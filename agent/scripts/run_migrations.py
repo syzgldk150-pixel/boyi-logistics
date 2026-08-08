@@ -57,7 +57,8 @@ def split_sql_statements(text: str) -> list[str]:
 
 def _connect():
     from dotenv import load_dotenv
-    load_dotenv(PROJECT_ROOT / ".env")
+    env_file = Path(os.getenv("MIGRATION_ENV_FILE", PROJECT_ROOT / ".env"))
+    load_dotenv(env_file)
     import pymysql
 
     return pymysql.connect(
@@ -75,6 +76,17 @@ def _connect():
 def _applied_migrations(cursor) -> dict[str, dict[str, str]]:
     cursor.execute("SELECT version, filename, checksum FROM schema_migrations")
     return {str(row["version"]): row for row in cursor.fetchall()}
+
+
+def _migration_table_exists(cursor) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schema_migrations'
+        """
+    )
+    return cursor.fetchone() is not None
 
 
 def _verify_history(cursor, migrations: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
@@ -100,11 +112,12 @@ def run(*, check_only: bool) -> int:
     connection = _connect()
     try:
         with connection.cursor() as cursor:
-            cursor.execute(SCHEMA_MIGRATIONS_SQL)
-            pending = _verify_history(cursor, migrations)
             if check_only:
+                pending = _verify_history(cursor, migrations) if _migration_table_exists(cursor) else migrations
                 print(f"migration_check=ok pending={len(pending)}")
                 return 0
+            cursor.execute(SCHEMA_MIGRATIONS_SQL)
+            pending = _verify_history(cursor, migrations)
             for version, path in pending:
                 for statement in split_sql_statements(path.read_text(encoding="utf-8")):
                     cursor.execute(statement)
