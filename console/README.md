@@ -1,4 +1,4 @@
-﻿# console
+# console
 
 本目录是控制台工作区，对齐服务器上的 `/home/boyce/console`，与 `../agent/` 并列。
 

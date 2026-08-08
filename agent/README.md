@@ -1,4 +1,4 @@
-﻿# agent
+# agent
 
 本目录是 Agent 运行时工程根目录，对齐服务器上的 `/home/boyce/agent`。
 

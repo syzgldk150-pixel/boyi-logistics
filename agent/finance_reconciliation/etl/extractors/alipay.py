@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 支付宝流水提取器
 输入: metadata/邓博严-支付宝流水(现金)/*.csv (GBK编码)

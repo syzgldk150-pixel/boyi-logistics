@@ -11,7 +11,13 @@ DEPLOY_ROOT="/home/boyce/.boyi-deploy"
 BACKUP_ROOT="/home/boyce/.boyi-backups"
 BACKUP_DIR="${BACKUP_ROOT}/$(basename "${STAGE_ROOT}")"
 BACKUP_TREE="${BACKUP_DIR}/tree"
+VENV_ROOT="/home/boyce/.boyi-venvs"
+PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
+PIP_TIMEOUT_SECONDS="${BOYI_PIP_TIMEOUT_SECONDS:-300}"
 MUTATION_STARTED=0
+VENV_ACTIVATED=0
+RELEASE_STAGE="initialization"
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -31,6 +37,9 @@ declare -A PYTHON_BINS=(
   [console]="/home/boyce/console/.venv/bin/python"
 )
 declare -A UNIT_PATHS=()
+declare -A RELEASE_VENVS=()
+declare -A PREVIOUS_VENV_LINKS=()
+declare -A PREVIOUS_VENV_DIRS=()
 
 IFS=',' read -r -a REQUESTED_TARGETS <<<"${TARGETS_CSV}"
 SCOPES=(shared)
@@ -59,6 +68,18 @@ validate_environment() {
     echo "Invalid release SHA" >&2
     return 1
   }
+  [[ "${PIP_INDEX_URL}" =~ ^https://[^[:space:]]+$ ]] || {
+    echo "Dependency index must be an HTTPS URL" >&2
+    return 1
+  }
+  [[ "${PIP_RETRIES}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "BOYI_PIP_RETRIES must be a positive integer" >&2
+    return 1
+  }
+  [[ "${PIP_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "BOYI_PIP_TIMEOUT_SECONDS must be a positive integer" >&2
+    return 1
+  }
 
   local target service actual_work_dir unit_path runtime_python
   for target in "${REQUESTED_TARGETS[@]}"; do
@@ -80,7 +101,7 @@ validate_environment() {
       echo "Missing runtime Python for ${target}: ${runtime_python}" >&2
       return 1
     }
-    "${runtime_python}" -c 'import sys; raise SystemExit(sys.version_info < (3, 8))' || {
+    "${runtime_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' || {
       echo "Unsupported runtime Python for ${target}: ${runtime_python}" >&2
       return 1
     }
@@ -115,6 +136,96 @@ validate_environment() {
         return 1
       }
     done <"${manifest}"
+  done
+}
+
+build_release_virtualenvs() {
+  local target bootstrap_python release_venv lock_file verifier
+  verifier="${STAGE_ROOT}/agent/scripts/verify_locked_environment.py"
+  [[ -f "${verifier}" ]] || {
+    echo "Missing locked-environment verifier" >&2
+    return 1
+  }
+  mkdir -p "${VENV_ROOT}"
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    bootstrap_python="$(readlink -f -- "${PYTHON_BINS[$target]}")"
+    [[ -x "${bootstrap_python}" ]] || {
+      echo "Could not resolve base Python for ${target}" >&2
+      return 1
+    }
+    "${bootstrap_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' || {
+      echo "Resolved base Python is not Python 3.10 for ${target}: ${bootstrap_python}" >&2
+      return 1
+    }
+    lock_file="${STAGE_ROOT}/${target}/requirements.lock"
+    [[ -f "${lock_file}" ]] || {
+      echo "Missing exact dependency lock for ${target}" >&2
+      return 1
+    }
+    release_venv="${VENV_ROOT}/${target}-${RELEASE_SHA}"
+    [[ ! -e "${release_venv}" ]] || {
+      echo "Release virtual environment already exists: ${release_venv}" >&2
+      return 1
+    }
+    "${bootstrap_python}" -m venv "${release_venv}"
+    RELEASE_VENVS[$target]="${release_venv}"
+    "${release_venv}/bin/python" -m pip install --disable-pip-version-check \
+      --index-url "${PIP_INDEX_URL}" \
+      --retries "${PIP_RETRIES}" \
+      --timeout "${PIP_TIMEOUT_SECONDS}" \
+      --requirement "${lock_file}"
+    "${release_venv}/bin/python" "${verifier}" "${lock_file}" --python-version 3.10
+  done
+}
+
+activate_release_virtualenvs() {
+  [[ "${SKIP_RESTART}" == "1" ]] && {
+    echo "Cannot activate locked dependencies when service restart is disabled" >&2
+    return 1
+  }
+  local target active_venv previous_dir service
+  VENV_ACTIVATED=1
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    service="${SERVICES[$target]}"
+    sudo systemctl stop "${service}"
+    active_venv="${ROOTS[$target]}/.venv"
+    if [[ -L "${active_venv}" ]]; then
+      PREVIOUS_VENV_LINKS[$target]="$(readlink "${active_venv}")"
+      rm -- "${active_venv}"
+    elif [[ -d "${active_venv}" ]]; then
+      previous_dir="${BACKUP_DIR}/${target}.venv"
+      mv -- "${active_venv}" "${previous_dir}"
+      PREVIOUS_VENV_DIRS[$target]="${previous_dir}"
+    elif [[ -e "${active_venv}" ]]; then
+      echo "Unsupported active virtual environment path: ${active_venv}" >&2
+      return 1
+    fi
+    ln -s "${RELEASE_VENVS[$target]}" "${active_venv}"
+  done
+}
+
+restore_virtualenvs() {
+  local target active_venv
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    active_venv="${ROOTS[$target]}/.venv"
+    if [[ -L "${active_venv}" && "$(readlink "${active_venv}")" == "${RELEASE_VENVS[$target]:-}" ]]; then
+      rm -- "${active_venv}"
+    fi
+    if [[ -n "${PREVIOUS_VENV_LINKS[$target]:-}" ]]; then
+      ln -s "${PREVIOUS_VENV_LINKS[$target]}" "${active_venv}"
+    elif [[ -n "${PREVIOUS_VENV_DIRS[$target]:-}" && -d "${PREVIOUS_VENV_DIRS[$target]}" ]]; then
+      mv -- "${PREVIOUS_VENV_DIRS[$target]}" "${active_venv}"
+    fi
+  done
+}
+
+remove_new_virtualenvs() {
+  local target release_venv
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    release_venv="${RELEASE_VENVS[$target]:-}"
+    if [[ -n "${release_venv}" && "${release_venv}" == "${VENV_ROOT}/${target}-"* ]]; then
+      rm -rf -- "${release_venv}"
+    fi
   done
 }
 
@@ -196,7 +307,11 @@ apply_migrations() {
     echo "Staged SQL migrations are missing their runner" >&2
     return 1
   }
-  MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${PYTHON_BINS[agent]}" "${runner}"
+  local migration_python="${PYTHON_BINS[agent]}"
+  if [[ -n "${RELEASE_VENVS[agent]:-}" ]]; then
+    migration_python="${RELEASE_VENVS[agent]}/bin/python"
+  fi
+  MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${migration_python}" "${runner}"
 }
 
 sync_scope() {
@@ -244,10 +359,17 @@ install_service_units() {
 
 restart_services() {
   [[ "${SKIP_RESTART}" == "1" ]] && return 0
-  local target
+  local target service
   for target in "${REQUESTED_TARGETS[@]}"; do
-    sudo systemctl restart "${SERVICES[$target]}"
-    systemctl is-active --quiet "${SERVICES[$target]}"
+    service="${SERVICES[$target]}"
+    if ! sudo systemctl restart "${service}"; then
+      systemctl show "${service}" -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
+      return 1
+    fi
+    if ! systemctl is-active --quiet "${service}"; then
+      systemctl show "${service}" -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
+      return 1
+    fi
   done
 }
 
@@ -289,10 +411,20 @@ PY
 
 rollback() {
   local exit_code=$?
+  local failed_command="${BASH_COMMAND}"
+  local failed_line="${BASH_LINENO[0]:-unknown}"
   trap - ERR
   set +e
+  echo "release_error stage=${RELEASE_STAGE} line=${failed_line} command=${failed_command}" >&2
   if [[ "${MUTATION_STARTED}" == "1" ]]; then
     echo "Release failed; restoring managed source backup" >&2
+    if [[ "${VENV_ACTIVATED}" == "1" ]]; then
+      local stopped_target
+      for stopped_target in "${REQUESTED_TARGETS[@]}"; do
+        sudo systemctl stop "${SERVICES[$stopped_target]}"
+      done
+      restore_virtualenvs
+    fi
     local scope root new_manifest backup_scope relative
     for scope in "${SCOPES[@]}"; do
       root="${ROOTS[$scope]}"
@@ -323,27 +455,42 @@ rollback() {
     sudo systemctl daemon-reload
     restart_services
   fi
+  remove_new_virtualenvs
   rm -rf -- "${STAGE_ROOT}"
   exit "${exit_code}"
 }
 
 trap rollback ERR
+RELEASE_STAGE="validate_environment"
 validate_environment
+RELEASE_STAGE="backup_managed_sources"
 mkdir -p "${BACKUP_DIR}"
 backup_managed_sources
+RELEASE_STAGE="static_preflight"
 run_static_preflight
+RELEASE_STAGE="build_release_virtualenvs"
+build_release_virtualenvs
 
 MUTATION_STARTED=1
 for scope in "${SCOPES[@]}"; do
+  RELEASE_STAGE="sync_scope:${scope}"
   sync_scope "${scope}"
 done
+RELEASE_STAGE="apply_migrations"
 apply_migrations
+RELEASE_STAGE="install_service_units"
 install_service_units
+RELEASE_STAGE="activate_release_virtualenvs"
+activate_release_virtualenvs
+RELEASE_STAGE="write_release_sha"
 mkdir -p "/home/boyce/agent/runtime"
 printf '%s\n' "${RELEASE_SHA}" >"/home/boyce/agent/runtime/release_sha"
+RELEASE_STAGE="restart_services"
 restart_services
+RELEASE_STAGE="check_health"
 check_health
 
 MUTATION_STARTED=0
+RELEASE_STAGE="cleanup"
 rm -rf -- "${STAGE_ROOT}"
 echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"

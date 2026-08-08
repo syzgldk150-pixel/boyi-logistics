@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agent.tms_runtime.dispatch import TARGETS, TaskRequest, execute_target
+from agent.api_contracts import EnvelopedRoute
 from agent.tms_runtime.errors import TMSAuthStateError, auth_error_payload
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.monitoring import (
@@ -22,7 +23,7 @@ from agent.tms_runtime.monitoring import (
 from agent.tms_runtime.session_broker import get_session_broker
 
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopedRoute)
 
 ACCOUNT_LIST_CACHE_TTL_SEC = 60
 _ACCOUNT_LIST_CACHE: dict[str, Any] = {}

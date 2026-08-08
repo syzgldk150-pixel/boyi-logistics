@@ -522,7 +522,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status)
         self.assertFalse(payload["ok"])
         self.assertEqual("AUTH_REQUIRED", payload["auth_state"]["code"])
-        self.assertEqual("/tms/yunda_waybill_entry", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/yunda_waybill_entry", app.last_call["endpoint"])
         self.assertEqual("bootstrap", app.last_call["payload"]["params"]["action"])
 
     def test_persist_yunda_save_creates_waybill_and_two_snapshots(self):
@@ -673,7 +673,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertEqual("text/html; charset=utf-8", handler.header_value("Content-Type"))
         self.assertEqual("<html>Yunda</html>", handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual("/tms/yunda_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/yunda_waybill_proxy", app.last_call["endpoint"])
         self.assertEqual("GET", app.last_call["payload"]["params"]["method"])
         self.assertEqual("/ky_inms/public/index.php/business/waybill/entry/indexNew.html", app.last_call["payload"]["params"]["path"])
         self.assertEqual("page=tab&p=nil", app.last_call["payload"]["params"]["query"])
@@ -770,7 +770,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertEqual("text/html; charset=utf-8", handler.header_value("Content-Type"))
         self.assertEqual("<html>Ronghui</html>", handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual("/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
         self.assertEqual("GET", app.last_call["payload"]["params"]["method"])
         self.assertEqual("", app.last_call["payload"]["params"]["path"])
         self.assertEqual("", app.last_call["payload"]["params"]["query"])
@@ -885,7 +885,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual("text/html; charset=utf-8", handler.header_value("Content-Type"))
         self.assertIn("AUTH_REQUIRED", body)
         self.assertIn("当前未登录或登录态已过期", body)
-        self.assertEqual("/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
 
     def test_handle_ronghui_live_proxy_outer_auth_required_returns_readable_iframe_body(self):
         app = self._app()
@@ -914,7 +914,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual("text/html; charset=utf-8", handler.header_value("Content-Type"))
         self.assertIn("AUTH_REQUIRED", body)
         self.assertIn("Ronghui login is required", body)
-        self.assertEqual("/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
 
     def test_request_handler_routes_write_methods_to_live_proxy_dispatcher(self):
         app = self._app()
@@ -972,7 +972,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         )
 
         self.assertEqual(HTTPStatus.OK, handler.status)
-        self.assertEqual("/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
         self.assertEqual("/commonOption/queryDispInfoByAddress", app.last_call["payload"]["params"]["path"])
         self.assertEqual("address=shaoyang", app.last_call["payload"]["params"]["query"])
 

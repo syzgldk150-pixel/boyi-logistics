@@ -519,7 +519,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertEqual(2, len(app.sent_payload["rows"]))
         self.assertEqual({"ronghui-a", "yunda-a"}, {item["account_id"] for item in app.sent_payload["rows"]})
         self.assertEqual({"739010002", "56739382003"}, {item["account_login"] for item in app.sent_payload["rows"]})
-        self.assertEqual("/tms/customer_service_problem", calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/tms/customer_service_problem", calls[0]["endpoint"])
         self.assertEqual("query", calls[0]["payload"]["params"]["action"])
         self.assertIn("account_login", calls[0]["payload"]["params"])
         self.assertNotIn("password", json.dumps(calls, ensure_ascii=False).lower())

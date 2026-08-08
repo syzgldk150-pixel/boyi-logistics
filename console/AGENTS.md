@@ -1,4 +1,4 @@
-﻿# console
+# console
 
 ## ECS 发布入口
 
@@ -11,11 +11,11 @@
 
 `console/` 是与 `agent/` 并列的控制台工作区，负责控制台页面、OCR 工作区、货拉拉调度页面、自动化配置页、财务工作台、客服系统工作台，以及控制台对 MySQL 的读写。
 
-Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Agent-Internal-Token`；凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增绕过该入口的 Agent HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
+Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；响应在该边界统一解包 `ok/data/error`。凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增旧 Agent 路径或绕过该入口的 HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
 `scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 
-Console 保留 `ThreadingHTTPServer`，但已按业务域将认证、自动化、监控、财务、客服、回单、OCR、运单/调度分流到 `routes/`；新路由先加入相应边界模块，`app.py` 仅保留 HTTP 生命周期、认证门禁和兼容服务门面。所有 Console 运行时表均由 `../agent/migrations/` 统一创建，`database.py` 只验证和读写。
+Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生命周期、认证门禁和请求分发。认证、自动化、监控/财务、客服、回单/运单、TMS 代理、OCR 文档业务分别维护在 `services/` 的领域 mixin 中，路由识别维护在 `routes/`。所有 Console 运行时表均由 `../agent/migrations/` 统一创建，`database.py` 只验证和读写。
 
 `config.py` 是无副作用配置解析模块；只允许 `runtime_config.py` 被 `app.py` 服务入口调用一次来加载本地开发环境。测试或库模块导入时不得读取 `.env`、建运行目录或连接数据库。
 
@@ -31,7 +31,7 @@ Console 保留 `ThreadingHTTPServer`，但已按业务域将认证、自动化�
   - `app.py`
   - Agent 侧入口在 `../agent/agent/tms_runtime/monitoring.py` 和 `../agent/agent/tms_runtime/routes.py`
   - Console 只代理分类汇总、SSE 推送和详情链接，不保存第三方 Cookie、Token、`encodeUser`、SSO 参数
-  - 首页“今日应签未签”卡片走 Console `/monitoring/daily-sign` 代理 Agent `/admin/monitoring/daily-sign`，Agent 读取 `phase7.daily_sign_sheet` 飞书普通电子表格中的“应签明细”快照，按当日 `应签收时间` 计数，并用 `scheduled_tasks` 中“每日应签”任务的启用定时点返回刷新时间；接口只返回计数、状态和刷新元数据，不返回应签明细、账号、表格 token 或请求体
+  - 首页“今日应签未签”卡片走 Console `/monitoring/daily-sign` 代理 Agent `/internal/v1/admin/monitoring/daily-sign`，Agent 读取 `phase7.daily_sign_sheet` 飞书普通电子表格中的“应签明细”快照，按当日 `应签收时间` 计数，并用 `scheduled_tasks` 中“每日应签”任务的启用定时点返回刷新时间；接口只返回计数、状态和刷新元数据，不返回应签明细、账号、表格 token 或请求体
 - 改后台登录、管理员账号、会话 Cookie：
   - `app.py`
   - `database.py`
