@@ -97,6 +97,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
         migrations = module.discover_migrations(project_root / "agent" / "migrations")
 
         self.assertEqual(["001", "002"], [version for version, _ in migrations])
+        self.assertNotIn("load_dotenv", script_path.read_text(encoding="utf-8").split("def _connect", 1)[0])
         for _, path in migrations:
             self.assertTrue(module.split_sql_statements(path.read_text(encoding="utf-8")))
 
