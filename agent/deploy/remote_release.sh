@@ -12,6 +12,9 @@ BACKUP_ROOT="/home/boyce/.boyi-backups"
 BACKUP_DIR="${BACKUP_ROOT}/$(basename "${STAGE_ROOT}")"
 BACKUP_TREE="${BACKUP_DIR}/tree"
 VENV_ROOT="/home/boyce/.boyi-venvs"
+PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
+PIP_TIMEOUT_SECONDS="${BOYI_PIP_TIMEOUT_SECONDS:-300}"
 MUTATION_STARTED=0
 VENV_ACTIVATED=0
 
@@ -62,6 +65,18 @@ validate_environment() {
   }
   [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
     echo "Invalid release SHA" >&2
+    return 1
+  }
+  [[ "${PIP_INDEX_URL}" =~ ^https://[^[:space:]]+$ ]] || {
+    echo "Dependency index must be an HTTPS URL" >&2
+    return 1
+  }
+  [[ "${PIP_RETRIES}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "BOYI_PIP_RETRIES must be a positive integer" >&2
+    return 1
+  }
+  [[ "${PIP_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "BOYI_PIP_TIMEOUT_SECONDS must be a positive integer" >&2
     return 1
   }
 
@@ -146,6 +161,9 @@ build_release_virtualenvs() {
     "${bootstrap_python}" -m venv "${release_venv}"
     RELEASE_VENVS[$target]="${release_venv}"
     "${release_venv}/bin/python" -m pip install --disable-pip-version-check \
+      --index-url "${PIP_INDEX_URL}" \
+      --retries "${PIP_RETRIES}" \
+      --timeout "${PIP_TIMEOUT_SECONDS}" \
       --requirement "${lock_file}"
     "${release_venv}/bin/python" "${verifier}" "${lock_file}" --python-version 3.10
   done
