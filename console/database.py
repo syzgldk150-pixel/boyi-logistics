@@ -7,6 +7,7 @@ from typing import Any, Iterator
 import pymysql
 
 from config import Settings
+from shared.redaction import redact_sensitive, redact_text
 
 import re
 
@@ -1543,7 +1544,7 @@ class DocumentRepository:
                     str(operator or "").strip(),
                     safe_request,
                     str(response_status or "").strip(),
-                    str(message or "").strip(),
+                    redact_text(message).strip(),
                     _now_iso(),
                 ],
             )
@@ -2434,30 +2435,17 @@ class DocumentRepository:
 
     def _row_to_receipt_audit_log(self, row: Any) -> dict[str, Any]:
         data = dict(row or {})
-        data["request_summary"] = _loads_json(data.pop("request_summary_json", None), {})
+        data["request_summary"] = redact_sensitive(
+            _loads_json(data.pop("request_summary_json", None), {})
+        )
+        data["message"] = redact_text(data.get("message"))
         data["created_at"] = self._format_datetime_field(data.get("created_at"))
         return data
 
     def _sanitize_receipt_log_payload(self, value: Any) -> str:
-        blocked_fragments = ("cookie", "token", "password", "passwd", "secret", "sso")
-
-        def sanitize(item: Any) -> Any:
-            if isinstance(item, dict):
-                cleaned: dict[str, Any] = {}
-                for key, inner in item.items():
-                    key_text = str(key)
-                    if any(fragment in key_text.lower() for fragment in blocked_fragments):
-                        cleaned[key_text] = "[REDACTED]"
-                    else:
-                        cleaned[key_text] = sanitize(inner)
-                return cleaned
-            if isinstance(item, list):
-                return [sanitize(inner) for inner in item]
-            return item
-
         if isinstance(value, str):
-            return value
-        return json.dumps(sanitize(value or {}), ensure_ascii=False)
+            return redact_text(value)
+        return json.dumps(redact_sensitive(value or {}), ensure_ascii=False)
 
     def _row_to_document(self, row: Any) -> dict[str, Any]:
         data = dict(row)

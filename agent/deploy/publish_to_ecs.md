@@ -1,207 +1,81 @@
-﻿# 发布到 ECS
+# 发布到 ECS
 
-本目录提供本地开发仓发布到 ECS 的标准化入口。
+标准发布入口：
 
-## 适用范围
+```powershell
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"
+```
 
-- 本地 Agent 根目录：`/home/deng/projects/agent`
-- 本地控制台目录：`/home/deng/projects/console`
-- 本地共享模块目录：`/home/deng/projects/shared`
-- 远端 Agent 目录：`/home/boyce/agent`
-- 远端控制台目录：`/home/boyce/console`
-- 远端共享模块目录：`/home/boyce/shared`
+生产目标固定为：
 
-## 发布脚本
+- SSH：`boyce@123.57.106.70`
+- Agent：`/home/boyce/agent`，`agent.service`
+- Console：`/home/boyce/console`，`console.service`
+- Shared：`/home/boyce/shared`
 
-- PowerShell：`deploy/publish_to_ecs.ps1`
+## 发布前提
 
-## 同步范围
+脚本采用失败关闭策略，以下任一条件不满足都会停止：
 
-### Agent
+1. Git 工作区必须干净，当前分支必须配置 upstream。
+2. 脚本会先 `git fetch`，本地 `HEAD` 必须与远程 upstream 完全一致。
+3. 本地 `127.0.0.1:9000` 不得有 Agent 监听，避免与 ECS 同时消费飞书任务。
+4. Windows `known_hosts` 必须已有经过人工核验的 ECS 主机密钥。
+5. SSH 只允许固定私钥、公钥认证、`BatchMode=yes`、`IdentitiesOnly=yes` 和 `StrictHostKeyChecking=yes`；不允许 root、密码回退或跳过主机校验。
+6. 远端执行用户必须是 `boyce`，systemd `WorkingDirectory` 必须与上述固定目录一致。
 
-- 根文件：
-  - `AGENTS.md`
-  - `CLAUDE.md`
-  - `README.md`
-  - `main.py`
-  - `requirements.txt`
-  - `agent.service`
-  - `project_overview.md`
-  - `deploy/publish_to_ecs.ps1`
-  - `deploy/publish_to_ecs.md`
-- 目录：
-  - `deploy/nginx/`
-  - `agent/`
-  - `docs/`
-  - `feishu/`
-  - `knowledge/`
-  - `prompts/`
-  - `tms_docs/`
-  - `tools/`
-  - `price_scripts/`
-  - `finance_reconciliation/`
-  - `../shared/` → `/home/boyce/shared/`
+## 源码白名单
 
-### Console
+发布包只从 `git ls-files` 取得已提交文件，再按 Agent、Console、Shared 明确白名单构建。未跟踪文件即使位于项目目录中也不会上传。
 
-- 根文件：
-  - `AGENTS.md`
-  - `CLAUDE.md`
-  - `README.md`
-  - `app.py`
-  - `check_syntax.py`
-  - `config.py`
-  - `console.service`
-  - `database.py`
-  - `finance_service.py`
-  - `line_haul_contacts.py`
-  - `ocr_providers.py`
-  - `preprocessing.py`
-  - `requirements.txt`
-  - `start_backend.sh`
-  - `stop_backend.sh`
-  - `task_queue.py`
-  - `template_store.py`
-  - `known_issues.md`
-- 目录：
-  - `config/`
-  - `static/`
-  - `templates/`
-  - `../shared/` → `/home/boyce/shared/`
+以下内容始终排除：
 
-## 不同步的内容
+- `.env`、凭据、Cookie、Token、登录态文件；
+- 虚拟环境、日志、缓存、运行态和临时文件；
+- 财务 `metadata`、业务表格/PDF、数据库文件、OCR 原图和输出报表；
+- 压缩包和其他生成物。
 
-- `.env`
-- `config.json`
-- `credentials*`
-- `secrets*`
-- `.venv`
-- `runtime/`
-- `logs/`
-- `tmp/`
-- `temp/`
-- `__pycache__/`
-- `deploy/state/`
+Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外。
 
-这些都属于环境态或运行态内容，不纳入发布覆盖。
+## 事务式发布流程
 
-## TMS 运行边界
+固定顺序如下：
 
-- 常规发布脚本只覆盖 `/home/boyce/agent` 与 `/home/boyce/console`
-- TMS Runtime 已并入 `/home/boyce/agent/agent/tms_runtime`
-- `console /automations` 页面顶部提供 TMS 登录态中心，实际代理到 Agent `/admin/tms/session/*`
-- 历史 `/root/http_service` 与 N8N 不再是运行时来源，也不属于本脚本默认动作范围
+1. 检查 Git 工作区和远程提交。
+2. 检查本地 Agent 已停止。
+3. 校验 SSH 主机密钥、远端用户和 systemd 工作目录。
+4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`。
+5. 在 `/home/boyce/.boyi-backups/` 备份当前受管源码和发布清单。
+6. 对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口。
+7. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
+8. 备份并安装同名 systemd unit、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
+9. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问。
+10. 任一步失败，删除本次新增受管文件、恢复备份和旧发布清单，并重启旧版本。
 
-## 一次性切换脚本
+`/health` 是公开的精简存活接口，只返回状态和 `release_sha`。详细组件状态位于带 `X-Agent-Internal-Token` 的 `/internal/v1/health`。
 
-- 单次切换入口：`deploy/cutover_legacy_tms.ps1`
-- 固定流程：
-  - 先执行 `publish_to_ecs.ps1 -Target all`
-  - 再做 `:9000/health`、`:8765/`、`/admin/tms/session/status` 健康检查
-  - 在 `/automations` 顶部模块完成短信验证码登录冒烟
-  - 再跑价格 / POST / 浏览器三类 TMS 冒烟
-  - 全部通过后才停用并删除旧 `/root/http_service` 与 N8N 资产
-- 危险删除动作不会并入 `publish_to_ecs.ps1` 默认发布流程
+## 发布范围
 
-## auto 模式
+默认 `-Target auto` 根据本地发布状态哈希判断范围。Shared 变化会同时影响 Agent 与 Console 的范围指纹。
 
-脚本默认 `-Target auto`，会比较本地同步范围的哈希，只发布真正变化的部分：
+```powershell
+# 全部发布
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target all
 
-- 只改 `agent` 侧代码：只发 `agent`
-- 只改 `console` 页面：只发 `console`
-- 两边都改：全发
-- 没有变更：直接退出，不重启服务
+# 只发布并重启 Agent
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target agent
 
-状态缓存保存在本地：
+# 只发布并重启 Console
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target console
+```
 
-- `deploy/state/publish_state.json`
+`-SkipRestart` 和 `-SkipHealthCheck` 仅用于用户明确授权的维护场景。常规生产发布不得跳过重启或健康检查。
 
-这个文件只用于本地判断发布范围，不会上服务器。
+本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。临时暂存目录在流程结束后自动清理。
 
-## 使用前提
-
-1. 本机已经配置好 SSH 公钥，可直接登录 ECS。
-2. ECS 上已存在：
-   - `/home/boyce/agent`
-   - `/home/boyce/console`
-3. ECS 上 `.env`、虚拟环境、systemd 服务都已经配置完成。
-
-## 生产域名与 HTTPS
+## Nginx 边界
 
 - 正式入口：`https://boyi.homes`
-- `http://boyi.homes`、`http://www.boyi.homes`、`https://www.boyi.homes` 均跳转到根域名 HTTPS。
-- 最终 Nginx 配置：`deploy/nginx/boyi.homes.conf`
-- 首次签发证书前的 HTTP/ACME 配置：`deploy/nginx/boyi.homes.bootstrap.conf`
-- Certbot 续期成功后 reload 钩子：`deploy/nginx/reload-nginx.sh`
-- Console 只监听 `127.0.0.1:8765`；外网只开放 `80/443`，不得直接开放 `8765`。
-- `publish_to_ecs.ps1` 会同步 `deploy/nginx/`，但不会自动覆盖 `/etc/nginx`、签发证书或修改安全组；这类系统变更必须先备份、执行 `nginx -t` 和健康检查后再切换。
-
-## 常用命令
-
-### 自动判断发布范围
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1"
-```
-
-### 强制全量发布
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1" -Target all
-```
-
-### 只发 Agent
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1" -Target agent
-```
-
-### 只发 Console
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1" -Target console
-```
-
-### 只同步，不重启
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1" -SkipRestart
-```
-
-### 跳过健康检查
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1" -SkipHealthCheck
-```
-
-### 跳过飞书长连等待
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1" -SkipFeishuCheck
-```
-
-## 默认动作
-
-脚本默认会：
-
-1. 判断应该发布 `agent`、`console` 还是两者都发
-2. 用 `scp` 上传代码和文档
-3. 重启对应的 systemd 服务
-4. 检查：
-   - `http://127.0.0.1:9000/health`
-   - `http://127.0.0.1:8765/`
-5. 如果本次发布包含 `agent`，默认额外等待：
-   - `/health` 中 `components.feishu_ws = connected`
-
-这样可以避免刚重启完时飞书 WebSocket 还没连上，脚本过早把状态看成最终结果。
-
-## 建议使用方式
-
-- 改页面：默认直接跑 `auto` 就够了
-- 改 Agent 能力、工具、飞书：默认直接跑 `auto` 就够了
-- 明确知道要全量刷新：手工指定 `-Target all`
-
-## 注意
-
-- 如果修改涉及数据库结构、系统包、Python 依赖升级，不要只依赖这个脚本，还要额外做环境变更。
-- 如果只是本地试 UI，没有必要每次都发版。
+- Console 和 Agent 均只监听回环地址，公网不得直接开放 `8765` 或 `9000`。
+- Nginx 配置位于 `deploy/nginx/`；发布脚本只同步源码，不自动修改 `/etc/nginx`、证书或安全组。
+- 系统配置切换必须单独备份并通过 `nginx -t` 后执行。

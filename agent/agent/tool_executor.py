@@ -12,9 +12,12 @@ import sys
 import time
 from datetime import datetime
 
+from shared.redaction import redact_sensitive, redact_text
+
 logger = logging.getLogger("tools")
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 LOCK_FILE = os.path.join(PROJECT_ROOT, "logs", ".heavy_task.lock")
 CANCEL_MESSAGE = "任务已取消"
 HEAVY_LOCK_RETRY_SECONDS = 0.5
@@ -206,7 +209,13 @@ class ToolExecutor:
             return {"success": False, "error": "脚本正在执行中，请先等待完成或取消当前任务。", "error_code": "TOOL_ALREADY_RUNNING"}
 
         start = time.time()
-        logger.info("tool=%s | params=%s | heavy=%s", name, json.dumps(params, ensure_ascii=False)[:500], heavy)
+        safe_params = redact_sensitive(params)
+        logger.info(
+            "tool=%s | params=%s | heavy=%s",
+            name,
+            json.dumps(safe_params, ensure_ascii=False)[:500],
+            heavy,
+        )
 
         lock_fd = None
         try:
@@ -234,6 +243,12 @@ class ToolExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=PROJECT_ROOT,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": os.pathsep.join(
+                        filter(None, (WORKSPACE_ROOT, os.environ.get("PYTHONPATH", "")))
+                    ),
+                },
                 start_new_session=True,
             )
             entry["proc"] = proc
@@ -246,6 +261,7 @@ class ToolExecutor:
             stderr_chunks: list[bytes] = []
 
             def append_output_line(text: str, *, is_stderr: bool) -> None:
+                text = redact_text(text)
                 if is_stderr:
                     if text.startswith("[progress] "):
                         buf.append(text[len("[progress] "):])
@@ -315,7 +331,7 @@ class ToolExecutor:
                     }
                     return {"success": False, "canceled": True, "error": CANCEL_MESSAGE, "duration_s": duration}
 
-                err_msg = stderr.decode("utf-8", errors="replace").strip()[-500:]
+                err_msg = redact_text(stderr.decode("utf-8", errors="replace").strip())[-500:]
                 logger.error("tool=%s | error=exit_code_%d | stderr=%s | duration=%ss", name, exit_code, err_msg, duration)
                 if exit_code == 137:
                     return {"success": False, "error": "工具被 OOM Kill，内存不足"}
@@ -328,14 +344,15 @@ class ToolExecutor:
                 result = {"output": raw_output}
 
             if isinstance(result, dict) and result.get("error"):
-                logger.error("tool=%s | success=false | error=%s | duration=%ss", name, str(result["error"])[:300], duration)
+                safe_error = redact_text(result["error"])
+                logger.error("tool=%s | success=false | error=%s | duration=%ss", name, safe_error[:300], duration)
                 self._last_run = {
                     "tool": name,
                     "time": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "success": False,
                     "duration_s": duration,
                 }
-                failure = {"success": False, "error": result["error"], "data": result, "duration_s": duration}
+                failure = {"success": False, "error": safe_error, "data": result, "duration_s": duration}
                 if result.get("error_code"):
                     failure["error_code"] = result.get("error_code")
                 return failure
@@ -351,8 +368,9 @@ class ToolExecutor:
 
         except Exception as exc:
             duration = round(time.time() - start, 2)
-            logger.error("tool=%s | error=%s | duration=%ss", name, str(exc)[:200], duration)
-            return {"success": False, "error": str(exc)}
+            safe_error = redact_text(exc)
+            logger.error("tool=%s | error=%s | duration=%ss", name, safe_error[:200], duration)
+            return {"success": False, "error": safe_error}
 
         finally:
             if lock_fd is not None:
