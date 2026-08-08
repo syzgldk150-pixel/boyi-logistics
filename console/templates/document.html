@@ -1,0 +1,2272 @@
+{% extends "base.html" %}
+
+{% block title %}{% if document %}Waybill #{{ document.id }}{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}OCR Mode{% else %}Manual Entry{% endif %}{% endblock %}
+
+{% block body_class %}ocr-page no-scroll{% if boyi_frame_mode|default(false) %} boyi-frame-page{% elif (not document) and (not ocr_mode) %} entry-tabs-page{% elif yunda_mode %} yunda-live-page{% elif ronghui_mode %} ronghui-live-page{% endif %}{% endblock %}
+
+{% block head %}
+{% if not document %}
+<script>
+  window.__manualAmapConfig = {{ manual_amap_config | default({}) | tojson }};
+  if (window.__manualAmapConfig && window.__manualAmapConfig.amap_security_code) {
+    window._AMapSecurityConfig = {
+      securityJsCode: window.__manualAmapConfig.amap_security_code
+    };
+  }
+</script>
+{% if manual_amap_sdk_should_load | default(false) %}
+<script src="https://webapi.amap.com/loader.js"></script>
+{% endif %}
+<script src="/static/js/waybill_label_html.js"></script>
+<script src="/static/js/waybill_label_lodop.js"></script>
+<script src="/static/js/yunda_entry_mode.js"></script>
+{% endif %}
+<style>
+  body.no-scroll { overflow: hidden; }
+	  .main-content { padding: 0 var(--content-x-pad) 16px !important; height: 100vh; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  body.yunda-live-page .app-shell { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) !important; }
+  body.yunda-live-page .sidebar { display: flex !important; }
+	  body.yunda-live-page .main-content { padding: 0 var(--content-x-pad) 16px !important; }
+  body.yunda-live-page .yunda-card { border: 0; border-radius: 0; box-shadow: none; }
+  body.yunda-live-page .manual-head { padding: 8px var(--form-x-pad); }
+  body.ronghui-live-page .app-shell { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) !important; }
+  body.ronghui-live-page .sidebar { display: flex !important; }
+  body.ronghui-live-page .main-content { padding: 0 var(--content-x-pad) 16px !important; }
+  body.ronghui-live-page .yunda-card { border: 0; border-radius: 0; box-shadow: none; }
+  body.ronghui-live-page .manual-head { padding: 8px var(--form-x-pad); }
+  body.entry-tabs-page .app-shell { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) !important; }
+  body.entry-tabs-page .sidebar { display: flex !important; }
+  body.boyi-frame-page .sidebar,
+  body.boyi-frame-page .top-header { display: none !important; }
+  body.boyi-frame-page .app-shell { grid-template-columns: minmax(0, 1fr) !important; }
+  body.boyi-frame-page .main-content { grid-column: 1; padding: 0 !important; height: 100vh; }
+  body.boyi-frame-page .manual-card,
+  body.boyi-frame-page .manual-side-card { border: 0; border-radius: 0; box-shadow: none; }
+  body.boyi-frame-page .manual-workbench { gap: 0; padding: 0; }
+
+  [data-mode-root] { flex: 1; min-height: 0; display: flex; width: 100%; }
+  [data-mode-panel] { min-height: 0; width: 100%; }
+  .entry-tabs-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+  .entry-tabs-toolbar { flex: 0 0 auto; min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 10px; border-bottom: 1px solid var(--line); background: #f9fafb; }
+  .entry-tab-list { align-self: stretch; flex: 1; min-width: 0; display: flex; align-items: stretch; gap: 18px; overflow-x: auto; overflow-y: hidden; padding: 0 2px; scrollbar-width: thin; }
+  .entry-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; height: 46px; max-width: 210px; padding: 0; border: 0; border-radius: 0; background: transparent; color: #6b7280; font-size: .8rem; font-weight: 800; transition: color var(--fast); }
+  .entry-tab::after { content: ""; position: absolute; left: 2px; right: 2px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); opacity: 0; transform: scaleX(.55); transform-origin: center; transition: opacity var(--fast), transform var(--fast); pointer-events: none; }
+  .entry-tab:hover { color: var(--text-strong); }
+  .entry-tab[aria-selected="true"] { color: var(--text-strong); }
+  .entry-tab[aria-selected="true"]::after { opacity: 1; transform: scaleX(1); }
+  .entry-tab-activate { display: inline-flex; align-items: center; min-width: 0; height: 100%; padding: 0 4px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
+  .entry-tab-activate:focus-visible { border-radius: var(--radius-sm); box-shadow: 0 0 0 3px var(--focus); }
+  .entry-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entry-tab-close { width: 24px; height: 24px; min-height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); background: transparent; color: #9ca3af; cursor: pointer; transition: color var(--fast), background var(--fast); }
+  .entry-tab-close:hover { background: #fef2f2; color: var(--danger); }
+  .entry-tab-close:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); color: var(--danger); }
+  .entry-tab-close .feather { width: 14px; height: 14px; stroke-width: 2.25; }
+  .entry-tabs-shell[data-entry-single="true"] .entry-tab-close { display: none; }
+  .entry-tabs-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .entry-add-btn, .entry-ocr-link { height: 32px; min-height: 32px; padding: 0 10px; border-radius: var(--radius-sm); font-size: .76rem; font-weight: 800; }
+  .entry-add-btn[disabled] { opacity: .5; cursor: not-allowed; }
+  @media (prefers-reduced-motion: reduce) {
+    .entry-tab, .entry-tab::after, .entry-tab-close { transition: none; }
+  }
+  .entry-tab-limit { flex: 0 0 auto; padding: 6px 10px; border-bottom: 1px solid #fed7aa; background: #fff7ed; color: #9a3412; font-size: .78rem; font-weight: 850; }
+  .entry-tab-limit[hidden] { display: none; }
+  .entry-frame-stack { flex: 1; min-height: 0; position: relative; background: #fff; }
+  .entry-frame-panel { position: absolute; inset: 0; display: none; min-width: 0; min-height: 0; background: #fff; overflow: hidden; }
+  .entry-frame-panel.is-active { display: block; }
+  .entry-instance-frame { position: absolute; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+  .entry-frame-panel > .manual-chip { position: absolute; top: 8px; right: 10px; z-index: 4; }
+  .entry-frame-panel > .yunda-live-fallback { position: absolute; top: 44px; left: 10px; right: 10px; z-index: 5; }
+  .entry-frame-panel[data-entry-provider="yunda"] .entry-instance-frame,
+  .entry-frame-panel[data-entry-provider="ronghui"] .entry-instance-frame { min-width: 1280px; }
+  .entry-frame-panel[data-entry-provider="yunda"],
+  .entry-frame-panel[data-entry-provider="ronghui"] { overflow: auto; }
+  .manual-workbench, .ocr-workspace { flex: 1; min-height: 0; height: 100%; }
+  .manual-workbench { display: grid; grid-template-columns: minmax(0, 1fr) clamp(430px, 30vw, 560px); gap: 16px; }
+  .manual-card, .manual-side-card, .ocr-figure-panel, .ocr-review-panel {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow-soft);
+    min-width: 0;
+  }
+  .manual-card { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+  .manual-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px var(--form-x-pad); border-bottom: 1px solid var(--line); background: #f9fafb;
+    flex: 0 0 auto;
+  }
+  .manual-title { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-width: max-content; }
+  .manual-title h3 { margin: 0; color: var(--text-strong); font-size: .9rem; font-weight: 800; white-space: nowrap; }
+  .manual-chip { padding: 4px 8px; border-radius: 999px; background: #eef2f7; color: var(--muted); font-size: .72rem; font-weight: 800; white-space: nowrap; }
+  .manual-head-tools { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; row-gap: 8px; flex-wrap: wrap; }
+  .manual-feedback {
+    flex: 0 0 auto; margin: 0; padding: 8px var(--form-x-pad); border-bottom: 1px solid #bfdbfe;
+    background: #eff6ff; color: #1d4ed8; font-size: .8rem; font-weight: 800; line-height: 1.4;
+  }
+  .manual-feedback[hidden] { display: none; }
+  .manual-feedback.is-error { border-bottom-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+  .manual-feedback.is-success { border-bottom-color: #bbf7d0; background: #ecfdf5; color: #047857; }
+  .mode-switch { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .mode-switch button, .mode-switch a {
+    display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 8px;
+    border-radius: 6px; color: var(--text); font-size: .74rem; font-weight: 800; text-decoration: none; cursor: pointer;
+  }
+  .mode-switch [aria-pressed="true"] { background: #111827; color: #fff; }
+  [data-mode-panel][hidden] { display: none !important; }
+  .mode-panel { animation: modeFade .16s ease-out; }
+  @keyframes modeFade {
+    from { opacity: .35; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .manual-form { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
+  .manual-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px var(--form-x-pad); }
+  .manual-section { margin: 0 0 12px; }
+  .manual-section-title {
+    margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid #eef0f4;
+    color: var(--muted); font-size: .78rem; font-weight: 900;
+  }
+  .manual-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 16px; }
+  .manual-party-stack { display: grid; gap: 10px; }
+  .manual-party-block { display: grid; gap: 7px; min-width: 0; }
+  .manual-subsection-title {
+    color: #8b95a5; font-size: .72rem; font-weight: 900; line-height: 1;
+  }
+  .manual-grid--party { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; }
+  .manual-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
+  .manual-row--wide { grid-column: 1 / -1; }
+  .manual-row--span-2 { grid-column: span 2; }
+  .manual-row--span-3 { grid-column: span 3; }
+  .manual-row--tall { align-items: start; }
+  .manual-label {
+    color: var(--text); font-size: .8rem; font-weight: 800; line-height: 30px;
+    text-align: justify; text-align-last: justify; white-space: nowrap; user-select: none;
+  }
+  .manual-label.required::after { content: "*"; color: var(--brand); margin-left: 4px; text-align-last: auto; }
+  .manual-input, .manual-select {
+    width: 100%; min-width: 0; height: 32px; padding: 0 9px;
+    border: 1px solid var(--line); border-radius: 5px; background: #fff;
+    color: var(--text-strong); font-size: .84rem; font-weight: 600; outline: none;
+  }
+  .manual-input:focus, .manual-select:focus { border-color: var(--text-strong); box-shadow: 0 0 0 1px var(--text-strong); }
+  .manual-input.is-invalid, .manual-select.is-invalid { border-color: #ef4444; box-shadow: 0 0 0 1px rgba(239, 68, 68, .35); background: #fff7f7; }
+  .manual-input[readonly] { background: #f7f8fa; color: #b5bdca; cursor: default; }
+  .manual-textarea { min-height: 46px; padding: 7px 9px; resize: vertical; line-height: 1.35; }
+  .manual-actions {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px var(--form-x-pad); border-top: 1px solid var(--line); background: rgba(255,255,255,.96);
+    flex: 0 0 auto;
+  }
+  .manual-action-group { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+  .action-btn { height: 38px; min-height: 38px; padding: 0 18px; font-size: .86rem; border-radius: 7px; }
+
+  .manual-side { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 2px; }
+  .manual-side-card { padding: var(--form-x-pad); }
+  .manual-map-card { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
+  .manual-side-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .manual-side-head h4 { margin: 0; color: var(--text-strong); font-size: .9rem; font-weight: 900; }
+  .manual-toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--text); font-size: .78rem; font-weight: 800; white-space: nowrap; }
+  .manual-toggle input { appearance: auto; width: 15px; height: 15px; }
+  .manual-map-body {
+    position: relative; flex: 0 0 auto; height: clamp(320px, 42vh, 480px); min-height: 320px; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 10px; background: #f8fafc;
+  }
+  .manual-route-planner--input-only { margin-top: 10px; }
+  .manual-route-input {
+    width: 100%; min-width: 0; height: 36px; padding: 0 11px;
+    border: 1px solid var(--line); border-radius: 7px; background: #fff;
+    color: var(--text-strong); font-size: .82rem; font-weight: 700; outline: none;
+  }
+  .manual-route-input:focus { border-color: var(--text-strong); box-shadow: 0 0 0 1px var(--text-strong); }
+  #manual-amap-container { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .map-placeholder {
+    position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; color: var(--muted); font-weight: 800; text-align: center;
+  }
+  .map-placeholder[hidden] { display: none; }
+  .map-placeholder i { width: 42px; height: 42px; opacity: .28; margin-bottom: 10px; }
+  .manual-quote-card { flex: 0 0 auto; display: grid; gap: 12px; }
+  .manual-quote-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .manual-quote-head h4 { margin: 0; color: var(--text-strong); font-size: .9rem; font-weight: 900; }
+  .manual-quote-action { height: 32px; min-height: 32px; padding: 0 12px; font-size: .78rem; border-radius: 7px; }
+  .manual-quote-summary {
+    min-height: 34px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px;
+    background: #f8fafc; color: var(--text); font-size: .78rem; font-weight: 800; line-height: 1.4;
+  }
+  .manual-quote-summary.is-error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+  .manual-quote-results { display: grid; gap: 9px; }
+  .manual-quote-item {
+    display: grid; gap: 8px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px;
+    background: #fff; color: var(--text);
+  }
+  .manual-quote-item.is-best { border-color: #111827; box-shadow: inset 3px 0 0 #111827; }
+  .manual-quote-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+  .manual-quote-name { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-strong); font-size: .84rem; font-weight: 900; }
+  .manual-quote-badge { padding: 2px 6px; border-radius: 999px; background: #eef2f7; color: var(--muted); font-size: .68rem; font-weight: 900; white-space: nowrap; }
+  .manual-quote-price { color: #111827; font-family: var(--font-display); font-size: 1.15rem; font-weight: 900; white-space: nowrap; }
+  .manual-quote-meta { display: grid; gap: 3px; color: var(--muted); font-size: .74rem; font-weight: 700; line-height: 1.35; }
+  .manual-quote-meta span { overflow-wrap: anywhere; }
+  .manual-quote-select { justify-self: end; height: 30px; min-height: 30px; padding: 0 10px; font-size: .74rem; border-radius: 6px; }
+  .manual-quote-select:disabled { opacity: .5; cursor: not-allowed; }
+  .address-parser-backdrop {
+    position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center;
+    padding: 20px; background: rgba(15, 23, 42, .28);
+  }
+  .address-parser-backdrop[hidden] { display: none; }
+  .address-parser-modal {
+    position: relative; z-index: 1;
+    width: min(560px, calc(100vw - 40px)); background: #fff; border: 1px solid #e5e7eb;
+    border-radius: 8px; box-shadow: 0 24px 60px rgba(15, 23, 42, .22);
+  }
+  .address-parser-head {
+    position: relative; display: flex; align-items: center; justify-content: center; min-height: 46px;
+    border-bottom: 1px solid #eef2f7;
+  }
+  .address-parser-head h4 { margin: 0; color: var(--text-strong); font-size: 1rem; font-weight: 800; }
+  .address-parser-close {
+    position: absolute; top: 7px; right: 10px; width: 32px; height: 32px; min-height: 32px;
+    padding: 0; justify-content: center; border-radius: 7px;
+  }
+  .address-parser-label {
+    display: block; margin: 14px 20px 6px; color: var(--text); font-size: .82rem; font-weight: 800;
+  }
+  .address-parser-textarea {
+    display: block; width: calc(100% - 40px); min-height: 96px; margin: 0 20px;
+    padding: 8px 10px; resize: vertical; line-height: 1.4;
+  }
+  .address-parser-error {
+    margin: 8px 20px 0; padding: 7px 9px; border: 1px solid #fecaca; border-radius: 7px;
+    background: #fef2f2; color: #b91c1c; font-size: .8rem; font-weight: 800; line-height: 1.4;
+  }
+  .address-parser-error[hidden] { display: none; }
+  .address-parser-actions { display: flex; justify-content: center; gap: 12px; padding: 16px 20px 18px; }
+  .address-parser-actions .action-btn { height: 34px; min-height: 34px; padding: 0 16px; }
+  .printer-popover-wrap { position: relative; }
+  .printer-trigger { height: 32px; min-height: 32px; padding: 0 10px; border-radius: 8px; font-size: .76rem; font-weight: 800; }
+  .printer-trigger .feather, .mode-switch .feather { width: 15px; height: 15px; }
+  .printer-popover {
+    position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 310px;
+    padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff;
+    box-shadow: 0 18px 36px rgba(15, 23, 42, .16);
+  }
+  .printer-popover[hidden] { display: none; }
+  .printer-popover-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .printer-popover-head h4 { margin: 0; color: var(--text-strong); font-size: .86rem; font-weight: 900; }
+  .printer-grid { display: grid; gap: 10px; }
+  .printer-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; }
+  .printer-label { color: var(--text); font-size: .8rem; font-weight: 800; }
+  .printer-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
+  .printer-mini-btn { height: 30px; min-height: 30px; padding: 0 10px; border-radius: 6px; font-size: .76rem; font-weight: 800; }
+  .ocr-secondary { display: grid; gap: 10px; }
+  .ocr-upload-box {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px; border: 1px dashed #cfd6e2; border-radius: 8px; background: #fbfcfe;
+  }
+  .ocr-upload-box strong { display: block; color: var(--text-strong); font-size: .85rem; }
+  .ocr-upload-box span { display: block; color: var(--muted); font-size: .76rem; margin-top: 3px; }
+  .queue-list { display: grid; gap: 8px; }
+  .queue-head { display: flex; justify-content: space-between; color: var(--text-strong); font-size: .82rem; font-weight: 900; }
+  .queue-item {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px;
+    padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); text-decoration: none; background: #fff;
+  }
+  .queue-item strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-size: .82rem; }
+  .queue-item span { color: var(--muted); font-size: .74rem; }
+  .ocr-mode-figure { display: flex; flex-direction: column; }
+  .ocr-mode-upload-area {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 32px; text-align: center; color: var(--muted);
+  }
+  .ocr-mode-upload-area i { width: 56px; height: 56px; opacity: .28; margin-bottom: 14px; }
+  .ocr-mode-upload-area h3 { margin: 0 0 8px; color: var(--text-strong); font-size: 1rem; font-weight: 900; }
+  .ocr-mode-upload-area p { margin: 0 0 18px; font-size: .86rem; font-weight: 700; }
+  .ocr-mode-upload-actions { display: flex; align-items: center; gap: 10px; }
+  .ocr-queue-panel .ocr-review-scroll { gap: 10px; }
+  .ocr-queue-empty {
+    padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfe;
+    color: var(--muted); font-weight: 800;
+  }
+
+  .ocr-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; }
+  .ocr-figure-panel { height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #f3f4f6; position: relative; }
+  .image-section { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: grab; }
+  .review-figure-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .ocr-review-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  .ocr-review-head { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; background: #f9fafb; }
+  .ocr-review-head h3 { margin: 0; font-size: .95rem; font-weight: 800; color: var(--text-strong); }
+  .ocr-review-form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .ocr-review-scroll { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; }
+  .compact-row { display: grid; grid-template-columns: 75px 1fr; align-items: center; gap: 8px; }
+  .compact-row--tall { align-items: flex-start; }
+  .compact-label { font-size: .8rem; font-weight: 700; color: var(--text); text-align: justify; text-align-last: justify; white-space: nowrap; line-height: 30px; user-select: none; }
+  .review-input.compact-input { height: 30px; min-height: 30px; padding: 0 8px; font-size: .85rem; border: 1px solid var(--line); border-radius: 4px; background: #fff; width: 100%; transition: none; }
+  .review-input.compact-input:focus { border-color: var(--text-strong); box-shadow: 0 0 0 1px var(--text-strong); }
+  .review-textarea { min-height: 48px !important; line-height: 1.4; padding: 6px 8px !important; resize: none; }
+  .form-group-title { grid-column: 1 / -1; font-size: .75rem; font-weight: 900; color: var(--muted); padding-bottom: 2px; border-bottom: 1px solid #f3f4f6; margin: 8px 0 2px; }
+  .form-group-title:first-child { margin-top: 0; }
+  .ocr-review-actions { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; background: #fff; }
+  .yunda-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; height: 100%; min-height: 0; }
+  .yunda-workspace > .manual-side { display: none; }
+  .yunda-card { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; border-radius: 8px; }
+  .yunda-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0; background: #f0f0f0; }
+  .yunda-live-scroll { overflow: auto; background: #fff; }
+  .yunda-live-frame { display: block; width: 100%; min-width: 1280px; height: 100%; min-height: 0; border: 0; background: #fff; }
+  .yunda-live-fallback[hidden] { display: none; }
+  .yunda-empty { border: 1px dashed #cbd5e1; border-radius: 4px; padding: 12px; color: #64748b; font-size: .78rem; background: #f8fafc; }
+  .yunda-shell { min-width: 1240px; padding: 12px 12px 18px; color: #1f2937; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 13px; }
+  .yunda-login-alert { margin-bottom: 8px; padding: 8px 10px; border: 1px solid #ffd9a8; background: #fff8ed; color: #9a4f00; font-weight: 700; }
+  .yunda-action-notice { margin-bottom: 8px; padding: 8px 10px; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+  .yunda-original-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; padding: 6px;
+    border: 1px solid #d0d7e2; border-radius: 4px; background: #fff;
+  }
+  .yd-btn {
+    height: 24px; min-height: 24px; padding: 0 10px; border: 1px solid #a9c1ff; border-radius: 4px;
+    background: #fff; color: #3266e6; font-size: 13px; font-weight: 700; cursor: pointer; line-height: 22px;
+  }
+  .yd-btn:hover { background: #f4f7ff; }
+  .yd-btn:disabled, .yd-btn.is-disabled { border-color: #d6dbe5; background: #f2f4f8; color: #9aa3b2; cursor: not-allowed; }
+  .yd-btn-blue { background: #4d82f3; border-color: #4d82f3; color: #fff; }
+  .yd-btn-red { background: #e95835; border-color: #e95835; color: #fff; }
+  .yd-btn-orange { background: #e86a35; border-color: #e86a35; color: #fff; }
+  .yd-btn-green { background: #62ad73; border-color: #62ad73; color: #fff; }
+  .yd-toolbar-check { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; color: #333; font-weight: 700; white-space: nowrap; }
+  .yd-toolbar-check input, .yd-check input { width: 14px; height: 14px; margin: 0; accent-color: #6aa26f; }
+  .yd-top-card { border: 1px solid #d8dde8; border-radius: 3px; background: #fff; margin-bottom: 10px; padding: 8px 10px; }
+  .yd-top-row { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 8px 10px; align-items: center; margin-bottom: 8px; }
+  .yd-top-row:last-child { margin-bottom: 0; }
+  .yd-field { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .yd-field-wide { grid-column: span 3; }
+  .yd-field-medium { grid-column: span 2; }
+  .yd-field-small { grid-column: span 1; }
+  .yd-label { flex: 0 0 auto; color: #111827; font-weight: 700; white-space: nowrap; }
+  .yd-label.required::after { content: "＊"; color: #f23a30; margin-left: 3px; font-weight: 900; }
+  .yd-input, .yd-select, .yd-textarea {
+    width: 100%; min-width: 0; border: 1px solid #d7dde8; border-radius: 3px; background: #ffffdf;
+    color: #111827; font-size: 13px; font-weight: 500; outline: none;
+  }
+  .yd-input, .yd-select { height: 22px; padding: 0 7px; }
+  .yd-textarea { min-height: 44px; padding: 6px 7px; resize: vertical; line-height: 1.4; }
+  .yd-input:focus, .yd-select:focus, .yd-textarea:focus { border-color: #5b8df7; box-shadow: 0 0 0 1px rgba(91, 141, 247, .25); }
+  .yd-input[readonly], .yd-input:disabled, .yd-select:disabled, .yd-textarea:disabled { background: #eeeeee; color: #667085; cursor: default; }
+  .yd-readonly { background: #eeeeee !important; }
+  .yd-main-grid { display: grid; grid-template-columns: 430px 470px 340px; gap: 10px; align-items: start; }
+  .yd-column { display: grid; gap: 10px; min-width: 0; }
+  .yd-panel { border: 1px solid #d8dde8; border-radius: 2px; background: #fff; min-width: 0; }
+  .yd-panel-title {
+    min-height: 28px; display: flex; align-items: center; gap: 8px; padding: 3px 8px;
+    background: #dbe8ff; color: #1f2937; font-size: 14px; font-weight: 700;
+  }
+  .yd-panel-title-blue { background: #4d82f3; color: #fff; }
+  .yd-panel-body { padding: 8px 10px; display: grid; gap: 7px; }
+  .yd-line { display: grid; grid-template-columns: 72px minmax(0, 1fr) 76px minmax(0, 1fr); gap: 6px; align-items: center; min-height: 24px; }
+  .yd-line-three { grid-template-columns: 72px minmax(0, 1fr) 72px minmax(0, 1fr) 72px minmax(0, 1fr); }
+  .yd-line-single { grid-template-columns: 72px minmax(0, 1fr); }
+  .yd-inline-action { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+  .yd-address-row { display: grid; grid-template-columns: 72px 88px 88px 88px minmax(0, 1fr); gap: 6px; align-items: center; }
+  .yd-address-action { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto auto; gap: 6px; align-items: center; }
+  .yd-check-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 22px; }
+  .yd-check { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: #1f2937; font-weight: 500; }
+  .yd-hint { color: #e06b2f; font-size: 12px; font-weight: 700; }
+  .yd-cargo-grid { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; align-items: start; }
+  .yd-volume-box { display: grid; gap: 6px; }
+  .yd-volume-box textarea { min-height: 156px; }
+  .yd-pack-lines { display: grid; gap: 6px; }
+  .yd-pack-line { display: grid; grid-template-columns: 70px minmax(0, 1fr) 42px 72px; gap: 6px; align-items: center; }
+  .yd-cost-grid { display: grid; grid-template-columns: 72px minmax(0, 1fr) 72px minmax(0, 1fr); gap: 7px 8px; align-items: center; }
+  .yd-mini-search { width: 20px; height: 20px; border: 0; border-radius: 50%; background: #6aa5ff; color: #fff; font-weight: 900; line-height: 20px; text-align: center; }
+  .yd-right-map { min-height: 190px; border: 1px solid #e2e8f0; background: #fff; display: flex; align-items: center; justify-content: center; color: #8b95a5; text-align: center; }
+  .yd-map-pin { font-size: 42px; line-height: 1; color: #a6adba; }
+  .yd-route { border: 1px solid #d8dde8; background: #fff; padding: 8px; display: grid; gap: 4px; }
+  .yd-route-title { display: flex; align-items: center; gap: 5px; color: #1f2937; font-weight: 800; }
+  .yd-route-line { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 6px; color: #1f2937; }
+  .yd-route-line span:first-child { color: #334155; }
+  .yd-tabs { border: 1px solid #d8dde8; background: #fff; }
+  .yd-tab-head { display: grid; grid-template-columns: 1fr 1fr; background: #cfdbf6; }
+  .yd-tab-head button { height: 34px; border: 0; background: transparent; color: #1f2937; font-weight: 800; cursor: pointer; }
+  .yd-tab-head button[aria-selected="true"] { background: #fff; }
+  .yd-tab-body { padding: 0; }
+  .yd-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+  .yd-table th, .yd-table td { border: 1px solid #e5e7eb; padding: 7px 6px; text-align: center; min-height: 24px; word-break: break-word; }
+  .yd-table th { background: #f5f5f5; color: #334155; font-weight: 700; }
+  .yd-table .yd-red { color: #f23a30; }
+  .yd-contact { padding: 8px 12px; display: grid; gap: 7px; border-top: 1px solid #edf0f5; }
+  .yd-contact h4 { margin: 0; color: #1f2937; font-size: 14px; }
+  .yd-contact-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px; align-items: center; }
+  .yd-status-mini { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: #eef2f7; color: #64748b; font-size: 12px; font-weight: 800; }
+  .yd-modal-backdrop { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(15, 23, 42, .32); }
+  .yd-modal-backdrop[hidden] { display: none; }
+  .yd-modal { width: min(620px, 100%); max-height: 78vh; overflow: hidden; display: flex; flex-direction: column; border-radius: 8px; background: #fff; box-shadow: 0 24px 60px rgba(15, 23, 42, .26); }
+  .yd-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
+  .yd-modal-head h3 { margin: 0; font-size: 16px; color: #111827; }
+  .yd-modal-body { padding: 14px 16px; overflow: auto; display: grid; gap: 10px; }
+  .yd-list-item { border: 1px solid #d8dde8; border-radius: 6px; padding: 10px; background: #fbfcfe; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+  .yd-list-item strong { display: block; color: #111827; font-size: 13px; }
+  .yd-list-item span { display: block; margin-top: 3px; color: #64748b; font-size: 12px; }
+  .yd-list-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+  @media (max-width: 1560px) {
+    .manual-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .manual-grid--party { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .manual-row--span-3 { grid-column: 1 / -1; }
+  }
+
+  @media (max-width: 1280px) {
+    .manual-workbench { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+    .manual-side { overflow: visible; }
+    .manual-grid { grid-template-columns: minmax(0, 1fr); }
+    .manual-grid--party { grid-template-columns: minmax(0, 1fr); }
+    .manual-row--span-2, .manual-row--span-3 { grid-column: 1 / -1; }
+    .yunda-workspace { grid-template-columns: minmax(0, 1fr); }
+    .yunda-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% set is_ocr_mode = (not document) and ocr_mode %}
+{% set is_yunda_mode = (not document) and yunda_mode %}
+{% set is_ronghui_mode = (not document) and ronghui_mode %}
+{% set is_boyi_frame = (not document) and (boyi_frame_mode|default(false)) %}
+{% set is_entry_tabs_shell = (not document) and (not is_ocr_mode) and (not is_boyi_frame) %}
+{% set is_manual = (not document) and (not is_ocr_mode) and (not is_yunda_mode) and (not is_ronghui_mode) %}
+{% set field_dict = {} %}
+{% if document and fields %}
+  {% for f in fields %}
+    {% set _ = field_dict.update({f.name: f}) %}
+  {% endfor %}
+{% endif %}
+
+{% macro render_compact_field(name, is_textarea=False, label_override=None, forced_value='', placeholder='', readonly=False) %}
+  {% set field = field_dict.get(name) %}
+  {% set field_value = field.value if field else forced_value %}
+  <div class="compact-row {% if is_textarea %}compact-row--tall{% endif %}">
+    <label class="compact-label" for="field_{{ name }}">{{ label_override or (field.label if field else name) }}</label>
+    {% if is_textarea %}
+    <textarea id="field_{{ name }}" name="field_{{ name }}" class="review-input compact-input review-textarea" placeholder="{{ placeholder }}" {% if readonly %}readonly{% endif %}>{{ field_value }}</textarea>
+    {% else %}
+    <input id="field_{{ name }}" type="text" name="field_{{ name }}" value="{{ field_value }}" placeholder="{{ placeholder }}" autocomplete="off" class="review-input compact-input" {% if readonly %}readonly{% endif %} {% if name == 'open_date' %}inputmode="numeric" data-open-date-input="true"{% endif %}>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro render_manual_field(name, label, required=False, is_textarea=False, placeholder='', readonly=False, forced_value='', span='') %}
+  <div class="manual-row {% if span %}manual-row--span-{{ span }}{% endif %} {% if is_textarea %}manual-row--tall{% endif %}">
+    <label class="manual-label {% if required %}required{% endif %}" for="field_{{ name }}">{{ label }}</label>
+    {% if is_textarea %}
+    <textarea id="field_{{ name }}" name="field_{{ name }}" class="manual-input manual-textarea" placeholder="{{ placeholder }}" {% if readonly %}readonly{% endif %}>{{ forced_value }}</textarea>
+    {% else %}
+    <input id="field_{{ name }}" type="{{ 'date' if name == 'open_date' else 'text' }}" name="field_{{ name }}" value="{{ forced_value }}" class="manual-input" placeholder="{{ placeholder }}" autocomplete="off" {% if readonly %}readonly{% endif %} {% if name == 'open_date' %}lang="zh-CN" data-open-date-input="true"{% endif %}>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% if not document %}
+{% if is_entry_tabs_shell %}
+{% set entry_initial_provider = 'ronghui' if is_ronghui_mode else ('yunda' if is_yunda_mode else 'boyi') %}
+{% set entry_initial_label = '融辉 1' if entry_initial_provider == 'ronghui' else ('韵达 1' if entry_initial_provider == 'yunda' else '博益 1') %}
+{% set entry_initial_src = '/ocr/ronghui/live' if entry_initial_provider == 'ronghui' else ('/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil' if entry_initial_provider == 'yunda' else '/ocr/boyi/frame') %}
+<div
+  class="entry-tabs-shell"
+  data-entry-tabs-root
+  data-entry-single="true"
+  data-entry-max-tabs="6"
+  data-entry-initial-provider="{{ entry_initial_provider }}"
+  data-entry-src-boyi="/ocr/boyi/frame"
+  data-entry-src-yunda="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"
+  data-entry-src-ronghui="/ocr/ronghui/live"
+>
+  <div class="entry-tabs-toolbar">
+    <div class="entry-tab-list" data-entry-tab-list role="tablist" aria-label="录单页签">
+      <div class="entry-tab" role="tab" aria-selected="true" data-entry-tab data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}">
+        <button type="button" class="entry-tab-activate" data-entry-activate>{{ entry_initial_label }}</button>
+        <button type="button" class="entry-tab-close" data-entry-close aria-label="关闭{{ entry_initial_label }}">
+          <i data-feather="x"></i>
+        </button>
+      </div>
+    </div>
+    <div class="entry-tabs-actions">
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="plus"></i> 新建韵达</button>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="plus"></i> 新建融辉</button>
+      <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> OCR队列</a>
+    </div>
+  </div>
+  <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
+  <div class="entry-frame-stack" data-entry-frame-stack>
+    <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-session-url="/automations"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations"{% endif %}>
+      {% if entry_initial_provider in ['yunda', 'ronghui'] %}
+      <div class="manual-chip" {% if entry_initial_provider == 'yunda' %}data-yunda-status-chip{% else %}data-ronghui-status-chip{% endif %}>登录态</div>
+      {% endif %}
+      <iframe
+        class="entry-instance-frame{% if entry_initial_provider == 'yunda' %} yunda-live-frame{% elif entry_initial_provider == 'ronghui' %} ronghui-live-frame{% endif %}"
+        data-entry-frame
+        data-entry-provider="{{ entry_initial_provider }}"
+        {% if entry_initial_provider == 'yunda' %}data-yunda-live-frame{% elif entry_initial_provider == 'ronghui' %}data-ronghui-live-frame{% endif %}
+        src="{{ entry_initial_src }}"
+        title="{{ entry_initial_label }}"
+      ></iframe>
+      {% if entry_initial_provider in ['yunda', 'ronghui'] %}
+      <div class="yunda-live-fallback yunda-empty" {% if entry_initial_provider == 'yunda' %}data-yunda-live-fallback{% else %}data-ronghui-live-fallback{% endif %} hidden>{{ '韵达' if entry_initial_provider == 'yunda' else '融辉' }}原页面加载失败，可刷新登录态后重试。</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% else %}
+<div data-mode-root data-active-mode="{{ 'ronghui' if is_ronghui_mode else ('yunda' if is_yunda_mode else ('ocr' if is_ocr_mode else 'manual')) }}">
+<div class="manual-workbench mode-panel" data-manual-workbench data-mode-panel="manual" {% if is_boyi_frame %}data-boyi-frame-root{% endif %} {% if is_ocr_mode or is_yunda_mode or is_ronghui_mode %}hidden{% endif %}>
+  <section class="manual-card">
+    <div class="manual-head">
+      <div class="manual-title">
+        <h3>手工录单</h3>
+        <span class="manual-chip">新建草稿</span>
+      </div>
+      <div class="manual-head-tools">
+        <div class="printer-popover-wrap" data-printer-popover>
+          <button type="button" class="ghost-btn printer-trigger" data-printer-toggle aria-expanded="false" aria-controls="printer-settings-panel">
+            <i data-feather="printer"></i> 打印机设置
+          </button>
+          <div class="printer-popover" id="printer-settings-panel" data-printer-panel hidden>
+            <div class="printer-popover-head">
+              <h4>打印机设置</h4>
+              <span class="manual-chip" data-printer-service-status>C-Lodop优先</span>
+            </div>
+            <div class="printer-grid">
+              <div class="printer-row">
+                <label class="printer-label" for="printer_name">打印机</label>
+                <select id="printer_name" name="printer_name" class="manual-select" data-printer-setting>
+                  <option>系统默认打印机</option>
+                  <option>热敏面单打印机</option>
+                </select>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="printer_paper">纸张</label>
+                <input id="printer_paper" type="text" name="printer_paper" value="74mm×92mm 热敏标签" class="manual-input" readonly>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_copies">份数</label>
+                <input id="print_copies" type="number" min="1" max="5" value="1" class="manual-input" name="print_copies" data-printer-setting>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_orientation">方向</label>
+                <select id="print_orientation" name="print_orientation" class="manual-select" data-printer-setting>
+                  <option value="1">竖向 74×92</option>
+                  <option value="2">横向校正</option>
+                </select>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_offset_x">X偏移</label>
+                <input id="print_offset_x" type="number" min="-20" max="20" step="0.5" value="0" class="manual-input" name="print_offset_x" data-printer-setting>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_offset_y">Y偏移</label>
+                <input id="print_offset_y" type="number" min="-20" max="20" step="0.5" value="0" class="manual-input" name="print_offset_y" data-printer-setting>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_font_scale">字体</label>
+                <input id="print_font_scale" type="number" min="85" max="115" step="1" value="100" class="manual-input" name="print_font_scale" data-printer-setting>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_template_scale">整体缩放</label>
+                <input id="print_template_scale" type="number" min="94" max="106" step="0.5" value="100" class="manual-input" name="print_template_scale" data-printer-setting>
+              </div>
+              <div class="printer-actions">
+                <button class="ghost-btn printer-mini-btn" type="button" data-printer-calibration>校准页</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="ghost-btn printer-trigger" type="button" data-manual-preview>
+          <i data-feather="eye"></i> 打印预览
+        </button>
+        <button class="ghost-btn printer-trigger" type="button" data-address-parser-trigger>
+          <i data-feather="map-pin"></i> 地址解析
+        </button>
+        {% if not is_boyi_frame %}
+        <div class="mode-switch" aria-label="Entry Mode">
+          <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
+          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
+          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
+          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="manual-feedback" data-manual-feedback aria-live="polite" hidden></div>
+
+    <form id="manual-waybill-form" action="/waybills/manual" method="post" class="manual-form" data-manual-form>
+      {% if is_boyi_frame %}
+      <input type="hidden" name="return_to" value="/ocr/boyi/frame">
+      {% endif %}
+      <div class="manual-scroll">
+        <section class="manual-section">
+          <div class="manual-grid">
+            {{ render_manual_field('waybill_no', '运单号', placeholder='提交后自动生成' ~ (' ' ~ manual_preview_waybill_no if manual_preview_waybill_no else ''), readonly=True, forced_value=manual_preview_waybill_no) }}
+            {{ render_manual_field('open_date', '日期', required=True, placeholder='年 / 月 / 日') }}
+            {{ render_manual_field('destination_site', '到站', required=True) }}
+          </div>
+        </section>
+
+        <section class="manual-section">
+          <div class="manual-party-stack">
+            <div class="manual-party-block">
+              <div class="manual-subsection-title">发货信息</div>
+              <div class="manual-grid manual-grid--party">
+                {{ render_manual_field('sender_name', '发货人') }}
+                {{ render_manual_field('sender_phone', '发货电话') }}
+              </div>
+            </div>
+            <div class="manual-party-block">
+              <div class="manual-subsection-title">收货信息</div>
+              <div class="manual-grid manual-grid--party">
+                {{ render_manual_field('receiver_name', '收货人', required=True) }}
+                {{ render_manual_field('receiver_phone', '收货电话', required=True) }}
+                <div class="manual-row manual-row--span-2 manual-row--tall">
+                  <label class="manual-label required" for="field_receiver_address">收件地址</label>
+                  <textarea id="field_receiver_address" name="field_receiver_address" class="manual-input manual-textarea" data-address-input></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="manual-section">
+          <div class="manual-section-title">货物明细</div>
+          <div class="manual-grid">
+            {{ render_manual_field('goods_name_lines', '货物名称', required=True) }}
+            {{ render_manual_field('package_type_lines', '包装类型', required=True) }}
+            {{ render_manual_field('quantity_lines', '件数', required=True) }}
+            <div class="manual-row">
+              <label class="manual-label" for="field_weight_kg">重量 kg</label>
+              <input id="field_weight_kg" name="field_weight_kg" class="manual-input" type="number" min="0" step="0.01" inputmode="decimal" data-weight-input data-quote-input>
+            </div>
+            <div class="manual-row">
+              <label class="manual-label" for="field_volume_m3">体积 m³</label>
+              <input id="field_volume_m3" name="field_volume_m3" class="manual-input" type="number" min="0" step="0.001" inputmode="decimal" data-volume-input data-quote-input>
+            </div>
+            <input type="hidden" id="field_weight_volume" name="field_weight_volume" data-weight-volume-combined>
+          </div>
+        </section>
+
+        <section class="manual-section">
+          <div class="manual-section-title">费用结算</div>
+          <div class="manual-grid">
+            {{ render_manual_field('freight_fee', '运费', required=True, placeholder='0.00') }}
+            {{ render_manual_field('pickup_fee', '接货费', placeholder='0.00') }}
+            {{ render_manual_field('delivery_fee', '送货费', placeholder='0.00') }}
+            {{ render_manual_field('transfer_fee', '中转费', placeholder='0.00') }}
+            <div class="manual-row">
+              <label class="manual-label required" for="field_delivery_method">送货方式</label>
+              <select id="field_delivery_method" name="field_delivery_method" class="manual-select">
+                <option value="">请选择</option>
+                <option value="送货">送货</option>
+                <option value="自提">自提</option>
+              </select>
+            </div>
+            <div class="manual-row">
+              <label class="manual-label required" for="field_payment_method">结算方式</label>
+              <select id="field_payment_method" name="field_payment_method" class="manual-select">
+                <option value="">请选择</option>
+                <option value="寄付">寄付</option>
+                <option value="到付">到付</option>
+                <option value="现付">现付</option>
+                <option value="月结">月结</option>
+              </select>
+            </div>
+            {{ render_manual_field('insurance_amount', '保价金额', placeholder='0.00') }}
+            {{ render_manual_field('cod_amount', '代收金额', placeholder='0.00') }}
+            <div class="manual-row manual-row--span-3 manual-row--tall">
+              <label class="manual-label" for="field_remark">备注</label>
+              <textarea id="field_remark" name="field_remark" class="manual-input manual-textarea"></textarea>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="manual-actions">
+        {% if not is_boyi_frame %}
+        <a class="ghost-btn action-btn" href="/ocr">返回</a>
+        {% else %}
+        <span></span>
+        {% endif %}
+        <div class="manual-action-group">
+          <label class="manual-toggle"><input type="checkbox" name="auto_print" checked data-printer-setting> 保存后打印</label>
+          <button class="primary-btn action-btn" type="submit" name="action" value="confirm"><i data-feather="check"></i> 保存</button>
+        </div>
+      </div>
+    </form>
+    <div class="address-parser-backdrop" data-address-parser-dialog hidden>
+      <section class="address-parser-modal" role="dialog" aria-modal="true" aria-labelledby="address-parser-title">
+        <div class="address-parser-head">
+          <h4 id="address-parser-title">解析地址</h4>
+          <button type="button" class="ghost-btn address-parser-close" data-address-parser-close aria-label="关闭解析地址">
+            <i data-feather="x"></i>
+          </button>
+        </div>
+        <label class="address-parser-label" for="field_address_parser_text">解析地址</label>
+        <textarea id="field_address_parser_text" class="manual-input address-parser-textarea" data-address-parser-input placeholder="录入姓名/电话/地址信息，开单可以一键解析&#10;例：张三 18800000678 上海市青浦区盈港东路6679号"></textarea>
+        <div class="address-parser-error" data-address-parser-error hidden aria-live="polite"></div>
+        <div class="address-parser-actions">
+          <button type="button" class="primary-btn action-btn" data-address-parser-apply>解析</button>
+          <button type="button" class="ghost-btn action-btn" data-address-parser-cancel>取消</button>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <aside class="manual-side">
+    <section class="manual-side-card manual-map-card" data-map-card>
+      <div class="manual-side-head">
+        <h4>地图</h4>
+      </div>
+      <div class="manual-map-body" data-map-body>
+        <div id="manual-amap-container" data-manual-amap-container></div>
+        <div class="map-placeholder" data-map-panel>
+          <i data-feather="map-pin"></i>
+          <span>暂无地图信息</span>
+        </div>
+      </div>
+      <div class="manual-route-planner manual-route-planner--input-only" data-manual-route-planner>
+        <input id="manual-route-origin" type="text" class="manual-route-input" placeholder="输入起始地址" autocomplete="off" data-route-origin-input>
+      </div>
+    </section>
+
+    <section class="manual-side-card manual-quote-card" data-quote-panel>
+      <div class="manual-quote-head">
+        <h4>成本比价</h4>
+        <button type="button" class="ghost-btn manual-quote-action" data-quote-action="calculate">
+          <i data-feather="bar-chart-2"></i> 比价
+        </button>
+      </div>
+      <div class="manual-quote-summary" data-quote-summary>填写收件地址、重量、体积和送货方式后点击比价。</div>
+      <div class="manual-quote-results" data-quote-results>
+        <article class="manual-quote-item">
+          <div class="manual-quote-main">
+            <div class="manual-quote-name">韵达<span class="manual-quote-badge">待比价</span></div>
+            <div class="manual-quote-price">--</div>
+          </div>
+          <div class="manual-quote-meta"><span>等待真实报价返回</span></div>
+          <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="yunda" disabled>选择韵达并预填</button>
+        </article>
+        <article class="manual-quote-item">
+          <div class="manual-quote-main">
+            <div class="manual-quote-name">融辉<span class="manual-quote-badge">待比价</span></div>
+            <div class="manual-quote-price">--</div>
+          </div>
+          <div class="manual-quote-meta"><span>等待真实报价返回</span></div>
+          <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="ronghui" disabled>选择融辉并预填</button>
+        </article>
+        <article class="manual-quote-item">
+          <div class="manual-quote-main">
+            <div class="manual-quote-name">勇胜手工专线<span class="manual-quote-badge">待维护</span></div>
+            <div class="manual-quote-price">--</div>
+          </div>
+          <div class="manual-quote-meta"><span>价格体系未维护，v1 不参与最低价。</span></div>
+          <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="yongsheng" disabled>暂不可选</button>
+        </article>
+      </div>
+    </section>
+
+  </aside>
+</div>
+{% if not is_boyi_frame %}
+<div class="ocr-workspace mode-panel" data-ocr-workspace data-mode-panel="ocr" {% if not is_ocr_mode %}hidden{% endif %}>
+  <section class="ocr-figure-panel ocr-mode-figure">
+    <div class="manual-head">
+      <div class="manual-title">
+        <h3>OCR模式</h3>
+        <span class="manual-chip">图文复核</span>
+      </div>
+      <div class="mode-switch" aria-label="Entry Mode">
+          <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
+          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
+          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
+          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
+        </div>
+    </div>
+    <div class="ocr-mode-upload-area">
+      <i data-feather="image"></i>
+      <h3>上传单据图像</h3>
+      <p>上传 JPG / PNG 图片后进入原 OCR 识别与运单复核流程</p>
+      <div class="ocr-mode-upload-actions">
+        <button type="button" class="primary-btn action-btn" onclick="document.getElementById('quick-upload-input').click()">
+          <i data-feather="upload"></i> 快速上传图像
+        </button>
+      </div>
+      <form id="quick-upload-form" action="/ocr/upload" method="post" enctype="multipart/form-data" hidden>
+        <input type="hidden" name="return_to" value="/ocr?mode=ocr">
+        <input type="file" id="quick-upload-input" name="files" accept=".jpg,.jpeg,.png" onchange="this.form.submit()">
+      </form>
+    </div>
+  </section>
+
+  <section class="ocr-review-panel ocr-queue-panel">
+    <div class="ocr-review-head">
+      <div style="display:flex;gap:12px;align-items:center;">
+        <h3>待复核 OCR 单据</h3>
+        <span class="manual-chip">{{ pending_docs|length }} 条</span>
+      </div>
+      <a class="ghost-btn" style="height:28px;min-height:28px;padding:0 10px;font-size:.76rem;" href="/ocr">
+        <i data-feather="layout" style="width:14px;"></i>手工录单
+      </a>
+    </div>
+    <div class="ocr-review-scroll">
+      {% for doc in pending_docs %}
+      <a class="queue-item" href="/documents/{{ doc.id }}">
+        <span>
+          <strong>{{ doc.original_name }}</strong>
+          <span>#{{ doc.id }} · {{ ui_label(doc.status) }}</span>
+        </span>
+        <span>打开</span>
+      </a>
+      {% else %}
+      <div class="ocr-queue-empty">
+        <strong>暂无待复核单据</strong>
+        <div style="margin-top:4px;">上传图片后会进入 OCR 队列</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+<div class="yunda-workspace mode-panel" data-mode-panel="yunda" {% if not is_yunda_mode %}hidden{% endif %}>
+  <section class="manual-card yunda-card">
+    <div class="manual-head">
+      <div class="manual-title">
+        <h3>韵达录单</h3>
+        <span class="manual-chip" data-yunda-status-chip>登录态</span>
+      </div>
+      <div class="manual-head-tools">
+        <div class="mode-switch" aria-label="Entry Mode">
+          <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
+          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
+          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
+          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
+        </div>
+      </div>
+    </div>
+    <div class="yunda-scroll yunda-live-scroll" data-yunda-root data-yunda-live="1" data-yunda-session-url="/automations">
+      <iframe
+        class="yunda-live-frame"
+        data-yunda-live-frame
+        data-live-src="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"
+        title="韵达原始录单页面"
+        {% if yunda_mode %}
+        src="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"
+        {% endif %}
+      ></iframe>
+      <div class="yunda-live-fallback yunda-empty" data-yunda-live-fallback hidden>韵达原页面加载失败，可刷新登录态后重试。</div>
+    </div>
+  </section>
+  <aside class="manual-side" data-yunda-side-root>
+    <section class="yunda-side-card">
+      <h4>运行状态</h4>
+      <div class="yunda-empty">正在初始化。</div>
+    </section>
+  </aside>
+</div>
+<div class="yunda-workspace ronghui-workspace mode-panel" data-mode-panel="ronghui" {% if not is_ronghui_mode %}hidden{% endif %}>
+  <section class="manual-card yunda-card ronghui-card">
+    <div class="manual-head">
+      <div class="manual-title">
+        <h3>融辉录单</h3>
+        <span class="manual-chip" data-ronghui-status-chip>登录态</span>
+      </div>
+      <div class="manual-head-tools">
+        <div class="mode-switch" aria-label="Entry Mode">
+          <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
+          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
+          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
+          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
+        </div>
+      </div>
+    </div>
+    <div class="yunda-scroll yunda-live-scroll" data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations">
+      <iframe
+        class="yunda-live-frame ronghui-live-frame"
+        data-ronghui-live-frame
+        data-live-src="/ocr/ronghui/live"
+        title="融辉原始运单录入页面"
+        {% if ronghui_mode %}
+        src="/ocr/ronghui/live"
+        {% endif %}
+      ></iframe>
+      <div class="yunda-live-fallback yunda-empty" data-ronghui-live-fallback hidden>融辉原页面加载失败，可刷新登录态后重试。</div>
+    </div>
+  </section>
+</div>
+{% endif %}
+</div>
+{% endif %}
+{% else %}
+<div class="ocr-workspace">
+  <section class="ocr-figure-panel">
+    <div class="image-section" id="image-container">
+      <img src="{{ processed_url }}" alt="单据图像" class="review-figure-image" id="review-image">
+    </div>
+    <div style="position:absolute;bottom:12px;left:12px;background:rgba(255,255,255,.9);padding:4px 10px;border-radius:6px;font-size:.75rem;font-weight:600;box-shadow:var(--shadow-soft);">
+      支持滚轮缩放、拖拽平移
+    </div>
+  </section>
+
+  <section class="ocr-review-panel">
+    <div class="ocr-review-head">
+      <div style="display:flex;gap:12px;align-items:center;">
+        <h3>运单录入 #{{ document.id }}</h3>
+        <span class="status status-{{ document.status }}">{{ document.status }}</span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <a class="ghost-btn" style="height:28px;min-height:28px;padding:0 10px;font-size:.76rem;" href="/ocr?mode=ocr">
+          <i data-feather="image" style="width:14px;"></i>OCR队列
+        </a>
+        <a class="ghost-btn" style="height:28px;min-height:28px;padding:0 10px;font-size:.76rem;" href="/ocr">
+          <i data-feather="layout" style="width:14px;"></i>手工录单
+        </a>
+      </div>
+    </div>
+
+    <form action="/documents/{{ document.id }}/review" method="post" class="ocr-review-form">
+      <div class="ocr-review-scroll">
+        <div class="form-group-title">核心信息</div>
+        {{ render_compact_field('waybill_no', label_override='运单号') }}
+        {{ render_compact_field('open_date', label_override='日期') }}
+        {{ render_compact_field('destination_site', label_override='到站') }}
+        <div class="form-group-title">客户信息</div>
+        {{ render_compact_field('sender_name', label_override='发货人') }}
+        {{ render_compact_field('sender_phone', label_override='发货电话') }}
+        {{ render_compact_field('receiver_name', label_override='收货人') }}
+        {{ render_compact_field('receiver_phone', label_override='收货电话') }}
+        {{ render_compact_field('receiver_address', is_textarea=True, label_override='收件地址') }}
+        <div class="form-group-title">货物明细</div>
+        {{ render_compact_field('goods_name_lines', label_override='货物名称') }}
+        {{ render_compact_field('package_type_lines', label_override='包装类型') }}
+        {{ render_compact_field('quantity_lines', label_override='件数') }}
+        {{ render_compact_field('weight_volume', label_override='重/体积') }}
+        <div class="form-group-title">费用结算</div>
+        {{ render_compact_field('freight_fee', label_override='运费') }}
+        {{ render_compact_field('pickup_fee', label_override='接货费') }}
+        {{ render_compact_field('delivery_fee', label_override='送货费') }}
+        {{ render_compact_field('transfer_fee', label_override='中转费') }}
+        {{ render_compact_field('delivery_method', label_override='送货方式') }}
+        {{ render_compact_field('payment_method', label_override='结算方式') }}
+        {{ render_compact_field('remark', is_textarea=True, label_override='备注') }}
+      </div>
+      <div class="ocr-review-actions">
+        <a class="ghost-btn action-btn" href="/ocr">返回</a>
+        <div style="display:flex;gap:8px;">
+          <button class="ghost-btn action-btn" type="submit" name="action" value="save">存草稿</button>
+          <button class="primary-btn action-btn" type="submit" name="action" value="confirm"><i data-feather="check"></i>确认提交</button>
+        </div>
+      </div>
+    </form>
+  </section>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block right_sidebar %}{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const openDateInput = document.querySelector('input[data-open-date-input="true"]');
+    const padDatePart = (value) => String(value).padStart(2, "0");
+    const toSlashDate = (value) => {
+      const compact = String(value || "").trim().replace(/\s+/g, "");
+      let match = compact.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (match) return `${match[1]}/${match[2]}/${match[3]}`;
+      match = compact.match(/^(\d{4})(\d{2})(\d{2})$/);
+      if (match) return `${match[1]}/${match[2]}/${match[3]}`;
+      return compact;
+    };
+    if (openDateInput && !openDateInput.value) {
+      const now = new Date();
+      const todayIso = `${now.getFullYear()}-${padDatePart(now.getMonth() + 1)}-${padDatePart(now.getDate())}`;
+      openDateInput.value = openDateInput.type === "date" ? todayIso : toSlashDate(todayIso);
+    }
+    const applyOpenDateFormatting = () => {
+      if (!openDateInput) return;
+      if (openDateInput.type === "date") return;
+      openDateInput.value = toSlashDate(openDateInput.value);
+    };
+    openDateInput?.addEventListener("blur", applyOpenDateFormatting);
+    openDateInput?.addEventListener("click", () => {
+      if (openDateInput.type !== "date" || typeof openDateInput.showPicker !== "function") return;
+      openDateInput.showPicker();
+    });
+
+    document.querySelector("[data-manual-form]")?.addEventListener("reset", () => {
+      window.setTimeout(() => openDateInput?.focus(), 0);
+    });
+
+    const modeRoot = document.querySelector("[data-mode-root]");
+    const QUOTE_OPTIONS_ENDPOINT = "/waybills/quote-options";
+    const PREFILL_STORAGE_KEY = "shipnow.manualQuote.prefill";
+    const quotePanel = document.querySelector("[data-quote-panel]");
+    const quoteSummary = document.querySelector("[data-quote-summary]");
+    const quoteResults = document.querySelector("[data-quote-results]");
+    const quoteAction = document.querySelector('[data-quote-action="calculate"]');
+    let lastQuotePayload = null;
+    const prefillSendAttempts = new Map();
+    const prefillReadyModes = new Set();
+    let prefillRetryTimer = null;
+    const quoteProviderLabels = {
+      yunda: "韵达",
+      ronghui: "融辉",
+      yongsheng: "勇胜手工专线",
+    };
+    const readStoredPrefill = () => {
+      try {
+        return JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) || "null");
+      } catch {
+        return null;
+      }
+    };
+    const prefillKey = (mode, stored) => `${mode}:${Number(stored?.created_at || 0)}`;
+    const requiresPrefillReady = (mode) => mode === "ronghui" || mode === "yunda";
+    const resetPrefillReady = (mode) => {
+      if (mode) prefillReadyModes.delete(mode);
+    };
+    const clearPrefillSchedule = () => {
+      if (prefillRetryTimer) {
+        window.clearTimeout(prefillRetryTimer);
+        prefillRetryTimer = null;
+      }
+    };
+    const prefillFrameSrc = (mode, liveSrc) => {
+      if (!liveSrc || !["yunda", "ronghui"].includes(mode)) return liveSrc || "";
+      const stored = readStoredPrefill();
+      if (!stored || stored.provider !== mode) return liveSrc;
+      const url = new URL(liveSrc, window.location.origin);
+      url.searchParams.set("_prefill", String(stored.created_at || Date.now()));
+      return `${url.pathname}${url.search}${url.hash}`;
+    };
+    const entryTabsRoot = document.querySelector("[data-entry-tabs-root]");
+    const ENTRY_MAX_TABS = 6;
+    const entryTabList = entryTabsRoot?.querySelector("[data-entry-tab-list]");
+    const entryFrameStack = entryTabsRoot?.querySelector("[data-entry-frame-stack]");
+    const entryLimitNotice = entryTabsRoot?.querySelector("[data-entry-tab-limit]");
+    let entryTabSerial = 1;
+    const entryProviderLabels = {
+      boyi: "博益",
+      yunda: "韵达",
+      ronghui: "融辉",
+    };
+    const entryFrameSrc = (provider) => provider === "boyi" ? "/ocr/boyi/frame" : (provider === "ronghui" ? "/ocr/ronghui/live" : (provider === "yunda" ? "/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil" : "/ocr/boyi/frame"));
+    const entryTabCount = () => entryTabsRoot ? entryTabsRoot.querySelectorAll("[data-entry-tab]").length : 0;
+    const entryProviderCount = (provider) => entryTabsRoot ? entryTabsRoot.querySelectorAll(`[data-entry-tab][data-entry-provider="${provider}"]`).length : 0;
+    const entryFrameForMessage = (event, provider) => {
+      const selector = provider === "yunda" ? "[data-yunda-live-frame]" : "[data-ronghui-live-frame]";
+      return Array.from(document.querySelectorAll(selector)).find((frame) => frame.contentWindow === event.source) || null;
+    };
+    const activeEntryFrameForMode = (mode) => {
+      const selector = mode === "yunda" ? "[data-yunda-live-frame]" : "[data-ronghui-live-frame]";
+      return document.querySelector(`.entry-frame-panel.is-active ${selector}`);
+    };
+    const updateEntryLimitState = () => {
+      if (!entryTabsRoot) return;
+      const tabCount = entryTabCount();
+      const atLimit = tabCount >= ENTRY_MAX_TABS;
+      entryTabsRoot.dataset.entrySingle = tabCount === 1 ? "true" : "false";
+      if (entryLimitNotice) entryLimitNotice.hidden = !atLimit;
+      entryTabsRoot.querySelectorAll("[data-entry-add-provider]").forEach((button) => {
+        button.disabled = atLimit;
+      });
+    };
+    function activateEntryTab(entryId) {
+      if (!entryTabsRoot || !entryId) return;
+      entryTabsRoot.querySelectorAll("[data-entry-tab]").forEach((tab) => {
+        tab.setAttribute("aria-selected", tab.dataset.entryId === entryId ? "true" : "false");
+      });
+      entryTabsRoot.querySelectorAll("[data-entry-frame-panel]").forEach((panel) => {
+        panel.classList.toggle("is-active", panel.dataset.entryId === entryId);
+      });
+      const activePanel = entryTabsRoot.querySelector(`[data-entry-frame-panel][data-entry-id="${entryId}"]`);
+      const provider = activePanel?.dataset.entryProvider || "boyi";
+      window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: provider } }));
+      if (window.feather) window.feather.replace();
+    }
+    function closeEntryTab(entryId) {
+      if (!entryTabsRoot || entryTabCount() <= 1) return;
+      const tab = entryTabsRoot.querySelector(`[data-entry-tab][data-entry-id="${entryId}"]`);
+      const panel = entryTabsRoot.querySelector(`[data-entry-frame-panel][data-entry-id="${entryId}"]`);
+      const wasActive = tab?.getAttribute("aria-selected") === "true";
+      const fallbackTab = tab?.previousElementSibling || tab?.nextElementSibling;
+      tab?.remove();
+      panel?.remove();
+      if (wasActive && fallbackTab?.dataset.entryId) activateEntryTab(fallbackTab.dataset.entryId);
+      updateEntryLimitState();
+    }
+    const bindEntryPanelFrame = (panel, provider, frame) => {
+      if (!panel || !frame || frame.dataset.entryFrameBound === "1") return;
+      frame.dataset.entryFrameBound = "1";
+      frame.addEventListener("load", () => {
+        if (!["yunda", "ronghui"].includes(provider)) return;
+        resetPrefillReady(provider);
+        window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: provider } }));
+      });
+    };
+    function createEntryTab(provider, options = {}) {
+      if (!entryTabsRoot || !entryTabList || !entryFrameStack) return null;
+      const normalizedProvider = ["boyi", "yunda", "ronghui"].includes(provider) ? provider : "boyi";
+      if (entryTabCount() >= ENTRY_MAX_TABS) {
+        updateEntryLimitState();
+        return null;
+      }
+      entryTabSerial += 1;
+      const entryId = `entry-${entryTabSerial}`;
+      const label = `${entryProviderLabels[normalizedProvider]} ${entryProviderCount(normalizedProvider) + 1}`;
+      const tab = document.createElement("div");
+      tab.className = "entry-tab";
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", "false");
+      tab.dataset.entryTab = "1";
+      tab.dataset.entryId = entryId;
+      tab.dataset.entryProvider = normalizedProvider;
+      tab.innerHTML = `<button type="button" class="entry-tab-activate" data-entry-activate>${label}</button><button type="button" class="entry-tab-close" data-entry-close aria-label="关闭${label}"><i data-feather="x"></i></button>`;
+      const panel = document.createElement("div");
+      panel.className = "entry-frame-panel";
+      panel.dataset.entryFramePanel = "1";
+      panel.dataset.entryId = entryId;
+      panel.dataset.entryProvider = normalizedProvider;
+      if (normalizedProvider === "yunda") {
+        panel.setAttribute("data-yunda-root", "");
+        panel.dataset.yundaLive = "1";
+        panel.dataset.yundaSessionUrl = "/automations";
+      }
+      if (normalizedProvider === "ronghui") {
+        panel.setAttribute("data-ronghui-root", "");
+        panel.dataset.ronghuiLive = "1";
+        panel.dataset.ronghuiSessionUrl = "/automations";
+      }
+      if (["yunda", "ronghui"].includes(normalizedProvider)) {
+        const chip = document.createElement("div");
+        chip.className = "manual-chip";
+        chip.textContent = "登录态";
+        chip.setAttribute(normalizedProvider === "yunda" ? "data-yunda-status-chip" : "data-ronghui-status-chip", "");
+        panel.appendChild(chip);
+      }
+      const frame = document.createElement("iframe");
+      frame.className = `entry-instance-frame${normalizedProvider === "yunda" ? " yunda-live-frame" : ""}${normalizedProvider === "ronghui" ? " ronghui-live-frame" : ""}`;
+      frame.dataset.entryFrame = "1";
+      frame.dataset.entryProvider = normalizedProvider;
+      if (normalizedProvider === "yunda") frame.setAttribute("data-yunda-live-frame", "");
+      if (normalizedProvider === "ronghui") frame.setAttribute("data-ronghui-live-frame", "");
+      frame.title = label;
+      let nextSrc = entryFrameSrc(normalizedProvider);
+      if (options.prefill && ["yunda", "ronghui"].includes(normalizedProvider)) {
+        nextSrc = prefillFrameSrc(normalizedProvider, nextSrc);
+      }
+      frame.src = nextSrc;
+      panel.appendChild(frame);
+      if (["yunda", "ronghui"].includes(normalizedProvider)) {
+        const fallback = document.createElement("div");
+        fallback.className = "yunda-live-fallback yunda-empty";
+        fallback.hidden = true;
+        fallback.textContent = `${entryProviderLabels[normalizedProvider]}原页面加载失败，可刷新登录态后重试。`;
+        fallback.setAttribute(normalizedProvider === "yunda" ? "data-yunda-live-fallback" : "data-ronghui-live-fallback", "");
+        panel.appendChild(fallback);
+      }
+      entryTabList.appendChild(tab);
+      entryFrameStack.appendChild(panel);
+      bindEntryPanelFrame(panel, normalizedProvider, frame);
+      activateEntryTab(entryId);
+      updateEntryLimitState();
+      return { tab, panel, frame };
+    }
+    function addEntryTab(provider, options = {}) {
+      return createEntryTab(provider, options);
+    }
+    const bindInitialEntryTabs = () => {
+      if (!entryTabsRoot) return;
+      entryTabsRoot.querySelectorAll("[data-entry-tab]").forEach((tab) => {
+        const numeric = Number(String(tab.dataset.entryId || "").replace(/\D+/g, ""));
+        if (Number.isFinite(numeric)) entryTabSerial = Math.max(entryTabSerial, numeric);
+      });
+      entryTabsRoot.querySelectorAll("[data-entry-frame-panel]").forEach((panel) => {
+        const provider = panel.dataset.entryProvider || "boyi";
+        const frame = panel.querySelector("[data-entry-frame]");
+        bindEntryPanelFrame(panel, provider, frame);
+      });
+      updateEntryLimitState();
+      const initialProvider = entryTabsRoot.dataset.entryInitialProvider || "boyi";
+      window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: initialProvider } }));
+    };
+    entryTabsRoot?.addEventListener("click", (event) => {
+      const addButton = event.target?.closest?.("[data-entry-add-provider]");
+      if (addButton) {
+        addEntryTab(addButton.dataset.entryAddProvider || "boyi");
+        return;
+      }
+      const closeButton = event.target?.closest?.("[data-entry-close]");
+      if (closeButton) {
+        closeEntryTab(closeButton.closest("[data-entry-tab]")?.dataset.entryId || "");
+        return;
+      }
+      const activateButton = event.target?.closest?.("[data-entry-activate]");
+      if (activateButton) {
+        activateEntryTab(activateButton.closest("[data-entry-tab]")?.dataset.entryId || "");
+      }
+    });
+    window.addEventListener("message", (event) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data || {};
+      if (data.type !== "SHIPNOW_OPEN_ENTRY_TAB") return;
+      const provider = ["yunda", "ronghui"].includes(data.provider) ? data.provider : "";
+      if (provider) addEntryTab(provider, { prefill: true });
+    });
+    bindInitialEntryTabs();
+    const platformFieldSpecs = (provider, form, quote) => {
+      const deliveryText = form.delivery_method === "自提" ? "自提" : "派送";
+      const paymentText = form.payment_method || "";
+      const isRonghui = provider === "ronghui";
+      const withRonghuiAliases = (names, ronghuiOnly = []) => isRonghui ? names.concat(ronghuiOnly) : names;
+      const inRonghuiSection = (section, spec) => isRonghui ? { ...spec, section } : spec;
+      const common = [
+        inRonghuiSection("寄件信息", { key: "sender_name", value: form.sender_name, names: ["SenderName", "SenderMan", "Consignor", "发货人", "寄件人"] }),
+        inRonghuiSection("寄件信息", { key: "sender_phone", value: form.sender_phone, names: withRonghuiAliases(["SenderMobile", "SenderPhone", "SenderTelephone", "发货电话", "寄件电话"], ["电话"]) }),
+        inRonghuiSection("收件信息", { key: "receiver_name", value: form.receiver_name, names: ["BuyerName", "ReceiverName", "Consignee", "收货人", "收件人"] }),
+        inRonghuiSection("收件信息", { key: "receiver_phone", value: form.receiver_phone, names: withRonghuiAliases(["BuyerMobile", "ReceiverMobile", "ReceiverPhone", "ConsigneePhone", "收货电话", "收件电话"], ["电话"]) }),
+        inRonghuiSection("收件信息", { key: "destination_site", value: form.destination_site, names: ["DestinationSite", "Destination", "ArriveSite", "ARRIVE_SITE", "到站", "目的地"] }),
+        inRonghuiSection("收件信息", { key: "receiver_address", value: form.receiver_address, names: withRonghuiAliases(["BuyerAddress", "ReceiverAddress", "ConsigneeAddress", "收件地址", "收货地址"], ["详细地址"]) }),
+        inRonghuiSection("货物信息", { key: "goods_name", value: form.goods_name_lines, names: ["ItemName", "GoodsName", "GoodsType", "GOODS_NAME", "货物名称"] }),
+        inRonghuiSection("货物信息", { key: "package_type", value: form.package_type_lines, names: ["PackageType", "PACKING", "包装类型"] }),
+        inRonghuiSection("货物信息", { key: "quantity", value: form.quantity_lines, names: ["ItemTotalNumber", "PackageCount", "NUM", "件数"] }),
+        inRonghuiSection("货物信息", { key: "weight", value: form.weight_kg, names: withRonghuiAliases(["GrossWeight", "WEIGHT", "weight", "重量"], ["实际重量"]) }),
+        inRonghuiSection("货物信息", { key: "volume", value: form.volume_m3, names: ["Volume", "VOLUME", "volume", "体积"] }),
+        inRonghuiSection("货物信息", { key: "delivery_method", value: deliveryText, names: withRonghuiAliases(["ShippingMethods", "ServiceMode", "DISPATCH_MODE", "送货方式"], ["运输方式"]) }),
+        inRonghuiSection("成本信息", { key: "payment_method", value: paymentText, names: withRonghuiAliases(["PaymentType", "PAYMENT_METHOD", "SettlementType", "结算方式"], ["支付方式"]) }),
+        inRonghuiSection("收入信息", { key: "freight_fee", value: quote.price || form.freight_fee, names: ["Freight", "FREIGHT", "freight_fee", "运费"] }),
+      ];
+      if (provider === "ronghui") {
+        common.push(inRonghuiSection("货物信息", { key: "product_name", value: quote.product_name, names: ["PRODUCT_TYPE", "ProductType", "产品名称", "产品类型"] }));
+      }
+      return common.filter((item) => String(item.value || "").trim());
+    };
+    function postStoredPrefillToFrame(mode, frame = null) {
+      const stored = readStoredPrefill();
+      if (!stored || stored.provider !== mode || !["yunda", "ronghui"].includes(mode)) return false;
+      if (Date.now() - Number(stored.created_at || 0) > 30 * 60 * 1000) {
+        sessionStorage.removeItem(PREFILL_STORAGE_KEY);
+        return false;
+      }
+      const targetFrame = frame || activeEntryFrameForMode(mode) || document.querySelector(mode === "yunda" ? "[data-yunda-live-frame]" : "[data-ronghui-live-frame]");
+      if (!targetFrame?.contentWindow) return false;
+      const message = {
+        type: "SHIPNOW_PREFILL",
+        provider: mode,
+        prefill_key: prefillKey(mode, stored),
+        payload: {
+          form: stored.form || {},
+          quote: stored.selected_quote || {},
+          fields: platformFieldSpecs(mode, stored.form || {}, stored.selected_quote || {}),
+        },
+      };
+      try {
+        targetFrame.contentWindow.postMessage(message, window.location.origin);
+      } catch (error) {
+        console.warn("SHIPNOW_PREFILL postMessage failed", error);
+      }
+      try {
+        const helper = targetFrame.contentWindow.codexManualPrefill?.[mode];
+        if (helper && typeof helper.run === "function") {
+          helper.run(message);
+        }
+      } catch (error) {
+        console.warn("SHIPNOW_PREFILL direct helper failed", error);
+      }
+      return true;
+    }
+    function scheduleStoredPrefillToFrame(mode, frame = null) {
+      const stored = readStoredPrefill();
+      if (!stored || stored.provider !== mode || !["yunda", "ronghui"].includes(mode)) return;
+      if (requiresPrefillReady(mode) && !prefillReadyModes.has(mode)) return false;
+      const token = prefillKey(mode, stored);
+      clearPrefillSchedule();
+      const send = () => {
+        const latest = readStoredPrefill();
+        if (!latest || latest.provider !== mode || prefillKey(mode, latest) !== token) {
+          clearPrefillSchedule();
+          return;
+        }
+        const sent = postStoredPrefillToFrame(mode, frame);
+        const attempts = (prefillSendAttempts.get(token) || 0) + 1;
+        prefillSendAttempts.set(token, attempts);
+        if (attempts >= 36) {
+          clearPrefillSchedule();
+          showManualNotice("原页预填未响应，请确认原页已加载完成或刷新后重试。");
+          return;
+        }
+        prefillRetryTimer = window.setTimeout(send, sent ? 700 : 500);
+      };
+      send();
+    }
+    window.addEventListener("message", (event) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data || {};
+      if (data.type === "SHIPNOW_PREFILL_READY" && ["yunda", "ronghui"].includes(data.provider)) {
+        prefillReadyModes.add(data.provider);
+        scheduleStoredPrefillToFrame(data.provider, entryFrameForMessage(event, data.provider));
+        return;
+      }
+      if (data.type !== "SHIPNOW_PREFILL_RESULT") return;
+      const missing = Array.isArray(data.missing) ? data.missing : [];
+      const filled = Array.isArray(data.filled) ? data.filled : [];
+      clearPrefillSchedule();
+      sessionStorage.removeItem(PREFILL_STORAGE_KEY);
+      if (data.ok) {
+        showManualNotice(`已预填 ${quoteProviderLabels[data.provider] || data.provider || ""} 原页字段${missing.length ? `，${missing.length} 项未匹配` : ""}。`);
+      } else {
+        showManualNotice(`原页预填失败：${data.error || (missing.length ? missing.join("、") : "未匹配到字段")}`);
+      }
+      if (!filled.length && missing.length) {
+        console.warn("SHIPNOW_PREFILL missing fields", missing);
+      }
+    });
+    const loadModeLiveFrame = (mode) => {
+      const selector = mode === "yunda"
+        ? "[data-yunda-live-frame]"
+        : (mode === "ronghui" ? "[data-ronghui-live-frame]" : "");
+      if (!selector) return;
+      const frame = document.querySelector(selector);
+      const liveSrc = frame?.dataset?.liveSrc || "";
+      const nextLiveSrc = prefillFrameSrc(mode, liveSrc);
+      if (frame && nextLiveSrc && frame.getAttribute("src") !== nextLiveSrc) {
+        resetPrefillReady(mode);
+        frame.setAttribute("src", nextLiveSrc);
+      }
+      if (frame && !frame.dataset.prefillBound) {
+        frame.dataset.prefillBound = "1";
+        frame.addEventListener("load", () => {
+          resetPrefillReady(mode);
+          if (!requiresPrefillReady(mode)) scheduleStoredPrefillToFrame(mode, frame);
+        });
+      }
+      if (frame?.getAttribute("src") && !requiresPrefillReady(mode)) {
+        window.setTimeout(() => scheduleStoredPrefillToFrame(mode, frame), 260);
+      }
+    };
+    const setMode = (mode, updateHistory = true) => {
+      if (!modeRoot) return;
+      const nextMode = ["manual", "ocr", "yunda", "ronghui"].includes(mode) ? mode : "manual";
+      modeRoot.dataset.activeMode = nextMode;
+      modeRoot.querySelectorAll("[data-mode-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.modePanel !== nextMode;
+      });
+      modeRoot.querySelectorAll("[data-mode-link]").forEach((link) => {
+        link.setAttribute("aria-pressed", link.dataset.modeLink === nextMode ? "true" : "false");
+      });
+      if (updateHistory && window.location.pathname === "/ocr") {
+        if (!window.history.state || window.history.state.consoleMode !== true) {
+          window.history.replaceState({ ...(window.history.state || {}), consoleMode: true }, "", window.location.href);
+        }
+        const nextUrl = nextMode === "ocr"
+          ? "/ocr?mode=ocr"
+          : (nextMode === "yunda"
+            ? "/ocr?mode=yunda"
+            : (nextMode === "ronghui" ? "/ocr?mode=ronghui" : "/ocr"));
+        if (window.location.pathname + window.location.search !== nextUrl) {
+          window.history.pushState({ consoleMode: true }, "", nextUrl);
+        }
+      }
+      window.requestAnimationFrame(() => {
+        if (window.feather) window.feather.replace();
+        if (nextMode === "manual") manualMap.map?.resize?.();
+      });
+      window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: nextMode } }));
+      loadModeLiveFrame(nextMode);
+      scheduleStoredPrefillToFrame(nextMode);
+    };
+    modeRoot?.querySelectorAll("[data-mode-link]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        setMode(link.dataset.modeLink || "manual");
+      });
+    });
+    const modePopAbort = new AbortController();
+    window.addEventListener("beforeunload", () => modePopAbort.abort(), { once: true });
+    window.addEventListener("popstate", () => {
+      if (!modeRoot || window.location.pathname !== "/ocr") return;
+      const params = new URLSearchParams(window.location.search);
+      const routeMode = params.get("mode") === "ocr"
+        ? "ocr"
+        : (params.get("mode") === "yunda"
+          ? "yunda"
+          : (params.get("mode") === "ronghui" ? "ronghui" : "manual"));
+      setMode(routeMode, false);
+    }, { signal: modePopAbort.signal });
+
+    const printerKey = "shipnow.manual.printerSettings";
+    const printerInputs = Array.from(document.querySelectorAll("[data-printer-setting]"));
+    const printerStatus = document.querySelector("[data-printer-service-status]");
+    const readSavedPrinterSettings = () => {
+      try {
+        return JSON.parse(localStorage.getItem(printerKey) || "{}") || {};
+      } catch {
+        return {};
+      }
+    };
+    const applySavedPrinterSettings = () => {
+      const saved = readSavedPrinterSettings();
+      printerInputs.forEach((input) => {
+        if (!(input.name in saved)) return;
+        if (input.type === "checkbox") input.checked = Boolean(saved[input.name]);
+        else input.value = saved[input.name];
+      });
+    };
+    const persistPrinterSettings = () => {
+      const data = {};
+      printerInputs.forEach((item) => {
+        data[item.name] = item.type === "checkbox" ? item.checked : item.value;
+      });
+      localStorage.setItem(printerKey, JSON.stringify(data));
+    };
+    applySavedPrinterSettings();
+    printerInputs.forEach((input) => {
+      input.addEventListener("change", persistPrinterSettings);
+    });
+    const CLODOP_URLS = [
+      "https://localhost.lodop.net:8443/CLodopfuncs.js?priority=1",
+      "http://localhost.lodop.net:8000/CLodopfuncs.js?priority=2",
+      "http://localhost.lodop.net:18000/CLodopfuncs.js?priority=3",
+      "http://127.0.0.1:8000/CLodopfuncs.js?priority=4",
+      "http://localhost:8000/CLodopfuncs.js?priority=5",
+      "http://127.0.0.1:18000/CLodopfuncs.js?priority=6",
+      "http://localhost:18000/CLodopfuncs.js?priority=7",
+    ];
+    let lastCLODOPLoadError = "";
+    const CLODOP_LOAD_ERRORS = [];
+    const describePrintError = (error) => {
+      if (error instanceof Error) return error.message || error.name || "";
+      return String(error || "");
+    };
+    const cleanCLODOPUrl = (src) => String(src || "").split("?")[0];
+    const isLocalOriginHost = (host) => ["localhost", "127.0.0.1", "::1", "[::1]"].includes(String(host || "").toLowerCase());
+    const isPublicHttpOrigin = () => window.location.protocol === "http:" && !isLocalOriginHost(window.location.hostname);
+    const getCandidateCLODOPUrls = () => {
+      if (window.location.protocol === "https:") {
+        return CLODOP_URLS.filter((url) => url.startsWith("https://"));
+      }
+      return CLODOP_URLS;
+    };
+    const formatCLODOPLoadErrors = () => CLODOP_LOAD_ERRORS.slice(-3).join("；");
+    const recordCLODOPLoadError = (src, error) => {
+      const detail = describePrintError(error) || "加载失败";
+      const message = `${cleanCLODOPUrl(src)}：${detail}`;
+      CLODOP_LOAD_ERRORS.push(message);
+      lastCLODOPLoadError = message;
+    };
+    const formatManualPrintError = (error) => {
+      const detail = describePrintError(error);
+      if (detail.includes("C-Lodop service not found")) {
+        const errorHistory = formatCLODOPLoadErrors();
+        const publicHttpHint = isPublicHttpOrigin()
+          ? "当前通过公网 HTTP 地址打开后台，Chrome 可能会阻止页面连接本机 C-Lodop；若仍失败，请在 Chrome 中允许该网站访问本地网络。"
+          : "";
+        if (errorHistory) return `未连接到 C-Lodop 打印服务，已尝试 ${errorHistory}。${publicHttpHint}`;
+        return publicHttpHint || "未连接到 C-Lodop 打印服务，请先启动 C-Lodop 后再预览。";
+      }
+      if (detail.includes("Waybill Lodop renderer not loaded")) {
+        return "面单打印模板未加载，请刷新页面后重试。";
+      }
+      if (detail.includes("Waybill label background load failed")) {
+        return `面单底版加载失败：${detail}。`;
+      }
+      if (detail.includes("Failed to fetch")) {
+        return "面单底版加载失败：浏览器无法读取面单底版资源，请刷新页面后重试。";
+      }
+      return `打印预览失败：${detail || "未知错误"}`;
+    };
+    const getCLODOPObject = () => {
+      if (typeof window.getCLodop !== "function") return null;
+      try {
+        return window.getCLodop() || null;
+      } catch {
+        return null;
+      }
+    };
+    const waitForCLODOPReady = (timeoutMs = 8000) => new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const tick = () => {
+        const lodop = getCLODOPObject();
+        if (lodop) {
+          resolve(lodop);
+          return;
+        }
+        if (Date.now() - startedAt >= timeoutMs) {
+          reject(new Error("C-Lodop startup timeout"));
+          return;
+        }
+        window.setTimeout(tick, 120);
+      };
+      tick();
+    });
+    const loadCLODOPScript = (src, timeoutMs = 8000) => new Promise((resolve, reject) => {
+      if (document.querySelector(`script[data-clodop-src="${src}"]`)) {
+        resolve();
+        return;
+      }
+      const script = document.createElement("script");
+      const timer = window.setTimeout(() => {
+        script.remove();
+        reject(new Error("C-Lodop load timeout"));
+      }, timeoutMs);
+      script.src = src;
+      script.crossOrigin = "anonymous";
+      script.referrerPolicy = "no-referrer";
+      script.dataset.clodopSrc = src;
+      script.onload = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      script.onerror = () => {
+        window.clearTimeout(timer);
+        script.remove();
+        reject(new Error("C-Lodop unavailable"));
+      };
+      document.head.appendChild(script);
+    });
+    const injectCLODOPScriptText = (src, source) => {
+      const text = String(source || "").trim();
+      if (!text) throw new Error("C-Lodop fetch returned empty script");
+      if (document.querySelector(`script[data-clodop-inline-src="${src}"]`)) return;
+      const script = document.createElement("script");
+      script.dataset.clodopInlineSrc = src;
+      script.dataset.clodopSrc = src;
+      script.text = `${text}\n//# sourceURL=${cleanCLODOPUrl(src)}`;
+      document.head.appendChild(script);
+    };
+    const fetchCLODOPScript = async (src) => {
+      const response = await fetch(src, {
+        method: "GET",
+        mode: "cors",
+        cache: "no-store",
+        credentials: "omit",
+      });
+      if (!response.ok) throw new Error(`C-Lodop fetch failed ${response.status}`);
+      injectCLODOPScriptText(src, await response.text());
+    };
+    const loadCLODOPScriptWithFetch = async (src) => {
+      try {
+        await loadCLODOPScript(src);
+      } catch (scriptError) {
+        try {
+          await fetchCLODOPScript(src);
+        } catch (fetchError) {
+          const scriptDetail = describePrintError(scriptError) || "script load failed";
+          const fetchDetail = describePrintError(fetchError) || "fetch load failed";
+          throw new Error(`${scriptDetail}; fetch load failed: ${fetchDetail}`);
+        }
+      }
+    };
+    const getCLODOP = async () => {
+      const existing = getCLODOPObject();
+      if (existing) return existing;
+      CLODOP_LOAD_ERRORS.length = 0;
+      lastCLODOPLoadError = "";
+      for (const src of getCandidateCLODOPUrls()) {
+        try {
+          await loadCLODOPScriptWithFetch(src);
+          return await waitForCLODOPReady();
+        } catch (error) {
+          recordCLODOPLoadError(src, error);
+          // C-Lodop may run on either local port.
+        }
+      }
+      return null;
+    };
+    const populateCLODOPPrinters = async () => {
+      const select = document.getElementById("printer_name");
+      if (!select) return;
+      const lodop = await getCLODOP();
+      if (!lodop) {
+        if (printerStatus) printerStatus.textContent = "C-Lodop未连接";
+        return;
+      }
+      const existing = new Set(Array.from(select.options).map((option) => option.value || option.textContent));
+      const count = Number(lodop.GET_PRINTER_COUNT?.() || 0);
+      for (let index = 0; index < count; index += 1) {
+        const name = String(lodop.GET_PRINTER_NAME(index) || "").trim();
+        if (!name || existing.has(name)) continue;
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+        existing.add(name);
+      }
+      if (printerStatus) printerStatus.textContent = count > 0 ? "C-Lodop已连接" : "C-Lodop未检测到打印机";
+      applySavedPrinterSettings();
+    };
+    window.addEventListener("load", populateCLODOPPrinters);
+
+    const printerWrap = document.querySelector("[data-printer-popover]");
+    const printerToggle = document.querySelector("[data-printer-toggle]");
+    const printerPanel = document.querySelector("[data-printer-panel]");
+    const setPrinterPanelOpen = (open) => {
+      if (!printerToggle || !printerPanel) return;
+      printerPanel.hidden = !open;
+      printerToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    printerToggle?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setPrinterPanelOpen(Boolean(printerPanel?.hidden));
+    });
+    document.addEventListener("click", (event) => {
+      if (!printerWrap || printerPanel?.hidden || printerWrap.contains(event.target)) return;
+      setPrinterPanelOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setPrinterPanelOpen(false);
+    });
+
+    const manualMap = {
+      AMap: null,
+      map: null,
+      marker: null,
+      geocoder: null,
+      placeSearch: null,
+      receiverLocation: null,
+      lastQuery: "",
+      composing: false,
+    };
+    const mapBody = document.querySelector("[data-map-body]");
+    const mapPanel = document.querySelector("[data-map-panel]");
+    const addressInput = document.querySelector("[data-address-input]");
+    const manualForm = document.querySelector("[data-manual-form]");
+    const manualFeedback = document.querySelector("[data-manual-feedback]");
+    const addressParserDialog = document.querySelector("[data-address-parser-dialog]");
+    const addressParserInput = document.querySelector("[data-address-parser-input]");
+    const addressParserTrigger = document.querySelector("[data-address-parser-trigger]");
+    const addressParserError = document.querySelector("[data-address-parser-error]");
+    const manualAmapConfig = window.__manualAmapConfig || {};
+    const closeNotice = (notice) => {
+      if (!notice) return;
+      notice.classList.add("is-closing");
+      window.setTimeout(() => {
+        notice.remove();
+        window.ConsoleUI?.refreshIcons?.();
+      }, 180);
+    };
+    const showManualNotice = (message, tone = "error") => {
+      const main = document.querySelector(".main-content");
+      if (!main || !modeRoot) return;
+      main.querySelectorAll("[data-client-notice]").forEach((notice) => notice.remove());
+      const notice = document.createElement("div");
+      const safeTone = ["success", "error", "info"].includes(tone) ? tone : "error";
+      notice.className = `notice notice--${safeTone}`;
+      notice.dataset.notice = "";
+      notice.dataset.clientNotice = "";
+
+      const copy = document.createElement("div");
+      copy.className = "notice-copy";
+      const icon = document.createElement("i");
+      icon.dataset.feather = "info";
+      const text = document.createElement("span");
+      text.textContent = message;
+      copy.append(icon, text);
+
+      const close = document.createElement("button");
+      close.className = "notice-close";
+      close.type = "button";
+      close.setAttribute("aria-label", "关闭提示");
+      close.dataset.noticeClose = "";
+      const closeIcon = document.createElement("i");
+      closeIcon.dataset.feather = "x";
+      close.appendChild(closeIcon);
+      close.addEventListener("click", () => closeNotice(notice));
+
+      notice.append(copy, close);
+      main.insertBefore(notice, modeRoot);
+      window.ConsoleUI?.refreshIcons?.();
+    };
+    const setManualFeedback = (message, tone = "info") => {
+      if (!manualFeedback) return;
+      const text = String(message || "").trim();
+      manualFeedback.textContent = text;
+      manualFeedback.hidden = !text;
+      manualFeedback.classList.toggle("is-error", tone === "error");
+      manualFeedback.classList.toggle("is-success", tone === "success");
+      if (text) manualFeedback.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+    const clearManualFeedback = () => setManualFeedback("");
+    const clearManualFieldInvalid = (field, options = {}) => {
+      if (!field) return;
+      field.classList.remove("is-invalid");
+      field.removeAttribute("aria-invalid");
+      if (!options.keepFeedback && !manualForm?.querySelector(".is-invalid")) {
+        clearManualFeedback();
+      }
+    };
+    const clearManualInvalidFields = () => {
+      manualForm?.querySelectorAll(".is-invalid").forEach((field) => clearManualFieldInvalid(field, { keepFeedback: true }));
+    };
+    const markManualFieldInvalid = (field) => {
+      if (!field) return;
+      field.classList.add("is-invalid");
+      field.setAttribute("aria-invalid", "true");
+    };
+    manualForm?.querySelectorAll("input, select, textarea").forEach((field) => {
+      field.addEventListener("input", () => clearManualFieldInvalid(field));
+      field.addEventListener("change", () => clearManualFieldInvalid(field));
+    });
+    const validateManualRequiredFields = (messagePrefix = "必填字段未填写") => {
+      if (!manualForm) return true;
+      clearManualInvalidFields();
+      const missing = [];
+      let firstMissing = null;
+      manualForm.querySelectorAll(".manual-label.required").forEach((label) => {
+        const field = document.getElementById(label.getAttribute("for") || "");
+        if (!field || field.disabled || field.readOnly) return;
+        if (String(field.value || "").trim()) return;
+        const labelText = String(label.textContent || "").replace("*", "").replace(/\s+/g, "").trim();
+        missing.push(labelText || field.name || "必填项");
+        markManualFieldInvalid(field);
+        if (!firstMissing) firstMissing = field;
+      });
+      if (!missing.length) {
+        clearManualFeedback();
+        return true;
+      }
+      const prefix = messagePrefix || "必填字段未填写";
+      setManualFeedback(`${prefix}：${missing.join("、")}`, "error");
+      firstMissing?.scrollIntoView({ behavior: "smooth", block: "center" });
+      firstMissing?.focus({ preventScroll: true });
+      return false;
+    };
+    manualForm?.addEventListener("submit", (event) => {
+      syncWeightVolumeField();
+      if (validateManualRequiredFields()) return;
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[char]));
+    const manualFieldValue = (name) => {
+      const value = String(document.getElementById(`field_${name}`)?.value || "").trim();
+      return name === "open_date" ? toSlashDate(value) : value;
+    };
+    const syncWeightVolumeField = () => {
+      const weight = manualFieldValue("weight_kg");
+      const volume = manualFieldValue("volume_m3");
+      const combined = [weight ? `${weight}kg` : "", volume ? `${volume}m³` : ""].filter(Boolean).join(" / ");
+      const hidden = document.querySelector("[data-weight-volume-combined]");
+      if (hidden) hidden.value = combined;
+      return combined;
+    };
+    document.querySelectorAll("[data-weight-input], [data-volume-input]").forEach((input) => {
+      input.addEventListener("input", syncWeightVolumeField);
+      input.addEventListener("change", syncWeightVolumeField);
+    });
+    syncWeightVolumeField();
+    const manualWaybillPreviewNo = () => {
+      const input = document.getElementById("field_waybill_no");
+      const value = String(input?.value || "").trim();
+      if (value) return value;
+      const placeholder = String(input?.getAttribute("placeholder") || "");
+      return placeholder.match(/\d{8,}/)?.[0] || "";
+    };
+    const readManualWaybillPreview = () => {
+      const weightVolume = syncWeightVolumeField();
+      return {
+        waybill_no: manualWaybillPreviewNo(),
+        open_date: manualFieldValue("open_date"),
+        destination_site: manualFieldValue("destination_site"),
+        receiver_name: manualFieldValue("receiver_name"),
+        receiver_phone: manualFieldValue("receiver_phone"),
+        receiver_address: manualFieldValue("receiver_address"),
+        sender_name: manualFieldValue("sender_name"),
+        sender_phone: manualFieldValue("sender_phone"),
+        goods_name_lines: manualFieldValue("goods_name_lines"),
+        package_type_lines: manualFieldValue("package_type_lines"),
+        quantity_lines: manualFieldValue("quantity_lines"),
+        weight_kg: manualFieldValue("weight_kg"),
+        volume_m3: manualFieldValue("volume_m3"),
+        weight_volume: manualFieldValue("weight_volume") || weightVolume,
+        delivery_method: manualFieldValue("delivery_method"),
+        freight_fee: manualFieldValue("freight_fee"),
+        delivery_fee: manualFieldValue("delivery_fee"),
+        payment_method: manualFieldValue("payment_method"),
+        insurance_amount: manualFieldValue("insurance_amount"),
+        cod_amount: manualFieldValue("cod_amount"),
+        remark: manualFieldValue("remark"),
+      };
+    };
+    const quoteStatusLabel = (status) => ({
+      available: "可用",
+      unavailable: "失败",
+      auth_required: "登录失效",
+      timeout: "超时",
+      invalid_price: "金额异常",
+      pending: "待维护",
+    }[status] || "失败");
+    const quoteButtonText = (provider) => {
+      if (provider === "yunda") return "选择韵达并预填";
+      if (provider === "ronghui") return "选择融辉并预填";
+      return "暂不可选";
+    };
+    const setQuoteSummary = (message, isError = false) => {
+      if (!quoteSummary) return;
+      quoteSummary.textContent = message;
+      quoteSummary.classList.toggle("is-error", Boolean(isError));
+    };
+    const renderQuoteResults = (payload) => {
+      if (!quoteResults) return;
+      const quotes = Array.isArray(payload?.quotes) ? payload.quotes : [];
+      const bestProvider = payload?.best_provider || "";
+      setQuoteSummary(payload?.message || "无报价结果。");
+      quoteResults.innerHTML = quotes.map((quote) => {
+        const provider = quote.provider || "";
+        const available = quote.status === "available";
+        const isBest = available && provider === bestProvider;
+        const price = available ? `￥${escapeHtml(quote.price || "")}` : "--";
+        const badge = isBest ? "最低推荐" : quoteStatusLabel(quote.status);
+        const meta = [
+          quote.product_name ? `产品：${quote.product_name}` : "",
+          quote.site_name ? `网点：${quote.site_name}` : "",
+          quote.error ? `原因：${quote.error}` : "",
+          ...(Array.isArray(quote.details) ? quote.details.slice(0, 2) : []),
+        ].filter(Boolean);
+        return `
+          <article class="manual-quote-item${isBest ? " is-best" : ""}">
+            <div class="manual-quote-main">
+              <div class="manual-quote-name">${escapeHtml(quote.label || quoteProviderLabels[provider] || provider)}<span class="manual-quote-badge">${escapeHtml(badge)}</span></div>
+              <div class="manual-quote-price">${price}</div>
+            </div>
+            <div class="manual-quote-meta">${meta.length ? meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("") : "<span>暂无明细</span>"}</div>
+            <button type="button" class="${available ? "primary-btn" : "ghost-btn"} manual-quote-select" data-quote-provider="${escapeHtml(provider)}" ${available && ["yunda", "ronghui"].includes(provider) ? "" : "disabled"}>
+              ${escapeHtml(quoteButtonText(provider))}
+            </button>
+          </article>
+        `;
+      }).join("");
+      window.ConsoleUI?.refreshIcons?.();
+    };
+    const readQuoteRequest = () => ({
+      receiver_address: manualFieldValue("receiver_address"),
+      weight_kg: manualFieldValue("weight_kg"),
+      volume_m3: manualFieldValue("volume_m3"),
+      delivery_method: manualFieldValue("delivery_method"),
+    });
+    const validateQuoteRequest = (payload) => {
+      const missing = [];
+      if (!payload.receiver_address) missing.push("收件地址");
+      if (!payload.weight_kg) missing.push("重量 kg");
+      if (!payload.volume_m3) missing.push("体积 m³");
+      if (!payload.delivery_method) missing.push("送货方式");
+      if (missing.length) return `请先填写：${missing.join("、")}`;
+      if (Number.isNaN(Number(payload.weight_kg)) || Number(payload.weight_kg) <= 0) return "重量 kg 必须是大于 0 的数字。";
+      if (Number.isNaN(Number(payload.volume_m3)) || Number(payload.volume_m3) <= 0) return "体积 m³ 必须是大于 0 的数字。";
+      return "";
+    };
+    const calculateQuoteOptions = async () => {
+      const request = readQuoteRequest();
+      const error = validateQuoteRequest(request);
+      if (error) {
+        setQuoteSummary(error, true);
+        return;
+      }
+      syncWeightVolumeField();
+      quoteAction?.setAttribute("disabled", "disabled");
+      setQuoteSummary("正在获取融辉与韵达真实报价...");
+      try {
+        const response = await fetch(QUOTE_OPTIONS_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || "比价接口调用失败");
+        lastQuotePayload = payload;
+        renderQuoteResults(payload);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "比价失败";
+        showManualNotice(message);
+        renderQuoteResults({ ok: false, message, quotes: [] });
+      } finally {
+        quoteAction?.removeAttribute("disabled");
+      }
+    };
+    const selectQuoteProvider = (provider) => {
+      const quote = (lastQuotePayload?.quotes || []).find((item) => item.provider === provider);
+      if (!quote || quote.status !== "available") {
+        showManualNotice("当前平台没有可用报价，不能预填。");
+        return;
+      }
+      const freightInput = document.getElementById("field_freight_fee");
+      if (freightInput) freightInput.value = quote.price || "";
+      const form = readManualWaybillPreview();
+      sessionStorage.setItem(PREFILL_STORAGE_KEY, JSON.stringify({
+        version: 1,
+        provider,
+        form,
+        selected_quote: quote,
+        created_at: Date.now(),
+      }));
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "SHIPNOW_OPEN_ENTRY_TAB", provider }, window.location.origin);
+        showManualNotice(`已打开新的${quoteProviderLabels[provider] || provider}页签并准备预填。`, "success");
+        return;
+      }
+      if (entryTabsRoot) {
+        addEntryTab(provider, { prefill: true });
+        return;
+      }
+      if (!modeRoot && ["yunda", "ronghui"].includes(provider)) {
+        window.location.href = provider === "yunda" ? "/ocr?mode=yunda" : "/ocr?mode=ronghui";
+        return;
+      }
+      setMode(provider);
+    };
+    quoteAction?.addEventListener("click", calculateQuoteOptions);
+    quoteResults?.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("[data-quote-provider]");
+      if (!button || button.disabled) return;
+      selectQuoteProvider(button.dataset.quoteProvider || "");
+    });
+    const findCLODOPPrinterIndex = (lodop, printerName) => {
+      const wanted = String(printerName || "").trim();
+      if (!wanted || wanted === "系统默认打印机") return null;
+      const count = Number(lodop.GET_PRINTER_COUNT?.() || 0);
+      for (let index = 0; index < count; index += 1) {
+        if (String(lodop.GET_PRINTER_NAME(index) || "") === wanted) return index;
+      }
+      return null;
+    };
+    const WAYBILL_LABEL_WIDTH = "74mm";
+    const WAYBILL_LABEL_HEIGHT = "92mm";
+    const buildManualPreviewHtml = async () => {
+      if (!window.WaybillLabelHtml?.buildHtml) throw new Error("Waybill HTML renderer not loaded");
+      return window.WaybillLabelHtml.buildHtml(readManualWaybillPreview(), readSavedPrinterSettings());
+    };
+    const openLodopPreview = (lodop) => {
+      if (typeof lodop.SET_PREVIEW_WINDOW === "function") {
+        lodop.SET_PREVIEW_WINDOW(1, 0, 0, 760, 680, "打印预览.打印");
+      }
+      lodop.PREVIEW();
+    };
+    const applyWaybillLodopTemplate = async (lodop, wb, settings = {}) => {
+      if (!window.WaybillLabelLodop?.applyTemplate) throw new Error("Waybill Lodop renderer not loaded");
+      await window.WaybillLabelLodop.applyTemplate(lodop, wb, settings);
+    };
+    const previewManualWaybill = async () => {
+      if (!validateManualRequiredFields("打印预览前请先填写")) return;
+      persistPrinterSettings();
+      setManualFeedback("正在打开 C-Lodop 打印预览...", "info");
+      const settings = readSavedPrinterSettings();
+      const copies = Math.max(1, Math.min(Number(settings.print_copies || 1) || 1, 5));
+      try {
+        const lodop = await getCLODOP();
+        if (!lodop) throw new Error("C-Lodop service not found");
+        const printerIndex = findCLODOPPrinterIndex(lodop, settings.printer_name);
+        lodop.PRINT_INIT("博益物流运单预览");
+        if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
+        lodop.SET_PRINT_COPIES(copies);
+        await applyWaybillLodopTemplate(lodop, readManualWaybillPreview(), settings);
+        openLodopPreview(lodop);
+        setManualFeedback("已调用 C-Lodop 打印预览，如未弹出窗口请检查 C-Lodop 服务或打印机权限。", "success");
+      } catch (error) {
+        console.error("C-Lodop preview failed", error);
+        setManualFeedback(formatManualPrintError(error), "error");
+      }
+    };
+    document.querySelector("[data-manual-preview]")?.addEventListener("click", previewManualWaybill);
+    const previewCalibrationPage = async () => {
+      persistPrinterSettings();
+      const settings = readSavedPrinterSettings();
+      try {
+        const lodop = await getCLODOP();
+        if (!lodop) throw new Error("C-Lodop service not found");
+        const printerIndex = findCLODOPPrinterIndex(lodop, settings.printer_name);
+        lodop.PRINT_INIT("博益物流主单校准页");
+        if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
+        lodop.SET_PRINT_COPIES(1);
+        if (!window.WaybillLabelLodop?.applyCalibration) throw new Error("Waybill Lodop renderer not loaded");
+        window.WaybillLabelLodop.applyCalibration(lodop, settings);
+        openLodopPreview(lodop);
+      } catch (error) {
+        console.error("C-Lodop calibration failed", error);
+        setManualFeedback(formatManualPrintError(error), "error");
+      }
+    };
+    document.querySelector("[data-printer-calibration]")?.addEventListener("click", previewCalibrationPage);
+    const setMapPlaceholder = (visible, text = "暂无地图信息") => {
+      if (!mapPanel) return;
+      mapPanel.hidden = !visible;
+      const label = mapPanel.querySelector("span");
+      if (label) label.textContent = text;
+    };
+    const normalizePosition = (location) => {
+      if (!location) return null;
+      const lng = Number(typeof location.getLng === "function" ? location.getLng() : (location.lng ?? location[0]));
+      const lat = Number(typeof location.getLat === "function" ? location.getLat() : (location.lat ?? location[1]));
+      return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
+    };
+    const clearMapMarker = () => {
+      if (manualMap.marker) {
+        manualMap.marker.setMap(null);
+        manualMap.marker = null;
+      }
+    };
+    const applyMapLocation = (result) => {
+      if (!manualMap.AMap || !manualMap.map || !result?.position) return;
+      clearMapMarker();
+      manualMap.marker = new manualMap.AMap.Marker({
+          position: result.position,
+          title: result.name || "收件地址",
+        });
+      manualMap.map.add(manualMap.marker);
+      manualMap.map.setZoomAndCenter(16, result.position);
+      setMapPlaceholder(false);
+    };
+    const searchPlace = (address) => new Promise((resolve) => {
+      if (!manualMap.placeSearch) {
+        resolve(null);
+        return;
+      }
+      manualMap.placeSearch.search(address, (status, result) => {
+        const pois = result?.poiList?.pois || [];
+        const poi = pois.find((item) => normalizePosition(item.location));
+        if (!poi) {
+          resolve(null);
+          return;
+        }
+        const region = [poi.pname, poi.cityname, poi.adname].filter(Boolean).join("");
+        resolve({
+          name: poi.name || address,
+          address: `${poi.name || address}${poi.address ? ` · ${region}${poi.address}` : ""}`,
+          position: normalizePosition(poi.location),
+        });
+      });
+    });
+    const geocodeAddress = (address) => new Promise((resolve) => {
+      if (!manualMap.geocoder) {
+        resolve(null);
+        return;
+      }
+      manualMap.geocoder.getLocation(address, (status, result) => {
+        const geocode = result?.geocodes?.find((item) => normalizePosition(item.location));
+        if (!geocode) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          name: address,
+          address: geocode.formattedAddress || address,
+          position: normalizePosition(geocode.location),
+        });
+      });
+    });
+    const resolveManualAddress = async (address) => await searchPlace(address) || await geocodeAddress(address);
+    const locateReceiverAddress = async () => {
+      const address = String(addressInput?.value || "").trim();
+      if (!address) {
+        manualMap.lastQuery = "";
+        manualMap.receiverLocation = null;
+        clearMapMarker();
+        return null;
+      }
+      if (address === manualMap.lastQuery && manualMap.receiverLocation?.position) {
+        return manualMap.receiverLocation;
+      }
+      manualMap.lastQuery = address;
+      if (!manualMap.map) {
+        return null;
+      }
+      setMapPlaceholder(true, "定位中...");
+      const result = await resolveManualAddress(address);
+      if (result?.position) {
+        manualMap.receiverLocation = result;
+        applyMapLocation(result);
+        return result;
+      } else {
+        manualMap.receiverLocation = null;
+        clearMapMarker();
+        setMapPlaceholder(true, "未找到地址");
+        return null;
+      }
+    };
+    const normalizeReceiverAddressText = (value) => String(value || "")
+      .replace(/(收货人|收件人|联系人|姓名)[:：]/g, " ")
+      .replace(/(收货电话|收件电话|联系电话|手机号|手机|电话)[:：]/g, " ")
+      .replace(/(收货地址|收件地址|详细地址|地址)[:：]/g, " ")
+      .replace(/[，,;；|｜]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const receiverPhonePattern = /(?:\+?86[-\s]?)?(1[3-9]\d[-\s]?\d{4}[-\s]?\d{4}|0\d{2,3}[-\s]?\d{7,8})/;
+    const looksLikeAddressPart = (value) => /省|市|区|县|镇|乡|街道|路|街|巷|弄|村|号|栋|幢|单元|室|楼|园|小区|市场|公司|仓|店/.test(value);
+    const stripReceiverNameLabel = (value) => String(value || "").replace(/^(收货人|收件人|联系人|姓名)[:：]?/, "").trim();
+    const stripAddressLabel = (value) => String(value || "").replace(/^(收货地址|收件地址|详细地址|地址)[:：]?/, "").trim();
+    const extractDestinationSiteFromAddress = (address) => {
+      const compact = String(address || "").replace(/\s+/g, "");
+      const cityMatches = Array.from(compact.matchAll(/([^省市区县镇乡街道]{2,12}市)/g))
+        .map((match) => match[1])
+        .filter(Boolean);
+      return cityMatches.length ? cityMatches[cityMatches.length - 1] : "";
+    };
+    const isReliableReceiverName = (value) => {
+      const cleaned = stripReceiverNameLabel(value);
+      return Boolean(cleaned) && cleaned.length <= 8 && !/\d/.test(cleaned) && !looksLikeAddressPart(cleaned);
+    };
+    const parseReceiverAddressText = (value) => {
+      const normalized = normalizeReceiverAddressText(value);
+      const phoneMatch = normalized.match(receiverPhonePattern);
+      if (!phoneMatch) {
+        return { ok: false, error: "无法解析收货电话，请检查是否包含手机号或座机号。" };
+      }
+      const phone = phoneMatch[1].replace(/[^\d]/g, "");
+      const withoutPhone = normalized.replace(phoneMatch[0], " ").replace(/\s+/g, " ").trim();
+      const parts = withoutPhone.split(/\s+/).filter(Boolean);
+      let receiverName = "";
+      let addressParts = parts;
+      if (parts.length > 1 && isReliableReceiverName(parts[0])) {
+        receiverName = stripReceiverNameLabel(parts[0]);
+        addressParts = parts.slice(1);
+      } else if (parts.length > 1 && isReliableReceiverName(parts[parts.length - 1])) {
+        receiverName = stripReceiverNameLabel(parts[parts.length - 1]);
+        addressParts = parts.slice(0, -1);
+      }
+      const address = stripAddressLabel(addressParts.join(" ")).trim();
+      if (!address) {
+        return { ok: false, error: "无法解析收件地址，请检查是否包含详细地址。" };
+      }
+      const destinationSite = extractDestinationSiteFromAddress(address);
+      return { ok: true, receiver_name: receiverName, receiver_phone: phone, receiver_address: address, destination_site: destinationSite };
+    };
+    const setAddressParserOpen = (open) => {
+      if (!addressParserDialog) return;
+      addressParserDialog.hidden = !open;
+      if (open) {
+        if (addressParserInput) addressParserInput.value = "";
+        showAddressParserError("");
+        window.setTimeout(() => addressParserInput?.focus(), 0);
+      }
+      window.ConsoleUI?.refreshIcons?.();
+    };
+    const showAddressParserError = (message) => {
+      if (!addressParserError) return;
+      const text = String(message || "").trim();
+      addressParserError.textContent = text;
+      addressParserError.hidden = !text;
+    };
+    const setManualFieldValue = (field, value) => {
+      if (!field) return;
+      const nextValue = String(value ?? "").trim();
+      if (!nextValue) return;
+      field.value = nextValue;
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const applyParsedReceiverAddress = () => {
+      const parsed = parseReceiverAddressText(addressParserInput?.value || "");
+      if (!parsed.ok) {
+        showAddressParserError(parsed.error || "地址解析失败，请手动填写。");
+        addressParserInput?.focus();
+        return;
+      }
+      showAddressParserError("");
+      const nameInput = document.getElementById("field_receiver_name");
+      const phoneInput = document.getElementById("field_receiver_phone");
+      const destinationInput = document.getElementById("field_destination_site");
+      setManualFieldValue(nameInput, parsed.receiver_name);
+      setManualFieldValue(phoneInput, parsed.receiver_phone);
+      setManualFieldValue(destinationInput, parsed.destination_site);
+      if (addressInput) {
+        setManualFieldValue(addressInput, parsed.receiver_address);
+        locateReceiverAddress();
+      }
+      setAddressParserOpen(false);
+    };
+    addressParserTrigger?.addEventListener("click", () => setAddressParserOpen(true));
+    addressParserDialog?.querySelector("[data-address-parser-close]")?.addEventListener("click", () => setAddressParserOpen(false));
+    addressParserDialog?.querySelector("[data-address-parser-cancel]")?.addEventListener("click", () => setAddressParserOpen(false));
+    addressParserDialog?.querySelector("[data-address-parser-apply]")?.addEventListener("click", applyParsedReceiverAddress);
+    addressParserInput?.addEventListener("input", () => showAddressParserError(""));
+    const focusNextManualField = () => {
+      if (!manualForm || !addressInput) return;
+      const fields = Array.from(manualForm.querySelectorAll("input, select, textarea"))
+        .filter((field) => !field.disabled && !field.readOnly && field.type !== "hidden" && field.offsetParent !== null);
+      const currentIndex = fields.indexOf(addressInput);
+      const nextField = fields[currentIndex + 1];
+      nextField?.focus();
+    };
+    addressInput?.addEventListener("compositionstart", () => { manualMap.composing = true; });
+    addressInput?.addEventListener("compositionend", () => { manualMap.composing = false; });
+    addressInput?.addEventListener("input", () => {
+      manualMap.lastQuery = "";
+      manualMap.receiverLocation = null;
+      if (manualMap.map) setMapPlaceholder(false);
+    });
+    addressInput?.addEventListener("blur", () => { locateReceiverAddress(); });
+    addressInput?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || manualMap.composing) return;
+      event.preventDefault();
+      locateReceiverAddress();
+      focusNextManualField();
+    });
+    const initManualMap = () => {
+      if (!mapBody || !document.getElementById("manual-amap-container")) return;
+      const amapJsKey = String(manualAmapConfig.amap_js_key || "").trim();
+      if (!window.AMapLoader || !amapJsKey || amapJsKey.startsWith("YOUR_")) {
+        setMapPlaceholder(true, "地图未配置");
+        return;
+      }
+      window.AMapLoader.load({
+        key: amapJsKey,
+        version: "2.0",
+        plugins: ["AMap.Geocoder", "AMap.PlaceSearch"],
+      }).then((AMap) => {
+        manualMap.AMap = AMap;
+        manualMap.map = new AMap.Map("manual-amap-container", {
+          zoom: 11,
+          center: [120.1551, 30.2741],
+          mapStyle: "amap://styles/light",
+        });
+        manualMap.geocoder = new AMap.Geocoder({ city: "全国", extensions: "all" });
+        manualMap.placeSearch = new AMap.PlaceSearch({ city: "全国", pageSize: 5, pageIndex: 1 });
+        setMapPlaceholder(false);
+        manualMap.lastQuery = "";
+        if (String(addressInput?.value || "").trim()) locateReceiverAddress();
+      }).catch((error) => {
+        console.error("AMap load failed", error);
+        setMapPlaceholder(true, "地图加载失败");
+      });
+    };
+    window.addEventListener("load", initManualMap);
+
+    const container = document.getElementById("image-container");
+    const img = document.getElementById("review-image");
+    if (container && img) {
+      let scale = 1, translateX = 0, translateY = 0, isDragging = false, startX = 0, startY = 0;
+      const updateTransform = () => { img.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`; };
+      container.addEventListener("wheel", (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
+        const rect = container.getBoundingClientRect();
+        const imgX = (e.clientX - rect.left - translateX) / scale;
+        const imgY = (e.clientY - rect.top - translateY) / scale;
+        const delta = e.deltaY > 0 ? -1 : 1;
+        scale = Math.max(0.2, Math.min(scale * (1 + delta * 0.1), 5));
+        translateX = e.clientX - rect.left - imgX * scale;
+        translateY = e.clientY - rect.top - imgY * scale;
+        updateTransform();
+      });
+      container.addEventListener("mousedown", (e) => {
+        isDragging = true;
+        startX = e.clientX - translateX;
+        startY = e.clientY - translateY;
+      });
+      window.addEventListener("mouseup", () => { isDragging = false; });
+      window.addEventListener("mousemove", (e) => {
+        if (!isDragging) return;
+        translateX = e.clientX - startX;
+        translateY = e.clientY - startY;
+        updateTransform();
+      });
+      container.addEventListener("dblclick", () => { scale = 1; translateX = 0; translateY = 0; updateTransform(); });
+    }
+  });
+</script>
+{% endblock %}

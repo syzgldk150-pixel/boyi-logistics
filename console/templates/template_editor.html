@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_new %}新增模板{% else %}编辑模板{% endif %}{% endblock %}
+
+{% block breadcrumb %}{% if is_new %}新增模板{% else %}编辑模板{% endif %}{% endblock %}
+{% block subtitle %}OCR 工作区 / 模板配置{% endblock %}
+
+{% block page_actions %}
+<a class="ghost-btn" href="/ocr">返回 OCR 工作区</a>
+{% endblock %}
+
+{% block content %}
+<div class="template-editor-layout" data-reveal="editor">
+  <section class="panel panel--hero template-editor-summary">
+    <div class="heading-stack">
+      <span class="kicker">OCR Template</span>
+      <p class="hero-summary">
+        在这里维护模板名称、说明以及 OCR 预处理和字段配置。保存后会立即影响后续上传任务的识别规则。
+      </p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <form action="/templates/save" method="post" data-ui-submit>
+      <input type="hidden" name="original_template_name" value="{{ original_template_name }}">
+
+      <div class="template-form-grid">
+        <label class="template-field">
+          <span class="template-label">模板名称</span>
+          <input class="review-input" type="text" name="template_name" value="{{ template_name_value }}" autocomplete="off">
+        </label>
+        <label class="template-field">
+          <span class="template-label">模板说明</span>
+          <input class="review-input" type="text" name="description" value="{{ description_value }}" autocomplete="off">
+        </label>
+      </div>
+
+      <label class="template-field">
+        <span class="template-label">模板 JSON</span>
+        <textarea class="review-input template-json" name="template_json" spellcheck="false">{{ template_json }}</textarea>
+      </label>
+
+      <div class="template-actions">
+        <label class="template-checkbox">
+          <input type="checkbox" name="set_active" value="1" {% if is_new or template_name_value == active_template_name %}checked{% endif %}>
+          <span>保存后设为当前模板</span>
+        </label>
+        <a class="ghost-btn" href="/ocr">取消</a>
+        <button type="submit" class="primary-btn">保存模板</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block right_sidebar %}
+<div class="widget-stack">
+  <section class="widget-card">
+    <h3 class="widget-title">现有模板</h3>
+    <div class="template-list">
+      {% for item in available_templates %}
+      <a href="/templates/{{ item.template_name }}/edit" class="template-list-item {% if item.template_name == template_name_value %}is-active{% endif %}">
+        <div class="queue-link">
+          <div class="queue-link-main">
+            <div class="queue-link-title">{{ item.template_name }}</div>
+            <div class="template-list-meta">字段 {{ item.field_count }} 个</div>
+          </div>
+          {% if item.active %}
+          <span class="status status-ready">当前</span>
+          {% endif %}
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="premium-card">
+    <div class="premium-badge"><i data-feather="settings"></i> Tips</div>
+    <p class="premium-desc">模板 JSON 至少保留两部分：`preprocess` 负责预处理，`fields` 负责字段定义。</p>
+    <p class="premium-desc">字段里至少保留 `name`、`label`，必填项额外加 `required`。</p>
+  </section>
+</div>
+{% endblock %}

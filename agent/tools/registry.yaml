@@ -1,0 +1,742 @@
+﻿tools:
+  - name: query_waybill
+    description: "根据运单号查询运单签收状态或详细信息（收件人、地址、件数、重量等）"
+    parameters:
+      type: object
+      properties:
+        waybill_no:
+          type: string
+          description: "运单号，支持多个用逗号/空格分隔，如 YS20260401001,YS20260401002"
+        query_type:
+          type: string
+          enum: [status, detail]
+          description: "查询类型：status=签收状态速查（默认，支持批量），detail=完整运单详情（仅单号）"
+      required: [waybill_no]
+    executor: tools/query_tool.py
+    timeout: 70
+    heavy: false
+
+  - name: track_waybill
+    description: "单号物流轨迹查询：融辉 R/RC/200 单号、韵达纯数字单号、000 专线单号统一入口"
+    parameters:
+      type: object
+      properties:
+        tracking_number:
+          type: string
+          description: "要查询的单号，如 R00014513348、977808459"
+        provider:
+          type: string
+          enum: [ronghui, yunda, zhuanxian]
+          description: "可选，指定物流系统；不传时按单号自动识别"
+      required: [tracking_number]
+    executor: tools/track_waybill_tool.py
+    timeout: 210
+    heavy: false
+
+  - name: tms_query
+    description: "调用 TMS 系统查询数据（运单、扫描、签收、报价等）"
+    parameters:
+      type: object
+      properties:
+        endpoint:
+          type: string
+          description: "TMS 兼容端点，如 /send_order, /get_scan, /get_qianshou, /get_price 等"
+        params:
+          type: object
+          description: "请求参数"
+      required: [endpoint]
+    executor: tools/tms_tool.py
+    timeout: 60
+    heavy: false
+
+  - name: get_price
+    description: "查询物流报价。默认走 Agent /tms/get_price；兼容旧版发站/到站/重量查询"
+    parameters:
+      type: object
+      properties:
+        address:
+          type: string
+          description: "优先使用：完整收货地址，如 浙江省杭州市西湖区文三路100号"
+        from_station:
+          type: string
+          description: "兼容旧版：发站名称"
+        to_station:
+          type: string
+          description: "兼容旧版：到站名称"
+        weight:
+          type: number
+          description: "重量(kg)"
+        volume:
+          type: number
+          description: "可选：体积(m³)，默认 0.1"
+      required: [weight]
+    executor: tools/price_tool.py
+    timeout: 60
+    heavy: true
+
+  - name: ocr_recognize
+    description: "识别物流单据图片，提取托运单号、发站、到站、件数、重量等字段"
+    parameters:
+      type: object
+      properties:
+        image_path:
+          type: string
+          description: "图片文件路径"
+      required: [image_path]
+    executor: tools/ocr_tool.py
+    timeout: 60
+    heavy: true
+
+  - name: finance_etl
+    description: "运行财务对账 ETL 管道，生成报表并返回指定月份或全量摘要"
+    parameters:
+      type: object
+      properties:
+        month:
+          type: string
+          description: "可选，月份摘要范围，格式 YYYY-MM，如 2026-03"
+        input_path:
+          type: string
+          description: "可选，元数据目录路径，或包含 metadata/ 的项目目录路径"
+      required: []
+    executor: tools/finance_tool.py
+    timeout: 600
+    heavy: true
+
+  - name: sync_daily_send_orders
+    description: "Phase 7 第一批：拉取融辉寄件数据并按发件日期替换写入飞书多维表格"
+    parameters:
+      type: object
+      properties:
+        target_date:
+          type: string
+          description: "可选，单个发件日期，格式 YYYY-MM-DD；默认当天"
+        start_date:
+          type: string
+          description: "可选，范围拉取起始发件日期，格式 YYYY-MM-DD；与 end_date 组成闭区间"
+        end_date:
+          type: string
+          description: "可选，范围拉取结束发件日期，格式 YYYY-MM-DD；与 start_date 组成闭区间"
+        request_body:
+          type: object
+          description: "可选，覆盖默认 send_order 请求体"
+        page_size:
+          type: integer
+          description: "融辉寄件列表接口每页条数，默认 100"
+        max_pages:
+          type: integer
+          description: "最多拉取页数，默认 50"
+        base_token:
+          type: string
+          description: "可选，飞书多维表格 app/base token；默认从 Agent MySQL 中读取，必要时可由 N8N 只读导入"
+        table_id:
+          type: string
+          description: "可选，飞书多维表格 table_id；默认从 Agent MySQL 中读取，必要时可由 N8N 只读导入"
+        dry_run:
+          type: boolean
+          description: "仅演练，不写入或删除飞书记录"
+        sql_only:
+          type: boolean
+          description: "仅同步控制台 waybills SQL 表，不写入或删除飞书记录"
+        sync_sql:
+          type: boolean
+          description: "是否同步控制台 waybills SQL 表，默认 true"
+      required: []
+    executor: tools/send_order_sync_tool.py
+    timeout: 7200
+    heavy: false
+
+  - name: sync_delivery_status
+    description: "Phase 7 第一批：扫描飞书多维表格未签收记录，查询签收状态并批量更新；也兼容传入单号和 record_id 的 webhook 模式"
+    parameters:
+      type: object
+      properties:
+        bill_codes:
+          type: array
+          items:
+            type: string
+          description: "运单号列表"
+        record_ids:
+          type: array
+          items:
+            type: string
+          description: "与 bill_codes 一一对应的飞书 record_id 列表"
+        BILL_CODE:
+          type: string
+          description: "兼容 N8N webhook 查询参数：逗号分隔运单号"
+        RECORD_ID:
+          type: string
+          description: "兼容 N8N webhook 查询参数：逗号分隔 record_id"
+        base_token:
+          type: string
+          description: "可选，飞书多维表格 app/base token；默认从 Agent MySQL 中读取，必要时可由 N8N 只读导入"
+        table_id:
+          type: string
+          description: "可选，飞书多维表格 table_id；默认从 Agent MySQL 中读取，必要时可由 N8N 只读导入"
+          view_id:
+            type: string
+            description: "可选，飞书多维表格 view_id；未传时优先按 view_name 解析"
+          view_name:
+            type: string
+            description: "可选，飞书多维表格视图名称；默认 未签收明细，只扫描该视图中的候选记录"
+          list_limit:
+            type: integer
+            description: "可选，每页读取飞书记录数，默认 200；飞书多维表格列表接口单页上限按 200 处理"
+        query_batch_size:
+          type: integer
+          description: "可选，每批查询签收状态的运单数，默认 100"
+        dry_run:
+          type: boolean
+          description: "仅演练，不写回飞书记录"
+      required: []
+    executor: tools/delivery_status_sync_tool.py
+    timeout: 1800
+    heavy: false
+
+  - name: sync_daily_should_sign
+    description: "Phase 7 第二批：拉取每日应签数据，补齐脱敏收件地址后覆盖飞书多维表格并同步电子表格"
+    parameters:
+      type: object
+      properties:
+        request_body:
+          type: object
+          description: "可选，覆盖默认 get_qianshou 请求体；R13 账号优先通过 r13_account_id 绑定账号管理中的 R13 账号，缺失时兼容读取 workflow_resources 的 phase7.r13_credentials"
+        base_token:
+          type: string
+          description: "可选，覆盖 phase7.daily_sign_bitable 的 base_token"
+        table_id:
+          type: string
+          description: "可选，覆盖 phase7.daily_sign_bitable 的 table_id"
+        spreadsheet_token:
+          type: string
+          description: "可选，覆盖 phase7.daily_sign_sheet 的 spreadsheet_token"
+        range:
+          type: string
+          description: "可选，覆盖 phase7.daily_sign_sheet 的写入范围"
+        enrich_addresses:
+          type: boolean
+          description: "是否按运单号调用 query_waybill_detail 补齐脱敏收件地址，默认 true"
+        detail_account_id:
+          type: string
+          description: "可选，补齐地址时使用的融辉详情查询账号 ID；不填则使用默认融辉账号"
+        r13_account_id:
+          type: string
+          description: "可选，每日应签 R13 查询账号 ID；优先使用账号管理中保存的 R13 账号密码"
+        waybill_timeout_sec:
+          type: integer
+          description: "可选，补齐地址的详情查询超时时间，默认 2400 秒"
+        browser_batch_size:
+          type: integer
+          description: "可选，浏览器补齐详情的批量大小，默认 10"
+      required: []
+    executor: tools/daily_sign_sync_tool.py
+    timeout: 2400
+    heavy: false
+
+  - name: sync_site_send_list
+    description: "Phase 7 第二批：拉取网点出港清单，覆盖飞书多维表格并同步电子表格"
+    parameters:
+      type: object
+      properties:
+        request_body:
+          type: object
+          description: "可选，覆盖默认 get_wangdiansendlist 请求体"
+        base_token:
+          type: string
+          description: "可选，覆盖 phase7.site_send_bitable 的 base_token"
+        table_id:
+          type: string
+          description: "可选，覆盖 phase7.site_send_bitable 的 table_id"
+        spreadsheet_token:
+          type: string
+          description: "可选，覆盖 phase7.site_send_sheet 的 spreadsheet_token"
+        range:
+          type: string
+          description: "可选，覆盖 phase7.site_send_sheet 的写入范围"
+      required: []
+    executor: tools/site_send_list_sync_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: sync_arrive_list
+    description: "到货清单同步：拉取 TMS 派件预报基础清单，写入 MySQL 与飞书表格"
+    parameters:
+      type: object
+      properties:
+        request_body:
+          type: object
+          description: "可选，覆盖 fetch_dispatch 请求体"
+        target_date:
+          type: string
+          description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
+        spreadsheet_token:
+          type: string
+          description: "可选，覆盖主/副表的 spreadsheet_token"
+        range:
+          type: string
+          description: "可选，覆盖主/副表的写入范围模板"
+        dry_run:
+          type: boolean
+          description: "仅演练，不写 MySQL/飞书"
+      required: []
+    executor: tools/arrive_list_sync_tool.py
+    timeout: 3600
+    heavy: false
+
+  - name: sync_scan_codes
+    description: "扫描同步：刷新扫描索引，并按批次触发 scan_next"
+    parameters:
+      type: object
+      properties:
+        request_body:
+          type: object
+          description: "可选，覆盖 get_scan 请求体"
+        scan_next_request_body:
+          type: object
+          description: "可选，覆盖 scan_next 请求体模板"
+        child_item_limit:
+          type: integer
+          description: "可选，仅处理前 N 条子单"
+        batch_size:
+          type: integer
+          description: "scan_next 每批条数"
+        max_batches:
+          type: integer
+          description: "可选，仅执行前 N 个批次"
+        skip_bill_codes:
+          type: array
+          items:
+            type: string
+          description: "可选，跳过指定扫描单号，适合小批量验证后继续执行剩余单号"
+        trigger_flow:
+          type: boolean
+          description: "完成后是否触发遗留后续 webhook"
+        dry_run:
+          type: boolean
+          description: "仅演练，不写 MySQL/不真正执行 scan_next"
+      required: []
+    executor: tools/scan_sync_tool.py
+    timeout: 21600
+    heavy: false
+
+  - name: sync_arrival_stats
+    description: "到货统计：累计扫描索引、补抓缺失主单、统计累计到货件数、输出统计/未齐清单及归档，并刷新分批及有发未到表"
+    parameters:
+      type: object
+      properties:
+        refresh_disabled:
+          type: boolean
+          description: "是否跳过刷新扫描索引"
+        target_date:
+          type: string
+          description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
+        scan_window_days:
+          type: integer
+          description: "可选，/get_scan 拉取窗口天数（默认 1=当日；首跑回填可传 30）"
+        scan_codes_retention_days:
+          type: integer
+          description: "scan_codes 累积表的保留天数（默认 30；0 或负数=不清理）"
+        pending_sheet_disabled:
+          type: boolean
+          description: "是否跳过写入「未齐货物」飞书表"
+        missing_limit:
+          type: integer
+          description: "可选，仅补抓前 N 条缺失主单"
+        export_limit:
+          type: integer
+          description: "可选，仅导出前 N 条统计记录"
+        child_count_limit:
+          type: integer
+          description: "可选，仅统计前 N 个主单的到货件数"
+        archive_snapshot:
+          type: boolean
+          description: "是否写入归档快照"
+        trigger_flow:
+          type: boolean
+          description: "完成后是否触发遗留后续 webhook"
+        dry_run:
+          type: boolean
+          description: "仅演练，不写 MySQL/飞书"
+      required: []
+    executor: tools/arrival_stats_sync_tool.py
+    timeout: 7200
+    heavy: false
+
+  - name: sync_yunda_dispatch_forecast
+    description: "韵达网点派件量预测主单表同步：默认拉取次日应派数据，按应派时间覆盖写入飞书多维表格"
+    parameters:
+      type: object
+      properties:
+        target_date:
+          type: string
+          description: "可选，应派日期，格式 YYYY-MM-DD；默认明天"
+        dest_brch:
+          type: string
+          description: "可选，目的网点编码，默认 56739382"
+        session_profile:
+          type: string
+          enum: [yunda]
+          description: "韵达独立登录态 Profile，默认 yunda"
+        base_token:
+          type: string
+          description: "可选，覆盖韵达派件预测多维表格 base token"
+        table_id:
+          type: string
+          description: "可选，覆盖韵达派件预测多维表格 table_id"
+        ensure_fields:
+          type: boolean
+          description: "是否校验并创建缺失字段，默认 true"
+        dry_run:
+          type: boolean
+          description: "仅演练，不删除或写入飞书记录"
+      required: []
+    executor: tools/yunda_dispatch_forecast_sync_tool.py
+    timeout: 1800
+    heavy: false
+
+  - name: sync_yunda_send_waybills
+    description: "韵达寄件运单管理同步：默认拉取当天寄件运单，补充快件跟踪详情和解密字段后按运单号 upsert 到飞书多维表格，并从电子表格第 2 行起刷新一份副本"
+    parameters:
+      type: object
+      properties:
+        target_date:
+          type: string
+          description: "可选，单个寄件日期，格式 YYYY-MM-DD；默认当天。传 start_date/end_date 时忽略"
+        start_date:
+          type: string
+          description: "可选，范围拉取起始寄件日期，格式 YYYY-MM-DD；需与 end_date 配合或单独表示只拉这一天"
+        end_date:
+          type: string
+          description: "可选，范围拉取结束寄件日期，格式 YYYY-MM-DD；与 start_date 组成闭区间"
+        session_profile:
+          type: string
+          enum: [yunda]
+          description: "韵达独立登录态 Profile，默认 yunda"
+        base_token:
+          type: string
+          description: "可选，覆盖韵达寄件运单多维表格 base token"
+        table_id:
+          type: string
+          description: "可选，覆盖韵达寄件运单多维表格 table_id"
+        sync_sheet:
+          type: boolean
+          description: "是否同步普通飞书电子表格副本，默认 true"
+        spreadsheet_token:
+          type: string
+          description: "可选，覆盖韵达寄件运单电子表格 token；默认写入 GILYss6KhhBBuRt9FPWcXbben7c"
+        range:
+          type: string
+          description: "可选，电子表格写入起始范围模板，默认 Sheet1!A2:A2，会按实际行数扩展到全部字段列"
+        clear_range:
+          type: string
+          description: "可选，电子表格写入前清空范围，默认 Sheet1!A2:Y5000"
+        ensure_fields:
+          type: boolean
+          description: "是否校验并创建缺失字段，默认 true"
+        page_size:
+          type: integer
+          description: "韵达列表接口每页条数，默认 200"
+        max_pages:
+          type: integer
+          description: "最多拉取页数，默认 50"
+        dry_run:
+          type: boolean
+          description: "仅演练，不写入飞书记录"
+        sql_only:
+          type: boolean
+          description: "仅同步控制台 waybills SQL 表，不写入或删除飞书多维表或电子表格"
+        sync_sql:
+          type: boolean
+          description: "是否同步控制台 waybills SQL 表，默认 true"
+      required: []
+    executor: tools/yunda_send_waybills_sync_tool.py
+    timeout: 7200
+    heavy: false
+
+  - name: init_waybills_sql_from_feishu
+    description: "初始化后台运单查询 SQL：从飞书融辉寄件数据和韵达寄件运单表全量读取历史记录，按运单号 upsert 到 waybills"
+    parameters:
+      type: object
+      properties:
+        providers:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: "可选，初始化来源；默认 ronghui,yunda，支持 ronghui / yunda"
+        list_limit:
+          type: integer
+          description: "可选，每页读取飞书记录数，默认 200；飞书记录列表单页上限按 200 处理"
+        list_max_pages:
+          type: integer
+          description: "可选，最多读取页数，默认 200"
+        ronghui_base_token:
+          type: string
+          description: "可选，覆盖融辉寄件数据 base token；默认读取 phase7.send_order_bitable"
+        ronghui_table_id:
+          type: string
+          description: "可选，覆盖融辉寄件数据 table_id；默认读取 phase7.send_order_bitable"
+        yunda_base_token:
+          type: string
+          description: "可选，覆盖韵达寄件运单 base token；默认读取 phase7.yunda_send_waybills_bitable"
+        yunda_table_id:
+          type: string
+          description: "可选，覆盖韵达寄件运单 table_id；默认读取 phase7.yunda_send_waybills_bitable"
+        dry_run:
+          type: boolean
+          description: "仅演练，读取飞书并统计可写入 SQL 的记录，不实际写 SQL"
+        cleanup_receipt_like:
+          type: boolean
+          description: "可选，初始化融辉后清理 SQL 中 H/HR 开头的回单类记录，默认 true"
+      required: []
+    executor: tools/init_waybills_sql_from_feishu_tool.py
+    timeout: 7200
+    heavy: false
+
+  - name: self_pickup_problem_upload
+    description: "自提到货问题件：读取飞书每日到货表，分别筛选邵阳自提部、邵阳大祥S站且派送方式=自提，且累计到货件数等于货物件数的单号，并按各自 TMS 登录态登记“开单为自提件”；默认不上传截图"
+    parameters:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          description: "可选，默认 true；仅预览飞书候选单号，不实际上传 TMS"
+        account_id:
+          type: string
+          description: "可选，自提部 TMS 账号角色绑定；默认使用 ronghui_self_pickup_problem"
+        daxiang_s_account_id:
+          type: string
+          description: "可选，大祥S站 TMS 账号角色绑定；默认使用 ronghui_daxiang_s，不要使用 price_default"
+        spreadsheet_token:
+          type: string
+          description: "可选，飞书电子表格 token；默认使用固定到货表"
+        sheet_id:
+          type: string
+          description: "可选，飞书 URL 中的 sheet id；默认 UeBd3I，找不到来源表时回退读取"
+        source_sheet_title:
+          type: string
+          description: "可选，优先读取的源表名称；默认 每日到货表，按目的站点和派送方式筛选"
+        destination_site:
+          type: string
+          description: "可选，自提部目的站点筛选值；默认 邵阳自提部"
+        include_daxiang_s_self_pickup:
+          type: boolean
+          description: "可选，默认 true；同时处理邵阳大祥S站且派送方式=自提的单号"
+        daxiang_s_destination_site:
+          type: string
+          description: "可选，大祥S站目的站点筛选值；默认 邵阳大祥S站"
+        daxiang_s_delivery_method:
+          type: string
+          description: "可选，大祥S站派送方式筛选值；默认 自提"
+        upload_screenshot:
+          type: boolean
+          description: "可选，默认 false；设为 true 时才从环境变量读取截图并上传"
+        screenshot_path:
+          type: string
+          description: "可选，截图路径；提供后会上传并关联到每个问题件"
+        screenshot_dir:
+          type: string
+          description: "可选，截图目录；提供后优先匹配包含单号或以单号命名的图片"
+        screenshot_map:
+          type: object
+          description: "可选，按单号指定截图路径的映射；提供后对应单号会上传截图"
+        problem_cause:
+          type: string
+          description: "可选，覆盖自提部默认问题原因文案；大祥S站使用独立 3 天游离仓储文案"
+        skip_existing_problem:
+          type: boolean
+          description: "可选，默认 true；登记前用 FIND_PROBLEM_BY_CODE 检查已有同类型或同文案问题件，存在则跳过"
+        limit:
+          type: integer
+          description: "可选，仅处理前 N 个候选单号，便于试跑"
+        stop_on_error:
+          type: boolean
+          description: "可选，遇到单票失败后是否停止后续处理，默认 false"
+      required: []
+    executor: tools/self_pickup_problem_upload_tool.py
+    timeout: 7200
+    heavy: true
+
+
+  - name: split_pending_problem_upload
+    description: "分批差错及问题件：dry-run 返回可选择的未完成运单和预览指纹；正式模式仅执行人工选择的运单，少货/分批先上报差错再登记问题件，有发未到只登记问题件"
+    parameters:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          description: "可选，默认 true；仅预览候选，不写目标 Sheet、数据库或融辉"
+        account_id:
+          type: string
+          description: "可选，融辉账号角色绑定；默认使用 ronghui_default（账号管理中的 739010002）"
+        selected_bill_codes:
+          type: array
+          items:
+            type: string
+          description: "正式模式必填；人工从本次预览列表选中的运单号"
+        preview_fingerprint:
+          type: string
+          description: "正式模式必填；dry-run 返回的 64 位预览指纹，用于执行前零写入复核"
+      required: []
+    executor: tools/split_pending_problem_upload_tool.py
+    timeout: 7200
+    heavy: true
+  - name: r7_arrival_checkin
+    description: "R7 到达打卡：登录 R7 运输任务管理，勾选目标状态任务并执行到达待卸；不依赖 TMS 短信登录态"
+    parameters:
+      type: object
+      properties:
+        status_text:
+          type: string
+          description: "待打卡任务的运输状态，默认 车辆到达；旧的 已调度 参数会在执行到达待卸时自动纠偏"
+        verify_status_text:
+          type: string
+          description: "打卡后用于验证的运输状态，默认 已到达"
+        flow_mode:
+          type: integer
+          enum: [1, 2]
+          description: "执行模式：1=按状态匹配，2=按状态+计划发车时间匹配"
+        plan_departure_time:
+          type: string
+          description: "模式2使用的计划发车时间；日期会按脚本逻辑替换为当天"
+        departure_time_fixed:
+          type: string
+          description: "模式2固定发车时间，默认 21:30:00"
+        do_arrive_wait_unload:
+          type: boolean
+          description: "是否执行到达待卸确认，默认 true"
+        headless:
+          type: boolean
+          description: "是否无头运行浏览器，默认 true"
+        slow_mo_ms:
+          type: integer
+          description: "浏览器动作延迟毫秒，默认 0"
+        max_login_attempts:
+          type: integer
+          description: "R7 登录重试次数，默认 6"
+        after_action_delay_ms:
+          type: integer
+          description: "打卡后验证前等待毫秒，默认 1500"
+        daily_success_limit:
+          type: integer
+          description: "一天需要成功打卡的次数，达到后当天后续定时执行会跳过，默认 1"
+      required: []
+    executor: tools/r7_arrival_checkin_tool.py
+    timeout: 1200
+    heavy: true
+
+  - name: r7_departure_checkin
+    description: "R7 发车打卡：登录 R7 运输任务管理，按状态、班次、计划发车时间和车牌号勾选目标任务并执行装车待发；不依赖 TMS 短信登录态"
+    parameters:
+      type: object
+      properties:
+        status_text:
+          type: string
+          description: "待打卡任务的运输状态，默认 已调度"
+        verify_status_text:
+          type: string
+          description: "打卡后用于验证的运输状态，默认 装车待发"
+        class_name:
+          type: string
+          description: "班次名称，默认 邵阳操作场-长沙"
+        departure_time_fixed:
+          type: string
+          description: "系统当日固定计划发车时间，默认 21:30:00"
+        plate_numbers:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: "车牌号，支持单个、逗号/换行分隔或数组，默认 湘AK6980"
+        headless:
+          type: boolean
+          description: "是否无头运行浏览器，默认 true"
+        slow_mo_ms:
+          type: integer
+          description: "浏览器动作延迟毫秒，默认 0"
+        max_login_attempts:
+          type: integer
+          description: "R7 登录重试次数，默认 6"
+        after_action_delay_ms:
+          type: integer
+          description: "打卡后验证前等待毫秒，默认 1500"
+        daily_success_limit:
+          type: integer
+          description: "一天需要成功发车打卡的次数，达到后当天后续定时执行会跳过，默认 1"
+      required: []
+    executor: tools/r7_departure_checkin_tool.py
+    timeout: 1200
+    heavy: true
+
+  - name: sync_finance_bills
+    description: "按账号管理中的四个财务角色，从融辉和韵达原始财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试"
+    parameters:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [sync, backfill, retry]
+          description: "sync=日常同步，backfill=历史回填，retry=按失败批次重试；默认 sync"
+        target_date:
+          type: string
+          description: "sync 可选结束日期，格式 YYYY-MM-DD；默认前一完整日"
+        start_date:
+          type: string
+          description: "sync/backfill 可选起始日期；backfill 必填"
+        end_date:
+          type: string
+          description: "sync/backfill 可选结束日期；backfill 必填"
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+          description: "sync/backfill 可选平台过滤"
+        account_id:
+          type: string
+          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem, yunda_default]
+          description: "sync/backfill 可选账号管理内部角色 ID"
+        batch_id:
+          type: integer
+          description: "retry 模式必填的原失败批次 ID；retry 不接受其他范围过滤"
+        rescan_days:
+          type: integer
+          description: "sync 默认回扫 7 个完整业务日"
+      required: []
+    executor: tools/sync_finance_bills_tool.py
+    timeout: 21600
+    heavy: false
+
+  - name: automation_profile
+    description: "查询或切换后台 Agent 当前自动化供应商 Profile（ronghui/yunda）"
+    parameters:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [get, status, set, switch]
+          description: "操作：get/status 查询当前 Profile；set/switch 切换 Profile"
+        profile:
+          type: string
+          enum: [ronghui, yunda]
+          description: "set/switch 时要切换到的 Profile"
+      required: []
+    executor: tools/automation_profile_tool.py
+    timeout: 30
+    heavy: false
+
+  - name: feishu_operation
+    description: "执行飞书协作操作（创建表格、写入数据、发送消息等）"
+    parameters:
+      type: object
+      properties:
+        action:
+          type: string
+          description: "操作类型：create_sheet, write_records, list_records, search_records, query_records, delete_records, list_fields, create_field, create_spreadsheet, write_sheet, clear_sheet, append_sheet, read_sheet, add_sheet, send_message, upload_file, trigger_webhook"
+        params:
+          type: object
+          description: "操作参数；支持飞书 Base/Sheets/IM 常用操作。write_records 支持 base_token(app_token 兼容) + table_id + records；search_records 使用 records/search + filter 精确筛选原始记录；query_records 使用 data-query DSL；read/write/append_sheet 使用 spreadsheet_token + range + values；add_sheet 走飞书 OpenAPI；trigger_webhook 用于触发飞书流程 webhook"
+      required: [action, params]
+    executor: tools/feishu_cli_tool.py
+    timeout: 30
+    heavy: false

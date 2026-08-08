@@ -1,0 +1,724 @@
+{% extends "base.html" %}
+
+{% block title %}账号管理 - {{ app_title }}{% endblock %}
+{% block breadcrumb %}
+<span class="automation-account-title-inline">
+  账号管理
+  <i data-feather="info"></i>
+</span>
+{% endblock %}
+{% block subtitle %}自动化业务账号 / 登录态 / 凭据状态{% endblock %}
+
+{% block page_actions %}
+<details class="automation-account-create-popover">
+  <summary class="automation-account-add-btn">
+    <i data-feather="plus"></i>
+    <span>新增系统账号</span>
+  </summary>
+  <form class="automation-account-create" action="/automation-accounts/create" method="post">
+    <label>
+      <span>账号标识</span>
+      <input class="review-input compact-input" type="text" name="account_id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,63}" placeholder="ronghui_ops_01" autocomplete="off" required>
+    </label>
+    <label>
+      <span>名称</span>
+      <input class="review-input compact-input" type="text" name="name" placeholder="融辉运营账号 01" autocomplete="off">
+    </label>
+    <label>
+      <span>所属系统</span>
+      <select class="review-input compact-input" name="system" required>
+        {% for system in account_system_order %}
+        <option value="{{ system }}">{{ account_system_labels.get(system, system) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="primary-btn" type="submit">
+      <i data-feather="plus"></i>
+      创建账号
+    </button>
+  </form>
+</details>
+{% endblock %}
+
+{% macro masked_phone(phone) -%}
+  {%- set raw = (phone or '') | string -%}
+  {%- if raw|length >= 7 -%}
+    {{ raw[:3] }}****{{ raw[-4:] }}
+  {%- elif raw -%}
+    {{ raw }}
+  {%- else -%}
+    -
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<section class="automation-account-page">
+  <nav class="automation-account-tabs" aria-label="账号系统筛选" data-account-tabs data-initial-filter="{{ account_filter }}">
+    <a class="automation-account-tab{% if not account_filter %} is-active{% endif %}" href="/automation-accounts" data-account-tab data-account-filter=""{% if not account_filter %} aria-current="page"{% endif %}>
+      全部系统 ({{ account_total_count }})
+    </a>
+    {% for system in account_tab_systems %}
+    <a class="automation-account-tab{% if account_filter == system %} is-active{% endif %}" href="/automation-accounts?system={{ system }}" data-account-tab data-account-filter="{{ system }}"{% if account_filter == system %} aria-current="page"{% endif %}>
+      {{ account_system_labels.get(system, system) }}
+    </a>
+    {% endfor %}
+  </nav>
+
+  {% if account_warning %}
+  <div class="auto-feedback auto-feedback--error">
+    <div class="auto-feedback-head">
+      <strong>Agent 状态异常</strong>
+      <span>{{ account_warning }}</span>
+    </div>
+  </div>
+  {% endif %}
+
+  <section class="automation-account-table-card">
+    <div class="automation-account-table-wrap">
+      <table class="automation-account-table">
+        <thead>
+          <tr>
+            <th>所属系统</th>
+            <th>登录账号</th>
+            <th>绑定手机号</th>
+            <th>当前状态</th>
+            <th>最近校验时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody data-account-table-body>
+        {% for account in account_rows %}
+        {% set status = account.status or {} %}
+        {% set creds = account.credentials or {} %}
+        {% set status_value = status.status or '' %}
+        {% set challenge_type = status.challenge_type or 'sms' %}
+        {% set primary_label = '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '刷新' if status_value == 'authenticated' else '登录' if account.session_capable and account.login_kind == 'image' else '去登录' if account.session_capable else '重新验证' %}
+          <tr class="{% if not account.is_active %}is-disabled{% endif %}" data-account-row data-account-system="{{ account.system }}" data-account-id="{{ account.account_id }}" data-account-status="{{ status_value }}" data-account-challenge-type="{{ challenge_type }}" data-account-login-kind="{{ account.login_kind or '' }}" data-account-session-capable="{{ 'true' if account.session_capable else 'false' }}" data-account-has-credentials="{{ 'true' if account.has_saved_credentials else 'false' }}" data-account-has-manual-credentials="{{ 'true' if account.has_manual_credentials else 'false' }}" data-account-has-env-credentials="{{ 'true' if account.has_env_credentials else 'false' }}" data-account-credential-source="{{ account.credential_source or '' }}"{% if account_filter and account.system != account_filter %} hidden{% endif %}>
+            <td>
+              <div class="automation-account-system-cell">
+                <strong class="automation-account-system">{{ account.system_label }}</strong>
+                <span class="automation-account-name">{{ account.name }}</span>
+                <div class="automation-account-mini-badges">
+                  {% if account.credentials_label %}
+                  <span class="automation-account-mini-badge automation-account-mini-badge--credentials automation-account-mini-badge--{{ account.credentials_tone or 'muted' }}" data-account-credentials-badge>{{ account.credentials_label }}</span>
+                  {% endif %}
+                  {% if not account.is_active %}
+                  <span class="automation-account-mini-badge automation-account-mini-badge--muted">已停用</span>
+                  {% endif %}
+                </div>
+              </div>
+            </td>
+            <td data-account-username>{{ creds.username or '-' }}</td>
+            <td data-account-phone>{{ masked_phone(creds.phone) }}</td>
+            <td>
+              <div class="automation-account-status-stack">
+                <span class="automation-account-status{% if account.status_tone %} automation-account-status--{{ account.status_tone }}{% endif %}" data-account-status-pill>
+                  <span class="automation-account-status-dot"></span>
+                  <span data-account-status-label>{{ account.status_label }}</span>
+                </span>
+                <span class="automation-account-status-note" data-account-status-note{% if not account.status_note %} hidden{% endif %}>{{ account.status_note }}</span>
+                <span class="automation-account-row-error" data-account-row-error{% if not status.last_error_summary %} hidden{% endif %}>{{ status.last_error_summary }}</span>
+              </div>
+            </td>
+            <td data-account-last-validation>{{ status.last_validation_at or status.authenticated_at or '-' }}</td>
+            <td class="automation-account-actions-cell">
+              <div class="automation-account-actions-stack">
+                <div class="automation-account-row-actions">
+                  <form action="/automation-accounts/{{ account.account_id }}/login" method="post" data-account-action-form data-account-login-form>
+                    <button class="automation-account-action-link" type="submit" data-account-primary-action>{{ primary_label }}</button>
+                  </form>
+
+                  <details class="automation-account-details automation-account-edit">
+                    <summary class="automation-account-action-link">编辑</summary>
+                    <div class="automation-account-edit-panel">
+                      <form class="automation-account-credentials" action="/automation-accounts/{{ account.account_id }}/credentials" method="post" data-account-action-form>
+                        <label>
+                          <span>账号</span>
+                          <input class="review-input compact-input" type="text" name="username" value="{{ creds.username or '' }}" autocomplete="username" placeholder="登录账号">
+                        </label>
+                        <label>
+                          <span>密码</span>
+                          <input class="review-input compact-input" type="password" name="password" value="{{ '********' if account.has_saved_credentials else '' }}" autocomplete="new-password" placeholder="登录密码" data-password-mask="********" data-password-saved="{{ 'true' if account.has_saved_credentials else 'false' }}" data-password-mask-active="{{ 'true' if account.has_saved_credentials else 'false' }}">
+                        </label>
+                        <label>
+                          <span>手机号</span>
+                          <input class="review-input compact-input" type="text" name="phone" value="{{ creds.phone or '' }}" inputmode="tel" autocomplete="tel" placeholder="短信账号可填">
+                        </label>
+                        <button class="primary-btn" type="submit">
+                          <i data-feather="save"></i>
+                          保存
+                        </button>
+                      </form>
+                    </div>
+                  </details>
+
+                  <details class="automation-account-details automation-account-menu">
+                    <summary class="automation-account-icon-btn" aria-label="更多操作">
+                      <i data-feather="more-vertical"></i>
+                    </summary>
+                    <div class="automation-account-menu-panel">
+                      <form action="/automation-accounts/{{ account.account_id }}/default" method="post" data-account-action-form>
+                        <button class="ghost-btn" type="submit" {% if account.is_default or not account.is_active %}disabled{% endif %}>
+                          <i data-feather="star"></i>
+                          设为默认
+                        </button>
+                      </form>
+                      {% if account.session_capable %}
+                      <form action="/automation-accounts/{{ account.account_id }}/clear-session" method="post" data-account-action-form>
+                        <button class="ghost-btn" type="submit">
+                          <i data-feather="log-out"></i>
+                          清除登录态
+                        </button>
+                      </form>
+                      {% endif %}
+                      <form action="/automation-accounts/{{ account.account_id }}/clear-credentials" method="post" data-account-action-form>
+                        <button class="ghost-btn ghost-btn--danger" type="submit">
+                          <i data-feather="trash-2"></i>
+                          清空凭据
+                        </button>
+                      </form>
+                      <form action="/automation-accounts/{{ account.account_id }}/active" method="post" data-account-action-form>
+                        <input type="hidden" name="target_active" value="{{ 0 if account.is_active else 1 }}">
+                        <button class="ghost-btn" type="submit">
+                          <i data-feather="{{ 'pause-circle' if account.is_active else 'play-circle' }}"></i>
+                          {{ '停用账号' if account.is_active else '启用账号' }}
+                        </button>
+                      </form>
+                    </div>
+                  </details>
+                </div>
+                {% if account.session_capable %}
+                <form class="automation-account-inline-code" action="/automation-accounts/{{ account.account_id }}/submit-code" method="post" data-account-code-form{% if status_value != 'pending_code' %} hidden{% endif %}>
+                  <div class="automation-account-inline-code-main">
+                    <input class="review-input compact-input automation-account-code-input" type="text" name="code" autocomplete="one-time-code" placeholder="{{ '输入图片验证码' if challenge_type == 'image' else '6 位验证码' }}" data-account-code-input>
+                    <button class="ghost-btn automation-account-code-submit" type="submit" data-account-code-submit>
+                      <i data-feather="check"></i>
+                      提交
+                    </button>
+                  </div>
+                  <div class="automation-account-captcha" data-account-captcha{% if not (status_value == 'pending_code' and status.captcha_image) %} hidden{% endif %}>
+                    <img src="{{ status.captcha_image or '' }}" alt="验证码" data-account-captcha-image>
+                  </div>
+                  <p class="automation-account-inline-error" data-account-inline-error hidden></p>
+                </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+          <tr data-account-empty-row{% if account_rows %} hidden{% endif %}>
+            <td class="automation-account-empty" colspan="6">暂无<span data-account-empty-label>{{ account_filter_label }}</span>账号。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const page = document.querySelector(".automation-account-page");
+  if (!page) return;
+
+  const toneClasses = [
+    "automation-account-status--success",
+    "automation-account-status--warning",
+    "automation-account-status--error",
+    "automation-account-status--neutral",
+  ];
+  const credentialToneClasses = [
+    "automation-account-mini-badge--success",
+    "automation-account-mini-badge--warning",
+    "automation-account-mini-badge--muted",
+  ];
+  const savedPasswordMask = "********";
+  const statusPollIntervalMs = 60000;
+  let accountPageActive = true;
+
+  function accountRow(element) {
+    return element?.closest?.("[data-account-row]") || null;
+  }
+
+  function isImageChallenge(row) {
+    return row?.dataset.accountChallengeType === "image";
+  }
+
+  function applyCodeInputMode(input, row) {
+    if (!input || !row) return;
+    const image = isImageChallenge(row);
+    input.inputMode = image ? "text" : "numeric";
+    input.autocomplete = image ? "off" : "one-time-code";
+    input.maxLength = image ? 4 : 6;
+    input.placeholder = image ? "输入图片验证码" : "6 位验证码";
+    if (image) input.removeAttribute("pattern");
+    else input.setAttribute("pattern", "\\d{6}");
+  }
+
+  function normalizeCodeValue(row, value) {
+    const raw = String(value || "");
+    if (isImageChallenge(row)) return raw.replace(/\s+/g, "").slice(0, 4);
+    return raw.replace(/\D+/g, "").slice(0, 6);
+  }
+
+  function isCodeComplete(row, value) {
+    const cleaned = normalizeCodeValue(row, value);
+    if (isImageChallenge(row)) return cleaned.length === 4;
+    return /^\d{6}$/.test(cleaned);
+  }
+
+  function maskPhone(phone) {
+    const raw = String(phone || "").trim();
+    if (raw.length >= 7) return `${raw.slice(0, 3)}****${raw.slice(-4)}`;
+    return raw || "-";
+  }
+
+  function asFlag(value) {
+    if (value === true || value === 1) return true;
+    const text = String(value ?? "").trim().toLowerCase();
+    return ["1", "true", "yes", "on"].includes(text);
+  }
+
+  function updateCredentialDataset(row, payload) {
+    if (!row || !payload || typeof payload !== "object") return;
+    if ("has_saved_credentials" in payload) {
+      row.dataset.accountHasCredentials = asFlag(payload.has_saved_credentials) ? "true" : "false";
+    }
+    if ("has_manual_credentials" in payload) {
+      row.dataset.accountHasManualCredentials = asFlag(payload.has_manual_credentials) ? "true" : "false";
+    }
+    if ("has_env_credentials" in payload) {
+      row.dataset.accountHasEnvCredentials = asFlag(payload.has_env_credentials) ? "true" : "false";
+    }
+    if ("credential_source" in payload) {
+      row.dataset.accountCredentialSource = String(payload.credential_source || "");
+    }
+  }
+
+  function credentialDisplay(row) {
+    const hasManual = row?.dataset.accountHasManualCredentials === "true";
+    const hasEnv = row?.dataset.accountHasEnvCredentials === "true";
+    const source = String(row?.dataset.accountCredentialSource || "");
+    if (hasManual) return { label: "已保存账号密码", tone: "success", hasCredentials: true, source };
+    if (hasEnv || source === "env") return { label: "环境变量凭据", tone: "success", hasCredentials: true, source: "env" };
+    return { label: "未保存账号密码", tone: "warning", hasCredentials: false, source };
+  }
+
+  function applyCredentialBadge(row) {
+    const badge = row?.querySelector("[data-account-credentials-badge]");
+    if (!badge) return;
+    const meta = credentialDisplay(row);
+    badge.textContent = meta.label;
+    badge.hidden = false;
+    badge.classList.remove(...credentialToneClasses);
+    badge.classList.add(`automation-account-mini-badge--${meta.tone}`);
+  }
+
+  function statusDisplay(row, state = {}) {
+    const status = String(state.status || row?.dataset.accountStatus || "");
+    const meta = credentialDisplay(row);
+    if (row?.dataset.accountSessionCapable === "true" && status === "authenticated" && !meta.hasCredentials) {
+      return {
+        label: "登录态有效",
+        tone: "warning",
+        note: "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。",
+      };
+    }
+    const note = row?.dataset.accountSessionCapable === "true" && status === "authenticated" && meta.source === "env"
+      ? "账号密码来自环境变量，编辑框不会回显。"
+      : String(state.status_note || "");
+    return {
+      label: String(state.label || row?.querySelector("[data-account-status-label]")?.textContent || "未知"),
+      tone: String(state.status_tone || "neutral"),
+      note,
+    };
+  }
+
+  function applyStatusDisplay(row, state = {}) {
+    const display = statusDisplay(row, state);
+    const pill = row?.querySelector("[data-account-status-pill]");
+    const label = row?.querySelector("[data-account-status-label]");
+    if (pill) {
+      pill.classList.remove(...toneClasses);
+      if (display.tone) pill.classList.add(`automation-account-status--${display.tone}`);
+    }
+    if (label && display.label) label.textContent = display.label;
+    const note = row?.querySelector("[data-account-status-note]");
+    if (note) {
+      note.textContent = display.note;
+      note.hidden = !display.note;
+    }
+  }
+
+  function setPasswordSavedState(input, saved) {
+    if (!input) return;
+    input.dataset.passwordSaved = saved ? "true" : "false";
+    input.dataset.passwordMaskActive = saved ? "true" : "false";
+    input.dataset.passwordDirty = "false";
+    if (saved) {
+      input.value = input.dataset.passwordMask || savedPasswordMask;
+      input.placeholder = "登录密码";
+    } else {
+      input.value = "";
+      input.placeholder = "登录密码";
+    }
+  }
+
+  function shouldResetPasswordSavedState(input, saved) {
+    if (!input) return false;
+    const nextSaved = saved ? "true" : "false";
+    if (input.dataset.passwordDirty === "true") return false;
+    if (document.activeElement === input && input.dataset.passwordMaskActive !== "true") return false;
+    return input.dataset.passwordSaved !== nextSaved || input.dataset.passwordMaskActive === "true" || !input.value;
+  }
+
+  function setupPasswordMask(input) {
+    if (!input) return;
+    if (input.dataset.passwordSaved === "true" && !input.value) {
+      setPasswordSavedState(input, true);
+    }
+    input.addEventListener("focus", () => {
+      if (input.dataset.passwordMaskActive === "true") {
+        input.value = "";
+        input.dataset.passwordMaskActive = "false";
+      }
+    });
+    input.addEventListener("input", () => {
+      input.dataset.passwordMaskActive = "false";
+      input.dataset.passwordDirty = input.value ? "true" : "false";
+    });
+    input.addEventListener("blur", () => {
+      if (input.dataset.passwordSaved === "true" && !input.value) {
+        setPasswordSavedState(input, true);
+      } else if (!input.value) {
+        input.dataset.passwordDirty = "false";
+      }
+    });
+  }
+
+  function closeOpenDetailsExcept(target) {
+    document.querySelectorAll(".automation-account-details[open], .automation-account-create-popover[open]").forEach((details) => {
+      if (!target || !details.contains(target)) details.removeAttribute("open");
+    });
+  }
+
+  function accountFilterFromUrl() {
+    return new URLSearchParams(window.location.search).get("system") || "";
+  }
+
+  function setAccountUrlFilter(filter, replace) {
+    const url = new URL(window.location.href);
+    if (filter) url.searchParams.set("system", filter);
+    else url.searchParams.delete("system");
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (replace) window.history.replaceState({ accountFilter: filter }, "", nextUrl);
+    else window.history.pushState({ accountFilter: filter }, "", nextUrl);
+  }
+
+  function applyAccountFilter(filter, options = {}) {
+    const normalized = String(filter || "").trim();
+    closeOpenDetailsExcept(null);
+    let visibleCount = 0;
+    page.querySelectorAll("[data-account-row]").forEach((row) => {
+      const visible = !normalized || row.dataset.accountSystem === normalized;
+      row.hidden = !visible;
+      if (visible) visibleCount += 1;
+    });
+    page.querySelectorAll("[data-account-tab]").forEach((tab) => {
+      const active = (tab.dataset.accountFilter || "") === normalized;
+      tab.classList.toggle("is-active", active);
+      if (active) tab.setAttribute("aria-current", "page");
+      else tab.removeAttribute("aria-current");
+    });
+    const emptyRow = page.querySelector("[data-account-empty-row]");
+    const emptyLabel = page.querySelector("[data-account-empty-label]");
+    if (emptyRow) emptyRow.hidden = visibleCount > 0;
+    if (emptyLabel) {
+      const activeTab = [...page.querySelectorAll("[data-account-tab]")].find((tab) => (tab.dataset.accountFilter || "") === normalized);
+      emptyLabel.textContent = normalized && activeTab ? `${activeTab.textContent.trim()} ` : "";
+    }
+    if (options.updateUrl) setAccountUrlFilter(normalized, !!options.replaceUrl);
+  }
+
+  function setButtonLoading(button, loading) {
+    if (!button) return;
+    if (loading) {
+      if (!button.dataset.originalHtml) button.dataset.originalHtml = button.innerHTML;
+      button.disabled = true;
+      button.textContent = "处理中";
+    } else {
+      button.disabled = false;
+      if (button.matches("[data-account-primary-action]")) {
+        const row = accountRow(button);
+        button.textContent = row ? actionLabel(row, {}) : (button.dataset.originalHtml || button.textContent);
+        delete button.dataset.originalHtml;
+      } else if (button.dataset.originalHtml) {
+        button.innerHTML = button.dataset.originalHtml;
+        delete button.dataset.originalHtml;
+      }
+    }
+  }
+
+  function setInlineError(row, message) {
+    const error = row?.querySelector("[data-account-inline-error]");
+    if (!error) return;
+    const text = String(message || "").trim();
+    error.textContent = text;
+    error.hidden = !text;
+  }
+
+  function actionLabel(row, state) {
+    const status = String(state?.status || row.dataset.accountStatus || "");
+    const challengeType = String(state?.challenge_type || state?.challengeType || row.dataset.accountChallengeType || "");
+    if (status === "pending_code") return challengeType === "image" ? "刷新验证码" : "重新发送";
+    if (status === "authenticated") return "刷新";
+    if (row.dataset.accountSessionCapable === "true") {
+      return row.dataset.accountLoginKind === "image" ? "登录" : "去登录";
+    }
+    return "重新验证";
+  }
+
+  function applyCredentials(row, credentials, options = {}) {
+    if (!row || !credentials || typeof credentials !== "object") return;
+    const username = row.querySelector("[data-account-username]");
+    const phone = row.querySelector("[data-account-phone]");
+    if (username) username.textContent = credentials.username || "-";
+    if (phone) phone.textContent = maskPhone(credentials.phone);
+    updateCredentialDataset(row, credentials);
+    if ("has_saved_credentials" in credentials) {
+      const passwordInput = row.querySelector('input[name="password"]');
+      if (options.forcePasswordReset || shouldResetPasswordSavedState(passwordInput, !!credentials.has_saved_credentials)) {
+        setPasswordSavedState(passwordInput, !!credentials.has_saved_credentials);
+      } else if (passwordInput) {
+        passwordInput.dataset.passwordSaved = credentials.has_saved_credentials ? "true" : "false";
+      }
+    }
+    applyCredentialBadge(row);
+    applyStatusDisplay(row, {});
+  }
+
+  function applyState(row, state, options = {}) {
+    if (!row || !state || typeof state !== "object") return;
+    const status = String(state.status || "");
+    const tone = String(state.status_tone || "");
+    const challengeType = String(state.challenge_type || state.challengeType || "");
+    if (status) row.dataset.accountStatus = status;
+    if (challengeType) row.dataset.accountChallengeType = challengeType === "image" ? "image" : "sms";
+    updateCredentialDataset(row, state);
+    applyCredentialBadge(row);
+
+    applyStatusDisplay(row, state);
+
+    const rowError = row.querySelector("[data-account-row-error]");
+    const errorText = String(state.last_error_summary || "").trim();
+    if (rowError) {
+      rowError.textContent = errorText;
+      rowError.hidden = !errorText;
+    }
+
+    const lastValidation = row.querySelector("[data-account-last-validation]");
+    if (lastValidation) lastValidation.textContent = state.last_validation_at || state.authenticated_at || "-";
+
+    const primary = row.querySelector("[data-account-primary-action]");
+    if (primary) primary.textContent = actionLabel(row, state);
+
+    const codeForm = row.querySelector("[data-account-code-form]");
+    const codeInput = row.querySelector("[data-account-code-input]");
+    const captcha = row.querySelector("[data-account-captcha]");
+    const captchaImage = row.querySelector("[data-account-captcha-image]");
+    const pending = status === "pending_code";
+    if (codeForm) codeForm.hidden = !pending;
+    if (codeInput) {
+      applyCodeInputMode(codeInput, row);
+      codeInput.disabled = !pending;
+      codeInput.required = pending;
+      if (!pending) codeInput.value = "";
+    }
+    const captchaSrc = String(state.captcha_image || state.captchaImage || "");
+    const showCaptcha = pending && isImageChallenge(row) && !!captchaSrc;
+    if (captcha) captcha.hidden = !showCaptcha;
+    if (captchaImage) {
+      if (showCaptcha) captchaImage.src = captchaSrc;
+      else captchaImage.removeAttribute("src");
+    }
+
+    if (pending && options.focus && codeInput) {
+      window.requestAnimationFrame(() => {
+        codeInput.focus({ preventScroll: true });
+        codeInput.select();
+      });
+    }
+    window.ConsoleUI?.refreshIcons?.(row || page);
+  }
+
+  async function refreshRowStatus(row) {
+    const accountId = row?.dataset.accountId || "";
+    if (!accountId) return null;
+    const response = await fetch(`/automation-accounts/${encodeURIComponent(accountId)}/status?force=1`, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      credentials: "same-origin",
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.message || "账号状态获取失败。");
+    if (payload.state) applyState(row, payload.state);
+    return payload.state || null;
+  }
+
+  function rowByAccountId(accountId) {
+    const id = String(accountId || "");
+    if (!id) return null;
+    return Array.from(page.querySelectorAll("[data-account-row]")).find((row) => row.dataset.accountId === id) || null;
+  }
+
+  let refreshStatusesPending = false;
+  let refreshStatusesAbort = null;
+  async function refreshAccountStatuses() {
+    if (!accountPageActive || refreshStatusesPending || document.hidden) return;
+    refreshStatusesPending = true;
+    refreshStatusesAbort?.abort();
+    refreshStatusesAbort = new AbortController();
+    try {
+      const response = await fetch("/automation-accounts/statuses?force=1&prefer_cached=1", {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        signal: refreshStatusesAbort.signal,
+      });
+      const payload = await response.json();
+      if (!payload.ok) throw new Error(payload.message || "账号状态批量刷新失败。");
+      (payload.accounts || []).forEach((account) => {
+        const row = rowByAccountId(account?.account_id);
+        if (!row) return;
+        if (account.credentials) applyCredentials(row, account.credentials);
+        if (account.status) applyState(row, account.status);
+      });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      console.warn("account status refresh failed", err);
+    } finally {
+      refreshStatusesAbort = null;
+      refreshStatusesPending = false;
+    }
+  }
+
+  async function submitAccountForm(event) {
+    const form = event.target instanceof HTMLFormElement ? event.target : null;
+    if (!form || !form.matches("[data-account-action-form], [data-account-code-form]")) return;
+    event.preventDefault();
+    if (form.dataset.submitting === "true") return;
+    form.dataset.submitting = "true";
+
+    const row = accountRow(form);
+    const submitter = event.submitter instanceof HTMLElement ? event.submitter : form.querySelector('button[type="submit"]');
+    const isCodeForm = form.matches("[data-account-code-form]");
+    setInlineError(row, "");
+    setButtonLoading(submitter, true);
+
+    try {
+      const formData = new FormData(form);
+      const passwordInput = form.querySelector('input[name="password"][data-password-mask-active="true"]');
+      if (passwordInput) formData.set("password", "");
+      const response = await fetch(form.action, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "X-Requested-With": "fetch",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+        body: new URLSearchParams(formData).toString(),
+        credentials: "same-origin",
+      });
+      const contentType = response.headers.get("Content-Type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("接口未返回 JSON，操作未完成。");
+      }
+      const payload = await response.json();
+      if (payload.credentials) applyCredentials(row, payload.credentials, { forcePasswordReset: true });
+      if (payload.state) applyState(row, payload.state, { focus: true });
+      else await refreshRowStatus(row);
+
+      if (payload.ok === false) {
+        const message = payload.message || "操作失败。";
+        setInlineError(row, message);
+        if (isCodeForm) {
+          const input = form.querySelector("[data-account-code-input]");
+          if (input) {
+            input.value = "";
+            window.requestAnimationFrame(() => input.focus({ preventScroll: true }));
+          }
+        }
+        return;
+      }
+
+      if (!isCodeForm) form.closest("details")?.removeAttribute("open");
+    } catch (err) {
+      setInlineError(row, err instanceof Error ? err.message : String(err || "操作失败。"));
+    } finally {
+      setButtonLoading(submitter, false);
+      if (!isCodeForm && row?.dataset.accountStatus === "pending_code") {
+        const input = row.querySelector("[data-account-code-input]");
+        if (input) {
+          window.requestAnimationFrame(() => {
+            input.focus({ preventScroll: true });
+            input.select();
+          });
+        }
+      }
+      delete form.dataset.submitting;
+    }
+  }
+
+  page.addEventListener("submit", submitAccountForm);
+  page.addEventListener("click", (event) => {
+    const tab = event.target?.closest?.("[data-account-tab]");
+    if (!tab || !page.contains(tab)) return;
+    event.preventDefault();
+    applyAccountFilter(tab.dataset.accountFilter || "", { updateUrl: true });
+  });
+  document.addEventListener("pointerdown", (event) => {
+    closeOpenDetailsExcept(event.target);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeOpenDetailsExcept(null);
+  });
+  document.querySelectorAll(".automation-account-details, .automation-account-create-popover").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      if (details.open) closeOpenDetailsExcept(details);
+    });
+  });
+  window.addEventListener("popstate", () => {
+    applyAccountFilter(accountFilterFromUrl(), { updateUrl: false });
+  });
+  window.addEventListener("focus", refreshAccountStatuses);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshAccountStatuses();
+  });
+  const statusPollTimerId = window.setInterval(refreshAccountStatuses, statusPollIntervalMs);
+  window.addEventListener("beforeunload", () => {
+    accountPageActive = false;
+    refreshStatusesAbort?.abort();
+    window.clearInterval(statusPollTimerId);
+  }, { once: true });
+  applyAccountFilter(page.querySelector("[data-account-tabs]")?.dataset.initialFilter || accountFilterFromUrl(), { updateUrl: false });
+  page.querySelectorAll('input[name="password"][data-password-saved]').forEach(setupPasswordMask);
+
+  page.querySelectorAll("[data-account-code-input]").forEach((input) => {
+    const row = accountRow(input);
+    applyCodeInputMode(input, row);
+    input.addEventListener("input", () => {
+      const cleaned = normalizeCodeValue(row, input.value);
+      if (cleaned !== input.value) input.value = cleaned;
+      if (isCodeComplete(row, cleaned)) input.form?.requestSubmit();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      if (!isCodeComplete(row, input.value)) return;
+      event.preventDefault();
+      input.form?.requestSubmit();
+    });
+  });
+})();
+</script>
+{% endblock %}

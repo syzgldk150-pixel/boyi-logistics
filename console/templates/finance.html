@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}财务对账 | {{ app_title }}{% endblock %}
+{% block body_class %}finance-page{% endblock %}
+{% block breadcrumb %}财务对账{% endblock %}
+{% block subtitle %}首页 / 财务模块{% endblock %}
+{% block main_class %}finance-main{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/finance.css?v=finance-workbench-20260712-3">
+{% endblock %}
+
+{% block content %}
+<section
+  class="finance-workbench"
+  data-finance-workbench
+  data-today="{{ today }}"
+  data-month-start="{{ month_start }}"
+  aria-labelledby="finance-workbench-title"
+>
+  <h1 class="visually-hidden" id="finance-workbench-title">财务对账工作台</h1>
+
+  <section class="finance-filter-shell" aria-label="全局财务筛选">
+    <div class="finance-range-group" role="group" aria-label="快捷日期范围">
+      <button class="finance-range-btn is-active" type="button" data-finance-range="month" aria-pressed="true">本月</button>
+      <button class="finance-range-btn" type="button" data-finance-range="yesterday" aria-pressed="false">昨日</button>
+      <button class="finance-range-btn" type="button" data-finance-range="7days" aria-pressed="false">近7日</button>
+      <button class="finance-range-btn" type="button" data-finance-range="custom" aria-pressed="false">自定义</button>
+    </div>
+
+    <div class="finance-date-fields" data-finance-custom-dates>
+      <label class="finance-field finance-field--date">
+        <span>开始日期</span>
+        <input type="date" value="{{ month_start }}" max="{{ today }}" data-finance-start-date>
+      </label>
+      <span class="finance-date-separator" aria-hidden="true">至</span>
+      <label class="finance-field finance-field--date">
+        <span>结束日期</span>
+        <input type="date" value="{{ today }}" max="{{ today }}" data-finance-end-date>
+      </label>
+    </div>
+
+    <label class="finance-field">
+      <span>平台</span>
+      <select data-finance-platform>
+        <option value="all">全部平台</option>
+        <option value="ronghui">融辉</option>
+        <option value="yunda">韵达</option>
+      </select>
+    </label>
+    <label class="finance-field finance-field--account">
+      <span>账号</span>
+      <select data-finance-account>
+        <option value="all">全部账号</option>
+      </select>
+    </label>
+    <button class="primary-btn finance-refresh-btn" type="button" data-finance-refresh>
+      <i data-feather="refresh-cw" aria-hidden="true"></i>
+      <span>刷新数据</span>
+    </button>
+  </section>
+
+  <div class="finance-status-row">
+    <p class="finance-live-status" role="status" aria-live="polite" data-finance-status>正在读取本月财务数据。</p>
+    <p class="finance-freshness" data-finance-freshness>数据截止日期：读取中</p>
+  </div>
+  <div class="finance-error" role="alert" hidden data-finance-error></div>
+  <noscript><div class="finance-error">财务工作台需要启用 JavaScript 才能查询和更新数据。</div></noscript>
+
+  <div class="finance-tabs" role="tablist" aria-label="财务工作台页签" data-finance-tabs>
+    <button id="finance-tab-overview" class="finance-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="finance-panel-overview" tabindex="0" data-finance-tab="overview">
+      <i data-feather="bar-chart-2" aria-hidden="true"></i><span>BI总览</span>
+    </button>
+    <button id="finance-tab-entries" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-entries" tabindex="-1" data-finance-tab="entries">
+      <i data-feather="list" aria-hidden="true"></i><span>交易明细</span>
+    </button>
+    <button id="finance-tab-mappings" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-mappings" tabindex="-1" data-finance-tab="mappings">
+      <i data-feather="git-merge" aria-hidden="true"></i><span>费用项目绑定</span>
+    </button>
+    <button id="finance-tab-sync" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-sync" tabindex="-1" data-finance-tab="sync">
+      <i data-feather="clock" aria-hidden="true"></i><span>同步记录</span>
+    </button>
+  </div>
+
+  <section id="finance-panel-overview" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-overview" tabindex="0" data-finance-panel="overview">
+    <div class="finance-partial-warning" role="status" hidden data-finance-partial-warning></div>
+    <div class="finance-metric-band" aria-label="财务关键指标" data-finance-metrics>
+      {% for key, label, drill in [
+        ('total_income', '收入', 'all'),
+        ('total_expense', '支出', 'all'),
+        ('net_change', '收支差额', 'all'),
+        ('waybill_cost', '运单级成本', 'waybill'),
+        ('operating_cost', '运营级成本', 'operating'),
+        ('pending_fee_items', '待绑定费用项目', 'pending')
+      ] %}
+      <button class="finance-metric" type="button" data-finance-metric="{{ key }}" data-finance-drill-level="{{ drill }}" aria-label="查看{{ label }}明细">
+        <span>{{ label }}</span>
+        <strong class="finance-skeleton-line" aria-hidden="true"></strong>
+        <small>点击查看明细</small>
+      </button>
+      {% endfor %}
+    </div>
+
+    <div class="finance-overview-layout">
+      <section class="finance-panel finance-trend-panel" aria-labelledby="finance-trend-title">
+        <div class="finance-panel-head">
+          <div>
+            <h2 id="finance-trend-title">每日收入与支出</h2>
+            <p>金额单位：元，日期范围随全局筛选；图表坐标由服务端生成。</p>
+          </div>
+          <div class="finance-chart-legend" aria-label="图例">
+            <span><i class="finance-legend-dot finance-legend-dot--income"></i>收入</span>
+            <span><i class="finance-legend-dot finance-legend-dot--expense"></i>支出</span>
+          </div>
+        </div>
+        <div class="finance-chart-shell" data-finance-trend-shell aria-busy="true">
+          <div class="finance-chart-skeleton" data-finance-trend-skeleton aria-hidden="true"></div>
+          <svg class="finance-trend-chart" viewBox="0 0 800 280" role="img" aria-labelledby="finance-trend-svg-title finance-trend-svg-desc" hidden data-finance-trend-chart>
+            <title id="finance-trend-svg-title">每日收入与支出趋势</title>
+            <desc id="finance-trend-svg-desc">可聚焦数据点并按回车下钻到对应日期的交易明细。</desc>
+            <g data-finance-trend-grid></g>
+            <g data-finance-trend-income></g>
+            <g data-finance-trend-expense></g>
+            <g data-finance-trend-labels></g>
+          </svg>
+          <div class="finance-inline-empty" hidden data-finance-trend-empty>当前筛选范围没有趋势数据。同步账单后可在这里按日比较收入与支出。</div>
+        </div>
+        <details class="finance-data-details">
+          <summary>查看趋势数据表</summary>
+          <div class="finance-table-wrap">
+            <table class="finance-table finance-table--compact">
+              <caption class="visually-hidden">每日收入与支出等价数据表</caption>
+              <thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">收支差额</th></tr></thead>
+              <tbody data-finance-trend-table></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <section class="finance-panel finance-ranking-panel" aria-labelledby="finance-ranking-title">
+        <div class="finance-panel-head">
+          <div>
+            <h2 id="finance-ranking-title">支出费用排行</h2>
+            <p>按最新成功同步批次汇总。</p>
+          </div>
+        </div>
+        <ol class="finance-bar-list" data-finance-ranking aria-busy="true"></ol>
+        <div class="finance-inline-empty" hidden data-finance-ranking-empty>当前范围没有支出费用项目。</div>
+        <details class="finance-data-details">
+          <summary>查看排行数据表</summary>
+          <div class="finance-table-wrap">
+            <table class="finance-table finance-table--compact">
+              <caption class="visually-hidden">支出费用排行等价数据表</caption>
+              <thead><tr><th scope="col">费用项目</th><th scope="col">方向</th><th scope="col">支出</th></tr></thead>
+              <tbody data-finance-ranking-table></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <section class="finance-panel finance-account-panel" aria-labelledby="finance-account-title">
+        <div class="finance-panel-head">
+          <div>
+            <h2 id="finance-account-title">账号两级成本对比</h2>
+            <p>在同一尺度比较运单级与运营级成本，点击账号进入明细。</p>
+          </div>
+        </div>
+        <div class="finance-bar-list" data-finance-account-costs aria-busy="true"></div>
+        <div class="finance-inline-empty" hidden data-finance-account-empty>当前范围没有账号成本数据。</div>
+        <details class="finance-data-details">
+          <summary>查看账号成本数据表</summary>
+          <div class="finance-table-wrap">
+            <table class="finance-table finance-table--compact">
+              <caption class="visually-hidden">账号成本对比等价数据表</caption>
+              <thead><tr><th scope="col">平台</th><th scope="col">账号</th><th scope="col">支出</th><th scope="col">运单级成本</th><th scope="col">运营级成本</th></tr></thead>
+              <tbody data-finance-account-table></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+    </div>
+  </section>
+
+  <section id="finance-panel-entries" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-entries" tabindex="0" hidden data-finance-panel="entries">
+    <form class="finance-panel finance-entry-filters" data-finance-entry-form>
+      <div class="finance-panel-head">
+        <div><h2>交易明细筛选</h2><p>金额保持原始字符串，仅按条件查询和展示。</p></div>
+        <button class="primary-btn" type="submit"><i data-feather="search" aria-hidden="true"></i><span>查询明细</span></button>
+      </div>
+      <div class="finance-filter-grid">
+        <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+        <label class="finance-field"><span>账号</span><select name="account_id" data-finance-entry-account><option value="all">全部账号</option></select></label>
+        <label class="finance-field"><span>收支方向</span><select name="direction"><option value="all">全部方向</option><option value="income">收入</option><option value="expense">支出</option></select></label>
+        <label class="finance-field"><span>费用级别</span><select name="fee_level"><option value="all">全部级别</option><option value="waybill">运单级</option><option value="operating">运营级</option></select></label>
+        <label class="finance-field"><span>费用项目</span><input type="search" name="fee_name" autocomplete="off" placeholder="一级、二级或录单项目"></label>
+        <label class="finance-field"><span>运单号</span><input type="search" name="waybill_no" autocomplete="off" placeholder="精确输入运单号"></label>
+        <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" value="{{ month_start }}" max="{{ today }}"></label>
+        <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" value="{{ today }}" max="{{ today }}"></label>
+      </div>
+    </form>
+    <section class="finance-panel finance-table-panel" aria-labelledby="finance-entry-title">
+      <div class="finance-panel-head">
+        <div><h2 id="finance-entry-title">交易明细</h2><p data-finance-entry-count>尚未查询。</p></div>
+      </div>
+      <div class="finance-table-state" data-finance-entry-state aria-live="polite"></div>
+      <div class="finance-table-wrap">
+        <table class="finance-table finance-entry-table">
+          <caption class="visually-hidden">财务交易明细</caption>
+          <thead><tr>
+            <th scope="col">日期</th><th scope="col">平台/账号</th><th scope="col">一级费用</th><th scope="col">二级费用</th><th scope="col">方向</th><th scope="col">级别</th><th scope="col">对应录单项目</th><th scope="col">运单号</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">变动额</th><th scope="col">期前余额</th><th scope="col">期后余额</th><th scope="col">备注</th>
+          </tr></thead>
+          <tbody data-finance-entry-body></tbody>
+        </table>
+      </div>
+      <div class="finance-pagination" aria-label="交易明细分页">
+        <button class="ghost-btn" type="button" data-finance-entry-prev disabled>上一页</button>
+        <span data-finance-entry-page>第 1 页</span>
+        <button class="ghost-btn" type="button" data-finance-entry-next disabled>下一页</button>
+      </div>
+    </section>
+  </section>
+
+  <section id="finance-panel-mappings" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-mappings" tabindex="0" hidden data-finance-panel="mappings">
+    <section class="finance-panel finance-mapping-intro">
+      <div>
+        <h2>费用项目绑定</h2>
+        <p>方向来自原始收支流水，只读展示；绑定按平台、费用名称和方向共享，不按账号重复维护。保存会生成新版本并写入审计记录。</p>
+      </div>
+      <span class="finance-policy-badge">收入方向不可计入成本</span>
+    </section>
+    <form class="finance-panel finance-mapping-filters" data-finance-mapping-form>
+      <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+      <label class="finance-field"><span>绑定状态</span><select name="status"><option value="all">全部状态</option><option value="pending">待绑定</option><option value="bound">已绑定</option></select></label>
+      <label class="finance-field"><span>生效月份</span><input type="month" name="effective_month"></label>
+      <label class="finance-field finance-field--grow"><span>搜索费用项目</span><input type="search" name="search" autocomplete="off" placeholder="一级、二级或录单项目"></label>
+      <button class="primary-btn" type="submit"><i data-feather="search" aria-hidden="true"></i><span>查询绑定</span></button>
+    </form>
+    <section class="finance-panel finance-table-panel" aria-labelledby="finance-mapping-title">
+      <div class="finance-panel-head"><div><h2 id="finance-mapping-title">绑定清单</h2><p data-finance-mapping-count>尚未查询。</p></div></div>
+      <div class="finance-table-state" data-finance-mapping-state aria-live="polite"></div>
+      <div class="finance-table-wrap">
+        <table class="finance-table finance-mapping-table">
+          <caption class="visually-hidden">费用项目绑定清单</caption>
+          <thead><tr><th scope="col">平台</th><th scope="col">原始一级费用</th><th scope="col">原始二级费用</th><th scope="col">方向</th><th scope="col">费用级别</th><th scope="col">对应录单项目</th><th scope="col">生效月份</th><th scope="col">计入成本</th><th scope="col">变更原因</th><th scope="col">操作</th></tr></thead>
+          <tbody data-finance-mapping-body></tbody>
+        </table>
+      </div>
+    </section>
+    <datalist id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"></datalist>
+    <datalist id="finance-booking-yunda" data-finance-booking-fee-items="yunda"></datalist>
+  </section>
+
+  <section id="finance-panel-sync" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-sync" tabindex="0" hidden data-finance-panel="sync">
+    <div class="finance-sync-actions">
+      <form class="finance-panel finance-sync-form" data-finance-sync-form>
+        <div class="finance-panel-head"><div><h2>手动同步</h2><p>默认重扫最近 7 天，Agent 按账号管理绑定登录。</p></div></div>
+        <div class="finance-filter-grid finance-filter-grid--sync">
+          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+          <label class="finance-field"><span>账号</span><select name="account_id" data-finance-sync-account><option value="all">全部账号</option></select></label>
+          <label class="finance-field"><span>目标日期（可选）</span><input type="date" name="target_date" max="{{ today }}"></label>
+          <label class="finance-field"><span>重扫天数</span><input type="number" name="rescan_days" min="1" max="31" value="7"></label>
+        </div>
+        <button class="primary-btn" type="submit"><i data-feather="download-cloud" aria-hidden="true"></i><span>开始同步</span></button>
+      </form>
+      <form class="finance-panel finance-sync-form" data-finance-backfill-form>
+        <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按明确日期范围创建回溯批次，不使用历史成功值补齐。</p></div></div>
+        <div class="finance-filter-grid finance-filter-grid--sync">
+          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+          <label class="finance-field"><span>账号</span><select name="account_id" data-finance-backfill-account><option value="all">全部账号</option></select></label>
+          <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" required max="{{ today }}"></label>
+          <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" required max="{{ today }}"></label>
+        </div>
+        <button class="ghost-btn finance-backfill-btn" type="submit"><i data-feather="archive" aria-hidden="true"></i><span>创建回溯</span></button>
+      </form>
+    </div>
+    <section class="finance-panel finance-table-panel" aria-labelledby="finance-sync-title">
+      <div class="finance-panel-head">
+        <div><h2 id="finance-sync-title">同步记录</h2><p data-finance-sync-count>尚未查询。</p></div>
+        <label class="finance-field finance-field--inline"><span>状态</span><select data-finance-sync-status><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">同步中</option><option value="success">成功</option><option value="partial_failed">部分失败</option><option value="failed">失败</option><option value="no_data">无数据</option></select></label>
+      </div>
+      <div class="finance-table-state" data-finance-sync-state aria-live="polite"></div>
+      <div class="finance-table-wrap">
+        <table class="finance-table finance-sync-table">
+          <caption class="visually-hidden">财务同步批次记录</caption>
+          <thead><tr><th scope="col">批次</th><th scope="col">触发方式</th><th scope="col">日期范围</th><th scope="col">状态</th><th scope="col">运行结果</th><th scope="col">最早日期确认</th><th scope="col">发起人</th><th scope="col">开始/结束</th><th scope="col">错误</th><th scope="col">操作</th></tr></thead>
+          <tbody data-finance-sync-body></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/finance.js?v=finance-workbench-20260712"></script>
+{% endblock %}

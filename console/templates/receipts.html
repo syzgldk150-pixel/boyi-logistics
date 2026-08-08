@@ -1,0 +1,3249 @@
+{% extends "base.html" %}
+
+{% block body_class %}receipts-page-body{% endblock %}
+{% block title %}回单管理 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}回单管理{% endblock %}
+{% block subtitle %}运单管理 / 统一回单{% endblock %}
+
+{% block content %}
+<style>
+  .receipts-page { display: grid; gap: 16px; width: 100%; min-width: 0; max-width: none; }
+  .receipt-filter-panel,
+  .receipt-table-panel {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: #fff;
+    box-shadow: var(--shadow-soft);
+  }
+  .receipt-filter-panel { position: relative; z-index: 20; overflow: visible; }
+  .receipt-table-panel { position: relative; z-index: 1; overflow: hidden; }
+  .receipt-filter-form {
+    display: grid;
+    grid-template-columns: minmax(260px, 1.45fr) repeat(3, minmax(128px, .72fr)) minmax(280px, 1.05fr) minmax(104px, 104px);
+    gap: 10px;
+    align-items: end;
+    padding: 14px 16px 12px;
+  }
+  .receipt-field { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+  .receipt-field label,
+  .receipt-field-label { color: var(--text-strong); font-size: .74rem; font-weight: 800; }
+  .receipt-field input,
+  .receipt-field select {
+    width: 100%;
+    min-height: 38px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-strong);
+    padding: 0 11px;
+    font-size: .84rem;
+    font-weight: 650;
+  }
+  .receipt-field input:focus,
+  .receipt-field select:focus {
+    border-color: #111827;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(17, 24, 39, .08);
+  }
+  .receipt-field--search input { font-weight: 700; }
+  .receipt-date-field { position: relative; min-width: 280px; }
+  .receipt-date-range-wrap { position: relative; }
+  .receipt-date-range-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 38px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-strong);
+    padding: 0 11px;
+    font-size: .84rem;
+    font-weight: 650;
+    text-align: left;
+    cursor: pointer;
+  }
+  .receipt-date-range-control i { width: 16px; height: 16px; color: var(--muted); }
+  .receipt-date-range-control:focus,
+  .receipt-date-range-control[aria-expanded="true"] {
+    border-color: #111827;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(17, 24, 39, .08);
+  }
+  .receipt-date-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 30;
+    width: min(352px, calc(100vw - 48px));
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    padding: 12px 12px 10px;
+    box-shadow: 0 18px 36px rgba(15, 23, 42, .14);
+  }
+  .receipt-date-popover[hidden] { display: none; }
+  .receipt-calendar { display: grid; gap: 8px; }
+  .receipt-calendar-head {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    align-items: center;
+    gap: 8px;
+  }
+  .receipt-calendar-title {
+    text-align: center;
+    color: var(--text-strong);
+    font-size: .96rem;
+    font-weight: 850;
+  }
+  .receipt-calendar-nav {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-strong);
+    cursor: pointer;
+  }
+  .receipt-calendar-nav:hover { background: #f9fafb; }
+  .receipt-calendar-nav i { width: 16px; height: 16px; }
+  .receipt-calendar-weekdays,
+  .receipt-calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+  .receipt-calendar-weekdays span {
+    display: grid;
+    place-items: center;
+    min-height: 28px;
+    color: var(--text-strong);
+    font-size: .78rem;
+    font-weight: 850;
+  }
+  .receipt-calendar-grid { overflow: hidden; border-radius: var(--radius-md); }
+  .receipt-calendar-day {
+    display: grid;
+    place-items: center;
+    height: 34px;
+    border: 0;
+    background: #fff;
+    color: var(--text-strong);
+    font-size: .86rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .receipt-calendar-day:hover { background: #eef2ff; }
+  .receipt-calendar-day.is-outside { color: #9ca3af; font-weight: 650; }
+  .receipt-calendar-day.is-in-range { background: #eaf4fb; color: var(--text-strong); }
+  .receipt-calendar-day.is-start,
+  .receipt-calendar-day.is-end {
+    border-radius: 7px;
+    background: #2f80c0;
+    color: #fff;
+  }
+  .receipt-calendar-day.is-start:hover,
+  .receipt-calendar-day.is-end:hover { background: #256da6; }
+  .receipt-calendar-day:focus-visible {
+    outline: 2px solid rgba(47, 128, 192, .38);
+    outline-offset: -2px;
+  }
+  .receipt-quick-ranges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+  .receipt-range-btn {
+    min-height: 25px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #f9fafb;
+    color: var(--text);
+    padding: 0 8px;
+    font-size: .72rem;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .receipt-range-btn:hover { border-color: #cbd5e1; background: #f3f4f6; }
+  .receipt-query-btn {
+    min-width: 104px;
+    min-height: 38px;
+    gap: 8px;
+    justify-self: stretch;
+    padding: 0 14px;
+    box-shadow: 0 8px 18px rgba(17, 24, 39, .14);
+  }
+  .receipt-query-btn[aria-busy="true"] { opacity: .82; cursor: wait; }
+  .btn-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255,255,255,.45);
+    border-top-color: #fff;
+    border-radius: 999px;
+    animation: receipt-spin .8s linear infinite;
+  }
+  .btn-spinner[hidden] { display: none; }
+  @keyframes receipt-spin { to { transform: rotate(360deg); } }
+  .receipt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .receipt-toolbar strong { color: var(--text-strong); font-size: .98rem; font-weight: 850; }
+  .receipt-toolbar span { color: var(--muted); font-size: .82rem; font-weight: 650; }
+  .receipt-toolbar-copy { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .receipt-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+  .receipt-count-muted { color: #9ca3af; font-size: .78rem; font-weight: 700; }
+  .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); }
+  .receipt-table { width: 100%; min-width: 0; table-layout: fixed; }
+  .receipt-col-photo { width: 6%; }
+  .receipt-col-platform { width: 8%; }
+  .receipt-col-waybill { width: 16%; }
+  .receipt-col-status { width: 13%; }
+  .receipt-col-audit { width: 12%; }
+  .receipt-col-photo-status { width: 11%; }
+  .receipt-col-signed { width: 10%; }
+  .receipt-col-updated { width: 16%; }
+  .receipt-col-action { width: 8%; }
+  .receipt-table th { position: sticky; top: 0; z-index: 1; background: #f9fafb; }
+  .receipt-table th,
+  .receipt-table td { overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
+  .receipt-table th { padding: 12px 8px; font-size: .76rem; }
+  .receipt-table td { padding: 11px 8px; font-size: .84rem; }
+  .receipt-table .receipt-updated-cell {
+    overflow: visible;
+    text-overflow: clip;
+    font-size: .78rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .receipt-row { cursor: pointer; transition: background var(--base); }
+  .receipt-row:hover,
+  .receipt-row.is-selected { background: #f9fafb; }
+  .receipt-thumb-list { display: flex; align-items: center; gap: 8px; min-width: 72px; }
+  .receipt-thumb {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #f9fafb;
+    overflow: hidden;
+    color: var(--muted);
+  }
+  button.receipt-thumb { padding: 0; cursor: zoom-in; }
+  .receipt-thumb--empty { cursor: default; }
+  .receipt-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .receipt-thumb.is-broken img { display: none; }
+  .receipt-code {
+    display: inline-block;
+    max-width: 100%;
+    color: var(--text-strong);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .78rem;
+    font-weight: 750;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .receipt-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    min-height: 24px;
+    border: 1px solid #e5e7eb;
+    border-radius: var(--radius-md);
+    background: #f9fafb;
+    color: var(--text);
+    padding: 0 7px;
+    font-size: .72rem;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .receipt-chip--yunda { border-color: #dbeafe; background: #eff6ff; color: #1d4ed8; }
+  .receipt-chip--ronghui { border-color: #dcfce7; background: #f0fdf4; color: #15803d; }
+  .receipt-chip--send { border-color: #fee2e2; background: #fef2f2; color: #b91c1c; }
+  .receipt-chip--receive { border-color: #e0e7ff; background: #eef2ff; color: #4338ca; }
+  .receipt-chip--ok { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+  .receipt-chip--warn { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+  .receipt-chip--muted { color: var(--muted); }
+  .receipt-count-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    min-height: 26px;
+    border-radius: var(--radius-md);
+    background: #111827;
+    color: #fff;
+    font-size: .78rem;
+    font-weight: 850;
+  }
+  .receipt-close-btn,
+  .receipt-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .receipt-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    display: none;
+    place-items: center;
+    background: rgba(15, 23, 42, .74);
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  .receipt-modal.is-open { display: grid; }
+  .receipt-modal[hidden] { display: none; }
+  .receipt-modal-card {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(1200px, calc(100vw - 48px));
+    max-width: 100%;
+    max-height: calc(100vh - 48px);
+    max-height: calc(100dvh - 48px);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: var(--radius-lg);
+    background: #fff;
+    box-shadow: 0 28px 80px rgba(15, 23, 42, .34);
+    overflow: hidden;
+  }
+  .receipt-modal-card--preview { height: min(840px, calc(100vh - 48px)); height: min(840px, calc(100dvh - 48px)); }
+  .receipt-modal-card--review { position: relative; width: min(1380px, calc(100vw - 48px)); height: min(900px, calc(100vh - 48px)); height: min(900px, calc(100dvh - 48px)); }
+  .receipt-modal-card--audit { width: min(1440px, calc(100vw - 48px)); height: min(860px, calc(100vh - 48px)); height: min(860px, calc(100dvh - 48px)); }
+  .receipt-modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fff;
+  }
+  .receipt-modal-head h2 { margin: 0; color: var(--text-strong); font-size: 1.02rem; font-weight: 850; }
+  .receipt-modal-head p { margin: 3px 0 0; color: var(--muted); font-size: .82rem; }
+  .receipt-modal-actions { display: flex; align-items: center; gap: 8px; }
+  .receipt-review-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    max-width: 100%;
+    min-height: 34px;
+    margin-top: 8px;
+    border: 1px solid #bbf7d0;
+    border-radius: var(--radius-md);
+    background: #f0fdf4;
+    color: #14532d;
+    padding: 6px 10px;
+    font-size: .82rem;
+    font-weight: 850;
+  }
+  .receipt-review-status[hidden] { display: none; }
+  .receipt-review-status i { width: 17px; height: 17px; flex: 0 0 auto; }
+  .receipt-review-status strong { color: #14532d; }
+  .receipt-review-status span { color: #166534; font-weight: 750; }
+  .receipt-review-status--failed {
+    border-color: #fecaca;
+    background: #fef2f2;
+    color: #991b1b;
+  }
+  .receipt-review-status--failed strong { color: #991b1b; }
+  .receipt-review-status--failed span { color: #b91c1c; }
+  .primary-btn.receipt-audit-pass--success,
+  .primary-btn.receipt-audit-pass--success:hover {
+    border-color: #16a34a;
+    background: #16a34a;
+    color: #fff;
+    box-shadow: 0 8px 18px rgba(22, 163, 74, .22);
+    transform: none;
+  }
+  .ghost-btn.receipt-audit-fail--locked { opacity: .55; cursor: not-allowed; }
+  .receipt-preview-body {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    min-height: 0;
+    padding: 16px;
+    background: #0f172a;
+    overflow: hidden;
+  }
+  .receipt-preview-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .receipt-preview img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center center; background: transparent; border-radius: var(--radius-md); }
+  .receipt-preview-error {
+    display: none;
+    max-width: 360px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: var(--radius-md);
+    color: #e5e7eb;
+    background: rgba(255,255,255,.08);
+    text-align: center;
+    font-size: .86rem;
+  }
+  .receipt-preview-stage.is-broken img { display: none; }
+  .receipt-preview-stage.is-broken .receipt-preview-error { display: block; }
+  .receipt-preview-nav {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid rgba(255,255,255,.22);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,.1);
+    color: #fff;
+    cursor: pointer;
+  }
+  .receipt-preview-nav:disabled { opacity: .35; cursor: not-allowed; }
+  .receipt-review-body {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 0;
+    background: #0f172a;
+  }
+  .receipt-review-summary-wrap {
+    display: grid;
+    min-height: 96px;
+    max-height: 108px;
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--line);
+    background: #fff;
+    overflow: hidden;
+  }
+  .receipt-review-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px 18px;
+    min-height: 0;
+  }
+  .receipt-review-field { min-width: 0; }
+  .receipt-review-field--recipient_address { grid-column: span 2; }
+  .receipt-review-field span { display: block; color: var(--muted); font-size: .68rem; font-weight: 800; }
+  .receipt-review-field strong {
+    display: block;
+    margin-top: 1px;
+    color: var(--text-strong);
+    font-size: .8rem;
+    font-weight: 850;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .receipt-review-field--recipient_address strong {
+    display: -webkit-box;
+    line-height: 1.25;
+    white-space: normal;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .receipt-review-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px;
+    gap: 10px;
+    min-height: 0;
+    padding: 10px 14px 8px;
+  }
+  .receipt-review-image-area {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+  }
+  .receipt-review-image-overlay,
+  .receipt-review-rotate-tools,
+  .receipt-review-record-tools { display: inline-flex; align-items: center; gap: 6px; }
+  .receipt-review-image-overlay {
+    position: absolute;
+    z-index: 2;
+    top: 10px;
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: var(--radius-md);
+    background: rgba(15, 23, 42, .78);
+    padding: 4px;
+    backdrop-filter: blur(10px);
+  }
+  .receipt-review-image-overlay { left: 10px; }
+  .receipt-review-rotate-tools {
+    position: absolute;
+    z-index: 2;
+    top: 10px;
+    right: 10px;
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: var(--radius-md);
+    background: rgba(15, 23, 42, .78);
+    padding: 4px;
+    backdrop-filter: blur(10px);
+  }
+  .receipt-review-tool-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    height: 32px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,.1);
+    color: #fff;
+    cursor: pointer;
+  }
+  .receipt-review-tool-btn:hover { background: rgba(255,255,255,.16); }
+  .receipt-review-tool-btn i { width: 15px; height: 15px; }
+  .receipt-review-tool-btn--text {
+    min-width: 42px;
+    padding: 0 9px;
+    font-size: .76rem;
+    font-weight: 850;
+  }
+  .receipt-review-rotation {
+    min-width: 38px;
+    color: #e5e7eb;
+    font-size: .76rem;
+    font-weight: 850;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .receipt-review-counter { color: #e5e7eb; font-size: .82rem; font-weight: 800; }
+  .receipt-review-stage {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: var(--radius-md);
+    background: #111827;
+    overflow: hidden;
+    cursor: grab;
+  }
+  .receipt-review-stage.is-dragging { cursor: grabbing; }
+  .receipt-review-stage img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transform-origin: center center;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  .receipt-review-error {
+    display: none;
+    max-width: 360px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: var(--radius-md);
+    color: #e5e7eb;
+    background: rgba(255,255,255,.08);
+    text-align: center;
+    font-size: .86rem;
+  }
+  .receipt-review-stage.is-broken img { display: none; }
+  .receipt-review-stage.is-broken .receipt-review-error { display: block; }
+  .receipt-review-thumbs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    overflow: auto;
+  }
+  .receipt-review-thumb {
+    width: 96px;
+    height: 72px;
+    border: 2px solid transparent;
+    border-radius: var(--radius-md);
+    background: #1f2937;
+    padding: 0;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .receipt-review-thumb.is-active { border-color: #fff; }
+  .receipt-review-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .receipt-review-reason {
+    position: absolute;
+    top: 72px;
+    right: 16px;
+    z-index: 5;
+    display: grid;
+    gap: 8px;
+    width: min(420px, calc(100% - 32px));
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-strong);
+    padding: 10px 12px 12px;
+    font-size: .78rem;
+    font-weight: 800;
+    box-shadow: 0 18px 36px rgba(15, 23, 42, .18);
+  }
+  .receipt-review-reason[hidden] { display: none; }
+  .receipt-review-reason-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .receipt-review-reason-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .receipt-review-reason-close:hover { background: #f9fafb; color: var(--text-strong); }
+  .receipt-review-reason-close i { width: 15px; height: 15px; }
+  .receipt-review-reason textarea {
+    min-height: 72px;
+    resize: vertical;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #f9fafb;
+    color: var(--text-strong);
+    padding: 8px 10px;
+    font: inherit;
+    font-weight: 650;
+  }
+  .receipt-review-reason-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .receipt-review-reason-actions .ghost-btn,
+  .receipt-review-reason-actions .primary-btn {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: .78rem;
+    font-weight: 850;
+  }
+  .receipt-audit-body { min-height: 0; background: #fff; }
+  .receipt-audit-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+  .receipt-modal-card--confirm {
+    grid-template-rows: auto auto;
+    width: min(440px, calc(100vw - 32px));
+    height: auto;
+  }
+  .receipt-confirm-body {
+    display: grid;
+    gap: 16px;
+    padding: 16px;
+    color: var(--text);
+    font-size: .88rem;
+    line-height: 1.55;
+  }
+  .receipt-confirm-body strong { color: var(--text-strong); font-weight: 850; }
+  .receipt-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .receipt-empty { padding: 24px; color: var(--muted); text-align: center; }
+  .receipt-empty-state {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    padding: 30px 16px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .receipt-empty-state i { color: #cbd5e1; }
+  .receipt-empty-state strong { color: var(--text-strong); font-size: .92rem; font-weight: 850; }
+  .receipt-empty-state span { max-width: 420px; font-size: .84rem; line-height: 1.6; }
+  .receipt-sync-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-strong);
+    font-size: .86rem;
+    font-weight: 700;
+    box-shadow: var(--shadow-soft);
+  }
+  .receipt-sync-status[hidden] { display: none; }
+  .receipt-sync-status.is-warning { border-color: #fbbf24; background: #fffbeb; }
+  .receipt-sync-status.is-error { border-color: #fca5a5; background: #fef2f2; }
+  .receipt-sync-status-text { min-width: 0; flex: 1; }
+  .receipt-sync-status-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .receipt-sync-status-close:hover { border-color: var(--line); background: rgba(255, 255, 255, .72); color: var(--text-strong); }
+  .receipt-sync-status-close i { width: 15px; height: 15px; }
+  @media (max-width: 1380px) {
+    .receipt-filter-form { grid-template-columns: minmax(220px, 1.3fr) repeat(2, minmax(0, 1fr)) minmax(104px, 104px); }
+    .receipt-date-field { grid-column: span 2; min-width: 0; }
+  }
+  @media (max-width: 1180px) {
+    .receipt-filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .receipt-date-field { grid-column: span 2; }
+    .receipt-query-btn { width: 100%; }
+  }
+  @media (max-width: 720px) {
+    .receipt-filter-form { grid-template-columns: 1fr; }
+    .receipt-date-field { grid-column: auto; min-width: 0; }
+    .receipt-date-popover { left: 0; right: auto; width: min(100%, calc(100vw - 32px)); }
+    .receipt-modal { padding: 10px; }
+    .receipt-modal-card--preview,
+    .receipt-modal-card--review,
+    .receipt-modal-card--audit { width: 100%; height: 96vh; max-height: 96vh; }
+    .receipt-preview-body { grid-template-columns: minmax(0, 1fr); }
+    .receipt-preview-nav { display: none; }
+    .receipt-review-image-overlay .receipt-preview-nav { display: inline-flex; }
+    .receipt-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .receipt-review-main { grid-template-columns: minmax(0, 1fr); }
+    .receipt-review-thumbs { flex-direction: row; }
+    .receipt-review-reason { left: 10px; right: 10px; top: 72px; width: auto; }
+  }
+</style>
+
+<section class="receipts-page" data-receipts-page data-receipts-data-url="/receipts/data">
+  <div class="receipt-filter-panel">
+    <form class="receipt-filter-form" method="get" action="/receipts" data-receipt-filter-form>
+      <input type="hidden" name="queried" value="{{ '1' if query_requested else '' }}" data-receipt-query-marker>
+      <input type="hidden" name="direction" value="send">
+      <div class="receipt-field receipt-field--search">
+        <label for="receipt-q">单号</label>
+        <input id="receipt-q" type="search" name="q" value="{{ filters.q }}" placeholder="运单号 / 回单号 / 返回单号">
+      </div>
+      <div class="receipt-field">
+        <label for="receipt-platform">平台</label>
+        <select id="receipt-platform" name="platform">
+          <option value="all" {% if filters.platform == 'all' %}selected{% endif %}>全部平台</option>
+          <option value="yunda" {% if filters.platform == 'yunda' %}selected{% endif %}>韵达</option>
+          <option value="ronghui" {% if filters.platform == 'ronghui' %}selected{% endif %}>融辉</option>
+        </select>
+      </div>
+      <div class="receipt-field">
+        <label for="receipt-audit-status">审核</label>
+        <select id="receipt-audit-status" name="audit_status">
+          <option value="all" {% if filters.audit_status == 'all' %}selected{% endif %}>全部审核状态</option>
+          <option value="待审核" {% if filters.audit_status == '待审核' %}selected{% endif %}>待审核</option>
+          <option value="审核通过" {% if filters.audit_status == '审核通过' %}selected{% endif %}>审核通过</option>
+          <option value="审核不通过" {% if filters.audit_status == '审核不通过' %}selected{% endif %}>审核不通过</option>
+        </select>
+      </div>
+      <div class="receipt-field">
+        <label for="receipt-photo-status">照片</label>
+        <select id="receipt-photo-status" name="photo_status">
+          <option value="all" {% if filters.photo_status == 'all' %}selected{% endif %}>全部照片状态</option>
+          <option value="has_photo" {% if filters.photo_status == 'has_photo' %}selected{% endif %}>有照片</option>
+          <option value="missing_photo" {% if filters.photo_status == 'missing_photo' %}selected{% endif %}>无照片</option>
+        </select>
+      </div>
+      <div class="receipt-field receipt-date-field">
+        <span class="receipt-field-label">更新时间</span>
+        <div class="receipt-date-range-wrap" data-receipt-date-range>
+          <input type="hidden" name="date_from" value="{{ filters.date_from }}" data-receipt-date-from>
+          <input type="hidden" name="date_to" value="{{ filters.date_to }}" data-receipt-date-to>
+          <button class="receipt-date-range-control" type="button" data-receipt-date-range-toggle aria-expanded="false">
+            <span data-receipt-date-range-label>{% if filters.date_from and filters.date_to %}{{ filters.date_from }} 至 {{ filters.date_to }}{% else %}选择日期范围{% endif %}</span>
+            <i data-feather="calendar"></i>
+          </button>
+          <div class="receipt-date-popover" data-receipt-date-popover hidden>
+            <div class="receipt-calendar" data-receipt-calendar>
+              <div class="receipt-calendar-head">
+                <button class="receipt-calendar-nav" type="button" data-receipt-calendar-prev aria-label="上个月"><i data-feather="chevron-left"></i></button>
+                <strong class="receipt-calendar-title" data-receipt-calendar-title></strong>
+                <button class="receipt-calendar-nav" type="button" data-receipt-calendar-next aria-label="下个月"><i data-feather="chevron-right"></i></button>
+              </div>
+              <div class="receipt-calendar-weekdays" aria-hidden="true">
+                <span>星期一</span>
+                <span>星期二</span>
+                <span>星期三</span>
+                <span>星期四</span>
+                <span>星期五</span>
+                <span>星期六</span>
+                <span>星期日</span>
+              </div>
+              <div class="receipt-calendar-grid" data-receipt-calendar-grid></div>
+            </div>
+            <div class="receipt-quick-ranges" aria-label="快捷日期范围">
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="1">今天</button>
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="3">近3天</button>
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="7">近7天</button>
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="clear">清空</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <button class="primary-btn receipt-query-btn" type="submit">
+        <i data-feather="search"></i>
+        <span data-receipt-submit-label>查询</span>
+        <span class="btn-spinner" data-receipt-spinner hidden></span>
+      </button>
+    </form>
+  </div>
+
+  <div class="receipt-sync-status" data-receipt-sync-status hidden>
+    <span class="receipt-sync-status-text" data-receipt-sync-status-text></span>
+    <button class="receipt-sync-status-close" type="button" data-receipt-sync-status-close aria-label="关闭提示">
+      <i data-feather="x"></i>
+    </button>
+  </div>
+
+  {% if db_error %}
+  <div class="notice notice--warning">
+    <div class="notice-copy"><i data-feather="alert-triangle"></i><span>{{ db_error }}</span></div>
+  </div>
+  {% endif %}
+
+  <div class="receipt-table-panel">
+    <div class="receipt-toolbar">
+      <div>
+        <div class="receipt-toolbar-copy">
+        <strong>统一回单列表</strong>
+        <span class="receipt-count-muted" data-receipt-count data-receipt-count-muted>共 {{ pagination.total }} 条</span>
+        </div>
+      </div>
+      <div class="receipt-toolbar-actions">
+        <button class="ghost-btn" type="button" data-receipt-download-images>
+          <i data-feather="download"></i> 下载图片
+        </button>
+        <div class="inline-actions" data-receipt-pagination-actions>
+          {% if prev_url %}<a class="ghost-btn" href="{{ prev_url }}" data-receipt-page="{{ pagination.page - 1 }}"><i data-feather="chevron-left"></i> 上一页</a>{% endif %}
+          {% if next_url %}<a class="ghost-btn" href="{{ next_url }}" data-receipt-page="{{ pagination.page + 1 }}">下一页 <i data-feather="chevron-right"></i></a>{% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="receipt-table-wrap">
+      <table class="receipt-table" data-receipt-table>
+        <colgroup>
+          <col class="receipt-col-photo">
+          <col class="receipt-col-platform">
+          <col class="receipt-col-waybill">
+          <col class="receipt-col-status">
+          <col class="receipt-col-audit">
+          <col class="receipt-col-photo-status">
+          <col class="receipt-col-signed">
+          <col class="receipt-col-updated">
+          <col class="receipt-col-action">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>照片</th>
+            <th>平台</th>
+            <th>运单号</th>
+            <th>回单状态</th>
+            <th>审核状态</th>
+            <th>照片状态</th>
+            <th>签收确认</th>
+            <th>更新时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="receipt-row" data-receipt-id="{{ row.id }}" data-platform="{{ row.platform }}" data-direction="{{ row.direction }}">
+            <td>
+              <div class="receipt-thumb-list">
+                {% if row.thumbnail_url %}
+                <button class="receipt-thumb" type="button" data-receipt-thumb-preview aria-label="预览回单照片">
+                  <img src="{{ row.thumbnail_url }}" alt="" data-receipt-thumb-image>
+                </button>
+                {% else %}
+                <span class="receipt-thumb receipt-thumb--empty">
+                  <i data-feather="image"></i>
+                </span>
+                {% endif %}
+              </div>
+            </td>
+            <td><span class="receipt-chip receipt-chip--{{ row.platform }}">{{ row.platform_label }}</span></td>
+            <td><span class="receipt-code" title="{{ row.waybill_no }}">{{ row.waybill_no or '-' }}</span></td>
+            <td><span class="receipt-chip">{{ row.receipt_status or '未同步' }}</span></td>
+            <td><span class="receipt-chip {% if row.audit_status == '审核通过' %}receipt-chip--ok{% elif row.audit_status in ['待审核', '审核不通过'] or ('待' in (row.audit_status or '') and '审核' in (row.audit_status or '')) %}receipt-chip--warn{% else %}receipt-chip--muted{% endif %}" data-receipt-audit-chip>{{ row.audit_status or '未同步' }}</span></td>
+            <td><span class="receipt-chip {% if row.photo_count %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.photo_status or '无照片' }}</span></td>
+            <td><span class="receipt-chip {% if row.signed_confirmed in ['是', '已确认'] %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.signed_confirmed or '-' }}</span></td>
+            <td class="receipt-updated-cell" title="{{ row.updated_at }}">{{ row.updated_at }}</td>
+            <td>
+              <button class="receipt-icon-btn" type="button" data-receipt-original-open title="原页模式" aria-label="打开原页模式">
+                <i data-feather="external-link"></i>
+              </button>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td class="receipt-empty" colspan="9">
+              <div class="receipt-empty-state">
+                <i data-feather="inbox"></i>
+                <strong>暂无回单数据</strong>
+                <span>点击“查询”会从原系统查询当前条件的数据。</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="receipt-modal receipt-review" data-receipt-review-modal hidden>
+    <div class="receipt-modal-card receipt-modal-card--review" role="dialog" aria-modal="true" aria-labelledby="receipt-review-title">
+      <div class="receipt-modal-head">
+        <div>
+          <h2 id="receipt-review-title" data-receipt-review-title>回单审核</h2>
+          <p data-receipt-review-subtitle>请选择一条回单记录</p>
+          <div class="receipt-review-status" data-receipt-review-status role="status" aria-live="polite" hidden></div>
+        </div>
+        <div class="receipt-modal-actions">
+          <button class="receipt-icon-btn" type="button" data-receipt-record-prev title="上一个单号" aria-label="上一个单号"><i data-feather="skip-back"></i></button>
+          <button class="receipt-icon-btn" type="button" data-receipt-record-next title="下一个单号" aria-label="下一个单号"><i data-feather="skip-forward"></i></button>
+          <button class="ghost-btn" type="button" data-receipt-audit-fail><i data-feather="x-circle"></i> 审核不通过</button>
+          <button class="primary-btn" type="button" data-receipt-audit-pass><i data-feather="check-circle"></i> 审核通过</button>
+          <button class="receipt-close-btn" type="button" data-receipt-review-close aria-label="关闭审核"><i data-feather="x"></i></button>
+        </div>
+      </div>
+      <div class="receipt-review-reason receipt-review-reason-popover" data-receipt-fail-reason-panel hidden>
+        <div class="receipt-review-reason-head">
+          <span>不通过原因</span>
+          <button class="receipt-review-reason-close" type="button" data-receipt-fail-reason-close aria-label="收起不通过原因"><i data-feather="x"></i></button>
+        </div>
+        <textarea data-receipt-audit-reason placeholder="可选，审核不通过时填写原因"></textarea>
+        <div class="receipt-review-reason-actions">
+          <button class="ghost-btn" type="button" data-receipt-fail-reason-cancel>取消</button>
+          <button class="primary-btn" type="button" data-receipt-fail-reason-submit><i data-feather="x-circle"></i> 提交不通过</button>
+        </div>
+      </div>
+      <div class="receipt-review-body">
+        <div class="receipt-review-main">
+          <div class="receipt-review-image-area">
+            <div class="receipt-review-stage" data-receipt-review-stage>
+              <div class="receipt-review-image-overlay">
+                <button class="receipt-preview-nav" type="button" data-receipt-same-prev title="上一张" aria-label="上一张"><i data-feather="chevron-left"></i></button>
+                <span class="receipt-review-counter" data-receipt-review-counter>0 / 0</span>
+                <button class="receipt-preview-nav" type="button" data-receipt-same-next title="下一张" aria-label="下一张"><i data-feather="chevron-right"></i></button>
+              </div>
+              <div class="receipt-review-rotate-tools" aria-label="图片旋转">
+                <button class="receipt-review-tool-btn receipt-review-tool-btn--text" type="button" data-receipt-rotate-left title="左转90°" aria-label="左转90°">左转</button>
+                <span class="receipt-review-rotation" data-receipt-review-rotation>0°</span>
+                <button class="receipt-review-tool-btn receipt-review-tool-btn--text" type="button" data-receipt-rotate-right title="右转90°" aria-label="右转90°">右转</button>
+                <button class="receipt-review-tool-btn receipt-review-tool-btn--text" type="button" data-receipt-rotate-reset title="复位旋转" aria-label="复位旋转">复位</button>
+              </div>
+              <img alt="回单照片审核" data-receipt-review-image>
+              <div class="receipt-review-error" data-receipt-review-error>当前回单没有可预览的照片。</div>
+            </div>
+          </div>
+          <div class="receipt-review-thumbs" data-receipt-review-thumbs></div>
+        </div>
+        <div class="receipt-review-summary-wrap">
+          <div class="receipt-review-summary" data-receipt-review-summary></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="receipt-modal receipt-preview" data-receipt-preview hidden>
+    <div class="receipt-modal-card receipt-modal-card--preview" role="dialog" aria-modal="true" aria-labelledby="receipt-preview-title">
+      <div class="receipt-modal-head">
+        <div>
+          <h2 id="receipt-preview-title" data-receipt-preview-title>回单照片</h2>
+          <p data-receipt-preview-subtitle>请选择一张回单照片</p>
+        </div>
+        <div class="receipt-modal-actions">
+          <a class="receipt-icon-btn" href="#" data-receipt-preview-download download title="下载"><i data-feather="download"></i></a>
+          <button class="receipt-close-btn" type="button" data-receipt-preview-close aria-label="关闭预览"><i data-feather="x"></i></button>
+        </div>
+      </div>
+      <div class="receipt-preview-body">
+        <button class="receipt-preview-nav" type="button" data-receipt-preview-prev aria-label="上一张"><i data-feather="chevron-left"></i></button>
+        <div class="receipt-preview-stage">
+          <img alt="回单照片预览" data-receipt-preview-image>
+          <div class="receipt-preview-error" data-receipt-preview-error>图片加载失败，请重新查询后再试。</div>
+        </div>
+        <button class="receipt-preview-nav" type="button" data-receipt-preview-next aria-label="下一张"><i data-feather="chevron-right"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="receipt-modal" data-receipt-audit-modal hidden>
+    <div class="receipt-modal-card receipt-modal-card--audit" role="dialog" aria-modal="true" aria-labelledby="receipt-audit-title">
+      <div class="receipt-modal-head">
+        <div>
+          <h2 id="receipt-audit-title" data-receipt-audit-title>原页审核</h2>
+          <p data-receipt-audit-subtitle>请选择一条回单记录</p>
+        </div>
+        <button class="receipt-close-btn" type="button" data-receipt-audit-close aria-label="关闭审核"><i data-feather="x"></i></button>
+      </div>
+      <div class="receipt-audit-body">
+        <iframe class="receipt-audit-frame" data-receipt-audit-frame title="原页审核"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <div class="receipt-modal" data-receipt-audit-confirm hidden>
+    <div class="receipt-modal-card receipt-modal-card--confirm" role="dialog" aria-modal="true" aria-labelledby="receipt-audit-confirm-title">
+      <div class="receipt-modal-head">
+        <div>
+          <h2 id="receipt-audit-confirm-title" data-receipt-audit-confirm-title>确认执行审核</h2>
+          <p data-receipt-audit-confirm-subtitle>此操作会在原系统页面执行</p>
+        </div>
+      </div>
+      <div class="receipt-confirm-body">
+        <div data-receipt-audit-confirm-body>确认后会在后台执行审核，不会打开可见原页。</div>
+        <div class="receipt-confirm-actions">
+          <button class="ghost-btn" type="button" data-receipt-audit-confirm-cancel>取消</button>
+          <button class="primary-btn" type="button" data-receipt-audit-confirm-execute>确认执行</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const page = document.querySelector("[data-receipts-page]");
+  if (!page) return;
+  const form = page.querySelector("[data-receipt-filter-form]");
+  const table = page.querySelector("[data-receipt-table]");
+  const tableBody = table?.querySelector("tbody");
+  const receiptCount = page.querySelector("[data-receipt-count]");
+  const paginationActions = page.querySelector("[data-receipt-pagination-actions]");
+  const downloadImagesButton = page.querySelector("[data-receipt-download-images]");
+  const preview = page.querySelector("[data-receipt-preview]");
+  const previewTitle = page.querySelector("[data-receipt-preview-title]");
+  const previewSubtitle = page.querySelector("[data-receipt-preview-subtitle]");
+  const previewImage = page.querySelector("[data-receipt-preview-image]");
+  const previewStage = page.querySelector(".receipt-preview-stage");
+  const previewError = page.querySelector("[data-receipt-preview-error]");
+  const previewDownload = page.querySelector("[data-receipt-preview-download]");
+  const previewPrev = page.querySelector("[data-receipt-preview-prev]");
+  const previewNext = page.querySelector("[data-receipt-preview-next]");
+  const reviewModal = page.querySelector("[data-receipt-review-modal]");
+  const reviewTitle = page.querySelector("[data-receipt-review-title]");
+  const reviewSubtitle = page.querySelector("[data-receipt-review-subtitle]");
+  const reviewStatus = page.querySelector("[data-receipt-review-status]");
+  const reviewSummary = page.querySelector("[data-receipt-review-summary]");
+  const reviewStage = page.querySelector("[data-receipt-review-stage]");
+  const reviewImage = page.querySelector("[data-receipt-review-image]");
+  const reviewError = page.querySelector("[data-receipt-review-error]");
+  const reviewCounter = page.querySelector("[data-receipt-review-counter]");
+  const reviewThumbs = page.querySelector("[data-receipt-review-thumbs]");
+  const reviewSamePrev = page.querySelector("[data-receipt-same-prev]");
+  const reviewSameNext = page.querySelector("[data-receipt-same-next]");
+  const reviewRotateLeft = page.querySelector("[data-receipt-rotate-left]");
+  const reviewRotateRight = page.querySelector("[data-receipt-rotate-right]");
+  const reviewRotateReset = page.querySelector("[data-receipt-rotate-reset]");
+  const reviewRotationLabel = page.querySelector("[data-receipt-review-rotation]");
+  const reviewRecordPrev = page.querySelector("[data-receipt-record-prev]");
+  const reviewRecordNext = page.querySelector("[data-receipt-record-next]");
+  const reviewAuditPass = page.querySelector("[data-receipt-audit-pass]");
+  const reviewAuditFail = page.querySelector("[data-receipt-audit-fail]");
+  const reviewReasonPanel = page.querySelector("[data-receipt-fail-reason-panel]");
+  const reviewReasonClose = page.querySelector("[data-receipt-fail-reason-close]");
+  const reviewReasonCancel = page.querySelector("[data-receipt-fail-reason-cancel]");
+  const reviewReasonSubmit = page.querySelector("[data-receipt-fail-reason-submit]");
+  const reviewReason = page.querySelector("[data-receipt-audit-reason]");
+  const auditModal = page.querySelector("[data-receipt-audit-modal]");
+  const auditTitle = page.querySelector("[data-receipt-audit-title]");
+  const auditSubtitle = page.querySelector("[data-receipt-audit-subtitle]");
+  const auditFrame = page.querySelector("[data-receipt-audit-frame]");
+  const auditConfirmModal = page.querySelector("[data-receipt-audit-confirm]");
+  const auditConfirmTitle = page.querySelector("[data-receipt-audit-confirm-title]");
+  const auditConfirmSubtitle = page.querySelector("[data-receipt-audit-confirm-subtitle]");
+  const auditConfirmBody = page.querySelector("[data-receipt-audit-confirm-body]");
+  const auditConfirmCancel = page.querySelector("[data-receipt-audit-confirm-cancel]");
+  const auditConfirmExecute = page.querySelector("[data-receipt-audit-confirm-execute]");
+  const syncStatus = page.querySelector("[data-receipt-sync-status]");
+  const syncStatusText = page.querySelector("[data-receipt-sync-status-text]");
+  const syncStatusClose = page.querySelector("[data-receipt-sync-status-close]");
+  const submitLabel = page.querySelector("[data-receipt-submit-label]");
+  const submitSpinner = page.querySelector("[data-receipt-spinner]");
+  const queryMarker = form?.querySelector("[data-receipt-query-marker]");
+  const dateRange = form?.querySelector("[data-receipt-date-range]");
+  const dateRangeToggle = form?.querySelector("[data-receipt-date-range-toggle]");
+  const dateRangeLabel = form?.querySelector("[data-receipt-date-range-label]");
+  const datePopover = form?.querySelector("[data-receipt-date-popover]");
+  const dateFromInput = form?.querySelector("[data-receipt-date-from]");
+  const dateToInput = form?.querySelector("[data-receipt-date-to]");
+  const calendarTitle = form?.querySelector("[data-receipt-calendar-title]");
+  const calendarGrid = form?.querySelector("[data-receipt-calendar-grid]");
+  const calendarPrev = form?.querySelector("[data-receipt-calendar-prev]");
+  const calendarNext = form?.querySelector("[data-receipt-calendar-next]");
+
+  if (preview && preview.parentElement !== document.body) {
+    document.body.appendChild(preview);
+  }
+  if (reviewModal && reviewModal.parentElement !== document.body) {
+    document.body.appendChild(reviewModal);
+  }
+  if (auditModal && auditModal.parentElement !== document.body) {
+    document.body.appendChild(auditModal);
+  }
+  if (auditConfirmModal && auditConfirmModal.parentElement !== document.body) {
+    document.body.appendChild(auditConfirmModal);
+  }
+
+  const liveUrlFor = (record) => {
+    const platform = String(record.platform || "");
+    const direction = String(record.direction || "send");
+    if (platform === "yunda") {
+      const path = direction === "receive"
+        ? "/ky_inms/public/index.php/business/waybill/delivery/index.html"
+        : "/ky_inms/public/index.php/business/waybill/mailing/index.html";
+      return "{{ yunda_live_url }}" + path;
+    }
+    if (platform === "ronghui") {
+      return direction === "receive"
+        ? "{{ ronghui_live_url }}?receipt_entry=receive"
+        : "{{ ronghui_live_url }}?receipt_entry=send";
+    }
+    return "";
+  };
+
+  const detailCache = new Map();
+  let previewAttachments = [];
+  let previewIndex = 0;
+  let reviewReceiptId = "";
+  let reviewAttachments = [];
+  let reviewImageIndex = 0;
+  let reviewZoom = 1;
+  let reviewPanX = 0;
+  let reviewPanY = 0;
+  let reviewRotation = 0;
+  let reviewDrag = null;
+  let auditAutoQueryTimer = null;
+  let originalAuditExecutionTimer = null;
+  let pendingReceiptAudit = null;
+  let backgroundAuditFrame = null;
+  let activeAuditExecutionFrame = null;
+  let backgroundAuditFrameClearTimer = null;
+
+  const fetchDetail = async (id) => {
+    if (detailCache.has(id)) return detailCache.get(id);
+    const response = await fetch(`/receipts/${encodeURIComponent(id)}`, {
+      headers: {"Accept": "application/json"}
+    });
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.message || "加载失败");
+    }
+    const detail = payload.data || {};
+    detailCache.set(id, detail);
+    return detail;
+  };
+
+  const downloadUrlFor = (url) => {
+    if (!url) return "#";
+    return `${url}${url.includes("?") ? "&" : "?"}download=1`;
+  };
+
+  const openModal = (modal) => {
+    if (!modal) return;
+    modal.hidden = false;
+    modal.classList.add("is-open");
+  };
+
+  const cleanAuditValue = (value) => String(value || "").trim();
+
+  const auditQueryPayloadFor = (record) => {
+    const platform = cleanAuditValue(record.platform);
+    const waybillNo = cleanAuditValue(record.waybill_no);
+    const receiptNo = cleanAuditValue(record.receipt_no);
+    const returnWaybillNo = cleanAuditValue(record.return_waybill_no);
+    const query = waybillNo || receiptNo || returnWaybillNo;
+    if (!platform || !query) return null;
+    return {
+      platform,
+      mode: waybillNo ? "waybill" : (receiptNo ? "receipt" : "return_waybill"),
+      query,
+      waybill_no: waybillNo,
+      receipt_no: receiptNo,
+      return_waybill_no: returnWaybillNo
+    };
+  };
+
+  const stopAuditAutoQuery = () => {
+    if (auditAutoQueryTimer) {
+      window.clearInterval(auditAutoQueryTimer);
+      auditAutoQueryTimer = null;
+    }
+  };
+
+  const stopOriginalPageAuditExecution = () => {
+    if (originalAuditExecutionTimer) {
+      window.clearInterval(originalAuditExecutionTimer);
+      originalAuditExecutionTimer = null;
+    }
+  };
+
+  const ensureBackgroundAuditFrame = () => {
+    if (backgroundAuditFrameClearTimer) {
+      window.clearTimeout(backgroundAuditFrameClearTimer);
+      backgroundAuditFrameClearTimer = null;
+    }
+    if (backgroundAuditFrame?.isConnected) return backgroundAuditFrame;
+    const frame = document.createElement("iframe");
+    frame.title = "后台回单审核";
+    frame.setAttribute("aria-hidden", "true");
+    frame.tabIndex = -1;
+    Object.assign(frame.style, {
+      position: "fixed",
+      left: "-10000px",
+      top: "0",
+      width: "1366px",
+      height: "900px",
+      border: "0",
+      opacity: "0",
+      pointerEvents: "none",
+      zIndex: "-1"
+    });
+    document.body.appendChild(frame);
+    backgroundAuditFrame = frame;
+    return frame;
+  };
+
+  const clearBackgroundAuditFrame = (delayMs = 0) => {
+    const frame = backgroundAuditFrame;
+    if (activeAuditExecutionFrame === backgroundAuditFrame) activeAuditExecutionFrame = null;
+    if (!frame) return;
+    const clearFrame = () => {
+      backgroundAuditFrameClearTimer = null;
+      if (backgroundAuditFrame === frame && activeAuditExecutionFrame !== frame) {
+        frame.src = "about:blank";
+      }
+    };
+    if (delayMs > 0) {
+      backgroundAuditFrameClearTimer = window.setTimeout(clearFrame, delayMs);
+    } else {
+      clearFrame();
+    }
+  };
+
+  const finishOriginalPageAuditExecution = () => {
+    stopOriginalPageAuditExecution();
+    if (activeAuditExecutionFrame === backgroundAuditFrame) {
+      clearBackgroundAuditFrame(10000);
+    } else {
+      activeAuditExecutionFrame = null;
+    }
+  };
+
+  const setOriginalAuditExecutionMessage = (message) => {
+    if (auditSubtitle) auditSubtitle.textContent = message;
+    if (reviewSubtitle) reviewSubtitle.textContent = message;
+  };
+
+  const isUsableElement = (element) => {
+    if (!element) return false;
+    const doc = element.ownerDocument;
+    const win = doc?.defaultView;
+    if (!win) return false;
+    const style = win.getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  const elementText = (element) => {
+    if (!element) return "";
+    return cleanAuditValue(element.innerText || element.textContent || element.value || "");
+  };
+
+  const collectAuditDocuments = () => {
+    const out = [];
+    const queue = [];
+    try {
+      const frame = activeAuditExecutionFrame || auditFrame;
+      if (frame?.contentWindow) queue.push(frame.contentWindow);
+    } catch (_) {}
+    const seen = new Set();
+    while (queue.length) {
+      const win = queue.shift();
+      if (!win || seen.has(win)) continue;
+      seen.add(win);
+      try {
+        const doc = win.document;
+        if (!doc || doc.location.href === "about:blank") continue;
+        out.push(doc);
+        Array.from(doc.querySelectorAll("iframe,frame")).forEach((frame) => {
+          try {
+            if (frame.contentWindow) queue.push(frame.contentWindow);
+          } catch (_) {}
+        });
+      } catch (_) {}
+    }
+    return out;
+  };
+
+  const dispatchAuditInputEvents = (element) => {
+    ["input", "change", "blur"].forEach((type) => {
+      try {
+        element.dispatchEvent(new Event(type, {bubbles: true}));
+      } catch (_) {}
+    });
+  };
+
+  const controlTextContext = (control) => {
+    const parts = [];
+    let node = control;
+    for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+      parts.push(elementText(node));
+    }
+    if (control.nextSibling) parts.push(cleanAuditValue(control.nextSibling.textContent || ""));
+    if (control.previousSibling) parts.push(cleanAuditValue(control.previousSibling.textContent || ""));
+    const id = cleanAuditValue(control.id);
+    if (id) {
+      const escapedId = window.CSS && typeof window.CSS.escape === "function"
+        ? window.CSS.escape(id)
+        : id.replace(/["\\]/g, "\\$&");
+      const label = control.ownerDocument.querySelector(`label[for="${escapedId}"]`);
+      if (label) parts.push(elementText(label));
+    }
+    return parts.join(" ");
+  };
+
+  const immediateControlText = (control) => {
+    const parts = [];
+    const parentLabel = control.closest("label");
+    if (parentLabel) parts.push(elementText(parentLabel));
+    let next = control.nextSibling;
+    for (let index = 0; next && index < 3; index += 1, next = next.nextSibling) {
+      parts.push(cleanAuditValue(next.textContent || ""));
+    }
+    let prev = control.previousSibling;
+    for (let index = 0; prev && index < 2; index += 1, prev = prev.previousSibling) {
+      parts.push(cleanAuditValue(prev.textContent || ""));
+    }
+    const id = cleanAuditValue(control.id);
+    if (id) {
+      const escapedId = window.CSS && typeof window.CSS.escape === "function"
+        ? window.CSS.escape(id)
+        : id.replace(/["\\]/g, "\\$&");
+      const label = control.ownerDocument.querySelector(`label[for="${escapedId}"]`);
+      if (label) parts.push(elementText(label));
+    }
+    return parts.join(" ");
+  };
+
+  const isChoiceInputNode = (node) =>
+    node?.nodeType === 1 &&
+    typeof node.matches === "function" &&
+    node.matches("input[type='checkbox'],input[type='radio']");
+
+  const choiceTextContext = (control, labelText = "") => {
+    const parts = [];
+    const maxTextLength = Math.max(40, cleanAuditValue(labelText).length + 20);
+    const pushChoiceText = (value) => {
+      const text = cleanAuditValue(value);
+      if (text && text.length <= maxTextLength) parts.push(text);
+    };
+    const parentLabel = control.closest("label");
+    if (parentLabel) pushChoiceText(elementText(parentLabel));
+    const id = cleanAuditValue(control.id);
+    if (id) {
+      const escapedId = window.CSS && typeof window.CSS.escape === "function"
+        ? window.CSS.escape(id)
+        : id.replace(/["\\]/g, "\\$&");
+      const label = control.ownerDocument.querySelector(`label[for="${escapedId}"]`);
+      if (label) pushChoiceText(elementText(label));
+    }
+    let next = control.nextSibling;
+    for (let index = 0; next && index < 4; index += 1, next = next.nextSibling) {
+      if (isChoiceInputNode(next)) break;
+      pushChoiceText(next.textContent || "");
+    }
+    let nextElement = control.nextElementSibling;
+    for (let index = 0; nextElement && index < 3; index += 1, nextElement = nextElement.nextElementSibling) {
+      if (isChoiceInputNode(nextElement)) break;
+      pushChoiceText(elementText(nextElement));
+    }
+    let node = control.parentElement;
+    for (let depth = 0; node && depth < 3; depth += 1, node = node.parentElement) {
+      const choiceCount = node.querySelectorAll("input[type='checkbox'],input[type='radio']").length;
+      const text = elementText(node);
+      if (choiceCount <= 1) pushChoiceText(text);
+    }
+    return parts.join(" ");
+  };
+
+  const findChoiceControl = (doc, selector, labelText) => {
+    const controls = Array.from(doc.querySelectorAll(selector));
+    return controls.find((control) => choiceTextContext(control, labelText).includes(labelText)) || null;
+  };
+
+  const layuiChoiceWidgetFor = (control, labelText = "") => {
+    const widgetSelector = ".layui-form-checkbox,.layui-form-radio";
+    const candidates = [];
+    const addCandidate = (item) => {
+      if (item && typeof item.matches === "function" && item.matches(widgetSelector)) {
+        candidates.push(item);
+      }
+    };
+    addCandidate(control.nextElementSibling);
+    addCandidate(control.previousElementSibling);
+    let node = control.parentElement;
+    for (let depth = 0; node && depth < 2; depth += 1, node = node.parentElement) {
+      node.querySelectorAll(widgetSelector).forEach(addCandidate);
+    }
+    const label = cleanAuditValue(labelText);
+    return candidates.find((item) => {
+      const context = `${elementText(item)} ${elementText(item.parentElement)}`;
+      return isUsableElement(item) && (!label || context.includes(label));
+    }) || null;
+  };
+
+  const renderLayuiChoiceState = (control) => {
+    try {
+      const win = control.ownerDocument.defaultView;
+      const form = win?.layui?.form;
+      if (!form || typeof form.render !== "function") return;
+      const type = String(control.type || "").toLowerCase() === "radio" ? "radio" : "checkbox";
+      form.render(type);
+    } catch (_) {}
+  };
+
+  const isChoiceControlChecked = (control, labelText = "", checked = true) => {
+    if (Boolean(control?.checked) !== Boolean(checked)) return false;
+    const widget = layuiChoiceWidgetFor(control, labelText);
+    if (!widget) return true;
+    const activeClass = String(control.type || "").toLowerCase() === "radio"
+      ? "layui-form-radioed"
+      : "layui-form-checked";
+    return Boolean(widget.classList.contains(activeClass)) === Boolean(checked);
+  };
+
+  const choiceClickTarget = (control, labelText = "") => {
+    const doc = control.ownerDocument;
+    const candidates = [];
+    const layuiWidget = layuiChoiceWidgetFor(control, labelText);
+    if (layuiWidget) return layuiWidget;
+    const id = cleanAuditValue(control.id);
+    if (id) {
+      const escapedId = window.CSS && typeof window.CSS.escape === "function"
+        ? window.CSS.escape(id)
+        : id.replace(/["\\]/g, "\\$&");
+      candidates.push(doc.querySelector(`label[for="${escapedId}"]`));
+    }
+    candidates.push(control.closest("label"));
+    let next = control.nextElementSibling;
+    for (let index = 0; next && index < 3; index += 1, next = next.nextElementSibling) {
+      candidates.push(next);
+    }
+    let node = control.parentElement;
+    for (let depth = 0; node && depth < 2; depth += 1, node = node.parentElement) {
+      candidates.push(node);
+    }
+    return candidates.find((item) => item && elementText(item).includes(labelText) && isUsableElement(item)) || control;
+  };
+
+  const clickChoiceControl = (control, labelText = "") => {
+    const target = choiceClickTarget(control, labelText);
+    const before = Boolean(control.checked);
+    const clickTarget = (item) => {
+      try {
+        item.click();
+        return true;
+      } catch (_) {
+        try {
+          ["mousedown", "mouseup", "click"].forEach((type) => {
+            item.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: item.ownerDocument.defaultView}));
+          });
+          return true;
+        } catch (__) {
+          return false;
+        }
+      }
+    };
+    let clicked = clickTarget(target);
+    if (target !== control && Boolean(control.checked) === before) {
+      clicked = clickTarget(control) || clicked;
+    }
+    if (clicked) {
+      renderLayuiChoiceState(control);
+      dispatchAuditInputEvents(control);
+    }
+    return clicked;
+  };
+
+  const forceClickChoiceControl = (control, labelText = "") => {
+    const before = Boolean(control.checked);
+    const clicked = clickChoiceControl(control, labelText);
+    if (!clicked) return false;
+    if (!before && !control.checked) return false;
+    return true;
+  };
+
+  const setControlCheckedDirectly = (control, checked) => {
+    try {
+      control.checked = Boolean(checked);
+      renderLayuiChoiceState(control);
+      dispatchAuditInputEvents(control);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const setChoiceByText = (doc, selector, labelText, checked, options = {}) => {
+    const control = findChoiceControl(doc, selector, labelText);
+    if (!control) return false;
+    const isRadio = String(control.type || "").toLowerCase() === "radio";
+    if (options.forceClick && checked && !isRadio) {
+      if (control.checked) {
+        forceClickChoiceControl(control, labelText);
+        return true;
+      }
+      return forceClickChoiceControl(control, labelText);
+    }
+    const shouldClick = isRadio
+      ? Boolean(checked) && !control.checked
+      : Boolean(control.checked) !== Boolean(checked);
+    if (shouldClick) {
+      if (!clickChoiceControl(control, labelText)) {
+        setControlCheckedDirectly(control, checked);
+      }
+    } else {
+      dispatchAuditInputEvents(control);
+    }
+    return true;
+  };
+
+  const isChoiceCheckedByText = (doc, selector, labelText, checked = true) => {
+    const control = findChoiceControl(doc, selector, labelText);
+    return Boolean(control) && isChoiceControlChecked(control, labelText, checked);
+  };
+
+  const auditQueryKey = (payload) => [
+    payload.platform || "",
+    payload.mode || "",
+    payload.query || ""
+  ].join("|");
+
+  const auditStateElement = (doc) => doc?.body || doc?.documentElement || null;
+
+  const markAuditQueryPrepared = (doc, payload) => {
+    const element = auditStateElement(doc);
+    if (element?.dataset) element.dataset.shipnowReceiptAuditPrepared = auditQueryKey(payload);
+  };
+
+  const isAuditQueryPrepared = (doc, payload) => {
+    const element = auditStateElement(doc);
+    return Boolean(element?.dataset) && element.dataset.shipnowReceiptAuditPrepared === auditQueryKey(payload);
+  };
+
+  const clearAuditQueryPrepared = (doc) => {
+    const element = auditStateElement(doc);
+    if (element?.dataset) delete element.dataset.shipnowReceiptAuditPrepared;
+  };
+
+  const findAuditNumberInput = (doc) => {
+    const fields = Array.from(doc.querySelectorAll("textarea,input[type='text'],input:not([type])"));
+    return fields.find((field) => {
+      const placeholder = cleanAuditValue(field.getAttribute("placeholder"));
+      const context = controlTextContext(field);
+      return isUsableElement(field) && (
+        placeholder.includes("输入内容") ||
+        placeholder.includes("单号") ||
+        context.includes("多个单号") ||
+        context.includes("请输入内容")
+      );
+    }) || fields.find((field) => isUsableElement(field) && field.tagName === "TEXTAREA") || null;
+  };
+
+  const setAuditFieldValue = (field, value) => {
+    if (!field) return false;
+    try {
+      field.focus();
+      field.value = value;
+      dispatchAuditInputEvents(field);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const findAuditButton = (doc, labelText) => {
+    const selector = "button,a,input[type='button'],input[type='submit'],.layui-btn,.l-btn,.mini-button,.easyui-linkbutton";
+    const candidates = Array.from(doc.querySelectorAll(selector));
+    return candidates.find((item) => isUsableElement(item) && elementText(item).replace(/\s+/g, "") === labelText) ||
+      candidates.find((item) => isUsableElement(item) && elementText(item).includes(labelText)) ||
+      null;
+  };
+
+  const clickAuditButton = (doc, labelText) => {
+    const button = findAuditButton(doc, labelText);
+    if (!button) return false;
+    try {
+      button.click();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const clickOriginalPageElement = (element) => {
+    if (!element) return false;
+    try {
+      element.click();
+      return true;
+    } catch (_) {
+      try {
+        ["mousedown", "mouseup", "click"].forEach((type) => {
+          element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: element.ownerDocument.defaultView}));
+        });
+        return true;
+      } catch (__) {
+        return false;
+      }
+    }
+  };
+
+  const originalAuditClickableElements = (doc) => {
+    const selector = "button,a,input[type='button'],input[type='submit'],.layui-btn,.l-btn,.mini-button,.easyui-linkbutton,[role='button']";
+    return Array.from(doc.querySelectorAll(selector)).filter((item) => {
+      const disabled = item.disabled || item.getAttribute("aria-disabled") === "true" || item.classList.contains("is-disabled") || item.classList.contains("disabled");
+      return !disabled && isUsableElement(item);
+    });
+  };
+
+  const compactButtonText = (element) => elementText(element).replace(/\s+/g, "");
+
+  const labelsForOriginalAuditResult = (result) => result === "passed"
+    ? ["审核通过", "通过"]
+    : ["审核不通过", "不通过"];
+
+  const findOriginalAuditActionButton = (doc, result) => {
+    const labels = labelsForOriginalAuditResult(result);
+    const candidates = originalAuditClickableElements(doc);
+    const exact = candidates.find((item) => labels.some((label) => compactButtonText(item) === label));
+    if (exact) return exact;
+    return candidates.find((item) => {
+      const text = compactButtonText(item);
+      if (!text || text.includes("查询")) return false;
+      if (result === "passed" && text.includes("不通过")) return false;
+      return labels.some((label) => text.includes(label));
+    }) || null;
+  };
+
+  const findOriginalAuditEntryButton = (doc) => {
+    const labels = ["回单审核", "审核", "处理"];
+    const candidates = originalAuditClickableElements(doc).filter((item) => {
+      const text = compactButtonText(item);
+      return labels.some((label) => text === label || text.includes(label));
+    });
+    return candidates.length === 1 ? candidates[0] : null;
+  };
+
+  const fillOriginalAuditReason = (doc, reason) => {
+    const value = cleanAuditValue(reason);
+    if (!value) return true;
+    const fields = Array.from(doc.querySelectorAll("textarea,input[type='text'],input:not([type])"));
+    const field = fields.find((item) => {
+      const placeholder = cleanAuditValue(item.getAttribute("placeholder"));
+      const context = controlTextContext(item);
+      return isUsableElement(item) && (
+        placeholder.includes("原因") ||
+        placeholder.includes("意见") ||
+        placeholder.includes("备注") ||
+        context.includes("原因") ||
+        context.includes("意见") ||
+        context.includes("备注")
+      );
+    });
+    return field ? setAuditFieldValue(field, value) : true;
+  };
+
+  const setMiniControlValue = (control, value) => {
+    if (!control) return false;
+    let changed = false;
+    try {
+      if (typeof control.setValue === "function") {
+        control.setValue(value);
+        changed = true;
+      } else if ("value" in control) {
+        control.value = value;
+        changed = true;
+      }
+    } catch (_) {
+      return false;
+    }
+    if (!changed) return false;
+    try {
+      control.doValueChanged?.();
+    } catch (_) {}
+    try {
+      control.fire?.("valuechanged");
+    } catch (_) {}
+    return true;
+  };
+
+  const submitOriginalAuditForm = (doc, audit) => {
+    const mini = doc?.defaultView?.mini;
+    if (!mini || typeof mini.get !== "function") return {ok: false, reason: "audit_form_not_found"};
+    const auditStatus = mini.get("AUDIT_STATUS");
+    const saveBtn = mini.get("saveBtn");
+    if (!auditStatus || !saveBtn) return {ok: false, reason: "audit_form_not_found"};
+    const auditStatusValue = audit.result === "failed" ? "3" : "2";
+    if (!setMiniControlValue(auditStatus, auditStatusValue)) return {ok: false, reason: "audit_status_set_failed"};
+    const reason = audit.reason || "";
+    const auditContent = mini.get("AUDIT_CONTENT");
+    if (auditContent) setMiniControlValue(auditContent, reason);
+    fillOriginalAuditReason(doc, reason);
+    try {
+      if (typeof saveBtn.doClick === "function") {
+        saveBtn.doClick();
+        return {ok: true, label: "saveBtn"};
+      }
+    } catch (_) {
+      return {ok: false, reason: "audit_form_save_failed"};
+    }
+    const saveElement = saveBtn.el || saveBtn._el || doc.getElementById("saveBtn");
+    return clickOriginalPageElement(saveElement)
+      ? {ok: true, label: "saveBtn"}
+      : {ok: false, reason: "audit_form_save_failed"};
+  };
+
+  const clickOriginalAuditConfirm = (doc) => {
+    const labels = ["确定", "确认", "是", "OK"];
+    const candidates = originalAuditClickableElements(doc);
+    const button = candidates.find((item) => labels.some((label) => compactButtonText(item) === label)) ||
+      candidates.find((item) => {
+        const text = compactButtonText(item);
+        return labels.some((label) => text.includes(label)) && !text.includes("取消");
+      });
+    return button ? clickOriginalPageElement(button) : false;
+  };
+
+  const tryClickOriginalAuditConfirm = () => {
+    for (const doc of collectAuditDocuments()) {
+      if (clickOriginalAuditConfirm(doc)) return {ok: true};
+    }
+    return {ok: false, reason: "confirm_not_found"};
+  };
+
+  const auditIdentifiersForVerification = (payload) => {
+    const values = [
+      payload?.query,
+      payload?.waybill_no,
+      payload?.receipt_no,
+      payload?.return_waybill_no
+    ].map(cleanAuditValue).filter(Boolean);
+    values.forEach((value) => {
+      if (value.length >= 6) values.push(value.slice(-6));
+    });
+    return Array.from(new Set(values));
+  };
+
+  const rowLikeElementsForAuditVerification = (doc) => Array.from(doc.querySelectorAll([
+    "tr",
+    "[role='row']",
+    ".datagrid-row",
+    ".mini-grid-row",
+    ".layui-table tr"
+  ].join(","))).filter(isUsableElement);
+
+  const rowTextShowsAuditResult = (text, identifiers, targetStatus) => {
+    const compact = cleanAuditValue(text).replace(/\s+/g, "");
+    if (!compact || !compact.includes(targetStatus)) return false;
+    return identifiers.some((identifier) => compact.includes(identifier));
+  };
+
+  const miniGridShowsAuditResult = (doc, identifiers, targetStatus) => {
+    const mini = doc?.defaultView?.mini;
+    if (!mini || typeof mini.getComponents !== "function") return false;
+    try {
+      return mini.getComponents().some((component) => {
+        if (!component || typeof component.getData !== "function") return false;
+        const rows = component.getData() || [];
+        return rows.some((row) => rowTextShowsAuditResult(Object.values(row || {}).join(" "), identifiers, targetStatus));
+      });
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const easyuiDatagridShowsAuditResult = (doc, identifiers, targetStatus) => {
+    const win = doc?.defaultView;
+    const jquery = win?.jQuery || win?.$;
+    if (typeof jquery !== "function") return false;
+    try {
+      const gridElements = [];
+      const addGridElements = (items) => {
+        Array.from(items || []).forEach((item) => {
+          if (item && !gridElements.includes(item)) gridElements.push(item);
+        });
+      };
+      addGridElements(jquery("#dg"));
+      addGridElements(doc.querySelectorAll("table.easyui-datagrid,.easyui-datagrid"));
+      return gridElements.some((element) => {
+        const grid = jquery(element);
+        if (!grid || typeof grid.datagrid !== "function") return false;
+        const datagridRows = grid.datagrid("getRows") || [];
+        return datagridRows.some((row) =>
+          rowTextShowsAuditResult(Object.values(row || {}).join(" "), identifiers, targetStatus)
+        );
+      });
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const verifyOriginalPageAuditResult = (payload, audit) => {
+    const targetStatus = auditLabelForResult(audit.result);
+    const identifiers = auditIdentifiersForVerification(payload);
+    if (!identifiers.length) return {ok: false, reason: "missing_identifier"};
+    for (const doc of collectAuditDocuments()) {
+      if (easyuiDatagridShowsAuditResult(doc, identifiers, targetStatus)) return {ok: true};
+      if (miniGridShowsAuditResult(doc, identifiers, targetStatus)) return {ok: true};
+      const matched = rowLikeElementsForAuditVerification(doc).some((row) =>
+        rowTextShowsAuditResult(elementText(row), identifiers, targetStatus)
+      );
+      if (matched) return {ok: true};
+    }
+    return {ok: false, reason: "status_not_confirmed"};
+  };
+
+  const verifyReceiptAuditViaSync = async (record, payload, audit) => {
+    const targetStatus = auditLabelForResult(audit.result);
+    const syncParams = new URLSearchParams();
+    syncParams.set("platform", record.platform || "");
+    syncParams.set("direction", record.direction || "send");
+    syncParams.set("q", payload.query || "");
+    const response = await fetch("/receipts/sync", {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Accept": "application/json"},
+      body: syncParams.toString()
+    });
+    let syncPayload = {};
+    try {
+      syncPayload = await response.json();
+    } catch (_) {
+      syncPayload = {};
+    }
+    if (!response.ok || !syncPayload.ok) {
+      return {ok: false, reason: syncPayload.message || syncPayload.error || "sync_failed"};
+    }
+    if (audit?.receiptId) detailCache.delete(String(audit.receiptId));
+    const freshDetail = await fetchDetail(audit.receiptId);
+    const freshRecord = freshDetail.record || {};
+    return freshRecord.audit_status === targetStatus
+      ? {ok: true}
+      : {ok: false, reason: "synced_status_not_confirmed"};
+  };
+
+  const tryClickOriginalAuditAction = (audit) => {
+    const docs = collectAuditDocuments();
+    let openedDialog = false;
+    for (const doc of docs) {
+      const formResult = submitOriginalAuditForm(doc, audit);
+      if (formResult.ok) return formResult;
+      if (formResult.reason !== "audit_form_not_found") return formResult;
+      const actionButton = findOriginalAuditActionButton(doc, audit.result);
+      if (actionButton) {
+        fillOriginalAuditReason(doc, audit.reason || "");
+        if (!clickOriginalPageElement(actionButton)) return {ok: false, reason: "audit_action_click_failed"};
+        return {ok: true, label: compactButtonText(actionButton)};
+      }
+      const state = auditStateElement(doc);
+      const openedKey = `${audit.receiptId || ""}|${audit.result || ""}`;
+      if (state?.dataset?.shipnowReceiptAuditEntryOpened !== openedKey) {
+        const entryButton = findOriginalAuditEntryButton(doc);
+        if (entryButton && clickOriginalPageElement(entryButton)) {
+          if (state?.dataset) state.dataset.shipnowReceiptAuditEntryOpened = openedKey;
+          openedDialog = true;
+        }
+      }
+    }
+    return {ok: false, reason: openedDialog ? "audit_dialog_opening" : "audit_action_not_found"};
+  };
+
+  const yundaQueryLabelFor = (payload) => payload.mode === "receipt"
+    ? "按回单号查询"
+    : (payload.mode === "return_waybill" ? "按回单快递单号查询" : "按运单号查询");
+
+  const hasVisibleLoadingMask = (doc) => {
+    const selector = ".datagrid-mask,.datagrid-mask-msg,.window-mask,.window-shadow,.layui-layer-shade,.el-loading-mask,.loading";
+    return Array.from(doc.querySelectorAll(selector)).some((item) => isUsableElement(item));
+  };
+
+  const yundaAuditReadyKeyFor = (doc, payload, signature) => `${auditQueryKey(payload)}|${doc.URL || ""}|${signature}`;
+  const ronghuiAuditReadyKeyFor = (doc, payload, signature) => `${auditQueryKey(payload)}|${doc.URL || ""}|${signature}`;
+
+  const isYundaAuditPageReady = (doc, payload) => {
+    const queryLabel = yundaQueryLabelFor(payload);
+    const choiceSelector = "input[type='checkbox'],input[type='radio']";
+    const bodyText = elementText(doc.body);
+    const choice = findChoiceControl(doc, choiceSelector, queryLabel);
+    const input = findAuditNumberInput(doc);
+    const button = findAuditButton(doc, "查询");
+    const win = doc.defaultView;
+    const jqueryActive = Number(win?.jQuery?.active || 0);
+    const loading = hasVisibleLoadingMask(doc);
+    const basicReady = doc.readyState === "complete" &&
+      bodyText.includes("查询条件") &&
+      bodyText.includes("数据列表") &&
+      Boolean(choice) &&
+      Boolean(input) &&
+      Boolean(button) &&
+      !loading &&
+      jqueryActive === 0;
+    const state = auditStateElement(doc);
+    if (!basicReady) {
+      if (state?.dataset) {
+        delete state.dataset.shipnowReceiptAuditReadyKey;
+        delete state.dataset.shipnowReceiptAuditReadyCount;
+      }
+      return {ok: false, reason: "yunda_page_loading"};
+    }
+    const signature = [
+      doc.readyState,
+      bodyText.includes(queryLabel),
+      bodyText.includes("查询条件"),
+      bodyText.includes("数据列表"),
+      Boolean(choice),
+      Boolean(input),
+      Boolean(button)
+    ].join("|");
+    const readyKey = yundaAuditReadyKeyFor(doc, payload, signature);
+    const previousKey = state?.dataset?.shipnowReceiptAuditReadyKey || "";
+    const previousCount = Number(state?.dataset?.shipnowReceiptAuditReadyCount || 0);
+    const nextCount = previousKey === readyKey ? previousCount + 1 : 1;
+    if (state?.dataset) {
+      state.dataset.shipnowReceiptAuditReadyKey = readyKey;
+      state.dataset.shipnowReceiptAuditReadyCount = String(nextCount);
+    }
+    return nextCount >= 4
+      ? {ok: true}
+      : {ok: false, reason: "yunda_page_stabilizing"};
+  };
+
+  const isRonghuiAuditPageReady = (doc, payload) => {
+    const queryLabel = payload.mode === "receipt" ? "按回单号查询" : "按运单号查询";
+    const choiceSelector = "input[type='radio'],input[type='checkbox']";
+    const bodyText = elementText(doc.body);
+    const choice = findChoiceControl(doc, choiceSelector, queryLabel);
+    const input = findAuditNumberInput(doc);
+    const button = findAuditButton(doc, "查询");
+    const win = doc.defaultView;
+    const jqueryActive = Number(win?.jQuery?.active || 0);
+    const loading = hasVisibleLoadingMask(doc);
+    const basicReady = doc.readyState === "complete" &&
+      bodyText.includes("查询条件") &&
+      Boolean(choice) &&
+      Boolean(input) &&
+      Boolean(button) &&
+      !loading &&
+      jqueryActive === 0;
+    const state = auditStateElement(doc);
+    if (!basicReady) {
+      if (state?.dataset) {
+        delete state.dataset.shipnowReceiptRonghuiReadyKey;
+        delete state.dataset.shipnowReceiptRonghuiReadyCount;
+      }
+      return {ok: false, reason: "ronghui_page_loading"};
+    }
+    const signature = [
+      doc.readyState,
+      bodyText.includes(queryLabel),
+      bodyText.includes("查询条件"),
+      Boolean(choice),
+      Boolean(input),
+      Boolean(button)
+    ].join("|");
+    const readyKey = ronghuiAuditReadyKeyFor(doc, payload, signature);
+    const previousKey = state?.dataset?.shipnowReceiptRonghuiReadyKey || "";
+    const previousCount = Number(state?.dataset?.shipnowReceiptRonghuiReadyCount || 0);
+    const nextCount = previousKey === readyKey ? previousCount + 1 : 1;
+    if (state?.dataset) {
+      state.dataset.shipnowReceiptRonghuiReadyKey = readyKey;
+      state.dataset.shipnowReceiptRonghuiReadyCount = String(nextCount);
+    }
+    return nextCount >= 3
+      ? {ok: true}
+      : {ok: false, reason: "ronghui_page_stabilizing"};
+  };
+
+  const prepareYundaChoiceForQuery = (doc, payload, wasPrepared) => {
+    const queryLabel = yundaQueryLabelFor(payload);
+    const choiceSelector = "input[type='checkbox'],input[type='radio']";
+    const control = findChoiceControl(doc, choiceSelector, queryLabel);
+    if (!control) return {ok: false, reason: "choice_not_ready"};
+    if (wasPrepared && control.checked) return {ok: true};
+    if (control.checked) {
+      if (!forceClickChoiceControl(control, queryLabel)) return {ok: false, reason: "choice_not_ready"};
+      return {ok: false, reason: "choice_rearming"};
+    }
+    if (!forceClickChoiceControl(control, queryLabel)) return {ok: false, reason: "choice_not_ready"};
+    return control.checked
+      ? {ok: false, reason: "choice_confirm_pending"}
+      : {ok: false, reason: "choice_not_ready"};
+  };
+
+  const applyYundaAuditQuery = (doc, payload) => {
+    const queryLabel = yundaQueryLabelFor(payload);
+    const choiceSelector = "input[type='checkbox'],input[type='radio']";
+    const wasChoiceReady = isChoiceCheckedByText(doc, choiceSelector, queryLabel, true);
+    const existingInput = findAuditNumberInput(doc);
+    const wasInputReady = cleanAuditValue(existingInput?.value) === payload.query;
+    const wasPrepared = isAuditQueryPrepared(doc, payload);
+    [
+      {label: "按运单号查询", active: payload.mode === "waybill"},
+      {label: "按回单号查询", active: payload.mode === "receipt"},
+      {label: "按回单快递单号查询", active: payload.mode === "return_waybill"}
+    ].forEach((mode) => {
+      if (!mode.active) {
+        setChoiceByText(doc, choiceSelector, mode.label, false, {forceClick: mode.active && !wasPrepared});
+      }
+    });
+    const choiceState = prepareYundaChoiceForQuery(doc, payload, wasPrepared);
+    const input = findAuditNumberInput(doc);
+    if (!setAuditFieldValue(input, payload.query)) return {ok: false, reason: "input_not_found"};
+    if (choiceState.reason === "choice_rearming") {
+      clearAuditQueryPrepared(doc);
+      return choiceState;
+    }
+    const choiceReady = isChoiceCheckedByText(doc, choiceSelector, queryLabel, true);
+    const inputReady = cleanAuditValue(input?.value) === payload.query;
+    if (!choiceState.ok && choiceState.reason !== "choice_confirm_pending") {
+      clearAuditQueryPrepared(doc);
+      return choiceState;
+    }
+    if (!choiceReady || !inputReady) {
+      clearAuditQueryPrepared(doc);
+      return {ok: false, reason: "choice_not_ready"};
+    }
+    if (choiceState.reason === "choice_confirm_pending" || !wasChoiceReady || !wasInputReady || !wasPrepared) {
+      markAuditQueryPrepared(doc, payload);
+      return {ok: false, reason: "choice_confirm_pending"};
+    }
+    if (!clickAuditButton(doc, "查询")) return {ok: false, reason: "button_not_found"};
+    clearAuditQueryPrepared(doc);
+    return {ok: true, label: queryLabel};
+  };
+
+  const applyRonghuiAuditQuery = (doc, payload) => {
+    const queryLabel = payload.mode === "receipt" ? "按回单号查询" : "按运单号查询";
+    const choiceSelector = "input[type='radio'],input[type='checkbox']";
+    const wasChoiceReady = isChoiceCheckedByText(doc, choiceSelector, queryLabel, true);
+    const existingInput = findAuditNumberInput(doc);
+    const wasInputReady = cleanAuditValue(existingInput?.value) === payload.query;
+    const wasPrepared = isAuditQueryPrepared(doc, payload);
+    setChoiceByText(doc, choiceSelector, "按运单号查询", payload.mode !== "receipt");
+    setChoiceByText(doc, choiceSelector, "按回单号查询", payload.mode === "receipt");
+    const input = findAuditNumberInput(doc);
+    if (!setAuditFieldValue(input, payload.query)) return {ok: false, reason: "input_not_found"};
+    const choiceReady = isChoiceCheckedByText(doc, choiceSelector, queryLabel, true);
+    const inputReady = cleanAuditValue(input?.value) === payload.query;
+    if (!choiceReady || !inputReady) {
+      clearAuditQueryPrepared(doc);
+      return {ok: false, reason: "ronghui_choice_not_ready"};
+    }
+    if (!wasChoiceReady || !wasInputReady || !wasPrepared) {
+      markAuditQueryPrepared(doc, payload);
+      return {ok: false, reason: "ronghui_choice_confirm_pending"};
+    }
+    if (!clickAuditButton(doc, "查询")) return {ok: false, reason: "button_not_found"};
+    clearAuditQueryPrepared(doc);
+    return {ok: true, label: queryLabel};
+  };
+
+  const tryApplyAuditQuery = (payload) => {
+    const docs = collectAuditDocuments();
+    let lastReason = "page_not_ready";
+    for (const doc of docs) {
+      if (payload.platform === "yunda") {
+        const ready = isYundaAuditPageReady(doc, payload);
+        if (!ready.ok) {
+          lastReason = ready.reason || lastReason;
+          continue;
+        }
+      } else if (payload.platform === "ronghui") {
+        const ready = isRonghuiAuditPageReady(doc, payload);
+        if (!ready.ok) {
+          lastReason = ready.reason || lastReason;
+          continue;
+        }
+      }
+      const result = payload.platform === "yunda"
+        ? applyYundaAuditQuery(doc, payload)
+        : applyRonghuiAuditQuery(doc, payload);
+      if (result.ok) return result;
+      lastReason = result.reason || lastReason;
+    }
+    return {ok: false, reason: lastReason};
+  };
+
+  const startAuditAutoQuery = (record, meta) => {
+    stopAuditAutoQuery();
+    const payload = auditQueryPayloadFor(record);
+    if (!payload) return;
+    let attempts = 0;
+    if (auditSubtitle) auditSubtitle.textContent = `${meta || "原系统审核页面"} · 正在按单号查询 ${payload.query}`;
+    const tick = () => {
+      attempts += 1;
+      const result = tryApplyAuditQuery(payload);
+      if (result.ok) {
+        stopAuditAutoQuery();
+        if (auditSubtitle) auditSubtitle.textContent = `${meta || "原系统审核页面"} · 已${result.label || "按单号"}查询 ${payload.query}`;
+        return;
+      }
+      if (attempts >= 40) {
+        stopAuditAutoQuery();
+        if (auditSubtitle) auditSubtitle.textContent = `${meta || "原系统审核页面"} · 原页已打开，请手动查询 ${payload.query}`;
+      }
+    };
+    auditAutoQueryTimer = window.setInterval(tick, 800);
+    window.setTimeout(tick, 1000);
+  };
+
+  const closePreview = () => {
+    preview?.classList.remove("is-open");
+    if (preview) preview.hidden = true;
+    previewImage?.removeAttribute("src");
+    if (previewDownload) previewDownload.href = "#";
+    previewAttachments = [];
+    previewIndex = 0;
+  };
+
+  const closeAudit = () => {
+    stopAuditAutoQuery();
+    stopOriginalPageAuditExecution();
+    setReviewAuditBusy(false);
+    auditModal?.classList.remove("is-open");
+    if (auditModal) auditModal.hidden = true;
+    auditFrame?.removeAttribute("src");
+    table?.querySelectorAll("[data-receipt-id]").forEach((row) => row.classList.remove("is-selected"));
+  };
+
+  const renderPreviewImage = () => {
+    const item = previewAttachments[previewIndex] || {};
+    const src = item.file_url || "";
+    const label = item.display_name || item.attachment_type || "回单照片";
+    if (previewTitle) previewTitle.textContent = label;
+    if (previewSubtitle) previewSubtitle.textContent = previewAttachments.length ? `${previewIndex + 1} / ${previewAttachments.length}` : "暂无照片";
+    previewStage?.classList.remove("is-broken");
+    if (previewError) previewError.textContent = "图片加载失败，请重新查询后再试。";
+    if (previewImage) {
+      previewImage.removeAttribute("src");
+      if (src) previewImage.src = src;
+    }
+    if (previewDownload) {
+      previewDownload.href = downloadUrlFor(src);
+      previewDownload.toggleAttribute("aria-disabled", !src);
+    }
+    if (previewPrev) previewPrev.disabled = previewAttachments.length < 2 || previewIndex <= 0;
+    if (previewNext) previewNext.disabled = previewAttachments.length < 2 || previewIndex >= previewAttachments.length - 1;
+  };
+
+  const openPhotoPreview = async (id) => {
+    try {
+      const detail = await fetchDetail(id);
+      previewAttachments = (detail.attachments || []).filter((item) => item && item.file_url);
+      if (!previewAttachments.length) {
+        window.alert("当前回单没有可预览的照片。");
+        return;
+      }
+      previewIndex = 0;
+      renderPreviewImage();
+      openModal(preview);
+    } catch (error) {
+      window.alert(error.message || String(error));
+    }
+  };
+
+  const reviewSummaryFields = [
+    ["recipient_name", "收货人"],
+    ["recipient_address", "收件地址"],
+    ["goods_name", "货物名称"],
+    ["package_type", "包装类型"],
+    ["piece_count", "件数"],
+    ["actual_weight", "实际重量"],
+    ["volume", "体积"],
+    ["waybill_no", "运单号"]
+  ];
+
+  const currentReceiptRows = () => Array.from(table?.querySelectorAll("[data-receipt-id]") || []);
+
+  const currentReceiptRow = () => currentReceiptRows().find((row) => row.dataset.receiptId === String(reviewReceiptId)) || null;
+
+  const summaryFieldsForRecord = (summary = {}, record = {}) => {
+    const headingWaybill = String(record.waybill_no || record.receipt_no || "").trim();
+    return reviewSummaryFields.filter(([field]) => {
+      if (field === "waybill_no") {
+        const summaryWaybill = String(summary[field] ?? "").trim();
+        return !headingWaybill || !summaryWaybill || summaryWaybill !== headingWaybill;
+      }
+      return true;
+    });
+  };
+
+  const renderReviewSummary = (summary = {}, record = {}) => {
+    if (!reviewSummary) return;
+    reviewSummary.innerHTML = summaryFieldsForRecord(summary, record).map(([field, label]) => {
+      const value = String(summary[field] ?? "").trim() || "无数据";
+      return `<div class="receipt-review-field receipt-review-field--${escapeHtml(field)}"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`;
+    }).join("");
+  };
+
+  const hideFailReasonPanel = () => {
+    if (reviewReasonPanel) reviewReasonPanel.hidden = true;
+    if (reviewAuditFail) reviewAuditFail.innerHTML = '<i data-feather="x-circle"></i> 审核不通过';
+    window.feather?.replace?.();
+  };
+
+  const showFailReasonPanel = () => {
+    if (reviewReasonPanel) reviewReasonPanel.hidden = false;
+    if (reviewAuditFail) reviewAuditFail.innerHTML = '<i data-feather="x-circle"></i> 提交不通过';
+    reviewReason?.focus?.();
+    window.feather?.replace?.();
+  };
+
+  const applyReviewImageTransform = () => {
+    if (!reviewImage) return;
+    reviewImage.style.transform = `translate(${reviewPanX}px, ${reviewPanY}px) rotate(${reviewRotation}deg) scale(${reviewZoom})`;
+    if (reviewRotationLabel) reviewRotationLabel.textContent = `${reviewRotation}°`;
+  };
+
+  const resetReviewImageTransform = () => {
+    reviewZoom = 1;
+    reviewPanX = 0;
+    reviewPanY = 0;
+    reviewRotation = 0;
+    applyReviewImageTransform();
+  };
+
+  const normalizeReviewRotation = (value) => {
+    let next = Number(value) || 0;
+    next = ((next % 360) + 360) % 360;
+    if (next > 180) next -= 360;
+    return Object.is(next, -0) ? 0 : next;
+  };
+
+  const rotateReviewImage = (delta) => {
+    if (!reviewImage?.getAttribute("src")) return;
+    reviewRotation = normalizeReviewRotation(reviewRotation + delta);
+    applyReviewImageTransform();
+  };
+
+  const setReviewZoom = (nextZoom, anchorEvent = null) => {
+    const previousZoom = reviewZoom;
+    const next = Math.min(5, Math.max(1, Number(nextZoom) || 1));
+    if (anchorEvent && reviewStage && previousZoom > 0 && next !== previousZoom) {
+      const rect = reviewStage.getBoundingClientRect();
+      const offsetX = anchorEvent.clientX - rect.left - rect.width / 2;
+      const offsetY = anchorEvent.clientY - rect.top - rect.height / 2;
+      const ratio = next / previousZoom;
+      reviewPanX = offsetX - (offsetX - reviewPanX) * ratio;
+      reviewPanY = offsetY - (offsetY - reviewPanY) * ratio;
+    }
+    reviewZoom = next;
+    if (reviewZoom <= 1.001) {
+      reviewZoom = 1;
+      reviewPanX = 0;
+      reviewPanY = 0;
+    }
+    applyReviewImageTransform();
+  };
+
+  const renderReviewThumbs = () => {
+    if (!reviewThumbs) return;
+    reviewThumbs.innerHTML = reviewAttachments.map((item, index) => {
+      const src = escapeHtml(item.file_url || "");
+      const label = escapeHtml(item.display_name || item.attachment_type || `回单照片 ${index + 1}`);
+      return `<button class="receipt-review-thumb ${index === reviewImageIndex ? "is-active" : ""}" type="button" data-receipt-review-thumb="${index}" aria-label="${label}"><img src="${src}" alt=""></button>`;
+    }).join("");
+    reviewThumbs.querySelectorAll("[data-receipt-review-thumb]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextIndex = Number(button.dataset.receiptReviewThumb || 0);
+        if (!Number.isFinite(nextIndex)) return;
+        reviewImageIndex = nextIndex;
+        renderReviewImage();
+      });
+    });
+  };
+
+  const renderReviewImage = () => {
+    const item = reviewAttachments[reviewImageIndex] || {};
+    const src = item.file_url || "";
+    resetReviewImageTransform();
+    reviewStage?.classList.toggle("is-broken", !src);
+    if (reviewError) reviewError.textContent = src ? "图片加载失败，请重新查询后再试。" : "当前回单没有可预览的照片。";
+    if (reviewImage) {
+      reviewImage.removeAttribute("src");
+      if (src) reviewImage.src = src;
+    }
+    if (reviewCounter) {
+      reviewCounter.textContent = reviewAttachments.length ? `${reviewImageIndex + 1} / ${reviewAttachments.length}` : "0 / 0";
+    }
+    if (reviewSamePrev) reviewSamePrev.disabled = reviewAttachments.length < 2 || reviewImageIndex <= 0;
+    if (reviewSameNext) reviewSameNext.disabled = reviewAttachments.length < 2 || reviewImageIndex >= reviewAttachments.length - 1;
+    renderReviewThumbs();
+  };
+
+  const updateReviewRecordNav = () => {
+    const rows = currentReceiptRows();
+    const index = rows.findIndex((row) => row.dataset.receiptId === String(reviewReceiptId));
+    if (reviewRecordPrev) reviewRecordPrev.disabled = index <= 0;
+    if (reviewRecordNext) reviewRecordNext.disabled = index < 0 || index >= rows.length - 1;
+  };
+
+  let reviewAuditCompletedResult = "";
+
+  const resetReceiptAuditFeedback = () => {
+    reviewAuditCompletedResult = "";
+    if (reviewStatus) {
+      reviewStatus.hidden = true;
+      reviewStatus.className = "receipt-review-status";
+      reviewStatus.innerHTML = "";
+    }
+    if (reviewAuditPass) {
+      reviewAuditPass.classList.remove("receipt-audit-pass--success");
+      reviewAuditPass.disabled = false;
+      reviewAuditPass.removeAttribute("aria-busy");
+      reviewAuditPass.innerHTML = '<i data-feather="check-circle"></i> 审核通过';
+    }
+    if (reviewAuditFail) {
+      reviewAuditFail.classList.remove("receipt-audit-fail--locked");
+      reviewAuditFail.disabled = false;
+      reviewAuditFail.removeAttribute("aria-busy");
+    }
+    if (reviewReasonSubmit) {
+      reviewReasonSubmit.disabled = false;
+      reviewReasonSubmit.removeAttribute("aria-busy");
+    }
+    window.feather?.replace?.();
+  };
+
+  const showReceiptAuditFeedback = (audit, message) => {
+    const result = audit?.result === "failed" ? "failed" : "passed";
+    reviewAuditCompletedResult = result;
+    const isPassed = result === "passed";
+    const title = isPassed ? "审核通过成功" : "审核不通过已提交";
+    const icon = isPassed ? "check-circle" : "x-circle";
+    const safeMessage = message || (isPassed ? "融辉审核通过已通过接口提交。" : "审核不通过结果已提交。");
+    if (reviewStatus) {
+      reviewStatus.hidden = false;
+      reviewStatus.className = `receipt-review-status ${isPassed ? "receipt-review-status--success" : "receipt-review-status--failed"}`;
+      reviewStatus.innerHTML = `<i data-feather="${icon}"></i><strong>${escapeHtml(title)}</strong><span>${escapeHtml(safeMessage)}</span>`;
+    }
+    if (reviewAuditPass) {
+      reviewAuditPass.classList.toggle("receipt-audit-pass--success", isPassed);
+      reviewAuditPass.disabled = true;
+      reviewAuditPass.removeAttribute("aria-busy");
+      reviewAuditPass.innerHTML = isPassed
+        ? '<i data-feather="check-circle"></i> 已审核通过'
+        : '<i data-feather="check-circle"></i> 审核通过';
+    }
+    if (reviewAuditFail) {
+      reviewAuditFail.classList.toggle("receipt-audit-fail--locked", true);
+      reviewAuditFail.disabled = true;
+      reviewAuditFail.removeAttribute("aria-busy");
+    }
+    window.feather?.replace?.();
+  };
+
+  const closeReview = () => {
+    reviewModal?.classList.remove("is-open");
+    if (reviewModal) reviewModal.hidden = true;
+    reviewReceiptId = "";
+    reviewAttachments = [];
+    reviewImageIndex = 0;
+    reviewImage?.removeAttribute("src");
+    resetReviewImageTransform();
+    resetReceiptAuditFeedback();
+    hideFailReasonPanel();
+    closeReceiptAuditConfirmation();
+    table?.querySelectorAll("[data-receipt-id]").forEach((row) => row.classList.remove("is-selected"));
+  };
+
+  const openReview = async (id, row) => {
+    reviewReceiptId = String(id || "");
+    table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item === row));
+    openModal(reviewModal);
+    resetReceiptAuditFeedback();
+    if (reviewTitle) reviewTitle.textContent = "正在加载";
+    if (reviewSubtitle) reviewSubtitle.textContent = "正在读取回单详情。";
+    renderReviewSummary({}, {});
+    if (reviewReason) reviewReason.value = "";
+    hideFailReasonPanel();
+    reviewAttachments = [];
+    reviewImageIndex = 0;
+    renderReviewImage();
+    updateReviewRecordNav();
+    try {
+      const detail = await fetchDetail(id);
+      const record = detail.record || {};
+      const heading = record.waybill_no || record.receipt_no || "回单审核";
+      const meta = [record.platform_label || record.platform, record.audit_status, record.photo_status]
+        .filter(Boolean)
+        .join(" · ");
+      if (reviewTitle) reviewTitle.textContent = heading;
+      if (reviewSubtitle) reviewSubtitle.textContent = meta || "本地回单详情";
+      renderReviewSummary(record.detail_summary || {}, record);
+      if (record.audit_status === "审核通过") {
+        showReceiptAuditFeedback({result: "passed"}, "当前回单已审核通过。");
+      } else if (record.audit_status === "审核不通过") {
+        showReceiptAuditFeedback({result: "failed"}, "当前回单已提交审核不通过。");
+      }
+      reviewAttachments = (detail.attachments || []).filter((item) => item && item.file_url);
+      reviewImageIndex = 0;
+      if (reviewReason) reviewReason.value = "";
+      hideFailReasonPanel();
+      renderReviewImage();
+      updateReviewRecordNav();
+    } catch (error) {
+      if (reviewTitle) reviewTitle.textContent = "加载失败";
+      if (reviewSubtitle) reviewSubtitle.textContent = error.message || String(error);
+      reviewStage?.classList.add("is-broken");
+      if (reviewError) reviewError.textContent = error.message || String(error);
+    }
+  };
+
+  const openReviewByOffset = (offset) => {
+    const rows = currentReceiptRows();
+    const index = rows.findIndex((row) => row.dataset.receiptId === String(reviewReceiptId));
+    const next = rows[index + offset];
+    if (!next) return;
+    openReview(next.dataset.receiptId, next);
+  };
+
+  const updateRowAuditStatus = (receiptId, auditStatus) => {
+    const row = currentReceiptRows().find((item) => item.dataset.receiptId === String(receiptId));
+    const chip = row?.querySelector("[data-receipt-audit-chip]");
+    if (!chip) return;
+    chip.textContent = auditStatus || "未同步";
+    chip.className = `receipt-chip ${auditClassFor(auditStatus)}`;
+  };
+
+  const setReviewAuditBusy = (busy) => {
+    [reviewAuditPass, reviewAuditFail].forEach((button) => {
+      if (button) {
+        button.disabled = busy || Boolean(reviewAuditCompletedResult);
+        button.toggleAttribute("aria-busy", busy);
+      }
+    });
+    if (reviewReasonSubmit) {
+      reviewReasonSubmit.disabled = busy || Boolean(reviewAuditCompletedResult);
+      reviewReasonSubmit.toggleAttribute("aria-busy", busy);
+    }
+  };
+
+  const auditLabelForResult = (result) => result === "passed" ? "审核通过" : "审核不通过";
+
+  const receiptAuditPayloadFor = (result) => {
+    if (!reviewReceiptId) return null;
+    const detail = detailCache.get(String(reviewReceiptId)) || {};
+    const record = detail.record || {};
+    const number = record.waybill_no || record.receipt_no || reviewTitle?.textContent || "当前单号";
+    return {
+      receiptId: String(reviewReceiptId),
+      result,
+      reason: result === "failed" ? (reviewReason?.value || "") : "",
+      number,
+    };
+  };
+
+  const closeReceiptAuditConfirmation = (clearPending = true) => {
+    auditConfirmModal?.classList.remove("is-open");
+    if (auditConfirmModal) auditConfirmModal.hidden = true;
+    if (clearPending) pendingReceiptAudit = null;
+  };
+
+  const requestReceiptAuditConfirmation = (result) => {
+    if (!reviewReceiptId) return;
+    if (result === "failed" && reviewReasonPanel?.hidden) {
+      showFailReasonPanel();
+      return;
+    }
+    const audit = receiptAuditPayloadFor(result);
+    if (!audit) return;
+    const number = audit.number;
+    pendingReceiptAudit = audit;
+    const confirmTitle = "确认驳回回单";
+    const confirmButtonText = "确认驳回";
+    if (auditConfirmTitle) auditConfirmTitle.textContent = confirmTitle;
+    if (auditConfirmSubtitle) auditConfirmSubtitle.textContent = `单号 ${number}`;
+    if (auditConfirmBody) {
+      auditConfirmBody.textContent = "确认后将把当前回单提交为审核不通过，并使用上方填写的原因。请确认回单照片和运单信息无误。";
+    }
+    if (auditConfirmExecute) auditConfirmExecute.textContent = confirmButtonText;
+    openModal(auditConfirmModal);
+  };
+
+  const applyReceiptAuditPayload = (audit, payload, defaultMessage) => {
+    const record = payload.data?.record || {};
+    if (record.id) detailCache.delete(String(record.id));
+    if (audit?.receiptId) detailCache.delete(String(audit.receiptId));
+    const auditStatus = record.audit_status || auditLabelForResult(audit.result);
+    updateRowAuditStatus(audit.receiptId, auditStatus);
+    const message = payload.message || defaultMessage || `已执行${auditStatus}。`;
+    if (reviewSubtitle) reviewSubtitle.textContent = message;
+    if (auditSubtitle) auditSubtitle.textContent = message;
+    hideFailReasonPanel();
+    showReceiptAuditFeedback(audit, message);
+    return {record, auditStatus, message};
+  };
+
+  const submitReceiptAuditDirect = async (audit) => {
+    const response = await fetch(`/receipts/${encodeURIComponent(audit.receiptId)}/audit`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json; charset=UTF-8", "Accept": "application/json"},
+      body: JSON.stringify({result: audit.result, reason: audit.reason || ""})
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (_) {
+      payload = {};
+    }
+    if (!response.ok || !payload.ok) {
+      const error = new Error(payload.message || payload.error || `回单审核调用失败（${response.status}）。`);
+      error.code = payload.error_code || payload.errorCode || "";
+      error.payload = payload;
+      throw error;
+    }
+    return applyReceiptAuditPayload(audit, payload, `后台已执行${auditLabelForResult(audit.result)}。`);
+  };
+
+  const recordOriginalPageAuditResult = async (audit, actionMessage) => {
+    const response = await fetch(`/receipts/${encodeURIComponent(audit.receiptId)}/audit`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json; charset=UTF-8", "Accept": "application/json"},
+      body: JSON.stringify({result: audit.result, reason: audit.reason || "", execution: "original_page"})
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.message || "本地审核状态更新失败");
+    applyReceiptAuditPayload(audit, payload, actionMessage || `已在后台原页执行${auditLabelForResult(audit.result)}。`);
+  };
+
+  const startOriginalPageAuditExecution = (record, meta, audit) => {
+    stopAuditAutoQuery();
+    stopOriginalPageAuditExecution();
+    if (!activeAuditExecutionFrame) activeAuditExecutionFrame = auditFrame;
+    const payload = auditQueryPayloadFor(record);
+    if (!payload) {
+      setOriginalAuditExecutionMessage("缺少运单号或回单号，无法在原页定位回单。");
+      finishOriginalPageAuditExecution();
+      setReviewAuditBusy(false);
+      return;
+    }
+    let attempts = 0;
+    let phase = "query";
+    let phaseStartedAt = Date.now();
+    let running = false;
+    let syncVerifyAttempted = false;
+    const label = auditLabelForResult(audit.result);
+    const enterPhase = (nextPhase, message) => {
+      phase = nextPhase;
+      phaseStartedAt = Date.now();
+      if (message) setOriginalAuditExecutionMessage(message);
+    };
+    setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 正在按单号查询 ${payload.query}`);
+    const complete = async (message) => {
+      finishOriginalPageAuditExecution();
+      try {
+        await recordOriginalPageAuditResult(audit, message);
+      } catch (error) {
+        setOriginalAuditExecutionMessage(error.message || String(error));
+      } finally {
+        setReviewAuditBusy(false);
+      }
+    };
+    const tick = async () => {
+      if (running) return;
+      running = true;
+      attempts += 1;
+      try {
+        if (phase === "query") {
+          const queryResult = tryApplyAuditQuery(payload);
+          if (queryResult.ok) {
+            enterPhase("action", `${meta || "原系统审核页面"} · 已查询 ${payload.query}，正在执行${label}`);
+          } else if (attempts >= 45) {
+            finishOriginalPageAuditExecution();
+            setReviewAuditBusy(false);
+            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 后台原页查询 ${payload.query} 超时，未执行审核`);
+          }
+          return;
+        }
+        if (phase === "action") {
+          const actionResult = tryClickOriginalAuditAction(audit);
+          if (actionResult.ok) {
+            enterPhase("confirm", `${meta || "原系统审核页面"} · 已点击${label}，正在确认原页提示`);
+          } else if (attempts >= 90) {
+            finishOriginalPageAuditExecution();
+            setReviewAuditBusy(false);
+            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 未找到原页${label}按钮，未执行审核`);
+          } else if (actionResult.reason === "audit_dialog_opening") {
+            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 已打开原页审核窗口，正在查找${label}按钮`);
+          }
+          return;
+        }
+        if (phase === "confirm") {
+          const confirmResult = tryClickOriginalAuditConfirm();
+          if (confirmResult.ok) {
+            enterPhase("verify", `${meta || "原系统审核页面"} · 已确认原页提示，正在核对原页审核状态`);
+          } else if (Date.now() - phaseStartedAt > 6000) {
+            enterPhase("verify", `${meta || "原系统审核页面"} · 未检测到原页确认提示，正在核对原页审核状态`);
+          }
+          return;
+        }
+        if (phase === "verify") {
+          const verifyResult = verifyOriginalPageAuditResult(payload, audit);
+          if (verifyResult.ok) {
+            await complete(`${meta || "原系统审核页面"} · 已核对原页显示${label}`);
+          } else if (!syncVerifyAttempted) {
+            syncVerifyAttempted = true;
+            const syncVerifyResult = await verifyReceiptAuditViaSync(record, payload, audit);
+            if (syncVerifyResult.ok) {
+              await complete(`${meta || "原系统审核页面"} · 已通过真实接口复核${label}`);
+              return;
+            }
+          } else if (Date.now() - phaseStartedAt > 12000) {
+            finishOriginalPageAuditExecution();
+            setReviewAuditBusy(false);
+            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 原页仍未显示${label}，未回写本地状态`);
+          }
+        }
+      } finally {
+        running = false;
+      }
+    };
+    originalAuditExecutionTimer = window.setInterval(tick, 800);
+    window.setTimeout(tick, 1000);
+  };
+
+  const executeReceiptAuditInHiddenOriginalPage = async (audit) => {
+    if (!audit?.receiptId) return;
+    try {
+      const detail = await fetchDetail(audit.receiptId);
+      const record = detail.record || {};
+      const meta = [record.platform_label || record.platform, record.direction_label || record.direction, record.audit_status]
+        .filter(Boolean)
+        .join(" · ");
+      const liveUrl = liveUrlFor(record);
+      if (!liveUrl) throw new Error("当前平台没有可用的后台原页审核入口。");
+      table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item.dataset.receiptId === String(audit.receiptId)));
+      const frame = ensureBackgroundAuditFrame();
+      activeAuditExecutionFrame = frame;
+      setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 正在后台打开原页执行${auditLabelForResult(audit.result)}`);
+      frame.src = liveUrl;
+      startOriginalPageAuditExecution(record, meta, audit);
+    } catch (error) {
+      finishOriginalPageAuditExecution();
+      setReviewAuditBusy(false);
+      setOriginalAuditExecutionMessage(error.message || String(error));
+    } finally {
+      if (auditConfirmExecute) auditConfirmExecute.disabled = false;
+      pendingReceiptAudit = null;
+    }
+  };
+
+  const executeReceiptAuditInBackground = async (audit) => {
+    if (!audit?.receiptId) return;
+    const label = auditLabelForResult(audit.result);
+    let delegatedToHiddenOriginalPage = false;
+    setReviewAuditBusy(true);
+    if (auditConfirmExecute) auditConfirmExecute.disabled = true;
+    closeReceiptAuditConfirmation(false);
+    if (reviewSubtitle) reviewSubtitle.textContent = `正在后台执行${label}。`;
+    try {
+      await submitReceiptAuditDirect(audit);
+      setReviewAuditBusy(false);
+    } catch (error) {
+      if (error.code === "AUDIT_CAPTURE_REQUIRED") {
+        delegatedToHiddenOriginalPage = true;
+        if (reviewSubtitle) reviewSubtitle.textContent = `真实审核接口尚未抓取，正在后台原页执行${label}。`;
+        await executeReceiptAuditInHiddenOriginalPage(audit);
+        return;
+      }
+      setReviewAuditBusy(false);
+      if (reviewSubtitle) reviewSubtitle.textContent = error.message || String(error);
+      if (auditSubtitle) auditSubtitle.textContent = error.message || String(error);
+    } finally {
+      if (!delegatedToHiddenOriginalPage) {
+        if (auditConfirmExecute) auditConfirmExecute.disabled = false;
+        pendingReceiptAudit = null;
+      }
+    }
+  };
+
+  const openAudit = async (id, row) => {
+    stopOriginalPageAuditExecution();
+    activeAuditExecutionFrame = auditFrame;
+    table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item === row));
+    openModal(auditModal);
+    if (auditTitle) auditTitle.textContent = "正在加载";
+    if (auditSubtitle) auditSubtitle.textContent = "正在读取原页审核入口。";
+    if (auditFrame) auditFrame.src = "about:blank";
+    try {
+      const detail = await fetchDetail(id);
+      const record = detail.record || {};
+      const heading = record.waybill_no || record.receipt_no || "原页审核";
+      const meta = [record.platform_label || record.platform, record.direction_label || record.direction, record.audit_status]
+        .filter(Boolean)
+        .join(" · ");
+      const liveUrl = liveUrlFor(record);
+      if (auditTitle) auditTitle.textContent = heading;
+      if (auditSubtitle) auditSubtitle.textContent = meta || "原系统审核页面";
+      if (auditFrame) auditFrame.src = liveUrl || "about:blank";
+      if (liveUrl) startAuditAutoQuery(record, meta);
+    } catch (error) {
+      stopAuditAutoQuery();
+      if (auditTitle) auditTitle.textContent = "加载失败";
+      if (auditSubtitle) auditSubtitle.textContent = error.message || String(error);
+      if (auditFrame) auditFrame.src = "about:blank";
+    }
+  };
+
+  preview?.querySelector("[data-receipt-preview-close]")?.addEventListener("click", closePreview);
+  previewImage?.addEventListener("load", () => {
+    previewStage?.classList.remove("is-broken");
+  });
+  previewImage?.addEventListener("error", () => {
+    previewStage?.classList.add("is-broken");
+    if (previewError) previewError.textContent = "图片加载失败，请重新查询后再试。";
+  });
+  reviewModal?.querySelector("[data-receipt-review-close]")?.addEventListener("click", closeReview);
+  reviewImage?.addEventListener("load", () => {
+    reviewStage?.classList.remove("is-broken");
+  });
+  reviewImage?.addEventListener("error", () => {
+    reviewStage?.classList.add("is-broken");
+    if (reviewError) reviewError.textContent = "图片加载失败，请重新查询后再试。";
+  });
+  reviewSamePrev?.addEventListener("click", () => {
+    if (reviewImageIndex <= 0) return;
+    reviewImageIndex -= 1;
+    renderReviewImage();
+  });
+  reviewSameNext?.addEventListener("click", () => {
+    if (reviewImageIndex >= reviewAttachments.length - 1) return;
+    reviewImageIndex += 1;
+    renderReviewImage();
+  });
+  reviewRotateLeft?.addEventListener("click", () => rotateReviewImage(-90));
+  reviewRotateRight?.addEventListener("click", () => rotateReviewImage(90));
+  reviewRotateReset?.addEventListener("click", () => {
+    reviewRotation = 0;
+    applyReviewImageTransform();
+  });
+  reviewRecordPrev?.addEventListener("click", () => openReviewByOffset(-1));
+  reviewRecordNext?.addEventListener("click", () => openReviewByOffset(1));
+  reviewReasonClose?.addEventListener("click", hideFailReasonPanel);
+  reviewReasonCancel?.addEventListener("click", hideFailReasonPanel);
+  reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"));
+  reviewAuditPass?.addEventListener("click", () => {
+    hideFailReasonPanel();
+    executeReceiptAuditInBackground(receiptAuditPayloadFor("passed"));
+  });
+  reviewAuditFail?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"));
+  auditConfirmCancel?.addEventListener("click", () => closeReceiptAuditConfirmation());
+  auditConfirmExecute?.addEventListener("click", () => {
+    const audit = pendingReceiptAudit;
+    if (!audit) return;
+    executeReceiptAuditInBackground(audit);
+  });
+  reviewStage?.addEventListener("wheel", (event) => {
+    if (!reviewImage?.getAttribute("src")) return;
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.14 : 1 / 1.14;
+    setReviewZoom(reviewZoom * factor, event);
+  }, {passive: false});
+  reviewStage?.addEventListener("pointerdown", (event) => {
+    if (!reviewImage?.getAttribute("src") || reviewZoom <= 1) return;
+    reviewDrag = {x: event.clientX, y: event.clientY, panX: reviewPanX, panY: reviewPanY};
+    reviewStage.classList.add("is-dragging");
+    reviewStage.setPointerCapture?.(event.pointerId);
+  });
+  reviewStage?.addEventListener("pointermove", (event) => {
+    if (!reviewDrag) return;
+    reviewPanX = reviewDrag.panX + event.clientX - reviewDrag.x;
+    reviewPanY = reviewDrag.panY + event.clientY - reviewDrag.y;
+    applyReviewImageTransform();
+  });
+  const stopReviewDrag = (event) => {
+    if (!reviewDrag) return;
+    reviewDrag = null;
+    reviewStage?.classList.remove("is-dragging");
+    if (event?.pointerId !== undefined) reviewStage?.releasePointerCapture?.(event.pointerId);
+  };
+  reviewStage?.addEventListener("pointerup", stopReviewDrag);
+  reviewStage?.addEventListener("pointercancel", stopReviewDrag);
+  auditModal?.querySelector("[data-receipt-audit-close]")?.addEventListener("click", closeAudit);
+  preview?.addEventListener("click", (event) => {
+    if (event.target === preview) closePreview();
+  });
+  reviewModal?.addEventListener("click", (event) => {
+    if (event.target === reviewModal) closeReview();
+  });
+  auditModal?.addEventListener("click", (event) => {
+    if (event.target === auditModal) closeAudit();
+  });
+  auditConfirmModal?.addEventListener("click", (event) => {
+    if (event.target === auditConfirmModal) closeReceiptAuditConfirmation();
+  });
+  previewPrev?.addEventListener("click", () => {
+    if (previewIndex <= 0) return;
+    previewIndex -= 1;
+    renderPreviewImage();
+  });
+  previewNext?.addEventListener("click", () => {
+    if (previewIndex >= previewAttachments.length - 1) return;
+    previewIndex += 1;
+    renderPreviewImage();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (datePopover && !datePopover.hidden) {
+      closeDatePopover();
+      return;
+    }
+    if (preview?.classList.contains("is-open")) {
+      closePreview();
+      return;
+    }
+    if (auditConfirmModal?.classList.contains("is-open")) {
+      closeReceiptAuditConfirmation();
+      return;
+    }
+    if (reviewModal?.classList.contains("is-open")) {
+      closeReview();
+      return;
+    }
+    if (auditModal?.classList.contains("is-open")) closeAudit();
+  });
+
+  const markBrokenThumbnail = (image) => {
+    const thumb = image?.closest?.("[data-receipt-thumb-preview]");
+    if (!thumb) return;
+    thumb.classList.add("is-broken");
+    thumb.innerHTML = '<i data-feather="image"></i>';
+    window.feather?.replace?.();
+  };
+
+  const bindReceiptRows = () => {
+    table?.querySelectorAll("[data-receipt-id]").forEach((row) => {
+      row.addEventListener("click", () => openReview(row.dataset.receiptId, row));
+      row.querySelector("[data-receipt-thumb-preview]")?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openReview(row.dataset.receiptId, row);
+      });
+      row.querySelector("[data-receipt-original-open]")?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openAudit(row.dataset.receiptId, row);
+      });
+      row.querySelectorAll("[data-receipt-thumb-image]").forEach((image) => {
+        if (image.complete && image.naturalWidth === 0) markBrokenThumbnail(image);
+        image.addEventListener("error", () => markBrokenThumbnail(image), { once: true });
+      });
+    });
+  };
+
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  })[char]);
+
+  const platformClassFor = (value) => value === "yunda" || value === "ronghui" ? value : "muted";
+  const isPendingAuditStatus = (value) => {
+    const text = String(value || "").trim();
+    return text === "待审核" || text === "审核不通过" || (text.includes("待") && text.includes("审核"));
+  };
+  const auditClassFor = (value) => {
+    if (value === "审核通过") return "receipt-chip--ok";
+    if (isPendingAuditStatus(value)) return "receipt-chip--warn";
+    return "receipt-chip--muted";
+  };
+  const okClassFor = (ok) => ok ? "receipt-chip--ok" : "receipt-chip--muted";
+
+  const renderReceiptRows = (rows) => {
+    if (!tableBody) return;
+    if (!rows || !rows.length) {
+      tableBody.innerHTML = `
+        <tr>
+          <td class="receipt-empty" colspan="9">
+            <div class="receipt-empty-state">
+              <i data-feather="inbox"></i>
+              <strong>暂无回单数据</strong>
+              <span>点击“查询”会从原系统查询当前条件的数据。</span>
+            </div>
+          </td>
+        </tr>
+      `;
+      window.feather?.replace?.();
+      return;
+    }
+    tableBody.innerHTML = rows.map((row) => {
+      const id = escapeHtml(row.id || "");
+      const platform = escapeHtml(row.platform || "");
+      const direction = escapeHtml(row.direction || "");
+      const thumbnail = row.thumbnail_url
+        ? `<button class="receipt-thumb" type="button" data-receipt-thumb-preview aria-label="预览回单照片"><img src="${escapeHtml(row.thumbnail_url)}" alt="" data-receipt-thumb-image></button>`
+        : `<span class="receipt-thumb receipt-thumb--empty"><i data-feather="image"></i></span>`;
+      const photoCount = Number(row.photo_count || 0);
+      const signedOk = row.signed_confirmed === "是" || row.signed_confirmed === "已确认";
+      return `
+        <tr class="receipt-row" data-receipt-id="${id}" data-platform="${platform}" data-direction="${direction}">
+          <td><div class="receipt-thumb-list">${thumbnail}</div></td>
+          <td><span class="receipt-chip receipt-chip--${platformClassFor(row.platform)}">${escapeHtml(row.platform_label || row.platform || "-")}</span></td>
+          <td><span class="receipt-code" title="${escapeHtml(row.waybill_no || "")}">${escapeHtml(row.waybill_no || "-")}</span></td>
+          <td><span class="receipt-chip">${escapeHtml(row.receipt_status || "未同步")}</span></td>
+          <td><span class="receipt-chip ${auditClassFor(row.audit_status)}" data-receipt-audit-chip>${escapeHtml(row.audit_status || "未同步")}</span></td>
+          <td><span class="receipt-chip ${okClassFor(photoCount > 0)}">${escapeHtml(row.photo_status || "无照片")}</span></td>
+          <td><span class="receipt-chip ${okClassFor(signedOk)}">${escapeHtml(row.signed_confirmed || "-")}</span></td>
+          <td class="receipt-updated-cell" title="${escapeHtml(row.updated_at || "")}">${escapeHtml(row.updated_at || "")}</td>
+          <td>
+            <button class="receipt-icon-btn" type="button" data-receipt-original-open title="原页模式" aria-label="打开原页模式">
+              <i data-feather="external-link"></i>
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join("");
+    window.feather?.replace?.();
+    bindReceiptRows();
+  };
+
+  const buildReceiptParams = (pageNumber = 1) => {
+    ensureReceiptDateDefaults();
+    const params = new URLSearchParams(new FormData(form));
+    params.set("queried", "1");
+    params.set("page", String(pageNumber));
+    return params;
+  };
+
+  const receiptUrlForPage = (pageNumber) => `/receipts?${buildReceiptParams(pageNumber).toString()}`;
+
+  const receiptImageArchiveUrl = () => {
+    const params = buildReceiptParams(1);
+    params.delete("page");
+    return `/receipts/download-images?${params.toString()}`;
+  };
+
+  const renderPagination = (pagination = {}) => {
+    if (!paginationActions) return;
+    const currentPage = Number(pagination.page || 1);
+    paginationActions.innerHTML = [
+      pagination.has_prev ? `<a class="ghost-btn" href="${receiptUrlForPage(currentPage - 1)}" data-receipt-page="${currentPage - 1}"><i data-feather="chevron-left"></i> 上一页</a>` : "",
+      pagination.has_next ? `<a class="ghost-btn" href="${receiptUrlForPage(currentPage + 1)}" data-receipt-page="${currentPage + 1}">下一页 <i data-feather="chevron-right"></i></a>` : ""
+    ].join("");
+    window.feather?.replace?.();
+  };
+
+  const updateReceiptUrl = (params) => {
+    if (!window.history?.replaceState) return;
+    window.history.replaceState(null, "", `/receipts?${params.toString()}`);
+  };
+
+  const refreshReceiptTable = async (pageNumber = 1) => {
+    const params = buildReceiptParams(pageNumber);
+    const url = `${page.dataset.receiptsDataUrl || "/receipts/data"}?${params.toString()}`;
+    const response = await fetch(url, {headers: {"Accept": "application/json"}});
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.message || "回单列表刷新失败");
+    }
+    const data = payload.data || {};
+    const pagination = data.pagination || {};
+    renderReceiptRows(data.rows || []);
+    renderPagination(pagination);
+    if (receiptCount) receiptCount.textContent = `共 ${pagination.total || 0} 条`;
+    table?.parentElement?.scrollTo?.({top: 0, left: 0});
+    detailCache.clear();
+    updateReceiptUrl(params);
+    return data;
+  };
+
+  bindReceiptRows();
+
+  const formatDate = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const parseDateKey = (value) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const date = new Date(year, month, day);
+    if (date.getFullYear() !== year || date.getMonth() !== month || date.getDate() !== day) return null;
+    return date;
+  };
+
+  const addDays = (date, days) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
+  let calendarMonth = startOfMonth(parseDateKey(dateFromInput?.value) || parseDateKey(dateToInput?.value) || new Date());
+
+  const renderDateRangeLabel = () => {
+    const from = dateFromInput?.value || "";
+    const to = dateToInput?.value || "";
+    if (!dateRangeLabel) return;
+    dateRangeLabel.textContent = from && to ? `${from} 至 ${to}` : "选择日期范围";
+  };
+
+  const renderCalendar = () => {
+    if (!calendarGrid) return;
+    const monthStart = startOfMonth(calendarMonth);
+    const gridStart = addDays(monthStart, -((monthStart.getDay() + 6) % 7));
+    const from = dateFromInput?.value || "";
+    const to = dateToInput?.value || "";
+    if (calendarTitle) calendarTitle.textContent = `${calendarMonth.getMonth() + 1}月 ${calendarMonth.getFullYear()}`;
+    calendarGrid.innerHTML = "";
+    for (let index = 0; index < 42; index += 1) {
+      const date = addDays(gridStart, index);
+      const key = formatDate(date);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "receipt-calendar-day";
+      button.textContent = String(date.getDate());
+      button.setAttribute("data-receipt-calendar-day", key);
+      button.setAttribute("aria-label", key);
+      if (date.getMonth() !== calendarMonth.getMonth()) button.classList.add("is-outside");
+      if (from && to && key > from && key < to) button.classList.add("is-in-range");
+      if (from && key === from) button.classList.add("is-start");
+      if (to && key === to) button.classList.add("is-end");
+      button.addEventListener("click", () => handleCalendarDayClick(key));
+      calendarGrid.appendChild(button);
+    }
+  };
+
+  const setDateRange = (from, to, options = {}) => {
+    let nextFrom = from || "";
+    let nextTo = to || "";
+    if (nextFrom && nextTo && nextTo < nextFrom) {
+      [nextFrom, nextTo] = [nextTo, nextFrom];
+    }
+    if (dateFromInput) dateFromInput.value = nextFrom || "";
+    if (dateToInput) dateToInput.value = nextTo || "";
+    const baseDate = parseDateKey(nextFrom || nextTo);
+    if (baseDate && options.syncMonth !== false) {
+      calendarMonth = startOfMonth(baseDate);
+    }
+    renderDateRangeLabel();
+    renderCalendar();
+    if (options.closeOnComplete && nextFrom && nextTo) {
+      closeDatePopover();
+    }
+  };
+
+  const ensureReceiptDateDefaults = () => {
+    if (!dateFromInput || !dateToInput) return;
+    if (dateFromInput.value || dateToInput.value) return;
+    const today = formatDate(new Date());
+    setDateRange(today, today);
+  };
+
+  const closeDatePopover = () => {
+    if (!datePopover) return;
+    datePopover.hidden = true;
+    dateRangeToggle?.setAttribute("aria-expanded", "false");
+  };
+
+  const openDatePopover = () => {
+    if (!datePopover) return;
+    datePopover.hidden = false;
+    dateRangeToggle?.setAttribute("aria-expanded", "true");
+    renderCalendar();
+  };
+
+  const handleCalendarDayClick = (dateKey) => {
+    const from = dateFromInput?.value || "";
+    const to = dateToInput?.value || "";
+    if (!from || to) {
+      setDateRange(dateKey, "");
+      return;
+    }
+    setDateRange(from, dateKey, {closeOnComplete: true, syncMonth: false});
+  };
+
+  renderDateRangeLabel();
+  renderCalendar();
+
+  dateRangeToggle?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!datePopover) return;
+    if (datePopover.hidden) {
+      openDatePopover();
+    } else {
+      closeDatePopover();
+    }
+  });
+
+  dateRange?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  document.addEventListener("click", closeDatePopover);
+
+  calendarPrev?.addEventListener("click", () => {
+    calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1);
+    renderCalendar();
+  });
+
+  calendarNext?.addEventListener("click", () => {
+    calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
+    renderCalendar();
+  });
+
+  page.querySelectorAll("[data-receipt-quick-range]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const range = button.dataset.receiptQuickRange || "";
+      if (range === "clear") {
+        setDateRange("", "");
+        return;
+      }
+      const days = Number(range);
+      if (!Number.isFinite(days) || days < 1) return;
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days + 1);
+      setDateRange(formatDate(start), formatDate(end), {closeOnComplete: true});
+    });
+  });
+
+  const setSubmitBusy = (busy) => {
+    const submitButton = form?.querySelector("button[type='submit']");
+    if (submitButton) {
+      submitButton.disabled = busy;
+      submitButton.toggleAttribute("aria-busy", busy);
+    }
+    if (submitLabel) submitLabel.textContent = busy ? "查询中" : "查询";
+    if (submitSpinner) submitSpinner.hidden = !busy;
+  };
+
+  const hideSyncStatus = () => {
+    if (syncStatus) syncStatus.hidden = true;
+  };
+
+  const setSyncStatus = (message, tone = "") => {
+    if (!syncStatus) return;
+    syncStatus.hidden = false;
+    syncStatus.className = `receipt-sync-status ${tone}`.trim();
+    if (syncStatusText) {
+      syncStatusText.textContent = message || "";
+    }
+    window.feather?.replace?.();
+  };
+
+  syncStatusClose?.addEventListener("click", hideSyncStatus);
+
+  const receiptSyncSummary = (stats = {}, warnings = [], listTotal = null) => {
+    const warningText = warnings.length ? `；提示：${warnings.join("；")}` : "";
+    const listText = Number.isFinite(listTotal) ? `；当前列表 ${listTotal} 条` : "";
+    return `查询完成：拉取 ${stats.fetched || 0} 条，过滤 ${stats.filtered || 0} 条，入库 ${stats.upserted || 0} 条，附件 ${stats.attachments || 0} 个${listText}${warningText}`;
+  };
+
+  const queryReceipts = async (label = "正在从原系统查询回单...") => {
+    ensureReceiptDateDefaults();
+    const params = new URLSearchParams(new FormData(form));
+    const dateFrom = params.get("date_from") || "";
+    const dateTo = params.get("date_to") || "";
+    if ((dateFrom && !dateTo) || (!dateFrom && dateTo)) {
+      setSyncStatus("请选择完整的更新时间范围：开始日期和结束日期必须同时填写。", "is-error");
+      return {ok: false};
+    }
+    setSyncStatus(label);
+    try {
+      const response = await fetch("/receipts/sync", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Accept": "application/json"},
+        body: params.toString()
+      });
+      const payload = await response.json();
+      if (!payload.ok) {
+        setSyncStatus(payload.message || "查询失败", "is-error");
+        return {ok: false, payload};
+      }
+      const stats = payload.stats || {};
+      const warnings = payload.warnings || [];
+      if (warnings.length) {
+        setSyncStatus(receiptSyncSummary(stats, warnings), "is-warning");
+      } else {
+        hideSyncStatus();
+      }
+      return {ok: true, payload, stats, warnings};
+    } catch (error) {
+      setSyncStatus(String(error), "is-error");
+      return {ok: false, error};
+    }
+  };
+
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setSubmitBusy(true);
+    try {
+      const result = await queryReceipts("正在从原系统查询回单...");
+      if (result?.ok) {
+        if (queryMarker) queryMarker.value = "1";
+        const data = await refreshReceiptTable(1);
+        const total = Number((data.pagination || {}).total || 0);
+        const warnings = result.warnings || [];
+        if (warnings.length) {
+          setSyncStatus(receiptSyncSummary(result.stats || {}, warnings, total), "is-warning");
+        } else {
+          hideSyncStatus();
+        }
+      }
+    } catch (error) {
+      setSyncStatus(error.message || String(error), "is-error");
+    } finally {
+      setSubmitBusy(false);
+    }
+  });
+
+  downloadImagesButton?.addEventListener("click", () => {
+    if (queryMarker && queryMarker.value !== "1") {
+      setSyncStatus("请先查询回单列表后再下载图片。", "is-error");
+      return;
+    }
+    window.location.href = receiptImageArchiveUrl();
+  });
+
+  paginationActions?.addEventListener("click", async (event) => {
+    const link = event.target.closest("[data-receipt-page]");
+    if (!link) return;
+    event.preventDefault();
+    const pageNumber = Number(link.dataset.receiptPage || 1);
+    if (!Number.isFinite(pageNumber) || pageNumber < 1) return;
+    setSubmitBusy(true);
+    try {
+      if (queryMarker) queryMarker.value = "1";
+      await refreshReceiptTable(pageNumber);
+    } catch (error) {
+      setSyncStatus(error.message || String(error), "is-error");
+    } finally {
+      setSubmitBusy(false);
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,2819 @@
+﻿{% extends "base.html" %}
+
+{% block title %}自动化 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}自动化{% endblock %}
+{% block subtitle %}自动化脚本 / 定时任务 / 运行状态{% endblock %}
+
+{% block page_actions %}
+<label class="automation-toolbar-field">
+  <span>排序</span>
+  <select class="automation-sort-select" data-automation-sort>
+    <option value="name">按名称</option>
+    <option value="recent">按最近活动</option>
+    <option value="mode" selected>按执行方式</option>
+  </select>
+</label>
+
+{% set tms = tms_session_status %}
+{% set creds = tms_session_credentials %}
+<div class="tms-dot-wrap">
+  <div
+    class="tms-dot"
+    data-tms-dot
+    data-status="{{ tms.status }}"
+    data-status-tone="{{ tms.status_tone }}"
+    data-label="{{ tms.label }}"
+    data-profile="ronghui"
+    data-profile-label="TMS融辉"
+    data-dot-label="TMS融辉"
+    data-has-saved-credentials="{{ 'true' if creds.has_saved_credentials else 'false' }}"
+    data-status-url="/automations/tms-session/status"
+    data-context-url="/automations/session-context"
+    data-poll-interval-ms="5000"
+    tabindex="0"
+    role="button"
+    aria-haspopup="dialog"
+    aria-expanded="false"
+    aria-label="TMS融辉 {{ tms.label }}"
+  >
+    <span class="tms-dot-pulse" aria-hidden="true"></span>
+    <span class="tms-dot-core" aria-hidden="true"></span>
+    <span class="tms-dot-label" data-tms-dot-label>TMS融辉</span>
+  </div>
+
+  {# ── TMS 状态 popover（hover/focus dot 时显示；展开账号设置后进入 sticky 模式） ── #}
+  <aside class="tms-popover" data-tms-popover hidden role="dialog" aria-label="登录状态详情">
+    <div class="tms-popover-head">
+      <span class="tms-popover-state" data-tms-popover-state>{{ tms.label }}</span>
+    </div>
+    <dl class="tms-popover-meta">
+      <div>
+        <dt>有效至</dt>
+        <dd data-tms-expires-at>{{ tms.expires_at or '—' }}</dd>
+      </div>
+      <div>
+        <dt>最近校验</dt>
+        <dd data-tms-last-validation>{{ tms.last_validation_at or '—' }}</dd>
+      </div>
+      <div>
+        <dt>凭据来源</dt>
+        <dd data-tms-credential-source>{% if creds.credential_source == 'saved' %}后台保存{% elif creds.credential_source == 'env' %}环境变量{% else %}未配置{% endif %}</dd>
+      </div>
+    </dl>
+    <div class="tms-popover-actions">
+      <button
+        type="button"
+        class="tms-popover-link tms-popover-toggle"
+        data-tms-toggle-settings
+        aria-expanded="false"
+        aria-controls="tms-popover-settings"
+      >
+        <span>账号设置</span>
+        <i data-feather="chevron-down" class="tms-popover-caret"></i>
+      </button>
+      <a class="tms-popover-link" href="/automation-accounts">
+        <span>账号管理</span>
+      </a>
+      <button type="button" class="tms-popover-link tms-popover-link--icon" data-tms-refresh aria-label="刷新状态">
+        <i data-feather="refresh-cw"></i>
+      </button>
+    </div>
+    <section
+      class="tms-popover-settings"
+      id="tms-popover-settings"
+      data-tms-settings-panel
+      hidden
+    >
+      <form
+        method="post"
+        action="/automations/tms-session/save-credentials"
+        class="tms-action-creds"
+        data-tms-settings-form
+        data-session-action="save-credentials"
+      >
+        <span hidden>默认登录配置</span>
+        <label class="tms-action-field">
+          <span>账号</span>
+          <input class="review-input compact-input" type="text" name="username" value="{{ creds.username }}" autocomplete="username" placeholder="TMS融辉 登录账号">
+        </label>
+        <label class="tms-action-field">
+          <span>密码</span>
+          <div class="tms-action-password">
+            <input class="review-input compact-input" type="password" name="password" value="{{ creds.password }}" autocomplete="current-password" placeholder="TMS融辉 登录密码" data-tms-password-input>
+            <button type="button" class="tms-action-password-toggle" data-tms-password-toggle aria-label="显示密码">
+              <i data-feather="eye"></i>
+            </button>
+          </div>
+        </label>
+        <label class="tms-action-field" data-session-phone-field>
+          <span>手机号</span>
+          <input class="review-input compact-input" type="text" name="phone" value="{{ creds.phone }}" inputmode="tel" autocomplete="tel" placeholder="接收验证码的手机号">
+        </label>
+        <div class="tms-action-creds-foot">
+          <button class="primary-btn tms-action-primary" type="submit" data-session-action="save-credentials">保存账号</button>
+          <button class="tms-action-link tms-action-link--danger" type="submit" formaction="/automations/tms-session/clear-credentials" formmethod="post" data-session-action="clear-credentials">清空已保存</button>
+        </div>
+        <div class="tms-action-creds-foot tms-action-creds-foot--authed" data-tms-settings-authed-actions hidden>
+          <button class="tms-action-link" type="submit" formaction="/automations/tms-session/clear" formmethod="post" data-session-action="clear">清除登录态</button>
+        </div>
+      </form>
+    </section>
+  </aside>
+</div>
+{% endblock %}
+
+{% macro render_visual_field(field, prefix) %}
+  {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
+  <label class="auto-field">
+    <span class="auto-field-label">{{ field.label }}</span>
+    {% if field.kind == "checkbox" %}
+    <div class="auto-checkbox-wrap">
+      <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-json-path="{{ field.path }}" {% if field.value %}checked{% endif %}>
+      <span class="auto-checkbox-label">{{ '已启用' if field.value else '未启用' }}</span>
+    </div>
+    {% elif field.kind == "list" %}
+    <textarea id="{{ input_id }}" class="review-input auto-list-input" data-json-path="{{ field.path }}" data-json-list="true" placeholder="每行一个值">{{ field.value }}</textarea>
+    {% else %}
+    <input id="{{ input_id }}" class="review-input compact-input" type="{{ 'password' if field.secret else 'date' if field.kind == 'date' else 'url' if field.kind == 'url' else 'number' if field.kind == 'number' else 'text' }}" value="{{ field.value }}" data-json-path="{{ field.path }}" {% if field.step %}step="{{ field.step }}"{% endif %} {% if field.empty_null %}data-empty-null="true"{% endif %} placeholder="{{ field.label }}">
+    {% endif %}
+    {% if field.hint %}
+    <span class="auto-field-hint">{{ field.hint }}</span>
+    {% endif %}
+  </label>
+{% endmacro %}
+
+{% macro render_resource_field(field, resource_key, prefix) %}
+  {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
+  <label class="auto-field">
+    <span class="auto-field-label">{{ field.label }}</span>
+    {% if field.kind == "checkbox" %}
+    <div class="auto-checkbox-wrap">
+      <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-resource-key="{{ resource_key }}" data-resource-path="{{ field.path }}" {% if field.value %}checked{% endif %}>
+      <span class="auto-checkbox-label">{{ '已启用' if field.value else '未启用' }}</span>
+    </div>
+    {% elif field.kind == "list" %}
+    <textarea id="{{ input_id }}" class="review-input auto-list-input" data-resource-key="{{ resource_key }}" data-resource-path="{{ field.path }}" data-resource-list="true" placeholder="每行一个值">{{ field.value }}</textarea>
+    {% else %}
+    <input id="{{ input_id }}" class="review-input compact-input" type="{{ 'password' if field.secret else 'date' if field.kind == 'date' else 'url' if field.kind == 'url' else 'number' if field.kind == 'number' else 'text' }}" value="{{ field.value }}" data-resource-key="{{ resource_key }}" data-resource-path="{{ field.path }}" {% if field.step %}step="{{ field.step }}"{% endif %} {% if field.empty_null %}data-empty-null="true"{% endif %} placeholder="{{ field.label }}">
+    {% endif %}
+    {% if field.hint %}
+    <span class="auto-field-hint">{{ field.hint }}</span>
+    {% endif %}
+  </label>
+{% endmacro %}
+
+{% block content %}
+<section class="auto-page" data-reveal="tasks">
+  {% set tms = tms_session_status %}
+  {% set creds = tms_session_credentials %}
+
+  {# ── TMS 登录维护 Action 内联条 ── #}
+  <section
+    class="tms-action-card"
+    data-tms-action-card
+    hidden
+    role="region"
+    aria-live="polite"
+    aria-label="登录维护"
+    data-status="{{ tms.status }}"
+  >
+    <header class="tms-action-head">
+      <div>
+        <h2 class="tms-action-title" data-tms-action-title>
+          {% if tms.status == 'pending_code' %}请输入 TMS融辉 {{ tms.challenge_label or '验证码' }}
+          {% elif tms.status == 'authenticated' %}TMS融辉 已登录 <span hidden>验证码共享登录态</span>
+          {% else %}TMS融辉 登录态已断开{% endif %}
+        </h2>
+        <p class="tms-action-sub" data-tms-action-sub {% if not tms.last_error_summary %}hidden{% endif %}>{{ tms.last_error_summary }}</p>
+      </div>
+      <div class="tms-action-head-actions">
+        <button type="button" class="tms-action-icon-btn" data-tms-settings aria-label="账号设置" title="账号设置">
+          <i data-feather="settings"></i>
+        </button>
+        <button type="button" class="tms-action-close" data-tms-close aria-label="收起">
+          <i data-feather="x"></i>
+        </button>
+      </div>
+    </header>
+
+    {# TMS 验证码：未发送时只显示发送按钮，待提交时显示输入框 + 同一个重发按钮 #}
+    <form
+      method="post"
+      action="/automations/tms-session/submit-code"
+      class="tms-action-form"
+      data-tms-action-form
+      data-session-action="submit-code"
+      hidden
+    >
+      <label class="tms-action-field tms-action-field--code" data-tms-code-field>
+        <span data-tms-code-label>{{ tms.challenge_label or '验证码' }}</span>
+        <input
+          class="review-input compact-input tms-action-code-input"
+          type="text"
+          name="code"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          maxlength="6"
+          pattern="\d{6}"
+          placeholder="发送后输入验证码"
+          data-tms-code-input
+          disabled
+          required
+          aria-describedby="tms-code-hint"
+        >
+        <div class="tms-captcha-preview" data-tms-captcha{% if not (tms.status == 'pending_code' and tms.challenge_type == 'image' and tms.captcha_image) %} hidden{% endif %}>
+          <img alt="图片验证码" src="{{ tms.captcha_image or '' }}" data-tms-captcha-img>
+        </div>
+      </label>
+      <button class="primary-btn tms-action-primary" type="submit" formaction="/automations/tms-session/send-code" formnovalidate data-tms-send-btn data-session-action="send-code" {% if not creds.has_saved_credentials %}disabled{% endif %}>
+        {% if tms.status == 'pending_code' %}
+          {{ '刷新验证码' if tms.challenge_type == 'image' else '重新发送验证码' }}
+        {% else %}
+          {{ '登录' if not tms.challenge_type or tms.challenge_type == 'image' else '发送验证码' }}
+        {% endif %}
+      </button>
+    </form>
+  </section>
+
+  {% if automation_db_warning %}
+  <div class="auto-feedback auto-feedback--warning">
+    <div class="auto-feedback-head">
+      <strong>自动化任务列表已降级</strong>
+      <span>{{ automation_db_warning }}</span>
+    </div>
+  </div>
+  {% endif %}
+  {% if automation_account_warning %}
+  <div class="auto-feedback auto-feedback--warning">
+    <div class="auto-feedback-head">
+      <strong>账号列表暂不可用</strong>
+      <span>{{ automation_account_warning }}；任务仍会按旧参数或系统默认登录态执行。</span>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── 分类切换 ── #}
+  {% set provider_counts = automation_provider_counts | default({}, true) %}
+  {% set provider_enabled_counts = automation_provider_enabled_counts | default({}, true) %}
+  <div class="auto-provider-bar">
+    <div class="auto-provider-tabs" role="tablist" aria-label="自动化分类">
+      <button class="auto-provider-tab" type="button" role="tab" data-automation-provider-tab data-provider="ronghui" aria-selected="true">
+        <i data-feather="truck"></i>
+        <span>TMS融辉</span>
+        <strong class="auto-provider-count">{{ provider_counts.get('ronghui', 0) }}</strong>
+      </button>
+      <button class="auto-provider-tab" type="button" role="tab" data-automation-provider-tab data-provider="yunda" aria-selected="false">
+        <i data-feather="truck"></i>
+        <span>韵达</span>
+        <strong class="auto-provider-count">{{ provider_counts.get('yunda', 0) }}</strong>
+      </button>
+    </div>
+  </div>
+
+  {# ── 统计栏 ── #}
+  <div class="auto-stats-bar">
+    <span class="auto-stat">
+      <i data-feather="layers"></i>
+      共 <strong data-total-count>{{ provider_counts.get('ronghui', scheduled_tasks|length) }}</strong> 个任务
+    </span>
+    <span class="auto-stat">
+      <i data-feather="check-circle"></i>
+      <strong data-enabled-count>{{ provider_enabled_counts.get('ronghui', enabled_task_count) }}</strong> 个已启用
+    </span>
+  </div>
+
+  {# ── 任务列表 ── #}
+  {% if scheduled_tasks %}
+  <div class="auto-list" data-automation-list>
+    {% for task in scheduled_tasks %}
+    <article
+      class="auto-card"
+      data-automation-task-row
+      data-search-text="{{ task.search_text }}"
+      data-sort-name="{{ task.name_value|lower }}"
+      data-sort-recent="{{ task.last_activity_value }}"
+      data-sort-mode="{{ task.task_mode }}"
+      data-automation-provider="{{ task.provider | default('ronghui', true) }}"
+    >
+      <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form">
+        <input type="hidden" name="task_id" value="{{ task.task_id }}">
+        <input type="hidden" name="task_mode" value="{{ task.task_mode or 'scheduled' }}">
+        <input type="hidden" name="name" value="{{ task.name_value }}">
+        <input type="hidden" name="tool_name" value="{{ task.tool_name_value }}">
+        <input type="hidden" name="cron_expression" value="{{ task.cron_expression_value }}" data-cron-hidden>
+        <input type="hidden" name="schedule_times_json" value='{{ task.schedule_time_values | default([], true) | tojson }}' data-schedule-times-hidden>
+        <input type="hidden" name="resource_key" value="" data-resource-key-hidden>
+        <textarea name="config_json" hidden data-resource-json-hidden></textarea>
+        <textarea name="resources_json" hidden data-resources-json-hidden></textarea>
+        <textarea name="tool_params_json" hidden>{{ task.tool_params_json }}</textarea>
+        <button type="submit" hidden data-save-trigger></button>
+
+        {% set has_schedule = task.is_schedulable and task.schedule_supported %}
+        {% set has_params = task.tool_param_fields %}
+        {% set has_webhook = task.has_webhook %}
+        {% set has_resources = task.resource_bindings %}
+        {% set has_account_roles = task.account_role_bindings %}
+        {% set is_webhook = task.task_mode == 'webhook' %}
+
+        {# ── 卡片主行 ── #}
+        <div class="auto-card-row">
+          <div class="auto-card-info">
+            <div class="auto-card-head">
+              <h2 class="auto-card-name">{{ task.name_value }}</h2>
+              {# 脚本名隐藏，仅作 hidden 字段保留 #}
+              {% if task.task_mode == 'scheduled' %}
+              <span class="auto-mode-badge auto-mode-badge--scheduled">
+                <i data-feather="clock"></i>
+                定时任务
+              </span>
+              {% elif task.task_mode == 'webhook' %}
+              <span class="auto-mode-badge auto-mode-badge--webhook">
+                <i data-feather="zap"></i>
+                Webhook
+              </span>
+              {% else %}
+              <span class="auto-mode-badge auto-mode-badge--manual">
+                <i data-feather="mouse-pointer"></i>
+                手动执行
+              </span>
+              {% endif %}
+              {% for badge in task.system_badges | default([], true) %}
+              <span class="auto-system-badge auto-system-badge--{{ badge.tone | default('neutral', true) }}">
+                {% if badge.icon %}<i data-feather="{{ badge.icon }}"></i>{% endif %}
+                {{ badge.label }}
+              </span>
+              {% endfor %}
+            </div>
+            {# 运行中进度 #}
+            <span class="auto-progress-pill" data-task-progress hidden>
+              <i data-feather="loader"></i>
+              <span data-task-progress-label>执行中</span>
+              <span data-task-progress-timer>0.0s</span>
+            </span>
+          </div>
+
+          <div class="auto-card-actions">
+            {% if task.is_schedulable %}
+            <label class="auto-toggle-wrap" title="启用/禁用定时">
+              <input type="checkbox" name="enabled" {% if task.enabled_value %}checked{% endif %} data-automation-toggle>
+              <span class="auto-toggle-track"><span class="auto-toggle-thumb"></span></span>
+            </label>
+            {% endif %}
+
+            <button class="primary-btn auto-run-btn" type="submit" formaction="/automations/tasks/run-now" formmethod="post" data-run-now data-run-mode="start">
+              <i data-feather="play" data-run-icon></i>
+              <span data-run-label>执行</span>
+            </button>
+
+            <button class="ghost-btn auto-terminal-btn" type="button" data-terminal-toggle title="查看运行输出" aria-expanded="false">
+              <i data-feather="terminal"></i>
+            </button>
+
+            {% if has_webhook or task.is_schedulable or has_params or has_resources or has_account_options %}
+            <button class="ghost-btn auto-expand-btn" type="button" data-settings-toggle aria-expanded="{{ 'true' if task.is_open else 'false' }}" aria-controls="task-settings-{{ task.task_id }}">
+              <i data-feather="chevron-down"></i>
+            </button>
+            {% endif %}
+          </div>
+        </div>
+
+        {% if task.resource_blocked %}
+        <div class="auto-resource-alert">
+          <i data-feather="alert-triangle"></i>
+          <span>缺少运行资源：{{ task.missing_required_resource_labels | default(task.missing_required_resources, true) | join('、') }}。展开设置后补齐资源配置，再执行。</span>
+        </div>
+        {% endif %}
+
+        {# ── 历史执行反馈默认隐藏；刷新进入保持干净，只由 JS 展示本次执行结果 ── #}
+        <div class="auto-feedback auto-feedback--error" data-runtime-feedback-box hidden>
+          <button class="auto-feedback-close" type="button" onclick="this.parentElement.hidden=true" title="关闭">&times;</button>
+          <div class="auto-feedback-head">
+            <strong>最近错误</strong>
+            <span data-runtime-feedback-message>{{ task.last_error_summary }}</span>
+          </div>
+          <div class="auto-feedback-meta">
+            <span class="auto-feedback-chip" data-runtime-feedback-stamp {% if not task.last_run_value %}hidden{% endif %}>{% if task.last_run_value %}运行于 {{ task.last_run_value }}{% endif %}</span>
+          </div>
+          <pre class="mono-block auto-feedback-body" data-runtime-feedback-body hidden></pre>
+        </div>
+
+        {# ── 实时执行反馈（JS 渲染） ── #}
+        <div class="auto-feedback auto-feedback--info" data-run-feedback hidden>
+          <button class="auto-feedback-close" type="button" data-feedback-close title="关闭">&times;</button>
+          <div class="auto-feedback-head">
+            <strong data-run-feedback-title>执行中</strong>
+            <span data-run-feedback-message>脚本正在运行…</span>
+          </div>
+          <div class="auto-feedback-meta">
+            <span class="auto-feedback-chip" data-run-feedback-stamp hidden></span>
+            <span data-run-feedback-timer></span>
+          </div>
+          <pre class="mono-block auto-feedback-body" data-run-feedback-body hidden></pre>
+        </div>
+
+        {# ── 图形化设置面板（chevron 控制） ── #}
+        {% if has_webhook or task.is_schedulable or has_params or has_resources or has_account_options %}
+        <div id="task-settings-{{ task.task_id }}" class="auto-settings{% if task.is_open %} is-open{% endif %}" {% if not task.is_open %}hidden{% endif %}>
+
+          {% if has_webhook %}
+          {# Webhook 链接展示 #}
+          <div class="auto-settings-section">
+            <div class="auto-settings-label">
+              <i data-feather="link" class="auto-settings-icon"></i>
+              Webhook 地址
+              <span style="color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 4px;">复制到飞书自动化的请求地址</span>
+            </div>
+            <div class="auto-webhook-url-wrap">
+              <code
+                class="auto-webhook-url"
+                data-webhook-url
+                data-webhook-masked="{{ task.webhook_masked_url }}"
+                data-webhook-full="{{ task.webhook_full_url }}"
+                data-webhook-path="{{ task.webhook_path }}"
+              >{{ task.webhook_masked_url }}</code>
+              <button class="ghost-btn auto-webhook-copy" type="button" data-toggle-webhook title="暂时显示真实地址">
+                <i data-feather="eye"></i>
+              </button>
+              <button class="ghost-btn auto-webhook-copy" type="button" data-copy-webhook title="复制链接">
+                <i data-feather="copy"></i>
+              </button>
+            </div>
+            <p class="auto-webhook-note">默认仅显示掩码地址，点击眼睛后会短暂显示真实地址 15 秒，便于复制但不会长期明文暴露。</p>
+            {% if task.webhook_token_enabled %}
+            <div class="auto-signing-hint auto-signing-hint--secure">
+              <i data-feather="shield"></i>
+              <div>
+                <strong>已启用静态 Webhook Token 校验</strong>
+                <span>请求必须带上 <code>{{ task.webhook_header_name }}</code> 请求头，值需与服务器配置的固定 Token 一致。</span>
+              </div>
+            </div>
+            {% else %}
+            <div class="auto-signing-hint auto-signing-hint--warning">
+              <i data-feather="alert-triangle"></i>
+              <div>
+                <strong>服务器尚未检测到静态 Webhook Token</strong>
+                <span>请在 Agent 环境变量中配置 <code>DOCFLOW_AGENT_WEBHOOK_TOKEN</code> 或 <code>AGENT_WEBHOOK_TOKEN</code>，并在飞书自动化请求头里附带 <code>{{ task.webhook_header_name }}</code>。</span>
+              </div>
+            </div>
+            {% endif %}
+            <div class="auto-signing-hint auto-signing-hint--secure">
+              <i data-feather="key"></i>
+              <div>
+                <strong>飞书自动化请求头</strong>
+                <span>Header 名称固定为 <code>{{ task.webhook_header_name }}</code>，值使用服务器配置的固定 Token。</span>
+              </div>
+            </div>
+            <div class="auto-webhook-body-section">
+              <div class="auto-settings-label" style="margin-top: 10px;">
+                <i data-feather="send" class="auto-settings-icon"></i>
+                请求体 (POST JSON)
+                <span style="color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 4px;">填入飞书请求体</span>
+              </div>
+              <div class="auto-webhook-url-wrap">
+                <pre class="auto-webhook-body" data-webhook-body>{{ task.webhook_body_json }}</pre>
+                <button class="ghost-btn auto-webhook-copy" type="button" data-copy-webhook-body title="复制请求体">
+                  <i data-feather="copy"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+
+          {% if has_account_roles %}
+          <div class="auto-settings-section auto-account-binding">
+            <div class="auto-settings-label">
+              <i data-feather="user-check" class="auto-settings-icon"></i>
+              使用账号
+            </div>
+            <div class="auto-account-role-stack">
+              {% for role in task.account_role_bindings %}
+              <label class="auto-account-role-row">
+                <span class="auto-account-role-label">
+                  {{ role.label }}
+                  <small>{{ role.system_label }}</small>
+                </span>
+                <select class="review-input compact-input auto-account-select" name="account_role__{{ role.field }}" data-json-path="{{ role.field }}">
+                  {% for account in role.options %}
+                  <option value="{{ account.account_id }}" {% if account.account_id == role.selected_account_id %}selected{% endif %}>
+                    {{ account.name }} · {{ account.status_label or '未知' }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </label>
+              {% endfor %}
+              <a class="ghost-btn auto-account-manage-link" href="/automation-accounts">
+                <i data-feather="users"></i>
+                账号管理
+              </a>
+            </div>
+            <p class="auto-webhook-note">保存后会写入各角色对应的任务参数；旧任务未设置时使用角色默认账号。</p>
+          </div>
+          {% endif %}
+
+          {% if has_resources %}
+          <div class="auto-settings-section">
+            <div class="auto-settings-label">
+              <i data-feather="database" class="auto-settings-icon"></i>
+              运行资源
+            </div>
+            <div class="auto-resource-toolbar">
+              <button class="ghost-btn auto-save-btn" type="button" data-resource-save-all>
+                <i data-feather="save"></i>
+                保存本任务资源
+              </button>
+              <span class="auto-resource-status" data-resource-save-status></span>
+            </div>
+            <div class="auto-resource-stack">
+              {% for resource in task.resource_bindings %}
+              <div class="auto-resource-card{% if resource.missing %} auto-resource-card--missing{% endif %}" data-resource-card="{{ resource.resource_key }}" data-resource-label="{{ resource.display_name or resource.note or '运行资源' }}">
+                <div class="auto-resource-head">
+                  <div class="auto-resource-copy">
+                    <strong>{{ resource.display_name or '运行资源' }}</strong>
+                    {% if resource.note %}
+                    <p>{{ resource.note }}</p>
+                    {% endif %}
+                  </div>
+                  <span class="auto-resource-chip auto-resource-chip--{{ 'missing' if resource.missing else 'ready' }}">
+                    {% if resource.missing %}{{ '缺失' if resource.required else '未配置' }}{% else %}已配置{% endif %}
+                  </span>
+                </div>
+                {% if resource.missing %}
+                <p class="auto-resource-note" data-resource-note>
+                  {% if resource.required %}这是执行必需资源。{% else %}这是可选资源；缺失时只会跳过后续触发。{% endif %}
+                  填写下方字段后保存。
+                </p>
+                <div class="auto-resource-form">
+                  <textarea data-resource-json-input="{{ resource.resource_key }}" hidden>{{ resource.editor_json }}</textarea>
+                  <div class="auto-resource-field-grid">
+                    {% for field in resource.visual_fields %}
+                    {{ render_resource_field(field, resource.resource_key, 'resource-' ~ resource.resource_key|replace('.', '-') ~ '-' ~ loop.index) }}
+                    {% endfor %}
+                  </div>
+                  <div class="auto-resource-actions">
+                    <button
+                      class="ghost-btn auto-save-btn"
+                      type="submit"
+                      formaction="/automations/resources/save"
+                      formmethod="post"
+                      data-resource-save
+                      data-resource-key="{{ resource.resource_key }}"
+                    >
+                      <i data-feather="save"></i>
+                      保存资源
+                    </button>
+                  </div>
+                </div>
+                {% else %}
+                <div class="auto-resource-meta">
+                  <span>来源：{{ resource.source|default('unknown', true) }}</span>
+                  {% if resource.updated_at %}
+                  <span>更新于 {{ resource.updated_at }}</span>
+                  {% endif %}
+                </div>
+                <details class="auto-resource-edit">
+                  <summary>重新配置</summary>
+                  <p class="auto-resource-note" data-resource-note>当前已配置，可修改下方字段后覆盖保存。</p>
+                  <div class="auto-resource-form">
+                    <textarea data-resource-json-input="{{ resource.resource_key }}" hidden>{{ resource.editor_json }}</textarea>
+                    <div class="auto-resource-field-grid">
+                      {% for field in resource.visual_fields %}
+                      {{ render_resource_field(field, resource.resource_key, 'resource-' ~ resource.resource_key|replace('.', '-') ~ '-' ~ loop.index) }}
+                      {% endfor %}
+                    </div>
+                    <div class="auto-resource-actions">
+                      <button
+                        class="ghost-btn auto-save-btn"
+                        type="submit"
+                        formaction="/automations/resources/save"
+                        formmethod="post"
+                        data-resource-save
+                        data-resource-key="{{ resource.resource_key }}"
+                      >
+                        <i data-feather="save"></i>
+                        覆盖保存
+                      </button>
+                    </div>
+                  </div>
+                </details>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          {# 定时设置 #}
+          {% if has_schedule %}
+          <div class="auto-settings-section">
+            <div class="auto-settings-label">
+              <i data-feather="clock" class="auto-settings-icon"></i>
+              执行时间
+            </div>
+            <div class="auto-schedule-stack" data-schedule-stack>
+              {% for schedule_time in task.schedule_time_values | default([], true) %}
+              <div class="auto-schedule-row" data-schedule-row>
+                <input class="review-input compact-input auto-time-input" type="time" value="{{ schedule_time }}" data-schedule-time>
+                <button class="ghost-btn auto-icon-btn" type="button" data-remove-schedule-time title="删除">
+                  <i data-feather="x"></i>
+                </button>
+              </div>
+              {% endfor %}
+            </div>
+            <button class="ghost-btn auto-add-btn" type="button" data-add-schedule-time>
+              <i data-feather="plus"></i>
+              添加时间
+            </button>
+          </div>
+          {% endif %}
+
+          {# 可视化参数 #}
+          {% if has_params %}
+          <div class="auto-settings-section">
+            <div class="auto-settings-label">
+              <i data-feather="sliders" class="auto-settings-icon"></i>
+              参数
+              <span class="auto-settings-count">{{ task.tool_param_fields|length }}</span>
+            </div>
+            <div class="auto-param-grid">
+              {% for field in task.tool_param_fields %}
+              {{ render_visual_field(field, 'task-' ~ task.task_id) }}
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          <div class="auto-settings-footer">
+            <button class="ghost-btn auto-save-btn" type="submit">
+              <i data-feather="check"></i>
+              保存设置
+            </button>
+          </div>
+        </div>
+        {% endif %}
+
+        {# ── 终端输出面板（terminal 图标控制） ── #}
+        <div class="auto-terminal-drawer" data-terminal-drawer data-tool-name="{{ task.tool_name_value }}" data-task-id="{{ task.task_id }}" hidden>
+          <div class="auto-terminal-head">
+            <div class="auto-terminal-title">
+              <i data-feather="terminal"></i>
+              <span>运行输出</span>
+              <span class="auto-terminal-status" data-terminal-status></span>
+            </div>
+            <div class="auto-terminal-actions">
+              <button class="auto-terminal-action-btn" type="button" data-terminal-clear title="清屏">
+                <i data-feather="trash-2"></i>
+              </button>
+              <button class="auto-terminal-action-btn" type="button" data-terminal-scroll-lock title="自动滚动">
+                <i data-feather="chevrons-down"></i>
+              </button>
+            </div>
+          </div>
+          <pre class="auto-terminal-body" data-terminal-body></pre>
+        </div>
+
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+
+  <div class="auto-empty" data-automation-empty hidden>
+    <p class="empty-note">没有匹配的任务。</p>
+  </div>
+  {% else %}
+  <div class="auto-empty">
+    <p class="empty-note">暂无自动化任务。</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+  /* ── helpers ── */
+  function setDeep(target, path, value) {
+    const parts = path.split(".");
+    let cursor = target;
+    parts.forEach((part, i) => {
+      if (i === parts.length - 1) { cursor[part] = value; return; }
+      if (!cursor[part] || typeof cursor[part] !== "object" || Array.isArray(cursor[part])) cursor[part] = {};
+      cursor = cursor[part];
+    });
+  }
+
+  function parseInputValue(input) {
+    if (input.type === "checkbox") return input.checked;
+    if (input.dataset.jsonList === "true") {
+      return input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+    }
+    if (input.type === "number") {
+      if (input.value === "") return input.dataset.emptyNull === "true" ? null : "";
+      return input.step === "1" ? parseInt(input.value, 10) : parseFloat(input.value);
+    }
+    if (input.dataset.emptyNull === "true" && input.value.trim() === "") return null;
+    return input.value;
+  }
+
+  function buildDailyCron(t) {
+    if (!t || !t.includes(":")) return null;
+    const [h, m] = t.split(":").map(Number);
+    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+    return `${m} ${h} * * *`;
+  }
+
+  function collectScheduleTimes(form) {
+    const seen = new Set();
+    return Array.from(form.querySelectorAll("[data-schedule-time]"))
+      .map(i => i.value.trim()).filter(Boolean)
+      .filter(v => { const c = buildDailyCron(v); if (!c || seen.has(v)) return false; seen.add(v); return true; })
+      .sort();
+  }
+
+  function syncScheduleUI(form) {
+    const rows = form.querySelectorAll("[data-schedule-row]");
+    rows.forEach(row => {
+      const btn = row.querySelector("[data-remove-schedule-time]");
+      if (btn) btn.disabled = false;
+    });
+  }
+
+  function serializeForm(form) {
+    const hiddenJson = form.querySelector('textarea[name="tool_params_json"]');
+    if (hiddenJson) {
+      let payload = {};
+      try { payload = JSON.parse(hiddenJson.value || "{}"); } catch {}
+      form.querySelectorAll("[data-json-path]").forEach(input => {
+        const val = parseInputValue(input);
+        setDeep(payload, input.dataset.jsonPath, val);
+      });
+      hiddenJson.value = JSON.stringify(payload, null, 2);
+    }
+    const hiddenCron = form.querySelector('input[name="cron_expression"]');
+    const hiddenTimes = form.querySelector('input[name="schedule_times_json"]');
+    const cronEditor = form.querySelector("[data-cron-editor]");
+    if (hiddenCron) {
+      if (cronEditor && cronEditor.dataset.manualDirty === "true") {
+        hiddenCron.value = cronEditor.value.trim();
+        if (hiddenTimes) hiddenTimes.value = "[]";
+      } else {
+        const times = collectScheduleTimes(form);
+        if (hiddenTimes) hiddenTimes.value = JSON.stringify(times);
+        const cron = times.map(buildDailyCron).filter(Boolean).join("\\n");
+        hiddenCron.value = cron;
+        if (cronEditor) cronEditor.value = hiddenCron.value;
+      }
+    }
+  }
+
+  function setButtonLoading(btn, on) {
+    if (!(btn instanceof HTMLElement)) return;
+    if (on) {
+      btn.setAttribute("aria-busy", "true");
+      btn.setAttribute("disabled", "");
+      if (!btn.querySelector(".btn-spinner")) {
+        const s = document.createElement("span");
+        s.className = "btn-spinner";
+        btn.appendChild(s);
+      }
+    } else {
+      btn.removeAttribute("aria-busy");
+      btn.removeAttribute("disabled");
+      btn.querySelector(".btn-spinner")?.remove();
+    }
+  }
+
+  function fmtStamp(d) {
+    const dt = d instanceof Date ? d : new Date(d);
+    if (isNaN(dt)) return "-";
+    const p = v => String(v).padStart(2, "0");
+    return `${dt.getFullYear()}-${p(dt.getMonth()+1)}-${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`;
+  }
+
+  function copyAndFlash(btn, text) {
+    navigator.clipboard.writeText(text).then(() => {
+      btn.classList.add("is-copied");
+      const icon = btn.querySelector(".feather");
+      if (icon) icon.setAttribute("data-feather", "check");
+      feather.replace();
+      setTimeout(() => {
+        btn.classList.remove("is-copied");
+        if (icon) icon.setAttribute("data-feather", "copy");
+        feather.replace();
+      }, 1500);
+    });
+  }
+
+  function hideLegacyFeedback(form) {
+    form.querySelectorAll(".auto-feedback:not([data-runtime-feedback-box]):not([data-run-feedback])").forEach(box => {
+      box.hidden = true;
+    });
+  }
+
+  function renderFeedback(form, s) {
+    const box = form.querySelector("[data-run-feedback]");
+    if (!box) return;
+    hideLegacyFeedback(form);
+    const runtimeBox = form.querySelector("[data-runtime-feedback-box]");
+    if (runtimeBox) runtimeBox.hidden = true;
+    box.hidden = false;
+    box.className = "auto-feedback auto-feedback--" + (s.kind || "info");
+    const t = box.querySelector("[data-run-feedback-title]");
+    const m = box.querySelector("[data-run-feedback-message]");
+    const b = box.querySelector("[data-run-feedback-body]");
+    const tm = box.querySelector("[data-run-feedback-timer]");
+    const st = box.querySelector("[data-run-feedback-stamp]");
+    if (t) t.textContent = s.title || "";
+    if (m) m.textContent = s.message || "";
+    if (tm) { tm.hidden = !s.showTimer; if (!s.showTimer && s.timerText) tm.textContent = s.timerText; }
+    if (st) { st.hidden = !s.stampText; st.textContent = s.stampText || ""; }
+    if (b) { b.hidden = !s.body; b.textContent = s.body || ""; }
+  }
+
+  function hideRunFeedback(form) {
+    const box = form.querySelector("[data-run-feedback]");
+    if (box) box.hidden = true;
+  }
+
+  function syncRuntimeFeedback(form, runtime) {
+    const box = form.querySelector("[data-runtime-feedback-box]");
+    if (!box) return;
+    if (!runtime) {
+      box.hidden = true;
+      return;
+    }
+    hideLegacyFeedback(form);
+    hideRunFeedback(form);
+    const titleEl = box.querySelector("[data-runtime-feedback-title]") || box.querySelector(".auto-feedback-head strong");
+    const messageEl = box.querySelector("[data-runtime-feedback-message]");
+    const stampEl = box.querySelector("[data-runtime-feedback-stamp]");
+    const bodyEl = box.querySelector("[data-runtime-feedback-body]");
+    const ok = !!runtime.ok;
+    const cancelled = !!runtime.cancelled;
+    box.hidden = false;
+    box.className = "auto-feedback auto-feedback--" + (cancelled ? "warning" : ok ? "success" : "error");
+    if (titleEl) titleEl.textContent = runtime.title || (cancelled ? "本次执行已取消" : ok ? "最近一次立即执行" : "最近一次执行失败");
+    if (messageEl) messageEl.textContent = runtime.message || "";
+    if (stampEl) {
+      const stampText = runtime.last_run ? `运行于 ${runtime.last_run}` : "";
+      stampEl.hidden = !stampText;
+      stampEl.textContent = stampText;
+    }
+    if (bodyEl) {
+      const bodyText = runtime.error || "";
+      bodyEl.hidden = !bodyText;
+      bodyEl.textContent = bodyText;
+    }
+  }
+
+  /* ── 面板开关辅助 ── */
+  function togglePanel(btn, panel) {
+    const open = btn.getAttribute("aria-expanded") === "true";
+    btn.setAttribute("aria-expanded", open ? "false" : "true");
+    if (open) {
+      panel.classList.remove("is-open");
+      panel.addEventListener("transitionend", function handler() {
+        if (!panel.classList.contains("is-open")) panel.hidden = true;
+        panel.removeEventListener("transitionend", handler);
+      });
+    } else {
+      panel.hidden = false;
+      // force reflow for transition
+      panel.offsetHeight;
+      panel.classList.add("is-open");
+    }
+  }
+
+  function closePanel(btn, panel) {
+    if (!btn || !panel || btn.getAttribute("aria-expanded") !== "true") return;
+    togglePanel(btn, panel);
+    window.setTimeout(() => {
+      if (!panel.classList.contains("is-open")) panel.hidden = true;
+    }, 360);
+  }
+
+  function hasMissingResourceCards(form) {
+    return !!form.querySelector(".auto-resource-card--missing");
+  }
+
+  function closeAutomationTaskPanels(form) {
+    closePanel(form.querySelector("[data-settings-toggle]"), form.querySelector(".auto-settings"));
+  }
+
+  function taskSubmitPath(form, submitter) {
+    const rawAction = submitter?.getAttribute("formaction") || form.getAttribute("action") || "";
+    try {
+      return new URL(rawAction, window.location.origin).pathname;
+    } catch (_) {
+      return rawAction;
+    }
+  }
+
+  const AUTOMATION_PROVIDER_KEY = "shipnow:automation-provider";
+  const AUTOMATION_PROVIDERS = new Set(["ronghui", "yunda"]);
+
+  function readAutomationProvider() {
+    try {
+      const saved = window.localStorage.getItem(AUTOMATION_PROVIDER_KEY);
+      if (AUTOMATION_PROVIDERS.has(saved)) return saved;
+    } catch {}
+    return "ronghui";
+  }
+
+  function currentAutomationProvider() {
+    const selected = document.querySelector("[data-automation-provider-tab][aria-selected='true']");
+    const provider = selected ? selected.dataset.provider : "";
+    return AUTOMATION_PROVIDERS.has(provider) ? provider : "ronghui";
+  }
+
+  function rowMatchesAutomationProvider(row, provider) {
+    return (row.dataset.automationProvider || "ronghui") === provider;
+  }
+
+  function updateAutomationStats(rows, provider) {
+    const totalCounter = document.querySelector("[data-total-count]");
+    const enabledCounter = document.querySelector("[data-enabled-count]");
+    const scopedRows = rows.filter(row => rowMatchesAutomationProvider(row, provider));
+    const enabled = scopedRows.filter(row => row.querySelector("[data-automation-toggle]:checked")).length;
+    if (totalCounter) totalCounter.textContent = scopedRows.length;
+    if (enabledCounter) enabledCounter.textContent = enabled;
+  }
+
+  function setAutomationProvider(provider, persist = true) {
+    const nextProvider = AUTOMATION_PROVIDERS.has(provider) ? provider : "ronghui";
+    document.querySelectorAll("[data-automation-provider-tab]").forEach(tab => {
+      const selected = tab.dataset.provider === nextProvider;
+      tab.setAttribute("aria-selected", selected ? "true" : "false");
+      tab.classList.toggle("is-active", selected);
+      tab.setAttribute("tabindex", selected ? "0" : "-1");
+    });
+    if (persist) {
+      try { window.localStorage.setItem(AUTOMATION_PROVIDER_KEY, nextProvider); } catch {}
+    }
+    applyListState();
+    if (typeof window.__setAutomationSessionProvider === "function") {
+      window.__setAutomationSessionProvider(nextProvider);
+    }
+  }
+
+  /* ── 统计栏实时同步 ── */
+  function syncEnabledCount() {
+    const list = document.querySelector("[data-automation-list]");
+    if (!list) return;
+    const rows = Array.from(list.querySelectorAll("[data-automation-task-row]"));
+    updateAutomationStats(rows, currentAutomationProvider());
+  }
+
+  /* ── toggle 自动保存 ── */
+  async function autoSaveToggle(form) {
+    serializeForm(form);
+    const fd = new FormData(form);
+    const body = new URLSearchParams();
+    fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
+    try {
+      await fetch("/automations/tasks/save", {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+        body: body.toString(),
+      });
+    } catch {}
+  }
+
+  /* ── 初始化每个表单 ── */
+  document.querySelectorAll(".js-automation-task-form").forEach(form => {
+    syncScheduleUI(form);
+    hideLegacyFeedback(form);
+    const runtimeBox = form.querySelector("[data-runtime-feedback-box]");
+    const runBtn = form.querySelector("[data-run-now]");
+    let runTimer = null;
+    let runUiState = {
+      running: false,
+      startedAt: "",
+      cancelRequested: false,
+    };
+
+    function syncRunButtonVisual() {
+      if (!(runBtn instanceof HTMLElement)) return;
+      const isRunning = !!runUiState.running;
+      const isCancelPending = !!runUiState.running && !!runUiState.cancelRequested;
+      const iconName = isRunning ? "x-circle" : "play";
+      const labelText = isCancelPending ? "取消中" : isRunning ? "取消" : "执行";
+      const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
+      const runLabel = runBtn.querySelector("[data-run-label]");
+
+      runBtn.dataset.runMode = isRunning ? "cancel" : "start";
+      runBtn.classList.toggle("auto-run-btn--cancel", isRunning);
+      runBtn.classList.toggle("is-pending", isCancelPending);
+      runBtn.disabled = runBtn.hasAttribute("aria-busy") || isCancelPending;
+      if (runLabel) {
+        runLabel.textContent = labelText;
+      }
+      if (runIcon) {
+        runIcon.setAttribute("data-feather", iconName);
+      }
+      feather.replace();
+    }
+
+    function setRunUiState(next = {}) {
+      runUiState = {
+        ...runUiState,
+        ...next,
+      };
+      if (!runUiState.running) {
+        runUiState.startedAt = "";
+        runUiState.cancelRequested = false;
+      }
+      syncRunButtonVisual();
+    }
+
+    function stopRunProgress() {
+      if (runTimer) {
+        clearInterval(runTimer);
+        runTimer = null;
+      }
+      const prog = form.querySelector("[data-task-progress]");
+      if (prog) prog.hidden = true;
+    }
+
+    function startRunProgress(startedAt) {
+      if (runTimer) {
+        clearInterval(runTimer);
+        runTimer = null;
+      }
+      const prog = form.querySelector("[data-task-progress]");
+      const progLabel = form.querySelector("[data-task-progress-label]");
+      const progTimer = form.querySelector("[data-task-progress-timer]");
+      setRunUiState({
+        running: true,
+        startedAt: startedAt || "",
+        cancelRequested: runUiState.cancelRequested,
+      });
+      if (prog) prog.hidden = false;
+      if (progLabel) {
+        progLabel.textContent = "执行中";
+        progLabel.title = startedAt ? `开始：${startedAt}` : "";
+      }
+      const parsed = startedAt ? Date.parse(String(startedAt).replace(" ", "T")) : NaN;
+      const baseTs = Number.isFinite(parsed) ? parsed : Date.now();
+      const tick = () => {
+        const sec = ((Date.now() - baseTs) / 1000).toFixed(1);
+        if (progTimer) progTimer.textContent = `${sec}s`;
+        const ft = form.querySelector("[data-run-feedback-timer]");
+        if (ft) ft.textContent = `已运行 ${sec} 秒`;
+      };
+      tick();
+      runTimer = setInterval(tick, 200);
+    }
+
+    const resourceEditors = Array.from(form.querySelectorAll("[data-resource-json-input]"));
+    resourceEditors.forEach(editor => {
+      editor.dataset.resourceInitial = editor.value;
+      editor.addEventListener("input", () => {
+        editor.dataset.resourceDirty = "true";
+      });
+    });
+
+    function setResourceSaveStatus(message, kind = "") {
+      const status = form.querySelector("[data-resource-save-status]");
+      if (!status) return;
+      status.textContent = message || "";
+      status.dataset.kind = kind;
+    }
+
+    function parseResourceFieldValue(input) {
+      if (input.type === "checkbox") return input.checked;
+      if (input.dataset.resourceList === "true") {
+        return input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+      }
+      if (input.type === "number") {
+        if (input.value === "") return input.dataset.emptyNull === "true" ? null : "";
+        return input.step === "1" ? parseInt(input.value, 10) : parseFloat(input.value);
+      }
+      if (input.dataset.emptyNull === "true" && input.value.trim() === "") return null;
+      return input.value;
+    }
+
+    function syncResourceCard(card, { markDirty = true } = {}) {
+      if (!card) return null;
+      const editor = card.querySelector("[data-resource-json-input]");
+      if (!editor) return null;
+      let payload = {};
+      try { payload = JSON.parse(editor.value || "{}"); } catch {}
+      card.querySelectorAll("[data-resource-path]").forEach(input => {
+        const path = input.dataset.resourcePath || "";
+        if (!path) return;
+        setDeep(payload, path, parseResourceFieldValue(input));
+      });
+      editor.value = JSON.stringify(payload, null, 2);
+      if (markDirty) editor.dataset.resourceDirty = "true";
+      return editor;
+    }
+
+    function syncAllResourceCards({ markDirty = false } = {}) {
+      form.querySelectorAll(".auto-resource-card").forEach(card => {
+        syncResourceCard(card, { markDirty });
+      });
+    }
+
+    function refreshResourceAlert() {
+      const alert = form.querySelector(".auto-resource-alert");
+      if (!alert) return;
+      const missingKeys = Array.from(form.querySelectorAll(".auto-resource-card--missing"))
+        .map(card => card.dataset.resourceLabel || "")
+        .filter(Boolean);
+      if (!missingKeys.length) {
+        alert.hidden = true;
+        return;
+      }
+      const text = alert.querySelector("span");
+      if (text) {
+        text.textContent = `缺少运行资源：${missingKeys.join("、")}。展开设置后补齐资源配置，再执行。`;
+      }
+    }
+
+    function foldResourceCardAsConfigured(card, resourceKey, editor) {
+      if (!card) return;
+      card.classList.remove("auto-resource-card--missing");
+
+      const directNote = Array.from(card.children).find(child => child.classList.contains("auto-resource-note"));
+      if (directNote) directNote.remove();
+
+      let meta = card.querySelector(":scope > .auto-resource-meta");
+      if (!meta) {
+        meta = document.createElement("div");
+        meta.className = "auto-resource-meta";
+        card.appendChild(meta);
+      }
+      meta.innerHTML = "<span>来源：backend_console</span><span>刚刚保存</span>";
+
+      let details = card.querySelector(":scope > .auto-resource-edit");
+      if (!details) {
+        details = document.createElement("details");
+        details.className = "auto-resource-edit";
+        details.innerHTML = '<summary>重新配置</summary><p class="auto-resource-note" data-resource-note>当前已配置，可修改下方字段后覆盖保存。</p>';
+        card.appendChild(details);
+      }
+      details.open = false;
+
+      const resourceForm = card.querySelector(":scope > .auto-resource-form");
+      if (resourceForm && resourceForm.parentElement !== details) {
+        details.appendChild(resourceForm);
+      }
+
+      let actions = resourceForm?.querySelector(":scope > .auto-resource-actions")
+        || Array.from(card.children).find(child => child.classList.contains("auto-resource-actions"));
+      if (actions) {
+        const saveButton = actions.querySelector("[data-resource-save]");
+        const label = saveButton?.querySelector("span") || saveButton;
+        if (label) label.textContent = "覆盖保存";
+      }
+
+      if (editor) {
+        editor.dataset.resourceInitial = editor.value;
+        editor.dataset.resourceDirty = "false";
+      }
+    }
+
+    function markResourceSaved(resourceKey) {
+      form.querySelectorAll("[data-resource-json-input]").forEach(editor => {
+        if (editor.getAttribute("data-resource-json-input") !== resourceKey) return;
+        editor.dataset.resourceInitial = editor.value;
+        editor.dataset.resourceDirty = "false";
+        const card = editor.closest(".auto-resource-card");
+        if (!card) return;
+        const chip = card.querySelector(".auto-resource-chip");
+        if (chip) {
+          chip.textContent = "已配置";
+          chip.classList.remove("auto-resource-chip--missing");
+          chip.classList.add("auto-resource-chip--ready");
+        }
+        foldResourceCardAsConfigured(card, resourceKey, editor);
+      });
+      refreshResourceAlert();
+    }
+
+    form.querySelectorAll("[data-resource-path]").forEach(input => {
+      const card = input.closest(".auto-resource-card");
+      const sync = () => syncResourceCard(card);
+      input.addEventListener("input", sync);
+      input.addEventListener("change", sync);
+    });
+
+    async function saveResourcePayload(payload, btn) {
+      if (!Object.keys(payload).length) {
+        setResourceSaveStatus("没有修改的资源。", "warning");
+        return;
+      }
+
+      setButtonLoading(btn, true);
+      setResourceSaveStatus("保存中…", "info");
+      try {
+        const body = new URLSearchParams();
+        body.set("task_id", form.querySelector('input[name="task_id"]')?.value || "");
+        body.set("resources_json", JSON.stringify(payload));
+        const res = await fetch("/automations/resources/save", {
+          method: "POST",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          },
+          body: body.toString(),
+        });
+        const result = await res.json();
+        if (!res.ok || !result.ok) {
+          setResourceSaveStatus(result.message || "资源保存失败。", "error");
+          return;
+        }
+        (result.saved || []).forEach(markResourceSaved);
+        setResourceSaveStatus(result.message || "资源已保存。", "success");
+        if (!hasMissingResourceCards(form)) {
+          closeAutomationTaskPanels(form);
+        }
+      } catch (err) {
+        setResourceSaveStatus(err instanceof Error ? err.message : "资源保存失败。", "error");
+      } finally {
+        setButtonLoading(btn, false);
+      }
+    }
+
+    form.querySelectorAll("[data-resource-save]").forEach(btn => {
+      btn.addEventListener("click", async event => {
+        event.preventDefault();
+        const resourceKey = btn.getAttribute("data-resource-key") || "";
+        const card = btn.closest(".auto-resource-card");
+        const editor = syncResourceCard(card) || card?.querySelector(`[data-resource-json-input="${resourceKey}"]`) || form.querySelector(`[data-resource-json-input="${resourceKey}"]`);
+        const value = editor ? editor.value.trim() : "";
+        if (!resourceKey || !value) {
+          setResourceSaveStatus("请至少填写一个资源字段。", "warning");
+          return;
+        }
+        await saveResourcePayload({ [resourceKey]: value }, btn);
+      });
+    });
+
+    form.querySelector("[data-resource-save-all]")?.addEventListener("click", async btnEvent => {
+      const btn = btnEvent.currentTarget;
+      const payload = {};
+      syncAllResourceCards({ markDirty: false });
+      resourceEditors.forEach(editor => {
+        const resourceKey = editor.getAttribute("data-resource-json-input") || "";
+        const value = editor.value.trim();
+        const initial = (editor.dataset.resourceInitial || "").trim();
+        const dirty = editor.dataset.resourceDirty === "true" || value !== initial;
+        if (resourceKey && value && dirty) {
+          payload[resourceKey] = value;
+        }
+      });
+
+      await saveResourcePayload(payload, btn);
+    });
+
+    form.addEventListener("submit", async event => {
+      const submitter = event.submitter;
+      if (taskSubmitPath(form, submitter) !== "/automations/tasks/save") {
+        serializeForm(form);
+        return;
+      }
+
+      event.preventDefault();
+      serializeForm(form);
+      setButtonLoading(submitter, true);
+      try {
+        const fd = new FormData(form);
+        const body = new URLSearchParams();
+        fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
+        const res = await fetch("/automations/tasks/save", {
+          method: "POST",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          },
+          body: body.toString(),
+        });
+        const result = await res.json();
+        if (!res.ok) {
+          renderFeedback(form, {
+            kind: "error",
+            title: "保存失败",
+            message: result.message || "任务设置保存失败。",
+          });
+          return;
+        }
+        if (result.ok === false) {
+          renderFeedback(form, {
+            kind: "warning",
+            title: "设置已保存",
+            message: result.message || "任务设置已保存，Agent 重载稍后生效。",
+          });
+        } else {
+          hideRunFeedback(form);
+        }
+        closeAutomationTaskPanels(form);
+      } catch (err) {
+        renderFeedback(form, {
+          kind: "error",
+          title: "保存失败",
+          message: "未能提交任务设置。",
+          body: err instanceof Error ? err.message : String(err || ""),
+        });
+      } finally {
+        setButtonLoading(submitter, false);
+      }
+    });
+
+    // 图形化设置面板 展开/收起
+    const settingsBtn = form.querySelector("[data-settings-toggle]");
+    const settingsPanel = form.querySelector(".auto-settings");
+    if (settingsBtn && settingsPanel) {
+      settingsBtn.addEventListener("click", () => togglePanel(settingsBtn, settingsPanel));
+    }
+
+    // 终端输出面板
+    const termBtn = form.querySelector("[data-terminal-toggle]");
+    const termDrawer = form.querySelector("[data-terminal-drawer]");
+    let fetchOutputState = async function() { return null; };
+    let startPolling = function() {};
+    if (termBtn && termDrawer) {
+      const termBody = termDrawer.querySelector("[data-terminal-body]");
+      const termStatus = termDrawer.querySelector("[data-terminal-status]");
+      const termClear = termDrawer.querySelector("[data-terminal-clear]");
+      const termScrollLock = termDrawer.querySelector("[data-terminal-scroll-lock]");
+      const toolName = termDrawer.dataset.toolName;
+      const taskId = termDrawer.dataset.taskId || "";
+      let termPollTimer = null;
+      let termOffset = 0;
+      let autoScroll = true;
+      let termNeedsFinalRuntimePoll = false;
+      let termFinalRuntimePollCount = 0;
+
+      fetchOutputState = async function(options = {}) {
+        if (!toolName) return null;
+        const startedAt = options.startedAt ?? termDrawer.dataset.runStartedAt ?? "";
+        const offset = options.offset ?? termOffset;
+        const query = new URLSearchParams({
+          tool_name: toolName,
+          offset: String(offset),
+        });
+        if (taskId) query.set("task_id", taskId);
+        if (startedAt) query.set("started_at", startedAt);
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+        try {
+          const res = await fetch(`/automations/tasks/output?${query.toString()}`, {
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              "Accept": "application/json",
+            },
+            signal: controller.signal,
+          });
+          return await res.json();
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      };
+
+      function termScrollToBottom() {
+        if (autoScroll && termBody) termBody.scrollTop = termBody.scrollHeight;
+      }
+
+      async function pollOutput() {
+        if (!toolName) return;
+        try {
+          const data = await fetchOutputState();
+          if (data.lines && data.lines.length > 0) {
+            const fragment = data.lines.join("\n") + "\n";
+            termBody.textContent += fragment;
+            termOffset = data.total;
+            termScrollToBottom();
+          }
+          if (data.running) {
+            const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
+            if (startedAt) {
+              termDrawer.dataset.runStartedAt = startedAt;
+            }
+            setRunUiState({
+              running: true,
+              startedAt,
+              cancelRequested: !!data.cancel_requested,
+            });
+            startRunProgress(startedAt);
+            renderFeedback(form, {
+              kind: "info",
+              title: data.cancel_requested ? "取消中" : "执行中",
+              message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : "脚本已开始执行，结果会自动更新。",
+              showTimer: true,
+              stampText: startedAt ? `开始：${startedAt}` : "",
+              body: "",
+            });
+            syncRuntimeFeedback(form, null);
+          }
+          if (data.runtime) {
+            syncRuntimeFeedback(form, data.runtime);
+            hideRunFeedback(form);
+          }
+          if (!data.running) {
+            stopRunProgress();
+            setRunUiState({ running: false });
+          }
+          if (termStatus) {
+            if (data.running && data.cancel_requested) {
+              termStatus.textContent = "取消中";
+              termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
+            } else if (data.running) {
+              termStatus.textContent = "运行中";
+              termStatus.className = "auto-terminal-status auto-terminal-status--running";
+            } else if (data.runtime) {
+              if (data.runtime.cancelled) {
+                termStatus.textContent = "已取消";
+                termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
+              } else if (data.runtime.ok) {
+                termStatus.textContent = "已完成";
+                termStatus.className = "auto-terminal-status auto-terminal-status--done";
+              } else {
+                termStatus.textContent = "执行失败";
+                termStatus.className = "auto-terminal-status auto-terminal-status--error";
+              }
+            } else if (data.total > 0) {
+              termStatus.textContent = "等待状态同步";
+              termStatus.className = "auto-terminal-status auto-terminal-status--running";
+            } else if (termDrawer.dataset.runStartedAt) {
+              termStatus.textContent = "等待启动";
+              termStatus.className = "auto-terminal-status auto-terminal-status--running";
+            } else {
+              termStatus.textContent = "已完成";
+              termStatus.className = "auto-terminal-status";
+            }
+          }
+          // 运行中持续轮询，停止后再轮询若干次，等待 runtime 落库
+          if (data.running) {
+            termNeedsFinalRuntimePoll = false;
+            termFinalRuntimePollCount = 0;
+            termPollTimer = setTimeout(pollOutput, 1000);
+          } else if (!data.runtime && termFinalRuntimePollCount < 10) {
+            termNeedsFinalRuntimePoll = true;
+            termFinalRuntimePollCount += 1;
+            termPollTimer = setTimeout(pollOutput, 1000);
+          } else {
+            termNeedsFinalRuntimePoll = false;
+            termFinalRuntimePollCount = 0;
+          }
+        } catch (err) {
+          if (termStatus) {
+            termStatus.textContent = "连接失败";
+            termStatus.className = "auto-terminal-status auto-terminal-status--error";
+          }
+          if (runUiState.running || termDrawer.dataset.runStartedAt) {
+            termPollTimer = setTimeout(pollOutput, 3000);
+          }
+        }
+      }
+
+      startPolling = function(startedAt = "") {
+        if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
+        termOffset = 0;
+        termNeedsFinalRuntimePoll = false;
+        termFinalRuntimePollCount = 0;
+        termBody.textContent = "";
+        if (startedAt) {
+          termDrawer.dataset.runStartedAt = startedAt;
+        }
+        pollOutput();
+      };
+
+      async function resumeRunningTask() {
+        if (!toolName) return;
+        try {
+          const data = await fetchOutputState({ offset: 0 });
+          if (!data) return;
+          if (data.running) {
+            const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
+            if (startedAt) {
+              termDrawer.dataset.runStartedAt = startedAt;
+            }
+            hideLegacyFeedback(form);
+            syncRuntimeFeedback(form, null);
+            setRunUiState({
+              running: true,
+              startedAt,
+              cancelRequested: !!data.cancel_requested,
+            });
+            startRunProgress(startedAt);
+            startPolling(startedAt);
+            return;
+          }
+          if (data.runtime) {
+            setRunUiState({ running: false });
+            syncRuntimeFeedback(form, data.runtime);
+          }
+        } catch (_) {}
+      }
+
+      termBtn.addEventListener("click", () => {
+        togglePanel(termBtn, termDrawer);
+        const isOpen = termBtn.getAttribute("aria-expanded") === "true";
+        if (isOpen) {
+          startPolling();
+        } else {
+          if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
+        }
+      });
+
+      if (termClear) {
+        termClear.addEventListener("click", () => {
+          termBody.textContent = "";
+          termOffset = 0;
+        });
+      }
+
+      if (termScrollLock) {
+        termScrollLock.addEventListener("click", () => {
+          autoScroll = !autoScroll;
+          termScrollLock.classList.toggle("is-active", autoScroll);
+          if (autoScroll) termScrollToBottom();
+        });
+        termScrollLock.classList.add("is-active");
+      }
+
+      // 初次进入页面保持干净，不自动展开历史执行结果。
+    }
+
+    // 反馈关闭按钮
+    const feedbackClose = form.querySelector("[data-feedback-close]");
+      if (feedbackClose) {
+        feedbackClose.addEventListener("click", () => {
+          const box = feedbackClose.closest("[data-run-feedback]");
+          if (box) { box.hidden = true; stopRunProgress(); }
+        });
+      }
+
+    // Webhook 链接：默认掩码，点击后短暂显示
+    const webhookUrlEl = form.querySelector("[data-webhook-url]");
+    let webhookMaskTimer = null;
+    const webhookMaskedValue = webhookUrlEl ? (webhookUrlEl.dataset.webhookMasked || "未配置").trim() : "";
+    const webhookFullValue = webhookUrlEl
+      ? (webhookUrlEl.dataset.webhookFull || webhookUrlEl.dataset.webhookPath || "").trim()
+      : "";
+    const setWebhookMasked = () => {
+      if (!webhookUrlEl) return;
+      webhookUrlEl.textContent = webhookMaskedValue || "未配置";
+      webhookUrlEl.dataset.revealed = "false";
+      form.querySelectorAll("[data-toggle-webhook]").forEach(btn => {
+        btn.classList.remove("is-active");
+        btn.title = "暂时显示真实地址";
+      });
+    };
+    const setWebhookRevealed = () => {
+      if (!webhookUrlEl || !webhookFullValue) return;
+      webhookUrlEl.textContent = webhookFullValue;
+      webhookUrlEl.dataset.revealed = "true";
+      form.querySelectorAll("[data-toggle-webhook]").forEach(btn => {
+        btn.classList.add("is-active");
+        btn.title = "立即重新隐藏";
+      });
+    };
+    if (webhookUrlEl) {
+      setWebhookMasked();
+    }
+    form.querySelectorAll("[data-toggle-webhook]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (!webhookUrlEl || !webhookFullValue) return;
+        const revealed = webhookUrlEl.dataset.revealed === "true";
+        if (webhookMaskTimer) {
+          clearTimeout(webhookMaskTimer);
+          webhookMaskTimer = null;
+        }
+        if (revealed) {
+          setWebhookMasked();
+          return;
+        }
+        setWebhookRevealed();
+        webhookMaskTimer = window.setTimeout(() => {
+          setWebhookMasked();
+          webhookMaskTimer = null;
+        }, 15000);
+      });
+    });
+    form.querySelectorAll("[data-copy-webhook]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const value = webhookFullValue || webhookMaskedValue;
+        if (value) copyAndFlash(btn, value);
+      });
+    });
+    form.querySelectorAll("[data-copy-webhook-body]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const bodyEl = form.querySelector("[data-webhook-body]");
+        if (bodyEl) copyAndFlash(btn, bodyEl.textContent.trim());
+      });
+    });
+
+    // 定时开关 → 实时更新计数 + 自动保存
+    const toggle = form.querySelector("[data-automation-toggle]");
+    if (toggle) {
+      toggle.addEventListener("change", () => {
+        syncEnabledCount();
+        autoSaveToggle(form);
+      });
+    }
+
+    // checkbox 标签文字联动
+    form.querySelectorAll(".auto-toggle-checkbox").forEach(cb => {
+      cb.addEventListener("change", () => {
+        const label = cb.parentElement.querySelector(".auto-checkbox-label");
+        if (label) label.textContent = cb.checked ? "已启用" : "未启用";
+      });
+    });
+
+    // 添加/删除时间
+    const stack = form.querySelector("[data-schedule-stack]");
+    const addBtn = form.querySelector("[data-add-schedule-time]");
+    if (stack && addBtn) {
+      addBtn.addEventListener("click", () => {
+        const row = document.createElement("div");
+        row.className = "auto-schedule-row";
+        row.setAttribute("data-schedule-row", "");
+        row.innerHTML = '<input class="review-input compact-input auto-time-input" type="time" value="" data-schedule-time><button class="ghost-btn auto-icon-btn" type="button" data-remove-schedule-time title="删除"><i data-feather="x"></i></button>';
+        stack.appendChild(row);
+        feather.replace();
+        syncScheduleUI(form);
+      });
+      stack.addEventListener("click", e => {
+        const btn = e.target.closest("[data-remove-schedule-time]");
+        if (!btn) return;
+        btn.closest("[data-schedule-row]")?.remove();
+        syncScheduleUI(form);
+      });
+    }
+
+    async function requestTaskCancel() {
+      if (!(runBtn instanceof HTMLElement)) return;
+      const taskId = form.querySelector('input[name="task_id"]')?.value || "";
+      const toolName = form.querySelector('input[name="tool_name"]')?.value || "";
+      const startedAt = (termDrawer?.dataset.runStartedAt || runUiState.startedAt || "").trim();
+
+      setButtonLoading(runBtn, true);
+      setRunUiState({ running: true, startedAt, cancelRequested: true });
+      renderFeedback(form, {
+        kind: "warning",
+        title: "取消中",
+        message: "已发送取消请求，正在停止脚本。",
+        showTimer: true,
+        stampText: startedAt ? `开始：${startedAt}` : "",
+      });
+
+      try {
+        const body = new URLSearchParams();
+        body.set("task_id", taskId);
+        body.set("tool_name", toolName);
+        if (startedAt) body.set("started_at", startedAt);
+
+        const res = await fetch("/automations/tasks/cancel", {
+          method: "POST",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          },
+          body: body.toString(),
+        });
+        const result = await res.json();
+        if (result.ok) {
+          const cancelStartedAt = result.activity_value || startedAt;
+          if (termDrawer && cancelStartedAt) {
+            termDrawer.dataset.runStartedAt = cancelStartedAt;
+          }
+          setRunUiState({ running: true, startedAt: cancelStartedAt, cancelRequested: true });
+          renderFeedback(form, {
+            kind: "warning",
+            title: result.title || "取消中",
+            message: result.message || "已发送取消请求，正在停止脚本。",
+            showTimer: true,
+            stampText: cancelStartedAt ? `开始：${cancelStartedAt}` : "",
+          });
+          startPolling(cancelStartedAt);
+          return;
+        }
+
+        if (result.runtime) {
+          stopRunProgress();
+          setRunUiState({ running: false });
+          syncRuntimeFeedback(form, result.runtime);
+          hideRunFeedback(form);
+          return;
+        }
+
+        setRunUiState({ running: false });
+        renderFeedback(form, {
+          kind: "warning",
+          title: "取消未生效",
+          message: result.message || "当前没有运行中的任务。",
+          showTimer: false,
+          stampText: startedAt ? `开始：${startedAt}` : "",
+        });
+      } catch (err) {
+        setRunUiState({ running: true, startedAt, cancelRequested: false });
+        renderFeedback(form, {
+          kind: "error",
+          title: "取消失败",
+          message: "未能提交取消请求。",
+          showTimer: false,
+          stampText: startedAt ? `开始：${startedAt}` : "",
+          body: err instanceof Error ? err.message : String(err || ""),
+        });
+      } finally {
+        setButtonLoading(runBtn, false);
+        setRunUiState();
+      }
+    }
+
+    // 立即执行 / 单按钮取消
+    if (runBtn) {
+      runBtn.addEventListener("click", async e => {
+        e.preventDefault();
+        if (runUiState.running) {
+          if (runUiState.cancelRequested || runBtn.hasAttribute("aria-busy")) return;
+          await requestTaskCancel();
+          return;
+        }
+
+        stopRunProgress();
+        serializeForm(form);
+        hideLegacyFeedback(form);
+        syncRuntimeFeedback(form, null);
+        setButtonLoading(runBtn, true);
+
+        const stamp = fmtStamp(Date.now());
+        if (termDrawer) {
+          termDrawer.dataset.clientStartedAt = stamp;
+          termDrawer.dataset.runStartedAt = "";
+        }
+        setRunUiState({ running: true, startedAt: stamp, cancelRequested: false });
+        startRunProgress(stamp);
+
+        renderFeedback(form, {
+          kind: "info",
+          title: "执行中",
+          message: "脚本正在运行…",
+          showTimer: true,
+          stampText: `开始：${stamp}`,
+        });
+
+        try {
+          const fd = new FormData(form);
+          const body = new URLSearchParams();
+          fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
+
+          const res = await fetch(runBtn.getAttribute("formaction") || "/automations/tasks/run-now", {
+            method: "POST",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              "Accept": "application/json",
+              "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            },
+            body: body.toString(),
+          });
+          const result = await res.json();
+          if (result.pending) {
+            const startedAt = result.activity_value || stamp;
+            if (termDrawer) {
+              termDrawer.dataset.runStartedAt = result.activity_value || "";
+            }
+            setRunUiState({ running: true, startedAt, cancelRequested: false });
+            renderFeedback(form, {
+              kind: "info",
+              title: result.title || "脚本仍在执行",
+              message: result.message || "控制台等待结果超时，脚本仍在后台继续运行。",
+              showTimer: true,
+              stampText: `开始：${startedAt}`,
+            });
+            syncRuntimeFeedback(form, null);
+            startPolling(result.activity_value || "");
+            return;
+          }
+
+          stopRunProgress();
+          setRunUiState({ running: false });
+
+          renderFeedback(form, {
+            kind: result.cancelled ? "warning" : result.ok ? "success" : "error",
+            title: result.title || (result.cancelled ? "本次执行已取消" : result.ok ? "执行成功" : "执行失败"),
+            message: result.message || "",
+            showTimer: false,
+            timerText: result.duration_label ? `耗时 ${result.duration_label}` : "",
+            stampText: result.activity_value ? `运行于 ${result.activity_value}` : "",
+            body: result.error || (result.payload ? JSON.stringify(result.payload, null, 2) : ""),
+          });
+          syncRuntimeFeedback(form, {
+            ok: !!result.ok,
+            cancelled: !!result.cancelled,
+            title: result.title || (result.cancelled ? "本次执行已取消" : result.ok ? "最近一次立即执行" : "最近一次执行失败"),
+            message: result.message || "",
+            last_run: result.activity_value || "",
+            duration_label: result.duration_label || "",
+            error: result.error || "",
+            payload: result.payload || null,
+          });
+
+          if (!result.ok) {
+            const code = String(result.error_code || result.payload?.error_code || "").trim();
+            const errText = String(result.error || result.message || "");
+            if (code.startsWith("AUTH_") || /登录态|未登录|登录/.test(errText)) {
+              window.__tmsRefresh?.({ manual: false });
+            }
+          }
+        } catch (err) {
+          let outputState = null;
+          try {
+            outputState = await fetchOutputState({ offset: 0 });
+          } catch {}
+
+          if (outputState && (outputState.running || (outputState.total || 0) > 0)) {
+            const startedAt = outputState.started_at || stamp;
+            if (termDrawer && outputState.started_at) {
+              termDrawer.dataset.runStartedAt = outputState.started_at;
+            }
+            setRunUiState({
+              running: !!outputState.running,
+              startedAt,
+              cancelRequested: !!outputState.cancel_requested,
+            });
+            renderFeedback(form, {
+              kind: "info",
+              title: outputState.cancel_requested ? "取消中" : "脚本仍在执行",
+              message: outputState.cancel_requested ? "已发送取消请求，正在停止脚本。" : "控制台连接已断开，但脚本仍在后台继续运行。",
+              showTimer: true,
+              stampText: `开始：${startedAt}`,
+            });
+            syncRuntimeFeedback(form, null);
+            startPolling(outputState.started_at || "");
+            return;
+          }
+
+          stopRunProgress();
+          setRunUiState({ running: false });
+          syncRuntimeFeedback(form, null);
+          renderFeedback(form, {
+            kind: "error",
+            title: "请求失败",
+            message: "未能获取执行结果。",
+            showTimer: false,
+            stampText: `开始：${stamp}`,
+            body: err instanceof Error ? err.message : String(err || ""),
+          });
+        } finally {
+          setButtonLoading(runBtn, false);
+          setRunUiState();
+        }
+      });
+    }
+  });
+
+  /* ── 列表排序 ── */
+  function applyListState() {
+    const list = document.querySelector("[data-automation-list]");
+    if (!list) return;
+    const sortSelect = document.querySelector("[data-automation-sort]");
+    const empty = document.querySelector("[data-automation-empty]");
+    const mode = sortSelect ? sortSelect.value : "name";
+    const provider = currentAutomationProvider();
+    const rows = Array.from(list.querySelectorAll("[data-automation-task-row]"));
+    updateAutomationStats(rows, provider);
+
+    const modeOrder = { manual: 0, scheduled: 1, webhook: 2 };
+    rows.sort((a, b) => {
+      if (mode === "recent") {
+        const c = (b.dataset.sortRecent || "").localeCompare(a.dataset.sortRecent || "");
+        if (c) return c;
+      }
+      if (mode === "mode") {
+        const c = (modeOrder[a.dataset.sortMode] ?? 9) - (modeOrder[b.dataset.sortMode] ?? 9);
+        if (c) return c;
+      }
+      return (a.dataset.sortName || "").localeCompare(b.dataset.sortName || "", "zh-CN");
+    });
+    rows.forEach(r => list.appendChild(r));
+
+    let visible = 0;
+    rows.forEach(r => {
+      const providerOk = rowMatchesAutomationProvider(r, provider);
+      const ok = providerOk;
+      r.hidden = !ok;
+      if (ok) visible++;
+    });
+    if (empty) empty.hidden = visible > 0;
+  }
+
+  document.querySelectorAll("[data-automation-provider-tab]").forEach(tab => {
+    tab.addEventListener("click", () => setAutomationProvider(tab.dataset.provider || "ronghui"));
+    tab.addEventListener("keydown", event => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      setAutomationProvider(tab.dataset.provider === "yunda" ? "ronghui" : "yunda");
+      document.querySelector("[data-automation-provider-tab][aria-selected='true']")?.focus();
+    });
+  });
+  document.querySelector("[data-automation-sort]")?.addEventListener("change", applyListState);
+  setAutomationProvider(readAutomationProvider(), false);
+
+  function tmsDisplayValue(value) {
+    const text = typeof value === "string" ? value.trim() : String(value || "").trim();
+    return text || "—";
+  }
+
+  function credentialSourceLabel(state) {
+    const source = String(state?.credential_source || "").trim();
+    if (source === "saved") return "后台保存";
+    if (source === "env") return "环境变量";
+    return state?.has_saved_credentials ? "已配置" : "未配置";
+  }
+
+  /* ── TMS 隐藏式状态标记 ── */
+  const tmsDot = document.querySelector("[data-tms-dot]");
+  const tmsPopover = document.querySelector("[data-tms-popover]");
+  const tmsActionCard = document.querySelector("[data-tms-action-card]");
+
+  if (tmsDot && tmsPopover && tmsActionCard) {
+    const sessionContextBaseUrl = tmsDot.dataset.contextUrl || "/automations/session-context";
+    const pollIntervalMs = Number(tmsDot.dataset.pollIntervalMs || "5000");
+    const SESSION_PROFILES = {
+      ronghui: {
+        label: "TMS融辉",
+        dotLabel: "TMS融辉",
+        loginKind: "image",
+        actions: {
+          status: "/automations/tms-session/status",
+          send_code: "/automations/tms-session/send-code",
+          save_credentials: "/automations/tms-session/save-credentials",
+          clear_credentials: "/automations/tms-session/clear-credentials",
+          submit_code: "/automations/tms-session/submit-code",
+          clear: "/automations/tms-session/clear",
+        },
+      },
+      yunda: {
+        label: "韵达",
+        dotLabel: "韵达",
+        loginKind: "password",
+        actions: {
+          status: "/automations/yunda-session/status",
+          send_code: "/automations/yunda-session/send-code",
+          save_credentials: "/automations/yunda-session/save-credentials",
+          clear_credentials: "/automations/yunda-session/clear-credentials",
+          submit_code: "/automations/yunda-session/submit-code",
+          clear: "/automations/yunda-session/clear",
+        },
+      },
+    };
+    let activeSessionProvider = currentAutomationProvider();
+    if (!SESSION_PROFILES[activeSessionProvider]) activeSessionProvider = "ronghui";
+    let activeSessionMeta = { ...SESSION_PROFILES[activeSessionProvider] };
+    const sessionCredentialDirty = { ronghui: false, yunda: false };
+    const sessionCredentialDrafts = { ronghui: null, yunda: null };
+
+    const actionForm = tmsActionCard.querySelector("[data-tms-action-form]");
+    const codeField = tmsActionCard.querySelector("[data-tms-code-field]");
+    const captchaPreview = tmsActionCard.querySelector("[data-tms-captcha]");
+    const captchaImage = tmsActionCard.querySelector("[data-tms-captcha-img]");
+    const sendBtn = tmsActionCard.querySelector("[data-tms-send-btn]");
+
+    const settingsPanel = tmsPopover.querySelector("[data-tms-settings-panel]");
+    const settingsToggle = tmsPopover.querySelector("[data-tms-toggle-settings]");
+    const settingsForm = tmsPopover.querySelector("[data-tms-settings-form]");
+    const settingsAuthedActions = tmsPopover.querySelector("[data-tms-settings-authed-actions]");
+    const passwordInput = tmsPopover.querySelector("[data-tms-password-input]");
+    const passwordToggle = tmsPopover.querySelector("[data-tms-password-toggle]");
+
+    function sessionLabel() {
+      return activeSessionMeta.label || "TMS融辉";
+    }
+
+    function sessionDotLabel() {
+      return activeSessionMeta.dotLabel || activeSessionMeta.dot_label || sessionLabel();
+    }
+
+    function sessionActions() {
+      return activeSessionMeta.actions || SESSION_PROFILES[activeSessionProvider].actions;
+    }
+
+    function sessionLoginKind() {
+      return activeSessionMeta.loginKind || activeSessionMeta.login_kind || SESSION_PROFILES[activeSessionProvider].loginKind || "image";
+    }
+
+    function sessionChallengeType(state) {
+      const rawValue = state
+        ? (state.challenge_type || state.challengeType || "")
+        : (tmsActionCard?.dataset.challengeType || "");
+      const raw = String(rawValue).trim().toLowerCase();
+      if (raw === "sms" || raw === "image") return raw;
+      return ["image", "password"].includes(sessionLoginKind()) ? "image" : "sms";
+    }
+
+    function sessionChallengeLabel(state) {
+      const rawValue = state
+        ? (state.challenge_label || state.challengeLabel || "")
+        : (tmsActionCard?.dataset.challengeLabel || "");
+      const label = String(rawValue).trim();
+      if (label) return label;
+      return sessionChallengeType(state) === "image" ? "图片验证码" : "短信验证码";
+    }
+
+    function applyCodeInputMode(input, challengeType) {
+      if (!input) return;
+      const normalized = challengeType === "image" ? "image" : "sms";
+      input.dataset.loginKind = normalized;
+      input.dataset.challengeType = normalized;
+      input.inputMode = normalized === "image" ? "text" : "numeric";
+      input.autocomplete = normalized === "image" ? "off" : "one-time-code";
+      input.maxLength = normalized === "image" ? 4 : 6;
+      if (normalized === "image") {
+        input.removeAttribute("pattern");
+      } else {
+        input.setAttribute("pattern", "\\d{6}");
+      }
+    }
+
+    function sessionContextUrl() {
+      const params = new URLSearchParams({ profile: activeSessionProvider, force: "1" });
+      return `${sessionContextBaseUrl}?${params.toString()}`;
+    }
+
+    function applySessionActions(actions) {
+      const merged = { ...SESSION_PROFILES[activeSessionProvider].actions, ...(actions || {}) };
+      activeSessionMeta.actions = merged;
+      tmsDot.dataset.statusUrl = merged.status || "";
+      if (actionForm && merged.submit_code) actionForm.action = merged.submit_code;
+      if (sendBtn && merged.send_code) sendBtn.setAttribute("formaction", merged.send_code);
+      if (settingsForm && merged.save_credentials) settingsForm.action = merged.save_credentials;
+      const clearCredsBtn = settingsForm?.querySelector('[data-session-action="clear-credentials"]');
+      if (clearCredsBtn && merged.clear_credentials) clearCredsBtn.setAttribute("formaction", merged.clear_credentials);
+      const clearSessionBtn = settingsForm?.querySelector('[data-session-action="clear"]');
+      if (clearSessionBtn && merged.clear) clearSessionBtn.setAttribute("formaction", merged.clear);
+    }
+
+    function applySessionText() {
+      const label = sessionLabel();
+      const dotLabel = sessionDotLabel();
+      tmsDot.dataset.profile = activeSessionProvider;
+      tmsDot.dataset.profileLabel = label;
+      tmsDot.dataset.dotLabel = dotLabel;
+      const dotLabelEl = tmsDot.querySelector("[data-tms-dot-label]");
+      if (dotLabelEl) dotLabelEl.textContent = dotLabel;
+      tmsPopover.setAttribute("aria-label", `${label} 登录状态详情`);
+      tmsActionCard.setAttribute("aria-label", `${label} 登录维护`);
+      const usernameInput = settingsForm?.querySelector('input[name="username"]');
+      const passwordInputEl = settingsForm?.querySelector('input[name="password"]');
+      const phoneField = settingsForm?.querySelector("[data-session-phone-field]");
+      const phoneInput = phoneField?.querySelector('input[name="phone"]');
+      const codeLabel = actionForm?.querySelector("[data-tms-code-label]");
+      if (usernameInput) usernameInput.placeholder = `${label} 登录账号`;
+      if (passwordInputEl) passwordInputEl.placeholder = `${label} 登录密码`;
+      const loginKind = sessionLoginKind();
+      const passwordLogin = loginKind === "password";
+      const phoneRequired = loginKind === "sms";
+      if (phoneField) phoneField.hidden = passwordLogin;
+      if (phoneInput) {
+        phoneInput.required = phoneRequired;
+        phoneInput.disabled = passwordLogin;
+      }
+      const challengeType = sessionChallengeType();
+      if (codeLabel) codeLabel.textContent = sessionChallengeLabel();
+      const codeInput = actionForm?.querySelector("[data-tms-code-input]");
+      if (codeInput) {
+        applyCodeInputMode(codeInput, challengeType);
+      }
+    }
+
+    function credentialInputs() {
+      return {
+        username: settingsForm?.querySelector('input[name="username"]') || null,
+        password: settingsForm?.querySelector('input[name="password"]') || null,
+        phone: settingsForm?.querySelector('input[name="phone"]') || null,
+      };
+    }
+
+    function readCredentialDraft() {
+      const inputs = credentialInputs();
+      return {
+        username: inputs.username?.value || "",
+        password: inputs.password?.value || "",
+        phone: inputs.phone?.value || "",
+      };
+    }
+
+    function writeCredentialValues(values) {
+      const inputs = credentialInputs();
+      if (inputs.username) inputs.username.value = values?.username || "";
+      if (inputs.password) inputs.password.value = values?.password || "";
+      if (inputs.phone) inputs.phone.value = values?.phone || "";
+    }
+
+    function markCredentialDirty() {
+      sessionCredentialDirty[activeSessionProvider] = true;
+      sessionCredentialDrafts[activeSessionProvider] = readCredentialDraft();
+    }
+
+    function clearCredentialDirty(provider = activeSessionProvider) {
+      sessionCredentialDirty[provider] = false;
+      sessionCredentialDrafts[provider] = null;
+    }
+
+    function showCredentialDraftOrBlank(provider) {
+      const draft = sessionCredentialDrafts[provider];
+      writeCredentialValues(draft || { username: "", password: "", phone: "" });
+    }
+
+    function fillSessionCredentials(credentials, options = {}) {
+      if (!credentials || !settingsForm) return;
+      const profile = options.profile || activeSessionProvider;
+      const force = !!options.force;
+      if (!force && profile === activeSessionProvider && sessionCredentialDirty[profile]) {
+        return;
+      }
+      const u = settingsForm.querySelector('input[name="username"]');
+      const p = settingsForm.querySelector('input[name="password"]');
+      const ph = settingsForm.querySelector('input[name="phone"]');
+      if (u) u.value = credentials.username || "";
+      if (p) p.value = credentials.password || "";
+      if (ph) ph.value = credentials.phone || "";
+      clearCredentialDirty(profile);
+    }
+
+    function applySessionContext(payload) {
+      if (!payload || typeof payload !== "object") return;
+      const profile = payload.profile || activeSessionProvider;
+      if (SESSION_PROFILES[profile]) activeSessionProvider = profile;
+      activeSessionMeta = {
+        ...SESSION_PROFILES[activeSessionProvider],
+        label: payload.profile_label || payload.label || SESSION_PROFILES[activeSessionProvider].label,
+        dotLabel: payload.dot_label || payload.dotLabel || SESSION_PROFILES[activeSessionProvider].dotLabel,
+        loginKind: payload.login_kind || payload.loginKind || SESSION_PROFILES[activeSessionProvider].loginKind,
+        actions: payload.actions || activeSessionMeta.actions || SESSION_PROFILES[activeSessionProvider].actions,
+      };
+      applySessionActions(activeSessionMeta.actions);
+      applySessionText();
+      fillSessionCredentials(payload.credentials, { profile: activeSessionProvider });
+      if (payload.state) applyTmsState(payload.state);
+    }
+
+    const TONE_CLASS = {
+      success: "tms-dot--ok",
+      warning: "tms-dot--warn",
+      error: "tms-dot--alert",
+      neutral: "tms-dot--alert",
+    };
+
+    function setDotTone(tone, status) {
+      tmsDot.classList.remove("tms-dot--ok", "tms-dot--warn", "tms-dot--alert");
+      tmsDot.classList.add(TONE_CLASS[tone] || "tms-dot--alert");
+      tmsDot.dataset.statusTone = tone || "error";
+      tmsDot.dataset.status = status || "error";
+      tmsDot.classList.remove("tms-dot--pulse");
+      if (status !== "authenticated") {
+        void tmsDot.offsetWidth;
+        tmsDot.classList.add("tms-dot--pulse");
+      }
+    }
+
+    function updateDotStaleness(lastValidationAt) {
+      if (!lastValidationAt) {
+        tmsDot.classList.remove("tms-dot--stale");
+        return;
+      }
+      const parsed = Date.parse(String(lastValidationAt).replace(" ", "T"));
+      if (!Number.isFinite(parsed)) {
+        tmsDot.classList.remove("tms-dot--stale");
+        return;
+      }
+      const ageMs = Date.now() - parsed;
+      tmsDot.classList.toggle("tms-dot--stale", ageMs > 90_000);
+    }
+
+    function setPopoverField(selector, value) {
+      const el = tmsPopover.querySelector(selector);
+      if (el) el.textContent = tmsDisplayValue(value);
+    }
+
+    function pickActionVariant(status) {
+      if (status === "checking") return null;
+      if (status === "pending_code") return "submit-code";
+      if (status === "authenticated") return null;
+      return "send-code"; // logged_out / expired / error
+    }
+
+    /* ── 发送验证码冷却态 ── */
+    const COOLDOWN_SEC = 60;
+    let cooldownTimerId = null;
+    function cooldownKey() {
+      return `tms:${activeSessionProvider}:last_send_at`;
+    }
+    function cooldownRemainingSec() {
+      if (sessionChallengeType() === "image") return 0;
+      const raw = Number(localStorage.getItem(cooldownKey()) || "0");
+      if (!Number.isFinite(raw) || raw <= 0) return 0;
+      const elapsed = Math.floor((Date.now() - raw) / 1000);
+      return Math.max(0, COOLDOWN_SEC - elapsed);
+    }
+    function markCodeJustSent() {
+      localStorage.setItem(cooldownKey(), String(Date.now()));
+    }
+    function applyCooldown() {
+      const remain = cooldownRemainingSec();
+      const hasCreds = tmsDot.dataset.hasSavedCredentials === "true";
+      const challengeType = sessionChallengeType();
+      if (sendBtn) {
+        if (remain > 0) {
+          sendBtn.disabled = true;
+          sendBtn.dataset.cooldown = "1";
+          sendBtn.textContent = `已发送 · ${remain}s`;
+        } else {
+          sendBtn.disabled = !hasCreds;
+          delete sendBtn.dataset.cooldown;
+          if (challengeType === "image") {
+            sendBtn.textContent = tmsActionCard.dataset.variant === "submit-code" ? "刷新验证码" : "登录";
+          } else {
+            sendBtn.textContent = tmsActionCard.dataset.variant === "submit-code" ? "重新发送验证码" : "发送验证码";
+          }
+        }
+      }
+      if (remain > 0 && !cooldownTimerId) {
+        cooldownTimerId = window.setInterval(applyCooldown, 1000);
+      } else if (remain === 0 && cooldownTimerId) {
+        window.clearInterval(cooldownTimerId);
+        cooldownTimerId = null;
+      }
+    }
+
+    function baseSendActionLabel(challengeType, variant) {
+      if (challengeType === "image") {
+        return variant === "submit-code" ? "刷新验证码" : "登录";
+      }
+      return variant === "submit-code" ? "重新发送验证码" : "发送验证码";
+    }
+
+    applyCooldown = function applyCooldownOverride() {
+      const remain = cooldownRemainingSec();
+      const hasCreds = tmsDot.dataset.hasSavedCredentials === "true";
+      const challengeType = sessionChallengeType();
+      if (sendBtn) {
+        if (remain > 0) {
+          sendBtn.disabled = true;
+          sendBtn.dataset.cooldown = "1";
+          sendBtn.textContent = `已发送 · ${remain}s`;
+        } else {
+          sendBtn.disabled = !hasCreds;
+          delete sendBtn.dataset.cooldown;
+          sendBtn.textContent = baseSendActionLabel(challengeType, tmsActionCard.dataset.variant);
+        }
+      }
+      if (remain > 0 && !cooldownTimerId) {
+        cooldownTimerId = window.setInterval(applyCooldown, 1000);
+      } else if (remain === 0 && cooldownTimerId) {
+        window.clearInterval(cooldownTimerId);
+        cooldownTimerId = null;
+      }
+    };
+
+    const initialRenderedProvider = tmsDot.dataset.profile || "ronghui";
+    let lastStatus = tmsDot.dataset.status || "";
+    let lastVariant = null;
+
+    function ensureSubLink(subEl, hasCreds) {
+      let link = subEl.querySelector("[data-tms-goto-settings]");
+      if (hasCreds) {
+        if (link) link.remove();
+        return;
+      }
+      if (!link) {
+        link = document.createElement("button");
+        link.type = "button";
+        link.className = "tms-action-sub-link";
+        link.dataset.tmsGotoSettings = "";
+        link.textContent = "去设置";
+        link.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openPopover();
+          openSettings();
+        });
+        subEl.appendChild(link);
+      }
+    }
+
+    function updateCaptchaPreview(state, showCodeField) {
+      if (!captchaPreview || !captchaImage) return;
+      const image = String(state.captcha_image || state.captchaImage || "");
+      const shouldShow = !!(showCodeField && sessionChallengeType(state) === "image" && image);
+      captchaPreview.hidden = !shouldShow;
+      if (shouldShow) {
+        captchaImage.src = image;
+      } else {
+        captchaImage.removeAttribute("src");
+      }
+    }
+
+    function updateActionCard(state) {
+      const variant = pickActionVariant(state.status);
+      const hasCreds = !!state.has_saved_credentials;
+      const label = sessionLabel();
+      const challengeType = sessionChallengeType(state);
+      const challengeLabel = sessionChallengeLabel(state);
+
+      const titleEl = tmsActionCard.querySelector("[data-tms-action-title]");
+      const subEl = tmsActionCard.querySelector("[data-tms-action-sub]");
+      if (titleEl) {
+        if (state.status === "pending_code") titleEl.textContent = `请输入 ${label} ${challengeLabel}`;
+        else if (state.status === "authenticated") titleEl.textContent = `${label} 已登录`;
+        else titleEl.textContent = `${label} 登录态已断开`;
+      }
+      if (subEl) {
+        const summary = (state.last_error_summary || "").trim();
+        // 未登录且没有保存凭证时，强制副标题提示 + "去设置"链接
+        const needSetup = variant === "send-code" && !hasCreds;
+        if (needSetup) {
+          subEl.textContent = `请先在账号设置中保存${label}登录账号`;
+          ensureSubLink(subEl, false);
+          subEl.hidden = false;
+        } else if (summary) {
+          subEl.textContent = summary;
+          ensureSubLink(subEl, true);
+          subEl.hidden = false;
+        } else {
+          subEl.textContent = "";
+          ensureSubLink(subEl, true);
+          subEl.hidden = true;
+        }
+      }
+
+      tmsActionCard.dataset.status = state.status || "error";
+      tmsActionCard.dataset.statusTone = state.status_tone || "error";
+      tmsActionCard.dataset.variant = variant || "";
+      tmsActionCard.dataset.challengeType = challengeType;
+      tmsActionCard.dataset.challengeLabel = challengeLabel;
+
+      if (actionForm) {
+        actionForm.hidden = variant === null;
+        actionForm.style.display = variant === null ? "none" : "";
+        actionForm.dataset.challengeType = challengeType;
+      }
+      if (codeField) {
+        const showCodeField = variant === "submit-code";
+        codeField.hidden = !showCodeField;
+        codeField.style.display = showCodeField ? "" : "none";
+        const codeLabel = codeField.querySelector("[data-tms-code-label]");
+        const codeInput = codeField.querySelector("[data-tms-code-input]");
+        if (codeLabel) codeLabel.textContent = challengeLabel;
+        if (codeInput) {
+          applyCodeInputMode(codeInput, challengeType);
+          codeInput.disabled = !showCodeField;
+          codeInput.required = showCodeField;
+          codeInput.placeholder = showCodeField ? (challengeType === "image" ? "输入图片验证码" : "6 位数字") : "发送后输入验证码";
+        }
+        updateCaptchaPreview(state, showCodeField);
+      }
+      if (sendBtn) sendBtn.hidden = variant === null;
+
+      applyCooldown();
+
+      const shouldShow = variant !== null;
+      const freshlyAuthenticated = state.status === "authenticated" && lastStatus && lastStatus !== "authenticated";
+
+      if (shouldShow && tmsActionCard.hidden) {
+        tmsActionCard.hidden = false;
+        requestAnimationFrame(() => tmsActionCard.classList.add("is-open"));
+      } else if (!shouldShow && !tmsActionCard.hidden) {
+        if (freshlyAuthenticated) {
+          tmsActionCard.classList.add("is-success");
+          window.setTimeout(() => {
+            tmsActionCard.classList.remove("is-success");
+            tmsActionCard.classList.remove("is-open");
+            window.setTimeout(() => {
+              if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
+            }, 240);
+          }, 800);
+        } else {
+          tmsActionCard.classList.remove("is-open");
+          window.setTimeout(() => {
+            if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
+          }, 240);
+        }
+      }
+
+      if (variant === "submit-code" && lastVariant !== "submit-code") {
+        const codeInput = actionForm?.querySelector("[data-tms-code-input]");
+        if (codeInput) {
+          requestAnimationFrame(() => {
+            codeInput.focus({ preventScroll: true });
+            codeInput.select();
+          });
+        }
+      }
+
+      // 已登录时 settings 面板多一个"清除登录态"按钮
+      if (settingsAuthedActions) {
+        settingsAuthedActions.hidden = state.status !== "authenticated";
+      }
+
+      lastStatus = state.status || "";
+      lastVariant = variant;
+      feather.replace();
+    }
+
+    function applyTmsState(state) {
+      if (!state || typeof state !== "object") return;
+      const tone = state.status_tone || "error";
+      const status = state.status || "error";
+      const label = state.label || "异常";
+      const profileLabel = sessionLabel();
+
+      setDotTone(tone, status);
+      updateDotStaleness(state.last_validation_at);
+
+      const ariaLabelMap = {
+        authenticated: `${profileLabel} 已登录`,
+        pending_code: `${profileLabel} 待输入验证码`,
+      };
+      tmsDot.setAttribute("aria-label", ariaLabelMap[status] || `${profileLabel} ${label}，需要重新登录`);
+      tmsDot.dataset.label = label;
+      tmsDot.dataset.hasSavedCredentials = state.has_saved_credentials ? "true" : "false";
+
+      const popoverState = tmsPopover.querySelector("[data-tms-popover-state]");
+      if (popoverState) popoverState.textContent = label;
+      setPopoverField("[data-tms-expires-at]", state.expires_at);
+      setPopoverField("[data-tms-last-validation]", state.last_validation_at);
+      setPopoverField("[data-tms-credential-source]", credentialSourceLabel(state));
+
+      updateActionCard(state);
+    }
+
+    function applySessionCheckingState() {
+      applyTmsState({
+        status: "checking",
+        label: "校验中",
+        status_tone: "warning",
+        last_validation_at: "",
+        expires_at: "",
+        last_error_summary: "",
+        has_saved_credentials: tmsDot.dataset.hasSavedCredentials === "true",
+      });
+    }
+
+    /* ── 轮询 + 刷新 ── */
+    let refreshPending = false;
+    async function refreshTmsSessionStatus(options = {}) {
+      if (refreshPending) return;
+      refreshPending = true;
+      const refreshBtn = tmsPopover.querySelector("[data-tms-refresh]");
+      if (options.manual && refreshBtn) setButtonLoading(refreshBtn, true);
+      try {
+        const response = await fetch(sessionContextUrl(), {
+          method: "GET",
+          headers: { "Accept": "application/json" },
+        });
+        const payload = await response.json();
+        if (payload && payload.state) {
+          applySessionContext(payload);
+        } else {
+          applyTmsState(payload);
+        }
+      } catch (err) {
+        applyTmsState({
+          status: "error",
+          label: "异常",
+          status_tone: "error",
+          last_validation_at: "",
+          expires_at: "",
+          last_error_summary: err instanceof Error ? err.message : String(err || "状态刷新失败"),
+          has_saved_credentials: tmsDot.dataset.hasSavedCredentials === "true",
+        });
+      } finally {
+        refreshPending = false;
+        if (options.manual && refreshBtn) setButtonLoading(refreshBtn, false);
+      }
+    }
+
+    window.__tmsRefresh = refreshTmsSessionStatus;
+    window.__setAutomationSessionProvider = (provider) => {
+      const nextProvider = SESSION_PROFILES[provider] ? provider : "ronghui";
+      if (activeSessionProvider === nextProvider) {
+        applySessionText();
+        return;
+      }
+      sessionCredentialDrafts[activeSessionProvider] = readCredentialDraft();
+      activeSessionProvider = nextProvider;
+      activeSessionMeta = { ...SESSION_PROFILES[activeSessionProvider] };
+      lastStatus = "";
+      lastVariant = null;
+      applySessionActions(activeSessionMeta.actions);
+      applySessionText();
+      applySessionCheckingState();
+      showCredentialDraftOrBlank(activeSessionProvider);
+      ensureSettingsError("");
+      if (codeInput) codeInput.value = "";
+      refreshTmsSessionStatus();
+    };
+
+    /* ── popover 显隐 + sticky 模式 ── */
+    let popoverHideTimer = null;
+    let isSticky = false;
+
+    function openPopover() {
+      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
+      tmsPopover.hidden = false;
+      requestAnimationFrame(() => tmsPopover.classList.add("is-open"));
+      tmsDot.setAttribute("aria-expanded", "true");
+    }
+    function closePopover() {
+      if (isSticky) return;
+      tmsPopover.classList.remove("is-open");
+      tmsDot.setAttribute("aria-expanded", "false");
+      popoverHideTimer = window.setTimeout(() => {
+        if (!tmsPopover.classList.contains("is-open")) tmsPopover.hidden = true;
+      }, 180);
+    }
+    function scheduleClose() {
+      if (isSticky) return;
+      popoverHideTimer = window.setTimeout(closePopover, 260);
+    }
+    function openSettings() {
+      if (!settingsPanel || !settingsToggle) return;
+      settingsPanel.hidden = false;
+      requestAnimationFrame(() => settingsPanel.classList.add("is-open"));
+      settingsToggle.setAttribute("aria-expanded", "true");
+      isSticky = true;
+      tmsPopover.classList.add("is-sticky");
+      requestAnimationFrame(() => {
+        settingsPanel.querySelector('input[name="username"]')?.focus({ preventScroll: true });
+      });
+    }
+    function closeSettings() {
+      if (!settingsPanel || !settingsToggle) return;
+      settingsPanel.classList.remove("is-open");
+      settingsToggle.setAttribute("aria-expanded", "false");
+      window.setTimeout(() => {
+        if (!settingsPanel.classList.contains("is-open")) settingsPanel.hidden = true;
+      }, 220);
+      isSticky = false;
+      tmsPopover.classList.remove("is-sticky");
+    }
+
+    tmsDot.addEventListener("mouseenter", openPopover);
+    tmsDot.addEventListener("mouseleave", scheduleClose);
+    tmsDot.addEventListener("focus", openPopover);
+    tmsDot.addEventListener("blur", (e) => {
+      if (tmsPopover.contains(e.relatedTarget)) return;
+      scheduleClose();
+    });
+    tmsPopover.addEventListener("mouseenter", () => {
+      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
+    });
+    tmsPopover.addEventListener("mouseleave", scheduleClose);
+    tmsDot.addEventListener("click", () => {
+      if (tmsPopover.hidden) openPopover();
+      else if (!isSticky) closePopover();
+    });
+    tmsDot.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (tmsPopover.hidden) openPopover();
+        else if (!isSticky) closePopover();
+      } else if (e.key === "Escape") {
+        if (isSticky) closeSettings();
+        else closePopover();
+      }
+    });
+
+    /* ── popover 操作：刷新 + 账号设置折叠切换 ── */
+    tmsPopover.querySelector("[data-tms-refresh]")?.addEventListener("click", () => {
+      refreshTmsSessionStatus({ manual: true });
+    });
+    settingsToggle?.addEventListener("click", () => {
+      if (settingsPanel?.classList.contains("is-open")) closeSettings();
+      else openSettings();
+    });
+
+    /* ── 密码显隐切换 ── */
+    passwordToggle?.addEventListener("click", () => {
+      if (!passwordInput) return;
+      const isPwd = passwordInput.type === "password";
+      passwordInput.type = isPwd ? "text" : "password";
+      passwordToggle.setAttribute("aria-label", isPwd ? "隐藏密码" : "显示密码");
+      const icon = passwordToggle.querySelector("i");
+      if (icon) {
+        icon.setAttribute("data-feather", isPwd ? "eye-off" : "eye");
+        feather.replace();
+      }
+    });
+
+    settingsForm?.querySelectorAll('input[name="username"], input[name="password"], input[name="phone"]').forEach(input => {
+      input.addEventListener("input", markCredentialDirty);
+    });
+
+    /* ── 点击 popover 外部：收起 settings + 关 popover ── */
+    document.addEventListener("click", (e) => {
+      if (tmsPopover.hidden) return;
+      if (tmsPopover.contains(e.target) || tmsDot.contains(e.target)) return;
+      if (isSticky) closeSettings();
+      closePopover();
+    });
+
+    /* ── action 卡关闭 ── */
+    tmsActionCard.querySelector("[data-tms-close]")?.addEventListener("click", () => {
+      tmsActionCard.classList.remove("is-open");
+      window.setTimeout(() => {
+        if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
+      }, 240);
+    });
+
+    /* ── 齿轮按钮（快捷入口）：打开 popover + 展开设置 ── */
+    tmsActionCard.querySelector("[data-tms-settings]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openPopover();
+      openSettings();
+    });
+
+    function normalizeSessionCodeValue(value) {
+      const raw = String(value || "");
+      if (sessionChallengeType() === "image") {
+        return raw.replace(/\s+/g, "").slice(0, 4);
+      }
+      return raw.replace(/\D+/g, "").slice(0, 6);
+    }
+
+    function isSessionCodeComplete(value) {
+      const cleaned = normalizeSessionCodeValue(value);
+      if (sessionChallengeType() === "image") return cleaned.length === 4;
+      return /^\d{6}$/.test(cleaned);
+    }
+
+    /* ── 验证码输入：短信满 6 位自动提交；图片验证码满 4 位自动提交 ── */
+    const codeInput = actionForm?.querySelector("[data-tms-code-input]");
+    const codeForm = actionForm;
+    if (codeInput && codeForm) {
+      codeInput.addEventListener("input", () => {
+        const cleaned = normalizeSessionCodeValue(codeInput.value);
+        if (cleaned !== codeInput.value) codeInput.value = cleaned;
+        if (isSessionCodeComplete(cleaned) && !codeForm.classList.contains("is-submitting")) {
+          codeForm.requestSubmit();
+        }
+      });
+      codeInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const cleaned = normalizeSessionCodeValue(codeInput.value);
+          if (isSessionCodeComplete(cleaned) && !codeForm.classList.contains("is-submitting")) {
+            e.preventDefault();
+            codeForm.requestSubmit();
+          }
+        }
+      });
+    }
+
+    /* ── AJAX submit handler（action 卡 + popover 设置表单通用） ── */
+    async function handleTmsFormSubmit(event) {
+      const form = event.target instanceof HTMLFormElement ? event.target : null;
+      if (!form) return;
+      if (!form.matches(".tms-action-form, .tms-action-form-inline, .tms-action-creds")) return;
+      event.preventDefault();
+
+      const submitter = event.submitter instanceof HTMLElement ? event.submitter : null;
+      const loadingTarget = submitter || form.querySelector('button[type="submit"]');
+      const action = (submitter && submitter.getAttribute("formaction")) || form.action;
+      if (!action) return;
+
+      const actionKind = submitter?.dataset.sessionAction || form.dataset.sessionAction || "";
+      const isSendAction = actionKind === "send-code";
+      const isSubmitAction = actionKind === "submit-code";
+      const isSaveCreds = actionKind === "save-credentials";
+      const isClearCreds = actionKind === "clear-credentials";
+      const isClearSession = actionKind === "clear";
+      const isSettingsForm = form === settingsForm;
+
+      if (isSubmitAction && codeForm) codeForm.classList.add("is-submitting");
+      setButtonLoading(loadingTarget, true);
+      try {
+        const resp = await fetch(action, {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "X-Requested-With": "fetch",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          },
+          body: new URLSearchParams(new FormData(form)).toString(),
+          credentials: "same-origin",
+        });
+        let payload = null;
+        try { payload = await resp.json(); } catch (_) { /* 非 JSON 返回也兜底 */ }
+
+        if (payload && payload.state) {
+          applySessionContext(payload);
+        } else {
+          await refreshTmsSessionStatus();
+        }
+
+        const sub = tmsActionCard.querySelector("[data-tms-action-sub]");
+        if (payload && payload.ok === false) {
+          const msg = payload.message || "操作失败";
+          if (isSettingsForm) {
+            // 设置表单的错误就近显示在 settings 面板
+            ensureSettingsError(msg);
+          } else if (sub) {
+            sub.textContent = msg;
+            sub.hidden = false;
+          }
+          if (isSubmitAction && codeInput) {
+            codeInput.value = "";
+            requestAnimationFrame(() => codeInput.focus({ preventScroll: true }));
+          }
+        } else if (payload && payload.ok) {
+          if (isSendAction && sessionChallengeType() === "sms") markCodeJustSent();
+          applyCooldown();
+          if (isSendAction && codeInput) {
+            codeInput.value = "";
+            requestAnimationFrame(() => codeInput.focus({ preventScroll: true }));
+          }
+          if (isSettingsForm) {
+            ensureSettingsError("");
+            if (isSaveCreds || isClearCreds || isClearSession) {
+              closeSettings();
+            }
+          }
+          // 保存成功后刷新 popover 里 credentials 字段
+          if (payload.credentials && settingsForm) {
+            fillSessionCredentials(payload.credentials, { profile: activeSessionProvider, force: true });
+          } else if (isSettingsForm && (isSaveCreds || isClearCreds)) {
+            clearCredentialDirty(activeSessionProvider);
+          }
+        }
+      } catch (err) {
+        const sub = tmsActionCard.querySelector("[data-tms-action-sub]");
+        const msg = (err && err.message) || "网络异常，请稍后重试";
+        if (isSettingsForm) ensureSettingsError(msg);
+        else if (sub) { sub.textContent = msg; sub.hidden = false; }
+        await refreshTmsSessionStatus();
+      } finally {
+        setButtonLoading(loadingTarget, false);
+        if (isSubmitAction && codeForm) codeForm.classList.remove("is-submitting");
+        applyCooldown();
+      }
+    }
+
+    function ensureSettingsError(msg) {
+      if (!settingsPanel) return;
+      let err = settingsPanel.querySelector("[data-tms-settings-error]");
+      if (!msg) {
+        if (err) err.remove();
+        return;
+      }
+      if (!err) {
+        err = document.createElement("p");
+        err.className = "tms-settings-error";
+        err.dataset.tmsSettingsError = "";
+        settingsPanel.prepend(err);
+      }
+      err.textContent = msg;
+    }
+
+    tmsActionCard.addEventListener("submit", handleTmsFormSubmit);
+    settingsForm?.addEventListener("submit", handleTmsFormSubmit);
+
+    /* ── 键盘：Esc 关闭 action 卡（非 pending_code 时） ── */
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (isSticky) { closeSettings(); return; }
+      if (!tmsActionCard.hidden && tmsActionCard.dataset.status === "authenticated") {
+        tmsActionCard.classList.remove("is-open");
+        window.setTimeout(() => {
+          if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
+        }, 240);
+      }
+    });
+
+    /* ── 轮询、visibility、focus 触发 ── */
+    if (Number.isFinite(pollIntervalMs) && pollIntervalMs >= 5000) {
+      const timerId = window.setInterval(() => refreshTmsSessionStatus(), pollIntervalMs);
+      window.addEventListener("beforeunload", () => clearInterval(timerId), { once: true });
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshTmsSessionStatus();
+    });
+    window.addEventListener("focus", () => refreshTmsSessionStatus());
+
+    /* ── 初始化 ── */
+    applySessionActions(activeSessionMeta.actions);
+    applySessionText();
+    if (activeSessionProvider === initialRenderedProvider) {
+      applyTmsState({
+        status: tmsDot.dataset.status || "error",
+        status_tone: tmsDot.dataset.statusTone || "error",
+        label: tmsDot.dataset.label || "异常",
+        last_validation_at: tmsPopover.querySelector("[data-tms-last-validation]")?.textContent || "",
+        expires_at: tmsPopover.querySelector("[data-tms-expires-at]")?.textContent || "",
+        has_saved_credentials: tmsDot.dataset.hasSavedCredentials === "true",
+        last_error_summary: tmsActionCard.querySelector("[data-tms-action-sub]")?.textContent || "",
+      });
+    } else {
+      applySessionCheckingState();
+    }
+    refreshTmsSessionStatus();
+  }
+
+  feather.replace();
+</script>
+{% endblock %}

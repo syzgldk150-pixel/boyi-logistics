@@ -1,0 +1,19 @@
+[Unit]
+Description=Logistics Backend Console
+After=network.target
+
+[Service]
+Type=simple
+User=boyce
+WorkingDirectory=/home/boyce/console
+EnvironmentFile=/home/boyce/agent/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=DOCFLOW_HOST=127.0.0.1
+Environment=DOCFLOW_PORT=8765
+Environment=DOCFLOW_COOKIE_SECURE=1
+ExecStart=/home/boyce/console/.venv/bin/python /home/boyce/console/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

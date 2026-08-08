@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{% block title %}专线分流维护 - {{ app_title }}{% endblock %}
+{% block breadcrumb %}专线分流维护{% endblock %}
+{% block subtitle %}基础资料 / 专线物流公司与地址{% endblock %}
+{% block main_class %}line-haul-main{% endblock %}
+
+{% block content %}
+<section class="panel line-haul-toolbar-panel" aria-label="专线分流资料查询">
+  <div class="line-haul-compact-head">
+    <div>
+      <p class="section-note line-haul-toolbar-note">维护专线公司、站点、地址和联系方式。</p>
+    </div>
+    <div class="line-haul-toolbar-actions">
+      <button class="icon-btn line-haul-tool-btn" type="button" title="新增资料" aria-label="新增资料" data-line-haul-open="create">
+        <i data-feather="plus"></i>
+      </button>
+      <button class="icon-btn line-haul-tool-btn" type="button" title="Excel 粘贴导入" aria-label="Excel 粘贴导入" data-line-haul-open="import">
+        <i data-feather="clipboard"></i>
+      </button>
+    </div>
+  </div>
+
+  <form id="lineHaulFilterForm" class="line-haul-filter-form" action="/line-haul-contacts" method="get" data-line-haul-filter-form>
+    <input type="hidden" name="page" value="1">
+    <div class="line-haul-search-field">
+      <i data-feather="search"></i>
+      <input type="search" name="q" value="{{ filters.q }}" placeholder="搜索公司、站点、地址、电话" data-line-haul-search-input>
+    </div>
+    <button class="primary-btn" type="submit">
+      <i data-feather="search"></i>
+      <span>查询</span>
+    </button>
+    <button class="ghost-btn line-haul-reset-btn" type="button" aria-label="清空搜索" data-line-haul-reset {% if not filters.q %}hidden{% endif %}>
+      <i data-feather="x"></i>
+    </button>
+  </form>
+</section>
+
+<div class="line-haul-modal-backdrop" data-line-haul-modal hidden>
+  <div class="line-haul-modal" role="dialog" aria-modal="true" aria-labelledby="line-haul-modal-title">
+    <div class="line-haul-modal-head">
+      <h2 class="section-title" id="line-haul-modal-title">维护资料</h2>
+      <button class="icon-btn line-haul-modal-close" type="button" title="关闭" aria-label="关闭" data-line-haul-close>
+        <i data-feather="x"></i>
+      </button>
+    </div>
+    <div class="line-haul-modal-tabs" role="tablist" aria-label="资料维护方式" data-line-haul-tabs>
+      <button type="button" class="line-haul-modal-tab" data-line-haul-tab="create" aria-selected="true">新增</button>
+      <button type="button" class="line-haul-modal-tab" data-line-haul-tab="import" aria-selected="false">粘贴导入</button>
+    </div>
+
+    <form class="line-haul-modal-panel" action="/line-haul-contacts/create" method="post" data-ui-submit data-line-haul-panel="create">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <div class="line-haul-create-grid">
+        <label>
+          <span>公司名称</span>
+          <input class="review-input" type="text" name="company_name" required placeholder="武汉宏大物流">
+        </label>
+        <label>
+          <span>分流站点/城市</span>
+          <input class="review-input" type="text" name="service_area" required placeholder="武汉总部">
+        </label>
+        <label class="line-haul-wide-field">
+          <span>详细地址</span>
+          <input class="review-input" type="text" name="address" placeholder="东西湖区革新大道富民路天黎物流">
+        </label>
+        <label>
+          <span>联系人</span>
+          <input class="review-input" type="text" name="contact_name" placeholder="张">
+        </label>
+        <label>
+          <span>联系电话</span>
+          <input class="review-input" type="text" name="phone_numbers" placeholder="027-83089895 / 13035114111">
+        </label>
+        <label>
+          <span>备注</span>
+          <input class="review-input" type="text" name="remark" placeholder="查询、查货、专线负责人">
+        </label>
+      </div>
+      <button class="primary-btn" type="submit">
+        <i data-feather="plus"></i>
+        <span>新增资料</span>
+      </button>
+    </form>
+
+    <form class="line-haul-modal-panel" action="/line-haul-contacts/import-paste" method="post" data-ui-submit data-line-haul-panel="import" hidden>
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <p class="section-note line-haul-modal-note">复制三列：公司名称、分流站点/城市、地址电话原文。公司列为空时沿用上一行。</p>
+      <textarea class="review-input line-haul-paste-box" name="paste_text" placeholder="金湾（原金海华）物流	长沙	鑫创安:0731-84075971/13808420444/13155963228"></textarea>
+      <button class="primary-btn" type="submit">
+        <i data-feather="clipboard"></i>
+        <span>解析并导入</span>
+      </button>
+    </form>
+
+    <form class="line-haul-modal-panel" action="" method="post" data-ui-submit data-line-haul-panel="edit" data-line-haul-edit-form hidden>
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <input type="hidden" name="source_text" value="" data-line-haul-edit-field>
+      <div class="line-haul-create-grid">
+        <label>
+          <span>公司名称</span>
+          <input class="review-input" type="text" name="company_name" required data-line-haul-edit-field>
+        </label>
+        <label>
+          <span>分流站点/城市</span>
+          <input class="review-input" type="text" name="service_area" required data-line-haul-edit-field>
+        </label>
+        <label class="line-haul-wide-field">
+          <span>详细地址</span>
+          <textarea class="review-input line-haul-edit-address" name="address" data-line-haul-edit-field></textarea>
+        </label>
+        <label>
+          <span>联系人</span>
+          <input class="review-input" type="text" name="contact_name" data-line-haul-edit-field>
+        </label>
+        <label>
+          <span>联系电话</span>
+          <input class="review-input" type="text" name="phone_numbers" data-line-haul-edit-field>
+        </label>
+        <label>
+          <span>备注</span>
+          <input class="review-input" type="text" name="remark" data-line-haul-edit-field>
+        </label>
+      </div>
+      <button class="primary-btn" type="submit">
+        <i data-feather="save"></i>
+        <span>保存修改</span>
+      </button>
+    </form>
+  </div>
+</div>
+
+{% if db_error %}
+<div class="notice notice--warning" data-notice>
+  <div class="notice-copy">
+    <i data-feather="alert-triangle"></i>
+    <span>数据库读取失败：{{ db_error }}</span>
+  </div>
+</div>
+{% endif %}
+
+<section class="panel line-haul-list-panel">
+  <div class="section-head section-head--compact">
+    <div>
+      <h2 class="section-title">分流地址列表</h2>
+      <p class="section-note">查询结果按公司和站点展示。</p>
+    </div>
+  </div>
+
+  <div class="line-haul-results-meta">
+    <span>{{ '查询结果' if has_search else '等待查询' }}</span>
+    <div class="line-haul-results-tools">
+      <label class="line-haul-page-size-control" for="lineHaulPageSize">
+        每页
+        <select id="lineHaulPageSize" class="line-haul-select" name="page_size" form="lineHaulFilterForm" data-line-haul-page-size>
+          {% for item in [20, 50, 100] %}
+          <option value="{{ item }}" {% if pagination.page_size == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <span>显示 {{ pagination.offset + 1 if pagination.total else 0 }} 到 {{ pagination.offset + rows|length }}，共 {{ pagination.total }} 条</span>
+    </div>
+  </div>
+
+  <div class="line-haul-table-wrap{% if not rows %} line-haul-table-wrap--empty{% endif %}">
+    <table class="line-haul-table">
+      <thead>
+        <tr>
+          <th>公司名称</th>
+          <th>站点/城市</th>
+          <th>详细地址</th>
+          <th>联系人</th>
+          <th>联系电话</th>
+          <th>备注</th>
+          <th>更新时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr data-line-haul-row>
+          {% if row.show_company %}
+          <td rowspan="{{ row.company_rowspan }}">
+            <div class="line-haul-cell-text line-haul-cell-text--strong">{{ row.company_name }}</div>
+          </td>
+          {% endif %}
+          <td><div class="line-haul-cell-text line-haul-cell-text--strong">{{ row.service_area or '-' }}</div></td>
+          <td class="line-haul-address-cell"><div class="line-haul-cell-text line-haul-cell-text--wrap">{{ row.address or '-' }}</div></td>
+          <td><div class="line-haul-cell-text">{{ row.contact_name or '-' }}</div></td>
+          <td><div class="line-haul-cell-text line-haul-cell-text--wrap">{{ row.phone_numbers or '-' }}</div></td>
+          <td><div class="line-haul-cell-text line-haul-cell-text--wrap">{{ row.remark or '-' }}</div></td>
+          <td class="line-haul-updated-at">{{ row.updated_at or '-' }}</td>
+          <td>
+            <div class="line-haul-row-actions">
+              <button class="ghost-btn line-haul-edit-btn" type="button" data-line-haul-edit='{{ row|tojson }}'>
+                <i data-feather="edit-3"></i>
+                <span>编辑</span>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="line-haul-empty">{{ '暂无匹配的专线分流资料。' if has_search else '请输入关键词查询专线分流资料。' }}</td>
+        </tr>
+        {% endfor %}
+        {% if rows %}
+        <tr data-line-haul-filter-empty hidden>
+          <td colspan="8" class="line-haul-empty">暂无匹配的专线分流资料。</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="line-haul-footer">
+    <div class="line-haul-page-size">第 {{ pagination.page }} / {{ pagination.total_pages }} 页</div>
+    <div class="line-haul-pager">
+      {% if prev_url %}
+      <a class="ghost-btn" href="{{ prev_url }}"><i data-feather="chevron-left"></i> 上一页</a>
+      {% else %}
+      <button class="ghost-btn" type="button" disabled><i data-feather="chevron-left"></i> 上一页</button>
+      {% endif %}
+      {% if next_url %}
+      <a class="ghost-btn" href="{{ next_url }}">下一页<i data-feather="chevron-right"></i></a>
+      {% else %}
+      <button class="ghost-btn" type="button" disabled>下一页<i data-feather="chevron-right"></i></button>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const modal = document.querySelector("[data-line-haul-modal]");
+    const modalTitle = document.querySelector("#line-haul-modal-title");
+    const tabWrap = document.querySelector("[data-line-haul-tabs]");
+    const tabs = document.querySelectorAll("[data-line-haul-tab]");
+    const panels = document.querySelectorAll("[data-line-haul-panel]");
+    const editForm = document.querySelector("[data-line-haul-edit-form]");
+    const filterForm = document.querySelector("[data-line-haul-filter-form]");
+    const resetButton = document.querySelector("[data-line-haul-reset]");
+
+    document.querySelector("[data-line-haul-page-size]")?.addEventListener("change", () => {
+      filterForm?.submit();
+    });
+    resetButton?.addEventListener("click", () => {
+      window.location.href = "/line-haul-contacts";
+    });
+
+    function selectPanel(name) {
+      const isEdit = name === "edit";
+      if (tabWrap) tabWrap.hidden = isEdit;
+      if (modalTitle) modalTitle.textContent = isEdit ? "编辑资料" : "维护资料";
+      tabs.forEach((tab) => {
+        tab.setAttribute("aria-selected", !isEdit && tab.dataset.lineHaulTab === name ? "true" : "false");
+      });
+      panels.forEach((panel) => {
+        panel.hidden = panel.dataset.lineHaulPanel !== name;
+      });
+      const firstInput = document.querySelector(`[data-line-haul-panel="${name}"] input:not([type="hidden"]), [data-line-haul-panel="${name}"] textarea`);
+      if (firstInput) {
+        window.setTimeout(() => firstInput.focus({preventScroll: true}), 80);
+      }
+    }
+
+    function openModal(name) {
+      if (!modal) return;
+      selectPanel(name || "create");
+      modal.hidden = false;
+      document.body.classList.add("line-haul-modal-open");
+    }
+
+    function closeModal() {
+      if (!modal) return;
+      modal.hidden = true;
+      document.body.classList.remove("line-haul-modal-open");
+    }
+
+    function openEdit(payload) {
+      if (!editForm || !payload || !payload.id) return;
+      editForm.action = `/line-haul-contacts/${payload.id}/update`;
+      editForm.querySelectorAll("[data-line-haul-edit-field]").forEach((field) => {
+        field.value = payload[field.name] || "";
+      });
+      openModal("edit");
+    }
+
+    document.querySelectorAll("[data-line-haul-open]").forEach((button) => {
+      button.addEventListener("click", () => openModal(button.dataset.lineHaulOpen || "create"));
+    });
+    document.querySelectorAll("[data-line-haul-edit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        try {
+          openEdit(JSON.parse(button.getAttribute("data-line-haul-edit") || "{}"));
+        } catch (error) {
+          console.error("Failed to parse line haul row.", error);
+        }
+      });
+    });
+    document.querySelectorAll("[data-line-haul-close]").forEach((button) => {
+      button.addEventListener("click", closeModal);
+    });
+    modal?.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => selectPanel(tab.dataset.lineHaulTab || "create"));
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && modal && !modal.hidden) closeModal();
+    });
+  })();
+</script>
+{% endblock %}
