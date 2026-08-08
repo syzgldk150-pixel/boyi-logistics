@@ -17,6 +17,8 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Ag
 
 Console 保留 `ThreadingHTTPServer`，但已按业务域将认证、自动化、监控、财务、客服、回单、OCR、运单/调度分流到 `routes/`；新路由先加入相应边界模块，`app.py` 仅保留 HTTP 生命周期、认证门禁和兼容服务门面。所有 Console 运行时表均由 `../agent/migrations/` 统一创建，`database.py` 只验证和读写。
 
+`config.py` 是无副作用配置解析模块；只允许 `runtime_config.py` 被 `app.py` 服务入口调用一次来加载本地开发环境。测试或库模块导入时不得读取 `.env`、建运行目录或连接数据库。
+
 ## 修改入口
 
 - 改首页、模块页、公共导航、页面文案：

@@ -77,7 +77,7 @@ QUERY_BUTTON_XPATHS = (
 _ACTION_DELAY_SEC = contextvars.ContextVar("action_delay_sec", default=DEFAULT_ACTION_DELAY_SEC)
 _SPLIT_RE = re.compile(r"[,\s;]+")
 
-JS_COUNT_SCRIPT = """
+JS_COUNT_SCRIPT = r"""
 (params) => {
   const TARGET_SITES = Array.isArray(params.targetSites) && params.targetSites.length
     ? params.targetSites

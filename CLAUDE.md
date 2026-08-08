@@ -34,6 +34,8 @@
 - 旧脚本必须置于明确的 `legacy` 或离线命名空间，并与线上运行路径隔离。
 - 数据库结构只由 `agent/migrations/` 的顺序 SQL 和部署期迁移器维护；服务、仓储、同步工具和 Console 请求路径只能校验结构及读写数据，不能运行 DDL。
 - Console 保持现有 HTTP 框架并按 `console/routes/` 业务域分流；TMS SessionBroker 保持统一门面，provider adapter、状态持久化和响应验证必须分层，调度器只依赖公开接口。
+- 服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 固定；提交前运行 `pyproject.toml` 中配置的 Ruff、工具清单校验与导入边界检查，GitHub Actions 也必须覆盖这些检查。
+- `.env` 只允许由服务或脚本入口通过显式 bootstrap 加载一次；库模块、测试导入和共享模块不得读取 `.env`、创建运行目录或连接数据库。
 
 ## 安全与数据规则
 
@@ -54,4 +56,5 @@
 - `AGENT_INTERNAL_API_TOKEN` 是 Console、Agent 内部工具和飞书内部管理调用共享的服务间凭据；只允许由运行环境注入，不得写入源码、文档、日志或审计记录。
 - Agent 仅公开精简 `/health`、`/feishu/webhook/event` 和带独立 Webhook Token 的 `/webhook/*`；其他 `/admin`、`/tms`、工具、知识库、调度和账号接口统一要求 `X-Agent-Internal-Token`。
 - `/health` 只返回存活状态和 `release_sha`；组件、实例和工具状态只在鉴权后的 `/internal/v1/health` 返回。
+- `/internal/v1/*` 使用唯一的 `ok/data/error` 响应契约；旧内部接口继续鉴权但标记 deprecated，Console 应逐步迁移到版本化接口。
 - 日志、工具执行输出、MySQL 工具日志、回单审计和异常文本统一使用 `shared/redaction.py`，新增记录入口不得自建较弱的局部脱敏规则。

@@ -184,14 +184,15 @@ class LineHaulRepositoryHelperTests(unittest.TestCase):
         self.assertEqual("2026-05-14 09:30:00", row["created_at"])
         self.assertEqual("2026-05-14 10:30:00", row["updated_at"])
 
-    def test_restore_line_haul_contacts_active_state_reenables_disabled_rows(self):
-        repository = DocumentRepository.__new__(DocumentRepository)
-        executed = []
-        cursor = SimpleNamespace(execute=lambda sql: executed.append(sql))
+    def test_restore_line_haul_contacts_active_state_is_a_versioned_migration(self):
+        migration = (
+            CONSOLE_DIR.parent / "agent" / "migrations" / "007_restore_line_haul_contacts.sql"
+        ).read_text(encoding="utf-8")
 
-        repository._restore_line_haul_contacts_active_state(cursor)
-
-        self.assertEqual(["UPDATE line_haul_contacts SET is_active = 1 WHERE is_active = 0"], executed)
+        self.assertIn(
+            "UPDATE line_haul_contacts\nSET is_active = 1\nWHERE is_active = 0;",
+            migration,
+        )
 
 
 class LineHaulStylesheetTests(unittest.TestCase):

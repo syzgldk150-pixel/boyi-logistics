@@ -823,7 +823,7 @@ def ensure_checkbox_checked(checkbox, *, click_timeout_ms: int = 10_000) -> bool
     while time.time() < deadline:
         if _is_checkbox_checked(inner):
             return True
-        page.wait_for_timeout(150)
+        time.sleep(0.15)
     return _is_checkbox_checked(inner)
 
 

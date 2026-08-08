@@ -6,11 +6,9 @@ import re
 import sys
 
 import httpx
-from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 from shared.redaction import redact_text
 from tools.internal_http import internal_api_headers

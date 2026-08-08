@@ -3,13 +3,11 @@
 import os
 
 import pymysql
-from dotenv import load_dotenv
 
 from shared.runtime_repositories import WorkflowResourceRepository
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 
 def _connect():

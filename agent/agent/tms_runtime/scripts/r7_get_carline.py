@@ -153,7 +153,7 @@ def _resolve_token(
 
     # Prefer headless SSO login (requests) to obtain tokenValue, avoiding Playwright in server/sandbox envs.
     try:
-        from r7_login_manager import R7SSOAuth  # type: ignore
+        from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
 
         auth = R7SSOAuth(config_path=config_path, disable_proxy=bool(disable_proxy))
         auth.login_and_get_session(
@@ -176,8 +176,8 @@ def _resolve_token(
 
     # 沿用 scripts/r7_login.py：用 Playwright 登录后，从 localStorage 读取 accessToken 作为 aurora-token
     try:
-        from browser_manager import launch_browser  # type: ignore
-        from r7_login import (  # type: ignore
+        from agent.tms_runtime.scripts.browser_manager import launch_browser
+        from agent.tms_runtime.scripts.r7_login import (
             DEFAULT_PASSWORD,
             DEFAULT_USERNAME,
             HOME_URL,
