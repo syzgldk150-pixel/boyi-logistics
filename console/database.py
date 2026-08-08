@@ -2453,33 +2453,20 @@ class DocumentRepository:
             for task in tasks
         }
 
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            for task in tasks:
-                cursor.execute(
-                    """
-                    INSERT INTO scheduled_tasks
-                        (id, name, tool_name, tool_params, cron_expression, enabled)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        name = VALUES(name),
-                        tool_name = VALUES(tool_name),
-                        tool_params = VALUES(tool_params),
-                        cron_expression = VALUES(cron_expression),
-                        enabled = VALUES(enabled)
-                    """,
-                    (
-                        task["task_id"],
-                        task["name"],
-                        task["tool_name"],
-                        json.dumps(task.get("tool_params") or {}, ensure_ascii=False),
-                        task["cron_expression"],
-                        bool(task.get("enabled", False)),
-                    ),
-                )
-
-            for stale_id in sorted(existing_ids - incoming_ids):
-                cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (stale_id,))
+        self._scheduled_tasks.replace_tasks(
+            [
+                {
+                    "id": task["task_id"],
+                    "name": task["name"],
+                    "tool_name": task["tool_name"],
+                    "tool_params": task.get("tool_params") or {},
+                    "cron_expression": task["cron_expression"],
+                    "enabled": bool(task.get("enabled", False)),
+                }
+                for task in tasks
+            ],
+            stale_task_ids=existing_ids - incoming_ids,
+        )
 
     def update_scheduled_task_runtime(
         self,
@@ -2498,12 +2485,10 @@ class DocumentRepository:
         if not group_ids:
             return
 
-        placeholders = ", ".join("%s" for _ in group_ids)
-        sql = (
-            f"UPDATE scheduled_tasks "
-            f"SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s "
-            f"WHERE id IN ({placeholders})"
+        self._scheduled_tasks.update_runtime_at(
+            group_ids,
+            last_run=last_run,
+            last_status=last_status,
+            last_duration_ms=last_duration_ms,
+            last_message=last_message,
         )
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(sql, [last_run, last_status, last_duration_ms, last_message, *group_ids])

@@ -86,6 +86,29 @@ class RuntimeRepositoryTests(unittest.TestCase):
         self.assertEqual("2026-08-08 01:00:00", row["updated_at"])
         self.assertEqual(("phase7.source",), cursor.calls[0][1])
 
+    def test_scheduled_task_group_write_uses_one_connection(self):
+        cursor = _Cursor()
+        connection = _Connection(cursor)
+        repository = ScheduledTaskRepository(lambda: connection)
+
+        repository.replace_tasks(
+            [
+                {
+                    "id": "daily__slot_1",
+                    "name": "每日任务",
+                    "tool_name": "sync",
+                    "tool_params": {},
+                    "cron_expression": "0 1 * * *",
+                    "enabled": True,
+                }
+            ],
+            stale_task_ids={"daily__slot_0"},
+        )
+
+        self.assertEqual(2, len(cursor.calls))
+        self.assertIn("INSERT INTO scheduled_tasks", cursor.calls[0][0])
+        self.assertEqual(("daily__slot_0",), cursor.calls[1][1])
+
     def test_migration_runner_discovers_ordered_sql_without_loading_configuration(self):
         project_root = Path(__file__).resolve().parents[1]
         script_path = project_root / "agent" / "scripts" / "run_migrations.py"
