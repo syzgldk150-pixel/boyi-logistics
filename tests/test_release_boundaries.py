@@ -61,6 +61,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
         self.assertNotIn("StrictHostKeyChecking=no", publisher)
+        self.assertIn('"app_support.py"', publisher)
         self.assertIn('"config", "routes", "services", "static", "templates"', publisher)
 
 
