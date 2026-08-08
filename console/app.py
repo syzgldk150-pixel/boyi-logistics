@@ -31,6 +31,11 @@ from http.cookies import SimpleCookie
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from config import MODULE_DIR, PROJECT_ROOT, load_settings
+
+WORKSPACE_ROOT = MODULE_DIR.parent
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
 from database import (
     DocumentRepository,
     WAYBILL_SOURCE_LABELS,
@@ -44,11 +49,8 @@ from preprocessing import new_doc_token, preprocess_document, sanitize_filename,
 from task_queue import DocumentTaskQueue
 from template_store import TemplateStore
 
-WORKSPACE_ROOT = MODULE_DIR.parent
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
-
 from finance_service import FinanceError, FinanceService, FinanceValidationError
+from shared.redaction import redact_sensitive, redact_text
 from shared.yunda_console_waybill import build_console_waybill_from_yunda_data
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -8639,9 +8641,17 @@ class LocalDocFlowApp:
         payload: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> dict[str, Any]:
+        if not self.settings.agent_internal_api_token:
+            return {
+                "ok": False,
+                "status": None,
+                "error": "AGENT_INTERNAL_API_TOKEN is not configured",
+            }
         url = f"{self.settings.agent_base_url.rstrip('/')}{endpoint}"
         body: bytes | None = None
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {
+            "X-Agent-Internal-Token": self.settings.agent_internal_api_token,
+        }
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json; charset=utf-8"
@@ -8655,18 +8665,26 @@ class LocalDocFlowApp:
             with response_handle as response:
                 raw = response.read().decode("utf-8")
                 data = json.loads(raw) if raw else {}
-                return {"ok": True, "status": response.status, "data": data}
+                return {
+                    "ok": True,
+                    "status": response.status,
+                    "data": data,
+                }
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             try:
                 data = json.loads(raw) if raw else {}
             except json.JSONDecodeError:
                 data = raw
-            return {"ok": False, "status": exc.code, "error": data or str(exc)}
+            return {
+                "ok": False,
+                "status": exc.code,
+                "error": redact_sensitive(data or str(exc)),
+            }
         except URLError as exc:
-            return {"ok": False, "status": None, "error": str(exc.reason)}
+            return {"ok": False, "status": None, "error": redact_text(exc.reason)}
         except Exception as exc:
-            return {"ok": False, "status": None, "error": str(exc)}
+            return {"ok": False, "status": None, "error": redact_text(exc)}
 
     def _latest_tool_log(self, tool_name: str, *, since: str | None = None) -> dict[str, Any] | None:
         endpoint = f"/tool-logs?limit=5&tool_name={quote(tool_name, safe='')}"

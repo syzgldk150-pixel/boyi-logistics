@@ -8,6 +8,7 @@ User=boyce
 WorkingDirectory=/home/boyce/console
 EnvironmentFile=/home/boyce/agent/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/boyce
 Environment=DOCFLOW_HOST=127.0.0.1
 Environment=DOCFLOW_PORT=8765
 Environment=DOCFLOW_COOKIE_SECURE=1

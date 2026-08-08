@@ -14,8 +14,13 @@ import httpx
 from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, WORKSPACE_ROOT)
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+from shared.redaction import redact_text
+from tools.internal_http import internal_api_headers
 
 HTTP_SERVICE_URL = os.getenv("HTTP_SERVICE_URL", "http://127.0.0.1:9000/tms")
 PRICE_TOOL_PREFER_HTTP = str(os.getenv("PRICE_TOOL_PREFER_HTTP", "1")).strip().lower() not in {
@@ -118,7 +123,7 @@ def get_price_via_script(
             return result
         return {"mode": "local_script", "result": result}
     except Exception as exc:
-        return {"error": f"本地报价脚本执行失败: {str(exc)[:200]}"}
+        return {"error": f"本地报价脚本执行失败: {redact_text(exc)[:200]}"}
 
 
 def get_price_via_http(
@@ -138,7 +143,7 @@ def get_price_via_http(
         payload["from_station"] = from_station
         payload["to_station"] = to_station
     try:
-        resp = httpx.post(url, json=payload, timeout=60)
+        resp = httpx.post(url, json=payload, headers=internal_api_headers(), timeout=60)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict):
@@ -173,9 +178,9 @@ def get_price_via_http(
                 result["error_code"] = payload.get("error_code")
             result["data"] = payload
             return result
-        return {"error": f"报价查询失败: {str(exc)[:200]}"}
+        return {"error": f"报价查询失败: {redact_text(exc)[:200]}"}
     except Exception as exc:
-        return {"error": f"报价查询失败: {str(exc)[:200]}"}
+        return {"error": f"报价查询失败: {redact_text(exc)[:200]}"}
 
 
 def _provider_failure(
@@ -260,7 +265,7 @@ def get_yunda_price_via_http(
         "volume": volume,
     }
     try:
-        resp = httpx.post(url, json=payload, timeout=75)
+        resp = httpx.post(url, json=payload, headers=internal_api_headers(), timeout=75)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict):
@@ -295,9 +300,9 @@ def get_yunda_price_via_http(
                 result["error_code"] = payload.get("error_code")
             result["data"] = payload
             return result
-        return {"error": f"韵达报价查询失败: {str(exc)[:200]}"}
+        return {"error": f"韵达报价查询失败: {redact_text(exc)[:200]}"}
     except Exception as exc:
-        return {"error": f"韵达报价查询失败: {str(exc)[:200]}"}
+        return {"error": f"韵达报价查询失败: {redact_text(exc)[:200]}"}
 
 
 def get_combined_price(
