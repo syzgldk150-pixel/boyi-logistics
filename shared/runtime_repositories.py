@@ -104,27 +104,40 @@ class ScheduledTaskRepository:
     def upsert_task(self, task: dict[str, Any]) -> None:
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO scheduled_tasks
-                        (id, name, tool_name, tool_params, cron_expression, enabled)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        name = VALUES(name),
-                        tool_name = VALUES(tool_name),
-                        tool_params = VALUES(tool_params),
-                        cron_expression = VALUES(cron_expression),
-                        enabled = VALUES(enabled)
-                    """,
-                    (
-                        task["id"],
-                        task["name"],
-                        task["tool_name"],
-                        json.dumps(task.get("tool_params") or {}, ensure_ascii=False),
-                        task["cron_expression"],
-                        bool(task.get("enabled", False)),
-                    ),
-                )
+                self._upsert_cursor(cursor, task)
+
+    @staticmethod
+    def _upsert_cursor(cursor: Any, task: dict[str, Any]) -> None:
+        cursor.execute(
+            """
+            INSERT INTO scheduled_tasks
+                (id, name, tool_name, tool_params, cron_expression, enabled)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                name = VALUES(name),
+                tool_name = VALUES(tool_name),
+                tool_params = VALUES(tool_params),
+                cron_expression = VALUES(cron_expression),
+                enabled = VALUES(enabled)
+            """,
+            (
+                task["id"],
+                task["name"],
+                task["tool_name"],
+                json.dumps(task.get("tool_params") or {}, ensure_ascii=False),
+                task["cron_expression"],
+                bool(task.get("enabled", False)),
+            ),
+        )
+
+    def replace_tasks(self, tasks: list[dict[str, Any]], *, stale_task_ids: set[str]) -> None:
+        """Atomically upsert a task group and delete its stale members."""
+        with _connection(self._connection_factory) as connection:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                for task in tasks:
+                    self._upsert_cursor(cursor, task)
+                for task_id in sorted(stale_task_ids):
+                    cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (task_id,))
 
     def delete_task(self, task_id: str) -> None:
         with _connection(self._connection_factory) as connection:
@@ -148,6 +161,30 @@ class ScheduledTaskRepository:
                     WHERE id=%s
                     """,
                     (last_status, last_duration_ms, last_message, task_id),
+                )
+
+    def update_runtime_at(
+        self,
+        task_ids: list[str],
+        *,
+        last_run: str | None,
+        last_status: str | None,
+        last_duration_ms: int | None,
+        last_message: str | None,
+    ) -> None:
+        if not task_ids:
+            return
+        placeholders = ", ".join("%s" for _ in task_ids)
+        sql = (
+            "UPDATE scheduled_tasks "
+            "SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s "
+            f"WHERE id IN ({placeholders})"
+        )
+        with _connection(self._connection_factory) as connection:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                cursor.execute(
+                    sql,
+                    [last_run, last_status, last_duration_ms, last_message, *task_ids],
                 )
 
 
