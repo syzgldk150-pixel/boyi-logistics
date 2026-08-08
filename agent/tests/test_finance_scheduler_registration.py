@@ -133,11 +133,8 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             / "publish_to_ecs.ps1"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(
-            '@{ Type = "file"; Local = "finance_service.py"; Remote = "finance_service.py" }',
-            script,
-        )
-        self.assertIn('@{ Type = "dir"; Local = "../shared"; Remote = "../shared" }', script)
+        self.assertIn('"finance_service.py"', script)
+        self.assertIn('foreach ($scope in @("agent", "console", "shared", "_manifests"))', script)
 
 
 if __name__ == "__main__":

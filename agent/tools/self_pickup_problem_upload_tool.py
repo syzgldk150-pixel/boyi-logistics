@@ -7,13 +7,11 @@ import os
 import sys
 from typing import Any
 
-from dotenv import load_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 from tools.phase7_sync_common import tms_auth_error_result
 from tools.tms_tool import call_http_service

@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager, suppress
 from logging.handlers import TimedRotatingFileHandler
 
 import psutil
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -20,13 +19,11 @@ from pydantic import BaseModel
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
-
 from shared.redaction import redact_text
+from shared.contracts import api_failure, api_success
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)-16s | %(message)s"
@@ -76,9 +73,10 @@ def setup_logging() -> None:
     if _logging_initialized:
         return
     _logging_initialized = True
+    os.makedirs(LOG_DIR, exist_ok=True)
 
     root = logging.getLogger()
-    root.setLevel(LOG_LEVEL)
+    root.setLevel(os.getenv("LOG_LEVEL", LOG_LEVEL).upper())
 
     console = _configure_handler(logging.StreamHandler(sys.stdout))
     root.addHandler(console)
@@ -97,13 +95,13 @@ def setup_logging() -> None:
         logging.getLogger(uvicorn_logger).addHandler(_make_handler("agent.log"))
 
 
-setup_logging()
 logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
 from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal_request
 from agent.phase7_resource_import import import_phase7_resources
+from agent.runtime_config import load_agent_environment
 from agent.scheduler import init_scheduler, reload_scheduler
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from agent.tms_runtime import router as tms_router
@@ -123,10 +121,10 @@ from feishu.message_handler import queue_bot_menu_payload, queue_im_message_payl
 from feishu.notify import send_tms_session_disconnected_alert
 
 
-agent_core = AgentCore()
+agent_core: AgentCore | None = None
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
-AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
+AGENT_INTERNAL_API_TOKEN = ""
 TMS_SESSION_ALERT_STATUSES = {"pending_code", "expired", "logged_out", "error"}
 TMS_SESSION_TRANSITION_ALERT_STATUSES = {"expired", "logged_out", "error"}
 TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
@@ -144,6 +142,12 @@ TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
     "temporarily unavailable",
     "temporary failure",
 )
+
+
+def _runtime() -> AgentCore:
+    if agent_core is None:
+        raise RuntimeError("Agent runtime is not initialized")
+    return agent_core
 
 
 def _tms_session_monitor_interval_sec() -> int:
@@ -366,19 +370,25 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global AGENT_INTERNAL_API_TOKEN, agent_core
+    load_agent_environment()
+    setup_logging()
+    AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
     if not AGENT_INTERNAL_API_TOKEN:
         raise RuntimeError("AGENT_INTERNAL_API_TOKEN is required")
+    agent_core = AgentCore()
+    runtime = _runtime()
     logger.info("Agent service starting instance_id=%s pid=%s", INSTANCE_ID, os.getpid())
 
-    await agent_core.init()
-    bind_agent_runtime(agent_core, asyncio.get_running_loop())
+    await runtime.init()
+    bind_agent_runtime(runtime, asyncio.get_running_loop())
 
-    scheduler = init_scheduler(agent_core)
+    scheduler = init_scheduler(runtime)
     scheduler.start()
     logger.info("APScheduler started with %d jobs", len(scheduler.get_jobs()))
 
     if websocket_enabled():
-        await start_feishu_ws(agent_core)
+        await start_feishu_ws(runtime)
     else:
         logger.info("Feishu webhook mode enabled: %s", feishu_event_mode())
 
@@ -400,7 +410,8 @@ async def lifespan(app: FastAPI):
             await tms_session_alert_task
     scheduler.shutdown(wait=False)
     await stop_feishu_ws()
-    await agent_core.close()
+    await runtime.close()
+    agent_core = None
     logger.info("Agent service stopped")
 
 
@@ -550,7 +561,7 @@ async def feishu_event_webhook(request: Request):
 @app.post("/webhook/sign-status")
 async def webhook_sign_status(request: Request):
     await _verify_webhook_token(request)
-    return await agent_core.execute_tool("sync_delivery_status", await _webhook_payload(request))
+    return await _runtime().execute_tool("sync_delivery_status", await _webhook_payload(request))
 
 
 @app.post("/webhook/{path:path}")
@@ -559,7 +570,7 @@ async def webhook_handler(path: str, request: Request):
     tool_name = _phase7_webhook_tool(path)
     if tool_name:
         logger.info("Webhook migrated route hit: /%s -> %s", path, tool_name)
-        return await agent_core.execute_tool(tool_name, await _webhook_payload(request))
+        return await _runtime().execute_tool(tool_name, await _webhook_payload(request))
     logger.info("Webhook request received: /%s", path)
     return {"status": "ok", "message": "webhook endpoint placeholder"}
 
@@ -586,6 +597,7 @@ def _release_sha() -> str:
 
 @app.get("/internal/v1/health")
 async def internal_health():
+    runtime = _runtime()
     process = psutil.Process()
     mem_mb = process.memory_info().rss / 1024 / 1024
 
@@ -595,9 +607,8 @@ async def internal_health():
     minutes, _ = divmod(rem, 60)
     uptime_str = f"{days}d {hours}h {minutes}m"
 
-    return {
-        "ok": True,
-        "data": {
+    return api_success(
+        {
             "status": "ok",
             "release_sha": _release_sha(),
             "instance_id": INSTANCE_ID,
@@ -605,17 +616,16 @@ async def internal_health():
             "memory_mb": round(mem_mb, 1),
             "components": {
                 "feishu_mode": feishu_event_mode(),
-                "feishu_ws": agent_core.feishu_status(),
-                "deepseek": agent_core.llm_status("deepseek"),
-                "glm": agent_core.llm_status("glm"),
-                "mysql": agent_core.db_status(),
+                "feishu_ws": runtime.feishu_status(),
+                "deepseek": runtime.llm_status("deepseek"),
+                "glm": runtime.llm_status("glm"),
+                "mysql": runtime.db_status(),
                 "tms_session": get_session_broker().describe_status(validate=False),
             },
-            "last_tool_run": agent_core.last_tool_info(),
-            "heavy_task_lock": agent_core.heavy_lock_held(),
-        },
-        "error": None,
-    }
+            "last_tool_run": runtime.last_tool_info(),
+            "heavy_task_lock": runtime.heavy_lock_held(),
+        }
+    )
 
 
 class ChatRequest(BaseModel):
@@ -626,7 +636,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    return await agent_core.handle_message(
+    return await _runtime().handle_message(
         message=req.message,
         user_id=req.user_id,
         conversation_id=req.conversation_id,
@@ -638,9 +648,9 @@ class ToolRequest(BaseModel):
     params: dict = {}
 
 
-@app.post("/run-tool")
+@app.post("/run-tool", deprecated=True)
 async def run_tool(req: ToolRequest):
-    return await agent_core.execute_tool(req.tool_name, req.params)
+    return await _runtime().execute_tool(req.tool_name, req.params)
 
 
 class CancelToolRequest(BaseModel):
@@ -648,9 +658,9 @@ class CancelToolRequest(BaseModel):
     started_at: str = ""
 
 
-@app.post("/cancel-tool")
+@app.post("/cancel-tool", deprecated=True)
 async def cancel_tool(req: CancelToolRequest):
-    return await agent_core.cancel_tool(req.tool_name, req.started_at)
+    return await _runtime().cancel_tool(req.tool_name, req.started_at)
 
 
 class KnowledgeRequest(BaseModel):
@@ -659,22 +669,52 @@ class KnowledgeRequest(BaseModel):
     source: str | None = None
 
 
-@app.get("/tools")
+@app.get("/tools", deprecated=True)
 async def list_tools():
-    return {"tools": agent_core.registry.list_tools()}
+    return {"tools": _runtime().registry.list_tools()}
+
+
+@app.get("/internal/v1/tools")
+async def internal_list_tools():
+    return api_success({"tools": _runtime().registry.list_tools()})
+
+
+@app.post("/internal/v1/tools/run")
+async def internal_run_tool(req: ToolRequest):
+    result = await _runtime().execute_tool(req.tool_name, req.params)
+    if isinstance(result, dict) and result.get("success") is False:
+        return api_failure(
+            str(result.get("error_code") or "tool_execution_failed"),
+            str(result.get("error") or "Tool execution failed"),
+            data=result,
+        )
+    return api_success(result)
+
+
+@app.post("/internal/v1/tools/cancel")
+async def internal_cancel_tool(req: CancelToolRequest):
+    result = await _runtime().cancel_tool(req.tool_name, req.started_at)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return api_failure(
+            str(result.get("code") or "tool_cancel_failed"),
+            str(result.get("message") or "Tool cancellation failed"),
+            data=result,
+        )
+    return api_success(result)
 
 
 @app.post("/admin/reload")
 async def reload_runtime():
-    result = agent_core.reload_runtime_config()
+    runtime = _runtime()
+    result = runtime.reload_runtime_config()
     logger.info("Runtime configuration reloaded")
-    scheduler = reload_scheduler(agent_core)
+    scheduler = reload_scheduler(runtime)
     return {"status": "ok", **result, "scheduler": scheduler}
 
 
 @app.post("/knowledge")
 async def add_knowledge(req: KnowledgeRequest):
-    record_id = agent_core.memory.add_knowledge(
+    record_id = _runtime().memory.add_knowledge(
         content=req.content,
         category=req.category,
         source=req.source,
@@ -684,14 +724,14 @@ async def add_knowledge(req: KnowledgeRequest):
 
 @app.get("/knowledge/search")
 async def search_knowledge(q: str, limit: int = 5):
-    rows = agent_core.memory.search_knowledge(q, limit=max(1, min(limit, 20)))
+    rows = _runtime().memory.search_knowledge(q, limit=max(1, min(limit, 20)))
     return {"query": q, "results": rows}
 
 
 @app.get("/tool-output/{tool_name}")
 async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
     """获取工具的实时 shell 输出"""
-    return agent_core.executor.get_running_output(
+    return _runtime().executor.get_running_output(
         tool_name,
         offset=max(0, offset),
         started_at=started_at,
@@ -700,7 +740,7 @@ async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = "")
 
 @app.get("/tool-logs")
 async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
-    rows = agent_core.memory.get_tool_logs(
+    rows = _runtime().memory.get_tool_logs(
         limit=max(1, min(limit, 100)),
         tool_name=tool_name,
         success=success,
@@ -713,25 +753,36 @@ async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: 
     }
 
 
-@app.get("/scheduled-tasks")
+@app.get("/scheduled-tasks", deprecated=True)
 async def scheduled_tasks():
-    return {"rows": agent_core.memory.list_scheduled_tasks()}
+    return {"rows": _runtime().memory.list_scheduled_tasks()}
+
+
+@app.get("/internal/v1/scheduled-tasks")
+async def internal_scheduled_tasks():
+    return api_success({"rows": _runtime().memory.list_scheduled_tasks()})
 
 
 @app.post("/admin/seed-phase7-tasks")
 async def seed_phase7_tasks():
+    runtime = _runtime()
     seeded = []
     for task in PHASE7_SCHEDULED_TASK_TEMPLATES:
-        agent_core.memory.upsert_scheduled_task(task)
+        runtime.memory.upsert_scheduled_task(task)
         seeded.append(task["id"])
     logger.info("Seeded Phase 7 schedule templates: %s", ", ".join(seeded))
-    scheduler = reload_scheduler(agent_core)
+    scheduler = reload_scheduler(runtime)
     return {"status": "ok", "seeded": seeded, "scheduler": scheduler}
 
 
-@app.get("/workflow-resources")
+@app.get("/workflow-resources", deprecated=True)
 async def workflow_resources():
     return {"rows": list_workflow_resources()}
+
+
+@app.get("/internal/v1/workflow-resources")
+async def internal_workflow_resources():
+    return api_success({"rows": list_workflow_resources()})
 
 
 @app.post("/admin/import-phase7-resources")
@@ -744,6 +795,7 @@ async def import_phase7_resource_configs():
 if __name__ == "__main__":
     import uvicorn
 
+    load_agent_environment()
     uvicorn.run(
         "main:app",
         host=os.getenv("AGENT_HOST", "127.0.0.1"),
