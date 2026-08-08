@@ -211,7 +211,18 @@ function Copy-TrackedFile(
 
 function Write-Utf8NoBomLines([string]$PathValue, [string[]]$Lines) {
     $encoding = [Text.UTF8Encoding]::new($false)
-    [IO.File]::WriteAllLines($PathValue, $Lines, $encoding)
+    $content = if ($Lines.Count -gt 0) {
+        [string]::Join("`n", $Lines) + "`n"
+    }
+    else {
+        ""
+    }
+    [IO.File]::WriteAllText($PathValue, $content, $encoding)
+
+    $bytes = [IO.File]::ReadAllBytes($PathValue)
+    if ($bytes -contains [byte]13) {
+        throw "Generated publish manifest contains a CR byte: $PathValue"
+    }
 }
 
 function Build-Payload([string]$PayloadRoot) {
