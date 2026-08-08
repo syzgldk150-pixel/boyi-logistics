@@ -13,8 +13,6 @@ from typing import Any
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import (
     _clear_spreadsheet_sheet_cache,

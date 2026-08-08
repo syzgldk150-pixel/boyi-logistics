@@ -30,26 +30,22 @@ from urllib.request import Request, urlopen
 from http.cookies import SimpleCookie
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from config import MODULE_DIR, PROJECT_ROOT, load_settings
-
-WORKSPACE_ROOT = MODULE_DIR.parent
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
-
-from database import (
+from console.config import MODULE_DIR, PROJECT_ROOT, load_settings
+from console.database import (
     DocumentRepository,
     WAYBILL_SOURCE_LABELS,
     WAYBILL_STATUS_LABELS,
     WAYBILL_STATUS_TONES,
     normalize_waybill_status,
 )
-from line_haul_contacts import normalize_phone_numbers, parse_line_haul_paste
-from ocr_providers import build_qwen_provider
-from preprocessing import new_doc_token, preprocess_document, sanitize_filename, write_bytes
-from task_queue import DocumentTaskQueue
-from template_store import TemplateStore
+from console.line_haul_contacts import normalize_phone_numbers, parse_line_haul_paste
+from console.ocr_providers import build_qwen_provider
+from console.preprocessing import new_doc_token, preprocess_document, sanitize_filename, write_bytes
+from console.routes import ConsoleRouteDispatcher
+from console.task_queue import DocumentTaskQueue
+from console.template_store import TemplateStore
 
-from finance_service import FinanceError, FinanceService, FinanceValidationError
+from console.finance_service import FinanceError, FinanceService, FinanceValidationError
 from shared.redaction import redact_sensitive, redact_text
 from shared.yunda_console_waybill import build_console_waybill_from_yunda_data
 
@@ -2367,6 +2363,7 @@ class LocalDocFlowApp:
         self.finance_service = FinanceService(self.repository, agent_request=self._agent_request)
         self.finance_service.initialize_schema()
         self.automation_virtual_task_state: dict[str, dict[str, Any]] = {}
+        self.routes = ConsoleRouteDispatcher()
 
     def _ensure_seed_admin_user(self) -> None:
         if self.repository.count_admin_users() > 0:
@@ -2428,6 +2425,9 @@ class LocalDocFlowApp:
         query = parse_qs(parsed.query)
         if not self._ensure_authorized(handler):
             return
+
+        if self.routes.handle_get(self, handler, path, parsed.path, query):
+            return
         if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
             self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method=method.upper(), query=query)
             return
@@ -2451,6 +2451,7 @@ class LocalDocFlowApp:
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
+        query = parse_qs(parsed.query)
 
         if path.startswith("/static/"):
             relpath = path[len("/static/") :]
@@ -2460,6 +2461,8 @@ class LocalDocFlowApp:
             self._render_login(handler, query)
             return
         if not self._ensure_authorized(handler):
+            return
+        if self.routes.handle_post(self, handler, path, parsed.path, query):
             return
 
         if path in {"/", "/portal"}:

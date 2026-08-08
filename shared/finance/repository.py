@@ -34,7 +34,7 @@ from shared.finance.models import (
     month_start,
 )
 from shared.finance.money import ZERO, format_money
-from shared.finance.schema import mysql_schema_statements
+from shared.finance.schema import validate_finance_schema
 from shared.finance.validation import ValidationReport
 
 
@@ -144,9 +144,9 @@ class FinanceRepository:
                 close()
 
     def initialize_schema(self) -> None:
+        """Validate the migration-owned schema without executing runtime DDL."""
         with self._connection() as connection, _managed_cursor(connection) as cursor:
-            for statement in mysql_schema_statements():
-                cursor.execute(statement)
+            validate_finance_schema(cursor)
 
     def create_batch(
         self,

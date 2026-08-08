@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from mysql_sink import MySQLSink, load_mysql_config
+from agent.tms_runtime.scripts.mysql_sink import MySQLSink, load_mysql_config
 
-import auto_checkin_r7
+from agent.tms_runtime.scripts import auto_checkin_r7
 
 
 API_URL = "https://r7.ronghuiwl.com/gateway/tms/public/lineTask/pageGet"

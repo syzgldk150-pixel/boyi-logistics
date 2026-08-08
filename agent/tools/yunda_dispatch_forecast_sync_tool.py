@@ -13,8 +13,6 @@ from zoneinfo import ZoneInfo
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_sync_common import tms_auth_error_result

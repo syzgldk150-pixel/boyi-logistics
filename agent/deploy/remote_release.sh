@@ -86,6 +86,14 @@ validate_environment() {
     }
   done
 
+  if [[ -d "${STAGE_ROOT}/agent/migrations" ]]; then
+    runtime_python="${PYTHON_BINS[agent]}"
+    [[ -x "${runtime_python}" ]] || {
+      echo "Missing Agent runtime Python for migrations: ${runtime_python}" >&2
+      return 1
+    }
+  fi
+
   local scope manifest relative
   for scope in "${SCOPES[@]}"; do
     [[ -d "${STAGE_ROOT}/${scope}" ]] || {
@@ -172,12 +180,23 @@ run_static_preflight() {
     if [[ -f "${STAGE_ROOT}/shared/db/migrate.py" ]]; then
       "${shared_python}" "${STAGE_ROOT}/shared/db/migrate.py" --check
     elif [[ -f "${STAGE_ROOT}/agent/scripts/run_migrations.py" ]]; then
-      "${shared_python}" "${STAGE_ROOT}/agent/scripts/run_migrations.py" --check
+      MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${PYTHON_BINS[agent]}" \
+        "${STAGE_ROOT}/agent/scripts/run_migrations.py" --check
     else
       echo "SQL migrations exist but no supported migration preflight runner was staged" >&2
       return 1
     fi
   fi
+}
+
+apply_migrations() {
+  [[ -d "${STAGE_ROOT}/agent/migrations" ]] || return 0
+  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
+  [[ -f "${runner}" ]] || {
+    echo "Staged SQL migrations are missing their runner" >&2
+    return 1
+  }
+  MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${PYTHON_BINS[agent]}" "${runner}"
 }
 
 sync_scope() {
@@ -318,6 +337,7 @@ MUTATION_STARTED=1
 for scope in "${SCOPES[@]}"; do
   sync_scope "${scope}"
 done
+apply_migrations
 install_service_units
 mkdir -p "/home/boyce/agent/runtime"
 printf '%s\n' "${RELEASE_SHA}" >"/home/boyce/agent/runtime/release_sha"

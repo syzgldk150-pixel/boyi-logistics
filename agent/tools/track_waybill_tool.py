@@ -12,8 +12,6 @@ from typing import Any
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from agent.tracking_number_validation import validate_tracking_number
 from tools.feishu_cli_tool import _spreadsheet_sheet_ref_map, feishu_operation
 from tools.phase7_sync_common import get_workflow_resource, tms_auth_error_result

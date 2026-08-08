@@ -11,7 +11,6 @@ import re
 import shutil
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
@@ -26,6 +25,18 @@ except Exception:  # pragma: no cover - fallback for very old urllib3 builds
 
 from agent.tms_runtime import captcha_ocr, yunda_report
 from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.session_adapters import RonghuiSessionAdapter, SessionProviderAdapter, YundaSessionAdapter
+from agent.tms_runtime.session_models import (
+    LoginConfig,
+    PendingBrowser,
+    format_ts as _format_ts,
+    now_ts as _now_ts,
+    safe_profile_name as _safe_profile_name,
+    status_label as _status_label,
+    status_tone as _status_tone,
+)
+from agent.tms_runtime.session_state import SessionStateStore
+from agent.tms_runtime.session_validators import looks_like_ronghui_login
 
 
 logger = logging.getLogger("agent")
@@ -103,25 +114,6 @@ class _RonghuiTLSAdapter(HTTPAdapter):
         return super().proxy_manager_for(*args, **kwargs)
 
 
-@dataclass
-class PendingBrowser:
-    playwright: Any
-    browser: Any
-    context: Any
-    page: Any
-    created_at: float
-
-
-@dataclass(frozen=True)
-class LoginConfig:
-    base_origin: str
-    login_url: str
-    home_url: str
-    username: str
-    password: str
-    phone: str
-
-
 DEFAULT_USERNAME_ENVS = ("TMS_LOGIN_USERNAME", "TMS_OPERATOR_UID", "TMS_CAOZUOUSERNAME")
 DEFAULT_PASSWORD_ENVS = ("TMS_LOGIN_PASSWORD", "TMS_OPERATOR_PASSWORD", "TMS_CAOZUOPASSWORD")
 DEFAULT_PHONE_ENVS = ("TMS_LOGIN_PHONE", "TMS_OPERATOR_PHONE", "TMS_SMS_PHONE")
@@ -134,36 +126,6 @@ YUNDA_PHONE_ENVS = ("YUNDA_REPORT_PHONE", "YUNDA_PHONE", "KY_CLIENT_PHONE")
 YUNDA_BASE_ORIGIN_ENVS = ("YUNDA_REPORT_BASE_ORIGIN", "YUNDA_BASE_ORIGIN", "KY_CLIENT_BASE_ORIGIN")
 YUNDA_LOGIN_PATH_ENVS = ("YUNDA_REPORT_LOGIN_PATH", "YUNDA_LOGIN_PATH", "KY_CLIENT_LOGIN_PATH")
 YUNDA_HOME_PATH_ENVS = ("YUNDA_REPORT_HOME_PATH", "YUNDA_HOME_PATH", "KY_CLIENT_HOME_PATH")
-
-
-def _now_ts() -> float:
-    return time.time()
-
-
-def _format_ts(value: float | None) -> str:
-    if not value:
-        return ""
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(value))
-
-
-def _status_label(status: str) -> str:
-    return {
-        "authenticated": "已登录",
-        "pending_code": "待输入验证码",
-        "logged_out": "未登录",
-        "expired": "已过期",
-        "error": "异常",
-    }.get(status, "未知")
-
-
-def _status_tone(status: str) -> str:
-    return {
-        "authenticated": "success",
-        "pending_code": "warning",
-        "logged_out": "neutral",
-        "expired": "error",
-        "error": "error",
-    }.get(status, "neutral")
 
 
 def _resolve_chromium_executable() -> str:
@@ -212,14 +174,6 @@ def _join_origin_path(base_origin: str, path_or_url: str) -> str:
     return urljoin(base_origin.rstrip("/") + "/", value.lstrip("/"))
 
 
-def _safe_profile_name(profile_name: str) -> str:
-    normalized = str(profile_name or "default").strip().lower()
-    keep = []
-    for char in normalized:
-        keep.append(char if char.isalnum() or char in {"_", "-"} else "_")
-    return "".join(keep).strip("_") or "default"
-
-
 class SessionBroker:
     def __init__(
         self,
@@ -259,7 +213,7 @@ class SessionBroker:
         self._state_dir = module_dir / "state"
         if self.profile_name != "default":
             self._state_dir = self._state_dir / self.profile_name
-        self._state_dir.mkdir(parents=True, exist_ok=True)
+        self._state_store = SessionStateStore(self._state_dir)
         self._meta_path = self._state_dir / "session_meta.json"
         self._storage_state_path = self._state_dir / "storage_state.json"
         self._cookies_path = self._state_dir / "cookies.json"
@@ -268,15 +222,12 @@ class SessionBroker:
         self._login_profile_path = self._state_dir / "login_profile.json"
         self._lock = threading.RLock()
         self._pending: PendingBrowser | None = None
+        self._provider_adapter: SessionProviderAdapter = (
+            YundaSessionAdapter(self) if self._is_yunda_mode() else RonghuiSessionAdapter(self)
+        )
 
     def _read_existing_meta_for_transition(self) -> dict[str, Any]:
-        if not self._meta_path.exists():
-            return {}
-        try:
-            payload = json.loads(self._meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        return self._state_store.read_dict(self._meta_path) or {}
 
     @staticmethod
     def _should_alert_session_disconnected(previous: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -312,13 +263,8 @@ class SessionBroker:
         return all(str(payload.get(field) or "").strip() for field in fields)
 
     def _load_saved_credentials_locked(self) -> dict[str, str]:
-        if not self._login_profile_path.exists():
-            return self._empty_credentials()
-        try:
-            raw = json.loads(self._login_profile_path.read_text(encoding="utf-8"))
-        except Exception:
-            return self._empty_credentials()
-        if not isinstance(raw, dict):
+        raw = self._state_store.read_dict(self._login_profile_path)
+        if raw is None:
             return self._empty_credentials()
         payload = self._empty_credentials()
         payload.update(
@@ -377,10 +323,7 @@ class SessionBroker:
             missing.append("手机号")
         if missing:
             raise TMSAuthStateError("AUTH_REQUIRED", f"{'、'.join(missing)}不能为空。")
-        self._login_profile_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._state_store.write_dict(self._login_profile_path, payload)
         return self._credentials_status_locked()
 
     def get_saved_credentials(self) -> dict[str, Any]:
@@ -394,7 +337,7 @@ class SessionBroker:
     def clear_saved_credentials(self) -> dict[str, Any]:
         with self._lock:
             try:
-                self._login_profile_path.unlink(missing_ok=True)
+                self._state_store.remove(self._login_profile_path)
             except Exception:
                 logger.exception("Failed to remove saved TMS credentials file: %s", self._login_profile_path)
             return self._credentials_status_locked()
@@ -429,7 +372,18 @@ class SessionBroker:
         )
 
     def _load_meta(self) -> dict[str, Any]:
-        if not self._meta_path.exists():
+        payload = self._state_store.read_dict(self._meta_path)
+        if payload is None:
+            if self._meta_path.exists():
+                return {
+                    "status": "error",
+                    "label": _status_label("error"),
+                    "last_validation_at": "",
+                    "last_error_summary": "运行态元数据损坏",
+                    "authenticated_at": "",
+                    "pending_since": "",
+                    "expires_at": "",
+                }
             return {
                 "status": "logged_out",
                 "label": _status_label("logged_out"),
@@ -439,18 +393,7 @@ class SessionBroker:
                 "pending_since": "",
                 "expires_at": "",
             }
-        try:
-            return json.loads(self._meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {
-                "status": "error",
-                "label": _status_label("error"),
-                "last_validation_at": "",
-                "last_error_summary": "运行态元数据损坏",
-                "authenticated_at": "",
-                "pending_since": "",
-                "expires_at": "",
-            }
+        return payload
 
     def _save_meta(self, meta: dict[str, Any]) -> dict[str, Any]:
         payload = {
@@ -472,10 +415,7 @@ class SessionBroker:
             ):
                 if meta.get(key):
                     payload[key] = str(meta.get(key) or "")
-        self._meta_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._state_store.write_dict(self._meta_path, payload)
         try:
             import traceback as _tb
             stack = _tb.extract_stack(limit=8)[:-1]
@@ -2478,9 +2418,7 @@ class SessionBroker:
                 pending_since=pending_since,
             )
 
-    def send_code(self) -> dict[str, Any]:
-        if self._is_yunda_mode():
-            return self._send_code_yunda()
+    def _send_code_ronghui(self) -> dict[str, Any]:
 
         def run_send(config: LoginConfig) -> dict[str, Any]:
             try:
@@ -2683,9 +2621,7 @@ class SessionBroker:
             self._close_pending_locked()
             return meta
 
-    def submit_code(self, code: str) -> dict[str, Any]:
-        if self._is_yunda_mode():
-            return self._submit_code_yunda(code)
+    def _submit_code_ronghui(self, code: str) -> dict[str, Any]:
 
         def run_submit(config: LoginConfig, sms_code: str, pending_since: str) -> dict[str, Any]:
             try:
@@ -2837,6 +2773,14 @@ class SessionBroker:
                 except Exception:
                     pass
 
+    def send_code(self) -> dict[str, Any]:
+        """Start the provider-specific login flow through the stable façade."""
+        return self._provider_adapter.send_code()
+
+    def submit_code(self, code: str) -> dict[str, Any]:
+        """Complete the provider-specific login flow through the stable façade."""
+        return self._provider_adapter.submit_code(code)
+
     def _session_from_saved_state_locked(self) -> requests.Session:
         storage_state = self._load_storage_state()
         cookies = storage_state.get("cookies", [])
@@ -2926,25 +2870,6 @@ class SessionBroker:
     def _should_validate_ronghui_menu_api_locked(self) -> bool:
         return self._should_validate_ronghui_scan_api_locked()
 
-    @staticmethod
-    def _response_looks_like_ronghui_login(response: requests.Response) -> bool:
-        location = str(response.headers.get("Location") or "")
-        if any(keyword in location for keyword in ("/system/login", "system/login")):
-            return True
-        try:
-            body = str(response.text or "")
-        except Exception:
-            body = ""
-        body_lower = body.lower()
-        login_markers = (
-            "/system/login",
-            "system/login",
-            "validatecode",
-            "loinform",
-            "#loinform",
-        )
-        return any(marker in body_lower for marker in login_markers)
-
     def _validate_ronghui_scan_api_session_locked(
         self,
         session: requests.Session,
@@ -2987,7 +2912,7 @@ class SessionBroker:
             allow_redirects=False,
             timeout=15,
         )
-        if response.status_code in {301, 302, 303, 307, 308} or self._response_looks_like_ronghui_login(response):
+        if response.status_code in {301, 302, 303, 307, 308} or looks_like_ronghui_login(response):
             return "expired", "Ronghui scan API validation reached login page; please login again."
         if response.status_code != 200:
             return "expired", f"Ronghui scan API validation failed: HTTP {response.status_code}."
@@ -3018,7 +2943,7 @@ class SessionBroker:
             allow_redirects=False,
             timeout=15,
         )
-        if response.status_code in {301, 302, 303, 307, 308} or self._response_looks_like_ronghui_login(response):
+        if response.status_code in {301, 302, 303, 307, 308} or looks_like_ronghui_login(response):
             return "expired", "Ronghui menu validation reached login page; please login again."
         if response.status_code != 200:
             return "expired", f"Ronghui menu validation failed: HTTP {response.status_code}."

@@ -16,8 +16,8 @@ import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from browser_manager import TMSBrowserAuth, launch_browser
-from shared_login import resolve_primary_credentials
+from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
+from agent.tms_runtime.scripts.shared_login import resolve_primary_credentials
 
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")

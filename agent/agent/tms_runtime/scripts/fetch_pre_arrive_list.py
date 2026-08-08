@@ -16,9 +16,9 @@ from urllib.parse import unquote
 
 import requests
 
-from browser_manager import launch_browser
-from r7_login import HOME_URL, build_auth, ensure_logged_in
-from r7_login_manager import R7SSOAuth
+from agent.tms_runtime.scripts.browser_manager import launch_browser
+from agent.tms_runtime.scripts.r7_login import HOME_URL, build_auth, ensure_logged_in
+from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
 
 
 PRE_ARRIVE_PAGE_URL = "https://r7.ronghuiwl.com/operateManage/preArriveList"

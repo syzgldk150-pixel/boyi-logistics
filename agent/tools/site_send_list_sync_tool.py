@@ -5,8 +5,6 @@ import os
 import sys
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from tools.phase7_sync_common import sync_bitable_snapshot, sync_sheet_snapshot, tms_auth_error_result
 from tools.tms_tool import call_http_service
 

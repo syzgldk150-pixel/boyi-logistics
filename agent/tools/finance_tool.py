@@ -13,8 +13,6 @@ from decimal import Decimal
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINANCE_ROOT = os.path.join(PROJECT_ROOT, "finance_reconciliation")
 
-sys.path.insert(0, PROJECT_ROOT)
-
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
