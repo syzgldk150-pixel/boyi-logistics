@@ -4,7 +4,8 @@ import asyncio
 import json
 import time
 import logging
-from typing import Optional
+from collections.abc import Callable, Mapping
+from typing import Any, Optional
 
 from agent.direct_tool_router import (
     direct_tool_request_from_text,
@@ -23,20 +24,8 @@ MAX_TOOL_ROUNDS = 3  # 防止死循环
 UNKNOWN_EXECUTION_REPLY = "没有匹配到可执行脚本，我不知道该执行哪个任务。"
 
 
-def _run_track_waybill_in_process(params: dict) -> dict:
-    from tools.track_waybill_tool import run_track_waybill
-
-    return run_track_waybill(params)
-
-
-def _run_get_price_in_process(params: dict) -> dict:
-    from tools.price_tool import run_price_tool
-
-    return run_price_tool(params)
-
-
 class AgentCore:
-    def __init__(self):
+    def __init__(self, *, direct_tool_runners: Mapping[str, Callable[[dict], dict]] | None = None):
         self.llm = LLMClient()
         self.registry = ToolRegistry()
         self.executor = ToolExecutor()
@@ -45,6 +34,7 @@ class AgentCore:
         self._system_prompt: str = ""
         self._tool_selection_prompt: str = ""
         self._business_rules: str = ""
+        self._direct_tool_runners: dict[str, Callable[[dict], dict]] = dict(direct_tool_runners or {})
 
     async def init(self):
         """初始化：加载 prompts，连接 MySQL"""
@@ -80,11 +70,11 @@ class AgentCore:
                 logger.info("加载 prompt: %s", filename)
 
     async def _execute_tool_config(self, tool_name: str, tool_config: dict, params: dict) -> dict:
-        if tool_name in {"track_waybill", "get_price"}:
+        direct_runner = self._direct_tool_runners.get(tool_name)
+        if direct_runner is not None:
             start = time.time()
             try:
-                runner = _run_track_waybill_in_process if tool_name == "track_waybill" else _run_get_price_in_process
-                payload = await asyncio.to_thread(runner, dict(params or {}))
+                payload = await asyncio.to_thread(direct_runner, dict(params or {}))
             except Exception as exc:
                 duration = round(time.time() - start, 2)
                 safe_error = redact_text(exc)

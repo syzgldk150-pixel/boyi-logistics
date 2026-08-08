@@ -145,9 +145,9 @@ class ManualQuoteOptionsEndpointTests(unittest.TestCase):
 
         def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
             calls.append((method, endpoint, payload, timeout))
-            if endpoint == "/tms/get_price":
+            if endpoint == "/internal/v1/tms/get_price":
                 return {"ok": True, "status": 200, "data": {"融惠达(派送)": "92.00", "目的网点": "杭州余杭"}}
-            if endpoint == "/tms/yunda_price":
+            if endpoint == "/internal/v1/tms/yunda_price":
                 return {"ok": True, "status": 200, "data": {"韵达派送": "88.00", "目的网点": "杭州韵达"}}
             raise AssertionError(endpoint)
 
@@ -166,7 +166,7 @@ class ManualQuoteOptionsEndpointTests(unittest.TestCase):
         body = handler.json_body()
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertEqual("yunda", body["best_provider"])
-        self.assertEqual({"/tms/get_price", "/tms/yunda_price"}, {call[1] for call in calls})
+        self.assertEqual({"/internal/v1/tms/get_price", "/internal/v1/tms/yunda_price"}, {call[1] for call in calls})
         self.assertTrue(all(call[2]["params"]["volume"] == "0.45" for call in calls))
 
     def test_quote_options_endpoint_rejects_invalid_numbers_before_agent_call(self):

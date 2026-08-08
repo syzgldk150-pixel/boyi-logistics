@@ -1,4 +1,4 @@
-﻿"""
+"""
 Automate outgoing scan flow in Ronghui TMS (Playwright, headed by default).
 """
 

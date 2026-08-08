@@ -11,7 +11,9 @@ DEPLOY_ROOT="/home/boyce/.boyi-deploy"
 BACKUP_ROOT="/home/boyce/.boyi-backups"
 BACKUP_DIR="${BACKUP_ROOT}/$(basename "${STAGE_ROOT}")"
 BACKUP_TREE="${BACKUP_DIR}/tree"
+VENV_ROOT="/home/boyce/.boyi-venvs"
 MUTATION_STARTED=0
+VENV_ACTIVATED=0
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -31,6 +33,9 @@ declare -A PYTHON_BINS=(
   [console]="/home/boyce/console/.venv/bin/python"
 )
 declare -A UNIT_PATHS=()
+declare -A RELEASE_VENVS=()
+declare -A PREVIOUS_VENV_LINKS=()
+declare -A PREVIOUS_VENV_DIRS=()
 
 IFS=',' read -r -a REQUESTED_TARGETS <<<"${TARGETS_CSV}"
 SCOPES=(shared)
@@ -80,7 +85,7 @@ validate_environment() {
       echo "Missing runtime Python for ${target}: ${runtime_python}" >&2
       return 1
     }
-    "${runtime_python}" -c 'import sys; raise SystemExit(sys.version_info < (3, 8))' || {
+    "${runtime_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' || {
       echo "Unsupported runtime Python for ${target}: ${runtime_python}" >&2
       return 1
     }
@@ -115,6 +120,85 @@ validate_environment() {
         return 1
       }
     done <"${manifest}"
+  done
+}
+
+build_release_virtualenvs() {
+  local target bootstrap_python release_venv lock_file verifier
+  verifier="${STAGE_ROOT}/agent/scripts/verify_locked_environment.py"
+  [[ -f "${verifier}" ]] || {
+    echo "Missing locked-environment verifier" >&2
+    return 1
+  }
+  mkdir -p "${VENV_ROOT}"
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    bootstrap_python="${PYTHON_BINS[$target]}"
+    lock_file="${STAGE_ROOT}/${target}/requirements.lock"
+    [[ -f "${lock_file}" ]] || {
+      echo "Missing exact dependency lock for ${target}" >&2
+      return 1
+    }
+    release_venv="${VENV_ROOT}/${target}-${RELEASE_SHA}"
+    [[ ! -e "${release_venv}" ]] || {
+      echo "Release virtual environment already exists: ${release_venv}" >&2
+      return 1
+    }
+    "${bootstrap_python}" -m venv "${release_venv}"
+    RELEASE_VENVS[$target]="${release_venv}"
+    "${release_venv}/bin/python" -m pip install --disable-pip-version-check \
+      --requirement "${lock_file}"
+    "${release_venv}/bin/python" "${verifier}" "${lock_file}" --python-version 3.10
+  done
+}
+
+activate_release_virtualenvs() {
+  [[ "${SKIP_RESTART}" == "1" ]] && {
+    echo "Cannot activate locked dependencies when service restart is disabled" >&2
+    return 1
+  }
+  local target active_venv previous_dir service
+  VENV_ACTIVATED=1
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    service="${SERVICES[$target]}"
+    sudo systemctl stop "${service}"
+    active_venv="${ROOTS[$target]}/.venv"
+    if [[ -L "${active_venv}" ]]; then
+      PREVIOUS_VENV_LINKS[$target]="$(readlink "${active_venv}")"
+      rm -- "${active_venv}"
+    elif [[ -d "${active_venv}" ]]; then
+      previous_dir="${BACKUP_DIR}/${target}.venv"
+      mv -- "${active_venv}" "${previous_dir}"
+      PREVIOUS_VENV_DIRS[$target]="${previous_dir}"
+    elif [[ -e "${active_venv}" ]]; then
+      echo "Unsupported active virtual environment path: ${active_venv}" >&2
+      return 1
+    fi
+    ln -s "${RELEASE_VENVS[$target]}" "${active_venv}"
+  done
+}
+
+restore_virtualenvs() {
+  local target active_venv
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    active_venv="${ROOTS[$target]}/.venv"
+    if [[ -L "${active_venv}" && "$(readlink "${active_venv}")" == "${RELEASE_VENVS[$target]:-}" ]]; then
+      rm -- "${active_venv}"
+    fi
+    if [[ -n "${PREVIOUS_VENV_LINKS[$target]:-}" ]]; then
+      ln -s "${PREVIOUS_VENV_LINKS[$target]}" "${active_venv}"
+    elif [[ -n "${PREVIOUS_VENV_DIRS[$target]:-}" && -d "${PREVIOUS_VENV_DIRS[$target]}" ]]; then
+      mv -- "${PREVIOUS_VENV_DIRS[$target]}" "${active_venv}"
+    fi
+  done
+}
+
+remove_new_virtualenvs() {
+  local target release_venv
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    release_venv="${RELEASE_VENVS[$target]:-}"
+    if [[ -n "${release_venv}" && "${release_venv}" == "${VENV_ROOT}/${target}-"* ]]; then
+      rm -rf -- "${release_venv}"
+    fi
   done
 }
 
@@ -196,7 +280,11 @@ apply_migrations() {
     echo "Staged SQL migrations are missing their runner" >&2
     return 1
   }
-  MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${PYTHON_BINS[agent]}" "${runner}"
+  local migration_python="${PYTHON_BINS[agent]}"
+  if [[ -n "${RELEASE_VENVS[agent]:-}" ]]; then
+    migration_python="${RELEASE_VENVS[agent]}/bin/python"
+  fi
+  MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${migration_python}" "${runner}"
 }
 
 sync_scope() {
@@ -293,6 +381,13 @@ rollback() {
   set +e
   if [[ "${MUTATION_STARTED}" == "1" ]]; then
     echo "Release failed; restoring managed source backup" >&2
+    if [[ "${VENV_ACTIVATED}" == "1" ]]; then
+      local stopped_target
+      for stopped_target in "${REQUESTED_TARGETS[@]}"; do
+        sudo systemctl stop "${SERVICES[$stopped_target]}"
+      done
+      restore_virtualenvs
+    fi
     local scope root new_manifest backup_scope relative
     for scope in "${SCOPES[@]}"; do
       root="${ROOTS[$scope]}"
@@ -323,6 +418,7 @@ rollback() {
     sudo systemctl daemon-reload
     restart_services
   fi
+  remove_new_virtualenvs
   rm -rf -- "${STAGE_ROOT}"
   exit "${exit_code}"
 }
@@ -332,6 +428,7 @@ validate_environment
 mkdir -p "${BACKUP_DIR}"
 backup_managed_sources
 run_static_preflight
+build_release_virtualenvs
 
 MUTATION_STARTED=1
 for scope in "${SCOPES[@]}"; do
@@ -339,6 +436,7 @@ for scope in "${SCOPES[@]}"; do
 done
 apply_migrations
 install_service_units
+activate_release_virtualenvs
 mkdir -p "/home/boyce/agent/runtime"
 printf '%s\n' "${RELEASE_SHA}" >"/home/boyce/agent/runtime/release_sha"
 restart_services

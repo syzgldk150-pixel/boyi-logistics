@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 融辉系统流水提取器
 输入: metadata/融辉系统流水/*.xlsx (9个月度文件)

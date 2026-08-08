@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Compute product prices and dispatch-site info for a given address/weight/volume.
 

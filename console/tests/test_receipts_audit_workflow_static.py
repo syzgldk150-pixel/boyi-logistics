@@ -208,11 +208,16 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
             self.assertIn(expected, template)
 
     def test_app_has_receipt_audit_route_and_agent_target_name(self):
-        app_source = (CONSOLE_DIR / "app.py").read_text(encoding="utf-8")
+        app_source = "\n".join(
+            (
+                (CONSOLE_DIR / "app.py").read_text(encoding="utf-8"),
+                (CONSOLE_DIR / "services" / "waybills_receipts.py").read_text(encoding="utf-8"),
+            )
+        )
 
         self.assertIn('path.startswith("/receipts/") and path.endswith("/audit")', app_source)
         self.assertIn("def _handle_receipt_audit", app_source)
-        self.assertIn('"/tms/receipts_audit"', app_source)
+        self.assertIn('"/internal/v1/tms/receipts_audit"', app_source)
         self.assertIn("update_receipt_audit_status", app_source)
         self.assertIn("audit_log_request", app_source)
         self.assertNotIn("request_summary=params", app_source)

@@ -1,4 +1,4 @@
-﻿"""财务 ETL 工具：封装对账管道并返回结构化摘要"""
+"""财务 ETL 工具：封装对账管道并返回结构化摘要"""
 
 import contextlib
 import importlib

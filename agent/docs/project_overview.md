@@ -1,13 +1,24 @@
-﻿---
+---
 module: 项目总览
 type: 架构文档
 tags: [项目总览, 模块关系, 本地控制台, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
-status: 开发中
-updated: 2026-08-07
+status: 架构基线已完成
+updated: 2026-08-09
 ---
 
 # 物流 Agent 项目总览
+
+> 本文件是项目总览的唯一规范副本；仓库根或 `agent/` 根目录不得保留同名重复文档。
+
+## 2026-08-09 架构基线
+
+- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖由精确锁文件重建；ECS 发布按 Git SHA 创建并原子切换虚拟环境。
+- Console 保留 `ThreadingHTTPServer`，`app.py` 是组合入口，业务服务位于 `console/services/`，路由识别位于 `console/routes/`。
+- TMS SessionBroker 是稳定门面，provider 执行、适配器、持久化和验证器已分层；`agent/agent/` 不再依赖 `tools` 或 `feishu`。
+- Console 到 Agent 的调用全部进入 `/internal/v1/*`，使用统一 `ok/data/error` 契约；旧接口仅作鉴权后的 deprecated 兼容层。
+- 数据库 DDL 只由版本化 SQL 迁移执行；仓库卫生、导入边界、接口契约、工具 Schema、Ruff、编译和测试均由 CI 门禁。
+- 文本文件统一 UTF-8 无 BOM；聚合测试已按领域拆分，单个 Python 文件上限为 3,000 行。
 
 ## 项目定位
 

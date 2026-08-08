@@ -326,7 +326,7 @@ class FinanceServiceTests(unittest.TestCase):
 
         self.assertEqual(12, payload["batch_id"])
         call = self.agent_calls[-1]
-        self.assertEqual("/run-tool", call["path"])
+        self.assertEqual("/internal/v1/tools/run", call["path"])
         self.assertEqual(21600, call["timeout"])
         self.assertEqual("sync_finance_bills", call["payload"]["tool_name"])
         self.assertEqual(

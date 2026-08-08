@@ -13,6 +13,8 @@ from logging.handlers import TimedRotatingFileHandler
 
 import psutil
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -21,6 +23,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
+from shared.runtime_events import register_tms_session_alert
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -105,7 +108,9 @@ from agent.runtime_config import load_agent_environment
 from agent.scheduler import init_scheduler, reload_scheduler
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from agent.tms_runtime import router as tms_router
+from agent.api_contracts import validation_failure
 from agent.tms_runtime.account_manager import get_account_manager
+from agent.tms_runtime.monitoring import configure_feishu_operation
 from agent.tms_runtime.routes import update_account_list_cache_status
 from agent.tms_runtime.session_broker import get_session_broker
 from agent.workflow_resource_store import get_workflow_resource, list_workflow_resources
@@ -119,6 +124,13 @@ from feishu.bot import (
 )
 from feishu.message_handler import queue_bot_menu_payload, queue_im_message_payload
 from feishu.notify import send_tms_session_disconnected_alert
+from tools.feishu_cli_tool import feishu_operation
+from tools.price_tool import run_price_tool
+from tools.track_waybill_tool import run_track_waybill
+
+
+register_tms_session_alert(send_tms_session_disconnected_alert)
+configure_feishu_operation(feishu_operation)
 
 
 agent_core: AgentCore | None = None
@@ -376,7 +388,12 @@ async def lifespan(app: FastAPI):
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
     if not AGENT_INTERNAL_API_TOKEN:
         raise RuntimeError("AGENT_INTERNAL_API_TOKEN is required")
-    agent_core = AgentCore()
+    agent_core = AgentCore(
+        direct_tool_runners={
+            "track_waybill": run_track_waybill,
+            "get_price": run_price_tool,
+        }
+    )
     runtime = _runtime()
     logger.info("Agent service starting instance_id=%s pid=%s", INSTANCE_ID, os.getpid())
 
@@ -416,7 +433,37 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Logistics Agent", version="0.1.0", lifespan=lifespan)
-app.include_router(tms_router)
+app.include_router(tms_router, deprecated=True)
+app.include_router(tms_router, prefix="/internal/v1")
+
+
+@app.exception_handler(RequestValidationError)
+async def internal_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/internal/v1/"):
+        return JSONResponse(status_code=422, content=validation_failure(exc))
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(HTTPException)
+async def internal_http_error(request: Request, exc: HTTPException):
+    if request.url.path.startswith("/internal/v1/"):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=api_failure(f"http_{exc.status_code}", redact_text(exc.detail)),
+            headers=exc.headers,
+        )
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(Exception)
+async def internal_unhandled_error(request: Request, exc: Exception):
+    if request.url.path.startswith("/internal/v1/"):
+        logger.error("Internal API request failed path=%s error=%s", request.url.path, redact_text(exc))
+        return JSONResponse(
+            status_code=500,
+            content=api_failure("internal_server_error", "Internal server error"),
+        )
+    raise exc
 
 
 @app.middleware("http")
@@ -634,13 +681,18 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
 
 
-@app.post("/chat")
+@app.post("/chat", deprecated=True)
 async def chat(req: ChatRequest):
     return await _runtime().handle_message(
         message=req.message,
         user_id=req.user_id,
         conversation_id=req.conversation_id,
     )
+
+
+@app.post("/internal/v1/chat")
+async def internal_chat(req: ChatRequest):
+    return api_success(await chat(req))
 
 
 class ToolRequest(BaseModel):
@@ -703,7 +755,7 @@ async def internal_cancel_tool(req: CancelToolRequest):
     return api_success(result)
 
 
-@app.post("/admin/reload")
+@app.post("/admin/reload", deprecated=True)
 async def reload_runtime():
     runtime = _runtime()
     result = runtime.reload_runtime_config()
@@ -712,7 +764,12 @@ async def reload_runtime():
     return {"status": "ok", **result, "scheduler": scheduler}
 
 
-@app.post("/knowledge")
+@app.post("/internal/v1/admin/reload")
+async def internal_reload_runtime():
+    return api_success(await reload_runtime())
+
+
+@app.post("/knowledge", deprecated=True)
 async def add_knowledge(req: KnowledgeRequest):
     record_id = _runtime().memory.add_knowledge(
         content=req.content,
@@ -722,13 +779,23 @@ async def add_knowledge(req: KnowledgeRequest):
     return {"status": "ok", "id": record_id}
 
 
-@app.get("/knowledge/search")
+@app.post("/internal/v1/knowledge")
+async def internal_add_knowledge(req: KnowledgeRequest):
+    return api_success(await add_knowledge(req))
+
+
+@app.get("/knowledge/search", deprecated=True)
 async def search_knowledge(q: str, limit: int = 5):
     rows = _runtime().memory.search_knowledge(q, limit=max(1, min(limit, 20)))
     return {"query": q, "results": rows}
 
 
-@app.get("/tool-output/{tool_name}")
+@app.get("/internal/v1/knowledge/search")
+async def internal_search_knowledge(q: str, limit: int = 5):
+    return api_success(await search_knowledge(q, limit))
+
+
+@app.get("/tool-output/{tool_name}", deprecated=True)
 async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
     """获取工具的实时 shell 输出"""
     return _runtime().executor.get_running_output(
@@ -738,7 +805,12 @@ async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = "")
     )
 
 
-@app.get("/tool-logs")
+@app.get("/internal/v1/tool-output/{tool_name}")
+async def internal_get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
+    return api_success(await get_tool_output(tool_name, offset, started_at))
+
+
+@app.get("/tool-logs", deprecated=True)
 async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
     rows = _runtime().memory.get_tool_logs(
         limit=max(1, min(limit, 100)),
@@ -753,6 +825,11 @@ async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: 
     }
 
 
+@app.get("/internal/v1/tool-logs")
+async def internal_get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
+    return api_success(await get_tool_logs(limit, tool_name, success))
+
+
 @app.get("/scheduled-tasks", deprecated=True)
 async def scheduled_tasks():
     return {"rows": _runtime().memory.list_scheduled_tasks()}
@@ -763,7 +840,7 @@ async def internal_scheduled_tasks():
     return api_success({"rows": _runtime().memory.list_scheduled_tasks()})
 
 
-@app.post("/admin/seed-phase7-tasks")
+@app.post("/admin/seed-phase7-tasks", deprecated=True)
 async def seed_phase7_tasks():
     runtime = _runtime()
     seeded = []
@@ -773,6 +850,11 @@ async def seed_phase7_tasks():
     logger.info("Seeded Phase 7 schedule templates: %s", ", ".join(seeded))
     scheduler = reload_scheduler(runtime)
     return {"status": "ok", "seeded": seeded, "scheduler": scheduler}
+
+
+@app.post("/internal/v1/admin/seed-phase7-tasks")
+async def internal_seed_phase7_tasks():
+    return api_success(await seed_phase7_tasks())
 
 
 @app.get("/workflow-resources", deprecated=True)
@@ -785,11 +867,16 @@ async def internal_workflow_resources():
     return api_success({"rows": list_workflow_resources()})
 
 
-@app.post("/admin/import-phase7-resources")
+@app.post("/admin/import-phase7-resources", deprecated=True)
 async def import_phase7_resource_configs():
     imported = import_phase7_resources()
     logger.info("Imported Phase 7 workflow resources into MySQL: %s", ", ".join(imported))
     return {"status": "ok", "imported": imported}
+
+
+@app.post("/internal/v1/admin/import-phase7-resources")
+async def internal_import_phase7_resource_configs():
+    return api_success(await import_phase7_resource_configs())
 
 
 if __name__ == "__main__":
