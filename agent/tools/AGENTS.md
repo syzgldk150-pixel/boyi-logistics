@@ -15,6 +15,7 @@
 - 价格查询与 TMS 对接：
   - `price_tool.py`
   - `tms_tool.py`
+  - `internal_http.py`（本机 Agent HTTP 请求头；缺少 `AGENT_INTERNAL_API_TOKEN` 时显式失败）
   - 地址报价会同时调用融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
 - 财务 ETL：
   - `finance_tool.py`
@@ -54,6 +55,7 @@
 
 - `tms_tool.py`
   - 默认走 `http://127.0.0.1:9000/tms/*` 兼容层
+  - 所有本机 Agent HTTP 调用必须使用 `internal_http.internal_api_headers()` 发送 `X-Agent-Internal-Token`
   - 当前线上权威执行源已切换为 `agent/tms_runtime/`
   - 图片/短信验证码共享登录态由 `agent` 的 `/admin/tms/session/*` 管理
 

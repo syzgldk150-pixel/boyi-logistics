@@ -33,6 +33,7 @@ Thumbs.db
 *:Zone.Identifier
 
 # Runtime, logs, authentication state and temporary files
+.task_tmp/
 logs/
 runtime/
 tmp/

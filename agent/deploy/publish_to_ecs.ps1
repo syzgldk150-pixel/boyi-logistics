@@ -1,118 +1,70 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidateSet("auto", "all", "agent", "console")]
     [string]$Target = "auto",
-    [string]$RemoteUser = "boyce",
     [string]$RemoteHost = "123.57.106.70",
     [string]$SshKeyPath = "C:\Users\DENG\.ssh\codex_ecs_ed25519",
-    [string]$AgentRoot = "",
-    [string]$ConsoleRoot = "",
-    [string]$RemoteAgentDir = "/home/boyce/agent",
-    [string]$RemoteConsoleDir = "/home/boyce/console",
     [switch]$SkipRestart,
-    [switch]$SkipHealthCheck,
-    [switch]$SkipFeishuCheck
+    [switch]$SkipHealthCheck
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$RemoteUser = "boyce"
+$RemoteDeployRoot = "/home/boyce/.boyi-deploy"
 $ScriptDir = Split-Path -Parent $PSCommandPath
-$DefaultAgentRoot = Split-Path -Parent $ScriptDir
-$DefaultProjectsRoot = Split-Path -Parent $DefaultAgentRoot
-
-if ([string]::IsNullOrWhiteSpace($AgentRoot)) {
-    $AgentRoot = $DefaultAgentRoot
-}
-if ([string]::IsNullOrWhiteSpace($ConsoleRoot)) {
-    $ConsoleRoot = Join-Path $DefaultProjectsRoot "console"
-}
-
+$AgentRoot = Split-Path -Parent $ScriptDir
+$RepoRoot = Split-Path -Parent $AgentRoot
 $StateDir = Join-Path $ScriptDir "state"
 $StateFile = Join-Path $StateDir "publish_state.json"
-$remoteSpec = "$RemoteUser@$RemoteHost"
+$TaskTempRoot = Join-Path $RepoRoot ".task_tmp"
+$remoteSpec = "${RemoteUser}@${RemoteHost}"
 $sshArgs = @(
     "-i", $SshKeyPath,
+    "-o", "IdentitiesOnly=yes",
     "-o", "BatchMode=yes",
-    "-o", "StrictHostKeyChecking=no"
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ConnectTimeout=10"
 )
 $scpArgs = @(
     "-i", $SshKeyPath,
+    "-o", "IdentitiesOnly=yes",
     "-o", "BatchMode=yes",
-    "-o", "StrictHostKeyChecking=no"
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ConnectTimeout=10"
 )
 
-$AgentScope = @{
-    Name = "agent"
-    LocalRoot = $AgentRoot
-    RemoteRoot = $RemoteAgentDir
-    Service = "agent.service"
-    HealthCommand = "curl -fsS http://127.0.0.1:9000/health"
-    Items = @(
-        @{ Type = "file"; Local = "AGENTS.md"; Remote = "AGENTS.md" },
-        @{ Type = "file"; Local = "CLAUDE.md"; Remote = "CLAUDE.md" },
-        @{ Type = "file"; Local = "README.md"; Remote = "README.md" },
-        @{ Type = "file"; Local = "main.py"; Remote = "main.py" },
-        @{ Type = "file"; Local = "requirements.txt"; Remote = "requirements.txt" },
-        @{ Type = "file"; Local = "agent.service"; Remote = "agent.service" },
-        @{ Type = "file"; Local = "project_overview.md"; Remote = "project_overview.md" },
-        @{ Type = "file"; Local = "deploy/publish_to_ecs.ps1"; Remote = "deploy/publish_to_ecs.ps1" },
-        @{ Type = "file"; Local = "deploy/publish_to_ecs.md"; Remote = "deploy/publish_to_ecs.md" },
-        @{ Type = "dir"; Local = "deploy/nginx"; Remote = "deploy/nginx" },
-        @{ Type = "dir"; Local = "agent"; Remote = "agent" },
-        @{ Type = "dir"; Local = "docs"; Remote = "docs" },
-        @{ Type = "dir"; Local = "feishu"; Remote = "feishu" },
-        @{ Type = "dir"; Local = "knowledge"; Remote = "knowledge" },
-        @{ Type = "dir"; Local = "prompts"; Remote = "prompts" },
-        @{ Type = "dir"; Local = "tms_docs"; Remote = "tms_docs" },
-        @{ Type = "dir"; Local = "tools"; Remote = "tools" },
-        @{ Type = "dir"; Local = "price_scripts"; Remote = "price_scripts" },
-        @{ Type = "dir"; Local = "finance_reconciliation"; Remote = "finance_reconciliation" },
-        @{ Type = "dir"; Local = "../shared"; Remote = "../shared" }
-    )
-}
-
-$ConsoleScope = @{
-    Name = "console"
-    LocalRoot = $ConsoleRoot
-    RemoteRoot = $RemoteConsoleDir
-    Service = "console.service"
-    HealthCommand = "curl -fsS http://127.0.0.1:8765/ > /dev/null && echo console_ok"
-    Items = @(
-        @{ Type = "file"; Local = "AGENTS.md"; Remote = "AGENTS.md" },
-        @{ Type = "file"; Local = "CLAUDE.md"; Remote = "CLAUDE.md" },
-        @{ Type = "file"; Local = "README.md"; Remote = "README.md" },
-        @{ Type = "file"; Local = "app.py"; Remote = "app.py" },
-        @{ Type = "file"; Local = "check_syntax.py"; Remote = "check_syntax.py" },
-        @{ Type = "file"; Local = "config.py"; Remote = "config.py" },
-        @{ Type = "file"; Local = "console.service"; Remote = "console.service" },
-        @{ Type = "file"; Local = "database.py"; Remote = "database.py" },
-        @{ Type = "file"; Local = "finance_service.py"; Remote = "finance_service.py" },
-        @{ Type = "file"; Local = "line_haul_contacts.py"; Remote = "line_haul_contacts.py" },
-        @{ Type = "file"; Local = "ocr_providers.py"; Remote = "ocr_providers.py" },
-        @{ Type = "file"; Local = "preprocessing.py"; Remote = "preprocessing.py" },
-        @{ Type = "file"; Local = "requirements.txt"; Remote = "requirements.txt" },
-        @{ Type = "file"; Local = "start_backend.sh"; Remote = "start_backend.sh" },
-        @{ Type = "file"; Local = "stop_backend.sh"; Remote = "stop_backend.sh" },
-        @{ Type = "file"; Local = "task_queue.py"; Remote = "task_queue.py" },
-        @{ Type = "file"; Local = "template_store.py"; Remote = "template_store.py" },
-        @{ Type = "file"; Local = "known_issues.md"; Remote = "known_issues.md" },
-        @{ Type = "dir"; Local = "config"; Remote = "config" },
-        @{ Type = "dir"; Local = "static"; Remote = "static" },
-        @{ Type = "dir"; Local = "templates"; Remote = "templates" },
-        @{ Type = "dir"; Local = "../shared"; Remote = "../shared" }
-    )
-}
-
-$ScopesByName = @{
-    agent = $AgentScope
-    console = $ConsoleScope
-}
-
-$ExcludedDirNames = @("__pycache__", ".pytest_cache", "logs", "runtime", "state", "temp", "tmp")
-$ExcludedFileNames = @(".env", "config.json", "cookies.json", "feishu_ws.lock", "pending_actions.json", "session_meta.json", "storage_state.json")
-$ExcludedFileNamePatterns = @("credentials*", "secrets*")
-$ExcludedFileExtensions = @(".log", ".pyc")
+$AgentFiles = @(
+    "AGENTS.md", "CLAUDE.md", "README.md", "main.py", "requirements.txt",
+    "agent.service", "project_overview.md", "start_agent.sh", "stop_agent.sh",
+    "dev_local_tunnel.sh"
+)
+$AgentDirs = @(
+    "agent", "deploy", "docs", "feishu", "knowledge", "prompts", "tms_docs",
+    "tools", "price_scripts", "finance_reconciliation"
+)
+$ConsoleFiles = @(
+    "AGENTS.md", "CLAUDE.md", "README.md", "app.py", "check_syntax.py", "config.py",
+    "console.service", "database.py", "finance_service.py", "known_issues.md",
+    "line_haul_contacts.py", "ocr_providers.py", "preprocessing.py", "requirements.txt",
+    "start_backend.sh", "stop_backend.sh", "task_queue.py", "template_store.py"
+)
+$ConsoleDirs = @("config", "static", "templates")
+$BlockedDirNames = @(
+    ".git", ".venv", "venv", "__pycache__", ".pytest_cache", "logs", "runtime",
+    "state", "sessions", "cache", "temp", "tmp", "uploads", "downloads", "output",
+    "outputs", "reports", "metadata", "data"
+)
+$BlockedFileNames = @(
+    ".env", "config.json", "cookies.json", "credentials.json", "feishu_ws.lock",
+    "pending_actions.json", "session_meta.json", "storage_state.json"
+)
+$BlockedExtensions = @(
+    ".log", ".pyc", ".xlsx", ".xls", ".xlsm", ".csv", ".tsv", ".pdf", ".parquet",
+    ".feather", ".pkl", ".pickle", ".db", ".sqlite", ".sqlite3", ".webp", ".tif",
+    ".tiff", ".bmp", ".zip", ".7z", ".rar", ".tar", ".gz"
+)
 
 function Assert-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -126,137 +78,212 @@ function Assert-PathExists([string]$PathValue) {
     }
 }
 
-function Join-RemotePath([string]$BasePath, [string]$RelativePath) {
-    return ($BasePath.TrimEnd("/") + "/" + ($RelativePath -replace "\\", "/").TrimStart("/"))
-}
-
-function Get-RemoteParentPath([string]$RemotePath) {
-    $normalized = $RemotePath -replace "\\", "/"
-    $lastSlash = $normalized.LastIndexOf("/")
-    if ($lastSlash -lt 1) {
-        return $normalized
+function Invoke-Git([string[]]$Arguments) {
+    $output = & git -c core.filemode=false -C $RepoRoot @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git command failed: git $($Arguments -join ' ')`n$($output -join [Environment]::NewLine)"
     }
-    return $normalized.Substring(0, $lastSlash)
+    return @($output)
 }
 
 function Invoke-Remote([string]$CommandText) {
-    Write-Host "REMOTE> $CommandText"
     & ssh @sshArgs $remoteSpec $CommandText
     if ($LASTEXITCODE -ne 0) {
-        throw "Remote command failed: $CommandText"
+        throw "Remote command failed"
     }
 }
 
-function Copy-FileToRemote([string]$SourcePath, [string]$RemotePath) {
-    Assert-PathExists $SourcePath
-    Write-Host "FILE  $SourcePath -> $RemotePath"
-    & scp @scpArgs $SourcePath "${remoteSpec}:${RemotePath}"
+function Assert-CleanPublishedCommit() {
+    $status = @(Invoke-Git @("status", "--porcelain", "--untracked-files=all"))
+    if ($status.Count -gt 0) {
+        throw "Git worktree is not clean. Commit and push the release before publishing."
+    }
+
+    $branch = [string](Invoke-Git @("branch", "--show-current") | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($branch)) {
+        throw "Detached HEAD cannot be published."
+    }
+    Invoke-Git @("fetch", "--quiet", "origin", $branch) | Out-Null
+
+    $upstream = [string](Invoke-Git @("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}") | Select-Object -First 1)
+    $countLine = [string](Invoke-Git @("rev-list", "--left-right", "--count", "${upstream}...HEAD") | Select-Object -First 1)
+    $counts = $countLine -split "\s+"
+    if ($counts.Count -lt 2 -or $counts[0] -ne "0" -or $counts[1] -ne "0") {
+        throw "HEAD does not exactly match its remote upstream: $upstream"
+    }
+
+    return [string](Invoke-Git @("rev-parse", "HEAD") | Select-Object -First 1)
+}
+
+function Assert-SshHostKey() {
+    & ssh-keygen -F $RemoteHost *> $null
     if ($LASTEXITCODE -ne 0) {
-        throw "scp file failed: $SourcePath"
+        throw "SSH host key for $RemoteHost is not present in known_hosts. Verify and add it manually first."
     }
 }
 
-function Copy-DirToRemote([string]$SourcePath, [string]$RemoteParentDir) {
-    Assert-PathExists $SourcePath
-    $sourceItem = Get-Item -LiteralPath $SourcePath
-    $stageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("agent_publish_" + [System.Guid]::NewGuid().ToString("N"))
-    $stageDir = Join-Path $stageRoot $sourceItem.Name
+function Test-LocalTcpListener([int]$Port) {
+    $client = [System.Net.Sockets.TcpClient]::new()
     try {
-        New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
-        foreach ($file in Get-PublishFiles $SourcePath $SourcePath) {
-            $relativePath = Get-RelativePath $SourcePath $file.FullName
-            $targetPath = Join-Path $stageDir $relativePath
-            $targetParent = Split-Path -Parent $targetPath
-            if (-not (Test-Path -LiteralPath $targetParent)) {
-                New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
-            }
-            Copy-Item -LiteralPath $file.FullName -Destination $targetPath -Force
+        $pending = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
+        if (-not $pending.AsyncWaitHandle.WaitOne(400)) {
+            return $false
         }
-
-        Write-Host "DIR   $SourcePath -> $RemoteParentDir"
-        & scp @scpArgs -r $stageDir "${remoteSpec}:${RemoteParentDir}"
-        if ($LASTEXITCODE -ne 0) {
-            throw "scp dir failed: $SourcePath"
-        }
+        $client.EndConnect($pending)
+        return $true
+    }
+    catch {
+        return $false
     }
     finally {
-        if (Test-Path -LiteralPath $stageRoot) {
-            Remove-Item -LiteralPath $stageRoot -Recurse -Force
-        }
+        $client.Dispose()
     }
 }
 
-function Get-RelativePath([string]$BasePath, [string]$TargetPath) {
-    $baseResolved = (Resolve-Path -LiteralPath $BasePath).ProviderPath.TrimEnd("\")
-    $targetResolved = (Resolve-Path -LiteralPath $TargetPath).ProviderPath
-    $baseUri = [Uri]($baseResolved + "\")
-    $targetUri = [Uri]$targetResolved
-    return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace("/", "\")
+function Test-AllowedRelativePath(
+    [string]$RelativePath,
+    [string[]]$AllowedFiles,
+    [string[]]$AllowedDirs
+) {
+    $normalized = $RelativePath.Replace("\", "/").TrimStart("/")
+    if ($AllowedFiles -contains $normalized) {
+        return $true
+    }
+    foreach ($directory in $AllowedDirs) {
+        if ($normalized.StartsWith("$directory/", [StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+    return $false
 }
 
-function Get-StringHash([string]$InputText) {
-    $sha = [System.Security.Cryptography.SHA256]::Create()
+function Test-BlockedPublishPath([string]$RepoRelativePath) {
+    $normalized = $RepoRelativePath.Replace("\", "/")
+    $parts = @($normalized -split "/" | Where-Object { $_ })
+    foreach ($part in $parts) {
+        if ($BlockedDirNames -contains $part.ToLowerInvariant()) {
+            return $true
+        }
+    }
+
+    $name = [IO.Path]::GetFileName($normalized)
+    $lowerName = $name.ToLowerInvariant()
+    if ($BlockedFileNames -contains $lowerName) {
+        return $true
+    }
+    if ($lowerName -like "credentials*" -or $lowerName -like "secrets*") {
+        return $true
+    }
+    if ($lowerName -like ".env.*") {
+        return $true
+    }
+
+    $extension = [IO.Path]::GetExtension($lowerName)
+    if ($BlockedExtensions -contains $extension) {
+        return $true
+    }
+    if ($extension -in @(".png", ".jpg", ".jpeg")) {
+        return -not $normalized.StartsWith("console/static/", [StringComparison]::Ordinal)
+    }
+    return $false
+}
+
+function Copy-TrackedFile(
+    [string]$RepoRelativePath,
+    [string]$Scope,
+    [string]$ScopeRelativePath,
+    [string]$PayloadRoot,
+    [hashtable]$ManifestEntries
+) {
+    if (Test-BlockedPublishPath $RepoRelativePath) {
+        return
+    }
+    $source = Join-Path $RepoRoot ($RepoRelativePath.Replace("/", [IO.Path]::DirectorySeparatorChar))
+    Assert-PathExists $source
+    $destination = Join-Path (Join-Path $PayloadRoot $Scope) ($ScopeRelativePath.Replace("/", [IO.Path]::DirectorySeparatorChar))
+    $parent = Split-Path -Parent $destination
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $source -Destination $destination -Force
+    $ManifestEntries[$Scope].Add($ScopeRelativePath.Replace("\", "/"))
+}
+
+function Write-Utf8NoBomLines([string]$PathValue, [string[]]$Lines) {
+    $encoding = [Text.UTF8Encoding]::new($false)
+    $content = if ($Lines.Count -gt 0) {
+        [string]::Join("`n", $Lines) + "`n"
+    }
+    else {
+        ""
+    }
+    [IO.File]::WriteAllText($PathValue, $content, $encoding)
+
+    $bytes = [IO.File]::ReadAllBytes($PathValue)
+    if ($bytes -contains [byte]13) {
+        throw "Generated publish manifest contains a CR byte: $PathValue"
+    }
+}
+
+function Build-Payload([string]$PayloadRoot) {
+    $manifestEntries = @{
+        agent = [Collections.Generic.List[string]]::new()
+        console = [Collections.Generic.List[string]]::new()
+        shared = [Collections.Generic.List[string]]::new()
+    }
+    foreach ($scope in @("agent", "console", "shared", "_manifests")) {
+        New-Item -ItemType Directory -Path (Join-Path $PayloadRoot $scope) -Force | Out-Null
+    }
+
+    $trackedFiles = @(Invoke-Git @("ls-files"))
+    foreach ($repoPathRaw in $trackedFiles) {
+        $repoPath = ([string]$repoPathRaw).Replace("\", "/")
+        if ($repoPath.StartsWith("agent/", [StringComparison]::Ordinal)) {
+            $relative = $repoPath.Substring(6)
+            if (Test-AllowedRelativePath $relative $AgentFiles $AgentDirs) {
+                Copy-TrackedFile $repoPath "agent" $relative $PayloadRoot $manifestEntries
+            }
+        }
+        elseif ($repoPath.StartsWith("console/", [StringComparison]::Ordinal)) {
+            $relative = $repoPath.Substring(8)
+            if (Test-AllowedRelativePath $relative $ConsoleFiles $ConsoleDirs) {
+                Copy-TrackedFile $repoPath "console" $relative $PayloadRoot $manifestEntries
+            }
+        }
+        elseif ($repoPath.StartsWith("shared/", [StringComparison]::Ordinal)) {
+            $relative = $repoPath.Substring(7)
+            Copy-TrackedFile $repoPath "shared" $relative $PayloadRoot $manifestEntries
+        }
+    }
+
+    foreach ($scope in @("agent", "console", "shared")) {
+        $entries = @($manifestEntries[$scope] | Sort-Object -Unique)
+        if ($entries.Count -eq 0) {
+            throw "Publish whitelist produced an empty scope: $scope"
+        }
+        Write-Utf8NoBomLines (Join-Path $PayloadRoot "_manifests/$scope.txt") $entries
+    }
+}
+
+function Get-TreeFingerprint([string[]]$Paths) {
+    $entries = [Collections.Generic.List[string]]::new()
+    foreach ($pathValue in $Paths) {
+        $root = Join-Path $PayloadRoot $pathValue
+        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName) {
+            $relative = $file.FullName.Substring($PayloadRoot.Length).TrimStart("\", "/").Replace("\", "/")
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $entries.Add("${relative}=${hash}")
+        }
+    }
+    $joined = [string]::Join("`n", @($entries | Sort-Object))
+    $bytes = [Text.Encoding]::UTF8.GetBytes($joined)
+    $sha = [Security.Cryptography.SHA256]::Create()
     try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($InputText)
         return (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join "")
     }
     finally {
         $sha.Dispose()
     }
-}
-
-function Test-PublishExcluded([string]$BasePath, [string]$PathValue) {
-    $relativePath = Get-RelativePath $BasePath $PathValue
-    $parts = @($relativePath -split "[\\/]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    foreach ($part in $parts) {
-        if ($ExcludedDirNames -contains $part) {
-            return $true
-        }
-    }
-
-    $name = [System.IO.Path]::GetFileName($PathValue)
-    if ($ExcludedFileNames -contains $name) {
-        return $true
-    }
-    foreach ($pattern in $ExcludedFileNamePatterns) {
-        if ($name -like $pattern) {
-            return $true
-        }
-    }
-
-    $extension = [System.IO.Path]::GetExtension($PathValue)
-    return ($ExcludedFileExtensions -contains $extension)
-}
-
-function Get-PublishFiles([string]$BasePath, [string]$PathValue) {
-    $files = @(Get-ChildItem -LiteralPath $PathValue -Recurse -File | Sort-Object FullName)
-    return @($files | Where-Object { -not (Test-PublishExcluded $BasePath $_.FullName) })
-}
-
-function Get-ScopeFingerprint([hashtable]$Scope) {
-    $entries = New-Object System.Collections.Generic.List[string]
-    foreach ($item in $Scope.Items) {
-        $localPath = Join-Path $Scope.LocalRoot $item.Local
-        Assert-PathExists $localPath
-        $files = @()
-        if ($item.Type -eq "file") {
-            $files = @(Get-Item -LiteralPath $localPath)
-        }
-        elseif ($item.Type -eq "dir") {
-            $files = @(Get-PublishFiles $Scope.LocalRoot $localPath)
-        }
-        else {
-            throw "Unsupported item type: $($item.Type)"
-        }
-
-        foreach ($file in $files) {
-            $relativePath = Get-RelativePath $Scope.LocalRoot $file.FullName
-            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            $entries.Add("$relativePath=$hash")
-        }
-    }
-
-    return Get-StringHash(([string]::Join("`n", ($entries | Sort-Object))))
 }
 
 function Load-State() {
@@ -267,7 +294,6 @@ function Load-State() {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         return @{}
     }
-
     $parsed = $raw | ConvertFrom-Json
     $state = @{}
     foreach ($property in $parsed.PSObject.Properties) {
@@ -277,10 +303,9 @@ function Load-State() {
 }
 
 function Save-State([hashtable]$State) {
-    if (-not (Test-Path -LiteralPath $StateDir)) {
-        New-Item -ItemType Directory -Path $StateDir | Out-Null
-    }
-    $State | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $StateFile -Encoding utf8
+    New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+    $json = $State | ConvertTo-Json -Depth 4
+    [IO.File]::WriteAllText($StateFile, $json, [Text.UTF8Encoding]::new($false))
 }
 
 function Resolve-Targets([hashtable]$State, [hashtable]$Fingerprints) {
@@ -289,107 +314,82 @@ function Resolve-Targets([hashtable]$State, [hashtable]$Fingerprints) {
         "agent" { return @("agent") }
         "console" { return @("console") }
         "auto" {
-            $targets = New-Object System.Collections.Generic.List[string]
+            $resolved = [Collections.Generic.List[string]]::new()
             foreach ($name in @("agent", "console")) {
-                $hashKey = "${name}Hash"
-                $changed = ($State[$hashKey] -ne $Fingerprints[$name])
-                $status = if ($changed) { "changed" } else { "unchanged" }
-                Write-Host ("AUTO  {0,-7} {1}" -f $name, $status)
-                if ($changed) {
-                    $targets.Add($name)
+                if ($State["${name}Hash"] -ne $Fingerprints[$name]) {
+                    $resolved.Add($name)
                 }
             }
-            return @($targets)
-        }
-        default {
-            throw "Unsupported target: $Target"
+            return @($resolved)
         }
     }
 }
 
-function Publish-Scope([hashtable]$Scope) {
-    Invoke-Remote("mkdir -p '$($Scope.RemoteRoot)'")
-    foreach ($item in $Scope.Items) {
-        $localPath = Join-Path $Scope.LocalRoot $item.Local
-        $remotePath = Join-RemotePath $Scope.RemoteRoot $item.Remote
-        $remoteParent = Get-RemoteParentPath $remotePath
-        Invoke-Remote("mkdir -p '$remoteParent'")
-        if ($item.Type -eq "file") {
-            Copy-FileToRemote $localPath $remotePath
-        }
-        elseif ($item.Type -eq "dir") {
-            Copy-DirToRemote $localPath $remoteParent
-        }
-        else {
-            throw "Unsupported item type: $($item.Type)"
-        }
-    }
-}
-
-function Restart-Services([string[]]$TargetNames) {
-    foreach ($name in $TargetNames) {
-        $scope = $ScopesByName[$name]
-        Invoke-Remote("sudo systemctl restart $($scope.Service) && systemctl is-active $($scope.Service)")
-    }
-}
-
-function Check-Health([string[]]$TargetNames) {
-    foreach ($name in $TargetNames) {
-        $scope = $ScopesByName[$name]
-        $retryCommand = 'bash -lc ''for attempt in 1 2 3 4 5 6 7 8 9 10; do ' + $scope.HealthCommand + ' && exit 0; sleep 2; done; exit 1'''
-        Invoke-Remote($retryCommand)
-    }
-}
-
-function Wait-AgentFeishuReady() {
-    if ($SkipFeishuCheck) {
-        Write-Host "Skip feishu_ws readiness check."
-        return
-    }
-
-    $retryCommand = 'for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do last=$(curl -fsS http://127.0.0.1:9000/health) || exit 1; echo "$last"; printf "%s" "$last" | grep -Eq ''feishu_ws[^A-Za-z0-9]+connected'' && exit 0; sleep 2; done; echo "feishu_ws did not become connected within retry window" >&2; exit 1'
-    Invoke-Remote($retryCommand)
-}
-
+Assert-Command "git"
 Assert-Command "ssh"
 Assert-Command "scp"
-Assert-PathExists $AgentRoot
-Assert-PathExists $ConsoleRoot
+Assert-Command "ssh-keygen"
+Assert-PathExists $RepoRoot
 Assert-PathExists $SshKeyPath
+Assert-SshHostKey
 
-$fingerprints = @{
-    agent = Get-ScopeFingerprint $AgentScope
-    console = Get-ScopeFingerprint $ConsoleScope
-}
-$state = Load-State
-$targetsToPublish = @(Resolve-Targets $state $fingerprints)
-
-if ($targetsToPublish.Count -eq 0) {
-    Write-Host "No changed scope detected. Nothing to publish."
-    exit 0
+$releaseSha = Assert-CleanPublishedCommit
+if (Test-LocalTcpListener 9000) {
+    throw "A local Agent is listening on 127.0.0.1:9000. Stop it before publishing."
 }
 
-Write-Host ("Publish target resolved to: {0}" -f ($targetsToPublish -join ", "))
+$releaseId = "release-$($releaseSha.Substring(0, 12))-$(Get-Date -Format 'yyyyMMddHHmmss')"
+$TaskTempDir = Join-Path $TaskTempRoot $releaseId
+$PayloadRoot = Join-Path $TaskTempDir $releaseId
+$remoteStage = "${RemoteDeployRoot}/${releaseId}"
+$remoteStageCreated = $false
 
-foreach ($name in $targetsToPublish) {
-    Publish-Scope $ScopesByName[$name]
-}
+try {
+    New-Item -ItemType Directory -Path $PayloadRoot -Force | Out-Null
+    Build-Payload $PayloadRoot
 
-if (-not $SkipRestart) {
-    Restart-Services $targetsToPublish
+    $fingerprints = @{
+        agent = Get-TreeFingerprint @("agent", "shared")
+        console = Get-TreeFingerprint @("console", "shared")
+    }
+    $state = Load-State
+    $targetsToPublish = @(Resolve-Targets $state $fingerprints)
+    if ($targetsToPublish.Count -eq 0) {
+        Write-Host "No changed source scope detected. Nothing to publish."
+        exit 0
+    }
+
+    Invoke-Remote "test `"`$(id -un)`" = boyce && test -d /home/boyce && mkdir -p '$RemoteDeployRoot'"
+    & scp @scpArgs -r $PayloadRoot "${remoteSpec}:${RemoteDeployRoot}/"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to upload staged release"
+    }
+    $remoteStageCreated = $true
+
+    $skipRestartValue = if ($SkipRestart) { "1" } else { "0" }
+    $skipHealthValue = if ($SkipHealthCheck) { "1" } else { "0" }
+    $targetCsv = $targetsToPublish -join ","
+    Invoke-Remote "bash '$remoteStage/agent/deploy/remote_release.sh' '$remoteStage' '$releaseSha' '$targetCsv' '$skipRestartValue' '$skipHealthValue'"
+    $remoteStageCreated = $false
+
+    foreach ($name in $targetsToPublish) {
+        $state["${name}Hash"] = $fingerprints[$name]
+    }
+    $state["lastPublishedAt"] = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $state["lastPublishedTarget"] = $targetCsv
+    $state["lastReleaseSha"] = $releaseSha
+    Save-State $state
+    Write-Host "Publish completed: $targetCsv @ $releaseSha"
 }
-if (-not $SkipHealthCheck) {
-    Check-Health $targetsToPublish
-    if ($targetsToPublish -contains "agent") {
-        Wait-AgentFeishuReady
+finally {
+    if ($remoteStageCreated -and $remoteStage.StartsWith("/home/boyce/.boyi-deploy/release-")) {
+        & ssh @sshArgs $remoteSpec "rm -rf -- '$remoteStage'" *> $null
+    }
+    if (Test-Path -LiteralPath $TaskTempDir) {
+        $resolvedTemp = (Resolve-Path -LiteralPath $TaskTempDir).ProviderPath
+        $resolvedRoot = (Resolve-Path -LiteralPath $TaskTempRoot).ProviderPath
+        if ($resolvedTemp.StartsWith($resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
+        }
     }
 }
-
-foreach ($name in $targetsToPublish) {
-    $state["${name}Hash"] = $fingerprints[$name]
-}
-$state["lastPublishedAt"] = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-$state["lastPublishedTarget"] = ($targetsToPublish -join ",")
-Save-State $state
-
-Write-Host ("Publish completed: {0}" -f ($targetsToPublish -join ", "))

@@ -8,8 +8,13 @@ import httpx
 from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, WORKSPACE_ROOT)
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+from shared.redaction import redact_text
+from tools.internal_http import internal_api_headers
 
 HTTP_SERVICE_URL = os.getenv("HTTP_SERVICE_URL", "http://127.0.0.1:9000/tms")
 
@@ -46,6 +51,7 @@ def call_http_service(endpoint: str, params: dict | None = None) -> dict:
         resp = httpx.post(
             url,
             json=task_payload,
+            headers=internal_api_headers(),
             timeout=timeout_sec,
         )
         resp.raise_for_status()
@@ -60,9 +66,14 @@ def call_http_service(endpoint: str, params: dict | None = None) -> dict:
         if isinstance(payload, dict):
             payload.setdefault("http_status", exc.response.status_code)
             return payload
-        return {"error": f"tms service returned {exc.response.status_code}: {exc.response.text[:200]}"}
+        return {
+            "error": (
+                f"tms service returned {exc.response.status_code}: "
+                f"{redact_text(exc.response.text)[:200]}"
+            )
+        }
     except Exception as exc:
-        return {"error": f"tms service call failed: {str(exc)[:200]}"}
+        return {"error": f"tms service call failed: {redact_text(exc)[:200]}"}
 
 
 def main():

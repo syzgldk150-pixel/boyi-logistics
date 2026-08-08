@@ -176,6 +176,7 @@ class Settings:
     mysql_password: str
     mysql_database: str
     agent_base_url: str
+    agent_internal_api_token: str
     agent_timeout_seconds: int
     basic_auth_user: str
     basic_auth_password: str
@@ -230,6 +231,7 @@ def load_settings() -> Settings:
             os.getenv("DOCFLOW_AGENT_BASE_URL", "").strip()
             or f"http://127.0.0.1:{agent_port}"
         ),
+        agent_internal_api_token=os.getenv("AGENT_INTERNAL_API_TOKEN", "").strip(),
         agent_timeout_seconds=max(5, _env_int("DOCFLOW_AGENT_TIMEOUT_SECONDS", 30)),
         basic_auth_user=os.getenv("DOCFLOW_BASIC_AUTH_USER", "").strip(),
         basic_auth_password=os.getenv("DOCFLOW_BASIC_AUTH_PASS", "").strip(),

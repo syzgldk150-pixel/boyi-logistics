@@ -14,13 +14,18 @@ from logging.handlers import TimedRotatingFileHandler
 import psutil
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, WORKSPACE_ROOT)
 
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+from shared.redaction import redact_text
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -33,6 +38,28 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 WEBHOOK_TOKEN_HEADER = "X-Agent-Webhook-Token"
 
 
+class RedactingFilter(logging.Filter):
+    """Remove credentials from every message before it reaches a handler."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact_text(record.getMessage())
+        record.args = ()
+        return True
+
+
+class RedactingFormatter(logging.Formatter):
+    """Ensure exception tracebacks receive the same redaction policy."""
+
+    def formatException(self, exc_info) -> str:  # noqa: N802
+        return redact_text(super().formatException(exc_info))
+
+
+def _configure_handler(handler: logging.Handler) -> logging.Handler:
+    handler.addFilter(RedactingFilter())
+    handler.setFormatter(RedactingFormatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+    return handler
+
+
 def _make_handler(filename: str) -> TimedRotatingFileHandler:
     handler = TimedRotatingFileHandler(
         filename=os.path.join(LOG_DIR, filename),
@@ -41,8 +68,7 @@ def _make_handler(filename: str) -> TimedRotatingFileHandler:
         backupCount=30,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
-    return handler
+    return _configure_handler(handler)
 
 
 _logging_initialized = False
@@ -57,8 +83,7 @@ def setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(LOG_LEVEL)
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+    console = _configure_handler(logging.StreamHandler(sys.stdout))
     root.addHandler(console)
 
     for logger_name, filename in (
@@ -80,6 +105,7 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
+from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal_request
 from agent.phase7_resource_import import import_phase7_resources
 from agent.scheduler import init_scheduler, reload_scheduler
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
@@ -103,6 +129,7 @@ from feishu.notify import send_tms_session_disconnected_alert
 agent_core = AgentCore()
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
 TMS_SESSION_ALERT_STATUSES = {"pending_code", "expired", "logged_out", "error"}
 TMS_SESSION_TRANSITION_ALERT_STATUSES = {"expired", "logged_out", "error"}
 TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
@@ -208,7 +235,7 @@ def _error_status_payload_for_account(account: dict, exc: Exception) -> dict:
             "authenticated": False,
             "pending_code": False,
             "last_validation_at": "",
-            "last_error_summary": str(exc)[:300],
+            "last_error_summary": redact_text(exc)[:300],
             "authenticated_at": "",
             "pending_since": "",
             "expires_at": "",
@@ -342,6 +369,8 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not AGENT_INTERNAL_API_TOKEN:
+        raise RuntimeError("AGENT_INTERNAL_API_TOKEN is required")
     logger.info("Agent service starting instance_id=%s pid=%s", INSTANCE_ID, os.getpid())
 
     await agent_core.init()
@@ -380,6 +409,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Logistics Agent", version="0.1.0", lifespan=lifespan)
 app.include_router(tms_router)
+
+
+@app.middleware("http")
+async def require_internal_api_token(request: Request, call_next):
+    failure = authenticate_internal_request(
+        path=request.url.path,
+        expected_token=AGENT_INTERNAL_API_TOKEN,
+        provided_token=request.headers.get(INTERNAL_API_TOKEN_HEADER, ""),
+    )
+    if failure:
+        return JSONResponse(
+            status_code=failure.status_code,
+            content={
+                "ok": False,
+                "data": None,
+                "error": {"code": "internal_auth_failed", "message": failure.message},
+            },
+        )
+    return await call_next(request)
 
 
 def _webhook_token() -> str:
@@ -442,7 +490,10 @@ def _feishu_verification_token() -> str:
 def _verify_feishu_event_token(payload: dict) -> None:
     expected_token = _feishu_verification_token()
     if not expected_token:
-        return
+        raise HTTPException(
+            status_code=503,
+            detail="Feishu event verification token is not configured",
+        )
 
     header = payload.get("header") or {}
     provided_token = str(payload.get("token") or header.get("token") or "").strip()
@@ -518,6 +569,26 @@ async def webhook_handler(path: str, request: Request):
 
 @app.get("/health")
 async def health():
+    """Minimal unauthenticated liveness response."""
+
+    return {"ok": True, "status": "ok", "release_sha": _release_sha()}
+
+
+def _release_sha() -> str:
+    configured = str(os.getenv("AGENT_RELEASE_SHA", "") or "").strip()
+    if configured:
+        return configured
+    release_file = os.path.join(PROJECT_ROOT, "runtime", "release_sha")
+    try:
+        with open(release_file, encoding="utf-8") as handle:
+            value = handle.read(128).strip()
+    except OSError:
+        value = ""
+    return value or "development"
+
+
+@app.get("/internal/v1/health")
+async def internal_health():
     process = psutil.Process()
     mem_mb = process.memory_info().rss / 1024 / 1024
 
@@ -528,20 +599,25 @@ async def health():
     uptime_str = f"{days}d {hours}h {minutes}m"
 
     return {
-        "status": "ok",
-        "instance_id": INSTANCE_ID,
-        "uptime": uptime_str,
-        "memory_mb": round(mem_mb, 1),
-        "components": {
-            "feishu_mode": feishu_event_mode(),
-            "feishu_ws": agent_core.feishu_status(),
-            "deepseek": agent_core.llm_status("deepseek"),
-            "glm": agent_core.llm_status("glm"),
-            "mysql": agent_core.db_status(),
-            "tms_session": get_session_broker().describe_status(validate=False),
+        "ok": True,
+        "data": {
+            "status": "ok",
+            "release_sha": _release_sha(),
+            "instance_id": INSTANCE_ID,
+            "uptime": uptime_str,
+            "memory_mb": round(mem_mb, 1),
+            "components": {
+                "feishu_mode": feishu_event_mode(),
+                "feishu_ws": agent_core.feishu_status(),
+                "deepseek": agent_core.llm_status("deepseek"),
+                "glm": agent_core.llm_status("glm"),
+                "mysql": agent_core.db_status(),
+                "tms_session": get_session_broker().describe_status(validate=False),
+            },
+            "last_tool_run": agent_core.last_tool_info(),
+            "heavy_task_lock": agent_core.heavy_lock_held(),
         },
-        "last_tool_run": agent_core.last_tool_info(),
-        "heavy_task_lock": agent_core.heavy_lock_held(),
+        "error": None,
     }
 
 
@@ -673,7 +749,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host=os.getenv("AGENT_HOST", "127.0.0.1"),
         port=int(os.getenv("AGENT_PORT", "9000")),
         log_level=LOG_LEVEL.lower(),
         access_log=False,

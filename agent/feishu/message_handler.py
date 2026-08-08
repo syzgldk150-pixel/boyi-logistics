@@ -25,6 +25,8 @@ from agent.direct_tool_router import (
 )
 from agent.pending_actions import clear_pending, get_pending, set_pending
 from feishu.notify import remember_chat_id
+from shared.redaction import redact_text
+from tools.internal_http import internal_api_headers
 
 logger = logging.getLogger("feishu")
 
@@ -206,7 +208,7 @@ def _r7_departure_saved_params(agent: Any) -> dict[str, Any]:
     try:
         rows = agent.memory.list_scheduled_tasks()
     except Exception as exc:
-        logger.warning("读取 R7 发车打卡后台配置失败: %s", str(exc)[:200])
+        logger.warning("读取 R7 发车打卡后台配置失败: %s", redact_text(exc)[:200])
         return {}
 
     fallback: dict[str, Any] | None = None
@@ -266,9 +268,14 @@ def _admin_base_url() -> str:
 def _post_admin_sync(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     url = f"{_admin_base_url()}{path}"
     try:
-        resp = httpx.post(url, json=body or {}, timeout=ADMIN_REQUEST_TIMEOUT)
+        resp = httpx.post(
+            url,
+            json=body or {},
+            headers=internal_api_headers(),
+            timeout=ADMIN_REQUEST_TIMEOUT,
+        )
     except Exception as exc:
-        return {"ok": False, "error": f"调用 {path} 失败: {str(exc)[:200]}"}
+        return {"ok": False, "error": f"调用 {path} 失败: {redact_text(exc)[:200]}"}
     try:
         data = resp.json()
     except Exception:
@@ -285,9 +292,13 @@ async def _post_admin(path: str, body: dict[str, Any] | None = None) -> dict[str
 def _get_admin_sync(path: str) -> dict[str, Any]:
     url = f"{_admin_base_url()}{path}"
     try:
-        resp = httpx.get(url, timeout=ADMIN_REQUEST_TIMEOUT)
+        resp = httpx.get(
+            url,
+            headers=internal_api_headers(),
+            timeout=ADMIN_REQUEST_TIMEOUT,
+        )
     except Exception as exc:
-        return {"ok": False, "error": f"调用 {path} 失败: {str(exc)[:200]}"}
+        return {"ok": False, "error": f"调用 {path} 失败: {redact_text(exc)[:200]}"}
     try:
         data = resp.json()
     except Exception:
@@ -763,8 +774,9 @@ async def _cancel_running_tool_and_reply(
     try:
         result = await agent.cancel_tool(tool_name, started_at=started_at)
     except Exception as exc:
-        logger.error("取消工具失败: tool=%s error=%s", tool_name, str(exc)[:200])
-        await _reply_text(chat_id, f"{label}取消失败：{str(exc)[:200]}", reply_type=f"tool_cancel:{tool_name}")
+        safe_error = redact_text(exc)[:200]
+        logger.error("取消工具失败: tool=%s error=%s", tool_name, safe_error)
+        await _reply_text(chat_id, f"{label}取消失败：{safe_error}", reply_type=f"tool_cancel:{tool_name}")
         return
     message = str(result.get("message") or ("已发送取消请求，正在停止脚本。" if result.get("ok") else "取消失败")).strip()
     await _reply_text(chat_id, f"{label}：{message}", reply_type=f"tool_cancel:{tool_name}")
@@ -1032,10 +1044,11 @@ async def _execute_and_reply(
     try:
         result = await _execute_tool_with_stale_auth_retry(agent, tool_name, params)
     except Exception as exc:
-        logger.error("飞书工具执行异常: tool=%s error=%s", tool_name, str(exc)[:200])
+        safe_error = redact_text(exc)
+        logger.error("飞书工具执行异常: tool=%s error=%s", tool_name, safe_error[:200])
         await _reply_text(
             chat_id,
-            format_tool_reply(tool_name, {"success": False, "error": str(exc)}),
+            format_tool_reply(tool_name, {"success": False, "error": safe_error}),
         )
         return
 

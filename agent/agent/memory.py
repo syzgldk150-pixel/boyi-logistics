@@ -7,6 +7,7 @@ import logging
 from typing import Any, Optional
 
 import pymysql
+from shared.redaction import redact_sensitive
 
 logger = logging.getLogger("agent")
 
@@ -63,7 +64,11 @@ def _compact_json_value(value: Any, *, depth: int = 0) -> Any:
 
 
 def _json_for_storage(value: Any) -> str:
-    return json.dumps(_compact_json_value(value), ensure_ascii=False, default=str)
+    return json.dumps(
+        _compact_json_value(redact_sensitive(value)),
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 class Memory:
@@ -298,14 +303,14 @@ class Memory:
             for row in rows:
                 if row.get("params"):
                     try:
-                        row["params"] = json.loads(row["params"])
+                        row["params"] = redact_sensitive(json.loads(row["params"]))
                     except Exception:
-                        pass
+                        row["params"] = redact_sensitive(row["params"])
                 if row.get("result"):
                     try:
-                        row["result"] = json.loads(row["result"])
+                        row["result"] = redact_sensitive(json.loads(row["result"]))
                     except Exception:
-                        pass
+                        row["result"] = redact_sensitive(row["result"])
                 if row.get("created_at") is not None:
                     row["created_at"] = row["created_at"].strftime("%Y-%m-%d %H:%M:%S")
             return rows

@@ -15,6 +15,7 @@ from agent.llm_client import LLMClient
 from agent.tool_registry import ToolRegistry
 from agent.tool_executor import ToolExecutor
 from agent.memory import Memory
+from shared.redaction import redact_sensitive, redact_text
 
 logger = logging.getLogger("agent")
 
@@ -86,20 +87,27 @@ class AgentCore:
                 payload = await asyncio.to_thread(runner, dict(params or {}))
             except Exception as exc:
                 duration = round(time.time() - start, 2)
-                logger.error("tool=%s | direct_error=%s | duration=%ss", tool_name, str(exc)[:200], duration)
-                return {"success": False, "error": str(exc), "duration_s": duration}
+                safe_error = redact_text(exc)
+                logger.error("tool=%s | direct_error=%s | duration=%ss", tool_name, safe_error[:200], duration)
+                return {"success": False, "error": safe_error, "duration_s": duration}
 
             duration = round(time.time() - start, 2)
             if isinstance(payload, dict) and payload.get("error"):
+                safe_payload = redact_sensitive(payload)
                 failure = {
                     "success": False,
-                    "error": payload["error"],
-                    "data": payload,
+                    "error": safe_payload["error"],
+                    "data": safe_payload,
                     "duration_s": duration,
                 }
                 if payload.get("error_code"):
                     failure["error_code"] = payload.get("error_code")
-                logger.error("tool=%s | success=false | direct_error=%s | duration=%ss", tool_name, str(payload["error"])[:300], duration)
+                logger.error(
+                    "tool=%s | success=false | direct_error=%s | duration=%ss",
+                    tool_name,
+                    redact_text(payload["error"])[:300],
+                    duration,
+                )
                 return failure
             logger.info("tool=%s | success=true | direct=true | duration=%ss", tool_name, duration)
             return {"success": True, "data": payload, "duration_s": duration}
