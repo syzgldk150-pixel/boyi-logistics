@@ -76,7 +76,7 @@ class FeishuMessageHandlerTests(unittest.TestCase):
             {
                 "address": "四川省绵阳市涪城区石塘镇瓦店村七组东岳汽修厂内金源冷挤压有限公司",
                 "weight": 1000.0,
-                "volume": 0.348,
+                "volume": 0.35,
             },
         )
 

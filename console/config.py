@@ -6,11 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency
-    load_dotenv = None
-
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8-sig")
 
@@ -61,14 +56,6 @@ def _discover_ocr_module_dir(project_root: Path) -> Path | None:
 
 
 OCR_MODULE_DIR = _discover_ocr_module_dir(PROJECT_ROOT)
-
-if load_dotenv is not None:
-    for candidate in (MODULE_DIR / ".env", PROJECT_ROOT / ".env"):
-        if candidate.exists():
-            load_dotenv(candidate)
-    if OCR_MODULE_DIR is not None:
-        load_dotenv(OCR_MODULE_DIR / ".env")
-
 
 def _wsl_gateway_ip() -> str:
     """在 WSL 环境下自动获取 Windows 宿主机网关 IP。"""

@@ -13,8 +13,6 @@ import re
 from pathlib import Path
 from urllib import request, error
 
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 QWEN_API_KEY = (
     os.getenv("QWEN_VL_API_KEY", "")

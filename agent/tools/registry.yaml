@@ -173,15 +173,15 @@
         table_id:
           type: string
           description: "可选，飞书多维表格 table_id；默认从 Agent MySQL 中读取，必要时可由 N8N 只读导入"
-          view_id:
-            type: string
-            description: "可选，飞书多维表格 view_id；未传时优先按 view_name 解析"
-          view_name:
-            type: string
-            description: "可选，飞书多维表格视图名称；默认 未签收明细，只扫描该视图中的候选记录"
-          list_limit:
-            type: integer
-            description: "可选，每页读取飞书记录数，默认 200；飞书多维表格列表接口单页上限按 200 处理"
+        view_id:
+          type: string
+          description: "可选，飞书多维表格 view_id；未传时优先按 view_name 解析"
+        view_name:
+          type: string
+          description: "可选，飞书多维表格视图名称；默认 未签收明细，只扫描该视图中的候选记录"
+        list_limit:
+          type: integer
+          description: "可选，每页读取飞书记录数，默认 200；飞书多维表格列表接口单页上限按 200 处理"
         query_batch_size:
           type: integer
           description: "可选，每批查询签收状态的运单数，默认 100"

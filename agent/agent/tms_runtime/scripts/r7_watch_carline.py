@@ -140,8 +140,14 @@ def _resolve_token_via_env_or_browser(
             print(f"Warning: ignore env token ({type(exc).__name__}: {exc})", file=sys.stderr, flush=True)
 
     # Use r7_login.py (Playwright) to login and read localStorage['accessToken'].
-    from browser_manager import launch_browser  # type: ignore
-    from r7_login import DEFAULT_PASSWORD, DEFAULT_USERNAME, HOME_URL, build_auth, ensure_logged_in  # type: ignore
+    from agent.tms_runtime.scripts.browser_manager import launch_browser
+    from agent.tms_runtime.scripts.r7_login import (
+        DEFAULT_PASSWORD,
+        DEFAULT_USERNAME,
+        HOME_URL,
+        build_auth,
+        ensure_logged_in,
+    )
 
     u = (username or DEFAULT_USERNAME or "").strip()
     p = (password or DEFAULT_PASSWORD or "").strip()
