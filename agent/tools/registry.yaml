@@ -1,4 +1,4 @@
-﻿tools:
+tools:
   - name: query_waybill
     description: "根据运单号查询运单签收状态或详细信息（收件人、地址、件数、重量等）"
     parameters:

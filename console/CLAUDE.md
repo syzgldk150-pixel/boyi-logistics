@@ -1,4 +1,4 @@
-﻿# console
+# console
 
 ## 目录定位
 
@@ -6,7 +6,7 @@
 
 ## 当前职责
 
-Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Agent-Internal-Token`；凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增绕过该入口的 Agent HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
+Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；响应在该边界统一解包 `ok/data/error`。凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增旧 Agent 路径或绕过该入口的 HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
 - 提供本地 Web 控制台入口
 - 提供统一后台壳层（左侧导航、顶部路径、右侧辅助栏、共享动效与交互反馈）
@@ -23,7 +23,11 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Ag
 ## 关键文件
 
 - `app.py`
-  控制台入口、页面路由、上传、复核、模板选择和模板保存
+  控制台组合入口、HTTP 生命周期、认证门禁和请求分发
+- `services/`
+  认证、自动化、监控/财务、客服、回单/运单、TMS 代理和 OCR 文档等领域服务
+- `routes/`
+  按业务域识别请求路径并把请求分发到领域服务
 - `finance_service.py`
   财务 Console 服务适配层，负责筛选与分页校验、共享仓储调用、金额字符串透传、服务端图形比例和 Agent 同步请求；费用方向只取共享仓储锁定值，不信任前端提交值；Console 与 Agent 必须使用同一套 Agent MySQL，长回溯请求超时与 Agent 工具上限一致
 - `config.py`

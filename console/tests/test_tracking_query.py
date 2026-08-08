@@ -117,7 +117,7 @@ class TrackingQueryTests(unittest.TestCase):
         self.assertEqual("R000145133480001", app.sent_payload["child_detail_rows"][0]["child_waybill_no"])
         self.assertEqual("勇胜", app.sent_payload["waybill_stub"]["sender_name"])
         self.assertEqual("货物信息", app.sent_payload["waybill_info"][0]["title"])
-        self.assertEqual("/tms/tracking_query", calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/tms/tracking_query", calls[0]["endpoint"])
         self.assertEqual({"tracking_number": "R00014513348", "decrypt_masked": True}, calls[0]["payload"]["params"])
         self.assertEqual(180, calls[0]["payload"]["timeout_sec"])
 
@@ -164,7 +164,7 @@ class TrackingQueryTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertEqual("yunda", app.sent_payload["type"])
         self.assertEqual("湖南邵阳集配站 0739-5455259", app.sent_payload["route_rows"][0]["contact"])
-        self.assertEqual("/tms/tracking_query", calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/tms/tracking_query", calls[0]["endpoint"])
         self.assertEqual({"tracking_number": "977808459", "decrypt_masked": True}, calls[0]["payload"]["params"])
 
     def test_tracking_template_uses_scan_detail_and_child_tabs_without_r7(self):

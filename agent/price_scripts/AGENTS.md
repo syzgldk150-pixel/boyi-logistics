@@ -1,4 +1,4 @@
-﻿# price_scripts
+# price_scripts
 
 ## 目录职责
 

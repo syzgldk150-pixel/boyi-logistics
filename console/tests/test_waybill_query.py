@@ -410,7 +410,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         app = _build_waybill_app(repository)
         handler = _RenderHandler()
 
-        with patch("app.datetime") as mocked_datetime:
+        with patch("console.services.waybills_receipts.datetime") as mocked_datetime:
             mocked_datetime.now.return_value = datetime(2026, 6, 22, 9, 30, 0)
             app._render_waybills(handler, {})
 

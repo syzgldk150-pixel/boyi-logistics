@@ -1,4 +1,4 @@
-﻿# 财务对账模块
+# 财务对账模块
 
 > 详细文档：`docs/finance_reconciliation/`
 

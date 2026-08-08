@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 货拉拉订单提取器
 输入: metadata/邓博严-货拉拉订单明细/费用明细*.xlsx (header=4)

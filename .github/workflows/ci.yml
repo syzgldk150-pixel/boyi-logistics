@@ -15,11 +15,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.10"
       - name: Install Agent lock and quality tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r agent/requirements.lock ruff==0.16.2 pytest==9.1.1
+          python -m pip install -r agent/requirements.lock
+          python agent/scripts/verify_locked_environment.py agent/requirements.lock
+          python -m pip install ruff==0.16.2 pytest==9.1.1
       - name: Compile source
         run: python -m compileall -q agent shared tests
       - name: Lint high-confidence errors
@@ -28,6 +30,10 @@ jobs:
         run: python agent/scripts/validate_tool_registry.py
       - name: Guard runtime import boundaries
         run: python agent/scripts/check_runtime_import_boundaries.py
+      - name: Guard repository hygiene
+        run: python agent/scripts/check_repository_hygiene.py
+      - name: Guard internal API contracts
+        run: python agent/scripts/check_internal_api_contracts.py
       - name: Test
         run: |
           pytest -q tests
@@ -42,11 +48,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.10"
       - name: Install Console lock and quality tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r console/requirements.lock ruff==0.16.2 pytest==9.1.1
+          python -m pip install -r console/requirements.lock
+          python agent/scripts/verify_locked_environment.py console/requirements.lock
+          python -m pip install ruff==0.16.2 pytest==9.1.1
       - name: Compile source
         run: python -m compileall -q console shared
       - name: Lint high-confidence errors

@@ -172,7 +172,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("total_income +", script)
 
     def test_all_nine_finance_api_routes_are_registered(self):
-        source = (CONSOLE_DIR / "app.py").read_text(encoding="utf-8")
+        source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
         routes = (
             "/finance/summary",
             "/finance/trend",
@@ -181,8 +181,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "/finance/sync-batches",
             "/finance/sync",
             "/finance/backfill",
-            "/finance/fee-mappings/(\\d+)",
-            "/finance/sync-batches/(\\d+)/retry",
+            "/finance/fee-mappings/\\d+",
+            "/finance/sync-batches/\\d+/retry",
         )
 
         for route in routes:

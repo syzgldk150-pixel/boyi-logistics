@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 微信流水提取器
 输入: metadata/邓博严-微信流水(现金)/*.xlsx (4个文件, header=16)

@@ -37,7 +37,7 @@ $scpArgs = @(
 
 $AgentFiles = @(
     "AGENTS.md", "CLAUDE.md", "README.md", "main.py", "requirements.txt", "requirements.lock",
-    "agent.service", "project_overview.md", "start_agent.sh", "stop_agent.sh",
+    "agent.service", "start_agent.sh", "stop_agent.sh",
     "dev_local_tunnel.sh"
 )
 $AgentDirs = @(
@@ -51,7 +51,7 @@ $ConsoleFiles = @(
     "requirements.lock", "runtime_config.py", "start_backend.sh", "stop_backend.sh", "task_queue.py",
     "template_store.py"
 )
-$ConsoleDirs = @("config", "routes", "static", "templates")
+$ConsoleDirs = @("config", "routes", "services", "static", "templates")
 $BlockedDirNames = @(
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache", "logs", "runtime",
     "state", "sessions", "cache", "temp", "tmp", "uploads", "downloads", "output",
