@@ -40,6 +40,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(execution.index("build_release_virtualenvs"), execution.index("MUTATION_STARTED=1"))
         self.assertLess(execution.index("apply_migrations"), execution.index("activate_release_virtualenvs"))
         self.assertIn('release_venv="${VENV_ROOT}/${target}-${RELEASE_SHA}"', release)
+        self.assertIn('bootstrap_python="$(readlink -f -- "${PYTHON_BINS[$target]}")"', release)
         self.assertIn('migration_python="${RELEASE_VENVS[agent]}/bin/python"', release)
         self.assertIn("restore_virtualenvs", release)
         self.assertIn("https://mirrors.aliyun.com/pypi/simple", release)

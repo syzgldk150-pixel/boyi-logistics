@@ -148,7 +148,15 @@ build_release_virtualenvs() {
   }
   mkdir -p "${VENV_ROOT}"
   for target in "${REQUESTED_TARGETS[@]}"; do
-    bootstrap_python="${PYTHON_BINS[$target]}"
+    bootstrap_python="$(readlink -f -- "${PYTHON_BINS[$target]}")"
+    [[ -x "${bootstrap_python}" ]] || {
+      echo "Could not resolve base Python for ${target}" >&2
+      return 1
+    }
+    "${bootstrap_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' || {
+      echo "Resolved base Python is not Python 3.10 for ${target}: ${bootstrap_python}" >&2
+      return 1
+    }
     lock_file="${STAGE_ROOT}/${target}/requirements.lock"
     [[ -f "${lock_file}" ]] || {
       echo "Missing exact dependency lock for ${target}" >&2
