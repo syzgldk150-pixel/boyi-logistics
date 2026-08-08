@@ -509,63 +509,31 @@ def ensure_phase7_tables() -> None:
 
 
 def ensure_console_waybill_table() -> None:
+    """Validate the deployment-managed ``waybills`` schema.
+
+    Runtime sync jobs must never create or mutate table definitions.  The
+    versioned SQL migrations are responsible for installing this schema before
+    either service starts.
+    """
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS waybills (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    document_id BIGINT NULL,
-                    waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                    destination_site VARCHAR(256) NOT NULL DEFAULT '',
-                    open_date VARCHAR(64) NOT NULL DEFAULT '',
-                    receiver_address TEXT NOT NULL,
-                    receiver_name VARCHAR(128) NOT NULL DEFAULT '',
-                    receiver_phone VARCHAR(64) NOT NULL DEFAULT '',
-                    sender_name VARCHAR(128) NOT NULL DEFAULT '',
-                    sender_phone VARCHAR(64) NOT NULL DEFAULT '',
-                    goods_name_lines TEXT NOT NULL,
-                    package_type_lines TEXT NOT NULL,
-                    quantity_lines TEXT NOT NULL,
-                    weight_volume VARCHAR(128) NOT NULL DEFAULT '',
-                    delivery_method VARCHAR(32) NOT NULL DEFAULT '',
-                    freight_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    pickup_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    delivery_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    transfer_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    payment_method VARCHAR(64) NOT NULL DEFAULT '',
-                    insurance_amount VARCHAR(64) NOT NULL DEFAULT '',
-                    cod_amount VARCHAR(64) NOT NULL DEFAULT '',
-                    remark TEXT NOT NULL,
-                    scan_status VARCHAR(128) NOT NULL DEFAULT '',
-                    status VARCHAR(32) NOT NULL DEFAULT 'in_transit',
-                    writer_id VARCHAR(64) NOT NULL DEFAULT '',
-                    source VARCHAR(32) NOT NULL DEFAULT 'ocr',
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    INDEX idx_wb_waybill_no (waybill_no),
-                    INDEX idx_wb_source (source),
-                    INDEX idx_wb_status (status),
-                    INDEX idx_wb_created_at (created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                SELECT COLUMN_NAME
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'waybills'
                 """
             )
-            migrations = (
-                ("insurance_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-                ("cod_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-                ("status", "VARCHAR(32) NOT NULL DEFAULT 'in_transit'"),
-                ("scan_status", "VARCHAR(128) NOT NULL DEFAULT ''"),
-            )
-            for column, definition in migrations:
-                try:
-                    cur.execute(f"ALTER TABLE waybills ADD COLUMN {column} {definition}")
-                except Exception:
-                    pass
-            try:
-                cur.execute("CREATE INDEX idx_wb_status ON waybills (status)")
-            except Exception:
-                pass
+            columns = {str(row.get("COLUMN_NAME") or "") for row in cur.fetchall()}
+            required = {"id", "waybill_no", "insurance_amount", "cod_amount", "status", "scan_status"}
+            missing = sorted(required - columns)
+            if missing:
+                raise RuntimeError(
+                    "waybills schema is not migrated; run deployment migrations first: "
+                    + ", ".join(missing)
+                )
     finally:
         conn.close()
 

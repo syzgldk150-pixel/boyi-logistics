@@ -8,6 +8,7 @@ import pymysql
 
 from config import Settings
 from shared.redaction import redact_sensitive, redact_text
+from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
 
 import re
 
@@ -294,6 +295,8 @@ class DocumentRepository:
         self.settings = settings
         self.placeholder = "%s"
         self._mysql = pymysql
+        self._scheduled_tasks = ScheduledTaskRepository(self.connect)
+        self._workflow_resources = WorkflowResourceRepository(self.connect)
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
@@ -550,11 +553,6 @@ class DocumentRepository:
         """增量迁移：为已有表添加新列（幂等，列存在时忽略）。"""
         migrations = [
             ("documents", "writer_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
-            ("waybills", "insurance_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-            ("waybills", "cod_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-            ("waybills", "status", "VARCHAR(32) NOT NULL DEFAULT 'in_transit'"),
-            ("waybills", "scan_status", "VARCHAR(128) NOT NULL DEFAULT ''"),
-            ("scheduled_tasks", "last_message", "TEXT NULL"),
             ("admin_users", "avatar_path", "VARCHAR(1024) NOT NULL DEFAULT ''"),
         ]
         for table, column, definition in migrations:
@@ -564,14 +562,6 @@ class DocumentRepository:
                 )
             except Exception:
                 pass  # 列已存在，忽略
-        for statement in (
-            "CREATE INDEX idx_wb_status ON waybills (status)",
-        ):
-            try:
-                cursor.execute(statement)
-            except Exception:
-                pass  # 索引已存在或表尚未创建时忽略，建表语句会补齐
-
     def _restore_line_haul_contacts_active_state(self, cursor: Any) -> None:
         cursor.execute("UPDATE line_haul_contacts SET is_active = 1 WHERE is_active = 0")
 
@@ -664,44 +654,6 @@ class DocumentRepository:
                 display_name VARCHAR(128) NOT NULL DEFAULT '',
                 sample_count INT NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL
-            )
-            """,
-            # --- waybills ---
-            """
-            CREATE TABLE IF NOT EXISTS waybills (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                document_id BIGINT NULL,
-                waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                destination_site VARCHAR(256) NOT NULL DEFAULT '',
-                open_date VARCHAR(64) NOT NULL DEFAULT '',
-                receiver_address TEXT NOT NULL,
-                receiver_name VARCHAR(128) NOT NULL DEFAULT '',
-                receiver_phone VARCHAR(64) NOT NULL DEFAULT '',
-                sender_name VARCHAR(128) NOT NULL DEFAULT '',
-                sender_phone VARCHAR(64) NOT NULL DEFAULT '',
-                goods_name_lines TEXT NOT NULL,
-                package_type_lines TEXT NOT NULL,
-                quantity_lines TEXT NOT NULL,
-                weight_volume VARCHAR(128) NOT NULL DEFAULT '',
-                delivery_method VARCHAR(32) NOT NULL DEFAULT '',
-                freight_fee VARCHAR(64) NOT NULL DEFAULT '',
-                pickup_fee VARCHAR(64) NOT NULL DEFAULT '',
-                delivery_fee VARCHAR(64) NOT NULL DEFAULT '',
-                transfer_fee VARCHAR(64) NOT NULL DEFAULT '',
-                payment_method VARCHAR(64) NOT NULL DEFAULT '',
-                insurance_amount VARCHAR(64) NOT NULL DEFAULT '',
-                cod_amount VARCHAR(64) NOT NULL DEFAULT '',
-                remark TEXT NOT NULL,
-                writer_id VARCHAR(64) NOT NULL DEFAULT '',
-                source VARCHAR(32) NOT NULL DEFAULT 'ocr',
-                status VARCHAR(32) NOT NULL DEFAULT 'in_transit',
-                scan_status VARCHAR(128) NOT NULL DEFAULT '',
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_wb_waybill_no (waybill_no),
-                INDEX idx_wb_source (source),
-                INDEX idx_wb_status (status),
-                INDEX idx_wb_created_at (created_at)
             )
             """,
             # --- waybill_sequences ---
@@ -822,22 +774,6 @@ class DocumentRepository:
                 INDEX idx_admin_sessions_expires (expires_at)
             )
             """,
-            # --- scheduled_tasks ---
-            """
-            CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                id VARCHAR(64) PRIMARY KEY,
-                name VARCHAR(128) NOT NULL,
-                tool_name VARCHAR(64) NOT NULL,
-                tool_params JSON,
-                cron_expression VARCHAR(64) NOT NULL,
-                enabled BOOLEAN DEFAULT TRUE,
-                last_run DATETIME NULL,
-                last_status VARCHAR(16) NULL,
-                last_duration_ms INT NULL,
-                last_message TEXT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
             # --- line_haul_contacts ---
             """
             CREATE TABLE IF NOT EXISTS line_haul_contacts (
@@ -857,16 +793,6 @@ class DocumentRepository:
                 INDEX idx_lhc_service_area (service_area),
                 INDEX idx_lhc_active (is_active),
                 INDEX idx_lhc_sort (sort_order)
-            )
-            """,
-            # --- workflow_resources ---
-            """
-            CREATE TABLE IF NOT EXISTS workflow_resources (
-                resource_key VARCHAR(128) PRIMARY KEY,
-                config_json JSON NOT NULL,
-                source VARCHAR(128),
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """,
         ]
@@ -2467,96 +2393,19 @@ class DocumentRepository:
         return data
 
     def list_workflow_resources(self) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT resource_key, config_json, source, updated_at, created_at
-                FROM workflow_resources
-                ORDER BY resource_key ASC
-                """
-            )
-            rows = cursor.fetchall()
-        for row in rows:
-            row["config"] = _loads_json(row.get("config_json"), {})
-            for field in ("updated_at", "created_at"):
-                if row.get(field):
-                    row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return rows
+        return self._workflow_resources.list_records()
 
     def get_workflow_resource(self, resource_key: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT resource_key, config_json, source, updated_at, created_at
-                FROM workflow_resources
-                WHERE resource_key=%s
-                """,
-                (resource_key,),
-            )
-            row = cursor.fetchone()
-        if not row:
-            return None
-        row["config"] = _loads_json(row.get("config_json"), {})
-        for field in ("updated_at", "created_at"):
-            if row.get(field):
-                row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return row
+        return self._workflow_resources.get_record(resource_key)
 
     def upsert_workflow_resource(self, resource_key: str, config: dict[str, Any], source: str = "backend_console") -> None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                INSERT INTO workflow_resources (resource_key, config_json, source)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    config_json = VALUES(config_json),
-                    source = VALUES(source)
-                """,
-                (resource_key, json.dumps(config, ensure_ascii=False), source),
-            )
+        self._workflow_resources.upsert(resource_key, config, source=source)
 
     def list_scheduled_tasks(self) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                       last_run, last_status, last_duration_ms, last_message, created_at
-                FROM scheduled_tasks
-                ORDER BY name ASC, id ASC
-                """
-            )
-            rows = cursor.fetchall()
-        for row in rows:
-            row["tool_params"] = _loads_json(row.get("tool_params"), {})
-            for field in ("last_run", "created_at"):
-                if row.get(field):
-                    row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return rows
+        return self._scheduled_tasks.list_tasks()
 
     def get_scheduled_task(self, task_id: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                       last_run, last_status, last_duration_ms, last_message, created_at
-                FROM scheduled_tasks
-                WHERE id=%s
-                """,
-                (task_id,),
-            )
-            row = cursor.fetchone()
-        if not row:
-            return None
-        row["tool_params"] = _loads_json(row.get("tool_params"), {})
-        for field in ("last_run", "created_at"):
-            if row.get(field):
-                row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return row
+        return self._scheduled_tasks.get_task(task_id)
 
     def list_scheduled_task_group(self, base_task_id: str) -> list[dict[str, Any]]:
         rows = self.list_scheduled_tasks()
@@ -2575,34 +2424,19 @@ class DocumentRepository:
         cron_expression: str,
         enabled: bool,
     ) -> None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                INSERT INTO scheduled_tasks
-                    (id, name, tool_name, tool_params, cron_expression, enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    name = VALUES(name),
-                    tool_name = VALUES(tool_name),
-                    tool_params = VALUES(tool_params),
-                    cron_expression = VALUES(cron_expression),
-                    enabled = VALUES(enabled)
-                """,
-                (
-                    task_id,
-                    name,
-                    tool_name,
-                    json.dumps(tool_params, ensure_ascii=False),
-                    cron_expression,
-                    enabled,
-                ),
-            )
+        self._scheduled_tasks.upsert_task(
+            {
+                "id": task_id,
+                "name": name,
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "cron_expression": cron_expression,
+                "enabled": enabled,
+            }
+        )
 
     def delete_scheduled_task(self, task_id: str) -> None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (task_id,))
+        self._scheduled_tasks.delete_task(task_id)
 
     def replace_scheduled_task_group(
         self,

@@ -13,6 +13,8 @@
 
 Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Agent-Internal-Token`；凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增绕过该入口的 Agent HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
+`scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
+
 ## 修改入口
 
 - 改首页、模块页、公共导航、页面文案：
