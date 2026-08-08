@@ -14,7 +14,7 @@ import sys
 import traceback
 from typing import Any, Dict, List, Optional
 
-from get_infor import fetch_bill_info_html, parse_bill_info_html
+from agent.tms_runtime.scripts.get_infor import fetch_bill_info_html, parse_bill_info_html
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 
 DATA_QUERY_URL = "https://tms.ronghuiwl.com/dataQuery/findPageByCallId"

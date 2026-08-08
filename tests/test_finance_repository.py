@@ -10,6 +10,7 @@ from shared.finance import (
     Direction,
     FeeLevel,
     FeeMappingSeed,
+    FINANCE_REQUIRED_TABLES,
     FinanceQuery,
     FinanceRepository,
     Platform,
@@ -72,9 +73,8 @@ class RouterConnection:
 
 
 class FinanceRepositoryTests(unittest.TestCase):
-    def test_mysql_schema_contains_all_tables_and_decimal_scale(self) -> None:
-        ddl = "\n".join(mysql_schema_statements())
-        for table in (
+    def test_finance_schema_contract_lists_all_migration_owned_tables(self) -> None:
+        for table in {
             "finance_sync_batches",
             "finance_sync_runs",
             "finance_transactions",
@@ -82,17 +82,11 @@ class FinanceRepositoryTests(unittest.TestCase):
             "finance_fee_items",
             "finance_fee_mappings",
             "finance_mapping_audit_logs",
-        ):
-            self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", ddl)
-        self.assertIn("DECIMAL(20,4)", ddl)
-        self.assertIn("login_account VARCHAR(128) NULL", ddl)
-        self.assertIn("session_profile VARCHAR(128) NULL", ddl)
-        self.assertIn(
-            "platform, raw_primary_fee_name, raw_secondary_fee_name, direction",
-            " ".join(ddl.split()),
-        )
+        }:
+            self.assertIn(table, FINANCE_REQUIRED_TABLES)
+        self.assertEqual((), mysql_schema_statements())
 
-    def test_initialize_schema_uses_caller_factory_and_all_statements(self) -> None:
+    def test_initialize_schema_uses_caller_factory_for_migration_validation(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
         connections: list[RouterConnection] = []
 
@@ -101,11 +95,13 @@ class FinanceRepositoryTests(unittest.TestCase):
             connections.append(connection)
             return connection
 
-        FinanceRepository(factory).initialize_schema()
-        self.assertEqual(len(records), len(mysql_schema_statements()))
-        self.assertTrue(connections[0].committed)
-        self.assertTrue(connections[0].closed)
-        self.assertFalse(connections[0].rolled_back)
+        def router(sql: str, _params: tuple[Any, ...]):
+            if "information_schema.TABLES" in sql:
+                return [{"TABLE_NAME": table} for table in FINANCE_REQUIRED_TABLES]
+            return []
+
+        FinanceRepository(lambda: RouterConnection(records, router)).initialize_schema()
+        self.assertEqual(1, len(records))
 
     def test_public_signatures_keep_direction_read_only_and_expose_pipeline_methods(self) -> None:
         save_parameters = inspect.signature(FinanceRepository.save_fee_mapping).parameters

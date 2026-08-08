@@ -11,7 +11,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from agent.tms_runtime.scripts.login_manager import TMSAuth
-from waybill_tracking import run_once as run_waybill_tracking_once
+from agent.tms_runtime.scripts.waybill_tracking import run_once as run_waybill_tracking_once
 
 
 DETAIL_URL = "https://tms.ronghuiwl.com/billEntity/getBillByCode"

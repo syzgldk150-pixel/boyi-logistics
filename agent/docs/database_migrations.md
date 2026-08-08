@@ -18,6 +18,14 @@ updated: 2026-08-08
 - 迁移在服务重启前由发布流程执行，线上请求、调度器和同步工具不得
   `CREATE` / `ALTER` 表。
 
-当前由迁移统一管理 `scheduled_tasks`、`workflow_resources` 和
-`waybills`。Agent 与 Console 通过 `shared/runtime_repositories.py` 访问前两张表；
-同步工具对 `waybills` 只做结构校验和业务读写，缺表或缺列必须明确失败。
+当前由迁移统一管理以下运行时结构：
+
+- 工作流与运单：`scheduled_tasks`、`workflow_resources`、`waybills`；
+- Console 文档、OCR、回单、管理员与专线联系人表；
+- 共享财务账本表；
+- Agent 会话、消息、工具日志、知识库和 Phase 7 表；
+- R7 监控事件/状态及到达、发车打卡日志。
+
+Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流和运单边界；
+财务仓储及 R7/Phase 7/Console 运行时均只做结构校验和业务读写。缺表或缺列必须
+明确失败，并要求先执行部署迁移，不能在服务请求中补建或改表。

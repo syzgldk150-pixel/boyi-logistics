@@ -6,7 +6,6 @@ import asyncio
 import importlib
 import logging
 import os
-import sys
 import time
 import traceback
 from dataclasses import dataclass
@@ -23,14 +22,7 @@ logger = logging.getLogger("agent")
 
 MODULE_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = MODULE_DIR / "scripts"
-
-def _ensure_scripts_dir_first() -> None:
-    scripts_dir = str(SCRIPTS_DIR)
-    sys.path[:] = [path for path in sys.path if path != scripts_dir]
-    sys.path.insert(0, scripts_dir)
-
-
-_ensure_scripts_dir_first()
+SCRIPTS_PACKAGE = "agent.tms_runtime.scripts"
 
 
 class TaskRequest(BaseModel):
@@ -48,20 +40,20 @@ class Target:
 SCAN_NEXT_CONCURRENCY = max(1, int(os.getenv("SCAN_NEXT_CONCURRENCY", "3")))
 
 TARGETS: dict[str, Target] = {
-    "fetch_dispatch": Target(module="fetch_dispatch", func="run_once"),
-    "fetch_pre_arrive_list": Target(module="fetch_pre_arrive_list", func="run_once"),
-    "send_order": Target(module="Send_order", func="run_once"),
-    "delivery_status": Target(module="Delivery_status", func="run_once"),
-    "clock_in_dual": Target(module="clock_in_dual", func="run_once"),
-    "auto_checkin_r7": Target(module="auto_checkin_r7", func="run_once"),
+    "fetch_dispatch": Target(module=f"{SCRIPTS_PACKAGE}.fetch_dispatch", func="run_once"),
+    "fetch_pre_arrive_list": Target(module=f"{SCRIPTS_PACKAGE}.fetch_pre_arrive_list", func="run_once"),
+    "send_order": Target(module=f"{SCRIPTS_PACKAGE}.Send_order", func="run_once"),
+    "delivery_status": Target(module=f"{SCRIPTS_PACKAGE}.Delivery_status", func="run_once"),
+    "clock_in_dual": Target(module=f"{SCRIPTS_PACKAGE}.clock_in_dual", func="run_once"),
+    "auto_checkin_r7": Target(module=f"{SCRIPTS_PACKAGE}.auto_checkin_r7", func="run_once"),
     "ronghui_tms_tracking": Target(module="agent.tms_runtime.scripts.ronghui_tms_tracking", func="run_once"),
-    "yunda_waybill_tracking": Target(module="yunda_waybill_tracking", func="run_once"),
-    "tracking_query": Target(module="tracking_query", func="run_once"),
-    "get_scan": Target(module="get_scan", func="run_once"),
-    "get_qianshou": Target(module="get_qianshou", func="run_once"),
+    "yunda_waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.yunda_waybill_tracking", func="run_once"),
+    "tracking_query": Target(module=f"{SCRIPTS_PACKAGE}.tracking_query", func="run_once"),
+    "get_scan": Target(module=f"{SCRIPTS_PACKAGE}.get_scan", func="run_once"),
+    "get_qianshou": Target(module=f"{SCRIPTS_PACKAGE}.get_qianshou", func="run_once"),
     "get_price": Target(module="agent.tms_runtime.scripts.get_price", func="run_once"),
-    "get_wangdiansendlist": Target(module="get_wangdiansendlist", func="run_once"),
-    "child_count": Target(module="child_count", func="run_once"),
+    "get_wangdiansendlist": Target(module=f"{SCRIPTS_PACKAGE}.get_wangdiansendlist", func="run_once"),
+    "child_count": Target(module=f"{SCRIPTS_PACKAGE}.child_count", func="run_once"),
     "yunda_waybill_entry": Target(module="agent.tms_runtime.scripts.yunda_waybill_entry", func="run_once"),
     "yunda_waybill_proxy": Target(module="agent.tms_runtime.scripts.yunda_waybill_proxy", func="run_once"),
     "receipts_sync": Target(module="agent.tms_runtime.scripts.receipts_sync", func="run_once"),
@@ -77,13 +69,13 @@ TARGETS: dict[str, Target] = {
         max_concurrency=12,
     ),
     "yunda_price": Target(module="agent.tms_runtime.scripts.yunda_price", func="run_once"),
-    "waybill_tracking": Target(module="waybill_tracking", func="run_once"),
-    "query_waybill_detail": Target(module="query_waybill_detail", func="run_once"),
-    "self_pickup_problem_upload": Target(module="self_pickup_problem_upload", func="run_once", max_concurrency=1),
+    "waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.waybill_tracking", func="run_once"),
+    "query_waybill_detail": Target(module=f"{SCRIPTS_PACKAGE}.query_waybill_detail", func="run_once"),
+    "self_pickup_problem_upload": Target(module=f"{SCRIPTS_PACKAGE}.self_pickup_problem_upload", func="run_once", max_concurrency=1),
     "split_pending_problem_upload": Target(module="agent.tms_runtime.scripts.split_pending_problem_upload", func="run_once", max_concurrency=1),
-    "scan_next": Target(module="scan_next", func="run_once", max_concurrency=SCAN_NEXT_CONCURRENCY),
-    "yunda_dispatch_forecast": Target(module="yunda_dispatch_forecast", func="run_once"),
-    "yunda_send_waybills": Target(module="yunda_send_waybills", func="run_once"),
+    "scan_next": Target(module=f"{SCRIPTS_PACKAGE}.scan_next", func="run_once", max_concurrency=SCAN_NEXT_CONCURRENCY),
+    "yunda_dispatch_forecast": Target(module=f"{SCRIPTS_PACKAGE}.yunda_dispatch_forecast", func="run_once"),
+    "yunda_send_waybills": Target(module=f"{SCRIPTS_PACKAGE}.yunda_send_waybills", func="run_once"),
 }
 
 TARGET_ACCOUNT_SYSTEMS: dict[str, str] = {
@@ -167,11 +159,6 @@ def _sanitize_params_for_log(value: Any) -> Any:
 
 
 def _load_callable(target: Target) -> Callable[[dict[str, Any]], Any]:
-    _ensure_scripts_dir_first()
-    loaded = sys.modules.get(target.module)
-    loaded_file = Path(getattr(loaded, "__file__", "") or "").resolve() if loaded else None
-    if loaded_file and not loaded_file.is_relative_to(SCRIPTS_DIR):
-        sys.modules.pop(target.module, None)
     mod = importlib.import_module(target.module)
     fn = getattr(mod, target.func, None)
     if fn is None or not callable(fn):

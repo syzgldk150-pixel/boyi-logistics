@@ -93,7 +93,7 @@ class Memory:
             self._conn,
             cursor_factory=pymysql.cursors.DictCursor,
         )
-        self._create_tables()
+        self._validate_migrated_tables()
         logger.info("对话记忆初始化完成 (MySQL %s:%s/%s)",
                      self._connect_params["host"],
                      self._connect_params["port"],
@@ -102,55 +102,22 @@ class Memory:
     def _conn(self):
         return pymysql.connect(**self._connect_params)
 
-    def _create_tables(self):
+    def _validate_migrated_tables(self) -> None:
         conn = self._conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS conversations (
-                        id VARCHAR(64) PRIMARY KEY,
-                        user_id VARCHAR(64) NOT NULL,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX idx_user (user_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        conversation_id VARCHAR(64) NOT NULL,
-                        role VARCHAR(16) NOT NULL,
-                        content TEXT,
-                        tool_calls JSON,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_conv (conversation_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS tool_logs (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        message_id BIGINT,
-                        conversation_id VARCHAR(64),
-                        tool_name VARCHAR(64) NOT NULL,
-                        params JSON,
-                        result JSON,
-                        success BOOLEAN,
-                        duration_ms INT,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_conv (conversation_id),
-                        INDEX idx_tool (tool_name)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS knowledge (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        category VARCHAR(64),
-                        content TEXT NOT NULL,
-                        source VARCHAR(256),
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        FULLTEXT INDEX ft_content (content) WITH PARSER ngram
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
+                cur.execute(
+                    """
+                    SELECT TABLE_NAME FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = DATABASE()
+                    """
+                )
+                tables = {str(row.get("TABLE_NAME") or "") for row in cur.fetchall() or []}
+                missing = sorted({"conversations", "messages", "tool_logs", "knowledge"} - tables)
+                if missing:
+                    raise RuntimeError(
+                        "Agent memory schema is not migrated; run deployment migrations first: " + ", ".join(missing)
+                    )
         finally:
             conn.close()
 

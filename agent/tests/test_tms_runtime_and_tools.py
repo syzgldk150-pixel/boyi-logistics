@@ -9276,6 +9276,9 @@ class ToolRegressionTests(unittest.TestCase):
             def fetchone(self):
                 return self._next_row
 
+            def close(self):
+                return None
+
         class Connection:
             def __init__(self):
                 self.cursor_obj = Cursor()

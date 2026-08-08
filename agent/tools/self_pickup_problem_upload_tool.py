@@ -14,7 +14,6 @@ if hasattr(sys.stdout, "reconfigure"):
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
-sys.path.insert(0, PROJECT_ROOT)
 
 from tools.phase7_sync_common import tms_auth_error_result
 from tools.tms_tool import call_http_service

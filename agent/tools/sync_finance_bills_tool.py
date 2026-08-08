@@ -12,10 +12,6 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
-for package_root in (WORKSPACE_ROOT, PROJECT_ROOT):
-    if package_root not in sys.path:
-        sys.path.insert(0, package_root)
 
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.scripts.finance_capture_common import FinanceCaptureError
