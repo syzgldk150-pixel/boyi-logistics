@@ -16,14 +16,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "agent", "tms_runtime", "scripts")
-for path in (PROJECT_ROOT, SCRIPTS_DIR):
-    if path not in sys.path:
-        sys.path.insert(0, path)
-
-import auto_departure_r7  # noqa: E402
-from agent.tms_runtime.account_manager import resolve_account_params  # noqa: E402
+from agent.tms_runtime.scripts import auto_departure_r7
+from agent.tms_runtime.account_manager import resolve_account_params
 
 
 DEFAULT_SCRIPT_PARAMS: dict[str, Any] = {
@@ -111,32 +105,17 @@ def _prepare_log_storage() -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {LOG_TABLE_NAME} (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    business_date DATE NOT NULL,
-                    task_id VARCHAR(128),
-                    trigger_mode VARCHAR(32),
-                    status VARCHAR(32) NOT NULL,
-                    ok BOOLEAN,
-                    skipped BOOLEAN DEFAULT FALSE,
-                    daily_success_limit INT,
-                    success_count_before INT,
-                    success_count_after INT,
-                    target_plate_numbers JSON,
-                    target_departure_time VARCHAR(32),
-                    class_name VARCHAR(128),
-                    stage VARCHAR(64),
-                    message TEXT,
-                    detail_json JSON,
-                    params_json JSON,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_r7_departure_date_status (business_date, status),
-                    INDEX idx_r7_departure_task_date (task_id, business_date),
-                    INDEX idx_r7_departure_created_at (created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
+                SELECT 1
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                """,
+                (LOG_TABLE_NAME,),
             )
+            if cur.fetchone() is None:
+                raise RuntimeError(
+                    "Missing r7_departure_checkin_log; run deployment migrations first"
+                )
     finally:
         conn.close()
 

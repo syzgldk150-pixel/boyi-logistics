@@ -15,7 +15,7 @@ import sys
 import time
 from typing import Any, Optional
 
-from auto_checkin_r7 import (
+from agent.tms_runtime.scripts.auto_checkin_r7 import (
     DEFAULT_PASSWORD,
     DEFAULT_USERNAME,
     HOME_URL,

@@ -10,6 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 import pymysql
+from shared.runtime_repositories import WaybillRepository
 
 _DECIMAL_2 = Decimal("0.01")
 _DECIMAL_3 = Decimal("0.001")
@@ -331,243 +332,63 @@ def _int_cell(value: Any) -> int | str:
 
 
 def ensure_phase7_tables() -> None:
+    """Validate Phase 7 tables and views installed by deployment migrations."""
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS waybill_data (
-                    tracking_number VARCHAR(64) PRIMARY KEY,
-                    goods_name VARCHAR(255),
-                    package_type VARCHAR(64),
-                    delivery_method VARCHAR(64),
-                    quantity INT,
-                    receipt_number VARCHAR(64),
-                    actual_weight DECIMAL(18,2),
-                    volume DECIMAL(18,3),
-                    remarks VARCHAR(255),
-                    destination_station VARCHAR(128),
-                    recipient_name VARCHAR(128),
-                    recipient_phone VARCHAR(64),
-                    recipient_address VARCHAR(512),
-                    settlement_weight DECIMAL(18,2),
-                    volumetric_weight DECIMAL(18,2),
-                    shipping_fee DECIMAL(18,2),
-                    payment_type VARCHAR(64),
-                    pay_on_arrival DECIMAL(18,2),
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_destination_station (destination_station),
-                    INDEX idx_updated_at (updated_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS split_pending_problem_items (
-                    tracking_number VARCHAR(64) PRIMARY KEY,
-                    source_row_no INT NOT NULL,
-                    destination_station VARCHAR(128),
-                    expected_quantity INT NOT NULL,
-                    arrived_quantity INT NOT NULL,
-                    pending_quantity INT NOT NULL,
-                    problem_type VARCHAR(32) NOT NULL,
-                    problem_owner_type VARCHAR(64) NOT NULL,
-                    problem_cause VARCHAR(255) NOT NULL,
-                    upload_status VARCHAR(16) NOT NULL DEFAULT 'pending',
-                    error_summary VARCHAR(500) NULL,
-                    uploaded_at DATETIME NULL,
-                    complaint_status VARCHAR(16) NOT NULL DEFAULT 'not_applicable',
-                    complaint_error_summary VARCHAR(500) NULL,
-                    complaint_processed_at DATETIME NULL,
-                    refreshed_at DATETIME NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_split_pending_status (upload_status),
-                    INDEX idx_split_pending_complaint_status (complaint_status),
-                    INDEX idx_split_pending_refreshed (refreshed_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cur.execute(
-                """
-                SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                SELECT TABLE_NAME
+                FROM information_schema.TABLES
                 WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = 'split_pending_problem_items'
-                  AND COLUMN_NAME IN (
-                      'complaint_status',
-                      'complaint_error_summary',
-                      'complaint_processed_at'
-                  )
                 """
             )
-            split_columns = {str(row.get("COLUMN_NAME") or "") for row in cur.fetchall()}
-            complaint_status_added = "complaint_status" not in split_columns
-            if complaint_status_added:
-                cur.execute(
-                    "ALTER TABLE split_pending_problem_items "
-                    "ADD COLUMN complaint_status VARCHAR(16) NOT NULL DEFAULT 'not_applicable', "
-                    "ADD INDEX idx_split_pending_complaint_status (complaint_status)"
-                )
-            if "complaint_error_summary" not in split_columns:
-                cur.execute(
-                    "ALTER TABLE split_pending_problem_items "
-                    "ADD COLUMN complaint_error_summary VARCHAR(500) NULL"
-                )
-            if "complaint_processed_at" not in split_columns:
-                cur.execute(
-                    "ALTER TABLE split_pending_problem_items "
-                    "ADD COLUMN complaint_processed_at DATETIME NULL"
-                )
-            if complaint_status_added:
-                cur.execute(
-                    """
-                    UPDATE split_pending_problem_items
-                    SET complaint_status = 'pending'
-                    WHERE problem_type = '少货/分批'
-                    """
+            tables = {str(row.get("TABLE_NAME") or "") for row in cur.fetchall() or []}
+            required_tables = {"waybill_data", "split_pending_problem_items", "scan_codes"}
+            missing_tables = sorted(required_tables - tables)
+            if missing_tables:
+                raise RuntimeError(
+                    "Phase 7 schema is not migrated; run deployment migrations first: "
+                    + ", ".join(missing_tables)
                 )
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS scan_codes (
-                    raw_code VARCHAR(64) PRIMARY KEY,
-                    destination VARCHAR(128),
-                    code_type VARCHAR(16) NOT NULL,
-                    main_tracking VARCHAR(64) NULL,
-                    seen_count INT NOT NULL DEFAULT 1,
-                    last_seen_at DATETIME NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_code_type (code_type),
-                    INDEX idx_destination (destination),
-                    INDEX idx_last_seen_at (last_seen_at),
-                    INDEX idx_main_tracking (main_tracking)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cur.execute(
-                """
-                SELECT 1 FROM information_schema.COLUMNS
+                SELECT TABLE_NAME, COLUMN_NAME
+                FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = 'scan_codes'
-                  AND COLUMN_NAME = 'main_tracking'
-                LIMIT 1
+                  AND TABLE_NAME IN ('split_pending_problem_items', 'scan_codes')
                 """
             )
-            if not cur.fetchone():
-                cur.execute(
-                    "ALTER TABLE scan_codes ADD COLUMN main_tracking VARCHAR(64) NULL,"
-                    " ADD INDEX idx_main_tracking (main_tracking)"
+            columns = {
+                (str(row.get("TABLE_NAME") or ""), str(row.get("COLUMN_NAME") or ""))
+                for row in cur.fetchall() or []
+            }
+            required_columns = {
+                ("split_pending_problem_items", "complaint_status"),
+                ("split_pending_problem_items", "complaint_error_summary"),
+                ("split_pending_problem_items", "complaint_processed_at"),
+                ("scan_codes", "main_tracking"),
+            }
+            missing_columns = sorted(
+                f"{table}.{column}" for table, column in required_columns - columns
+            )
+            if missing_columns:
+                raise RuntimeError(
+                    "Phase 7 schema is not migrated; run deployment migrations first: "
+                    + ", ".join(missing_columns)
                 )
-            cur.execute(
-                """
-                CREATE OR REPLACE VIEW v_missing_in_waybill AS
-                SELECT sc.raw_code AS main_tracking
-                FROM scan_codes sc
-                LEFT JOIN waybill_data wd
-                    ON wd.tracking_number = sc.raw_code
-                WHERE sc.code_type = 'main'
-                  AND sc.last_seen_at >= CURDATE()
-                  AND wd.tracking_number IS NULL
-                GROUP BY sc.raw_code
-                """
-            )
-            cur.execute(
-                """
-                CREATE OR REPLACE VIEW v_arrival_progress AS
-                SELECT
-                    wd.tracking_number,
-                    wd.destination_station,
-                    wd.quantity AS expected_quantity,
-                    COALESCE(arrived.cnt, 0) AS arrived_quantity,
-                    GREATEST(COALESCE(wd.quantity, 0) - COALESCE(arrived.cnt, 0), 0) AS pending_quantity,
-                    arrived.first_seen AS first_arrival_at,
-                    arrived.last_seen AS last_arrival_at,
-                    CASE
-                        WHEN wd.quantity IS NULL OR wd.quantity <= 0 THEN 'unknown'
-                        WHEN COALESCE(arrived.cnt, 0) >= wd.quantity THEN 'completed'
-                        WHEN COALESCE(arrived.cnt, 0) > 0 THEN 'partial'
-                        ELSE 'pending'
-                    END AS arrival_status
-                FROM waybill_data wd
-                LEFT JOIN (
-                    SELECT
-                        main_tracking,
-                        COUNT(DISTINCT raw_code) AS cnt,
-                        MIN(last_seen_at) AS first_seen,
-                        MAX(last_seen_at) AS last_seen
-                    FROM scan_codes
-                    WHERE code_type = 'child'
-                      AND main_tracking IS NOT NULL
-                      AND main_tracking <> ''
-                    GROUP BY main_tracking
-                ) arrived ON arrived.main_tracking = wd.tracking_number
-                """
-            )
     finally:
         conn.close()
 
 
 def ensure_console_waybill_table() -> None:
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS waybills (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    document_id BIGINT NULL,
-                    waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                    destination_site VARCHAR(256) NOT NULL DEFAULT '',
-                    open_date VARCHAR(64) NOT NULL DEFAULT '',
-                    receiver_address TEXT NOT NULL,
-                    receiver_name VARCHAR(128) NOT NULL DEFAULT '',
-                    receiver_phone VARCHAR(64) NOT NULL DEFAULT '',
-                    sender_name VARCHAR(128) NOT NULL DEFAULT '',
-                    sender_phone VARCHAR(64) NOT NULL DEFAULT '',
-                    goods_name_lines TEXT NOT NULL,
-                    package_type_lines TEXT NOT NULL,
-                    quantity_lines TEXT NOT NULL,
-                    weight_volume VARCHAR(128) NOT NULL DEFAULT '',
-                    delivery_method VARCHAR(32) NOT NULL DEFAULT '',
-                    freight_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    pickup_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    delivery_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    transfer_fee VARCHAR(64) NOT NULL DEFAULT '',
-                    payment_method VARCHAR(64) NOT NULL DEFAULT '',
-                    insurance_amount VARCHAR(64) NOT NULL DEFAULT '',
-                    cod_amount VARCHAR(64) NOT NULL DEFAULT '',
-                    remark TEXT NOT NULL,
-                    scan_status VARCHAR(128) NOT NULL DEFAULT '',
-                    status VARCHAR(32) NOT NULL DEFAULT 'in_transit',
-                    writer_id VARCHAR(64) NOT NULL DEFAULT '',
-                    source VARCHAR(32) NOT NULL DEFAULT 'ocr',
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    INDEX idx_wb_waybill_no (waybill_no),
-                    INDEX idx_wb_source (source),
-                    INDEX idx_wb_status (status),
-                    INDEX idx_wb_created_at (created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            migrations = (
-                ("insurance_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-                ("cod_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-                ("status", "VARCHAR(32) NOT NULL DEFAULT 'in_transit'"),
-                ("scan_status", "VARCHAR(128) NOT NULL DEFAULT ''"),
-            )
-            for column, definition in migrations:
-                try:
-                    cur.execute(f"ALTER TABLE waybills ADD COLUMN {column} {definition}")
-                except Exception:
-                    pass
-            try:
-                cur.execute("CREATE INDEX idx_wb_status ON waybills (status)")
-            except Exception:
-                pass
-    finally:
-        conn.close()
+    """Validate the deployment-managed ``waybills`` schema.
+
+    Runtime sync jobs must never create or mutate table definitions.  The
+    versioned SQL migrations are responsible for installing this schema before
+    either service starts.
+    """
+    WaybillRepository(_connect).ensure_schema()
 
 
 def normalize_console_waybill_status(value: Any) -> str:
@@ -599,17 +420,6 @@ def normalize_console_waybill_record(row: dict[str, Any]) -> dict[str, str] | No
     return payload
 
 
-def _console_waybill_insert_tuple(row: dict[str, str], *, source: str, now: str) -> tuple[Any, ...]:
-    return (
-        None,
-        *[row.get(field, "") for field in CONSOLE_WAYBILL_FIELDS],
-        "",
-        source,
-        now,
-        now,
-    )
-
-
 def sync_console_waybills(
     records: list[dict[str, Any]],
     *,
@@ -628,95 +438,13 @@ def sync_console_waybills(
         normalized_by_waybill.setdefault(normalized["waybill_no"], normalized)
 
     ensure_console_waybill_table()
-    conn = _connect()
-    updates = 0
-    creates = 0
-    deleted_stale = 0
-    try:
-        with conn.cursor() as cur:
-            now = _now_mysql()
-            for row in normalized_by_waybill.values():
-                waybill_no = row["waybill_no"]
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM waybills
-                    WHERE waybill_no = %s
-                    ORDER BY CASE WHEN source = %s THEN 0 ELSE 1 END, id ASC
-                    LIMIT 1
-                    """,
-                    (waybill_no, source_text),
-                )
-                existing = cur.fetchone()
-                if existing and existing.get("id"):
-                    updatable_fields = [field for field in CONSOLE_WAYBILL_FIELDS if field != "status"]
-                    assignments = ", ".join(f"{field} = %s" for field in updatable_fields)
-                    cur.execute(
-                        f"""
-                        UPDATE waybills
-                        SET {assignments},
-                            status = CASE WHEN status = 'cancelled' THEN status ELSE %s END,
-                            source = %s,
-                            updated_at = %s
-                        WHERE id = %s
-                        """,
-                        [
-                            *[row.get(field, "") for field in updatable_fields],
-                            row.get("status", "in_transit"),
-                            source_text,
-                            now,
-                            existing["id"],
-                        ],
-                    )
-                    updates += 1
-                else:
-                    columns = [
-                        "document_id",
-                        *CONSOLE_WAYBILL_FIELDS,
-                        "writer_id",
-                        "source",
-                        "created_at",
-                        "updated_at",
-                    ]
-                    placeholders = ", ".join(["%s"] * len(columns))
-                    cur.execute(
-                        f"INSERT INTO waybills ({', '.join(columns)}) VALUES ({placeholders})",
-                        _console_waybill_insert_tuple(row, source=source_text, now=now),
-                    )
-                    creates += 1
-
-            if replace_date and date_text:
-                keep_waybills = list(normalized_by_waybill)
-                if keep_waybills:
-                    placeholders = ", ".join(["%s"] * len(keep_waybills))
-                    cur.execute(
-                        f"""
-                        DELETE FROM waybills
-                        WHERE source = %s
-                          AND open_date = %s
-                          AND status <> 'cancelled'
-                          AND waybill_no NOT IN ({placeholders})
-                        """,
-                        [source_text, date_text, *keep_waybills],
-                    )
-                else:
-                    cur.execute(
-                        "DELETE FROM waybills WHERE source = %s AND open_date = %s AND status <> 'cancelled'",
-                        (source_text, date_text),
-                    )
-                deleted_stale = int(cur.rowcount or 0)
-    finally:
-        conn.close()
-
-    return {
-        "ok": True,
-        "source": source_text,
-        "upserted": updates + creates,
-        "updates": updates,
-        "creates": creates,
-        "deleted_stale": deleted_stale,
-        "target_date": date_text,
-    }
+    return WaybillRepository(_connect).sync_records(
+        list(normalized_by_waybill.values()),
+        source=source_text,
+        target_date=date_text,
+        replace_date=replace_date,
+        validate_schema=False,
+    )
 
 
 def update_console_waybill_statuses(waybill_numbers: list[str], status: str) -> dict[str, Any]:
@@ -734,45 +462,18 @@ def update_console_waybill_statuses(waybill_numbers: list[str], status: str) -> 
         return {"ok": True, "updated": 0, "status": normalized_status}
 
     ensure_console_waybill_table()
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            placeholders = ", ".join(["%s"] * len(clean_numbers))
-            cur.execute(
-                f"""
-                UPDATE waybills
-                SET status = %s, updated_at = %s
-                WHERE waybill_no IN ({placeholders})
-                  AND status <> 'cancelled'
-                """,
-                [normalized_status, _now_mysql(), *clean_numbers],
-            )
-            updated = int(cur.rowcount or 0)
-    finally:
-        conn.close()
-
-    return {"ok": True, "updated": updated, "status": normalized_status}
+    return WaybillRepository(_connect).update_statuses(
+        clean_numbers,
+        normalized_status,
+        validate_schema=False,
+    )
 
 
 def delete_receipt_like_console_waybills(*, source: str = "ronghui") -> dict[str, Any]:
     """Delete H/HR receipt-like rows from console waybill search table."""
     source_text = _clean_text(source)[:32] or "ronghui"
     ensure_console_waybill_table()
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                DELETE FROM waybills
-                WHERE source = %s
-                  AND UPPER(waybill_no) LIKE 'H%%'
-                """,
-                (source_text,),
-            )
-            deleted = int(cur.rowcount or 0)
-    finally:
-        conn.close()
-    return {"ok": True, "source": source_text, "deleted": deleted}
+    return WaybillRepository(_connect).delete_receipt_like(source=source_text, validate_schema=False)
 
 
 def normalize_waybill_record(row: list[Any] | tuple[Any, ...] | dict[str, Any]) -> dict[str, Any] | None:

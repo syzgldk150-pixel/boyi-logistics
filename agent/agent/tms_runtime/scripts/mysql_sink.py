@@ -41,7 +41,8 @@ def load_mysql_config(*, config_path: Optional[str] = None) -> Optional[MySQLCon
 
     Env vars:
       - MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE
-      - MYSQL_TABLE_EVENTS / MYSQL_TABLE_STATUS (optional)
+      - R7 task tables are fixed by migration 006; arbitrary table-name
+        overrides are intentionally unsupported.
     """
 
     host = _env("MYSQL_HOST")
@@ -49,9 +50,6 @@ def load_mysql_config(*, config_path: Optional[str] = None) -> Optional[MySQLCon
     password = _env("MYSQL_PASSWORD")
     database = _env("MYSQL_DATABASE") or _env("MYSQL_DB")
     port = _coerce_int(_env("MYSQL_PORT"), default=3306)
-    table_events = _env("MYSQL_TABLE_EVENTS") or "r7_task_events"
-    table_status = _env("MYSQL_TABLE_STATUS") or "r7_task_status"
-
     if host and user and password and database:
         return MySQLConfig(
             host=host,
@@ -59,8 +57,6 @@ def load_mysql_config(*, config_path: Optional[str] = None) -> Optional[MySQLCon
             user=user,
             password=password,
             database=database,
-            table_events=table_events,
-            table_status=table_status,
         )
 
     if not config_path:
@@ -86,16 +82,12 @@ def load_mysql_config(*, config_path: Optional[str] = None) -> Optional[MySQLCon
         return None
 
     port = _coerce_int(mysql_cfg.get("port"), default=3306)
-    table_events = str(mysql_cfg.get("table_events") or "r7_task_events").strip() or "r7_task_events"
-    table_status = str(mysql_cfg.get("table_status") or "r7_task_status").strip() or "r7_task_status"
     return MySQLConfig(
         host=host,
         port=port,
         user=user,
         password=password,
         database=database,
-        table_events=table_events,
-        table_status=table_status,
     )
 
 
@@ -107,7 +99,7 @@ class MySQLSink:
       pip install pymysql
     """
 
-    def __init__(self, cfg: MySQLConfig, *, create_tables: bool = True):
+    def __init__(self, cfg: MySQLConfig, *, create_tables: bool = False):
         self.cfg = cfg
         self.create_tables = bool(create_tables)
         self._conn = None
@@ -146,46 +138,27 @@ class MySQLSink:
     def ensure_tables(self) -> None:
         self.connect()
         assert self._conn is not None
-        events = self.cfg.table_events
-        status = self.cfg.table_status
         with self._conn.cursor() as cur:
             cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS `{events}` (
-                  `id` BIGINT NOT NULL AUTO_INCREMENT,
-                  `event_ts` DATETIME NOT NULL,
-                  `event_type` VARCHAR(32) NOT NULL,
-                  `task_number` VARCHAR(32) NULL,
-                  `class_name` VARCHAR(128) NULL,
-                  `task_status` INT NULL,
-                  `task_status_name` VARCHAR(32) NULL,
-                  `plan_go_time` VARCHAR(19) NULL,
-                  `plan_arrive_time` VARCHAR(19) NULL,
-                  `ok` TINYINT NULL,
-                  `manual_arrive_time` VARCHAR(19) NULL,
-                  `message` TEXT NULL,
-                  `detail_json` LONGTEXT NULL,
-                  PRIMARY KEY (`id`),
-                  INDEX `idx_task_ts` (`task_number`, `event_ts`)
-                ) CHARACTER SET utf8mb4;
                 """
+                SELECT TABLE_NAME
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME IN (%s, %s)
+                """,
+                (self.cfg.table_events, self.cfg.table_status),
             )
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS `{status}` (
-                  `task_number` VARCHAR(32) NOT NULL,
-                  `class_name` VARCHAR(128) NULL,
-                  `task_status` INT NULL,
-                  `task_status_name` VARCHAR(32) NULL,
-                  `plan_go_time` VARCHAR(19) NULL,
-                  `plan_arrive_time` VARCHAR(19) NULL,
-                  `last_seen_ts` DATETIME NOT NULL,
-                  `checkin_success` TINYINT NOT NULL DEFAULT 0,
-                  `manual_arrive_time` VARCHAR(19) NULL,
-                  `detail_json` LONGTEXT NULL,
-                  PRIMARY KEY (`task_number`)
-                ) CHARACTER SET utf8mb4;
-                """
+            rows = cur.fetchall()
+        names = {
+            str(row.get("TABLE_NAME") or row.get("table_name") or "")
+            for row in rows
+        }
+        required = {self.cfg.table_events, self.cfg.table_status}
+        missing = sorted(required - names)
+        if missing:
+            raise RuntimeError(
+                "Missing R7 runtime tables; run deployment migrations first: "
+                + ", ".join(missing)
             )
 
     def insert_event(

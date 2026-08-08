@@ -8,6 +8,8 @@ import pymysql
 
 from config import Settings
 from shared.redaction import redact_sensitive, redact_text
+from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
+from shared.runtime_repositories import WaybillRepository
 
 import re
 
@@ -294,6 +296,9 @@ class DocumentRepository:
         self.settings = settings
         self.placeholder = "%s"
         self._mysql = pymysql
+        self._scheduled_tasks = ScheduledTaskRepository(self.connect)
+        self._workflow_resources = WorkflowResourceRepository(self.connect)
+        self._waybills = WaybillRepository(self.connect)
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
@@ -320,13 +325,37 @@ class DocumentRepository:
             connection.close()
 
     def initialize(self) -> None:
-        self._ensure_mysql_database()
+        """Validate the deployment-managed schema without mutating it at runtime."""
+        required_tables = {
+            "documents",
+            "training_samples",
+            "model_versions",
+            "accuracy_log",
+            "writers",
+            "waybill_sequences",
+            "waybill_provider_snapshots",
+            "receipt_records",
+            "receipt_attachments",
+            "receipt_audit_logs",
+            "admin_users",
+            "admin_sessions",
+            "line_haul_contacts",
+        }
         with self.connect() as connection:
             cursor = connection.cursor()
-            for statement in self._schema_statements():
-                cursor.execute(statement)
-            self._migrate_schema(cursor)
-            self._restore_line_haul_contacts_active_state(cursor)
+            cursor.execute(
+                """
+                SELECT TABLE_NAME FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                """
+            )
+            actual_tables = {str(row.get("TABLE_NAME") or "") for row in cursor.fetchall() or []}
+        missing = sorted(required_tables - actual_tables)
+        if missing:
+            raise RuntimeError(
+                "Console schema is not migrated; run deployment migrations first: " + ", ".join(missing)
+            )
+        self._waybills.ensure_schema()
 
     def count_admin_users(self) -> int:
         with self.connect() as connection:
@@ -522,354 +551,6 @@ class DocumentRepository:
                 "DELETE FROM admin_sessions WHERE expires_at <= %s",
                 (now.isoformat(timespec="seconds"),),
             )
-
-    def _ensure_mysql_database(self) -> None:
-        """连接 MySQL（不指定数据库），自动创建目标数据库。"""
-        connection = self._mysql.connect(
-            host=self.settings.mysql_host,
-            port=self.settings.mysql_port,
-            user=self.settings.mysql_user,
-            password=self.settings.mysql_password,
-            connect_timeout=self.settings.mysql_connect_timeout_seconds,
-            read_timeout=self.settings.mysql_connect_timeout_seconds,
-            write_timeout=self.settings.mysql_connect_timeout_seconds,
-            charset="utf8mb4",
-            autocommit=True,
-        )
-        try:
-            cursor = connection.cursor()
-            db = self.settings.mysql_database
-            cursor.execute(
-                f"CREATE DATABASE IF NOT EXISTS `{db}` "
-                f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-            )
-        finally:
-            connection.close()
-
-    def _migrate_schema(self, cursor: Any) -> None:
-        """增量迁移：为已有表添加新列（幂等，列存在时忽略）。"""
-        migrations = [
-            ("documents", "writer_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
-            ("waybills", "insurance_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-            ("waybills", "cod_amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
-            ("waybills", "status", "VARCHAR(32) NOT NULL DEFAULT 'in_transit'"),
-            ("waybills", "scan_status", "VARCHAR(128) NOT NULL DEFAULT ''"),
-            ("scheduled_tasks", "last_message", "TEXT NULL"),
-            ("admin_users", "avatar_path", "VARCHAR(1024) NOT NULL DEFAULT ''"),
-        ]
-        for table, column, definition in migrations:
-            try:
-                cursor.execute(
-                    f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}"
-                )
-            except Exception:
-                pass  # 列已存在，忽略
-        for statement in (
-            "CREATE INDEX idx_wb_status ON waybills (status)",
-        ):
-            try:
-                cursor.execute(statement)
-            except Exception:
-                pass  # 索引已存在或表尚未创建时忽略，建表语句会补齐
-
-    def _restore_line_haul_contacts_active_state(self, cursor: Any) -> None:
-        cursor.execute("UPDATE line_haul_contacts SET is_active = 1 WHERE is_active = 0")
-
-    def _schema_statements(self) -> list[str]:
-        return [
-            # --- documents ---
-            """
-            CREATE TABLE IF NOT EXISTS documents (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                doc_token VARCHAR(64) NOT NULL UNIQUE,
-                original_name VARCHAR(255) NOT NULL,
-                source_relpath VARCHAR(1024) NOT NULL,
-                template_name VARCHAR(128) NOT NULL,
-                status VARCHAR(64) NOT NULL,
-                original_path VARCHAR(1024) NOT NULL,
-                processed_path VARCHAR(1024) NOT NULL,
-                artifacts_dir VARCHAR(1024) NOT NULL,
-                fields_json LONGTEXT NOT NULL,
-                raw_ocr_json LONGTEXT NOT NULL,
-                notes LONGTEXT NOT NULL,
-                error_message LONGTEXT NOT NULL,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                reviewed_at DATETIME NULL,
-                INDEX idx_documents_status (status),
-                INDEX idx_documents_created_at (created_at)
-            )
-            """,
-            # --- training_samples ---
-            """
-            CREATE TABLE IF NOT EXISTS training_samples (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                document_id BIGINT NOT NULL,
-                field_name VARCHAR(128) NOT NULL,
-                template_name VARCHAR(128) NOT NULL,
-                writer_id VARCHAR(64) NOT NULL DEFAULT '',
-                ocr_value TEXT NOT NULL,
-                correct_value TEXT NOT NULL,
-                is_correction TINYINT NOT NULL,
-                confidence_original FLOAT NOT NULL,
-                crop_image_path VARCHAR(1024) NOT NULL,
-                source_image_path VARCHAR(1024) NOT NULL,
-                bbox_json TEXT NOT NULL,
-                created_at DATETIME NOT NULL,
-                INDEX idx_ts_field (field_name),
-                INDEX idx_ts_writer (writer_id),
-                INDEX idx_ts_correction (is_correction),
-                INDEX idx_ts_document (document_id)
-            )
-            """,
-            # --- model_versions ---
-            """
-            CREATE TABLE IF NOT EXISTS model_versions (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                version_tag VARCHAR(128) NOT NULL UNIQUE,
-                base_model VARCHAR(256) NOT NULL,
-                training_sample_count INT NOT NULL,
-                field_scope TEXT NOT NULL,
-                metrics_json TEXT NOT NULL,
-                model_path VARCHAR(1024) NOT NULL,
-                status VARCHAR(32) NOT NULL,
-                created_at DATETIME NOT NULL,
-                activated_at DATETIME NULL,
-                INDEX idx_mv_status (status)
-            )
-            """,
-            # --- accuracy_log ---
-            """
-            CREATE TABLE IF NOT EXISTS accuracy_log (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                document_id BIGINT NOT NULL,
-                field_name VARCHAR(128) NOT NULL,
-                writer_id VARCHAR(64) NOT NULL DEFAULT '',
-                ocr_provider VARCHAR(64) NOT NULL,
-                model_version VARCHAR(128) NOT NULL DEFAULT '',
-                ocr_value TEXT NOT NULL,
-                final_value TEXT NOT NULL,
-                is_correct TINYINT NOT NULL,
-                confidence FLOAT NOT NULL,
-                created_at DATETIME NOT NULL,
-                INDEX idx_al_field (field_name),
-                INDEX idx_al_provider (ocr_provider)
-            )
-            """,
-            # --- writers ---
-            """
-            CREATE TABLE IF NOT EXISTS writers (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                writer_id VARCHAR(64) NOT NULL UNIQUE,
-                display_name VARCHAR(128) NOT NULL DEFAULT '',
-                sample_count INT NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL
-            )
-            """,
-            # --- waybills ---
-            """
-            CREATE TABLE IF NOT EXISTS waybills (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                document_id BIGINT NULL,
-                waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                destination_site VARCHAR(256) NOT NULL DEFAULT '',
-                open_date VARCHAR(64) NOT NULL DEFAULT '',
-                receiver_address TEXT NOT NULL,
-                receiver_name VARCHAR(128) NOT NULL DEFAULT '',
-                receiver_phone VARCHAR(64) NOT NULL DEFAULT '',
-                sender_name VARCHAR(128) NOT NULL DEFAULT '',
-                sender_phone VARCHAR(64) NOT NULL DEFAULT '',
-                goods_name_lines TEXT NOT NULL,
-                package_type_lines TEXT NOT NULL,
-                quantity_lines TEXT NOT NULL,
-                weight_volume VARCHAR(128) NOT NULL DEFAULT '',
-                delivery_method VARCHAR(32) NOT NULL DEFAULT '',
-                freight_fee VARCHAR(64) NOT NULL DEFAULT '',
-                pickup_fee VARCHAR(64) NOT NULL DEFAULT '',
-                delivery_fee VARCHAR(64) NOT NULL DEFAULT '',
-                transfer_fee VARCHAR(64) NOT NULL DEFAULT '',
-                payment_method VARCHAR(64) NOT NULL DEFAULT '',
-                insurance_amount VARCHAR(64) NOT NULL DEFAULT '',
-                cod_amount VARCHAR(64) NOT NULL DEFAULT '',
-                remark TEXT NOT NULL,
-                writer_id VARCHAR(64) NOT NULL DEFAULT '',
-                source VARCHAR(32) NOT NULL DEFAULT 'ocr',
-                status VARCHAR(32) NOT NULL DEFAULT 'in_transit',
-                scan_status VARCHAR(128) NOT NULL DEFAULT '',
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_wb_waybill_no (waybill_no),
-                INDEX idx_wb_source (source),
-                INDEX idx_wb_status (status),
-                INDEX idx_wb_created_at (created_at)
-            )
-            """,
-            # --- waybill_sequences ---
-            """
-            CREATE TABLE IF NOT EXISTS waybill_sequences (
-                sequence_key VARCHAR(64) PRIMARY KEY,
-                current_value BIGINT NOT NULL DEFAULT 0,
-                updated_at DATETIME NOT NULL
-            )
-            """,
-            # --- waybill_provider_snapshots ---
-            """
-            CREATE TABLE IF NOT EXISTS waybill_provider_snapshots (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                waybill_id BIGINT NULL,
-                provider VARCHAR(32) NOT NULL,
-                remote_waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                snapshot_kind VARCHAR(32) NOT NULL,
-                payload_json LONGTEXT NOT NULL,
-                created_at DATETIME NOT NULL,
-                INDEX idx_wps_provider_remote (provider, remote_waybill_no),
-                INDEX idx_wps_waybill_id (waybill_id),
-                INDEX idx_wps_created_at (created_at)
-            )
-            """,
-            # --- receipt_records ---
-            """
-            CREATE TABLE IF NOT EXISTS receipt_records (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                platform VARCHAR(32) NOT NULL,
-                direction VARCHAR(32) NOT NULL,
-                waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                receipt_no VARCHAR(128) NOT NULL DEFAULT '',
-                return_waybill_no VARCHAR(128) NOT NULL DEFAULT '',
-                receipt_status VARCHAR(128) NOT NULL DEFAULT '',
-                audit_status VARCHAR(128) NOT NULL DEFAULT '',
-                photo_status VARCHAR(64) NOT NULL DEFAULT '',
-                photo_count INT NOT NULL DEFAULT 0,
-                signed_confirmed VARCHAR(64) NOT NULL DEFAULT '',
-                remote_updated_at VARCHAR(64) NOT NULL DEFAULT '',
-                raw_payload_json LONGTEXT NOT NULL,
-                synced_at DATETIME NOT NULL,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                UNIQUE KEY uniq_receipt_record (platform, direction, waybill_no, receipt_no),
-                INDEX idx_receipt_platform_direction (platform, direction),
-                INDEX idx_receipt_waybill_no (waybill_no),
-                INDEX idx_receipt_return_waybill_no (return_waybill_no),
-                INDEX idx_receipt_status (receipt_status),
-                INDEX idx_receipt_audit_status (audit_status),
-                INDEX idx_receipt_photo_count (photo_count),
-                INDEX idx_receipt_updated_at (updated_at)
-            )
-            """,
-            # --- receipt_attachments ---
-            """
-            CREATE TABLE IF NOT EXISTS receipt_attachments (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                record_id BIGINT NOT NULL,
-                attachment_type VARCHAR(64) NOT NULL DEFAULT '',
-                display_name VARCHAR(255) NOT NULL DEFAULT '',
-                source_url TEXT NOT NULL,
-                local_path VARCHAR(1024) NOT NULL DEFAULT '',
-                file_hash VARCHAR(128) NULL,
-                mime_type VARCHAR(128) NOT NULL DEFAULT '',
-                file_size BIGINT NOT NULL DEFAULT 0,
-                uploaded_at VARCHAR(64) NOT NULL DEFAULT '',
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_receipt_attachment_record (record_id),
-                INDEX idx_receipt_attachment_hash (file_hash),
-                INDEX idx_receipt_attachment_type (attachment_type)
-            )
-            """,
-            # --- receipt_audit_logs ---
-            """
-            CREATE TABLE IF NOT EXISTS receipt_audit_logs (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                receipt_id BIGINT NULL,
-                platform VARCHAR(32) NOT NULL DEFAULT '',
-                direction VARCHAR(32) NOT NULL DEFAULT '',
-                action VARCHAR(64) NOT NULL DEFAULT '',
-                result_status VARCHAR(64) NOT NULL DEFAULT '',
-                operator VARCHAR(128) NOT NULL DEFAULT '',
-                request_summary_json LONGTEXT NOT NULL,
-                response_status VARCHAR(64) NOT NULL DEFAULT '',
-                message TEXT NOT NULL,
-                created_at DATETIME NOT NULL,
-                INDEX idx_receipt_audit_receipt_id (receipt_id),
-                INDEX idx_receipt_audit_platform_direction (platform, direction),
-                INDEX idx_receipt_audit_created_at (created_at)
-            )
-            """,
-            # --- admin users ---
-            """
-            CREATE TABLE IF NOT EXISTS admin_users (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                username VARCHAR(128) NOT NULL UNIQUE,
-                display_name VARCHAR(128) NOT NULL DEFAULT '',
-                avatar_path VARCHAR(1024) NOT NULL DEFAULT '',
-                password_hash VARCHAR(512) NOT NULL,
-                is_active TINYINT NOT NULL DEFAULT 1,
-                last_login_at DATETIME NULL,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_admin_users_active (is_active)
-            )
-            """,
-            # --- admin sessions ---
-            """
-            CREATE TABLE IF NOT EXISTS admin_sessions (
-                session_id VARCHAR(128) PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                expires_at DATETIME NOT NULL,
-                created_at DATETIME NOT NULL,
-                last_seen_at DATETIME NOT NULL,
-                INDEX idx_admin_sessions_user (user_id),
-                INDEX idx_admin_sessions_expires (expires_at)
-            )
-            """,
-            # --- scheduled_tasks ---
-            """
-            CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                id VARCHAR(64) PRIMARY KEY,
-                name VARCHAR(128) NOT NULL,
-                tool_name VARCHAR(64) NOT NULL,
-                tool_params JSON,
-                cron_expression VARCHAR(64) NOT NULL,
-                enabled BOOLEAN DEFAULT TRUE,
-                last_run DATETIME NULL,
-                last_status VARCHAR(16) NULL,
-                last_duration_ms INT NULL,
-                last_message TEXT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            # --- line_haul_contacts ---
-            """
-            CREATE TABLE IF NOT EXISTS line_haul_contacts (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                company_name VARCHAR(128) NOT NULL DEFAULT '',
-                service_area VARCHAR(128) NOT NULL DEFAULT '',
-                address TEXT NOT NULL,
-                contact_name VARCHAR(128) NOT NULL DEFAULT '',
-                phone_numbers VARCHAR(512) NOT NULL DEFAULT '',
-                remark TEXT NOT NULL,
-                source_text TEXT NOT NULL,
-                is_active TINYINT NOT NULL DEFAULT 1,
-                sort_order INT NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_lhc_company (company_name),
-                INDEX idx_lhc_service_area (service_area),
-                INDEX idx_lhc_active (is_active),
-                INDEX idx_lhc_sort (sort_order)
-            )
-            """,
-            # --- workflow_resources ---
-            """
-            CREATE TABLE IF NOT EXISTS workflow_resources (
-                resource_key VARCHAR(128) PRIMARY KEY,
-                config_json JSON NOT NULL,
-                source VARCHAR(128),
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-        ]
 
     def create_document(
         self,
@@ -1133,19 +814,8 @@ class DocumentRepository:
         return data
 
     def get_waybill_by_no(self, waybill_no: str, *, source: str | None = None) -> dict[str, Any] | None:
-        sql = f"SELECT * FROM waybills WHERE waybill_no = {self.placeholder}"
-        params: list[Any] = [str(waybill_no or "").strip()]
-        if source:
-            sql += f" AND source = {self.placeholder}"
-            params.append(str(source or "").strip())
-        sql += " ORDER BY id DESC LIMIT 1"
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(sql, params)
-            row = cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_waybill(row)
+        row = self._waybills.get_by_number(waybill_no, source=source)
+        return self._row_to_waybill(row) if row else None
 
     def upsert_provider_waybill(
         self,
@@ -1157,67 +827,8 @@ class DocumentRepository:
         waybill_no = str(payload.get("waybill_no", "") or "").strip()
         if not waybill_no:
             raise ValueError("waybill_no is required")
-        now = _now_iso()
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                (
-                    "SELECT id, status FROM waybills "
-                    f"WHERE waybill_no = {self.placeholder} "
-                    "ORDER BY CASE WHEN source = %s THEN 0 ELSE 1 END, id ASC LIMIT 1"
-                ),
-                [waybill_no, source],
-            )
-            existing = cursor.fetchone()
-            field_values = {name: str(payload.get(name, "") or "") for name in self._WAYBILL_FIELD_NAMES}
-            if existing and existing.get("id"):
-                assignments = ", ".join(f"{name} = {self.placeholder}" for name in self._WAYBILL_FIELD_NAMES if name != "waybill_no")
-                status = normalize_waybill_status(existing.get("status", ""))
-                next_status = status if status == "cancelled" else normalize_waybill_status(payload.get("status", "in_transit"))
-                cursor.execute(
-                    (
-                        f"UPDATE waybills SET {assignments}, writer_id = {self.placeholder}, "
-                        f"source = {self.placeholder}, status = {self.placeholder}, updated_at = {self.placeholder} "
-                        f"WHERE id = {self.placeholder}"
-                    ),
-                    [
-                        *[field_values[name] for name in self._WAYBILL_FIELD_NAMES if name != "waybill_no"],
-                        writer_id,
-                        source,
-                        next_status,
-                        now,
-                        int(existing["id"]),
-                    ],
-                )
-                return self.get_waybill(int(existing["id"]))
-
-            columns = [
-                "document_id",
-                *self._WAYBILL_FIELD_NAMES,
-                "writer_id",
-                "source",
-                "status",
-                "created_at",
-                "updated_at",
-            ]
-            values: list[Any] = [None]
-            for name in self._WAYBILL_FIELD_NAMES:
-                values.append(field_values[name])
-            values.extend(
-                [
-                    writer_id,
-                    source,
-                    normalize_waybill_status(payload.get("status", "in_transit")),
-                    now,
-                    now,
-                ]
-            )
-            placeholders = ", ".join(self.placeholder for _ in columns)
-            cursor.execute(
-                f"INSERT INTO waybills ({', '.join(columns)}) VALUES ({placeholders})",
-                values,
-            )
-            return self.get_waybill(int(cursor.lastrowid))
+        self._waybills.sync_records([payload], source=source, writer_id=writer_id)
+        return self.get_waybill_by_no(waybill_no, source=source)
 
     def create_waybill_provider_snapshot(
         self,
@@ -2467,96 +2078,19 @@ class DocumentRepository:
         return data
 
     def list_workflow_resources(self) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT resource_key, config_json, source, updated_at, created_at
-                FROM workflow_resources
-                ORDER BY resource_key ASC
-                """
-            )
-            rows = cursor.fetchall()
-        for row in rows:
-            row["config"] = _loads_json(row.get("config_json"), {})
-            for field in ("updated_at", "created_at"):
-                if row.get(field):
-                    row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return rows
+        return self._workflow_resources.list_records()
 
     def get_workflow_resource(self, resource_key: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT resource_key, config_json, source, updated_at, created_at
-                FROM workflow_resources
-                WHERE resource_key=%s
-                """,
-                (resource_key,),
-            )
-            row = cursor.fetchone()
-        if not row:
-            return None
-        row["config"] = _loads_json(row.get("config_json"), {})
-        for field in ("updated_at", "created_at"):
-            if row.get(field):
-                row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return row
+        return self._workflow_resources.get_record(resource_key)
 
     def upsert_workflow_resource(self, resource_key: str, config: dict[str, Any], source: str = "backend_console") -> None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                INSERT INTO workflow_resources (resource_key, config_json, source)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    config_json = VALUES(config_json),
-                    source = VALUES(source)
-                """,
-                (resource_key, json.dumps(config, ensure_ascii=False), source),
-            )
+        self._workflow_resources.upsert(resource_key, config, source=source)
 
     def list_scheduled_tasks(self) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                       last_run, last_status, last_duration_ms, last_message, created_at
-                FROM scheduled_tasks
-                ORDER BY name ASC, id ASC
-                """
-            )
-            rows = cursor.fetchall()
-        for row in rows:
-            row["tool_params"] = _loads_json(row.get("tool_params"), {})
-            for field in ("last_run", "created_at"):
-                if row.get(field):
-                    row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return rows
+        return self._scheduled_tasks.list_tasks()
 
     def get_scheduled_task(self, task_id: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                       last_run, last_status, last_duration_ms, last_message, created_at
-                FROM scheduled_tasks
-                WHERE id=%s
-                """,
-                (task_id,),
-            )
-            row = cursor.fetchone()
-        if not row:
-            return None
-        row["tool_params"] = _loads_json(row.get("tool_params"), {})
-        for field in ("last_run", "created_at"):
-            if row.get(field):
-                row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-        return row
+        return self._scheduled_tasks.get_task(task_id)
 
     def list_scheduled_task_group(self, base_task_id: str) -> list[dict[str, Any]]:
         rows = self.list_scheduled_tasks()
@@ -2575,34 +2109,19 @@ class DocumentRepository:
         cron_expression: str,
         enabled: bool,
     ) -> None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                INSERT INTO scheduled_tasks
-                    (id, name, tool_name, tool_params, cron_expression, enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    name = VALUES(name),
-                    tool_name = VALUES(tool_name),
-                    tool_params = VALUES(tool_params),
-                    cron_expression = VALUES(cron_expression),
-                    enabled = VALUES(enabled)
-                """,
-                (
-                    task_id,
-                    name,
-                    tool_name,
-                    json.dumps(tool_params, ensure_ascii=False),
-                    cron_expression,
-                    enabled,
-                ),
-            )
+        self._scheduled_tasks.upsert_task(
+            {
+                "id": task_id,
+                "name": name,
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "cron_expression": cron_expression,
+                "enabled": enabled,
+            }
+        )
 
     def delete_scheduled_task(self, task_id: str) -> None:
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (task_id,))
+        self._scheduled_tasks.delete_task(task_id)
 
     def replace_scheduled_task_group(
         self,
@@ -2619,33 +2138,20 @@ class DocumentRepository:
             for task in tasks
         }
 
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            for task in tasks:
-                cursor.execute(
-                    """
-                    INSERT INTO scheduled_tasks
-                        (id, name, tool_name, tool_params, cron_expression, enabled)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        name = VALUES(name),
-                        tool_name = VALUES(tool_name),
-                        tool_params = VALUES(tool_params),
-                        cron_expression = VALUES(cron_expression),
-                        enabled = VALUES(enabled)
-                    """,
-                    (
-                        task["task_id"],
-                        task["name"],
-                        task["tool_name"],
-                        json.dumps(task.get("tool_params") or {}, ensure_ascii=False),
-                        task["cron_expression"],
-                        bool(task.get("enabled", False)),
-                    ),
-                )
-
-            for stale_id in sorted(existing_ids - incoming_ids):
-                cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (stale_id,))
+        self._scheduled_tasks.replace_tasks(
+            [
+                {
+                    "id": task["task_id"],
+                    "name": task["name"],
+                    "tool_name": task["tool_name"],
+                    "tool_params": task.get("tool_params") or {},
+                    "cron_expression": task["cron_expression"],
+                    "enabled": bool(task.get("enabled", False)),
+                }
+                for task in tasks
+            ],
+            stale_task_ids=existing_ids - incoming_ids,
+        )
 
     def update_scheduled_task_runtime(
         self,
@@ -2664,12 +2170,10 @@ class DocumentRepository:
         if not group_ids:
             return
 
-        placeholders = ", ".join("%s" for _ in group_ids)
-        sql = (
-            f"UPDATE scheduled_tasks "
-            f"SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s "
-            f"WHERE id IN ({placeholders})"
+        self._scheduled_tasks.update_runtime_at(
+            group_ids,
+            last_run=last_run,
+            last_status=last_status,
+            last_duration_ms=last_duration_ms,
+            last_message=last_message,
         )
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(sql, [last_run, last_status, last_duration_ms, last_message, *group_ids])

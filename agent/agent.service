@@ -12,7 +12,7 @@ ExecStart=/home/boyce/agent/.venv/bin/python -m uvicorn main:app --host 127.0.0.
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=/home/boyce
+Environment=PYTHONPATH=/home/boyce:/home/boyce/agent
 Environment=AGENT_HOST=127.0.0.1
 
 # finance_tool / price_tool 会启动重任务子进程，需预留足够 cgroup 空间

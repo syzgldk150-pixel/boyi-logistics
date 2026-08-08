@@ -12,8 +12,8 @@ import json
 import os
 from typing import Any
 
-from browser_manager import BrowserLoginSelectors, TMSBrowserAuth
-from r7_login_manager import R7SSOAuth
+from agent.tms_runtime.scripts.browser_manager import BrowserLoginSelectors, TMSBrowserAuth
+from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
 
 
 LOGIN_URL = (
