@@ -1,0 +1,1403 @@
+{% extends "base.html" %}
+
+{% block title %}货拉拉调度与比价{% endblock %}
+
+{% block body_class %}dispatch-page map-only-view{% endblock %}
+
+{% block head %}
+<style>
+	  .dispatch-page .main-content { padding: 0 0 40px !important; height: 100vh; position: relative; overflow: hidden; }
+	  .dispatch-page .top-header { position: relative; z-index: 30; }
+
+  #amap-container { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* 悬浮小窗交互核心 */
+	  .map-drawer {
+	    position: absolute; top: calc(var(--header-h) + 16px); left: 22px; width: 356px; max-height: calc(100vh - var(--header-h) - 36px);
+    background: #fff; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.09);
+    display: flex; flex-direction: column; overflow: visible; border: 1px solid var(--line);
+    z-index: 10;
+  }
+
+  .drawer-search-box { padding: 16px; border-bottom: 1px solid var(--line); background: #fff; z-index: 2; position: relative; border-radius: 10px 10px 0 0; }
+  .drawer-scroll-area { flex: 1; overflow-y: auto; background: #f9f9fb; }
+  .drawer-scroll-area[hidden] { display: none; } /* 只有查询后才显示 */
+
+  .drawer-title { font-size: 1rem; font-weight: 700; color: var(--text-strong); margin: 0 0 12px; }
+
+  /* 搜索表单简化版 */
+  .route-field-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .route-icon { width: 22px; display: flex; justify-content: center; }
+  .route-icon .feather { width: 18px; height: 18px; color: var(--accent); stroke-width: 2.4; }
+  .route-icon.dest .feather { color: var(--success); }
+  .route-swap-icon { width: 14px; height: 14px; margin-right: 4px; stroke-width: 2.5; }
+  .route-field-main { position: relative; flex: 1; }
+  .route-input { width: 100%; height: 38px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.84rem; font-weight: 500; outline: none; background: #f9f9fb; }
+  .route-input:focus { border-color: var(--accent); background: #fff; }
+  .route-suggest-list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: min(320px, calc(100vh - 180px)); background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12); overflow-y: auto; overflow-x: hidden; z-index: 30; }
+  .route-suggest-list[hidden] { display: none; }
+  .route-suggest-item { width: 100%; border: 0; border-bottom: 1px solid #eef2f7; background: #fff; padding: 10px 12px; text-align: left; cursor: pointer; transition: background var(--fast); }
+  .route-suggest-item:last-child { border-bottom: 0; }
+  .route-suggest-item:hover { background: #f8fafc; }
+  .route-suggest-primary { font-size: 0.84rem; font-weight: 700; color: var(--text-strong); display: block; }
+  .route-suggest-secondary { font-size: 0.72rem; color: var(--muted); margin-top: 4px; display: block; line-height: 1.4; }
+  .route-suggest-empty { padding: 10px 12px; font-size: 0.78rem; color: var(--muted); background: #fff; }
+
+  .search-action-row { display: flex; gap: 10px; margin-top: 16px; }
+  .search-action-btn { flex: 1; height: 36px; min-height: 36px; border-radius: 6px; font-size: 0.84rem; }
+
+  /* 结果卡片 */
+  .result-section { padding: 16px; }
+  .result-header { font-size: 0.76rem; font-weight: 800; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
+
+  .distance-overview { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: var(--shadow-soft); }
+  .distance-val strong { font-size: 1.55rem; font-family: var(--font-display); font-weight: 800; color: var(--text-strong); }
+  .distance-val span { font-size: 0.78rem; color: var(--muted); font-weight: 600; margin-left: 4px; }
+
+  .platform-card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; transition: all var(--fast); box-shadow: var(--shadow-soft); }
+  .platform-card:hover { border-color: var(--accent); }
+  .p-info { display: flex; align-items: center; gap: 12px; }
+  .p-icon { width: 30px; height: 30px; border-radius: 4px; background: #e5e7eb; display: grid; place-items: center; }
+  .p-icon .feather { width: 16px; height: 16px; color: currentColor; stroke-width: 2.4; }
+  .p-name { font-weight: 700; color: var(--text-strong); font-size: 0.84rem; margin-bottom: 2px; }
+  .p-meta { font-size: 0.7rem; color: var(--muted); }
+  .p-price { text-align: right; }
+  .p-price-val { font-size: 1.12rem; font-family: var(--font-display); font-weight: 800; color: var(--text-strong); }
+  .p-price-status { font-size: 0.7rem; color: var(--warning); margin-top: 2px; white-space: nowrap; }
+
+</style>
+<script>
+  window.__dispatchConfig = {{ dispatch_config | tojson }};
+  if (window.__dispatchConfig && window.__dispatchConfig.amap_security_code) {
+    window._AMapSecurityConfig = {
+      securityJsCode: window.__dispatchConfig.amap_security_code
+    };
+  }
+</script>
+{% if dispatch_sdk_should_load %}
+<script src="https://webapi.amap.com/loader.js"></script>
+{% endif %}
+<script src="/static/js/amap_route_utils.js"></script>
+{% endblock %}
+
+{% block content %}
+<div id="amap-container"></div>
+
+<!-- 浮动工作区（悬浮左上角） -->
+<aside class="map-drawer">
+  <!-- 核心输入层 -->
+  <div class="drawer-search-box">
+    <h2 class="drawer-title">路线规划与询价</h2>
+    <div class="route-field-row">
+      <div class="route-icon"><i data-feather="map-pin"></i></div>
+      <div class="route-field-main">
+        <input type="text" id="dispatch-origin" class="route-input" placeholder="输入发货地" autocomplete="off">
+        <div class="route-suggest-list" id="dispatch-origin-suggestions" hidden></div>
+      </div>
+    </div>
+    <div style="padding-left: 30px; margin: -5px 0 5px;">
+      <button type="button" class="ghost-btn" style="height: 22px; min-height: 22px; padding: 0 7px; font-size: 0.68rem;" onclick="swapRouteInputs()"><i data-feather="repeat" class="route-swap-icon"></i>切倒发收</button>
+    </div>
+    <div class="route-field-row">
+      <div class="route-icon dest"><i data-feather="flag"></i></div>
+      <div class="route-field-main">
+        <input type="text" id="dispatch-dest" class="route-input" placeholder="输入目的地" autocomplete="off">
+        <div class="route-suggest-list" id="dispatch-dest-suggestions" hidden></div>
+      </div>
+    </div>
+
+    <!-- 高级项默认折叠，通过交互触发 -->
+    <details style="margin-top: 10px;" id="adv-settings">
+      <summary style="font-size: 0.76rem; color: var(--muted); font-weight: 600; cursor: pointer; user-select: none;">可选估算条件</summary>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+        <input type="number" id="dispatch-est-weight" class="route-input" placeholder="重量(kg)" style="height: 32px;">
+        <input type="number" id="dispatch-est-volume" class="route-input" placeholder="体积(m³)" style="height: 32px;">
+      </div>
+    </details>
+
+    <div class="search-action-row">
+      <button class="ghost-btn search-action-btn" type="button" onclick="clearRoute()">清空</button>
+      <button class="primary-btn search-action-btn" type="button" onclick="searchRouteAndExpand()">立即询价</button>
+    </div>
+  </div>
+
+  <!-- 结果呈现层 (默认隐藏，查询后拉长显示) -->
+  <div class="drawer-scroll-area" id="drawer-results" hidden>
+    <div class="result-section">
+      <div class="result-header">基础行程预估</div>
+      <div class="distance-overview">
+        <div>
+          <span style="font-size: 0.76rem; color: var(--text-strong); font-weight: 700; display: block; margin-bottom: 4px;">推荐路线</span>
+          <span style="font-size: 0.7rem; color: var(--muted);" id="route-duration-label">等待路线规划</span>
+        </div>
+        <div class="distance-val" id="route-distance-label">
+          <strong>--</strong><span>km</span>
+        </div>
+      </div>
+
+      <div class="result-header">各平台运费对比</div>
+
+      <!-- 平台卡片 -->
+      <div class="platform-card" id="card-huolala">
+        <div class="p-info">
+          <div class="p-icon" style="background:#fef3c7; color:#d97706;"><i data-feather="truck"></i></div>
+          <div>
+            <div class="p-name">货拉拉</div>
+            <div class="p-meta" id="huolala-vehicle">推荐车型</div>
+          </div>
+        </div>
+        <div class="p-price">
+          <div class="p-price-val" id="huolala-price">¥ --.--</div>
+          <div class="p-price-status" id="huolala-status">等待路线结果</div>
+        </div>
+      </div>
+
+      <div class="platform-card" id="card-ymm">
+        <div class="p-info">
+          <div class="p-icon" style="background:#dbeafe; color:#2563eb;"><i data-feather="navigation"></i></div>
+          <div>
+            <div class="p-name">运满满</div>
+            <div class="p-meta" id="ymm-vehicle">推荐车型</div>
+          </div>
+        </div>
+        <div class="p-price">
+          <div class="p-price-val" id="ymm-price">¥ --.--</div>
+          <div class="p-price-status" id="ymm-status">等待路线结果</div>
+        </div>
+      </div>
+
+      <div class="platform-card" id="card-internal" style="border-color: var(--accent);">
+        <div class="p-info">
+          <div class="p-icon" style="background:var(--accent); color:#fff;"><i data-feather="award"></i></div>
+          <div>
+            <div class="p-name">我们报价</div>
+            <div class="p-meta">基于实时路线估算</div>
+          </div>
+        </div>
+        <div class="p-price">
+          <div class="p-price-val" id="dispatch-est-price">¥ --.--</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</aside>
+
+{% endblock %}
+
+{% block right_sidebar %}{% endblock %}
+
+{% block scripts %}
+<script>
+  const dispatchState = {
+    AMap: null,
+    map: null,
+    driving: null,
+    geocoder: null,
+    currentLocation: null,
+    currentLocationContext: null,
+    activeSearchId: 0,
+    selectedSuggestions: {
+      origin: null,
+      dest: null,
+    },
+    suggestionSearchIds: {
+      origin: 0,
+      dest: 0,
+    },
+    suggestionTimers: {
+      origin: null,
+      dest: null,
+    },
+    suggestionBindingsReady: false,
+  };
+  const routeUtils = window.AMapRouteUtils;
+
+  const FIELD_CONFIG = {
+    origin: {
+      inputId: "dispatch-origin",
+      panelId: "dispatch-origin-suggestions",
+      label: "发货地",
+    },
+    dest: {
+      inputId: "dispatch-dest",
+      panelId: "dispatch-dest-suggestions",
+      label: "目的地",
+    },
+  };
+  const DEFAULT_CENTER = [116.397428, 39.90923];
+  const DEFAULT_DURATION_TEXT = "等待路线规划";
+  const DEFAULT_STATUS_TEXT = "等待路线结果";
+  const LIVE_ESTIMATE_TEXT = "基于实时路线估算";
+  const REGION_SUFFIX_REGEX = /(特别行政区|自治州|自治县|自治旗|林区|新区|开发区|高新区|经开区|风景区|景区|地区|盟|ʡ|市|区|县|旗)$/;
+  const PLACE_HINT_KEYWORDS = [
+    "物流", "公司", "公园", "广场", "花园", "ҽԺ", "ѧУ", "园区", "工业园", "科技园",
+    "仓", "仓库", "市场", "商场", "中心", "大厦", "酒店", "古城", "机场", "车站", "码头",
+  ];
+
+  function getDispatchElement(id) {
+    return document.getElementById(id);
+  }
+
+  function getFieldInput(fieldKey) {
+    return getDispatchElement(FIELD_CONFIG[fieldKey].inputId);
+  }
+
+  function getFieldPanel(fieldKey) {
+    return getDispatchElement(FIELD_CONFIG[fieldKey].panelId);
+  }
+
+  function getPeerFieldKey(fieldKey) {
+    return fieldKey === "origin" ? "dest" : "origin";
+  }
+
+  function normalizeSearchText(text) {
+    return String(text || "").replace(/\s+/g, "").trim();
+  }
+
+  function normalizeRegionName(text) {
+    return normalizeSearchText(text).replace(REGION_SUFFIX_REGEX, "");
+  }
+
+  function uniqueTextList(items) {
+    const seen = new Set();
+    return items.filter((item) => {
+      const value = normalizeSearchText(item);
+      if (!value || seen.has(value)) {
+        return false;
+      }
+      seen.add(value);
+      return true;
+    });
+  }
+
+  function extractLocationTuple(location) {
+    if (Array.isArray(location) && location.length >= 2) {
+      return [Number(location[0]), Number(location[1])];
+    }
+    if (location && typeof location.getLng === "function" && typeof location.getLat === "function") {
+      return [Number(location.getLng()), Number(location.getLat())];
+    }
+    if (location && typeof location.lng === "number" && typeof location.lat === "number") {
+      return [Number(location.lng), Number(location.lat)];
+    }
+    return null;
+  }
+
+  function locationKey(location) {
+    const tuple = extractLocationTuple(location);
+    return tuple ? tuple.join(",") : "";
+  }
+
+  function parsePositiveNumber(id) {
+    const raw = getDispatchElement(id)?.value.trim() || "";
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+
+  class AddressSelectionError extends Error {
+    constructor(fieldKey, suggestions, message, emptyMessage = "") {
+      super(message);
+      this.name = "AddressSelectionError";
+      this.fieldKey = fieldKey;
+      this.suggestions = suggestions;
+      this.emptyMessage = emptyMessage;
+    }
+  }
+
+  function setSearchButtonBusy(busy) {
+    const button = document.querySelector(".search-action-row .primary-btn");
+    if (!button) {
+      return;
+    }
+    button.disabled = busy;
+    button.textContent = busy ? "规划中..." : "立即询价";
+  }
+
+  function formatDistance(distanceMeters) {
+    return routeUtils.formatDistance(distanceMeters);
+  }
+
+  function formatDuration(durationSeconds) {
+    return routeUtils.formatDuration(durationSeconds);
+  }
+
+  function formatCurrencyFen(amountFen) {
+    return `¥ ${(Math.max(0, Number(amountFen) || 0) / 100).toFixed(2)}`;
+  }
+
+  function setDistancePlaceholder() {
+    getDispatchElement("route-distance-label").innerHTML = "<strong>--</strong><span>km</span>";
+  }
+
+  function setPriceCardsIdle(statusText = DEFAULT_STATUS_TEXT) {
+    getDispatchElement("huolala-price").innerText = "¥ --.--";
+    getDispatchElement("ymm-price").innerText = "¥ --.--";
+    getDispatchElement("dispatch-est-price").innerText = "¥ --.--";
+    getDispatchElement("huolala-vehicle").innerText = "推荐车型";
+    getDispatchElement("ymm-vehicle").innerText = "推荐车型";
+    getDispatchElement("huolala-status").innerText = statusText;
+    getDispatchElement("ymm-status").innerText = statusText;
+  }
+
+  function setRouteLoading() {
+    setDistancePlaceholder();
+    getDispatchElement("route-duration-label").innerText = "路线规划中...";
+    setPriceCardsIdle("等待路线返回");
+  }
+
+  function setRouteError(message) {
+    setDistancePlaceholder();
+    getDispatchElement("route-duration-label").innerText = message;
+    setPriceCardsIdle("路线规划失败");
+  }
+
+  function resetRouteSummary() {
+    setDistancePlaceholder();
+    getDispatchElement("route-duration-label").innerText = DEFAULT_DURATION_TEXT;
+    setPriceCardsIdle();
+  }
+
+  function clearSuggestionSelection(fieldKey) {
+    dispatchState.selectedSuggestions[fieldKey] = null;
+  }
+
+  function hideSuggestions(fieldKey) {
+    const panel = getFieldPanel(fieldKey);
+    if (!panel) {
+      return;
+    }
+    panel.hidden = true;
+    panel.innerHTML = "";
+  }
+
+  function hideAllSuggestions() {
+    Object.keys(FIELD_CONFIG).forEach((fieldKey) => hideSuggestions(fieldKey));
+  }
+
+  function renderSuggestions(fieldKey, suggestions, emptyMessage = "未找到相似地址，请补充更完整信息") {
+    const panel = getFieldPanel(fieldKey);
+    if (!panel) {
+      return;
+    }
+    panel.innerHTML = "";
+
+    if (!suggestions.length) {
+      const empty = document.createElement("div");
+      empty.className = "route-suggest-empty";
+      empty.innerText = emptyMessage;
+      panel.appendChild(empty);
+      panel.hidden = false;
+      return;
+    }
+
+    suggestions.forEach((suggestion) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "route-suggest-item";
+      button.addEventListener("click", () => selectSuggestion(fieldKey, suggestion));
+
+      const primary = document.createElement("span");
+      primary.className = "route-suggest-primary";
+      primary.innerText = suggestion.primaryText;
+
+      const secondary = document.createElement("span");
+      secondary.className = "route-suggest-secondary";
+      secondary.innerText = suggestion.secondaryText || suggestion.formattedAddress || "";
+
+      button.appendChild(primary);
+      if (secondary.innerText) {
+        button.appendChild(secondary);
+      }
+      panel.appendChild(button);
+    });
+
+    panel.hidden = false;
+  }
+
+  function selectSuggestion(fieldKey, suggestion) {
+    const input = getFieldInput(fieldKey);
+    if (!input) {
+      return;
+    }
+    const displayValue = suggestion.location
+      ? (suggestion.displayValue || suggestion.primaryText)
+      : (suggestion.resolveKeyword || suggestion.formattedAddress || suggestion.primaryText);
+
+    if (suggestion.location) {
+      dispatchState.selectedSuggestions[fieldKey] = {
+        ...suggestion,
+        displayValue,
+      };
+    } else {
+      dispatchState.selectedSuggestions[fieldKey] = null;
+    }
+
+    input.value = displayValue;
+    input.title = suggestion.formattedAddress || suggestion.secondaryText || suggestion.primaryText;
+    hideSuggestions(fieldKey);
+  }
+
+  function bindSuggestionInputs() {
+    if (dispatchState.suggestionBindingsReady) {
+      return;
+    }
+    dispatchState.suggestionBindingsReady = true;
+
+    Object.keys(FIELD_CONFIG).forEach((fieldKey) => {
+      const input = getFieldInput(fieldKey);
+      if (!input) {
+        return;
+      }
+
+      input.addEventListener("input", () => {
+        clearSuggestionSelection(fieldKey);
+        queueSuggestionSearch(fieldKey);
+      });
+
+      input.addEventListener("focus", () => {
+        if (input.value.trim().length >= 2) {
+          queueSuggestionSearch(fieldKey);
+        }
+      });
+
+      input.addEventListener("blur", () => {
+        window.setTimeout(() => hideSuggestions(fieldKey), 180);
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      Object.keys(FIELD_CONFIG).forEach((fieldKey) => {
+        const input = getFieldInput(fieldKey);
+        const panel = getFieldPanel(fieldKey);
+        if (!input || !panel) {
+          return;
+        }
+        if (panel.contains(event.target) || input === event.target) {
+          return;
+        }
+        hideSuggestions(fieldKey);
+      });
+    });
+  }
+
+  function getPricingProfile(weightKg, volumeM3, distanceKm) {
+    if (weightKg > 8000 || volumeM3 > 28 || distanceKm > 1000) {
+      return {
+        label: "9.6米厢货",
+        baseFen: 16800,
+        distanceFenPerDeciKm: 420,
+        weightFenPerKg: 2,
+        volumeFenPerDeciM3: 180,
+        highwayFen: 4600,
+      };
+    }
+    if (weightKg > 3000 || volumeM3 > 12 || distanceKm > 400) {
+      return {
+        label: "7.6米厢货",
+        baseFen: 11800,
+        distanceFenPerDeciKm: 340,
+        weightFenPerKg: 2,
+        volumeFenPerDeciM3: 140,
+        highwayFen: 2800,
+      };
+    }
+    if (weightKg > 800 || volumeM3 > 4 || distanceKm > 120) {
+      return {
+        label: "4.2米厢货",
+        baseFen: 6800,
+        distanceFenPerDeciKm: 280,
+        weightFenPerKg: 3,
+        volumeFenPerDeciM3: 120,
+        highwayFen: 1600,
+      };
+    }
+    return {
+      label: "中面/依维柯",
+      baseFen: 4200,
+      distanceFenPerDeciKm: 220,
+      weightFenPerKg: 4,
+      volumeFenPerDeciM3: 100,
+      highwayFen: 800,
+    };
+  }
+
+  function buildEstimate(distanceMeters) {
+    const distanceKm = Math.max(0, Number(distanceMeters) || 0) / 1000;
+    const weightKg = parsePositiveNumber("dispatch-est-weight");
+    const volumeM3 = parsePositiveNumber("dispatch-est-volume");
+    const profile = getPricingProfile(weightKg, volumeM3, distanceKm);
+    const distanceDeciKm = Math.max(1, Math.round(distanceMeters / 100));
+    const roundedWeightKg = Math.round(weightKg);
+    const volumeDeciM3 = Math.round(volumeM3 * 10);
+
+    const internalFen =
+      profile.baseFen +
+      distanceDeciKm * profile.distanceFenPerDeciKm +
+      roundedWeightKg * profile.weightFenPerKg +
+      volumeDeciM3 * profile.volumeFenPerDeciM3 +
+      (distanceKm > 30 ? profile.highwayFen : 0);
+
+    return {
+      vehicleLabel: profile.label,
+      internalFen,
+      huolalaFen: Math.round(internalFen * 1.10),
+      ymmFen: Math.round(internalFen * 1.15),
+    };
+  }
+
+  function updateEstimateCards(distanceMeters) {
+    const estimate = buildEstimate(distanceMeters);
+    getDispatchElement("dispatch-est-price").innerText = formatCurrencyFen(estimate.internalFen);
+    getDispatchElement("huolala-price").innerText = formatCurrencyFen(estimate.huolalaFen);
+    getDispatchElement("ymm-price").innerText = formatCurrencyFen(estimate.ymmFen);
+    getDispatchElement("huolala-vehicle").innerText = estimate.vehicleLabel;
+    getDispatchElement("ymm-vehicle").innerText = estimate.vehicleLabel;
+    getDispatchElement("huolala-status").innerText = LIVE_ESTIMATE_TEXT;
+    getDispatchElement("ymm-status").innerText = LIVE_ESTIMATE_TEXT;
+  }
+
+  function clearRouteOverlays() {
+    if (dispatchState.driving && typeof dispatchState.driving.clear === "function") {
+      dispatchState.driving.clear();
+    }
+  }
+
+  function resetMapView() {
+    if (!dispatchState.map) {
+      return;
+    }
+    const center = dispatchState.currentLocation || DEFAULT_CENTER;
+    const zoom = dispatchState.currentLocation ? 12 : 11;
+    dispatchState.map.setZoomAndCenter(zoom, center);
+  }
+
+  function extractAdministrativeContext(keyword) {
+    const text = normalizeSearchText(keyword);
+    if (!text) {
+      return { province: "", city: "", district: "" };
+    }
+
+    const provinceMatch = text.match(/((?:[\u4e00-\u9fa5]{2,8}ʡ)|(?:内蒙古自治区|广西壮族自治区|宁夏回族自治区|新疆维吾尔自治区|西藏自治区)|(?:香港特别行政区|澳门特别行政区))/);
+    const province = provinceMatch?.[1] || "";
+    const citySource = province ? text.slice(text.indexOf(province) + province.length) : text;
+    const cityMatch = citySource.match(/((?:[\u4e00-\u9fa5]{2,8}(?:自治州|地区|盟|市)))/);
+    const city = cityMatch?.[1] || "";
+    const districtSource = city ? citySource.slice(citySource.indexOf(city) + city.length) : citySource;
+    const districtMatch = districtSource.match(/((?:[\u4e00-\u9fa5]{1,10}(?:自治县|自治旗|林区|新区|开发区|高新区|经开区|风景区|景区|区|县|旗|市)))/);
+    const district = districtMatch?.[1] || "";
+
+    return { province, city, district };
+  }
+
+  function buildSearchContexts(keyword, peerKeyword = "") {
+    const ownContext = extractAdministrativeContext(keyword);
+    const peerContext = extractAdministrativeContext(peerKeyword);
+    const contexts = [];
+    const seen = new Set();
+    const hasOwnCityHint = Boolean(ownContext.city || ownContext.province);
+    const hasOwnDistrictOnly = Boolean(!hasOwnCityHint && ownContext.district);
+
+    function pushContext(context) {
+      const normalized = [
+        normalizeSearchText(context.province),
+        normalizeSearchText(context.city),
+        normalizeSearchText(context.district),
+      ].join("|");
+      if (seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      contexts.push({
+        province: context.province || "",
+        city: context.city || "",
+        district: context.district || "",
+      });
+    }
+
+    if (hasOwnCityHint) {
+      pushContext(ownContext);
+    }
+
+    if (!ownContext.city && peerContext.city) {
+      pushContext({
+        province: ownContext.province || peerContext.province || "",
+        city: peerContext.city,
+        district: ownContext.district || "",
+      });
+    }
+
+    if (!ownContext.city && dispatchState.currentLocationContext?.city) {
+      pushContext({
+        province: ownContext.province || dispatchState.currentLocationContext.province || "",
+        city: dispatchState.currentLocationContext.city,
+        district: ownContext.district || dispatchState.currentLocationContext.district || "",
+      });
+    }
+
+    if (hasOwnDistrictOnly) {
+      pushContext(ownContext);
+    }
+
+    if (!contexts.length) {
+      pushContext({ province: "", city: "", district: "" });
+    }
+
+    return contexts;
+  }
+
+  function stripAdministrativeTokens(keyword, context) {
+    let stripped = normalizeSearchText(keyword);
+    [context.province, context.city, context.district].forEach((token) => {
+      const normalized = normalizeSearchText(token);
+      if (normalized) {
+        stripped = stripped.replace(normalized, "");
+      }
+    });
+    return stripped.trim();
+  }
+
+  function buildKeywordVariants(keyword, context) {
+    const rawKeyword = normalizeSearchText(keyword);
+    const coreKeyword = stripAdministrativeTokens(keyword, context);
+    const keywords = uniqueTextList([
+      rawKeyword,
+      coreKeyword,
+      context.district && coreKeyword ? `${context.district}${coreKeyword}` : "",
+      context.city && coreKeyword ? `${context.city}${coreKeyword}` : "",
+    ]);
+    return keywords.filter((item) => item.length >= 2);
+  }
+
+  function createDynamicGeocoder(context) {
+    return new dispatchState.AMap.Geocoder({
+      city: context.city || "全国",
+      extensions: "all",
+    });
+  }
+
+  function reverseGeocodeLocation(location) {
+    return new Promise((resolve, reject) => {
+      if (!dispatchState.geocoder) {
+        reject(new Error("逆地理编码服务未就绪"));
+        return;
+      }
+      dispatchState.geocoder.getAddress(location, (status, result) => {
+        const component = result?.regeocode?.addressComponent;
+        if (status === "complete" && component) {
+          const cityValue = Array.isArray(component.city)
+            ? (component.city[0] || component.province || "")
+            : (component.city || component.province || "");
+          resolve({
+            province: component.province || "",
+            city: cityValue || "",
+            district: component.district || "",
+          });
+          return;
+        }
+        reject(new Error("逆地理编码失败"));
+      });
+    });
+  }
+
+  function geocodeAddress(keyword, context) {
+    return new Promise((resolve, reject) => {
+      const geocoder = createDynamicGeocoder(context);
+      geocoder.getLocation(keyword, (status, result) => {
+        const geocode = result?.geocodes?.[0];
+        const location = extractLocationTuple(geocode?.location);
+        if (status === "complete" && location) {
+          resolve({
+            source: "geocoder",
+            location,
+            primaryText: keyword,
+            secondaryText: geocode.formattedAddress || keyword,
+            formattedAddress: geocode.formattedAddress || keyword,
+            level: geocode.level || "",
+            province: geocode.province || "",
+            city: Array.isArray(geocode.city) ? (geocode.city[0] || "") : (geocode.city || ""),
+            district: geocode.district || "",
+          });
+          return;
+        }
+        reject(new Error(`未识别地址：${keyword}`));
+      });
+    });
+  }
+
+  function createAutoComplete(context) {
+    return new dispatchState.AMap.AutoComplete({
+      city: context.city || "全国",
+      citylimit: Boolean(context.city),
+      datatype: "poi",
+    });
+  }
+
+  function runAutoComplete(keyword, context) {
+    return new Promise((resolve) => {
+      if (!dispatchState.AMap?.AutoComplete) {
+        resolve([]);
+        return;
+      }
+      const autocomplete = createAutoComplete(context);
+      autocomplete.search(keyword, (status, result) => {
+        if (status === "complete" && Array.isArray(result?.tips) && result.tips.length) {
+          resolve(
+            result.tips.filter((tip) => {
+              const name = normalizeSearchText(tip.name || "");
+              return Boolean(name) && name !== "[]";
+            })
+          );
+          return;
+        }
+        resolve([]);
+      });
+    });
+  }
+
+  function createPlaceSearch(context) {
+    return new dispatchState.AMap.PlaceSearch({
+      city: context.city || "全国",
+      citylimit: Boolean(context.city),
+      pageSize: 20,
+      pageIndex: 1,
+      extensions: "base",
+    });
+  }
+
+  function runPlaceSearch(keyword, context) {
+    return new Promise((resolve) => {
+      if (!dispatchState.AMap?.PlaceSearch) {
+        resolve([]);
+        return;
+      }
+      const placeSearch = createPlaceSearch(context);
+      placeSearch.search(keyword, (status, result) => {
+        if (status === "complete" && result?.poiList?.pois?.length) {
+          resolve(result.poiList.pois);
+          return;
+        }
+        resolve([]);
+      });
+    });
+  }
+
+  function scorePlaceCandidate(poi, keyword, context) {
+    const rawKeyword = normalizeSearchText(keyword);
+    const coreKeyword = stripAdministrativeTokens(keyword, context) || rawKeyword;
+    const poiName = normalizeSearchText(poi.name || "");
+    const poiAddress = normalizeSearchText(poi.address || "");
+    const poiCity = normalizeSearchText(poi.cityname || "");
+    const poiDistrict = normalizeSearchText(poi.adname || "");
+    const combined = `${poiName}${poiAddress}${poiCity}${poiDistrict}${normalizeSearchText(poi.pname || "")}`;
+    let score = 0;
+
+    if (poiName === rawKeyword || poiName === coreKeyword) {
+      score += 180;
+    } else {
+      if (poiName && rawKeyword.includes(poiName)) {
+        score += 100;
+      }
+      if (poiName && coreKeyword && poiName.includes(coreKeyword)) {
+        score += 90;
+      }
+      if (coreKeyword && coreKeyword.includes(poiName) && poiName.length >= 2) {
+        score += 80;
+      }
+    }
+
+    if (combined.includes(rawKeyword)) {
+      score += 70;
+    }
+    if (coreKeyword && combined.includes(coreKeyword)) {
+      score += 65;
+    }
+
+    const normalizedContextCity = normalizeRegionName(context.city);
+    const normalizedPoiCity = normalizeRegionName(poiCity);
+    if (normalizedContextCity) {
+      if (normalizedPoiCity === normalizedContextCity) {
+        score += 60;
+      } else if (normalizedPoiCity) {
+        score -= 120;
+      }
+    }
+
+    const normalizedContextDistrict = normalizeRegionName(context.district);
+    const normalizedPoiDistrict = normalizeRegionName(poiDistrict);
+    if (normalizedContextDistrict) {
+      if (
+        normalizedPoiDistrict === normalizedContextDistrict ||
+        poiAddress.includes(normalizeSearchText(context.district))
+      ) {
+        score += 45;
+      } else if (normalizedPoiDistrict) {
+        score -= 70;
+      }
+    }
+
+    if (PLACE_HINT_KEYWORDS.some((item) => coreKeyword.includes(item) && poiName.includes(item))) {
+      score += 20;
+    }
+
+    const keywordHints = PLACE_HINT_KEYWORDS.filter((item) => coreKeyword.includes(item));
+    if (keywordHints.length && !keywordHints.some((item) => poiName.includes(item) || poiAddress.includes(item))) {
+      score -= 140;
+    }
+
+    if (/人民政府|政府|派出所|公安|管理所|办事处|委员会/.test(poiName) && keywordHints.length) {
+      score -= 180;
+    }
+
+    if (typeof poi.distance === "number") {
+      score += Math.max(0, 30 - poi.distance / 200);
+    }
+
+    if (poi.location) {
+      score += 10;
+    }
+
+    return score;
+  }
+
+  function scoreAutoCompleteCandidate(tip, keyword, context) {
+    const rawKeyword = normalizeSearchText(keyword);
+    const coreKeyword = stripAdministrativeTokens(keyword, context) || rawKeyword;
+    const tipName = normalizeSearchText(tip.name || "");
+    const tipAddress = normalizeSearchText(tip.address || "");
+    const tipDistrict = normalizeSearchText(tip.district || "");
+    const combined = `${tipName}${tipAddress}${tipDistrict}`;
+    let score = 0;
+
+    if (tipName === rawKeyword || tipName === coreKeyword) {
+      score += 170;
+    } else {
+      if (tipName && rawKeyword.includes(tipName)) {
+        score += 100;
+      }
+      if (tipName && coreKeyword && tipName.includes(coreKeyword)) {
+        score += 90;
+      }
+      if (coreKeyword && coreKeyword.includes(tipName) && tipName.length >= 2) {
+        score += 75;
+      }
+    }
+
+    if (combined.includes(rawKeyword)) {
+      score += 60;
+    }
+    if (coreKeyword && combined.includes(coreKeyword)) {
+      score += 55;
+    }
+
+    const normalizedContextDistrict = normalizeRegionName(context.district);
+    const normalizedTipDistrict = normalizeRegionName(tipDistrict);
+    if (normalizedContextDistrict) {
+      if (normalizedTipDistrict === normalizedContextDistrict || tipAddress.includes(normalizeSearchText(context.district))) {
+        score += 40;
+      } else if (normalizedTipDistrict) {
+        score -= 55;
+      }
+    }
+
+    const keywordHints = PLACE_HINT_KEYWORDS.filter((item) => coreKeyword.includes(item));
+    if (keywordHints.some((item) => tipName.includes(item) || tipAddress.includes(item))) {
+      score += 18;
+    } else if (keywordHints.length) {
+      score -= 120;
+    }
+
+    if (/人民政府|政府|派出所|公安|管理所|办事处|委员会/.test(tipName) && keywordHints.length) {
+      score -= 180;
+    }
+
+    if (tip.location) {
+      score += 10;
+    }
+
+    return score;
+  }
+
+  function formatPoiAddress(poi) {
+    const region = [poi.pname, poi.cityname, poi.adname].filter(Boolean).join("");
+    const detail = [poi.address, poi.name].filter(Boolean).join(" ");
+    return `${region}${detail}`.trim() || poi.name || "";
+  }
+
+  function formatSuggestionSecondary(poi) {
+    return [poi.pname, poi.cityname, poi.adname].filter(Boolean).join(" ") + (poi.address ? ` ${poi.address}` : "");
+  }
+
+  function formatTipAddress(tip) {
+    return [tip.district, tip.address, tip.name].filter(Boolean).join(" ").trim();
+  }
+
+  function buildSuggestionKey(candidate) {
+    return [
+      normalizeSearchText(candidate.primaryText),
+      normalizeSearchText(candidate.secondaryText),
+      normalizeSearchText(candidate.resolveKeyword || candidate.formattedAddress || locationKey(candidate.location)),
+    ].join("|");
+  }
+
+  function isStrongPlaceCandidate(candidate, keyword) {
+    if (!candidate) {
+      return false;
+    }
+    const rawKeyword = normalizeSearchText(keyword);
+    const coreKeyword = stripAdministrativeTokens(keyword, candidate.context || {}) || rawKeyword;
+    const candidateName = normalizeSearchText(candidate.primaryText || "");
+    const combined = normalizeSearchText(`${candidate.formattedAddress || ""}${candidate.secondaryText || ""}`);
+    const keywordHints = PLACE_HINT_KEYWORDS.filter((item) => coreKeyword.includes(item));
+    const hasExactName = candidateName === rawKeyword || candidateName === coreKeyword;
+    const hasCoreMatch = Boolean(coreKeyword) && (candidateName.includes(coreKeyword) || combined.includes(coreKeyword));
+    const hasHintMatch = !keywordHints.length || keywordHints.some((item) => candidateName.includes(item) || combined.includes(item));
+
+    if (!hasHintMatch) {
+      return false;
+    }
+    if (hasExactName && candidate.score >= 95) {
+      return true;
+    }
+    if (candidate.source === "place" && hasCoreMatch && candidate.score >= 145) {
+      return true;
+    }
+    if (candidate.source === "autocomplete" && candidate.location && hasCoreMatch && candidate.score >= 155) {
+      return true;
+    }
+    const normalizedKeyword = normalizeSearchText(keyword);
+    if (candidate.score >= 180) {
+      return true;
+    }
+    if ((candidate.context?.city || candidate.context?.district) && candidate.score >= 130) {
+      return true;
+    }
+    if (normalizedKeyword.length >= 8 && candidate.score >= 150) {
+      return true;
+    }
+    return false;
+  }
+
+  async function collectPlaceCandidates(keyword, contexts, limit = 6) {
+    const candidateMap = new Map();
+    for (const context of contexts) {
+      const keywordVariants = buildKeywordVariants(keyword, context);
+      for (const keywordVariant of keywordVariants) {
+        const pois = await runPlaceSearch(keywordVariant, context);
+        for (const poi of pois) {
+          const location = extractLocationTuple(poi.location);
+          if (!location) {
+            continue;
+          }
+          const candidate = {
+            source: "place",
+            poi: {
+              ...poi,
+              location,
+            },
+            location,
+            context,
+            score: scorePlaceCandidate(poi, keyword, context),
+            primaryText: poi.name || keywordVariant || keyword,
+            secondaryText: formatSuggestionSecondary(poi).trim(),
+            formattedAddress: formatPoiAddress(poi),
+            resolveKeyword: formatPoiAddress(poi) || poi.name || keywordVariant || keyword,
+          };
+          const key = buildSuggestionKey(candidate);
+          const existing = candidateMap.get(key);
+          if (!existing || candidate.score > existing.score) {
+            candidateMap.set(key, candidate);
+          }
+        }
+      }
+    }
+
+    return Array.from(candidateMap.values())
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
+  }
+
+  async function collectAutoCompleteCandidates(keyword, contexts, limit = 6) {
+    const candidateMap = new Map();
+    for (const context of contexts) {
+      const keywordVariants = buildKeywordVariants(keyword, context);
+      for (const keywordVariant of keywordVariants) {
+        const tips = await runAutoComplete(keywordVariant, context);
+        for (const tip of tips) {
+          const location = extractLocationTuple(tip.location);
+          const candidate = {
+            source: "autocomplete",
+            context,
+            score: scoreAutoCompleteCandidate(tip, keyword, context),
+            location,
+            primaryText: tip.name || keywordVariant || keyword,
+            secondaryText: [tip.district, tip.address].filter(Boolean).join(" ").trim(),
+            formattedAddress: formatTipAddress(tip),
+            resolveKeyword: [tip.district, tip.address, tip.name].filter(Boolean).join(" ").trim() || tip.name || keywordVariant || keyword,
+          };
+          const key = buildSuggestionKey(candidate);
+          const existing = candidateMap.get(key);
+          if (!existing || candidate.score > existing.score) {
+            candidateMap.set(key, candidate);
+          }
+        }
+      }
+    }
+
+    return Array.from(candidateMap.values())
+      .filter((candidate) => candidate.score > -80)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
+  }
+
+  async function collectSearchCandidates(keyword, contexts, limit = 6) {
+    const [placeCandidates, autocompleteCandidates] = await Promise.all([
+      collectPlaceCandidates(keyword, contexts, Math.max(limit, 8)),
+      collectAutoCompleteCandidates(keyword, contexts, Math.max(limit, 8)),
+    ]);
+
+    const candidateMap = new Map();
+    [...placeCandidates, ...autocompleteCandidates].forEach((candidate) => {
+      const key = buildSuggestionKey(candidate);
+      const existing = candidateMap.get(key);
+      if (!existing || candidate.score > existing.score) {
+        candidateMap.set(key, candidate);
+      }
+    });
+
+    return Array.from(candidateMap.values())
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
+  }
+
+  async function resolveBySearchCandidates(keyword, contexts) {
+    const candidates = await collectSearchCandidates(keyword, contexts, 8);
+    const bestCandidate = candidates[0] || null;
+    if (bestCandidate?.location && isStrongPlaceCandidate(bestCandidate, keyword)) {
+      return {
+        source: bestCandidate.source,
+        location: bestCandidate.location,
+        primaryText: bestCandidate.primaryText,
+        secondaryText: bestCandidate.secondaryText,
+        formattedAddress: bestCandidate.formattedAddress,
+        resolveKeyword: bestCandidate.resolveKeyword,
+        context: bestCandidate.context,
+        candidates,
+      };
+    }
+    return {
+      source: "search_candidates",
+      location: null,
+      candidates,
+      formattedAddress: "",
+    };
+  }
+
+  function isReliableGeocodeResult(geocodeResult, keyword, context) {
+    if (!geocodeResult?.location) {
+      return false;
+    }
+    const rawKeyword = normalizeSearchText(keyword);
+    const coreKeyword = stripAdministrativeTokens(keyword, context) || rawKeyword;
+    const formattedAddress = normalizeSearchText(geocodeResult.formattedAddress || "");
+    const matchedCity = normalizeRegionName(geocodeResult.city || geocodeResult.province || "");
+    const matchedDistrict = normalizeRegionName(geocodeResult.district || "");
+    const expectedCity = normalizeRegionName(context.city || "");
+    const expectedDistrict = normalizeRegionName(context.district || "");
+    const keywordHints = PLACE_HINT_KEYWORDS.filter((item) => coreKeyword.includes(item));
+    const hasRawMatch = Boolean(rawKeyword) && formattedAddress.includes(rawKeyword);
+    const hasCoreMatch = Boolean(coreKeyword) && formattedAddress.includes(coreKeyword);
+    const hasHintMatch = !keywordHints.length || keywordHints.some((item) => formattedAddress.includes(item));
+    const isAdministrativeLevel = /^(国家|ʡ|市|区县|乡镇)$/.test(geocodeResult.level || "");
+    const isGovernmentLike = /人民政府|政府|派出所|公安|管理所|办事处|委员会/.test(geocodeResult.formattedAddress || "");
+
+    if (keywordHints.length && (!hasHintMatch || isGovernmentLike)) {
+      return false;
+    }
+    if (expectedCity && matchedCity && matchedCity !== expectedCity) {
+      return false;
+    }
+    if (expectedDistrict && matchedDistrict && matchedDistrict !== expectedDistrict) {
+      return false;
+    }
+    if (isAdministrativeLevel && !hasRawMatch && !hasCoreMatch) {
+      return false;
+    }
+    if (hasRawMatch || hasCoreMatch) {
+      return true;
+    }
+    return !keywordHints.length && !isAdministrativeLevel && coreKeyword.length >= 8;
+  }
+
+  function queueSuggestionSearch(fieldKey) {
+    const input = getFieldInput(fieldKey);
+    if (!input) {
+      return;
+    }
+    const keyword = input.value.trim();
+    if (dispatchState.suggestionTimers[fieldKey]) {
+      window.clearTimeout(dispatchState.suggestionTimers[fieldKey]);
+    }
+    if (keyword.length < 2 || (!dispatchState.AMap?.PlaceSearch && !dispatchState.AMap?.AutoComplete)) {
+      hideSuggestions(fieldKey);
+      return;
+    }
+    dispatchState.suggestionTimers[fieldKey] = window.setTimeout(async () => {
+      const requestId = ++dispatchState.suggestionSearchIds[fieldKey];
+      const contexts = buildSearchContexts(keyword, getFieldInput(getPeerFieldKey(fieldKey))?.value.trim() || "");
+      const suggestions = await collectSearchCandidates(keyword, contexts, 5);
+      if (requestId !== dispatchState.suggestionSearchIds[fieldKey]) {
+        return;
+      }
+      if (!suggestions.length) {
+        hideSuggestions(fieldKey);
+        return;
+      }
+      renderSuggestions(fieldKey, suggestions);
+    }, 220);
+  }
+
+  async function resolveAddress(fieldKey, keyword, peerKeyword = "") {
+    const selectedSuggestion = dispatchState.selectedSuggestions[fieldKey];
+    if (
+      selectedSuggestion &&
+      normalizeSearchText(getFieldInput(fieldKey)?.value) ===
+        normalizeSearchText(selectedSuggestion.displayValue || selectedSuggestion.primaryText)
+    ) {
+      return selectedSuggestion;
+    }
+
+    const contexts = buildSearchContexts(keyword, peerKeyword);
+    const placeResult = await resolveBySearchCandidates(keyword, contexts);
+    if (placeResult?.location) {
+      return placeResult;
+    }
+
+    if (placeResult?.candidates?.length) {
+      throw new AddressSelectionError(
+        fieldKey,
+        placeResult.candidates.slice(0, 5),
+        `请从下拉列表中选择更准确的${FIELD_CONFIG[fieldKey].label}`
+      );
+    }
+
+    let lastError = null;
+    for (const context of contexts) {
+      try {
+        const geocodeResult = await geocodeAddress(keyword, context);
+        if (isReliableGeocodeResult(geocodeResult, keyword, context)) {
+          return geocodeResult;
+        }
+        lastError = new AddressSelectionError(
+          fieldKey,
+          placeResult?.candidates || [],
+          `请从下拉列表中选择更准确的${FIELD_CONFIG[fieldKey].label}`,
+          `未能可靠识别“${keyword}”，请补充区县/园区/门牌号，或从下拉候选中选择`
+        );
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new AddressSelectionError(
+      fieldKey,
+      [],
+      `未识别地址：${keyword}`,
+      `未找到“${keyword}”的可用地址，请补充到区县、园区或门牌号后重试`
+    );
+  }
+
+  function searchDrivingRoute(originPoint, destPoint) {
+    return routeUtils.searchDrivingRoute(dispatchState.driving, originPoint, destPoint, {
+      serviceMissing: "驾车规划服务未就绪",
+      noData: "未找到可规划的驾车路线",
+      failure: "驾车路线规划失败",
+    });
+  }
+
+  async function searchRoute() {
+    const origin = getDispatchElement("dispatch-origin").value.trim();
+    const dest = getDispatchElement("dispatch-dest").value.trim();
+    if (!origin || !dest) {
+      alert("请填写完整的发货和收货地址！");
+      return;
+    }
+    if (!dispatchState.map || !dispatchState.geocoder || !dispatchState.driving) {
+      alert("地图尚未完成初始化，请稍后重试。");
+      return;
+    }
+
+    const currentSearchId = ++dispatchState.activeSearchId;
+    setSearchButtonBusy(true);
+    setRouteLoading();
+    hideAllSuggestions();
+
+    try {
+      const [originGeocode, destGeocode] = await Promise.all([
+        resolveAddress("origin", origin, dest),
+        resolveAddress("dest", dest, origin),
+      ]);
+
+      if (currentSearchId !== dispatchState.activeSearchId) {
+        return;
+      }
+
+      const result = await searchDrivingRoute(originGeocode.location, destGeocode.location);
+      if (currentSearchId !== dispatchState.activeSearchId) {
+        return;
+      }
+
+      const route = result.routes[0];
+      const distanceMeters = Number(route.distance) || 0;
+      const durationSeconds = Number(route.time) || 0;
+
+      getDispatchElement("dispatch-origin").title = originGeocode.formattedAddress || origin;
+      getDispatchElement("dispatch-dest").title = destGeocode.formattedAddress || dest;
+      getDispatchElement("route-distance-label").innerHTML = `<strong>${formatDistance(distanceMeters)}</strong><span>km</span>`;
+      getDispatchElement("route-duration-label").innerText = formatDuration(durationSeconds);
+      updateEstimateCards(distanceMeters);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "路线规划失败，请补充更完整的地址";
+      console.error("Dispatch route search failed", error);
+      setRouteError(message);
+      if (error instanceof AddressSelectionError) {
+        renderSuggestions(error.fieldKey, error.suggestions, error.emptyMessage || undefined);
+        getFieldInput(error.fieldKey)?.focus();
+      } else {
+        alert(message);
+      }
+    } finally {
+      if (currentSearchId === dispatchState.activeSearchId) {
+        setSearchButtonBusy(false);
+      }
+    }
+  }
+
+  function routeActionClear() {
+    dispatchState.activeSearchId += 1;
+    setSearchButtonBusy(false);
+    clearRouteOverlays();
+    resetRouteSummary();
+    resetMapView();
+    Object.keys(FIELD_CONFIG).forEach((fieldKey) => {
+      clearSuggestionSelection(fieldKey);
+      hideSuggestions(fieldKey);
+    });
+  }
+
+  function bindDispatchHotkeys() {
+    ["dispatch-origin", "dispatch-dest", "dispatch-est-weight", "dispatch-est-volume"].forEach((id) => {
+      const input = getDispatchElement(id);
+      if (!input || input.dataset.hotkeyBound === "1") {
+        return;
+      }
+      input.dataset.hotkeyBound = "1";
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          searchRouteAndExpand();
+        }
+      });
+    });
+  }
+
+  function tryCenterMapWithBrowserLocation() {
+    if (!dispatchState.map || !navigator.geolocation) {
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        dispatchState.currentLocation = [position.coords.longitude, position.coords.latitude];
+        resetMapView();
+        reverseGeocodeLocation(dispatchState.currentLocation)
+          .then((context) => {
+            dispatchState.currentLocationContext = context;
+          })
+          .catch(() => {});
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 300000 }
+    );
+  }
+
+  function initDispatchServices(AMap) {
+    dispatchState.AMap = AMap;
+    dispatchState.map = new AMap.Map("amap-container", {
+      zoom: 11,
+      center: DEFAULT_CENTER,
+      mapStyle: "amap://styles/light",
+    });
+    dispatchState.geocoder = new AMap.Geocoder({
+      city: "全国",
+      extensions: "all",
+    });
+    dispatchState.driving = routeUtils.createDrivingService(AMap, dispatchState.map, {
+      showTraffic: true,
+      autoFitView: true,
+      hideMarkers: false,
+      policy: AMap.DrivingPolicy.LEAST_TIME,
+    });
+    resetRouteSummary();
+    bindDispatchHotkeys();
+    bindSuggestionInputs();
+    tryCenterMapWithBrowserLocation();
+  }
+
+  function swapRouteInputs() {
+    const orig = getDispatchElement("dispatch-origin");
+    const dest = getDispatchElement("dispatch-dest");
+    const previousOrigin = orig.value;
+    const previousOriginSuggestion = dispatchState.selectedSuggestions.origin;
+    orig.value = dest.value;
+    dest.value = previousOrigin;
+    dispatchState.selectedSuggestions.origin = dispatchState.selectedSuggestions.dest;
+    dispatchState.selectedSuggestions.dest = previousOriginSuggestion;
+    hideAllSuggestions();
+  }
+
+  function searchRouteAndExpand() {
+    const origin = getDispatchElement("dispatch-origin").value.trim();
+    const dest = getDispatchElement("dispatch-dest").value.trim();
+    if (!origin || !dest) {
+      alert("请填写完整的发货和收货地址！");
+      return;
+    }
+    getDispatchElement("drawer-results").hidden = false;
+    return searchRoute();
+  }
+
+  function clearRoute() {
+    getDispatchElement("dispatch-origin").value = "";
+    getDispatchElement("dispatch-dest").value = "";
+    getDispatchElement("dispatch-est-weight").value = "";
+    getDispatchElement("dispatch-est-volume").value = "";
+    getDispatchElement("drawer-results").hidden = true;
+    routeActionClear();
+  }
+
+  window.searchRoute = searchRoute;
+  window.searchRouteAndExpand = searchRouteAndExpand;
+  window.clearRoute = clearRoute;
+  window.routeActionClear = routeActionClear;
+  window.swapRouteInputs = swapRouteInputs;
+
+  window.addEventListener('load', () => {
+    const amapJsKey = window.__dispatchConfig?.amap_js_key?.trim() || "";
+    if (!window.AMapLoader || !amapJsKey) {
+      console.error("AMap loader unavailable or amap_js_key missing.");
+      return;
+    }
+
+    AMapLoader.load({
+      key: amapJsKey,
+      version: "2.0",
+      plugins: ['AMap.Driving', 'AMap.Geocoder', 'AMap.PlaceSearch', 'AMap.AutoComplete']
+    }).then((AMap) => {
+      window._AMap = AMap;
+      initDispatchServices(AMap);
+    }).catch((e) => {
+      console.error("AMap load failed", e);
+    });
+  });
+</script>
+{% endblock %}

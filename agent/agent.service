@@ -1,0 +1,21 @@
+[Unit]
+Description=Logistics Agent Service
+After=network.target mysqld.service
+Wants=mysqld.service
+
+[Service]
+Type=simple
+User=boyce
+Group=boyce
+WorkingDirectory=/home/boyce/agent
+ExecStart=/home/boyce/agent/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# finance_tool / price_tool 会启动重任务子进程，需预留足够 cgroup 空间
+MemoryHigh=900M
+MemoryMax=1400M
+
+[Install]
+WantedBy=multi-user.target

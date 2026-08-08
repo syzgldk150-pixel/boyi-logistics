@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}后台账号管理 - {{ app_title }}{% endblock %}
+{% block breadcrumb %}后台账号管理{% endblock %}
+{% block subtitle %}账号与登录{% endblock %}
+
+{% block content %}
+<section class="panel account-admin-panel account-admin-compact" aria-label="管理员账号列表">
+  <div class="account-admin-toolbar">
+    <div class="account-admin-title">
+      <span class="account-count">{{ users|length }} 个账号</span>
+    </div>
+
+    <form class="account-create-form" action="/settings/accounts/create" method="post">
+      <input class="review-input" type="text" name="username" autocomplete="off" placeholder="账号" aria-label="账号" required>
+      <input class="review-input" type="text" name="display_name" autocomplete="off" placeholder="显示名称" aria-label="显示名称">
+      <input class="review-input" type="password" name="password" autocomplete="new-password" minlength="8" placeholder="初始密码" aria-label="初始密码" required>
+      <button class="primary-btn" type="submit">
+        <i data-feather="user-plus"></i>
+        <span>新增</span>
+      </button>
+    </form>
+  </div>
+
+  <div class="account-table-wrap">
+    <table class="account-table">
+      <thead>
+        <tr>
+          <th>账号</th>
+          <th>状态</th>
+          <th>最近登录</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td class="account-identity">
+            <strong>{{ user.username }}</strong>
+            {% if user.display_name %}
+            <span>{{ user.display_name }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="status-pill {{ 'status-pill--success' if user.is_active else 'status-pill--muted' }}">
+              {{ '已启用' if user.is_active else '已停用' }}
+            </span>
+          </td>
+          <td>{{ user.last_login_at or '-' }}</td>
+          <td>
+            <div class="account-row-actions">
+              <form action="/settings/accounts/{{ user.id }}/toggle" method="post">
+                <input type="hidden" name="target_active" value="{{ 0 if user.is_active else 1 }}">
+                <button class="ghost-btn" type="submit">
+                  <i data-feather="{{ 'user-x' if user.is_active else 'user-check' }}"></i>
+                  <span>{{ '停用' if user.is_active else '启用' }}</span>
+                </button>
+              </form>
+              <form class="account-reset-form" action="/settings/accounts/{{ user.id }}/reset-password" method="post">
+                <input class="review-input compact-input" type="password" name="password" autocomplete="new-password" minlength="8" placeholder="新密码" required>
+                <button class="ghost-btn" type="submit">
+                  <i data-feather="key"></i>
+                  <span>重置</span>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" class="account-empty">暂无管理员账号。</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

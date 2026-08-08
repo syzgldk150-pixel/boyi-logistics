@@ -1,0 +1,766 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}消息监控大盘{% endblock %}
+{% block subtitle %}首页 / 韵达与融辉 TMS 实时待办{% endblock %}
+
+{% block page_actions %}
+<button class="primary-btn monitoring-refresh" type="button" data-monitoring-refresh>
+  <i data-feather="refresh-cw"></i>
+  立即刷新
+</button>
+{% endblock %}
+
+{% block content %}
+<style>
+  .monitor-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, 38%);
+    gap: 20px;
+    align-items: start;
+  }
+  .monitor-metrics {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .monitor-metric,
+  .monitor-panel,
+  .monitor-detail {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .04);
+  }
+  .monitor-metric {
+    padding: 18px;
+    min-height: 126px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .monitor-metric span {
+    color: var(--muted);
+    font-weight: 800;
+    font-size: .82rem;
+  }
+  .monitor-metric strong {
+    font-size: 2rem;
+    color: var(--text-strong);
+    line-height: 1;
+  }
+  .monitor-metric small {
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .monitor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .monitor-panel {
+    padding: 18px;
+    min-height: 280px;
+  }
+  .monitor-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .monitor-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .monitor-panel-title i {
+    width: 18px;
+    height: 18px;
+    color: #334155;
+  }
+  .monitor-panel-title h2 {
+    margin: 0;
+    font-size: 1.08rem;
+    color: var(--text-strong);
+  }
+  .monitor-status {
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: .74rem;
+    font-weight: 900;
+    background: #f1f5f9;
+    color: #475569;
+  }
+  .monitor-status[data-status="ok"] {
+    background: #dcfce7;
+    color: #166534;
+  }
+  .monitor-status[data-status="auth_required"],
+  .monitor-status[data-status="error"] {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+  .monitor-status[data-status="no_source"] {
+    background: #fef3c7;
+    color: #92400e;
+  }
+  .monitor-category-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .monitor-category {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+  }
+  .monitor-category:hover,
+  .monitor-category.is-active {
+    border-color: #2563eb;
+    box-shadow: 0 8px 20px rgba(37, 99, 235, .12);
+    transform: translateY(-1px);
+  }
+  .monitor-category-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: #eff6ff;
+    color: #2563eb;
+  }
+  .monitor-category[data-tone="warning"] .monitor-category-icon {
+    background: #fef3c7;
+    color: #d97706;
+  }
+  .monitor-category[data-tone="danger"] .monitor-category-icon {
+    background: #fee2e2;
+    color: #dc2626;
+  }
+  .monitor-category[data-tone="muted"] .monitor-category-icon {
+    background: #f1f5f9;
+    color: #64748b;
+  }
+  .monitor-category-title {
+    color: var(--text-strong);
+    font-weight: 900;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .monitor-category-meta {
+    color: var(--muted);
+    font-size: .78rem;
+    font-weight: 700;
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .monitor-category-count {
+    min-width: 42px;
+    height: 34px;
+    border-radius: 8px;
+    background: #111827;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-weight: 900;
+  }
+  .monitor-category[data-count="0"] .monitor-category-count {
+    background: #e5e7eb;
+    color: #64748b;
+  }
+  .monitor-empty {
+    color: var(--muted);
+    border: 1px dashed #cbd5e1;
+    border-radius: 8px;
+    padding: 18px;
+    font-weight: 700;
+  }
+  .monitor-detail {
+    position: sticky;
+    top: 16px;
+    min-height: 640px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .monitor-detail-header {
+    padding: 16px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .monitor-detail-title strong {
+    display: block;
+    color: var(--text-strong);
+    font-size: 1rem;
+  }
+  .monitor-detail-title span {
+    display: block;
+    color: var(--muted);
+    font-weight: 700;
+    font-size: .78rem;
+    margin-top: 4px;
+  }
+  .monitor-detail-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .monitor-icon-btn {
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line);
+    background: #fff;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    color: #334155;
+    cursor: pointer;
+  }
+  .monitor-icon-btn:hover {
+    border-color: #2563eb;
+    color: #2563eb;
+  }
+  .monitor-frame-wrap {
+    flex: 1;
+    min-height: 520px;
+    background: #f8fafc;
+    position: relative;
+  }
+  .monitor-frame {
+    width: 100%;
+    height: 100%;
+    min-height: 560px;
+    border: 0;
+    background: #fff;
+  }
+  .monitor-placeholder {
+    height: 100%;
+    min-height: 560px;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    padding: 24px;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .monitor-placeholder i {
+    width: 42px;
+    height: 42px;
+    color: #94a3b8;
+    margin-bottom: 12px;
+  }
+  .monitor-refresh {
+    border-radius: 999px;
+    gap: 8px;
+  }
+  @media (max-width: 1280px) {
+    .monitor-shell {
+      grid-template-columns: 1fr;
+    }
+    .monitor-detail {
+      position: static;
+    }
+  }
+  @media (max-width: 1100px) {
+    .monitor-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 900px) {
+    .monitor-metrics,
+    .monitor-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<div class="monitor-dashboard" data-monitoring-dashboard>
+  <div class="monitor-metrics">
+    <div class="monitor-metric">
+      <span>未处理总数</span>
+      <strong data-monitoring-total>--</strong>
+      <small>来自消息分类汇总</small>
+    </div>
+    <div class="monitor-metric">
+      <span>韵达待办</span>
+      <strong data-monitoring-yunda>--</strong>
+      <small>问题件、回复、待办事项</small>
+    </div>
+    <div class="monitor-metric">
+      <span>融辉 TMS</span>
+      <strong data-monitoring-ronghui>--</strong>
+      <small>消息源定位中</small>
+    </div>
+    <div class="monitor-metric">
+      <span>异常/投诉类</span>
+      <strong data-monitoring-exception>--</strong>
+      <small data-monitoring-updated>等待同步</small>
+    </div>
+    <div class="monitor-metric" data-monitoring-daily-sign>
+      <span>今日应签未签</span>
+      <strong data-monitoring-daily-sign-count>--</strong>
+      <small data-monitoring-daily-sign-meta>飞书应签明细</small>
+    </div>
+  </div>
+
+  <div class="monitor-shell">
+    <section class="monitor-grid" data-monitoring-systems></section>
+
+    <aside class="monitor-detail" data-monitoring-detail>
+      <div class="monitor-detail-header">
+        <div class="monitor-detail-title">
+          <strong data-monitoring-detail-title>选择一个消息分类</strong>
+          <span data-monitoring-detail-subtitle>原系统页面会在这里打开</span>
+        </div>
+        <div class="monitor-detail-actions">
+          <button class="monitor-icon-btn" type="button" data-monitoring-open disabled title="新标签打开">
+            <i data-feather="external-link"></i>
+          </button>
+          <button class="monitor-icon-btn" type="button" data-monitoring-reload disabled title="重新加载">
+            <i data-feather="rotate-cw"></i>
+          </button>
+        </div>
+      </div>
+      <div class="monitor-frame-wrap">
+        <div class="monitor-placeholder" data-monitoring-placeholder>
+          <div>
+            <i data-feather="bell"></i>
+            <div>点击左侧分类查看明细并在原系统处理。</div>
+          </div>
+        </div>
+        <iframe class="monitor-frame" data-monitoring-frame data-monitoring-current-src="" title="消息明细" hidden></iframe>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const root = document.querySelector('[data-monitoring-dashboard]');
+  if (!root) return;
+
+  const els = {
+    total: root.querySelector('[data-monitoring-total]'),
+    yunda: root.querySelector('[data-monitoring-yunda]'),
+    ronghui: root.querySelector('[data-monitoring-ronghui]'),
+    exception: root.querySelector('[data-monitoring-exception]'),
+    updated: root.querySelector('[data-monitoring-updated]'),
+    dailySign: root.querySelector('[data-monitoring-daily-sign-count]'),
+    dailySignMeta: root.querySelector('[data-monitoring-daily-sign-meta]'),
+    systems: root.querySelector('[data-monitoring-systems]'),
+    detailTitle: root.querySelector('[data-monitoring-detail-title]'),
+    detailSubtitle: root.querySelector('[data-monitoring-detail-subtitle]'),
+    placeholder: root.querySelector('[data-monitoring-placeholder]'),
+    frame: root.querySelector('[data-monitoring-frame]'),
+    open: root.querySelector('[data-monitoring-open]'),
+    reload: root.querySelector('[data-monitoring-reload]'),
+    refresh: document.querySelector('[data-monitoring-refresh]')
+  };
+  let activeLink = null;
+  let activeCategoryId = '';
+  let source = null;
+  let latestSnapshotKey = '';
+  let latestDailySignKey = '';
+  let pendingSnapshot = null;
+  let snapshotFrame = 0;
+  let dailySignTimer = 0;
+  let detailRequest = null;
+  let detailRequestSeq = 0;
+  let refreshCooldown = false;
+  const detailLinkCache = new Map();
+  const systemNodes = new Map();
+
+  function fmt(value) {
+    const number = Number(value || 0);
+    return Number.isFinite(number) ? number.toLocaleString('zh-CN') : '0';
+  }
+
+  function setText(el, text) {
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+
+  function setRefreshing(isRefreshing) {
+    if (!els.refresh) return;
+    els.refresh.disabled = isRefreshing;
+    els.refresh.classList.toggle('is-loading', isRefreshing);
+    els.refresh.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
+  }
+
+  function timeOnly(value) {
+    const text = String(value || '').trim();
+    const match = text.match(/\d{2}:\d{2}:\d{2}/);
+    return match ? match[0] : text;
+  }
+
+  function renderDailySign(payload) {
+    if (!els.dailySign || !els.dailySignMeta) return;
+    const key = JSON.stringify({
+      ok: payload?.ok,
+      status: payload?.status,
+      updated_at: payload?.updated_at,
+      counts: payload?.counts,
+      message: payload?.message,
+      refreshing: payload?.refreshing
+    });
+    if (key === latestDailySignKey) return;
+    latestDailySignKey = key;
+    const counts = payload?.counts || {};
+    if (payload?.ok === false) {
+      setText(els.dailySign, '--');
+      setText(els.dailySignMeta, payload.message || '飞书应签明细获取失败');
+      return;
+    }
+    setText(els.dailySign, fmt(counts.unsigned_today));
+    const sourceLabel = payload?.message || '飞书应签明细';
+    const updated = payload?.updated_at ? ` · 最后刷新 ${timeOnly(payload.updated_at)}` : '';
+    const refreshing = payload?.refreshing ? ' · 后台刷新中' : '';
+    setText(els.dailySignMeta, `${sourceLabel}${updated}${refreshing}`);
+  }
+
+  function renderSnapshot(snapshot) {
+    const key = JSON.stringify({
+      ok: snapshot?.ok,
+      updated_at: snapshot?.updated_at,
+      totals: snapshot?.totals,
+      systems: snapshot?.systems,
+      refreshing: snapshot?.refreshing
+    });
+    if (key === latestSnapshotKey) return;
+    latestSnapshotKey = key;
+    pendingSnapshot = snapshot;
+    if (snapshotFrame) return;
+    snapshotFrame = window.requestAnimationFrame(() => {
+      snapshotFrame = 0;
+      applySnapshot(pendingSnapshot || {});
+      pendingSnapshot = null;
+    });
+  }
+
+  function applySnapshot(snapshot) {
+    const totals = snapshot.totals || {};
+    setText(els.total, fmt(totals.total_pending));
+    setText(els.yunda, fmt(totals.yunda_pending));
+    setText(els.ronghui, fmt(totals.ronghui_pending));
+    setText(els.exception, fmt(totals.exception_pending));
+    const updated = snapshot.updated_at ? `最后同步 ${snapshot.updated_at}` : '等待同步';
+    setText(els.updated, snapshot.refreshing ? `${updated} · 后台刷新中` : updated);
+
+    const systems = Array.isArray(snapshot.systems) ? snapshot.systems : [];
+    if (!systems.length) {
+      renderEmptySystems();
+      return;
+    }
+    const seen = new Set();
+    systems.forEach((system) => {
+      const systemId = String(system.system || '');
+      if (!systemId) return;
+      seen.add(systemId);
+      const panel = getSystemPanel(systemId);
+      updateSystemPanel(panel, system);
+    });
+    systemNodes.forEach((panel, systemId) => {
+      if (!seen.has(systemId)) {
+        panel.remove();
+        systemNodes.delete(systemId);
+      }
+    });
+    refreshIconsSoon();
+  }
+
+  function renderEmptySystems() {
+    systemNodes.forEach((panel) => panel.remove());
+    systemNodes.clear();
+    let empty = els.systems.querySelector('[data-monitoring-empty]');
+    if (!empty) {
+      empty = document.createElement('div');
+      empty.className = 'monitor-empty';
+      empty.dataset.monitoringEmpty = 'true';
+      els.systems.appendChild(empty);
+    }
+    setText(empty, '暂时没有监控数据。');
+  }
+
+  function getSystemPanel(systemId) {
+    const empty = els.systems.querySelector('[data-monitoring-empty]');
+    if (empty) empty.remove();
+    let panel = systemNodes.get(systemId);
+    if (panel) return panel;
+    panel = document.createElement('article');
+    panel.className = 'monitor-panel';
+    panel.dataset.monitoringSystem = systemId;
+    panel.innerHTML = `
+      <div class="monitor-panel-header">
+        <div class="monitor-panel-title">
+          <i data-monitoring-system-icon></i>
+          <h2 data-monitoring-system-label></h2>
+        </div>
+        <span class="monitor-status" data-monitoring-system-status></span>
+      </div>
+      <div class="monitor-category-list" data-monitoring-category-list></div>
+    `;
+    systemNodes.set(systemId, panel);
+    els.systems.appendChild(panel);
+    return panel;
+  }
+
+  function updateSystemPanel(panel, system) {
+    const icon = panel.querySelector('[data-monitoring-system-icon]');
+    const label = panel.querySelector('[data-monitoring-system-label]');
+    const status = panel.querySelector('[data-monitoring-system-status]');
+    const list = panel.querySelector('[data-monitoring-category-list]');
+    const iconName = system.system === 'yunda' ? 'bell' : 'server';
+    if (icon.getAttribute('data-feather') !== iconName) icon.setAttribute('data-feather', iconName);
+    setText(label, system.label || system.system || '');
+    setText(status, system.status_label || '');
+    status.dataset.status = system.status || '';
+
+    const categories = Array.isArray(system.categories) ? system.categories : [];
+    if (!categories.length) {
+      list.className = 'monitor-empty';
+      list.dataset.monitoringCategoryList = 'true';
+      setText(list, system.message || '暂无消息分类。');
+      return;
+    }
+    list.className = 'monitor-category-list';
+    list.textContent = '';
+    categories.forEach((item) => list.appendChild(createCategoryButton(item)));
+  }
+
+  function createCategoryButton(item) {
+    const count = Number(item.count || 0);
+    const button = document.createElement('button');
+    button.className = 'monitor-category';
+    button.type = 'button';
+    button.dataset.monitoringCategory = 'true';
+    button.dataset.system = item.system || '';
+    button.dataset.categoryId = item.category_id || '';
+    button.dataset.title = item.title || '';
+    button.dataset.resourceId = item.resource_id || '';
+    button.dataset.typeCode = item.type_code || '';
+    button.dataset.targetTitle = item.target_title || '';
+    button.dataset.tone = item.tone || 'info';
+    button.dataset.count = String(count);
+    if (button.dataset.categoryId === activeCategoryId) button.classList.add('is-active');
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'monitor-category-icon';
+    const icon = document.createElement('i');
+    icon.setAttribute('data-feather', item.is_exception ? 'alert-triangle' : 'inbox');
+    iconWrap.appendChild(icon);
+
+    const textWrap = document.createElement('span');
+    const title = document.createElement('span');
+    title.className = 'monitor-category-title';
+    title.textContent = item.title || '';
+    const meta = document.createElement('span');
+    meta.className = 'monitor-category-meta';
+    meta.textContent = `${item.status_label || ''}${item.target_title ? ' · ' + item.target_title : ''}`;
+    textWrap.appendChild(title);
+    textWrap.appendChild(meta);
+
+    const countEl = document.createElement('span');
+    countEl.className = 'monitor-category-count';
+    countEl.textContent = fmt(count);
+    button.appendChild(iconWrap);
+    button.appendChild(textWrap);
+    button.appendChild(countEl);
+    return button;
+  }
+
+  function refreshIconsSoon() {
+    if (!window.feather) return;
+    window.requestAnimationFrame(() => window.feather.replace());
+  }
+
+  function paramsFromButton(button) {
+    const params = new URLSearchParams({
+      system: button.dataset.system || '',
+      category_id: button.dataset.categoryId || '',
+      title: button.dataset.title || '',
+      resource_id: button.dataset.resourceId || '',
+      type_code: button.dataset.typeCode || '',
+      target_title: button.dataset.targetTitle || ''
+    });
+    return params;
+  }
+
+  async function openCategory(button) {
+    root.querySelectorAll('[data-monitoring-category]').forEach((item) => item.classList.remove('is-active'));
+    button.classList.add('is-active');
+    activeCategoryId = button.dataset.categoryId || '';
+    const params = paramsFromButton(button);
+    const cacheKey = params.toString();
+    setText(els.detailTitle, button.dataset.title || '消息详情');
+    setText(els.detailSubtitle, '正在打开原系统页面');
+    if (detailLinkCache.has(cacheKey)) {
+      activeLink = detailLinkCache.get(cacheKey);
+      showDetail(activeLink);
+      return;
+    }
+    if (detailRequest) detailRequest.abort();
+    detailRequest = new AbortController();
+    const requestSeq = ++detailRequestSeq;
+    try {
+      const response = await fetch(`/monitoring/detail-link?${cacheKey}`, {
+        credentials: 'same-origin',
+        signal: detailRequest.signal
+      });
+      const payload = await response.json();
+      if (requestSeq !== detailRequestSeq) return;
+      if (!response.ok || payload.ok === false) throw new Error(payload.message || '详情链接获取失败');
+      detailLinkCache.set(cacheKey, payload);
+      activeLink = payload;
+      showDetail(payload);
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      if (requestSeq !== detailRequestSeq) return;
+      activeLink = null;
+      setText(els.detailSubtitle, error.message || '详情链接获取失败');
+      els.placeholder.hidden = false;
+      els.frame.hidden = true;
+      els.open.disabled = true;
+      els.reload.disabled = true;
+    }
+  }
+
+  function showDetail(link) {
+    const url = link.embed_url || link.open_url || '';
+    setText(els.detailTitle, link.title || '消息详情');
+    setText(els.detailSubtitle, '如嵌入受限，请使用新标签打开');
+    els.open.disabled = !link.open_url;
+    els.reload.disabled = !url;
+    if (!url) {
+      els.placeholder.hidden = false;
+      els.frame.hidden = true;
+      return;
+    }
+    els.placeholder.hidden = true;
+    els.frame.hidden = false;
+    if (els.frame.dataset.monitoringCurrentSrc !== url) {
+      els.frame.dataset.monitoringCurrentSrc = url;
+      els.frame.src = url;
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[ch]));
+  }
+
+  function preferCachedQueryValue(preferCached) {
+    return preferCached ? 'prefer_cached=1' : 'prefer_cached=0';
+  }
+
+  async function fetchSummary(force = false, preferCached = false) {
+    const response = await fetch(`/monitoring/summary?systems=yunda,ronghui&force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`, {
+      credentials: 'same-origin'
+    });
+    const payload = await response.json();
+    renderSnapshot(payload);
+  }
+
+  function dailySignPollDelayMs(payload = {}) {
+    const seconds = Number(payload?.poll_interval_sec || 60);
+    const safeSeconds = Number.isFinite(seconds) ? seconds : 60;
+    return Math.max(30, Math.min(safeSeconds, 24 * 60 * 60)) * 1000;
+  }
+
+  function scheduleDailySignRefresh(payload = {}) {
+    if (dailySignTimer) window.clearTimeout(dailySignTimer);
+    dailySignTimer = window.setTimeout(() => {
+      fetchDailySign(false, true, true).catch(() => {
+        renderDailySign({ ok: false, message: '飞书应签明细获取失败' });
+        scheduleDailySignRefresh();
+      });
+    }, dailySignPollDelayMs(payload));
+  }
+
+  async function fetchDailySign(force = false, preferCached = false, scheduleNext = false) {
+    const response = await fetch(`/monitoring/daily-sign?force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`, {
+      credentials: 'same-origin'
+    });
+    const payload = await response.json();
+    renderDailySign(payload);
+    if (scheduleNext) scheduleDailySignRefresh(payload);
+    return payload;
+  }
+
+  els.open?.addEventListener('click', () => {
+    if (activeLink?.open_url) window.open(activeLink.open_url, '_blank', 'noopener');
+  });
+  els.reload?.addEventListener('click', () => {
+    if (!activeLink?.embed_url) return;
+    els.frame.dataset.monitoringCurrentSrc = '';
+    els.frame.src = activeLink.embed_url;
+    els.frame.dataset.monitoringCurrentSrc = activeLink.embed_url;
+  });
+  els.refresh?.addEventListener('click', () => {
+    if (refreshCooldown) return;
+    refreshCooldown = true;
+    setRefreshing(true);
+    Promise.allSettled([
+      fetchSummary(true, true),
+      fetchDailySign(true, true).catch(() => renderDailySign({ ok: false, message: '飞书应签明细获取失败' }))
+    ]).finally(() => {
+      window.setTimeout(() => {
+        fetchSummary(false, false).catch(() => undefined);
+        fetchDailySign(false, false, true).catch(() => renderDailySign({ ok: false, message: '飞书应签明细获取失败' }));
+        refreshCooldown = false;
+        setRefreshing(false);
+      }, 1200);
+    });
+  });
+
+  els.systems?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-monitoring-category]');
+    if (!button || !els.systems.contains(button)) return;
+    openCategory(button);
+  });
+
+  fetchSummary(true, true).catch(() => undefined);
+  fetchDailySign(true, true, true).catch(() => {
+    renderDailySign({ ok: false, message: '飞书应签明细获取失败' });
+    scheduleDailySignRefresh();
+  });
+
+  if (window.EventSource) {
+    source = new EventSource('/monitoring/stream');
+    source.addEventListener('snapshot', (event) => {
+      try {
+        renderSnapshot(JSON.parse(event.data || '{}'));
+      } catch (_) {
+        return;
+      }
+    });
+    source.onerror = () => {
+      return;
+    };
+  } else {
+    fetchSummary(false).catch(() => undefined);
+    window.setInterval(() => fetchSummary(false).catch(() => undefined), 60000);
+  }
+})();
+</script>
+{% endblock %}

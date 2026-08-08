@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+
+{% block title %}{{ module.name }} | {{ app_title }}{% endblock %}
+{% block breadcrumb %}{{ module.name }}{% endblock %}
+{% block subtitle %}首页 / 模块详情{% endblock %}
+
+{% block page_actions %}
+{% if module.workspace_path %}
+<a class="primary-btn" href="{{ module.workspace_path }}">{{ module.workspace_label }}</a>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<section class="panel panel--hero module-hero" data-reveal="hero">
+  <div class="hero-copy">
+    <span class="kicker">模块详情</span>
+    <p class="hero-summary">{{ module.summary }}</p>
+    <div class="chip-group">
+      <span class="status status-ready">{{ ui_label(module.status) }}</span>
+      <span class="chip chip-neutral">{{ module.metric_label }} · {{ module.metric_value }}</span>
+    </div>
+  </div>
+
+  <div class="hero-side">
+    <div class="metric-card">
+      <div class="metric-label">当前重点</div>
+      <div class="metric-value">{{ module.metric_value }}</div>
+      <div class="metric-caption">{{ module.current_focus }}</div>
+    </div>
+    <div class="path-list">
+      <div class="path-item">
+        <strong>代码目录</strong>
+        <code>{{ module.code_path }}</code>
+      </div>
+      <div class="path-item">
+        <strong>文档目录</strong>
+        <code>{{ module.docs_path }}</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="module-detail-sections" data-reveal="details">
+  <article class="panel panel--soft module-detail-section">
+    <div class="module-detail-head">
+      <div class="module-detail-copy">
+        <span class="module-detail-kicker">输入</span>
+        <h2 class="module-detail-title">模块依赖输入</h2>
+        <p class="module-detail-note">运行前需要准备的数据来源、基础资料或外部输入。</p>
+      </div>
+      <span class="chip chip-neutral">{{ module.inputs|length }} 项</span>
+    </div>
+    <div class="module-detail-content">
+      <div class="chip-group module-detail-chip-group">
+        {% for item in module.inputs %}
+        <span class="chip">{{ item }}</span>
+        {% endfor %}
+      </div>
+    </div>
+  </article>
+
+  <article class="panel panel--soft module-detail-section">
+    <div class="module-detail-head">
+      <div class="module-detail-copy">
+        <span class="module-detail-kicker">输出</span>
+        <h2 class="module-detail-title">模块产出结果</h2>
+        <p class="module-detail-note">当前模块产出的文件、报表或可继续复用的数据结果。</p>
+      </div>
+      <span class="chip chip-neutral">{{ module.outputs|length }} 项</span>
+    </div>
+    <div class="module-detail-content">
+      <div class="chip-group module-detail-chip-group">
+        {% for item in module.outputs %}
+        <span class="chip">{{ item }}</span>
+        {% endfor %}
+      </div>
+    </div>
+  </article>
+
+  <article class="panel panel--soft module-detail-section">
+    <div class="module-detail-head">
+      <div class="module-detail-copy">
+        <span class="module-detail-kicker">上下游关系</span>
+        <h2 class="module-detail-title">模块协作链路</h2>
+        <p class="module-detail-note">明确结果从哪里来、最终又被哪些模块继续消费。</p>
+      </div>
+      <span class="chip chip-neutral">{{ module.dependencies|length + module.consumers|length }} 项</span>
+    </div>
+    <div class="module-topology-grid">
+      <section class="module-topology-block">
+        <div class="module-topology-head">
+          <h3>上游依赖</h3>
+          <p>提供原始数据或基础规则的模块。</p>
+        </div>
+        <div class="chip-group module-detail-chip-group">
+          {% for item in module.dependencies %}
+          <span class="chip chip-small">{{ item }}</span>
+          {% else %}
+          <span class="chip chip-small chip-neutral">无</span>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="module-topology-block">
+        <div class="module-topology-head">
+          <h3>下游消费</h3>
+          <p>会继续读取当前模块结果的入口。</p>
+        </div>
+        <div class="chip-group module-detail-chip-group">
+          {% for item in module.consumers %}
+          <span class="chip chip-small">{{ item }}</span>
+          {% else %}
+          <span class="chip chip-small chip-neutral">无</span>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+  </article>
+</section>
+
+<section class="panel" data-reveal="commands">
+  <div class="section-head">
+    <div class="heading-stack">
+      <span class="kicker">运行命令</span>
+      <h2 class="section-title">运行入口</h2>
+      <p class="section-note">保留常用命令的可读性和复制友好度。</p>
+    </div>
+    <span class="chip chip-neutral">{{ module.commands|length }} 条</span>
+  </div>
+
+  <div class="path-list">
+    {% for command in module.commands %}
+    <pre class="mono-block">{{ command }}</pre>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel" data-reveal="related">
+  <div class="section-head">
+    <div class="heading-stack">
+      <span class="kicker">关联模块</span>
+      <h2 class="section-title">关联模块</h2>
+      <p class="section-note">只保留与当前模块实际协作的入口。</p>
+    </div>
+  </div>
+
+  <div class="module-grid">
+    {% for item in related_modules %}
+    <article class="panel panel--soft module-card">
+      <div class="module-card-top">
+        <div class="heading-stack">
+          <span class="eyebrow">{{ item.name }}</span>
+          <h3 class="module-card-title">{{ item.summary }}</h3>
+        </div>
+        <span class="status status-ready">{{ ui_label(item.status) }}</span>
+      </div>
+      <div class="module-card-actions">
+        {% if item.workspace_path %}
+        <a class="primary-btn" href="{{ item.workspace_path }}">{{ item.workspace_label }}</a>
+        {% endif %}
+        <a class="ghost-btn" href="{{ item.route }}">查看详情</a>
+      </div>
+    </article>
+    {% else %}
+    <div class="panel panel--soft">
+      <p class="empty-note">当前没有配置关联模块。</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{% if module.slug == 'ocr' %}
+<section class="panel" data-reveal="ocr-recent">
+  <div class="section-head">
+    <div class="heading-stack">
+      <span class="kicker">OCR 队列</span>
+      <h2 class="section-title">OCR 最近单据</h2>
+      <p class="section-note">从模块页直接跳回应急单据，不再绕回首页。</p>
+    </div>
+    <a class="ghost-btn" href="/ocr">进入工作区</a>
+  </div>
+
+  <div class="chip-group">
+    <span class="chip chip-neutral">{{ ui_label('uploaded') }} {{ counts.get('uploaded', 0) }}</span>
+    <span class="chip chip-neutral">{{ ui_label('review_required') }} {{ counts.get('review_required', 0) }}</span>
+    <span class="chip chip-neutral">{{ ui_label('ready') }} {{ counts.get('ready', 0) }}</span>
+    <span class="chip chip-neutral">{{ ui_label('confirmed') }} {{ counts.get('confirmed', 0) }}</span>
+    <span class="chip chip-neutral">{{ ui_label('error') }} {{ counts.get('error', 0) }}</span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>状态</th>
+          <th>原文件</th>
+          <th>来源路径</th>
+          <th>更新时间</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc in recent_documents %}
+        <tr>
+          <td>#{{ doc.id }}</td>
+          <td><span class="status status-{{ doc.status }}">{{ ui_label(doc.status) }}</span></td>
+          <td>{{ doc.original_name }}</td>
+          <td><code>{{ doc.source_relpath }}</code></td>
+          <td>{{ doc.updated_at }}</td>
+          <td><a class="ghost-btn" href="/documents/{{ doc.id }}">打开复核</a></td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="table-empty">还没有 OCR 单据记录。</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

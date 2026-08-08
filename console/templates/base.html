@@ -1,0 +1,197 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}{{ app_title | default('物流 Agent 控制台') }}{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/style.css?v=design-audit-20260607">
+  <script src="https://unpkg.com/feather-icons"></script>
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  {% set right_sidebar_content %}{% block right_sidebar %}{% endblock %}{% endset %}
+  {% set page_breadcrumb %}{% block breadcrumb %}分析大盘{% endblock %}{% endset %}
+  {% set page_subtitle %}{% block subtitle %}首页 / 分析报表{% endblock %}{% endset %}
+  {% set page_actions_content %}{% block page_actions %}{% endblock %}{% endset %}
+  {% set admin_user = current_admin_user() if current_admin_user is defined else none %}
+
+  <div class="app-shell console-page-stack{% if not right_sidebar_content|trim %} app-shell--no-aside{% endif %}{% block shell_class %}{% endblock %}" data-console-page-stack>
+
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar" data-reveal="sidebar">
+
+      <a class="brand" href="/" aria-label="返回首页" title="返回首页" data-shell-home-link style="margin-bottom: 32px;">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        </span>
+        <span class="brand-copy">
+          <strong>博益物流</strong>
+        </span>
+      </a>
+
+      <div class="user-profile" style="border: none; padding: 0; margin: 0 0 20px 0;">
+        {% set avatar_src = (admin_user.avatar_url if admin_user and admin_user.avatar_url else 'https://api.dicebear.com/7.x/avataaars/svg?seed=' ~ (admin_user.username if admin_user else 'admin')) %}
+        {% if admin_user and not admin_user.is_legacy_basic_auth %}
+        <form class="avatar-upload-form" action="/settings/profile/avatar" method="post" enctype="multipart/form-data" data-avatar-upload-form>
+          <label class="avatar avatar--upload" title="点击上传头像" aria-label="点击上传头像">
+            <img src="{{ avatar_src }}" alt="用户头像" data-avatar-image>
+            <span class="avatar-upload-overlay" aria-hidden="true">
+              <i data-feather="camera"></i>
+            </span>
+            <input class="avatar-upload-input" type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif" data-avatar-upload-input>
+          </label>
+        </form>
+        {% else %}
+        <div class="avatar">
+          <img src="{{ avatar_src }}" alt="用户头像">
+        </div>
+        {% endif %}
+        <div class="user-copy">
+          <strong>{{ (admin_user.display_name or admin_user.username) if admin_user else '系统管理员' }}</strong>
+          <span>{% if admin_user and admin_user.is_legacy_basic_auth %}Basic Auth{% else %}管理员{% endif %}</span>
+        </div>
+        {% if admin_user and not admin_user.is_legacy_basic_auth %}
+        <form class="logout-form" action="/logout" method="post">
+          <button class="logout-button" type="submit" aria-label="退出登录">
+            <i data-feather="log-out"></i>
+          </button>
+        </form>
+        {% endif %}
+      </div>
+
+      <nav class="nav-menu" data-nav-list>
+        <!-- Hardcoding routes to match Mockup + Original Functionality -->
+        <a class="nav-link" href="/">
+          <i data-feather="grid"></i>
+          <span>首页大盘</span>
+        </a>
+
+        <!-- Waybill entry maps to manual entry and OCR review functionality -->
+        <a class="nav-link" href="/ocr">
+          <i data-feather="file-text"></i>
+          <span>运单录入</span>
+        </a>
+        <a class="nav-link" href="/waybills">
+          <i data-feather="list"></i>
+          <span>寄件运单查询</span>
+        </a>
+        <a class="nav-link" href="/tracking">
+          <i data-feather="search"></i>
+          <span>单号查询</span>
+        </a>
+        <a class="nav-link" href="/receipts">
+          <i data-feather="image"></i>
+          <span>回单管理</span>
+        </a>
+        <a class="nav-link" href="/modules/customer-service">
+          <i data-feather="headphones"></i>
+          <span>客服系统</span>
+        </a>
+        <a class="nav-link" href="/modules/finance">
+          <i data-feather="dollar-sign"></i>
+          <span>财务模块</span>
+        </a>
+
+        <!-- Dispatch map workspace -->
+        <a class="nav-link" href="/dispatch">
+          <i data-feather="map-pin"></i>
+          <span>货拉拉调度</span>
+        </a>
+        <a class="nav-link" href="/line-haul-contacts">
+          <i data-feather="map"></i>
+          <span>专线分流</span>
+        </a>
+        <a class="nav-link" href="/automations">
+          <i data-feather="sliders"></i>
+          <span>自动化</span>
+        </a>
+        <a class="nav-link" href="/automation-accounts">
+          <i data-feather="users"></i>
+          <span>账号管理</span>
+        </a>
+        <!-- Templates setting map -->
+        <a class="nav-link" href="/templates/new">
+          <i data-feather="layout"></i>
+          <span>模板配置</span>
+        </a>
+
+        <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); display:flex; flex-direction:column; gap:4px;">
+          <a class="nav-link" href="#" style="justify-content: space-between;">
+            <div style="display:flex; align-items:center; gap:14px;">
+              <i data-feather="message-square"></i>
+              <span>消息通知</span>
+            </div>
+            <span style="background:var(--accent); color:#fff; border-radius:12px; padding:2px 6px; font-size:0.7rem; font-weight:700;">19</span>
+          </a>
+          <a class="nav-link" href="/settings/accounts">
+            <i data-feather="settings"></i>
+            <span>系统设置</span>
+          </a>
+        </div>
+      </nav>
+
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content {% block main_class %}{% endblock %}" data-reveal="main" data-console-main data-console-tab-title="{{ page_breadcrumb | striptags | trim | e }}">
+      <header class="top-header">
+        <div class="console-tab-bar" data-console-tabs aria-label="已打开模块">
+          <div class="console-tab-strip" data-console-tab-list role="tablist" aria-label="模块历史"></div>
+          <template data-console-tab-template>
+            <div class="console-tab" data-console-tab role="tab" aria-selected="false" tabindex="-1">
+              <button class="console-tab-title" type="button" data-console-tab-activate>
+                <i data-console-tab-icon></i>
+                <span data-console-tab-title></span>
+              </button>
+              <button class="console-tab-close" type="button" data-console-tab-close title="关闭标签" aria-label="关闭标签">
+                <i data-feather="x"></i>
+              </button>
+            </div>
+          </template>
+        </div>
+        <div class="top-header-right">
+          <div class="top-header-search">
+            <form class="nav-search nav-search--global" action="/tracking" method="get" role="search" aria-label="全局单号查询" data-global-tracking-search>
+              <button class="nav-search-submit" type="submit" aria-label="查询单号">
+                <i data-feather="search"></i>
+              </button>
+              <input type="search" name="tracking_number" placeholder="搜索运单号，回车查询" autocomplete="off" data-global-tracking-input>
+            </form>
+          </div>
+
+          <div class="top-header-actions top-header-actions--page">
+            {{ page_actions_content | safe }}
+          </div>
+        </div>
+      </header>
+
+      {% if message %}
+      <div class="notice notice--{{ message_kind or 'info' }}" data-notice>
+        <div class="notice-copy">
+          <i data-feather="info"></i>
+          <span>{{ message }}</span>
+        </div>
+        <button class="notice-close" type="button" aria-label="关闭提示" data-notice-close>
+          <i data-feather="x"></i>
+        </button>
+      </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+
+    <!-- RIGHT SIDEBAR (If Present) -->
+    {% if right_sidebar_content|trim %}
+    <aside class="right-sidebar" data-reveal="aside" data-console-aside>
+      {{ right_sidebar_content | safe }}
+    </aside>
+    {% endif %}
+  </div>
+
+  <script src="/static/console_ui.js?v=module-stylesheet-gate-20260712"></script>
+  {% block scripts %}{% endblock %}
+  <script>
+    window.ConsoleUI?.initPage?.();
+  </script>
+</body>
+</html>

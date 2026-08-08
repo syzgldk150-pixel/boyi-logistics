@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+httpx
+requests
+PyMySQL
+python-dotenv
+openai
+PyYAML
+psutil
+APScheduler
+lark-oapi
+ddddocr
+playwright
+pandas
+openpyxl
+xlrd

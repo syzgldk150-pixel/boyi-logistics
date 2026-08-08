@@ -1,0 +1,1462 @@
+{% extends "base.html" %}
+
+{% block body_class %}waybills-page-body{% endblock %}
+{% block title %}寄件运单查询 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}寄件运单查询{% endblock %}
+{% block subtitle %}运单管理 / 寄件运单查询{% endblock %}
+
+{% block page_actions %}
+  <a class="primary-btn" href="/ocr"><i data-feather="plus"></i> 新增运单</a>
+{% endblock %}
+
+{% block content %}
+<style>
+  .waybill-page { max-width: none; }
+  .waybill-page [hidden] { display: none !important; }
+  .waybill-workbench {
+    display: block;
+    min-width: 0;
+  }
+  .waybill-list-panel {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: #fff;
+    box-shadow: var(--shadow-soft);
+  }
+  .waybill-list-panel { overflow: visible; }
+  .waybill-detail-dialog {
+    width: min(760px, calc(100vw - 32px));
+    max-height: min(820px, calc(100vh - 40px));
+    min-width: 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xl);
+    background: #fff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, .22);
+    overflow: hidden;
+  }
+  .waybill-detail-dialog::backdrop {
+    background: rgba(15, 23, 42, .34);
+    backdrop-filter: blur(2px);
+  }
+  .waybill-detail-dialog:not([open]) {
+    display: none;
+  }
+  .waybill-detail-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    min-height: 38px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--muted);
+    box-shadow: 0 8px 22px rgba(15, 23, 42, .08);
+    cursor: pointer;
+    transition: border-color var(--fast), color var(--fast), background var(--fast);
+  }
+  .waybill-detail-close:hover {
+    border-color: #d1d5db;
+    background: #f9fafb;
+    color: var(--text-strong);
+  }
+  .waybill-detail-close .feather {
+    width: 17px;
+    height: 17px;
+  }
+  .waybill-filter-form {
+    display: grid;
+    grid-template-columns: minmax(320px, 1.25fr) minmax(260px, .9fr) minmax(170px, .48fr) auto;
+    gap: 12px 14px;
+    align-items: end;
+    padding: 18px var(--form-x-pad) 10px;
+  }
+  .waybill-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .waybill-label { color: var(--text-strong); font-size: .78rem; font-weight: 800; }
+  .waybill-search-shell,
+  .waybill-date-trigger,
+  .waybill-select {
+    width: 100%;
+    min-height: 42px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-strong);
+    transition: border-color var(--fast), box-shadow var(--fast), background var(--fast);
+  }
+  .waybill-search-shell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 13px;
+  }
+  .waybill-search-shell:focus-within,
+  .waybill-date-trigger:focus-visible,
+  .waybill-date-trigger.is-open,
+  .waybill-select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--focus);
+    outline: none;
+  }
+  .waybill-search-shell .feather,
+  .waybill-date-trigger .feather { width: 16px; height: 16px; color: var(--muted); }
+  .waybill-search-shell input {
+    min-width: 0;
+    width: 100%;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--text-strong);
+    font-size: .9rem;
+    font-weight: 650;
+  }
+  .waybill-search-shell input::placeholder { color: var(--muted); }
+  .waybill-select {
+    padding: 0 34px 0 12px;
+    font-size: .86rem;
+    font-weight: 750;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 17px) 18px, calc(100% - 12px) 18px;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  .waybill-date-picker { position: relative; min-width: 0; }
+  .waybill-date-trigger {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 0 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .waybill-date-value {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-strong);
+    font-size: .88rem;
+    font-weight: 750;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .waybill-date-value.is-placeholder { color: var(--muted); font-weight: 650; }
+  .waybill-calendar-popover,
+  .waybill-popover {
+    position: absolute;
+    z-index: 30;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    box-shadow: 0 18px 45px rgba(15, 23, 42, .16);
+  }
+  .waybill-calendar-popover {
+    top: calc(100% + 8px);
+    right: 0;
+    width: 344px;
+    max-width: calc(100vw - 40px);
+    padding: 12px;
+  }
+  .waybill-calendar-head {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .waybill-calendar-title {
+    color: var(--text-strong);
+    font-size: .92rem;
+    font-weight: 850;
+    text-align: center;
+  }
+  .waybill-calendar-nav,
+  .waybill-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+    transition: background var(--fast), border-color var(--fast), color var(--fast);
+  }
+  .waybill-calendar-nav {
+    width: 32px;
+    height: 32px;
+    border-color: transparent;
+  }
+  .waybill-calendar-nav:hover,
+  .waybill-icon-btn:hover { background: #f9fafb; border-color: #d1d5db; color: var(--text-strong); }
+  .waybill-calendar-nav .feather,
+  .waybill-icon-btn .feather { width: 15px; height: 15px; }
+  .waybill-calendar-weekdays,
+  .waybill-calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 3px;
+  }
+  .waybill-calendar-weekdays {
+    margin-bottom: 5px;
+    color: var(--text);
+    font-size: .72rem;
+    font-weight: 800;
+    text-align: center;
+  }
+  .waybill-calendar-day {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-strong);
+    font-size: .84rem;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .waybill-calendar-day:hover { background: #fef2f2; color: var(--accent); }
+  .waybill-calendar-day.is-outside { color: var(--muted); font-weight: 650; }
+  .waybill-calendar-day.is-in-range { border-radius: 0; background: #fef2f2; color: var(--text-strong); }
+  .waybill-calendar-day.is-range-start,
+  .waybill-calendar-day.is-range-end { border-radius: 6px; background: var(--accent); color: #fff; }
+  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px rgba(239, 68, 68, .45); }
+  .waybill-calendar-presets {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .waybill-calendar-preset {
+    min-height: 34px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #f9fafb;
+    color: var(--text-strong);
+    font-size: .8rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition: background var(--fast), border-color var(--fast), color var(--fast);
+  }
+  .waybill-calendar-preset:hover,
+  .waybill-calendar-preset:focus-visible {
+    border-color: var(--accent);
+    background: #fef2f2;
+    color: var(--accent);
+    outline: none;
+  }
+  .waybill-calendar-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .waybill-filter-actions {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .waybill-filter-actions .waybill-tool-wrap { flex: 0 0 auto; }
+  .waybill-filter-actions .primary-btn,
+  .waybill-filter-actions .ghost-btn { min-height: 42px; white-space: nowrap; }
+  .waybill-filter-actions .primary-btn { min-width: 104px; }
+  .waybill-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    min-height: 64px;
+    padding: 12px var(--form-x-pad);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    background: #fbfcfe;
+  }
+  .waybill-meta-count { color: var(--text); font-size: .86rem; font-weight: 750; }
+  .waybill-toolbar-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .waybill-toolbar-actions .waybill-select {
+    flex: 0 0 260px;
+    width: 260px;
+    min-height: 40px;
+  }
+  .waybill-toolbar-actions .waybill-tool-wrap { flex: 0 0 auto; }
+  .waybill-tool-wrap { position: relative; }
+  .waybill-tool-btn {
+    min-height: 40px;
+    min-width: 112px;
+    padding: 0 14px;
+    border-radius: var(--radius-md);
+    font-size: .82rem;
+    font-weight: 800;
+  }
+  .waybill-tool-btn .feather { width: 15px; height: 15px; }
+  .waybill-popover {
+    top: calc(100% + 8px);
+    right: 0;
+    width: 250px;
+    padding: 14px;
+  }
+  .waybill-popover-title {
+    margin: 0 0 10px;
+    color: var(--text-strong);
+    font-size: .86rem;
+    font-weight: 850;
+  }
+  .waybill-popover-grid { display: grid; gap: 11px; }
+  .waybill-check {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--text-strong);
+    font-size: .84rem;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .waybill-check input { width: 15px; height: 15px; accent-color: var(--accent); appearance: auto; }
+  .waybill-table-shell {
+    overflow: auto;
+    max-height: calc(100vh - 292px);
+    min-height: 440px;
+    background: #fff;
+    scrollbar-gutter: stable;
+  }
+  .waybill-table {
+    width: 100%;
+    min-width: 1040px;
+    border-collapse: separate;
+    border-spacing: 0 8px;
+    table-layout: fixed;
+    padding: 0 12px 8px;
+  }
+  .waybill-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 12px 16px;
+    background: #fff;
+    color: var(--muted);
+    font-size: .76rem;
+    font-weight: 850;
+    white-space: nowrap;
+  }
+  .waybill-table td {
+    height: 72px;
+    padding: 13px 16px;
+    border-top: 1px solid #eef0f3;
+    border-bottom: 1px solid #eef0f3;
+    background: #fff;
+    vertical-align: middle;
+  }
+  .waybill-table td:first-child { border-left: 1px solid #eef0f3; border-radius: 8px 0 0 8px; }
+  .waybill-table td:last-child { border-right: 1px solid #eef0f3; border-radius: 0 8px 8px 0; }
+  .waybill-table tr.is-selected td {
+    border-top-color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: #fff7f7;
+  }
+  .waybill-table tr.is-selected td:first-child { border-left-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .waybill-table tr.is-selected td:last-child { border-right-color: var(--accent); }
+  .waybill-table tbody tr:hover td { background: #fcfdff; }
+  .waybill-col-select { width: 54px; text-align: center; }
+  .waybill-col-no { width: 158px; }
+  .waybill-col-date { width: 118px; }
+  .waybill-col-party { width: 148px; }
+  .waybill-col-goods { width: 150px; }
+  .waybill-col-status { width: 112px; }
+  .waybill-col-fee { width: 126px; text-align: right; }
+  .waybill-select-row {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    flex: 0 0 18px;
+    width: 18px;
+    min-width: 18px;
+    height: 18px;
+    min-height: 18px;
+    aspect-ratio: 1 / 1;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #fff;
+    cursor: pointer;
+    line-height: 0;
+    vertical-align: middle;
+    transition: border-color var(--fast), box-shadow var(--fast), background var(--fast);
+  }
+  .waybill-select-row::after {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--accent);
+    opacity: 0;
+    transform: scale(.65);
+    transition: opacity var(--fast), transform var(--fast);
+  }
+  tr.is-selected .waybill-select-row {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--focus);
+  }
+  tr.is-selected .waybill-select-row::after {
+    opacity: 1;
+    transform: scale(1);
+  }
+  .waybill-no-link {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--text-strong);
+    font-family: var(--font-mono);
+    font-size: .88rem;
+    font-weight: 850;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .waybill-no-link:hover { color: var(--accent); }
+  .waybill-muted-line { color: var(--muted); font-size: .76rem; font-weight: 700; line-height: 1.35; }
+  .waybill-cell-main {
+    overflow: hidden;
+    color: var(--text-strong);
+    font-size: .88rem;
+    font-weight: 850;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .waybill-cell-sub {
+    overflow: hidden;
+    color: #64748b;
+    font-family: var(--font-mono);
+    font-size: .76rem;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .waybill-fee {
+    color: var(--text-strong);
+    font-family: var(--font-display);
+    font-size: .92rem;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .waybill-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: var(--radius-pill);
+    font-size: .74rem;
+    font-weight: 850;
+    white-space: nowrap;
+  }
+  .waybill-status-pill[data-tone="info"] { color: #b91c1c; background: #fee2e2; }
+  .waybill-status-pill[data-tone="success"] { color: #047857; background: #d1fae5; }
+  .waybill-status-pill[data-tone="warning"] { color: #b45309; background: #fef3c7; }
+  .waybill-status-pill[data-tone="muted"] { color: #64748b; background: #f1f5f9; }
+  .waybill-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 14px var(--form-x-pad);
+    border-top: 1px solid var(--line);
+    background: #fff;
+  }
+  .waybill-page-size-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: .82rem;
+    font-weight: 800;
+  }
+  .waybill-page-size-control .waybill-select { width: 94px; min-height: 36px; font-size: .8rem; }
+  .waybill-pager { display: inline-flex; align-items: center; gap: 8px; }
+  .waybill-empty {
+    display: grid;
+    place-items: center;
+    min-height: 320px;
+    color: var(--muted);
+    text-align: center;
+    font-size: .9rem;
+    font-weight: 650;
+  }
+  .waybill-empty .feather { width: 28px; height: 28px; margin: 0 auto 8px; color: #cbd5e1; }
+  .waybill-warning {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px var(--form-x-pad);
+    border-top: 1px solid #fde68a;
+    border-bottom: 1px solid #fde68a;
+    background: #fffbeb;
+    color: #92400e;
+    font-size: .82rem;
+    font-weight: 750;
+  }
+  .waybill-detail-slot { min-height: 100%; }
+  .waybill-detail-dialog .waybill-detail-slot {
+    max-height: min(820px, calc(100vh - 40px));
+    overflow: auto;
+  }
+  .waybill-detail-empty { padding: 88px 22px 32px; color: var(--muted); font-size: .88rem; font-weight: 650; text-align: center; }
+  .waybill-detail-content { display: grid; gap: 0; }
+  .waybill-detail-head {
+    display: grid;
+    gap: 8px;
+    padding: 20px 68px 16px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .waybill-detail-title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .waybill-detail-title {
+    margin: 0;
+    color: var(--text-strong);
+    font-family: var(--font-display);
+    font-size: 1.16rem;
+    font-weight: 900;
+    line-height: 1.2;
+    word-break: break-all;
+  }
+  .waybill-detail-date { color: var(--muted); font-size: .78rem; font-weight: 750; }
+  .waybill-detail-section {
+    display: grid;
+    gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .waybill-detail-section h3 {
+    margin: 0;
+    color: var(--text-strong);
+    font-size: .92rem;
+    font-weight: 900;
+  }
+  .waybill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+  .waybill-detail-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .waybill-detail-item { min-width: 0; }
+  .waybill-detail-item.is-wide { grid-column: 1 / -1; }
+  .waybill-detail-label { color: var(--muted); font-size: .74rem; font-weight: 800; }
+  .waybill-detail-value {
+    margin-top: 2px;
+    color: var(--text-strong);
+    font-size: .88rem;
+    font-weight: 850;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+  .waybill-detail-value.is-money { font-family: var(--font-display); font-size: 1rem; }
+  .waybill-detail-total { color: var(--accent); font-family: var(--font-display); font-size: 1.05rem; font-weight: 900; }
+  .waybill-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 16px 20px 20px;
+  }
+  .waybill-danger-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 13px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: #dc2626;
+    color: #fff;
+    font-size: .84rem;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .waybill-danger-btn:hover { background: #b91c1c; }
+  .waybill-danger-btn[disabled] { opacity: .55; cursor: not-allowed; }
+  .waybill-row-actions { display: none; }
+  @media (max-width: 1380px) {
+    .waybill-filter-form { grid-template-columns: minmax(260px, 1fr) minmax(230px, .9fr); }
+    .waybill-filter-actions { justify-content: flex-start; }
+  }
+  @media (max-width: 980px) {
+    .waybill-toolbar { align-items: flex-start; flex-direction: column; }
+    .waybill-toolbar-actions { width: 100%; justify-content: flex-start; }
+    .waybill-toolbar-actions .waybill-select { flex: 1 1 260px; width: auto; }
+    .waybill-table-shell { max-height: none; }
+    .waybill-detail-dialog { width: min(640px, calc(100vw - 16px)); max-height: calc(100vh - 16px); }
+    .waybill-detail-dialog .waybill-detail-slot { max-height: calc(100vh - 16px); }
+  }
+  @media (max-width: 720px) {
+    .waybills-page-body .app-shell { display: block; }
+    .waybills-page-body .sidebar { display: none; }
+    .waybills-page-body .main-content { padding: 16px; }
+    .waybill-filter-form { grid-template-columns: 1fr; padding: 14px; }
+    .waybill-toolbar,
+    .waybill-footer { align-items: stretch; flex-direction: column; }
+    .waybill-filter-actions,
+    .waybill-toolbar-actions,
+    .waybill-pager { width: 100%; justify-content: stretch; }
+    .waybill-filter-actions > *,
+    .waybill-pager > * { flex: 1; }
+    .waybill-toolbar-actions .waybill-select,
+    .waybill-toolbar-actions .waybill-tool-wrap,
+    .waybill-toolbar-actions .waybill-tool-btn { width: 100%; flex: 1 1 100%; }
+    .waybill-calendar-popover,
+    .waybill-popover { left: 0; right: auto; width: min(100%, 344px); }
+    .waybill-detail-grid,
+    .waybill-detail-grid--three { grid-template-columns: 1fr; }
+  }
+</style>
+
+{% macro status_pill(row) -%}
+  {% set scan_status = row.scan_status | default('', true) %}
+  {% set scan_short = row.scan_status_short | default('', true) %}
+  {% set status_text = row.status_label | default('运输中', true) %}
+  {% set display_text = scan_short or status_text %}
+  <span class="waybill-status-pill" data-tone="{{ row.status_tone | default('info') }}"{% if scan_status %} title="{{ scan_status }}"{% endif %}>{{ display_text }}</span>
+{%- endmacro %}
+
+{% macro empty_dash(value) -%}
+  {{ value if value else '-' }}
+{%- endmacro %}
+
+{% macro detail_template(row) %}
+  <div class="waybill-detail-content" data-waybill-detail-content>
+    <div class="waybill-detail-head">
+      <div class="waybill-detail-title-row">
+        <h2 class="waybill-detail-title">{{ row.waybill_no }}</h2>
+        {{ status_pill(row) }}
+      </div>
+      <div class="waybill-detail-date">开单日期：{{ row.open_date or '-' }}{% if row.created_at %} · 入库 {{ row.created_at }}{% endif %}</div>
+    </div>
+
+    <section class="waybill-detail-section">
+      <h3>基础信息</h3>
+      <div class="waybill-detail-grid">
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">收货人</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.receiver_name) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">发货人</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.sender_name) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">电话</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.receiver_phone) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">电话</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.sender_phone) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">收货地址</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.receiver_address) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">发货地址</div>
+          <div class="waybill-detail-value">-</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="waybill-detail-section">
+      <h3>货物信息</h3>
+      <div class="waybill-detail-grid waybill-detail-grid--three">
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">货物名称</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.goods_name_lines) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">件数</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.quantity_lines) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">包装</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.package_type_lines) }}</div>
+        </div>
+        <div class="waybill-detail-item is-wide">
+          <div class="waybill-detail-label">重量 / 体积</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.weight_volume) }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="waybill-detail-section">
+      <h3>费用信息</h3>
+      <div class="waybill-detail-grid waybill-detail-grid--three">
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">开单成本</div>
+          <div class="waybill-detail-value is-money">¥{{ row.opening_cost or '0.00' }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">提付金额</div>
+          <div class="waybill-detail-value is-money">¥{{ row.pickup_payment_amount or '0.00' }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">现结 / 派送</div>
+          <div class="waybill-detail-value is-money">¥{{ row.delivery_fee or '0.00' }}</div>
+        </div>
+        <div class="waybill-detail-item is-wide">
+          <div class="waybill-detail-label">费用合计</div>
+          <div class="waybill-detail-total">¥{{ row.opening_cost or '0.00' }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="waybill-detail-section">
+      <h3>付款信息</h3>
+      <div class="waybill-detail-grid waybill-detail-grid--three">
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">付款方式</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.payment_method) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">付款状态</div>
+          <div class="waybill-detail-value">{{ '未付款' if row.pickup_payment_amount != '0.00' else '-' }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">应收金额</div>
+          <div class="waybill-detail-value is-money">¥{{ row.pickup_payment_amount or '0.00' }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="waybill-detail-section">
+      <h3>备注信息</h3>
+      <div class="waybill-detail-grid">
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">备注</div>
+          <div class="waybill-detail-value">{{ empty_dash(row.remark) }}</div>
+        </div>
+        <div class="waybill-detail-item">
+          <div class="waybill-detail-label">内部备注</div>
+          <div class="waybill-detail-value">无</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="waybill-detail-actions">
+      <a class="ghost-btn" href="{{ row.print_url }}" target="_blank" rel="noreferrer"><i data-feather="printer"></i> 打印</a>
+      <a class="ghost-btn" href="{{ row.tracking_url }}"><i data-feather="map-pin"></i> 轨迹跟踪</a>
+      <form action="/waybills/{{ row.id }}/status" method="post" data-waybill-cancel-form>
+        <input type="hidden" name="status" value="cancelled">
+        <input type="hidden" name="return_to" value="{{ current_url | default('/waybills') }}">
+        <button class="waybill-danger-btn" type="submit" {% if row.status == 'cancelled' %}disabled{% endif %}>
+          <i data-feather="x-circle"></i> 作废运单
+        </button>
+      </form>
+    </div>
+  </div>
+{% endmacro %}
+
+<section class="waybill-page">
+  <div class="waybill-workbench" data-waybill-ajax-panel aria-live="polite">
+    <section class="waybill-list-panel">
+      <form id="waybillFilterForm" class="waybill-filter-form" method="get" action="/waybills" data-waybill-filter-form>
+        <input type="hidden" name="page" value="1">
+        <div class="waybill-field">
+          <label class="waybill-label" for="waybillKeyword">运单号 / 电话 / 收货人 / 发货人</label>
+          <div class="waybill-search-shell">
+            <i data-feather="search"></i>
+            <input id="waybillKeyword" type="search" name="q" value="{{ filters.q }}" placeholder="请输入关键词" autocomplete="off">
+          </div>
+        </div>
+        <div class="waybill-field">
+          <label class="waybill-label" for="dateRangeTrigger">开单日期</label>
+          <div class="waybill-date-picker" data-date-range-picker>
+            <input id="dateFrom" type="hidden" name="date_from" value="{{ filters.date_from | replace('/', '-') }}" data-date-from>
+            <input id="dateTo" type="hidden" name="date_to" value="{{ filters.date_to | replace('/', '-') }}" data-date-to>
+            <button id="dateRangeTrigger" class="waybill-date-trigger" type="button" data-date-trigger aria-haspopup="dialog" aria-expanded="false">
+              <span class="waybill-date-value" data-date-label></span>
+              <i data-feather="calendar"></i>
+            </button>
+            <div class="waybill-calendar-popover" data-date-popover role="dialog" aria-label="选择开单日期范围" hidden>
+              <div class="waybill-calendar-head">
+                <button class="waybill-calendar-nav" type="button" data-month-prev aria-label="上个月"><i data-feather="chevron-left"></i></button>
+                <div class="waybill-calendar-title" data-calendar-title></div>
+                <button class="waybill-calendar-nav" type="button" data-month-next aria-label="下个月"><i data-feather="chevron-right"></i></button>
+              </div>
+              <div class="waybill-calendar-weekdays" aria-hidden="true">
+                <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+              </div>
+              <div class="waybill-calendar-grid" data-calendar-grid></div>
+              <div class="waybill-calendar-presets" aria-label="快捷日期范围">
+                <button class="waybill-calendar-preset" type="button" data-date-quick-range="1">今天</button>
+                <button class="waybill-calendar-preset" type="button" data-date-quick-range="3">3天</button>
+                <button class="waybill-calendar-preset" type="button" data-date-quick-range="7">7天</button>
+              </div>
+              <div class="waybill-calendar-foot">
+                <button class="ghost-btn" type="button" data-date-clear>清空日期</button>
+                <button class="primary-btn" type="button" data-date-done>完成</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="waybill-field">
+          <label class="waybill-label" for="waybillStatus">状态</label>
+          <select id="waybillStatus" class="waybill-select" name="status">
+            {% for item in status_options %}
+            <option value="{{ item.value }}" {% if filters.status == item.value %}selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="waybill-filter-actions">
+          <div class="waybill-tool-wrap" data-popover-wrap>
+            <button class="ghost-btn waybill-tool-btn" type="button" data-popover-toggle="filters" aria-expanded="false">
+              <i data-feather="sliders"></i> 更多筛选
+            </button>
+            <div class="waybill-popover" data-popover-panel="filters" hidden>
+              <h3 class="waybill-popover-title">更多筛选</h3>
+              <div class="waybill-popover-grid">
+                <div class="waybill-field">
+                  <label class="waybill-label" for="waybillSource">来源</label>
+                  <select id="waybillSource" class="waybill-select" name="source">
+                    {% for item in source_options %}
+                    <option value="{{ item.value }}" {% if filters.source == item.value %}selected{% endif %}>{{ item.label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="waybill-field">
+                  <label class="waybill-label" for="waybillPayment">结算方式</label>
+                  <select id="waybillPayment" class="waybill-select" name="payment_method">
+                    {% for item in payment_options %}
+                    <option value="{{ item }}" {% if filters.payment_method == item %}selected{% endif %}>{{ item or '全部结算方式' }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="waybill-field">
+                  <label class="waybill-label" for="waybillDelivery">派送方式</label>
+                  <select id="waybillDelivery" class="waybill-select" name="delivery_method">
+                    {% for item in delivery_options %}
+                    <option value="{{ item }}" {% if filters.delivery_method == item %}selected{% endif %}>{{ item or '全部派送方式' }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+          <a class="ghost-btn" href="/waybills">重置</a>
+          <button class="primary-btn" type="submit"><i data-feather="search"></i> 查询</button>
+        </div>
+      </form>
+
+      <div class="waybill-toolbar">
+        <div class="waybill-meta-count">共 {{ pagination.total }} 条{% if pagination.total %}，显示 {{ pagination.offset + 1 }} 到 {{ pagination.offset + rows|length }}{% endif %}</div>
+        <div class="waybill-toolbar-actions">
+          <select class="waybill-select" name="sort" form="waybillFilterForm" data-waybill-sort aria-label="排序方式">
+            {% for item in sort_options %}
+            <option value="{{ item.value }}" {% if filters.sort == item.value %}selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </select>
+          <div class="waybill-tool-wrap" data-popover-wrap>
+            <button class="ghost-btn waybill-tool-btn" type="button" data-popover-toggle="columns" aria-expanded="false">
+              <i data-feather="settings"></i> 列设置
+            </button>
+            <div class="waybill-popover" data-popover-panel="columns" hidden>
+              <h3 class="waybill-popover-title">列设置</h3>
+              <div class="waybill-popover-grid">
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="date" checked> 开单日期</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="receiver" checked> 收货人</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="sender" checked> 发货人</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="goods" checked> 货物名称</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="status" checked> 状态</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="fee" checked> 费用</label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {% if sync_status and sync_status.warnings %}
+      <div class="waybill-warning"><i data-feather="alert-triangle"></i> {{ sync_status.warnings | join('；') }}</div>
+      {% endif %}
+
+      {% if db_error %}
+      <div class="waybill-warning"><i data-feather="alert-triangle"></i> 数据库查询失败：{{ db_error }}</div>
+      {% elif summary.invalid_money_count %}
+      <div class="waybill-warning"><i data-feather="alert-triangle"></i> 有 {{ summary.invalid_money_count }} 个金额字段无法换算，汇总时已按 0.00 处理。</div>
+      {% endif %}
+
+      <div class="waybill-table-shell">
+        {% if rows %}
+        <table class="waybill-table">
+          <thead>
+            <tr>
+              <th class="waybill-col-select"></th>
+              <th class="waybill-col-no" data-col="no">运单号</th>
+              <th class="waybill-col-date" data-col="date">开单日期</th>
+              <th class="waybill-col-party" data-col="receiver">收货人</th>
+              <th class="waybill-col-party" data-col="sender">发货人</th>
+              <th class="waybill-col-goods" data-col="goods">货物名称</th>
+              <th class="waybill-col-status" data-col="status">状态</th>
+              <th class="waybill-col-fee" data-col="fee">费用(元)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr data-waybill-row="{{ row.id }}">
+              <td class="waybill-col-select">
+                <button class="waybill-select-row" type="button" data-waybill-select="{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情"></button>
+              </td>
+              <td class="waybill-col-no" data-col="no">
+                <a class="waybill-no-link" href="{{ row.tracking_url }}">{{ row.waybill_no }}</a>
+                <div class="waybill-muted-line">{{ row.source_label }}</div>
+              </td>
+              <td class="waybill-col-date" data-col="date">
+                <div class="waybill-cell-main">{{ row.open_date or '-' }}</div>
+                <div class="waybill-muted-line">{{ row.created_at[:10] if row.created_at else '' }}</div>
+              </td>
+              <td class="waybill-col-party" data-col="receiver">
+                <div class="waybill-cell-main" title="{{ row.receiver_name or '-' }}">{{ row.receiver_name or '-' }}</div>
+                <div class="waybill-cell-sub">{{ row.receiver_phone or '-' }}</div>
+              </td>
+              <td class="waybill-col-party" data-col="sender">
+                <div class="waybill-cell-main" title="{{ row.sender_name or '-' }}">{{ row.sender_name or '-' }}</div>
+                <div class="waybill-cell-sub">{{ row.sender_phone or '-' }}</div>
+              </td>
+              <td class="waybill-col-goods" data-col="goods">
+                <div class="waybill-cell-main" title="{{ row.goods_name_lines or '-' }}">{{ row.goods_name_lines or '-' }}</div>
+                <div class="waybill-muted-line">{{ row.quantity_lines or '' }}{% if row.package_type_lines %} / {{ row.package_type_lines }}{% endif %}</div>
+              </td>
+              <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}</td>
+              <td class="waybill-col-fee" data-col="fee">
+                <div class="waybill-fee">¥{{ row.opening_cost or '0.00' }}</div>
+                <div class="waybill-muted-line">{{ row.payment_method or '-' }}</div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% for row in rows %}
+        <template data-waybill-detail-template="{{ row.id }}">
+          {{ detail_template(row) }}
+        </template>
+        {% endfor %}
+        {% else %}
+        <div class="waybill-empty">
+          <div>
+            <i data-feather="inbox"></i>
+            <div>暂无符合条件的已开单运单</div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="waybill-footer">
+        <label class="waybill-page-size-control" for="pageSize">
+          每页
+          <select id="pageSize" class="waybill-select" name="page_size" form="waybillFilterForm" data-waybill-page-size>
+            {% for item in [10, 20, 50, 100] %}
+            <option value="{{ item }}" {% if pagination.page_size == item %}selected{% endif %}>{{ item }} 条</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="waybill-pager">
+          {% if prev_url %}
+          <a class="ghost-btn" href="{{ prev_url }}"><i data-feather="chevron-left"></i> 上一页</a>
+          {% else %}
+          <button class="ghost-btn" type="button" disabled><i data-feather="chevron-left"></i> 上一页</button>
+          {% endif %}
+          <span class="waybill-meta-count">第 {{ pagination.page }} / {{ pagination.total_pages }} 页</span>
+          {% if next_url %}
+          <a class="ghost-btn" href="{{ next_url }}">下一页<i data-feather="chevron-right"></i></a>
+          {% else %}
+          <button class="ghost-btn" type="button" disabled>下一页<i data-feather="chevron-right"></i></button>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <dialog class="waybill-detail-dialog" data-waybill-detail-dialog role="dialog" aria-modal="true" aria-hidden="true" aria-label="运单详情">
+      <button class="waybill-detail-close" type="button" data-waybill-detail-close aria-label="关闭详情"><i data-feather="x"></i></button>
+      <div class="waybill-detail-slot" data-waybill-detail-slot>
+        <div class="waybill-detail-empty">选择一条运单查看详情</div>
+      </div>
+    </dialog>
+  </div>
+</section>
+{% endblock %}
+
+{% block right_sidebar %}{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const COLUMN_KEY = "shipnow.waybills.visibleColumns";
+  const DEFAULT_COLUMNS = ["date", "receiver", "sender", "goods", "status", "fee"];
+
+  function panel() {
+    return document.querySelector("[data-waybill-ajax-panel]");
+  }
+
+  function sameWaybillUrl(url) {
+    return url.origin === window.location.origin && url.pathname === "/waybills";
+  }
+
+  function setBusy(isBusy) {
+    const current = panel();
+    if (!current) return;
+    current.toggleAttribute("aria-busy", isBusy);
+    current.style.opacity = isBusy ? "0.72" : "";
+    current.style.pointerEvents = isBusy ? "none" : "";
+  }
+
+  function parseDateValue(value) {
+    const match = String(value || "").trim().replaceAll("/", "-").match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (!match) return null;
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+
+  function padDatePart(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function formatInputDate(date) {
+    if (!(date instanceof Date)) return "";
+    return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+  }
+
+  function formatDisplayDate(date) {
+    if (!(date instanceof Date)) return "";
+    return `${date.getFullYear()}/${padDatePart(date.getMonth() + 1)}/${padDatePart(date.getDate())}`;
+  }
+
+  function firstDayOfMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+
+  function isSameDay(left, right) {
+    return left instanceof Date && right instanceof Date && formatInputDate(left) === formatInputDate(right);
+  }
+
+  function isBetweenDays(date, start, end) {
+    if (!(date instanceof Date) || !(start instanceof Date) || !(end instanceof Date)) return false;
+    const currentTime = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    return currentTime > start.getTime() && currentTime < end.getTime();
+  }
+
+  function initDateRangePickers(scope) {
+    scope.querySelectorAll("[data-date-range-picker]").forEach((picker) => {
+      if (picker.dataset.datePickerBound === "true") return;
+      picker.dataset.datePickerBound = "true";
+
+      const fromInput = picker.querySelector("[data-date-from]");
+      const toInput = picker.querySelector("[data-date-to]");
+      const trigger = picker.querySelector("[data-date-trigger]");
+      const label = picker.querySelector("[data-date-label]");
+      const popover = picker.querySelector("[data-date-popover]");
+      const form = picker.closest("form");
+      const title = picker.querySelector("[data-calendar-title]");
+      const grid = picker.querySelector("[data-calendar-grid]");
+      const doneButton = picker.querySelector("[data-date-done]");
+      const today = new Date();
+      const state = {
+        committedStart: parseDateValue(fromInput?.value),
+        committedEnd: parseDateValue(toInput?.value),
+        draftStart: null,
+        draftEnd: null,
+        view: firstDayOfMonth(parseDateValue(fromInput?.value) || parseDateValue(toInput?.value) || today),
+      };
+
+      if (state.committedStart && state.committedEnd && state.committedStart.getTime() > state.committedEnd.getTime()) {
+        const nextStart = state.committedEnd;
+        state.committedEnd = state.committedStart;
+        state.committedStart = nextStart;
+      }
+
+      function syncInputs() {
+        if (fromInput instanceof HTMLInputElement) fromInput.value = formatInputDate(state.committedStart);
+        if (toInput instanceof HTMLInputElement) toInput.value = formatInputDate(state.committedEnd);
+        if (!label) return;
+        if (state.committedStart && state.committedEnd) {
+          label.textContent = `${formatDisplayDate(state.committedStart)} 至 ${formatDisplayDate(state.committedEnd)}`;
+          label.classList.remove("is-placeholder");
+        } else if (state.committedStart) {
+          label.textContent = `${formatDisplayDate(state.committedStart)} 至 结束日期`;
+          label.classList.remove("is-placeholder");
+        } else {
+          label.textContent = "选择起止日期";
+          label.classList.add("is-placeholder");
+        }
+      }
+
+      function resetDraftFromCommitted() {
+        state.draftStart = state.committedStart ? new Date(state.committedStart) : null;
+        state.draftEnd = state.committedEnd ? new Date(state.committedEnd) : null;
+        state.view = firstDayOfMonth(state.draftStart || state.draftEnd || today);
+      }
+
+      function updateDoneState() {
+        if (doneButton instanceof HTMLButtonElement) doneButton.disabled = Boolean(state.draftStart && !state.draftEnd);
+      }
+
+      function renderCalendar() {
+        if (!title || !grid) return;
+        const year = state.view.getFullYear();
+        const month = state.view.getMonth();
+        title.textContent = `${year}年${month + 1}月`;
+        grid.replaceChildren();
+
+        const monthStart = new Date(year, month, 1);
+        const mondayOffset = (monthStart.getDay() + 6) % 7;
+        const cursor = new Date(year, month, 1 - mondayOffset);
+        for (let index = 0; index < 42; index += 1) {
+          const day = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + index);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "waybill-calendar-day";
+          button.dataset.dateValue = formatInputDate(day);
+          button.textContent = String(day.getDate());
+          if (day.getMonth() !== month) button.classList.add("is-outside");
+          if (isSameDay(day, today)) button.classList.add("is-today");
+          if (isBetweenDays(day, state.draftStart, state.draftEnd)) button.classList.add("is-in-range");
+          if (isSameDay(day, state.draftStart)) button.classList.add("is-range-start");
+          if (isSameDay(day, state.draftEnd)) button.classList.add("is-range-end");
+          grid.appendChild(button);
+        }
+      }
+
+      function commitRange(startDate, endDate, { submit = false } = {}) {
+        state.committedStart = startDate ? new Date(startDate) : null;
+        state.committedEnd = endDate ? new Date(endDate) : null;
+        state.draftStart = state.committedStart ? new Date(state.committedStart) : null;
+        state.draftEnd = state.committedEnd ? new Date(state.committedEnd) : null;
+        state.view = firstDayOfMonth(state.draftStart || state.draftEnd || new Date());
+        syncInputs();
+        updateDoneState();
+        renderCalendar();
+        if (submit && form instanceof HTMLFormElement) {
+          setOpen(false);
+          form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        }
+      }
+
+      function setOpen(isOpen) {
+        if (!popover || !trigger) return;
+        if (isOpen) {
+          resetDraftFromCommitted();
+          updateDoneState();
+          renderCalendar();
+        }
+        popover.hidden = !isOpen;
+        trigger.classList.toggle("is-open", isOpen);
+        trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      }
+
+      trigger?.addEventListener("click", () => setOpen(Boolean(popover?.hidden)));
+      picker.addEventListener("click", (event) => event.stopPropagation());
+      picker.querySelector("[data-month-prev]")?.addEventListener("click", () => {
+        state.view = new Date(state.view.getFullYear(), state.view.getMonth() - 1, 1);
+        renderCalendar();
+      });
+      picker.querySelector("[data-month-next]")?.addEventListener("click", () => {
+        state.view = new Date(state.view.getFullYear(), state.view.getMonth() + 1, 1);
+        renderCalendar();
+      });
+      grid?.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target.closest("[data-date-value]") : null;
+        if (!(target instanceof HTMLElement)) return;
+        const selected = parseDateValue(target.dataset.dateValue);
+        if (!selected) return;
+        if (!state.draftStart || state.draftEnd || selected.getTime() < state.draftStart.getTime()) {
+          state.draftStart = selected;
+          state.draftEnd = null;
+        } else {
+          state.draftEnd = selected;
+        }
+        state.view = firstDayOfMonth(selected);
+        updateDoneState();
+        renderCalendar();
+      });
+      picker.querySelector("[data-date-clear]")?.addEventListener("click", () => {
+        state.draftStart = null;
+        state.draftEnd = null;
+        updateDoneState();
+        renderCalendar();
+      });
+      picker.querySelectorAll("[data-date-quick-range]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const days = Math.max(Number(button.getAttribute("data-date-quick-range") || "1"), 1);
+          const rangeEnd = new Date();
+          const rangeStart = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate() - days + 1);
+          commitRange(rangeStart, rangeEnd);
+          setOpen(false);
+        });
+      });
+      picker.querySelector("[data-date-done]")?.addEventListener("click", () => {
+        if (state.draftStart && !state.draftEnd) {
+          updateDoneState();
+          return;
+        }
+        commitRange(state.draftStart, state.draftEnd);
+        setOpen(false);
+      });
+      picker.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          setOpen(false);
+          trigger?.focus();
+        }
+      });
+      document.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target && !target.closest("[data-date-range-picker]")) setOpen(false);
+      });
+
+      syncInputs();
+      resetDraftFromCommitted();
+      updateDoneState();
+      renderCalendar();
+    });
+  }
+
+  function selectedColumns() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(COLUMN_KEY) || "null");
+      if (Array.isArray(stored) && stored.length) return stored;
+    } catch (error) {
+      console.warn("Failed to read column settings", error);
+    }
+    return DEFAULT_COLUMNS;
+  }
+
+  function applyColumnSettings(scope) {
+    const visible = new Set(selectedColumns());
+    scope.querySelectorAll("[data-col]").forEach((cell) => {
+      const key = cell.getAttribute("data-col");
+      if (!key || key === "no") return;
+      cell.hidden = !visible.has(key);
+    });
+    scope.querySelectorAll("[data-col-toggle]").forEach((input) => {
+      if (input instanceof HTMLInputElement) input.checked = visible.has(input.dataset.colToggle || "");
+    });
+  }
+
+  function bindColumnSettings(scope) {
+    applyColumnSettings(scope);
+    scope.querySelectorAll("[data-col-toggle]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const next = Array.from(scope.querySelectorAll("[data-col-toggle]"))
+          .filter((item) => item instanceof HTMLInputElement && item.checked)
+          .map((item) => item.dataset.colToggle || "")
+          .filter(Boolean);
+        localStorage.setItem(COLUMN_KEY, JSON.stringify(next));
+        applyColumnSettings(scope);
+      });
+    });
+  }
+
+  function setPopoverOpen(scope, name, open) {
+    scope.querySelectorAll("[data-popover-panel]").forEach((panelEl) => {
+      const shouldOpen = open && panelEl.getAttribute("data-popover-panel") === name;
+      panelEl.hidden = !shouldOpen;
+    });
+    scope.querySelectorAll("[data-popover-toggle]").forEach((button) => {
+      const shouldOpen = open && button.getAttribute("data-popover-toggle") === name;
+      button.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+    });
+  }
+
+  function bindPopovers(scope) {
+    scope.querySelectorAll("[data-popover-toggle]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const name = button.getAttribute("data-popover-toggle") || "";
+        const panelEl = scope.querySelector(`[data-popover-panel="${name}"]`);
+        setPopoverOpen(scope, name, Boolean(panelEl?.hidden));
+      });
+    });
+    scope.querySelectorAll("[data-popover-panel]").forEach((panelEl) => {
+      panelEl.addEventListener("click", (event) => event.stopPropagation());
+    });
+    document.addEventListener("click", () => setPopoverOpen(scope, "", false));
+    scope.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setPopoverOpen(scope, "", false);
+    });
+  }
+
+  function selectWaybill(scope, id) {
+    const row = scope.querySelector(`[data-waybill-row="${CSS.escape(String(id))}"]`);
+    const template = scope.querySelector(`[data-waybill-detail-template="${CSS.escape(String(id))}"]`);
+    const detail = scope.querySelector("[data-waybill-detail-dialog]");
+    const slot = scope.querySelector("[data-waybill-detail-slot]");
+    if (!row || !template || !detail || !slot) return;
+    scope.querySelectorAll("[data-waybill-row]").forEach((item) => item.classList.toggle("is-selected", item === row));
+    slot.replaceChildren(template.content.cloneNode(true));
+    scope.classList.add("is-detail-open");
+    detail.setAttribute("aria-hidden", "false");
+    document.body.classList.add("has-modal");
+    if (detail instanceof HTMLDialogElement && typeof detail.showModal === "function") {
+      if (!detail.open) detail.showModal();
+    } else {
+      detail.setAttribute("open", "");
+    }
+    window.ConsoleUI?.refreshIcons?.();
+  }
+
+  function closeWaybillDetail(scope) {
+    const detail = scope.querySelector("[data-waybill-detail-dialog]");
+    scope.classList.remove("is-detail-open");
+    scope.querySelectorAll("[data-waybill-row]").forEach((item) => item.classList.remove("is-selected"));
+    detail?.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("has-modal");
+    if (detail instanceof HTMLDialogElement && detail.open) {
+      detail.close();
+    } else {
+      detail?.removeAttribute("open");
+    }
+  }
+
+  function bindDetail(scope) {
+    const detail = scope.querySelector("[data-waybill-detail-dialog]");
+    scope.querySelector("[data-waybill-detail-close]")?.addEventListener("click", () => closeWaybillDetail(scope));
+    detail?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeWaybillDetail(scope);
+    });
+    detail?.addEventListener("close", () => {
+      scope.classList.remove("is-detail-open");
+      scope.querySelectorAll("[data-waybill-row]").forEach((item) => item.classList.remove("is-selected"));
+      detail.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("has-modal");
+    });
+    detail?.addEventListener("click", (event) => {
+      if (event.target === detail) closeWaybillDetail(scope);
+    });
+    scope.querySelectorAll("[data-waybill-select]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectWaybill(scope, button.getAttribute("data-waybill-select"));
+      });
+    });
+    scope.querySelectorAll("[data-waybill-row]").forEach((row) => {
+      row.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("a, button, form, input, select")) return;
+        selectWaybill(scope, row.getAttribute("data-waybill-row"));
+      });
+    });
+    scope.addEventListener("submit", (event) => {
+      const form = event.target instanceof Element ? event.target.closest("[data-waybill-cancel-form]") : null;
+      if (!form) return;
+      if (!window.confirm("确认作废这张运单？作废后不会被后续同步覆盖。")) {
+        event.preventDefault();
+      }
+    });
+    scope.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeWaybillDetail(scope);
+    });
+  }
+
+  async function loadWaybills(url, { pushState = true } = {}) {
+    setBusy(true);
+    try {
+      const response = await fetch(url.href, {
+        headers: {
+          Accept: "text/html",
+          "X-Requested-With": "WaybillAjaxSearch",
+        },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const html = await response.text();
+      const nextDocument = new DOMParser().parseFromString(html, "text/html");
+      const nextPanel = nextDocument.querySelector("[data-waybill-ajax-panel]");
+      const currentPanel = panel();
+      if (!nextPanel || !currentPanel) {
+        window.location.assign(url.href);
+        return;
+      }
+      currentPanel.replaceWith(document.importNode(nextPanel, true));
+      if (pushState) window.history.pushState({ waybillAjax: true }, "", url.href);
+      bindWaybillSearch();
+      window.ConsoleUI?.initPage?.(panel() || document);
+      window.ConsoleUI?.refreshIcons?.();
+    } catch (error) {
+      console.warn("Waybill ajax search failed, falling back to full navigation.", error);
+      window.location.assign(url.href);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function normalizeParams(params) {
+    for (const [key, value] of Array.from(params.entries())) {
+      if (value === "" || ((key === "status" || key === "source") && value === "all")) {
+        params.delete(key);
+      }
+    }
+  }
+
+  function bindWaybillSearch() {
+    const current = panel();
+    if (!current || current.dataset.ajaxBound === "true") return;
+    current.dataset.ajaxBound = "true";
+    initDateRangePickers(current);
+    bindPopovers(current);
+    bindColumnSettings(current);
+    bindDetail(current);
+
+    const form = current.querySelector("[data-waybill-filter-form]");
+    form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const url = new URL(form.action || "/waybills", window.location.href);
+      const params = new URLSearchParams(new FormData(form));
+      const pageSize = current.querySelector("[data-waybill-page-size]");
+      if (pageSize instanceof HTMLSelectElement) params.set(pageSize.name, pageSize.value);
+      normalizeParams(params);
+      url.search = params.toString();
+      loadWaybills(url);
+    });
+
+    current.querySelector("[data-waybill-page-size]")?.addEventListener("change", () => {
+      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    current.querySelector("[data-waybill-sort]")?.addEventListener("change", () => {
+      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    current.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const link = target?.closest("a[href]");
+      if (!(link instanceof HTMLAnchorElement)) return;
+      if (link.target && link.target.toLowerCase() !== "_self") return;
+      const url = new URL(link.href, window.location.href);
+      if (!sameWaybillUrl(url)) return;
+      event.preventDefault();
+      loadWaybills(url);
+    });
+  }
+
+  if (!window.WaybillAjaxSearch) {
+    window.addEventListener("popstate", () => {
+      if (window.location.pathname === "/waybills" && panel()) {
+        loadWaybills(new URL(window.location.href), { pushState: false });
+      }
+    });
+  }
+
+  window.WaybillAjaxSearch = { init: bindWaybillSearch, load: loadWaybills };
+  bindWaybillSearch();
+})();
+</script>
+{% endblock %}

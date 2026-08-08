@@ -1,0 +1,1440 @@
+{% extends "base.html" %}
+
+{% block title %}单号查询 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}单号查询{% endblock %}
+{% block subtitle %}运单 / 单号查询{% endblock %}
+
+{% block content %}
+<style>
+  .tracking-page { display: flex; flex-direction: column; gap: 24px; max-width: 1180px; margin: 0 auto; }
+  .tracking-page [hidden] { display: none !important; }
+
+  .tracking-search-box {
+    padding: 28px;
+    text-align: center;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xl);
+    background: #fff;
+    box-shadow: var(--shadow);
+  }
+  .tracking-search-desc {
+    margin: 0 0 22px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+  .tracking-input-row { display: flex; gap: 12px; align-items: center; max-width: 760px; margin: 0 auto; }
+  .tracking-input-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    padding: 0 14px;
+    height: 48px;
+    transition: border-color var(--fast), box-shadow var(--fast);
+  }
+  .tracking-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+  .tracking-input-wrap .feather { color: var(--muted); width: 18px; flex-shrink: 0; }
+  .tracking-input {
+    flex: 1;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--text-strong);
+    font-size: 0.95rem;
+    font-weight: 500;
+    min-width: 0;
+  }
+  .tracking-input::placeholder { color: var(--faint); }
+
+  .tracking-type-badge {
+    padding: 3px 10px;
+    border-radius: var(--radius-pill);
+    font-size: 0.72rem;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: opacity var(--fast);
+  }
+  .tracking-type-badge--rh { background: #fef2f2; color: var(--accent); border: 1px solid #fecaca; }
+  .tracking-type-badge--yd { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+  .tracking-type-badge--zx { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+
+  .tracking-search-btn { height: 48px; padding: 0 24px; flex-shrink: 0; }
+
+  .tracking-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 56px 32px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .tracking-state .feather { width: 40px; height: 40px; stroke-width: 1.5; opacity: 0.6; }
+  .tracking-state p { margin: 0; font-size: 0.9rem; font-weight: 500; }
+  .tracking-state--error .feather { color: var(--danger); opacity: 1; }
+  .tracking-state--loading .tracking-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(0,0,0,0.08);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: tracking-spin 800ms linear infinite;
+  }
+  @keyframes tracking-spin { to { transform: rotate(360deg); } }
+
+  .tracking-result-panel {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xl);
+    background: #fff;
+    box-shadow: var(--shadow);
+    padding: 14px;
+    animation: trackingFadeIn var(--slow);
+  }
+  @keyframes trackingFadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .tracking-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 8px;
+  }
+  .tracking-result-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+  .tracking-result-header strong {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-strong);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+  .tracking-result-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    background: #fff;
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast), background var(--fast);
+    flex-shrink: 0;
+  }
+  .tracking-result-close:hover { color: var(--text-strong); border-color: #d1d5db; background: #f9fafb; }
+  .tracking-result-close:active { transform: scale(0.95); }
+  .tracking-result-close:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+  .tracking-result-panel--shipment .tracking-result-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 2;
+  }
+  .tracking-result-panel--shipment .shipment-tabs { margin-right: 52px; }
+
+  .r7-summary-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .r7-summary-item {
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #f9fafb;
+  }
+  .r7-summary-label {
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+  }
+  .r7-summary-value {
+    color: var(--text-strong);
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .r7-summary-value--mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  .r7-section { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
+  .r7-section:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .r7-section-title {
+    margin: 0 0 12px;
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: var(--text-strong);
+  }
+  .r7-kv-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px 16px;
+  }
+  .r7-kv-item { min-width: 0; }
+  .r7-kv-label {
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+  }
+  .r7-kv-value {
+    color: var(--text-strong);
+    font-size: 0.88rem;
+    font-weight: 600;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .r7-tabs {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    margin-top: 20px;
+  }
+  .r7-tab {
+    border: 0;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.84rem;
+    font-weight: 700;
+    padding: 9px 12px;
+    white-space: nowrap;
+  }
+  .r7-tab:hover { color: var(--text-strong); background: #f9fafb; }
+  .r7-tab.is-active { color: var(--accent); background: #fff1f2; }
+  .r7-tab-panel { padding-top: 18px; }
+
+  .shipment-tabs {
+    display: flex;
+    gap: 0;
+    overflow: visible;
+    border-bottom: 1px solid #bfd3ec;
+    margin: 16px 0 14px;
+  }
+  .shipment-tab {
+    min-width: 112px;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 0;
+    background: #fff;
+    color: var(--text-strong);
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1.2;
+    padding: 12px 18px;
+    white-space: nowrap;
+  }
+  .shipment-tab:hover { background: #f8fafc; color: var(--accent); }
+  .shipment-tab.is-active {
+    border-color: #bfd3ec;
+    background: #fff;
+    color: var(--accent);
+    margin-bottom: -1px;
+    padding-bottom: 13px;
+  }
+  .shipment-tab-panel { padding-top: 0; }
+  .shipment-hero-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    gap: 12px;
+    margin: 16px 0 2px;
+  }
+  .shipment-stat-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    min-height: 58px;
+    padding: 10px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    box-shadow: 0 4px 18px rgba(15,23,42,0.03);
+  }
+  .shipment-stat-icon,
+  .shipment-section-icon {
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #2563eb;
+  }
+  .shipment-stat-icon { width: 34px; height: 34px; }
+  .shipment-stat-icon .feather { width: 18px; height: 18px; stroke-width: 2.4; }
+  .shipment-stat-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .shipment-stat-label,
+  .shipment-metric-label {
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    line-height: 1.25;
+  }
+  .shipment-stat-value {
+    margin-top: 3px;
+    color: var(--text-strong);
+    font-size: 1rem;
+    font-weight: 850;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+  .shipment-details { display: block; }
+  .shipment-detail-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+    gap: 16px;
+    align-items: start;
+  }
+  .shipment-detail-layout--single { grid-template-columns: 1fr; }
+  .shipment-detail-main,
+  .shipment-detail-side {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+  }
+  .shipment-section {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  .shipment-section--aside {
+    background: #fff;
+  }
+  .shipment-section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 13px 16px;
+    border-bottom: 1px solid #f1f5f9;
+    color: var(--text-strong);
+    font-size: 0.88rem;
+    font-weight: 850;
+    line-height: 1.2;
+  }
+  .shipment-section-icon {
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    color: #94a3b8;
+  }
+  .shipment-section-icon .feather { width: 14px; height: 14px; stroke-width: 2.5; }
+  .shipment-party-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    min-width: 0;
+  }
+  .shipment-metric-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+  }
+  .shipment-metric-list--overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .shipment-metric-list--two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .shipment-metric-list--compact { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .shipment-metric-list--ledger { grid-template-columns: 1fr; }
+  .shipment-metric-list--aside { grid-template-columns: 1fr; }
+  .shipment-metric-item {
+    min-width: 0;
+    padding: 10px 16px 11px;
+    border: 0;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .shipment-metric-item:nth-last-child(-n + 3) { border-bottom-color: transparent; }
+  .shipment-metric-list--two .shipment-metric-item:nth-last-child(-n + 2),
+  .shipment-metric-list--compact .shipment-metric-item:nth-last-child(-n + 4),
+  .shipment-metric-list--aside .shipment-metric-item:last-child { border-bottom-color: transparent; }
+  .shipment-metric-list--overview .shipment-metric-item {
+    min-height: 60px;
+    background: #fbfdff;
+    border-right: 1px solid #f1f5f9;
+  }
+  .shipment-metric-list--overview .shipment-metric-item:nth-child(3n) { border-right: 0; }
+  .shipment-metric-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .shipment-metric-row:last-child { border-bottom: 0; }
+  .shipment-metric-row .shipment-metric-item {
+    border-bottom: 0;
+    border-right: 1px solid #f1f5f9;
+  }
+  .shipment-metric-row .shipment-metric-item:last-child { border-right: 0; }
+  .shipment-metric-item--wide { grid-column: 1 / -1; }
+  .shipment-metric-item--span-2 { grid-column: span 2; }
+  .shipment-metric-item--span-3 { grid-column: span 3; }
+  .shipment-metric-item--party {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+    padding: 12px 16px;
+    background: #fff;
+  }
+  .shipment-metric-list--ledger .shipment-metric-item--wide { border-right: 0; }
+  .shipment-metric-list--ledger .shipment-metric-item--party { border-right: 0; }
+  .shipment-party-row-title {
+    padding-top: 3px;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 850;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+  .shipment-party-row-fields {
+    display: grid;
+    grid-template-columns: minmax(86px, 0.65fr) minmax(128px, 0.9fr) minmax(150px, 1fr) minmax(260px, 2fr);
+    gap: 10px 16px;
+    min-width: 0;
+  }
+  .shipment-party-field { min-width: 0; }
+  .shipment-party-field-label {
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1.25;
+  }
+  .shipment-party-field-value {
+    margin-top: 3px;
+    color: var(--text-strong);
+    font-size: 0.88rem;
+    font-weight: 760;
+    line-height: 1.38;
+    overflow-wrap: anywhere;
+  }
+  .shipment-party-field-value--mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .shipment-metric-value {
+    margin-top: 4px;
+    color: var(--text-strong);
+    font-size: 0.88rem;
+    font-weight: 750;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .shipment-metric-item--memo .shipment-metric-value {
+    max-height: none;
+    overflow: visible;
+  }
+  .shipment-metric-item--mono .shipment-metric-value,
+  .shipment-stat-value--mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .shipment-value-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: var(--radius-md);
+    background: #fef2f2;
+    color: var(--accent);
+    font-size: 0.82rem;
+    font-weight: 850;
+  }
+
+  .r7-route-list {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .r7-route-node {
+    border-top: 3px solid #e5e7eb;
+    padding-top: 10px;
+    min-width: 0;
+  }
+  .r7-route-node.is-completed { border-color: var(--accent); }
+  .r7-route-name {
+    margin: 0 0 4px;
+    color: var(--text-strong);
+    font-size: 0.9rem;
+    font-weight: 800;
+  }
+  .r7-route-station {
+    color: var(--accent);
+    font-size: 0.86rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .r7-route-meta {
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .tracking-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+  .tracking-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 760px;
+    background: #fff;
+  }
+  .tracking-table th,
+  .tracking-table td {
+    border-bottom: 1px solid var(--line);
+    padding: 10px 12px;
+    text-align: left;
+    vertical-align: top;
+    font-size: 0.82rem;
+    line-height: 1.55;
+  }
+  .tracking-table th {
+    background: #f9fafb;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .tracking-table tr:last-child td { border-bottom: 0; }
+  .tracking-table .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tracking-table .wide { min-width: 280px; }
+  .tracking-empty {
+    text-align: center;
+    padding: 32px 24px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+
+  .tracking-timeline { position: relative; padding-left: 28px; }
+  .tracking-timeline::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--line);
+    border-radius: 1px;
+  }
+  .timeline-node { position: relative; padding-bottom: 24px; }
+  .timeline-node:last-child { padding-bottom: 0; }
+  .timeline-dot {
+    position: absolute;
+    left: -28px;
+    top: 4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid var(--line);
+    z-index: 1;
+    transition: border-color var(--fast), background var(--fast), box-shadow var(--fast);
+  }
+  .timeline-node:first-child .timeline-dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12); }
+  .timeline-node-time {
+    font-size: 0.78rem;
+    color: var(--muted);
+    font-weight: 600;
+    margin-bottom: 4px;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .timeline-node-desc { font-size: 0.9rem; color: var(--text-strong); font-weight: 500; line-height: 1.5; }
+  .timeline-node:first-child .timeline-node-desc { font-weight: 700; color: var(--text-strong); }
+  .timeline-node-location {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-top: 3px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .timeline-node-location .feather { width: 12px; height: 12px; stroke-width: 2.5; }
+
+  .tracking-contact-card {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+    padding: 24px;
+    background: #f9fafb;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--line);
+  }
+  .tracking-contact-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: var(--radius-lg);
+    background: #eff6ff;
+    color: #2563eb;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+  }
+  .tracking-contact-icon .feather { width: 24px; height: 24px; }
+  .tracking-contact-info { flex: 1; min-width: 0; }
+  .tracking-contact-info h3 { margin: 0 0 6px; font-size: 1.05rem; font-weight: 700; color: var(--text-strong); }
+  .tracking-contact-note { margin: 0 0 16px; font-size: 0.85rem; color: var(--muted); line-height: 1.6; font-weight: 500; }
+  .tracking-contact-phone-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: #fff;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    transition: border-color var(--fast);
+  }
+  .tracking-contact-phone-row:hover { border-color: #d1d5db; }
+  .tracking-contact-phone-row .feather { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
+  .tracking-contact-phone-number {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-strong);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .tracking-contact-phone-number a { color: var(--accent); text-decoration: none; transition: color var(--fast); }
+  .tracking-contact-phone-number a:hover { color: #dc2626; text-decoration: underline; }
+  .tracking-contact-phone-number a:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); border-radius: 2px; }
+  .tracking-contact-hours { margin-left: auto; font-size: 0.78rem; color: var(--muted); font-weight: 600; white-space: nowrap; }
+
+  @media (max-width: 900px) {
+    .r7-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .r7-kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .r7-route-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .shipment-detail-layout { grid-template-columns: 1fr; }
+    .shipment-hero-stats,
+    .shipment-party-grid,
+    .shipment-metric-list,
+    .shipment-metric-list--overview,
+    .shipment-metric-list--compact,
+    .shipment-metric-list--ledger,
+    .shipment-metric-list--aside { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .shipment-metric-list--ledger { grid-template-columns: 1fr; }
+    .shipment-metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .shipment-metric-row .shipment-metric-item:nth-child(2n) { border-right: 0; }
+    .shipment-metric-row .shipment-metric-item--span-2,
+    .shipment-metric-row .shipment-metric-item--span-3 { grid-column: 1 / -1; }
+    .shipment-metric-list--overview .shipment-metric-item:nth-child(3n) { border-right: 1px solid #f1f5f9; }
+    .shipment-metric-list--overview .shipment-metric-item:nth-child(2n) { border-right: 0; }
+    .shipment-metric-list--ledger .shipment-metric-item--party { border-right: 0; }
+    .shipment-metric-list--ledger .shipment-metric-item--wide { border-right: 0; }
+    .shipment-party-row-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 600px) {
+    .tracking-page { gap: 20px; }
+    .tracking-search-box { padding: 24px 20px; }
+    .tracking-input-row { flex-direction: column; }
+    .tracking-search-btn { width: 100%; }
+    .tracking-result-panel { padding: 14px 10px; }
+    .r7-summary-strip, .r7-kv-grid, .r7-route-list { grid-template-columns: 1fr; }
+    .shipment-hero-stats,
+    .shipment-party-grid,
+    .shipment-metric-list,
+    .shipment-metric-list--overview,
+    .shipment-metric-list--two,
+    .shipment-metric-list--compact,
+    .shipment-metric-list--ledger,
+    .shipment-metric-list--aside { grid-template-columns: 1fr; }
+    .shipment-tab { min-width: 104px; padding: 10px 12px; }
+    .shipment-stat-card { min-height: 54px; }
+    .shipment-section { padding: 0; }
+    .shipment-metric-list--overview .shipment-metric-item { border-right: 0 !important; }
+    .shipment-metric-list--ledger .shipment-metric-item { border-right: 0 !important; }
+    .shipment-metric-row { grid-template-columns: 1fr; }
+    .shipment-metric-row .shipment-metric-item--span-2,
+    .shipment-metric-row .shipment-metric-item--span-3 { grid-column: 1 / -1; }
+    .shipment-metric-item--party {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .shipment-party-row-fields { grid-template-columns: 1fr; }
+    .shipment-metric-item,
+    .shipment-metric-item:nth-last-child(-n + 3),
+    .shipment-metric-list--two .shipment-metric-item:nth-last-child(-n + 2),
+    .shipment-metric-list--compact .shipment-metric-item:nth-last-child(-n + 4),
+    .shipment-metric-list--ledger .shipment-metric-item:nth-last-child(-n + 4) { border-bottom-color: transparent; }
+    .shipment-metric-list .shipment-metric-item:last-child { border-bottom-color: transparent; }
+    .tracking-contact-card { flex-direction: column; padding: 20px; }
+    .tracking-contact-phone-row { flex-wrap: wrap; }
+    .tracking-contact-hours { margin-left: 0; width: 100%; margin-top: 4px; }
+  }
+</style>
+
+<section class="tracking-page">
+  <div class="tracking-search-box">
+    <p class="tracking-search-desc tracking-search-desc--lead">输入运单号自动识别类型，支持融辉单号、韵达单号与专线单号查询</p>
+    <div class="tracking-input-row">
+      <div class="tracking-input-wrap">
+        <i data-feather="search"></i>
+        <input
+          type="text"
+          id="trackingInput"
+          class="tracking-input"
+          placeholder="输入运单号，例如 RC123456、977808459、000123456"
+          value="{{ initial_tracking_number | default('') }}"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="运单号"
+        >
+        <span class="tracking-type-badge" id="typeBadge" hidden></span>
+      </div>
+      <button class="primary-btn tracking-search-btn" id="searchBtn" type="button">
+        <i data-feather="arrow-right"></i>
+        查询
+      </button>
+    </div>
+  </div>
+
+  <div id="resultArea">
+    <div class="tracking-state" id="stateEmpty">
+      <i data-feather="package"></i>
+      <p>输入运单号开始查询</p>
+    </div>
+
+    <div class="tracking-state tracking-state--loading" id="stateLoading" hidden>
+      <div class="tracking-spinner"></div>
+      <p>正在查询物流信息...</p>
+    </div>
+
+    <div class="tracking-state tracking-state--error" id="stateError" hidden>
+      <i data-feather="alert-circle"></i>
+      <p id="errorMsg">查询失败</p>
+      <button class="ghost-btn" type="button" id="retryBtn" style="margin-top:12px;">
+        <i data-feather="rotate-ccw" style="width:14px;"></i> 重新查询
+      </button>
+    </div>
+
+    <div class="tracking-result-panel tracking-result-panel--shipment" id="resultShipment" hidden>
+      <button class="tracking-result-close" type="button" id="closeShipment" title="关闭" aria-label="关闭查询结果">
+        <i data-feather="x"></i>
+      </button>
+
+      <div class="shipment-hero-stats" id="shipmentHeroStats" hidden></div>
+
+      <div class="shipment-tabs" data-shipment-tabs role="tablist">
+        <button class="shipment-tab is-active" type="button" data-shipment-tab="routes">扫描轨迹</button>
+        <button class="shipment-tab" type="button" data-shipment-tab="details" id="shipmentDetailsTab">运单详情(0)</button>
+        <button class="shipment-tab" type="button" data-shipment-tab="children" id="shipmentChildrenTab">子单详情(0)</button>
+      </div>
+
+      <div class="shipment-tab-panel" data-shipment-panel="routes" id="shipmentRoutes"></div>
+      <div class="shipment-tab-panel" data-shipment-panel="details" id="shipmentDetails" hidden></div>
+      <div class="shipment-tab-panel" data-shipment-panel="children" id="shipmentChildren" hidden></div>
+    </div>
+
+    <div class="tracking-result-panel" id="resultTimeline" hidden>
+      <div class="tracking-result-header">
+        <div class="tracking-result-header-left">
+          <span class="tracking-type-badge tracking-type-badge--rh">融辉单号</span>
+          <strong id="timelineNumber"></strong>
+        </div>
+        <button class="tracking-result-close" type="button" id="closeTimeline" title="关闭" aria-label="关闭查询结果">
+          <i data-feather="x"></i>
+        </button>
+      </div>
+      <div class="tracking-timeline" id="timelineNodes"></div>
+    </div>
+
+    <div class="tracking-result-panel" id="resultContact" hidden>
+      <div class="tracking-result-header">
+        <div class="tracking-result-header-left">
+          <span class="tracking-type-badge tracking-type-badge--zx">专线单号</span>
+          <strong id="contactNumber"></strong>
+        </div>
+        <button class="tracking-result-close" type="button" id="closeContact" title="关闭" aria-label="关闭查询结果">
+          <i data-feather="x"></i>
+        </button>
+      </div>
+      <div id="contactCard"></div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block right_sidebar %}{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var input = document.getElementById('trackingInput');
+  var badge = document.getElementById('typeBadge');
+  var searchBtn = document.getElementById('searchBtn');
+  var retryBtn = document.getElementById('retryBtn');
+
+  var stateEmpty = document.getElementById('stateEmpty');
+  var stateLoading = document.getElementById('stateLoading');
+  var stateError = document.getElementById('stateError');
+  var resultShipment = document.getElementById('resultShipment');
+  var resultTimeline = document.getElementById('resultTimeline');
+  var resultContact = document.getElementById('resultContact');
+
+  var allSections = [stateEmpty, stateLoading, stateError, resultShipment, resultTimeline, resultContact];
+
+  function detectType(v) {
+    v = v.trim();
+    if (!v) return null;
+    if (/^RC/i.test(v) || /^R\d/i.test(v) || /^200/.test(v)) return 'ronghui';
+    if (/^000/.test(v)) return 'zhuanxian';
+    if (/^\d+$/.test(v)) return 'yunda';
+    return null;
+  }
+
+  function showSection(el) {
+    allSections.forEach(function(s) { s.hidden = true; });
+    if (el) el.hidden = false;
+    feather.replace();
+  }
+
+  function resetUI() {
+    showSection(stateEmpty);
+    input.value = '';
+    badge.hidden = true;
+    input.focus();
+  }
+
+  function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.textContent = str == null ? '' : String(str);
+    return d.innerHTML;
+  }
+
+  function displayValue(value) {
+    if (value === null || value === undefined || value === '') return '无数据';
+    return String(value);
+  }
+
+  input.addEventListener('input', function() {
+    var type = detectType(this.value);
+    if (type === 'ronghui') {
+      badge.textContent = '融辉单号';
+      badge.className = 'tracking-type-badge tracking-type-badge--rh';
+      badge.hidden = false;
+    } else if (type === 'zhuanxian') {
+      badge.textContent = '专线单号';
+      badge.className = 'tracking-type-badge tracking-type-badge--zx';
+      badge.hidden = false;
+    } else if (type === 'yunda') {
+      badge.textContent = '韵达单号';
+      badge.className = 'tracking-type-badge tracking-type-badge--yd';
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  });
+
+  function doSearch() {
+    var trackingNumber = input.value.trim();
+    if (!trackingNumber) {
+      input.focus();
+      return;
+    }
+
+    var type = detectType(trackingNumber);
+    if (!type) {
+      showSection(stateError);
+      document.getElementById('errorMsg').textContent =
+        '无法识别单号类型，请输入 R/RC/200 开头的融辉单号、纯数字韵达单号或 000 开头的专线单号';
+      feather.replace();
+      return;
+    }
+
+    showSection(stateLoading);
+    searchBtn.setAttribute('disabled', 'disabled');
+
+    fetch('/tracking/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tracking_number: trackingNumber })
+    })
+    .then(function(resp) {
+      return resp.json().then(function(data) {
+        return { ok: resp.ok, data: data };
+      });
+    })
+    .then(function(result) {
+      searchBtn.removeAttribute('disabled');
+      if (!result.ok || result.data.error) {
+        showSection(stateError);
+        document.getElementById('errorMsg').textContent =
+          result.data.error || '查询失败，请稍后重试';
+        feather.replace();
+        return;
+      }
+
+      if (result.data.type === 'ronghui_tms' || result.data.type === 'ronghui') {
+        renderShipmentResult(result.data, {
+          label: '融辉单号',
+          badgeClass: 'tracking-type-badge tracking-type-badge--rh'
+        });
+      } else if (result.data.type === 'yunda') {
+        renderShipmentResult(result.data, {
+          label: '韵达单号',
+          badgeClass: 'tracking-type-badge tracking-type-badge--yd'
+        });
+      } else if (result.data.type === 'zhuanxian') {
+        renderContact(result.data);
+      }
+    })
+    .catch(function() {
+      searchBtn.removeAttribute('disabled');
+      showSection(stateError);
+      document.getElementById('errorMsg').textContent = '网络请求失败，请检查网络连接';
+      feather.replace();
+    });
+  }
+
+  function renderTable(container, columns, rows, emptyText) {
+    rows = rows || [];
+    if (!rows.length) {
+      container.innerHTML = '<div class="tracking-empty">' + escapeHtml(emptyText || '暂无数据') + '</div>';
+      return;
+    }
+    var html = '<div class="tracking-table-wrap"><table class="tracking-table"><thead><tr>';
+    columns.forEach(function(col) {
+      html += '<th>' + escapeHtml(col.label) + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.forEach(function(row) {
+      html += '<tr>';
+      columns.forEach(function(col) {
+        var cls = col.mono ? ' class="mono"' : (col.wide ? ' class="wide"' : '');
+        var value = typeof col.value === 'function' ? col.value(row) : row[col.key];
+        var renderedValue = escapeHtml(displayValue(value));
+        if (col.multiline) {
+          renderedValue = renderedValue.replace(/\n/g, '<br>');
+        }
+        html += '<td' + cls + '>' + renderedValue + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+  }
+
+  function hasValue(value) {
+    if (value === null || value === undefined) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') {
+      return Object.keys(value).some(function(key) { return hasValue(value[key]); });
+    }
+    return String(value).trim() !== '';
+  }
+
+  function compactItems(items) {
+    return (items || []).filter(function(item) {
+      if (!item || !item.label) return false;
+      if (item.type === 'party') {
+        return Array.isArray(item.cells) && item.cells.some(function(cell) {
+          return cell && hasValue(cell.value);
+        });
+      }
+      return hasValue(item.value);
+    });
+  }
+
+  function normalizeInfoSections(sections) {
+    if (!Array.isArray(sections)) return [];
+    return sections.map(function(section) {
+      return {
+        title: section && section.title ? section.title : '运单信息',
+        items: compactItems((section && section.items) || [])
+      };
+    }).filter(function(section) {
+      return section.items.length > 0;
+    });
+  }
+
+  function normalizeDetailLabel(label) {
+    return String(label || '').replace(/[：:\s]/g, '');
+  }
+
+  function firstFilledValue(values) {
+    for (var i = 0; i < values.length; i += 1) {
+      if (hasValue(values[i])) return values[i];
+    }
+    return '';
+  }
+
+  function routeText(left, right) {
+    return [left, right].filter(function(value) { return hasValue(value); }).join(' → ');
+  }
+
+  function summaryText(parts) {
+    return (parts || []).filter(function(value) {
+      return hasValue(value);
+    }).map(function(value) {
+      return String(value).trim();
+    }).join(' / ');
+  }
+
+  function markConsumedLabels(consumedLabels, labels) {
+    labels.forEach(function(label) {
+      consumedLabels[normalizeDetailLabel(label)] = true;
+    });
+  }
+
+  function findInfoValue(infoSections, labels, consumedLabels) {
+    var normalizedLabels = labels.map(normalizeDetailLabel);
+    for (var sectionIndex = 0; sectionIndex < infoSections.length; sectionIndex += 1) {
+      var items = infoSections[sectionIndex].items || [];
+      for (var itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+        var item = items[itemIndex];
+        var itemLabel = normalizeDetailLabel(item.label);
+        if (normalizedLabels.indexOf(itemLabel) !== -1 && hasValue(item.value)) {
+          consumedLabels[itemLabel] = true;
+          return item.value;
+        }
+      }
+    }
+    return '';
+  }
+
+  function filterExtraInfoSections(infoSections, consumedLabels) {
+    return infoSections.map(function(section) {
+      return {
+        title: section.title,
+        items: (section.items || []).filter(function(item) {
+          return !consumedLabels[normalizeDetailLabel(item.label)];
+        })
+      };
+    }).filter(function(section) {
+      return section.items.length > 0;
+    });
+  }
+
+  function formatChildRows(rows) {
+    if (!Array.isArray(rows) || !rows.length) return '';
+    return rows.map(function(row) {
+      if (!hasValue(row)) return '';
+      if (typeof row !== 'object') return String(row);
+      var directValue = firstFilledValue([
+        row.child_waybill_no,
+        row.child_no,
+        row.waybill_no,
+        row.tracking_number,
+        row.tracking_no,
+        row.sub_no,
+        row.no,
+        row.number,
+        row.code
+      ]);
+      if (hasValue(directValue)) return directValue;
+      return Object.keys(row).map(function(key) {
+        return row[key];
+      }).filter(function(value) {
+        return hasValue(value);
+      }).slice(0, 3).join(' / ');
+    }).filter(function(value) {
+      return hasValue(value);
+    }).join('，');
+  }
+
+  function statusTone(value) {
+    var text = String(value || '');
+    if (/问题|异常|差错|拒收|退|滞留|失败/.test(text)) return 'danger';
+    if (/签收|到达|到货|完成/.test(text)) return 'success';
+    return 'neutral';
+  }
+
+  function sameDisplayText(left, right) {
+    if (!hasValue(left) || !hasValue(right)) return false;
+    return String(left).trim() === String(right).trim();
+  }
+
+  function displayDeliveryMethod(value) {
+    var text = String(value || '').trim();
+    var methodCodeMap = {
+      '180': '派送',
+      '179': '送货上楼',
+      '231': '送货进仓'
+    };
+    if (!text) return '';
+    if (methodCodeMap[text]) return methodCodeMap[text];
+    if (/^[-+]?\d+(?:\.\d+)?$/.test(text)) return '';
+    return text;
+  }
+
+  function buildShipmentDetailSections(data) {
+    data = data || {};
+    var summary = data.summary || {};
+    var stub = data.waybill_stub || {};
+    var infoSections = normalizeInfoSections(data.waybill_info);
+    var hasStubDetails = hasValue(stub);
+    if (!hasStubDetails && !infoSections.length) {
+      return null;
+    }
+    var consumedLabels = {};
+    var infoValue = function(labels) {
+      return findInfoValue(infoSections, labels, consumedLabels);
+    };
+    var trackingNumber = stub.waybill_no || data.tracking_number || data.requested_tracking_number;
+    var statusText = firstFilledValue([summary.status, data.status, infoValue(['状态', '当前状态'])]);
+    var deliveryMethod = displayDeliveryMethod(firstFilledValue([stub.delivery_method, infoValue(['送货方式', '运输方式', '派送方式'])]));
+    infoValue(['线路']);
+    var goodsName = firstFilledValue([stub.goods_name, infoValue(['货物名称'])]);
+    var packageType = firstFilledValue([stub.package_type, infoValue(['包装类型', '包装'])]);
+    var weight = firstFilledValue([stub.weight, infoValue(['实际重量', '重量', '结算重量'])]);
+    var volume = firstFilledValue([stub.volume, infoValue(['体积'])]);
+    var volumeWeight = firstFilledValue([stub.volume_weight, infoValue(['体积重', '体积重量'])]);
+    var pieces = firstFilledValue([stub.pieces, infoValue(['件数'])]);
+    var paymentType = firstFilledValue([stub.payment_type, infoValue(['付款方式', '支付方式'])]);
+    var payKind = firstFilledValue([infoValue(['支付类型', '结算方式']), paymentType]);
+    var freight = infoValue(['运费']);
+    var insuranceAmount = firstFilledValue([stub.insurance_amount, infoValue(['保价金额', '保险金额'])]);
+    var codAmount = firstFilledValue([stub.cod_amount, infoValue(['代收货款'])]);
+    var senderPhone = firstFilledValue([stub.sender_phone, infoValue(['寄件电话', '发货电话', '发件人手机', '寄件人手机', '发货人电话'])]);
+    var receiverPhone = firstFilledValue([stub.recipient_phone, stub.receiver_phone, infoValue(['收货电话', '收件电话', '收件人手机', '收货人手机'])]);
+    var senderName = firstFilledValue([stub.sender_name, infoValue(['发货人', '发件人', '寄件人'])]);
+    var senderSite = firstFilledValue([stub.send_site, infoValue(['发货网点', '发货站点', '寄件网点'])]);
+    var senderAddress = firstFilledValue([stub.send_address, infoValue(['寄件地址', '发货地址'])]);
+    var receiverName = firstFilledValue([stub.recipient_name, infoValue(['收货人', '收件人'])]);
+    var receiverSite = firstFilledValue([stub.disp_site, infoValue(['收货网点', '收货站点', '目的网点'])]);
+    var receiverAddress = firstFilledValue([stub.recipient_address, stub.disp_address, infoValue(['收件地址', '收货地址'])]);
+    infoValue(['目的分拨中心', '目的分拨']);
+    var remark = firstFilledValue([stub.remark, infoValue(['备注', '备注信息'])]);
+    markConsumedLabels(consumedLabels, [
+      '状态', '当前状态', '当前位置', '计划送达时间', '签收时间', '到达时间', '到货时间', '子单数',
+      '运单号', '开单时间', '录单时间', '线路', '网点', '分拨', '送货方式', '运输方式', '派送方式', '回单服务',
+      '发货网点', '发货站点', '寄件网点', '发货人', '发件人', '寄件人', '发货时间', '发货日期', '寄件地址', '发货地址', '寄件电话', '发货电话', '发件人手机', '寄件人手机', '发货人电话',
+      '收货网点', '收货站点', '目的网点', '收货人', '收件人', '目的分拨中心', '目的分拨', '收件地址', '收货地址', '收货电话', '收件电话', '收件人手机', '收货人手机',
+      '货物名称', '包装类型', '包装', '实际重量', '重量', '结算重量', '体积', '体积重', '体积重量', '件数', '箱号', 'VIP客户',
+      '付款方式', '支付方式', '支付类型', '结算方式', '到付款', '运费', '保价金额', '保险金额', '保险费', '送货费', '代收货款', '大客户总运费',
+      '录单网点', '开单网点', '录单人', '开单人', '是否进仓件', '进仓件', '是否签回单', '签回单',
+      '备注', '备注信息', '子单', '子单号', '子单信息'
+    ]);
+
+    var coreRows = [
+      compactItems([
+        { label: '运单号', value: trackingNumber, mono: true },
+        { label: '当前状态', value: statusText, badge: true },
+        { label: '送货方式', value: deliveryMethod },
+        { label: '目的网点', value: receiverSite }
+      ]),
+      compactItems([
+        { label: '发货人', value: senderName },
+        { label: '电话', value: senderPhone, mono: true },
+        { label: '发货网点', value: senderSite },
+        { label: '寄件地址', value: senderAddress, memo: true }
+      ]),
+      compactItems([
+        { label: '收货人', value: receiverName },
+        { label: '电话', value: receiverPhone, mono: true },
+        { label: '收件地址', value: receiverAddress, memo: true, span: 2 }
+      ]),
+      compactItems([
+        { label: '货物名称', value: goodsName },
+        { label: '包装类型', value: packageType },
+        { label: '件数', value: pieces },
+        { label: '实际重量', value: weight }
+      ]),
+      compactItems([
+        { label: '体积', value: volume },
+        { label: '体积重量', value: volumeWeight },
+        { label: '付款方式', value: paymentType },
+        { label: '运费', value: freight }
+      ]),
+      compactItems([
+        { label: '保价金额', value: insuranceAmount },
+        { label: '代收款', value: codAmount },
+        { label: '备注信息', value: remark, memo: true, span: 2 }
+      ])
+    ].filter(function(row) {
+      return row && row.length > 0;
+    });
+    if (hasValue(payKind) && !sameDisplayText(payKind, paymentType)) {
+      var lastRow = coreRows[coreRows.length - 1];
+      var lastRowHasSpan = lastRow && lastRow.some(function(item) {
+        return item && (item.span || item.wide);
+      });
+      if (lastRow && lastRow.length < 4 && !lastRowHasSpan) {
+        lastRow.push({ label: '支付类型', value: payKind });
+      } else {
+        coreRows.push([{ label: '支付类型', value: payKind }]);
+      }
+    }
+
+    return {
+      statusText: statusText,
+      statusTone: statusTone(statusText),
+      coreRows: coreRows
+    };
+  }
+
+  function metricItemClassName(item) {
+    var classes = ['shipment-metric-item'];
+    if (item && item.type === 'party') classes.push('shipment-metric-item--party');
+    if (item && item.memo) classes.push('shipment-metric-item--memo');
+    if (item && item.mono) classes.push('shipment-metric-item--mono');
+    if (item && item.span === 2) classes.push('shipment-metric-item--span-2');
+    if (item && item.span === 3) classes.push('shipment-metric-item--span-3');
+    if (item && item.wide) classes.push('shipment-metric-item--wide');
+    return classes.join(' ');
+  }
+
+  function renderPartyCells(cells) {
+    return (cells || []).filter(function(cell) {
+      return cell && cell.label && hasValue(cell.value);
+    }).map(function(cell) {
+      var value = escapeHtml(displayValue(cell.value)).replace(/\n/g, '<br>');
+      var valueClass = 'shipment-party-field-value' + (cell.mono ? ' shipment-party-field-value--mono' : '');
+      return '<div class="shipment-party-field">' +
+        '<div class="shipment-party-field-label">' + escapeHtml(cell.label) + '</div>' +
+        '<div class="' + valueClass + '" title="' + escapeHtml(displayValue(cell.value)) + '">' + value + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderMetricItems(items) {
+    return (items || []).map(function(item) {
+      if (item.type === 'party') {
+        return '<div class="' + metricItemClassName(item) + '">' +
+          '<div class="shipment-party-row-title">' + escapeHtml(item.label) + '</div>' +
+          '<div class="shipment-party-row-fields">' + renderPartyCells(item.cells || []) + '</div>' +
+        '</div>';
+      }
+      var value = escapeHtml(displayValue(item.value)).replace(/\n/g, '<br>');
+      if (item.badge) {
+        value = '<span class="shipment-value-pill">' + value + '</span>';
+      }
+      return '<div class="' + metricItemClassName(item) + '">' +
+        '<div class="shipment-metric-label">' + escapeHtml(item.label) + '</div>' +
+        '<div class="shipment-metric-value" title="' + escapeHtml(displayValue(item.value)) + '">' + value + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderMetricRows(rows) {
+    return (rows || []).map(function(row) {
+      return '<div class="shipment-metric-row">' + renderMetricItems(row || []) + '</div>';
+    }).join('');
+  }
+
+  function renderShipmentSection(section) {
+    var hasRows = section && section.rows && section.rows.length;
+    var hasItems = section && section.items && section.items.length;
+    if (!hasRows && !hasItems) return '';
+    var sectionClass = 'shipment-section' + (section.modifier ? ' shipment-section--' + section.modifier : '');
+    var listClass = 'shipment-metric-list' + (section.list ? ' shipment-metric-list--' + section.list : '');
+    var content = hasRows ? renderMetricRows(section.rows || []) : renderMetricItems(section.items || []);
+    return '<section class="' + sectionClass + '">' +
+      '<h3 class="shipment-section-title"><span class="shipment-section-icon"><i data-feather="' + escapeHtml(section.icon || 'info') + '"></i></span>' + escapeHtml(section.title || '运单信息') + '</h3>' +
+      '<div class="' + listClass + '">' + content + '</div>' +
+    '</section>';
+  }
+
+  function renderShipmentSideSections(sections) {
+    if (!sections || !sections.length) return '';
+    return '<aside class="shipment-detail-side">' +
+      sections.map(function(section) {
+        return renderShipmentSection({
+          title: section.title,
+          icon: section.icon,
+          modifier: 'aside',
+          list: 'aside',
+          items: section.items
+        });
+      }).join('') +
+    '</aside>';
+  }
+
+  function renderShipmentDetailLayout(model) {
+    var mainHtml = [
+      renderShipmentSection({
+        title: '运单信息',
+        icon: 'file-text',
+        list: 'ledger',
+        rows: model.coreRows || []
+      })
+    ].filter(function(html) {
+      return html;
+    }).join('');
+    var sideHtml = renderShipmentSideSections(model.sideSections || []);
+    var layoutClass = 'shipment-detail-layout' + (sideHtml ? '' : ' shipment-detail-layout--single');
+    return '<div class="' + layoutClass + '">' +
+      '<div class="shipment-detail-main">' + mainHtml + '</div>' +
+      sideHtml +
+    '</div>';
+  }
+
+  function renderHeroStats(model) {
+    var stats = document.getElementById('shipmentHeroStats');
+    if (!stats) return;
+    stats.hidden = true;
+    stats.innerHTML = '';
+  }
+
+  function renderShipmentDetails(data) {
+    var model = buildShipmentDetailSections(data);
+    var detailsTab = document.getElementById('shipmentDetailsTab');
+    var details = document.getElementById('shipmentDetails');
+    detailsTab.textContent = '运单详情(' + (model ? '1' : '0') + ')';
+    if (!model) {
+      details.innerHTML = '<div class="tracking-empty">暂无运单详情</div>';
+      return null;
+    }
+    details.innerHTML = '<div class="shipment-details">' +
+      renderShipmentDetailLayout(model) +
+    '</div>';
+    return model;
+  }
+
+  function renderShipmentChildren(data) {
+    var rows = Array.isArray(data && data.child_detail_rows) ? data.child_detail_rows : [];
+    var childrenTab = document.getElementById('shipmentChildrenTab');
+    var children = document.getElementById('shipmentChildren');
+    childrenTab.textContent = '子单详情(' + rows.length + ')';
+    renderTable(children, [
+      { label: '子单号', key: 'child_waybill_no', mono: true },
+      { label: '扫描网点', key: 'scan_station' },
+      { label: '扫描类型', key: 'scan_type' },
+      { label: '扫描时间', key: 'scan_time', mono: true },
+      { label: '扫描轨迹', key: 'description', wide: true }
+    ], rows, '暂无子单详情');
+  }
+
+  function routeColumnsForShipment(data) {
+    if (data && (data.type === 'ronghui_tms' || data.type === 'ronghui')) {
+      return [
+        { label: '扫描网点', key: 'scan_station' },
+        { label: '扫描时间', key: 'scan_time', mono: true },
+        { label: '跟踪记录', key: 'description', wide: true },
+        { label: '货物跟踪查询电话', key: 'contact', wide: true, multiline: true }
+      ];
+    }
+    return [
+      { label: '扫描时间', key: 'scan_time', mono: true },
+      { label: '描述', key: 'description', wide: true },
+      { label: '货物跟踪查询电话', key: 'contact', wide: true, multiline: true }
+    ];
+  }
+
+  function activateShipmentTab(name) {
+    document.querySelectorAll('[data-shipment-tab]').forEach(function(tab) {
+      tab.classList.toggle('is-active', tab.getAttribute('data-shipment-tab') === name);
+    });
+    document.querySelectorAll('[data-shipment-panel]').forEach(function(panel) {
+      panel.hidden = panel.getAttribute('data-shipment-panel') !== name;
+    });
+    feather.replace();
+  }
+
+  function renderShipmentResult(data, options) {
+    options = options || {};
+    renderTable(document.getElementById('shipmentRoutes'), routeColumnsForShipment(data), data.route_rows || [], '暂无路由信息');
+    var model = renderShipmentDetails(data);
+    renderShipmentChildren(data);
+    renderHeroStats(model);
+    activateShipmentTab('routes');
+    showSection(resultShipment);
+  }
+
+  function renderTimeline(data) {
+    document.getElementById('timelineNumber').textContent = data.tracking_number;
+    var container = document.getElementById('timelineNodes');
+    container.innerHTML = '';
+
+    var routes = data.routes || [];
+    if (routes.length === 0) {
+      container.innerHTML = '<div class="tracking-empty">暂无物流轨迹信息</div>';
+      showSection(resultTimeline);
+      return;
+    }
+
+    routes.forEach(function(node) {
+      var div = document.createElement('div');
+      div.className = 'timeline-node';
+      var html = '<div class="timeline-dot"></div>';
+      html += '<div class="timeline-node-time">' + escapeHtml(node.time) + '</div>';
+      html += '<div class="timeline-node-desc">' + escapeHtml(node.description || node.desc) + '</div>';
+      if (node.location) {
+        html += '<div class="timeline-node-location">';
+        html += '<i data-feather="map-pin"></i> ' + escapeHtml(node.location);
+        html += '</div>';
+      }
+      div.innerHTML = html;
+      container.appendChild(div);
+    });
+
+    showSection(resultTimeline);
+  }
+
+  function renderContact(data) {
+    document.getElementById('contactNumber').textContent = data.tracking_number;
+    var contact = data.contact || {};
+    var card = document.getElementById('contactCard');
+    var phoneClean = (contact.phone || '').replace(/[^0-9+]/g, '');
+    var phoneRow = '';
+    if (contact.phone || contact.hours) {
+      phoneRow =
+        '<div class="tracking-contact-phone-row">' +
+          '<i data-feather="phone-call"></i>' +
+          (contact.phone ? '<span class="tracking-contact-phone-number"><a href="tel:' + escapeHtml(phoneClean) + '">' + escapeHtml(contact.phone) + '</a></span>' : '') +
+          (contact.hours ? '<span class="tracking-contact-hours">' + escapeHtml(contact.hours) + '</span>' : '') +
+        '</div>';
+    }
+
+    card.innerHTML =
+      '<div class="tracking-contact-card">' +
+        '<div class="tracking-contact-icon"><i data-feather="phone"></i></div>' +
+        '<div class="tracking-contact-info">' +
+          '<h3>' + escapeHtml(contact.company || '专线物流') + '</h3>' +
+          '<p class="tracking-contact-note">' + escapeHtml(contact.note || '专线单号不支持在线轨迹查询，请直接联系物流公司。') + '</p>' +
+          phoneRow +
+        '</div>' +
+      '</div>';
+
+    showSection(resultContact);
+  }
+
+  searchBtn.addEventListener('click', doSearch);
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
+  });
+  retryBtn.addEventListener('click', resetUI);
+  document.getElementById('closeShipment').addEventListener('click', resetUI);
+  document.getElementById('closeTimeline').addEventListener('click', resetUI);
+  document.getElementById('closeContact').addEventListener('click', resetUI);
+  document.querySelectorAll('[data-shipment-tab]').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      activateShipmentTab(tab.getAttribute('data-shipment-tab'));
+    });
+  });
+
+  if (input.value.trim()) {
+    input.dispatchEvent(new Event('input'));
+    window.setTimeout(doSearch, 0);
+  } else {
+    input.focus();
+  }
+})();
+</script>
+{% endblock %}

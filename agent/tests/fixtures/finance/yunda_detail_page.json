@@ -1,0 +1,33 @@
+{
+  "total": 2,
+  "rows": [
+    {
+      "id": "fixture-yd-001",
+      "serial_no": "fixture-serial-001",
+      "trade_time": "2026-07-11 23:59:59",
+      "first_fee_item": "结算",
+      "second_fee_item": "派送费",
+      "income": "",
+      "expend": "1.25",
+      "old_amount": "80.00",
+      "new_amount": "78.75",
+      "logistics_Id": "fixture-logistics-001",
+      "business_code": "fixture-business-001",
+      "remark": "fixture remark 001"
+    },
+    {
+      "id": "fixture-yd-002",
+      "serial_no": "fixture-serial-002",
+      "trade_time": "2026-07-12 00:00:00",
+      "first_fee_item": "结算",
+      "second_fee_item": "派送费",
+      "income": "2.00",
+      "expend": "",
+      "old_amount": "78.75",
+      "new_amount": "80.75",
+      "logistics_Id": "fixture-logistics-002",
+      "business_code": "fixture-business-002",
+      "remark": "fixture remark 002"
+    }
+  ]
+}

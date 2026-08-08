@@ -1,0 +1,393 @@
+{
+  "template_name": "template_new",
+  "description": "当前托运单的本地裁切模板，坐标基于预处理后横向图片。",
+  "preprocess": {
+    "target_size": [
+      2688,
+      1512
+    ],
+    "crop_padding_ratio": 0.006,
+    "document_expand_ratio": 0.12,
+    "document_expand_top_ratio": 0.22,
+    "document_expand_right_ratio": 0.05,
+    "document_expand_bottom_ratio": 0.06,
+    "document_expand_left_ratio": 0.05,
+    "blur_threshold": 90.0,
+    "min_brightness": 55.0,
+    "max_brightness": 230.0,
+    "min_document_fill_ratio": 0.42,
+    "anchor_alignment": {
+      "enabled": true,
+      "ransac_threshold": 10.0,
+      "min_matches": 4,
+      "min_inliers": 2,
+      "max_translation_ratio": 0.08,
+      "min_scale": 0.92,
+      "max_scale": 1.08,
+      "max_rotation_deg": 4.0,
+      "anchors": [
+        {
+          "name": "waybill_no_region",
+          "type": "red_region",
+          "bbox": [
+            0.8,
+            0.0,
+            0.98,
+            0.12
+          ],
+          "target_point": "center"
+        },
+        {
+          "name": "top_row_joint",
+          "type": "line_intersection",
+          "bbox": [
+            0.5,
+            0.03,
+            0.62,
+            0.1
+          ],
+          "vertical_select": "right",
+          "horizontal_select": "bottom"
+        },
+        {
+          "name": "goods_table_left_top",
+          "type": "line_intersection",
+          "bbox": [
+            0.0,
+            0.2,
+            0.08,
+            0.27
+          ],
+          "vertical_select": "left",
+          "horizontal_select": "top"
+        },
+        {
+          "name": "goods_table_right_top",
+          "type": "line_intersection",
+          "bbox": [
+            0.44,
+            0.2,
+            0.52,
+            0.27
+          ],
+          "vertical_select": "right",
+          "horizontal_select": "top"
+        },
+        {
+          "name": "settlement_joint",
+          "type": "line_intersection",
+          "bbox": [
+            0.81,
+            0.2,
+            0.88,
+            0.29
+          ],
+          "vertical_select": "left",
+          "horizontal_select": "top"
+        },
+        {
+          "name": "remark_left_corner",
+          "type": "line_intersection",
+          "bbox": [
+            0.04,
+            0.59,
+            0.12,
+            0.67
+          ],
+          "vertical_select": "left",
+          "horizontal_select": "top"
+        },
+        {
+          "name": "remark_right_corner",
+          "type": "line_intersection",
+          "bbox": [
+            0.92,
+            0.59,
+            0.99,
+            0.67
+          ],
+          "vertical_select": "right",
+          "horizontal_select": "top"
+        }
+      ]
+    }
+  },
+  "fields": [
+    {
+      "name": "waybill_no",
+      "label": "运单号",
+      "required": true,
+      "bbox": [
+        0.07,
+        0.0,
+        0.24,
+        0.06
+      ],
+      "crop_source": "ocr_input",
+      "crop_bbox": [
+        0.76,
+        0.05,
+        0.95,
+        0.16
+      ],
+      "hint": "右上角红色运单号/流水号，只取编号本身。"
+    },
+    {
+      "name": "receiver_address",
+      "label": "地址",
+      "required": true,
+      "bbox": [
+        0.585,
+        0.085,
+        0.975,
+        0.135
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "收货地址，大多为手写长文本，只取“地址:”后的内容。"
+    },
+    {
+      "name": "receiver_name",
+      "label": "收货人",
+      "required": true,
+      "bbox": [
+        0.585,
+        0.03,
+        0.755,
+        0.085
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "收货人姓名，多为手写，只取“收货人:”后的姓名。"
+    },
+    {
+      "name": "receiver_phone",
+      "label": "收货人电话",
+      "required": true,
+      "bbox": [
+        0.605,
+        0.12,
+        0.84,
+        0.18
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "收货人电话，常为数字，只取“电话:”后的号码。"
+    },
+    {
+      "name": "destination_site",
+      "label": "到达站",
+      "required": true,
+      "bbox": [
+        0.39,
+        0.018,
+        0.48,
+        0.082
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "顶部“到达站:”后的手写站点名称。"
+    },
+    {
+      "name": "open_date",
+      "label": "日期",
+      "required": true,
+      "bbox": [
+        0.755,
+        0.018,
+        0.965,
+        0.082
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "右上角开单日期，常见格式为年/月/日。"
+    },
+    {
+      "name": "sender_name",
+      "label": "发货人",
+      "required": false,
+      "bbox": [
+        0.08,
+        0.05,
+        0.31,
+        0.095
+      ],
+      "hint": "左上侧“发货人:”后的姓名，不是货物名称。"
+    },
+    {
+      "name": "sender_phone",
+      "label": "发货人电话",
+      "required": false,
+      "bbox": [
+        0.155,
+        0.11,
+        0.33,
+        0.19
+      ],
+      "crop_source": "processed",
+      "crop_bbox": [
+        0.12,
+        0.24,
+        0.34,
+        0.35
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "左侧“电话:”后的发货人联系电话，不是右侧收货人电话，也不是底部网点电话。"
+    },
+    {
+      "name": "goods_name_lines",
+      "label": "货物名称",
+      "required": true,
+      "bbox": [
+        0.02,
+        0.255,
+        0.145,
+        0.385
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "货物名称区域。若有多行货物名称，按行输出。"
+    },
+    {
+      "name": "package_type_lines",
+      "label": "包装种类",
+      "required": true,
+      "bbox": [
+        0.185,
+        0.255,
+        0.29,
+        0.385
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "包装种类区域。若有多行，按行输出并与货物名称对应。"
+    },
+    {
+      "name": "quantity_lines",
+      "label": "件数明细",
+      "required": true,
+      "bbox": [
+        0.295,
+        0.255,
+        0.37,
+        0.385
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "每个货物名称对应的件数，若多行则按行输出。"
+    },
+    {
+      "name": "weight_volume",
+      "label": "重量/体积",
+      "required": false,
+      "bbox": [
+        0.372,
+        0.255,
+        0.47,
+        0.385
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "重量/体积区域。"
+    },
+    {
+      "name": "delivery_method",
+      "label": "送货/自提",
+      "required": true,
+      "bbox": [
+        0.83,
+        0.205,
+        0.97,
+        0.285
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "右侧“送货/自提”区域，只返回被勾选或标记的一项。"
+    },
+    {
+      "name": "freight_fee",
+      "label": "运费",
+      "required": true,
+      "bbox": [
+        0.72,
+        0.55,
+        0.9,
+        0.64
+      ],
+      "crop_source": "ocr_input",
+      "crop_bbox": [
+        0.715,
+        0.54,
+        0.85,
+        0.62
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "右下角“小写¥:”后的运费金额，只取小写数值。"
+    },
+    {
+      "name": "pickup_fee",
+      "label": "接货费",
+      "required": false,
+      "bbox": [
+        0.66,
+        0.32,
+        0.83,
+        0.38
+      ],
+      "hint": "接货费金额。"
+    },
+    {
+      "name": "delivery_fee",
+      "label": "送货费",
+      "required": false,
+      "bbox": [
+        0.66,
+        0.38,
+        0.83,
+        0.44
+      ],
+      "hint": "送货费金额。"
+    },
+    {
+      "name": "transfer_fee",
+      "label": "中转费",
+      "required": false,
+      "bbox": [
+        0.66,
+        0.44,
+        0.83,
+        0.5
+      ],
+      "hint": "中转费金额。"
+    },
+    {
+      "name": "payment_method",
+      "label": "结算方式",
+      "required": true,
+      "bbox": [
+        0.815,
+        0.315,
+        0.95,
+        0.555
+      ],
+      "padding_ratio_x": 0.002,
+      "padding_ratio_y": 0.006,
+      "hint": "右侧“结算方式”区域，只返回实际结算方式，不要返回印刷标签。"
+    },
+    {
+      "name": "remark",
+      "label": "备注",
+      "required": false,
+      "bbox": [
+        0.1,
+        0.62,
+        0.74,
+        0.685
+      ],
+      "padding_ratio": 0.002,
+      "hint": "底部“备注:”后的手写备注内容，不要返回“备注”标签。"
+    }
+  ]
+}
