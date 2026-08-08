@@ -26,6 +26,10 @@ declare -A WORK_DIRS=(
   [agent]="/home/boyce/agent"
   [console]="/home/boyce/console"
 )
+declare -A PYTHON_BINS=(
+  [agent]="/home/boyce/agent/.venv/bin/python"
+  [console]="/home/boyce/console/.venv/bin/python"
+)
 declare -A UNIT_PATHS=()
 
 IFS=',' read -r -a REQUESTED_TARGETS <<<"${TARGETS_CSV}"
@@ -56,7 +60,7 @@ validate_environment() {
     return 1
   }
 
-  local target service actual_work_dir unit_path
+  local target service actual_work_dir unit_path runtime_python
   for target in "${REQUESTED_TARGETS[@]}"; do
     service="${SERVICES[$target]}"
     actual_work_dir="$(systemctl show "${service}" -p WorkingDirectory --value)"
@@ -70,6 +74,16 @@ validate_environment() {
       return 1
     }
     UNIT_PATHS[$target]="${unit_path}"
+
+    runtime_python="${PYTHON_BINS[$target]}"
+    [[ -x "${runtime_python}" ]] || {
+      echo "Missing runtime Python for ${target}: ${runtime_python}" >&2
+      return 1
+    }
+    "${runtime_python}" -c 'import sys; raise SystemExit(sys.version_info < (3, 8))' || {
+      echo "Unsupported runtime Python for ${target}: ${runtime_python}" >&2
+      return 1
+    }
   done
 
   local scope manifest relative
@@ -142,18 +156,23 @@ backup_managed_sources() {
 }
 
 run_static_preflight() {
-  python3 -m compileall -q \
-    "${STAGE_ROOT}/agent" \
-    "${STAGE_ROOT}/console" \
-    "${STAGE_ROOT}/shared"
+  local target runtime_python shared_python=""
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    runtime_python="${PYTHON_BINS[$target]}"
+    "${runtime_python}" -m compileall -q "${STAGE_ROOT}/${target}"
+    if [[ -z "${shared_python}" ]]; then
+      shared_python="${runtime_python}"
+    fi
+  done
+  "${shared_python}" -m compileall -q "${STAGE_ROOT}/shared"
 
   local migration_count
   migration_count="$(find "${STAGE_ROOT}" -type f -path '*/migrations/*.sql' | wc -l)"
   if [[ "${migration_count}" -gt 0 ]]; then
     if [[ -f "${STAGE_ROOT}/shared/db/migrate.py" ]]; then
-      python3 "${STAGE_ROOT}/shared/db/migrate.py" --check
+      "${shared_python}" "${STAGE_ROOT}/shared/db/migrate.py" --check
     elif [[ -f "${STAGE_ROOT}/agent/scripts/run_migrations.py" ]]; then
-      python3 "${STAGE_ROOT}/agent/scripts/run_migrations.py" --check
+      "${shared_python}" "${STAGE_ROOT}/agent/scripts/run_migrations.py" --check
     else
       echo "SQL migrations exist but no supported migration preflight runner was staged" >&2
       return 1
@@ -221,7 +240,7 @@ check_health() {
     for attempt in {1..15}; do
       if [[ "${target}" == "agent" ]]; then
         body="$(curl -fsS --max-time 5 http://127.0.0.1:9000/health 2>/dev/null || true)"
-        if RELEASE_BODY="${body}" RELEASE_EXPECTED="${RELEASE_SHA}" python3 - <<'PY'
+        if RELEASE_BODY="${body}" RELEASE_EXPECTED="${RELEASE_SHA}" "${PYTHON_BINS[agent]}" - <<'PY'
 import json
 import os
 
