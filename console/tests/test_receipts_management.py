@@ -856,7 +856,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("融辉收货人", record["detail_summary"]["recipient_name"])
         self.assertEqual("106", record["detail_summary"]["actual_weight"])
         self.assertEqual("tms_detail", record["detail_summary_source"])
-        self.assertEqual("/tms/query_waybill_detail", agent_calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/tms/query_waybill_detail", agent_calls[0]["endpoint"])
         self.assertEqual(["2003441429"], agent_calls[0]["payload"]["params"]["bill_codes"])
 
     def test_receipt_detail_uses_feishu_exact_search_only_after_local_yunda_missing(self):
@@ -908,7 +908,7 @@ class ReceiptRouteTests(unittest.TestCase):
         record = json.loads(handler.wfile.getvalue().decode("utf-8"))["data"]["record"]
         self.assertEqual("飞书收货人", record["detail_summary"]["recipient_name"])
         self.assertEqual("feishu_bitable", record["detail_summary_source"])
-        self.assertEqual("/run-tool", agent_calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/tools/run", agent_calls[0]["endpoint"])
         self.assertEqual("feishu_operation", agent_calls[0]["payload"]["tool_name"])
         self.assertEqual("search_records", agent_calls[0]["payload"]["params"]["action"])
         self.assertEqual(
@@ -1109,7 +1109,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("app.urlopen", return_value=response) as mocked_urlopen:
+        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1122,7 +1122,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("app.urlopen", return_value=response) as mocked_urlopen:
+        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1138,7 +1138,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("app.urlopen", return_value=response) as mocked_urlopen:
+        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://tms.ronghuiwl.com/rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1176,7 +1176,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_attachment_rejects_non_whitelisted_direct_image_host(self):
         app = _build_app(_ReceiptRepo())
 
-        with patch("app.urlopen") as mocked_urlopen:
+        with patch("console.services.waybills_receipts.urlopen") as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://example.test/k13/demo.jpg",
@@ -1244,7 +1244,7 @@ class ReceiptRouteTests(unittest.TestCase):
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertEqual("/tms/receipts_sync", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/receipts_sync", app.last_call["endpoint"])
         self.assertEqual("send", app.last_call["payload"]["params"]["direction"])
         self.assertLess(app.last_call["payload"]["timeout_sec"], 900)
         self.assertLess(app.last_call["timeout"], 900)
@@ -1305,7 +1305,7 @@ class ReceiptRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(HTTPStatus.OK, handler.status)
-        self.assertEqual("/tms/yunda_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/yunda_waybill_proxy", app.last_call["endpoint"])
         self.assertEqual("/receipts/yunda/live", app.last_call["payload"]["params"]["proxy_prefix"])
         self.assertEqual("/ky_inms/public/index.php/business/waybill/mailing/index.html", app.last_call["payload"]["params"]["path"])
 
@@ -1338,7 +1338,7 @@ class ReceiptRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(HTTPStatus.OK, handler.status)
-        self.assertEqual("/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
+        self.assertEqual("/internal/v1/tms/ronghui_waybill_proxy", app.last_call["endpoint"])
         self.assertEqual("/receipts/ronghui/live", app.last_call["payload"]["params"]["proxy_prefix"])
         self.assertEqual("", app.last_call["payload"]["params"]["path"])
         self.assertEqual("", app.last_call["payload"]["params"]["query"])

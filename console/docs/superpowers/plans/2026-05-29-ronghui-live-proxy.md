@@ -15,7 +15,7 @@
 **Files:**
 - Create: `agent/agent/tms_runtime/scripts/ronghui_waybill_proxy.py`
 - Modify: `agent/agent/tms_runtime/dispatch.py`
-- Test: `agent/tests/test_tms_runtime_and_tools.py`
+- Test: `agent/tests/test_tms_waybill_runtime.py`
 
 - [x] Add tests proving the proxy resolves the dynamic menu entry for menu id `1622`, rewrites same-origin Ronghui URLs to `/ocr/ronghui/live`, filters sensitive headers, and rejects non-Ronghui URLs.
 - [x] Implement `ronghui_waybill_proxy.run_once(params)` with `method`, `path`, `query`, `headers`, `body_base64`, `content_type`, and `proxy_prefix`.
@@ -48,7 +48,7 @@
 
 **Files:**
 - Test: `console/tests/test_yunda_entry.py`
-- Test: `agent/tests/test_tms_runtime_and_tools.py`
+- Test: `agent/tests/test_tms_waybill_runtime.py`
 
 - [x] Run focused Console tests.
 - [x] Run focused Agent tests.

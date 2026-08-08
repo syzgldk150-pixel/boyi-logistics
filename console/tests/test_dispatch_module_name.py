@@ -26,7 +26,7 @@ class DispatchModuleNameTests(unittest.TestCase):
         self.assertNotIn("车辆调度与比价", dispatch_template)
 
     def test_project_module_registry_uses_huolala_name(self):
-        app_source = (CONSOLE_DIR / "app.py").read_text(encoding="utf-8")
+        app_source = (CONSOLE_DIR / "services" / "documents.py").read_text(encoding="utf-8")
 
         self.assertIn('name="货拉拉调度"', app_source)
         self.assertNotIn('name="车辆调度"', app_source)

@@ -1,4 +1,4 @@
-﻿---
+---
 module: 通用
 type: 编码规范
 tags: [Decimal精度, 财务数据, 自验证, 数据校验, Pandas]

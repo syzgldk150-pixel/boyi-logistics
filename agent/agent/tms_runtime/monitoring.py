@@ -35,6 +35,13 @@ _SNAPSHOT_REFRESHING: set[tuple[str, ...]] = set()
 _DAILY_SIGN_REFRESHING: set[str] = set()
 _CACHE_META_KEYS = {"cached", "stale", "refreshing", "cache_age_sec"}
 _DAILY_CRON_RE = re.compile(r"^\s*(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*\s*$")
+_feishu_operation = None
+
+
+def configure_feishu_operation(callback) -> None:
+    """Inject the Feishu port from the service composition root."""
+    global _feishu_operation
+    _feishu_operation = callback
 
 
 def _now_label() -> str:
@@ -89,9 +96,9 @@ def get_workflow_resource(resource_key: str) -> dict | None:
 
 
 def feishu_operation(action: str, params: dict) -> dict:
-    """Lazily call Feishu CLI helpers so monitoring does not expose tokens."""
-    from tools.feishu_cli_tool import feishu_operation as _feishu_operation
-
+    """Call the configured Feishu port without importing the tools package."""
+    if _feishu_operation is None:
+        raise RuntimeError("Feishu monitoring operation is not configured")
     return _feishu_operation(action, params)
 
 

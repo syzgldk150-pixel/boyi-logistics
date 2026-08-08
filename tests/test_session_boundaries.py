@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from agent.tms_runtime.session_adapters import RonghuiSessionAdapter, YundaSessionAdapter
 from agent.tms_runtime.session_models import safe_profile_name
@@ -11,17 +12,7 @@ from agent.tms_runtime.session_validators import looks_like_ronghui_login
 
 
 class _Broker:
-    def _send_code_ronghui(self):
-        return {"provider": "ronghui", "action": "send"}
-
-    def _submit_code_ronghui(self, code):
-        return {"provider": "ronghui", "action": "submit", "code": code}
-
-    def _send_code_yunda(self):
-        return {"provider": "yunda", "action": "send"}
-
-    def _submit_code_yunda(self, code):
-        return {"provider": "yunda", "action": "submit", "code": code}
+    pass
 
 
 class _Response:
@@ -33,10 +24,27 @@ class _Response:
 class SessionBoundaryTests(unittest.TestCase):
     def test_provider_adapters_delegate_to_the_selected_flow(self):
         broker = _Broker()
-        self.assertEqual("ronghui", RonghuiSessionAdapter(broker).send_code()["provider"])
-        self.assertEqual("123456", RonghuiSessionAdapter(broker).submit_code("123456")["code"])
-        self.assertEqual("yunda", YundaSessionAdapter(broker).send_code()["provider"])
-        self.assertEqual("654321", YundaSessionAdapter(broker).submit_code("654321")["code"])
+        with (
+            patch.object(RonghuiSessionAdapter, "send_ronghui_code", return_value={"provider": "ronghui"}),
+            patch.object(
+                RonghuiSessionAdapter,
+                "submit_ronghui_code",
+                side_effect=lambda code: {"provider": "ronghui", "code": code},
+            ),
+            patch.object(YundaSessionAdapter, "send_yunda_code", return_value={"provider": "yunda"}),
+            patch.object(
+                YundaSessionAdapter,
+                "submit_yunda_code",
+                side_effect=lambda code: {"provider": "yunda", "code": code},
+            ),
+        ):
+            self.assertEqual("ronghui", RonghuiSessionAdapter(broker).send_code()["provider"])
+            self.assertEqual("123456", RonghuiSessionAdapter(broker).submit_code("123456")["code"])
+            self.assertEqual("yunda", YundaSessionAdapter(broker).send_code()["provider"])
+            self.assertEqual("654321", YundaSessionAdapter(broker).submit_code("654321")["code"])
+
+        self.assertEqual("agent.tms_runtime.session_ronghui_adapter", RonghuiSessionAdapter.__module__)
+        self.assertEqual("agent.tms_runtime.session_yunda_adapter", YundaSessionAdapter.__module__)
 
     def test_state_store_isolated_from_login_flow(self):
         with TemporaryDirectory() as temp_dir:

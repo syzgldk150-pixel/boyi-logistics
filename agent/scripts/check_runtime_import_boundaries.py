@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+AGENT_PACKAGE_ROOT = PROJECT_ROOT / "agent"
 SCRIPT_ROOT = PROJECT_ROOT / "agent" / "tms_runtime" / "scripts"
 RUNTIME_ROOTS = (PROJECT_ROOT / "agent", PROJECT_ROOT / "tools", PROJECT_ROOT.parent / "console", PROJECT_ROOT.parent / "shared")
 ALLOWED_LEGACY_ISOLATION = {
@@ -47,6 +48,19 @@ def main() -> int:
                         "get_infor",
                     }:
                         problems.append(f"bare runtime import: {path.relative_to(PROJECT_ROOT.parent)}:{node.lineno}")
+            if path.is_relative_to(AGENT_PACKAGE_ROOT):
+                tree = ast.parse(source, filename=str(path))
+                for node in ast.walk(tree):
+                    imported_roots: set[str] = set()
+                    if isinstance(node, ast.Import):
+                        imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        imported_roots.add(node.module.split(".", 1)[0])
+                    for imported_root in sorted(imported_roots & {"feishu", "tools"}):
+                        problems.append(
+                            f"agent package depends on {imported_root}: "
+                            f"{path.relative_to(PROJECT_ROOT.parent)}:{node.lineno}"
+                        )
     if problems:
         raise SystemExit("\n".join(problems))
     print("runtime_import_boundaries=ok")

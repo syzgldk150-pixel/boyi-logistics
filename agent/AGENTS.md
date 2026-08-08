@@ -1,4 +1,4 @@
-﻿# 物流 Agent 系统
+# 物流 Agent 系统
 
 > 企业级物流业务自动化系统，包含价格采集、财务对账、OCR识别、车辆调度、AI客服五大模块。
 > 远期目标：LangChain/LangGraph Agent 系统整合。
@@ -14,7 +14,7 @@
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
-- Agent 依赖以 `requirements.txt` 和 `requirements.lock` 为准；提交前执行 Ruff、工具清单和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
+- Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；发布为每个 Git SHA 构建独立虚拟环境并原子切换，失败时恢复旧环境和源码。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
 
 ## 本地 WSL 与 ECS 运行隔离
 
@@ -29,6 +29,9 @@
 - Console、TMS 工具和飞书内部调用必须发送 `X-Agent-Internal-Token`，其值来自 `AGENT_INTERNAL_API_TOKEN`；缺失配置必须显式失败。
 - 只有 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*` 属于公开路径。统一策略在 `agent/http_security.py`，不得在各路由重复实现。
 - 所有日志和持久化审计通过 `shared/redaction.py` 脱敏；原始请求体、密码、Token、Cookie 和 Authorization 不得落盘。
+- `agent/agent/` 不得导入 `tools` 或 `feishu`；直接工具执行器和飞书告警回调统一在 `main.py` 注入，TMS 会话事件通过 `shared/runtime_events.py` 发布。
+- `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。
+- 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
 
 ## 快速定位入口
 
@@ -136,7 +139,7 @@ docs/
 ## 项目本地控制台
 
 - 本地入口：`http://127.0.0.1:8765/`
-- 实时消息监控大盘：首页 `/`，Console 通过 `/monitoring/summary`、`/monitoring/stream`、`/monitoring/detail-link` 代理 Agent `/admin/monitoring/snapshot` 和 `/admin/monitoring/detail-link`；Agent 只返回分类、数量、状态和非敏感原系统跳转标识。
+- 实时消息监控大盘：首页 `/`，Console 通过 `/monitoring/summary`、`/monitoring/stream`、`/monitoring/detail-link` 代理 Agent `/internal/v1/admin/monitoring/snapshot` 和 `/internal/v1/admin/monitoring/detail-link`；Agent 只返回分类、数量、状态和非敏感原系统跳转标识。
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
 - 韵达录入页签：`http://127.0.0.1:8765/ocr?mode=yunda`，Console 同源 `/ocr/yunda/live/...` 转发 GET/POST/PUT/PATCH/DELETE 到 Agent `/tms/yunda_waybill_proxy`，Agent 使用 `yunda` 登录态代理韵达原始 `kyinms.yunda56.com/ky_inms/public/...` 页面与接口，成功保存后由 Console 写入本地 `waybills`，并通过保存响应里的 `shipnow_autoprint_url` 打开 Console 本地热敏打印页。
 - 融辉录入页签：`http://127.0.0.1:8765/ocr?mode=ronghui`，Console 只加载当前录单模式 iframe，非当前模式原页延迟到切换后加载；同源 `/ocr/ronghui/live` 转发 GET/POST/PUT/PATCH/DELETE 到 Agent `/tms/ronghui_waybill_proxy`，Agent 使用大祥报价 `price` 登录态以浏览器 XHR 头解析菜单 id `1622` 的融辉原始 `/widget/home` 运单录入页，菜单或页面返回登录页时透传 `AUTH_REQUIRED`，融辉原页代理目标在调度层允许 12 并发以承接浏览器首屏接口突发，固定字典/站点/客户下拉 GET 初始化接口在 Agent 侧短缓存 5 分钟且忽略 `_` 缓存破坏参数，运行时代理脚本会同步移除这些安全初始化接口 URL 的 `_` 参数以启用 Chrome 缓存，不缓存生成单号、日期、保存提交或带关键字的地址查询，`/static/...` 大 JS/图片资源直连融辉原站以避免代理大文件，CSS 与字体资源保留同源代理以避免字体 CORS 导致 MiniUI 图标显示异常，静态 CSS/字体响应带 `Cache-Control: public, max-age=86400` 供 Console 保留，并把大祥报价登录态里的必要 `userInfo` 字段桥接到同源 Cookie，初始地图 iframe 延迟到目的地/派件网点地图相关操作时再加载，重写允许的业务页面/接口链接、JSON/XML/XHTML/text/SVG 响应 URL（含 `\/` 斜杠转义形式）、协议相对 URL、跳转响应头 `Location/Refresh`、移除响应头和 HTML meta CSP、静态和动态 meta refresh、静态和动态 `<base href>`、静态和动态 iframe `srcdoc`、静态和动态 `<object data>`、组件 `url/data-url/data-src/data-href/poster/background` 属性、动态样式 URL（`style/cssText/setProperty/insertRule`，含 `url(...)` 与 `@import`）、动态 XHR/fetch/jQuery Ajax/MiniUI `mini.open`/`mini.ajax`/Beacon/SSE/Worker/表单提交、DOM URL 属性（含图片、脚本、iframe、表单、媒体、source/track/embed/object、area/input image）、动态 HTML 注入入口（`innerHTML/outerHTML/insertAdjacentHTML/document.write/writeln`）、DOM 子树和 URL 属性变化扫描（MutationObserver）、`window.open` URL、`history.pushState/replaceState` URL 和静态 `location.assign/replace` 参数，成功保存后由 Console 记录请求/响应快照。

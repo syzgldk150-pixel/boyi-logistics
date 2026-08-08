@@ -1,0 +1,1005 @@
+"""Console application services grouped by business responsibility."""
+
+from console.app_support import *  # noqa: F403
+
+
+class AuthServiceMixin:
+    def _ensure_authorized(self, handler: BaseHTTPRequestHandler) -> bool:
+        user = self._authenticated_user_from_request(handler)
+        if user:
+            return True
+
+        if self._is_ajax_request(handler):
+            self._send_json(
+                handler,
+                HTTPStatus.UNAUTHORIZED,
+                {"ok": False, "message": "请先登录后台。", "login_url": "/login"},
+            )
+            return False
+
+        next_url = quote(handler.path or "/", safe="")
+        self._redirect(handler, f"/login?next={next_url}")
+        return False
+
+    def _authenticated_user_from_request(self, handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
+        legacy_user = self._legacy_basic_auth_user(handler)
+        if legacy_user:
+            self._set_current_admin_user(handler, legacy_user)
+            return legacy_user
+
+        session_id = self._session_id_from_cookie(handler)
+        if not session_id:
+            return None
+        session = self.repository.get_admin_session(session_id)
+        if not session:
+            return None
+        if not bool(session.get("is_active")):
+            self.repository.delete_admin_session(session_id)
+            return None
+
+        expires_at = self._coerce_datetime(session.get("expires_at"))
+        if expires_at <= datetime.now():
+            self.repository.delete_admin_session(session_id)
+            return None
+
+        self.repository.touch_admin_session(session_id)
+        user = {
+            "id": int(session.get("user_id") or 0),
+            "username": str(session.get("username") or ""),
+            "display_name": str(session.get("display_name") or ""),
+            "avatar_path": str(session.get("avatar_path") or ""),
+            "avatar_url": self._admin_avatar_url(str(session.get("avatar_path") or "")),
+            "is_legacy_basic_auth": False,
+        }
+        self._set_current_admin_user(handler, user)
+        return user
+
+    def _legacy_basic_auth_user(self, handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
+        username = getattr(self.settings, "basic_auth_user", "")
+        password = getattr(self.settings, "basic_auth_password", "")
+        if not username or not password:
+            return None
+
+        auth_header = handler.headers.get("Authorization", "")
+        expected_token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        if not hmac.compare_digest(auth_header, f"Basic {expected_token}"):
+            return None
+        return {
+            "id": 0,
+            "username": username,
+            "display_name": username,
+            "avatar_path": "",
+            "avatar_url": "",
+            "is_legacy_basic_auth": True,
+        }
+
+    def _set_current_admin_user(self, handler: BaseHTTPRequestHandler, user: dict[str, Any]) -> None:
+        setattr(handler, "current_admin_user", user)
+        _CURRENT_ADMIN_USER.set(user)
+
+    def _session_id_from_cookie(self, handler: BaseHTTPRequestHandler) -> str:
+        raw_cookie = str(handler.headers.get("Cookie") or "")
+        if not raw_cookie:
+            return ""
+        cookie = SimpleCookie()
+        try:
+            cookie.load(raw_cookie)
+        except Exception:
+            return ""
+        morsel = cookie.get(ADMIN_SESSION_COOKIE)
+        if morsel is None:
+            return ""
+        return self._decode_session_cookie(morsel.value)
+
+    def _decode_session_cookie(self, cookie_value: str) -> str:
+        raw = str(cookie_value or "")
+        session_id, separator, signature = raw.partition(".")
+        if not session_id or not separator or not signature:
+            return ""
+        expected = self._sign_session_id(session_id)
+        if not hmac.compare_digest(signature, expected):
+            return ""
+        return session_id
+
+    def _encode_session_cookie(self, session_id: str) -> str:
+        return f"{session_id}.{self._sign_session_id(session_id)}"
+
+    def _sign_session_id(self, session_id: str) -> str:
+        secret = getattr(self, "_session_secret", "") or getattr(self.settings, "session_secret", "")
+        return hmac.new(secret.encode("utf-8"), session_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _build_session_cookie_header(self, cookie_value: str, *, max_age: int) -> str:
+        secure = "; Secure" if getattr(self.settings, "session_cookie_secure", False) else ""
+        return (
+            f"{ADMIN_SESSION_COOKIE}={cookie_value}; Path=/; HttpOnly; "
+            f"SameSite=Lax; Max-Age={max_age}{secure}"
+        )
+
+    def _clear_session_cookie_header(self) -> str:
+        secure = "; Secure" if getattr(self.settings, "session_cookie_secure", False) else ""
+        return (
+            f"{ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; "
+            f"Max-Age=0{secure}"
+        )
+
+    def _coerce_datetime(self, value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return datetime.min
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return datetime.min
+
+    def _clean_next_url(self, raw_url: str) -> str:
+        candidate = str(raw_url or "").strip() or "/"
+        parsed = urlparse(candidate)
+        if parsed.scheme or parsed.netloc or not candidate.startswith("/") or candidate.startswith("//"):
+            return "/"
+        return candidate
+
+    def _render_login(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
+        user = self._authenticated_user_from_request(handler)
+        next_url = self._clean_next_url(query.get("next", ["/"])[0])
+        if user:
+            self._redirect(handler, next_url)
+            return
+
+        template = self.template_env.get_template("login.html")
+        body = template.render(
+            app_title=self.settings.app_title,
+            next_url=next_url,
+            username_value=query.get("username", [""])[0],
+            message=query.get("message", [""])[0],
+            message_kind=query.get("kind", ["info"])[0],
+            has_admin_users=self.repository.count_admin_users() > 0,
+        )
+        self._send_html(handler, body)
+
+    def _handle_login(self, handler: BaseHTTPRequestHandler) -> None:
+        values = self._parse_urlencoded_form(handler)
+        username = str(values.get("username", "") or "").strip()
+        password = str(values.get("password", "") or "")
+        next_url = self._clean_next_url(values.get("next", "/"))
+        user = self.repository.get_admin_user_by_username(username)
+        if not user or not bool(user.get("is_active")) or not verify_admin_password(password, str(user.get("password_hash") or "")):
+            template = self.template_env.get_template("login.html")
+            body = template.render(
+                app_title=self.settings.app_title,
+                next_url=next_url,
+                username_value=username,
+                message="账号或密码不正确。",
+                message_kind="warning",
+                has_admin_users=self.repository.count_admin_users() > 0,
+            )
+            self._send_html(handler, body, status=HTTPStatus.UNAUTHORIZED)
+            return
+
+        now = datetime.now()
+        ttl_hours = getattr(self.settings, "session_ttl_hours", 12)
+        expires_at = now + timedelta(hours=ttl_hours)
+        self.repository.delete_expired_admin_sessions(now)
+        session_id = secrets.token_urlsafe(32)
+        self.repository.create_admin_session(
+            session_id=session_id,
+            user_id=int(user["id"]),
+            expires_at=expires_at,
+        )
+        self.repository.record_admin_login(int(user["id"]))
+        cookie_value = self._encode_session_cookie(session_id)
+        cookie_header = self._build_session_cookie_header(
+            cookie_value,
+            max_age=int(ttl_hours) * 3600,
+        )
+        self._redirect(handler, next_url, headers=[("Set-Cookie", cookie_header)])
+
+    def _handle_logout(self, handler: BaseHTTPRequestHandler) -> None:
+        session_id = self._session_id_from_cookie(handler)
+        if session_id:
+            self.repository.delete_admin_session(session_id)
+        self._redirect(
+            handler,
+            "/login?message=%E5%B7%B2%E9%80%80%E5%87%BA%E5%90%8E%E5%8F%B0%E3%80%82&kind=success",
+            headers=[("Set-Cookie", self._clear_session_cookie_header())],
+        )
+
+    def _render_admin_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
+        template = self.template_env.get_template("admin_accounts.html")
+        body = template.render(
+            app_title=self.settings.app_title,
+            users=self.repository.list_admin_users(),
+            message=query.get("message", [""])[0],
+            message_kind=query.get("kind", ["info"])[0],
+        )
+        self._send_html(handler, body)
+
+    def _render_automation_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
+        accounts, account_warning = self._fetch_automation_accounts(force=False, prefer_cached=True)
+        account_groups = self._automation_account_groups(accounts)
+        account_system_counts = {group["system"]: group["count"] for group in account_groups}
+        valid_systems = set(AUTOMATION_ACCOUNT_SYSTEM_ORDER) | set(account_system_counts)
+        requested_system = str(query.get("system", [""])[0] or "").strip().lower()
+        account_filter = requested_system if requested_system in valid_systems else ""
+        account_rows = [account for group in account_groups for account in group["accounts"]]
+        account_tab_systems = [
+            system
+            for system in AUTOMATION_ACCOUNT_SYSTEM_ORDER
+            if account_system_counts.get(system, 0) > 0
+        ]
+        account_tab_systems.extend(
+            sorted(
+                system
+                for system, count in account_system_counts.items()
+                if count > 0 and system not in AUTOMATION_ACCOUNT_SYSTEM_ORDER
+            )
+        )
+        template = self.template_env.get_template("automation_accounts.html")
+        body = template.render(
+            app_title=self.settings.app_title,
+            accounts=accounts,
+            account_groups=account_groups,
+            account_rows=account_rows,
+            account_filter=account_filter,
+            account_filter_label=(
+                f"{AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(account_filter, account_filter)} "
+                if account_filter
+                else ""
+            ),
+            account_total_count=len(accounts),
+            account_system_counts=account_system_counts,
+            account_tab_systems=account_tab_systems,
+            account_system_labels=AUTOMATION_ACCOUNT_SYSTEM_LABELS,
+            account_system_order=AUTOMATION_ACCOUNT_SYSTEM_ORDER,
+            account_warning=account_warning,
+            message=query.get("message", [""])[0],
+            message_kind=query.get("kind", ["info"])[0],
+        )
+        self._send_html(handler, body)
+
+    def _query_bool(self, query: dict | None, name: str, default: bool = False) -> bool:
+        raw = str((query or {}).get(name, ["1" if default else ""])[0] or "").strip().lower()
+        if not raw:
+            return default
+        return raw in {"1", "true", "yes", "on"}
+
+    def _handle_automation_account_status_get(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        query: dict | None = None,
+    ) -> None:
+        prefix = "/automation-accounts/"
+        suffix = "/status"
+        account_id = unquote(path[len(prefix) : -len(suffix)].strip("/"))
+        if not account_id:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "message": "账号不存在。", "kind": "warning"},
+            )
+            return
+        status_result = self._fetch_automation_account_status_state(
+            account_id,
+            force=self._query_bool(query, "force", True),
+        )
+        if not status_result.get("ok"):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "ok": False,
+                    "message": status_result.get("message") or "账号状态获取失败。",
+                    "kind": "warning",
+                },
+            )
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "state": status_result.get("state") or {}})
+
+    def _handle_automation_accounts_statuses_get(
+        self,
+        handler: BaseHTTPRequestHandler,
+        query: dict | None = None,
+    ) -> None:
+        accounts, warning = self._fetch_automation_accounts(
+            force=self._query_bool(query, "force", False),
+            prefer_cached=self._query_bool(query, "prefer_cached", True),
+        )
+        if warning:
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": warning, "accounts": []})
+            return
+        meta = getattr(self, "_automation_accounts_cache_meta", {})
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "accounts": accounts, **meta})
+
+    def _fetch_automation_accounts(
+        self,
+        *,
+        force: bool = True,
+        prefer_cached: bool = False,
+    ) -> tuple[list[dict[str, Any]], str]:
+        query_params = {}
+        if force:
+            query_params["force"] = "1"
+        if prefer_cached:
+            query_params["prefer_cached"] = "1"
+        endpoint = "/internal/v1/admin/accounts"
+        if query_params:
+            endpoint = f"{endpoint}?{urlencode(query_params)}"
+        self._automation_accounts_cache_meta = {}
+        result = self._agent_request("GET", endpoint, timeout=12 if prefer_cached else 45 if force else 12)
+        if not result.get("ok"):
+            return [], normalize_feedback_text(result.get("error") or "Agent 当前不可达，无法获取业务账号状态。")
+        payload = result.get("data")
+        if not isinstance(payload, dict):
+            return [], "Agent 账号接口返回了无效数据。"
+        if payload.get("ok") is False:
+            return [], normalize_feedback_text(payload.get("message") or payload.get("error") or "Agent 账号接口调用失败。")
+        raw_accounts = payload.get("accounts")
+        if not isinstance(raw_accounts, list):
+            return [], "Agent 账号接口缺少 accounts 列表。"
+        self._automation_accounts_cache_meta = {
+            key: payload[key]
+            for key in ("cached", "stale", "refreshing", "cache_age_sec")
+            if key in payload
+        }
+
+        accounts: list[dict[str, Any]] = []
+        for item in raw_accounts:
+            if not isinstance(item, dict):
+                continue
+            account = dict(item)
+            system = str(account.get("system") or "").strip().lower()
+            if system == "price":
+                system = "ronghui"
+                account["account_purpose"] = account.get("account_purpose") or "price"
+            account["system"] = system
+            account["system_label"] = str(
+                account.get("system_label")
+                or AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(system, system or "-")
+            )
+            if system == "ronghui":
+                account["system_label"] = AUTOMATION_ACCOUNT_SYSTEM_LABELS["ronghui"]
+            account["name"] = str(account.get("name") or account.get("account_id") or "").strip()
+            status = dict(account.get("status") if isinstance(account.get("status"), dict) else {})
+            credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+            safe_credentials = dict(credentials)
+            safe_credentials["password"] = ""
+            has_manual_credentials = bool(
+                safe_credentials.get("has_manual_credentials")
+                or status.get("has_manual_credentials")
+            )
+            has_env_credentials = bool(
+                safe_credentials.get("has_env_credentials")
+                or status.get("has_env_credentials")
+            )
+            credential_source = str(
+                safe_credentials.get("credential_source")
+                or status.get("credential_source")
+                or ""
+            ).strip()
+            has_saved_credentials = bool(
+                safe_credentials.get("has_saved_credentials")
+                or status.get("has_saved_credentials")
+                or has_manual_credentials
+                or has_env_credentials
+            )
+            if has_manual_credentials:
+                credentials_label = "已保存账号密码"
+                credentials_tone = "success"
+            elif has_env_credentials or credential_source == "env":
+                credentials_label = "环境变量凭据"
+                credentials_tone = "success"
+            else:
+                credentials_label = "未保存账号密码"
+                credentials_tone = "warning"
+            raw_status_value = str(status.get("status") or "").strip()
+            status_label = str(status.get("label") or "")
+            status_tone = str(status.get("status_tone") or "")
+            status_note = ""
+            if bool(account.get("session_capable")) and raw_status_value == "authenticated" and not has_saved_credentials:
+                status_label = "登录态有效"
+                status_tone = "warning"
+                status_note = "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。"
+            elif bool(account.get("session_capable")) and raw_status_value == "authenticated" and (has_env_credentials or credential_source == "env"):
+                status_note = "账号密码来自环境变量，编辑框不会回显。"
+            status["label"] = status_label
+            status["status_tone"] = status_tone
+            status["status_note"] = status_note
+            status["has_saved_credentials"] = has_saved_credentials
+            status["has_manual_credentials"] = has_manual_credentials
+            status["has_env_credentials"] = has_env_credentials
+            status["credential_source"] = credential_source
+            account["status"] = status
+            account["credentials"] = safe_credentials
+            account["status_label"] = status_label
+            account["status_tone"] = status_tone
+            account["status_note"] = status_note
+            account["credential_source"] = credential_source
+            account["has_saved_credentials"] = has_saved_credentials
+            account["has_manual_credentials"] = has_manual_credentials
+            account["has_env_credentials"] = has_env_credentials
+            account["credentials_label"] = credentials_label
+            account["credentials_tone"] = credentials_tone
+            accounts.append(account)
+        return accounts, ""
+
+    def _fetch_automation_account_status_state(self, account_id: str, *, force: bool = True) -> dict[str, Any]:
+        quoted_id = quote(str(account_id or "").strip(), safe="")
+        if not quoted_id:
+            return {"ok": False, "message": "账号不存在。"}
+        suffix = "?force=1" if force else ""
+        result = self._agent_request("GET", f"/internal/v1/admin/accounts/{quoted_id}/status{suffix}", timeout=35)
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "message": f"Agent 调用失败：{normalize_feedback_text(result.get('error') or 'unknown error')}",
+            }
+        payload = result.get("data")
+        if not isinstance(payload, dict):
+            return {"ok": False, "message": "Agent 账号状态接口返回了无效数据。"}
+        if payload.get("ok") is False:
+            return {
+                "ok": False,
+                "message": normalize_feedback_text(
+                    payload.get("message") or payload.get("error") or "账号状态获取失败。"
+                ),
+            }
+        state = dict(payload)
+        state.pop("ok", None)
+        return {"ok": True, "state": state}
+
+    def _automation_account_groups(self, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows_by_system: dict[str, list[dict[str, Any]]] = {
+            system: [] for system in AUTOMATION_ACCOUNT_SYSTEM_ORDER
+        }
+        for account in accounts:
+            system = str(account.get("system") or "").strip().lower()
+            rows_by_system.setdefault(system, []).append(account)
+
+        groups: list[dict[str, Any]] = []
+        for system in [*AUTOMATION_ACCOUNT_SYSTEM_ORDER, *sorted(set(rows_by_system) - set(AUTOMATION_ACCOUNT_SYSTEM_ORDER))]:
+            rows = sorted(
+                rows_by_system.get(system, []),
+                key=lambda item: (
+                    not bool(item.get("is_default")),
+                    not bool(item.get("is_active", True)),
+                    str(item.get("name") or item.get("account_id") or ""),
+                ),
+            )
+            groups.append(
+                {
+                    "system": system,
+                    "label": AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(system, system or "-"),
+                    "accounts": rows,
+                    "count": len(rows),
+                }
+            )
+        return groups
+
+    def _automation_account_options_by_system(self, accounts: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        options: dict[str, list[dict[str, Any]]] = {}
+        for account in accounts:
+            if not bool(account.get("is_active", True)):
+                continue
+            system = str(account.get("system") or "").strip().lower()
+            options.setdefault(system, []).append(account)
+        for system, rows in options.items():
+            rows.sort(
+                key=lambda item: (
+                    not bool(item.get("is_default")),
+                    str(item.get("name") or item.get("account_id") or ""),
+                )
+            )
+        return options
+
+    def _automation_task_account_roles(
+        self,
+        task_id: str,
+        workflow: dict[str, Any] | None = None,
+        tool_name: str = "",
+        provider: str = "",
+    ) -> list[dict[str, Any]]:
+        workflow = workflow or automation_workflow_definition(task_id)
+        raw_roles = workflow.get("account_roles")
+        roles = raw_roles if isinstance(raw_roles, list) else []
+        if not roles:
+            normalized = normalize_task_group_id(task_id)
+            tool_name_value = str(tool_name or workflow.get("tool_name") or "").strip()
+            provider_value = str(provider or "").strip().lower()
+            if tool_name_value.startswith("r7_") or normalized.startswith("r7_"):
+                roles = [{"label": "运行账号", "field": "account_id", "system": "r7", "default_account_id": "r7_default"}]
+            elif tool_name_value == "sync_daily_should_sign" or normalized.startswith("daily_sign"):
+                roles = [
+                    {"label": "R13应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
+                    {"label": "补地址账号", "field": "detail_account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
+                ]
+            elif provider_value == "yunda" or tool_name_value.startswith("sync_yunda_"):
+                roles = [{"label": "运行账号", "field": "account_id", "system": "yunda", "default_account_id": "yunda_default"}]
+            elif (
+                "price" in tool_name_value.lower()
+                or normalized.startswith("price")
+                or tool_name_value == "ronghui_waybill_proxy"
+                or normalized == "ronghui_waybill_proxy"
+            ):
+                roles = [{"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "price_default"}]
+            else:
+                roles = [{"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"}]
+
+        normalized_roles: list[dict[str, Any]] = []
+        for role in roles:
+            if not isinstance(role, dict):
+                continue
+            system = str(role.get("system") or "").strip().lower()
+            if system not in AUTOMATION_ACCOUNT_SYSTEM_LABELS:
+                continue
+            field = str(role.get("field") or "account_id").strip() or "account_id"
+            normalized_roles.append(
+                {
+                    "label": str(role.get("label") or "运行账号").strip() or "运行账号",
+                    "field": field,
+                    "system": system,
+                    "system_label": AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(system, system),
+                    "default_account_id": str(
+                        role.get("default_account_id")
+                        or AUTOMATION_DEFAULT_ACCOUNT_IDS.get(system, "")
+                    ).strip(),
+                    "required": bool(role.get("required", True)),
+                }
+            )
+        return normalized_roles
+
+    def _legacy_task_account_system(
+        self,
+        task_id: str,
+        workflow: dict[str, Any] | None = None,
+        tool_name: str = "",
+        provider: str = "",
+    ) -> str:
+        roles = self._automation_task_account_roles(task_id, workflow, tool_name, provider)
+        return str((roles[0] if roles else {}).get("system") or "ronghui")
+
+    def _legacy_task_account_purpose(
+        self,
+        task_id: str,
+        workflow: dict[str, Any] | None = None,
+        tool_name: str = "",
+    ) -> str:
+        workflow = workflow or automation_workflow_definition(task_id)
+        normalized = normalize_task_group_id(task_id)
+        tool_name_value = str(tool_name or workflow.get("tool_name") or "").strip()
+        if "price" in tool_name_value.lower() or normalized.startswith("price"):
+            return "price"
+        if tool_name_value == "self_pickup_problem_upload" or normalized == "self_pickup_problem_upload":
+            return "self_pickup_problem"
+        return "general"
+
+    def _enrich_automation_tasks_with_accounts(
+        self,
+        tasks: list[dict[str, Any]],
+        accounts: list[dict[str, Any]],
+    ) -> None:
+        options_by_system = self._automation_account_options_by_system(accounts)
+        for task in tasks:
+            task_id = str(task.get("task_id") or "")
+            workflow = automation_workflow_definition(task_id)
+            try:
+                payload = json.loads(str(task.get("tool_params_json") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            role_bindings: list[dict[str, Any]] = []
+            for role in self._automation_task_account_roles(
+                task_id,
+                workflow,
+                str(task.get("tool_name_value") or ""),
+                str(task.get("provider") or ""),
+            ):
+                system = str(role.get("system") or "").strip().lower()
+                options = list(options_by_system.get(system, []))
+                option_ids = {str(item.get("account_id") or "") for item in options}
+                field = str(role.get("field") or "account_id")
+                selected = str(payload.get(field) or "").strip()
+                if not selected and field == "account_id":
+                    selected = str(payload.get("accountId") or "").strip()
+                if selected not in option_ids:
+                    default_account_id = str(role.get("default_account_id") or "").strip()
+                    selected = (
+                        default_account_id
+                        if default_account_id in option_ids
+                        else str(options[0].get("account_id") or "") if options else ""
+                    )
+                role_bindings.append(
+                    {
+                        **role,
+                        "options": options,
+                        "selected_account_id": selected,
+                    }
+                )
+
+            first_role = role_bindings[0] if role_bindings else {}
+            task["account_role_bindings"] = role_bindings
+            task["account_system"] = str(first_role.get("system") or "")
+            task["account_system_label"] = str(first_role.get("system_label") or "")
+            task["account_options"] = list(first_role.get("options") or [])
+            task["selected_account_id"] = str(first_role.get("selected_account_id") or "")
+
+    def _handle_automation_account_post(self, handler: BaseHTTPRequestHandler, path: str) -> bool:
+        if path == "/automation-accounts/create":
+            values = self._parse_urlencoded_form(handler)
+            account_id = str(values.get("account_id", "") or "").strip()
+            system = str(values.get("system", "") or "").strip()
+            name = str(values.get("name", "") or "").strip()
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                "/internal/v1/admin/accounts",
+                payload={
+                    "account_id": account_id,
+                    "system": system,
+                    "name": name,
+                },
+                success_message=f"业务账号已创建：{name or account_id}",
+                timeout=12,
+                account_id=account_id,
+            )
+
+        prefix = "/automation-accounts/"
+        if not path.startswith(prefix):
+            return False
+        parts = [part for part in path[len(prefix) :].strip("/").split("/") if part]
+        if len(parts) != 2:
+            return False
+        account_id = unquote(parts[0])
+        action = parts[1]
+        quoted_id = quote(account_id, safe="")
+        values = self._parse_urlencoded_form(handler)
+
+        if action == "credentials":
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/credentials",
+                payload={
+                    "username": str(values.get("username", "") or "").strip(),
+                    "password": str(values.get("password", "") or ""),
+                    "phone": str(values.get("phone", "") or "").strip(),
+                },
+                success_message="账号凭据已保存。",
+                timeout=20,
+                account_id=account_id,
+            )
+        if action == "login":
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/login",
+                payload={},
+                success_message="登录或验证请求已提交，请按状态提示继续。",
+                timeout=90,
+                account_id=account_id,
+            )
+        if action == "submit-code":
+            code = str(values.get("code", "") or "").strip()
+            if not code:
+                if self._is_ajax_request(handler):
+                    self._send_json(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        {"ok": False, "message": "验证码不能为空。", "kind": "warning"},
+                    )
+                    return True
+                self._redirect_with_message(handler, "/automation-accounts", "验证码不能为空。", "warning")
+                return True
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/submit-code",
+                payload={"code": code},
+                success_message="验证码已提交。",
+                timeout=45,
+                account_id=account_id,
+            )
+        if action == "clear-session":
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/clear-session",
+                payload={},
+                success_message="登录态已清除。",
+                timeout=20,
+                account_id=account_id,
+            )
+        if action == "clear-credentials":
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/credentials/clear",
+                payload={},
+                success_message="账号凭据已清空。",
+                timeout=20,
+                account_id=account_id,
+            )
+        if action == "default":
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/default",
+                payload={},
+                success_message="默认账号已更新。",
+                timeout=12,
+                account_id=account_id,
+            )
+        if action == "active":
+            target_active = str(values.get("target_active", "") or "").strip() == "1"
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/active",
+                payload={"is_active": target_active},
+                success_message="账号状态已更新。",
+                timeout=12,
+                account_id=account_id,
+            )
+        return False
+
+    def _proxy_automation_account_action(
+        self,
+        handler: BaseHTTPRequestHandler,
+        method: str,
+        endpoint: str,
+        *,
+        payload: dict[str, Any],
+        success_message: str,
+        timeout: int,
+        account_id: str = "",
+    ) -> bool:
+        result = self._agent_request(method, endpoint, payload=payload, timeout=timeout)
+        message = success_message
+        kind = "success"
+        response_payload: dict[str, Any] | None = None
+        if not result.get("ok"):
+            message = f"Agent 调用失败：{normalize_feedback_text(result.get('error') or 'unknown error')}"
+            kind = "warning"
+        else:
+            raw_payload = result.get("data")
+            if not isinstance(raw_payload, dict):
+                message = "Agent 账号接口返回了无效数据。"
+                kind = "warning"
+            else:
+                response_payload = raw_payload
+            if isinstance(response_payload, dict) and response_payload.get("ok") is False:
+                message = normalize_feedback_text(
+                    response_payload.get("message")
+                    or response_payload.get("error")
+                    or "账号操作失败。"
+                )
+                kind = "warning"
+        if self._is_ajax_request(handler):
+            response: dict[str, Any] = {"ok": kind == "success", "message": message, "kind": kind}
+            if isinstance(response_payload, dict) and response_payload.get("ok") is not False:
+                direct_state = self._automation_account_state_from_payload(response_payload)
+                if direct_state is not None:
+                    response["state"] = direct_state
+                elif account_id:
+                    status_result = self._fetch_automation_account_status_state(account_id)
+                    if status_result.get("ok"):
+                        response["state"] = status_result.get("state") or {}
+                    elif kind == "success":
+                        response["ok"] = False
+                        response["kind"] = "warning"
+                        response["message"] = status_result.get("message") or "账号状态获取失败。"
+                credentials = response_payload.get("credentials")
+                if isinstance(credentials, dict):
+                    public_credentials = dict(credentials)
+                    public_credentials["password"] = ""
+                    response["credentials"] = public_credentials
+            self._send_json(handler, HTTPStatus.OK, response)
+            return True
+        self._redirect_with_message(handler, "/automation-accounts", message, kind)
+        return True
+
+    def _automation_account_state_from_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        nested = payload.get("state")
+        if isinstance(nested, dict):
+            state = dict(nested)
+            state.pop("ok", None)
+            return state
+        if isinstance(payload.get("status"), str):
+            state = dict(payload)
+            state.pop("ok", None)
+            return state
+        return None
+
+    def _handle_admin_account_create(self, handler: BaseHTTPRequestHandler) -> None:
+        values = self._parse_urlencoded_form(handler)
+        username = str(values.get("username", "") or "").strip()
+        display_name = str(values.get("display_name", "") or "").strip()
+        password = str(values.get("password", "") or "")
+        if not ADMIN_USERNAME_RE.fullmatch(username):
+            self._redirect_with_message(handler, "/settings/accounts", "账号需为 3-64 位字母、数字、点、下划线、@ 或短横线。", "warning")
+            return
+        if len(password) < 8:
+            self._redirect_with_message(handler, "/settings/accounts", "密码至少需要 8 位。", "warning")
+            return
+        if self.repository.get_admin_user_by_username(username):
+            self._redirect_with_message(handler, "/settings/accounts", "账号已存在。", "warning")
+            return
+        self.repository.create_admin_user(
+            username=username,
+            display_name=display_name or username,
+            password_hash=hash_admin_password(password),
+            is_active=True,
+        )
+        self._redirect_with_message(handler, "/settings/accounts", f"账号已创建：{username}", "success")
+
+    def _handle_admin_account_toggle(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        user_id = self._parse_admin_user_id(path, "toggle")
+        if user_id is None:
+            self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
+            return
+        values = self._parse_urlencoded_form(handler)
+        target_active = str(values.get("target_active", "") or "") == "1"
+        current_user = current_admin_user() or {}
+        if int(current_user.get("id") or 0) == user_id and not target_active:
+            self._redirect_with_message(handler, "/settings/accounts", "不能停用当前登录账号。", "warning")
+            return
+        if not self.repository.get_admin_user(user_id):
+            self._redirect_with_message(handler, "/settings/accounts", "账号不存在。", "warning")
+            return
+        self.repository.set_admin_user_active(user_id, target_active)
+        message = "账号已启用。" if target_active else "账号已停用。"
+        self._redirect_with_message(handler, "/settings/accounts", message, "success")
+
+    def _handle_admin_account_reset_password(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        user_id = self._parse_admin_user_id(path, "reset-password")
+        if user_id is None:
+            self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
+            return
+        values = self._parse_urlencoded_form(handler)
+        password = str(values.get("password", "") or "")
+        if len(password) < 8:
+            self._redirect_with_message(handler, "/settings/accounts", "新密码至少需要 8 位。", "warning")
+            return
+        if not self.repository.get_admin_user(user_id):
+            self._redirect_with_message(handler, "/settings/accounts", "账号不存在。", "warning")
+            return
+        self.repository.update_admin_user_password(user_id, hash_admin_password(password))
+        self._redirect_with_message(handler, "/settings/accounts", "密码已重置，原有会话已失效。", "success")
+
+    def _handle_admin_avatar_upload(self, handler: BaseHTTPRequestHandler) -> None:
+        user = current_admin_user() or {}
+        user_id = int(user.get("id") or 0)
+        return_to = self._request_return_to(handler, "/")
+        if not user_id or bool(user.get("is_legacy_basic_auth")):
+            self._send_avatar_upload_error(handler, HTTPStatus.FORBIDDEN, "当前登录方式不支持上传头像。", return_to)
+            return
+
+        try:
+            content_length = int(handler.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length > AVATAR_MAX_BYTES + 512 * 1024:
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "头像图片不能超过 2MB。", return_to)
+            return
+
+        form = self._parse_multipart_form(handler)
+        item = form["avatar"] if "avatar" in form else None
+        if isinstance(item, list):
+            item = item[0] if item else None
+        if item is None or not getattr(item, "filename", ""):
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "请选择要上传的头像图片。", return_to)
+            return
+
+        suffix = Path(str(item.filename or "")).suffix.lower()
+        if suffix not in AVATAR_ALLOWED_EXTENSIONS:
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "头像仅支持 JPG、PNG、WebP 或 GIF 图片。", return_to)
+            return
+
+        payload = item.file.read(AVATAR_MAX_BYTES + 1)
+        if not payload:
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "头像图片为空。", return_to)
+            return
+        if len(payload) > AVATAR_MAX_BYTES:
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "头像图片不能超过 2MB。", return_to)
+            return
+
+        detected_suffix = self._detect_avatar_extension(payload)
+        if detected_suffix is None:
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "头像文件格式无法识别。", return_to)
+            return
+
+        avatar_dir = self.settings.runtime_dir / "avatars"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"admin_{user_id}_{secrets.token_hex(12)}{detected_suffix}"
+        target = (avatar_dir / filename).resolve()
+        try:
+            target.relative_to(avatar_dir.resolve())
+        except ValueError:
+            self._send_avatar_upload_error(handler, HTTPStatus.BAD_REQUEST, "头像保存路径无效。", return_to)
+            return
+
+        target.write_bytes(payload)
+        relpath = str(target.relative_to(self.settings.runtime_dir)).replace("\\", "/")
+        previous_avatar_path = str(user.get("avatar_path") or "")
+        self.repository.update_admin_user_avatar(user_id, relpath)
+        self._delete_admin_avatar_file(previous_avatar_path, keep_relpath=relpath)
+
+        avatar_url = self._admin_avatar_url(relpath)
+        updated_user = dict(user)
+        updated_user["avatar_path"] = relpath
+        updated_user["avatar_url"] = avatar_url
+        self._set_current_admin_user(handler, updated_user)
+
+        if self._is_ajax_request(handler):
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "avatar_url": avatar_url, "message": "头像已更新。"})
+            return
+        self._redirect_with_message(handler, return_to, "头像已更新。", "success")
+
+    def _send_avatar_upload_error(
+        self,
+        handler: BaseHTTPRequestHandler,
+        status: HTTPStatus,
+        message: str,
+        return_to: str,
+    ) -> None:
+        if self._is_ajax_request(handler):
+            self._send_json(handler, status, {"ok": False, "message": message})
+            return
+        self._redirect_with_message(handler, return_to, message, "warning")
+
+    def _detect_avatar_extension(self, payload: bytes) -> str | None:
+        if payload.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if payload.startswith((b"GIF87a", b"GIF89a")):
+            return ".gif"
+        if len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+            return ".webp"
+        return None
+
+    def _admin_avatar_url(self, avatar_path: str) -> str:
+        normalized = str(avatar_path or "").strip().replace("\\", "/")
+        if not normalized or not normalized.startswith("avatars/"):
+            return ""
+        return self._runtime_url(normalized)
+
+    def _delete_admin_avatar_file(self, relpath: str, *, keep_relpath: str = "") -> None:
+        normalized = str(relpath or "").strip().replace("\\", "/")
+        if not normalized or normalized == keep_relpath or not normalized.startswith("avatars/"):
+            return
+        avatar_root = (self.settings.runtime_dir / "avatars").resolve()
+        target = (self.settings.runtime_dir / Path(normalized)).resolve()
+        try:
+            target.relative_to(avatar_root)
+        except ValueError:
+            return
+        if target.exists() and target.is_file():
+            target.unlink()
+
+    def _request_return_to(self, handler: BaseHTTPRequestHandler, fallback: str = "/") -> str:
+        referer = str(handler.headers.get("Referer") or "").strip()
+        if referer.startswith("/"):
+            return self._safe_return_to(referer, fallback)
+        parsed = urlparse(referer)
+        host = str(handler.headers.get("Host") or "").strip()
+        if parsed.netloc and parsed.netloc == host:
+            path = parsed.path or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            return self._safe_return_to(path, fallback)
+        return fallback
+
+    def _parse_admin_user_id(self, path: str, suffix: str) -> int | None:
+        prefix = "/settings/accounts/"
+        suffix_value = f"/{suffix}"
+        if not path.startswith(prefix) or not path.endswith(suffix_value):
+            return None
+        raw = path[len(prefix) : -len(suffix_value)].strip("/")
+        try:
+            return int(raw)
+        except ValueError:
+            return None

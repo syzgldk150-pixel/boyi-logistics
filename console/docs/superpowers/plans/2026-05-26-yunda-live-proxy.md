@@ -15,7 +15,7 @@
 **Files:**
 - Create: `agent/agent/tms_runtime/scripts/yunda_waybill_proxy.py`
 - Modify: `agent/agent/tms_runtime/dispatch.py`
-- Test: `agent/tests/test_tms_runtime_and_tools.py`
+- Test: `agent/tests/test_tms_waybill_runtime.py`
 
 - [x] Add tests proving proxy path allow-listing, method forwarding, content capture, header filtering, and HTML URL rewriting helpers.
 - [x] Implement `yunda_waybill_proxy.run_once(params)` with `method`, `path`, `query`, `headers`, `body_base64`, and optional `content_type`.
@@ -48,7 +48,7 @@
 
 **Files:**
 - Test: `console/tests/test_yunda_entry.py`
-- Test: `agent/tests/test_tms_runtime_and_tools.py`
+- Test: `agent/tests/test_tms_waybill_runtime.py`
 
 - [x] Run focused Console tests.
 - [x] Run focused Agent tests.

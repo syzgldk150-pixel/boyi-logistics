@@ -546,7 +546,7 @@ class FinanceService:
             raise FinanceUnavailableError("Agent 同步接口尚未配置。")
         result = self.agent_request(
             "POST",
-            "/run-tool",
+            "/internal/v1/tools/run",
             payload={"tool_name": "sync_finance_bills", "params": params},
             timeout=21600,
         )

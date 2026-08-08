@@ -1,0 +1,759 @@
+"""Console application services grouped by business responsibility."""
+
+from console.app_support import *  # noqa: F403
+
+
+class TmsProxyServiceMixin:
+    def _parse_json_body(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+        content_length = int(handler.headers.get("Content-Length", 0))
+        raw = handler.rfile.read(content_length) if content_length else b""
+        if not raw:
+            return {}
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    def _read_request_body(self, handler: BaseHTTPRequestHandler) -> bytes:
+        content_length = int(handler.headers.get("Content-Length", 0) or 0)
+        return handler.rfile.read(content_length) if content_length else b""
+
+    def _yunda_live_remote_path(self, path: str) -> str:
+        raw_path = str(path or "").strip()
+        if raw_path.rstrip("/") == YUNDA_LIVE_PROXY_PREFIX:
+            return YUNDA_LIVE_ENTRY_PATH
+        if not raw_path.startswith(YUNDA_LIVE_PROXY_PREFIX + "/"):
+            return ""
+        remote_path = "/" + unquote(raw_path[len(YUNDA_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        return remote_path if remote_path.startswith("/ky_inms/public/") else ""
+
+    def _yunda_receipt_live_remote_path(self, path: str) -> str:
+        raw_path = str(path or "").strip()
+        if raw_path.rstrip("/") == YUNDA_RECEIPT_LIVE_PROXY_PREFIX:
+            return YUNDA_RECEIPT_LIVE_ENTRY_PATH
+        if not raw_path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX + "/"):
+            return ""
+        remote_path = "/" + unquote(raw_path[len(YUNDA_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        return remote_path if remote_path.startswith("/ky_inms/public/") else ""
+
+    def _ronghui_live_remote_path(self, path: str) -> str:
+        raw_path = str(path or "").strip()
+        if raw_path.rstrip("/") == RONGHUI_LIVE_PROXY_PREFIX:
+            return ""
+        if not raw_path.startswith(RONGHUI_LIVE_PROXY_PREFIX + "/"):
+            return ""
+        remote_path = "/" + unquote(raw_path[len(RONGHUI_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        return remote_path if any(remote_path.startswith(prefix) for prefix in RONGHUI_LIVE_ALLOWED_PREFIXES) else ""
+
+    def _ronghui_receipt_live_remote_path(self, path: str) -> str:
+        raw_path = str(path or "").strip()
+        if raw_path.rstrip("/") == RONGHUI_RECEIPT_LIVE_PROXY_PREFIX:
+            return ""
+        if not raw_path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX + "/"):
+            return ""
+        remote_path = "/" + unquote(raw_path[len(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        return remote_path if any(remote_path.startswith(prefix) for prefix in RONGHUI_LIVE_ALLOWED_PREFIXES) else ""
+
+    def _flatten_query(self, query: dict[str, list[str]]) -> str:
+        pairs: list[tuple[str, str]] = []
+        for key, values in (query or {}).items():
+            if isinstance(values, list):
+                pairs.extend((str(key), str(value)) for value in values)
+            else:
+                pairs.append((str(key), str(values)))
+        return urlencode(pairs, doseq=True)
+
+    def _ronghui_receipt_entry_menu_text(self, query: dict[str, list[str]]) -> str:
+        values = (query or {}).get("receipt_entry") or ["send"]
+        raw_entry = values[0] if isinstance(values, list) and values else values
+        entry = str(raw_entry or "send").strip().lower()
+        return RONGHUI_RECEIPT_ENTRY_MENU_TEXTS.get(entry, RONGHUI_RECEIPT_ENTRY_MENU_TEXTS["send"])
+
+    def _handler_headers(self, handler: BaseHTTPRequestHandler) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for key, value in getattr(handler, "headers", {}).items():
+            headers[str(key)] = str(value)
+        return headers
+
+    def _unwrap_yunda_live_proxy_payload(self, result: dict[str, Any]) -> dict[str, Any] | None:
+        outer = result.get("data")
+        if not isinstance(outer, dict):
+            return None
+        nested = outer.get("data")
+        if isinstance(nested, dict) and ("body_base64" in nested or "status_code" in nested):
+            return nested
+        if "body_base64" in outer or "status_code" in outer:
+            return outer
+        return None
+
+    def _decode_proxy_body(self, proxy_payload: dict[str, Any]) -> bytes:
+        raw_base64 = str(proxy_payload.get("body_base64") or "")
+        if not raw_base64:
+            return b""
+        try:
+            return base64.b64decode(raw_base64)
+        except Exception:
+            return b""
+
+    def _header_value(self, headers: dict[str, Any], name: str) -> str:
+        for key, value in (headers or {}).items():
+            if str(key).lower() == name.lower():
+                return str(value)
+        return ""
+
+    def _parse_urlencoded_form_body(self, body: bytes, content_type: str) -> dict[str, str]:
+        charset = "utf-8"
+        match = re.search(r"charset=([A-Za-z0-9._-]+)", str(content_type or ""), flags=re.IGNORECASE)
+        if match:
+            charset = match.group(1)
+        parsed = parse_qs(body.decode(charset, errors="replace"), keep_blank_values=True)
+        return {str(key): str(values[-1] if values else "") for key, values in parsed.items()}
+
+    def _decode_proxy_json_body(self, proxy_payload: dict[str, Any]) -> dict[str, Any]:
+        headers = proxy_payload.get("headers") if isinstance(proxy_payload.get("headers"), dict) else {}
+        content_type = self._header_value(headers, "Content-Type")
+        raw_body = self._decode_proxy_body(proxy_payload)
+        text = raw_body.decode("utf-8", errors="replace").strip()
+        if "json" not in content_type.lower() and not text.startswith("{"):
+            return {}
+        try:
+            data = json.loads(text) if text else {}
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _persist_yunda_live_save_result(
+        self,
+        *,
+        request_body: bytes,
+        request_content_type: str,
+        proxy_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response_json = self._decode_proxy_json_body(proxy_payload)
+        if not response_json:
+            return {}
+        save_ok = str(response_json.get("info") or "").strip() == "1" or response_json.get("ok") is True
+        if not save_ok:
+            return {}
+        form_fields = self._parse_urlencoded_form_body(request_body, request_content_type)
+        normalized_form = {**form_fields}
+        for key, value in response_json.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                normalized_form[str(key)] = "" if value is None else str(value)
+        remote_waybill_no = str(response_json.get("LogisticsId") or normalized_form.get("LogisticsId") or "").strip()
+        mapped = build_console_waybill_from_yunda_data(normalized_form, remote_waybill_no=remote_waybill_no)
+        if not mapped:
+            return {}
+        waybill = self.repository.upsert_provider_waybill(mapped, source="yunda")
+        waybill_id = int(waybill.get("id", 0) or 0) if waybill else None
+        self.repository.create_waybill_provider_snapshot(
+            provider="yunda",
+            remote_waybill_no=remote_waybill_no,
+            snapshot_kind="save_request",
+            payload={
+                "action": "live_proxy_save",
+                "normalized_form": normalized_form,
+                "content_type": request_content_type,
+            },
+            waybill_id=waybill_id,
+        )
+        self.repository.create_waybill_provider_snapshot(
+            provider="yunda",
+            remote_waybill_no=remote_waybill_no,
+            snapshot_kind="save_response",
+            payload={
+                "action": "live_proxy_save",
+                "response": response_json,
+                "remote_path": proxy_payload.get("remote_path", ""),
+            },
+            waybill_id=waybill_id,
+        )
+        if not waybill_id:
+            return {}
+        return {
+            "shipnow_local_waybill_id": waybill_id,
+            "shipnow_print_url": f"/waybills/{waybill_id}/print?preview=1",
+            "shipnow_autoprint_url": f"/waybills/{waybill_id}/print?autoprint=1",
+        }
+
+    def _patch_proxy_json_body(self, proxy_payload: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+        if not patch:
+            return proxy_payload
+        response_json = self._decode_proxy_json_body(proxy_payload)
+        if not response_json:
+            return proxy_payload
+        patched = dict(response_json)
+        patched.update(patch)
+        updated_payload = dict(proxy_payload)
+        updated_payload["body_base64"] = base64.b64encode(
+            json.dumps(patched, ensure_ascii=False).encode("utf-8")
+        ).decode("ascii")
+        return updated_payload
+
+    def _persist_ronghui_live_save_result(
+        self,
+        *,
+        request_body: bytes,
+        request_content_type: str,
+        proxy_payload: dict[str, Any],
+    ) -> None:
+        response_json = self._decode_proxy_json_body(proxy_payload)
+        if not response_json:
+            return
+        message = str(response_json.get("message") or response_json.get("msg") or "").strip()
+        save_ok = response_json.get("success") is True or response_json.get("ok") is True or "成功" in message
+        if not save_ok:
+            return
+        form_fields = self._parse_urlencoded_form_body(request_body, request_content_type)
+        remote_waybill_no = str(response_json.get("BILL_CODE") or form_fields.get("BILL_CODE") or "").strip()
+        self.repository.create_waybill_provider_snapshot(
+            provider="ronghui",
+            remote_waybill_no=remote_waybill_no,
+            snapshot_kind="save_request",
+            payload={
+                "action": "live_proxy_save",
+                "form_fields": form_fields,
+                "content_type": request_content_type,
+            },
+            waybill_id=None,
+        )
+        self.repository.create_waybill_provider_snapshot(
+            provider="ronghui",
+            remote_waybill_no=remote_waybill_no,
+            snapshot_kind="save_response",
+            payload={
+                "action": "live_proxy_save",
+                "response": response_json,
+                "remote_path": proxy_payload.get("remote_path", ""),
+            },
+            waybill_id=None,
+        )
+
+    def _send_proxy_bytes(
+        self,
+        handler: BaseHTTPRequestHandler,
+        status: HTTPStatus,
+        payload: bytes,
+        headers: dict[str, Any],
+    ) -> None:
+        content_type = self._header_value(headers, "Content-Type") or "application/octet-stream"
+        cache_control = self._header_value(headers, "Cache-Control") or "no-store"
+        handler.send_response(status)
+        handler.send_header("Content-Type", content_type)
+        for key, value in (headers or {}).items():
+            key_text = str(key)
+            if key_text.lower() in {
+                "content-type",
+                "content-length",
+                "transfer-encoding",
+                "set-cookie",
+                "cache-control",
+            }:
+                continue
+            handler.send_header(key_text, str(value))
+        handler.send_header("Cache-Control", cache_control)
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+
+    def _handle_yunda_receipt_live_proxy(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        *,
+        method: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        remote_path = self._yunda_receipt_live_remote_path(path)
+        if not remote_path:
+            self._send_json(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                {"ok": False, "message": "韵达回单原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
+        request_content_type = str(handler.headers.get("Content-Type") or "")
+        params = {
+            "method": method.upper(),
+            "path": remote_path,
+            "query": self._flatten_query(query),
+            "headers": self._handler_headers(handler),
+            "content_type": request_content_type,
+            "proxy_prefix": YUNDA_RECEIPT_LIVE_PROXY_PREFIX,
+        }
+        if request_body:
+            params["body_base64"] = base64.b64encode(request_body).decode("ascii")
+        result = self._agent_request(
+            "POST",
+            "/internal/v1/tms/yunda_waybill_proxy",
+            payload={"params": params, "timeout_sec": 180},
+            timeout=max(195, self.settings.agent_timeout_seconds),
+        )
+        if not result.get("ok"):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "韵达回单原页代理调用失败。", "error": result.get("error")},
+            )
+            return
+        proxy_payload = self._unwrap_yunda_live_proxy_payload(result)
+        if not proxy_payload:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "韵达回单原页代理返回格式异常。"},
+            )
+            return
+        if proxy_payload.get("ok") is False:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": str(proxy_payload.get("error") or "韵达回单原页代理失败。")},
+            )
+            return
+        response_headers = proxy_payload.get("headers") if isinstance(proxy_payload.get("headers"), dict) else {}
+        response_status = HTTPStatus(int(proxy_payload.get("status_code") or 200))
+        self._send_proxy_bytes(
+            handler,
+            response_status,
+            self._decode_proxy_body(proxy_payload),
+            response_headers,
+        )
+
+    def _handle_ronghui_receipt_live_proxy(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        *,
+        method: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        remote_path = self._ronghui_receipt_live_remote_path(path)
+        is_entry_root = str(path or "").strip().rstrip("/") == RONGHUI_RECEIPT_LIVE_PROXY_PREFIX
+        if not remote_path and not is_entry_root:
+            self._send_json(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                {"ok": False, "message": "融辉回单原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
+        request_content_type = str(handler.headers.get("Content-Type") or "")
+        remote_query = "" if is_entry_root else self._flatten_query(query)
+        params = {
+            "method": method.upper(),
+            "path": remote_path,
+            "query": remote_query,
+            "headers": self._handler_headers(handler),
+            "content_type": request_content_type,
+            "proxy_prefix": RONGHUI_RECEIPT_LIVE_PROXY_PREFIX,
+        }
+        if is_entry_root:
+            params["entry_menu_text"] = self._ronghui_receipt_entry_menu_text(query)
+        if request_body:
+            params["body_base64"] = base64.b64encode(request_body).decode("ascii")
+        result = self._agent_request(
+            "POST",
+            "/internal/v1/tms/ronghui_waybill_proxy",
+            payload={"params": params, "timeout_sec": 180},
+            timeout=max(195, self.settings.agent_timeout_seconds),
+        )
+        if not result.get("ok"):
+            if str(result.get("error_code") or "") == "AUTH_REQUIRED":
+                self._send_ronghui_auth_required_iframe(
+                    handler,
+                    str(result.get("error") or result.get("message") or "当前未登录或登录态已过期。"),
+                )
+                return
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "融辉回单原页代理调用失败。", "error": result.get("error")},
+            )
+            return
+        agent_payload = result.get("data") if isinstance(result.get("data"), dict) else {}
+        auth_payload = None
+        if isinstance(agent_payload, dict) and agent_payload.get("ok") is False:
+            auth_payload = agent_payload
+        nested_agent_payload = agent_payload.get("data") if isinstance(agent_payload, dict) else None
+        if isinstance(nested_agent_payload, dict) and nested_agent_payload.get("ok") is False:
+            auth_payload = nested_agent_payload
+        if isinstance(auth_payload, dict) and str(auth_payload.get("error_code") or "") == "AUTH_REQUIRED":
+            self._send_ronghui_auth_required_iframe(
+                handler,
+                str(auth_payload.get("error") or auth_payload.get("message") or "当前未登录或登录态已过期。"),
+            )
+            return
+        proxy_payload = self._unwrap_yunda_live_proxy_payload(result)
+        if not proxy_payload:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "融辉回单原页代理返回格式异常。"},
+            )
+            return
+        if proxy_payload.get("ok") is False:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": str(proxy_payload.get("error") or "融辉回单原页代理失败。")},
+            )
+            return
+        response_headers = proxy_payload.get("headers") if isinstance(proxy_payload.get("headers"), dict) else {}
+        response_status = HTTPStatus(int(proxy_payload.get("status_code") or 200))
+        self._send_proxy_bytes(
+            handler,
+            response_status,
+            self._decode_proxy_body(proxy_payload),
+            response_headers,
+        )
+
+    def _handle_yunda_live_proxy(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        *,
+        method: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        remote_path = self._yunda_live_remote_path(path)
+        if not remote_path:
+            self._send_json(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                {"ok": False, "message": "韵达原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
+        request_content_type = str(handler.headers.get("Content-Type") or "")
+        params = {
+            "method": method.upper(),
+            "path": remote_path,
+            "query": self._flatten_query(query),
+            "headers": self._handler_headers(handler),
+            "content_type": request_content_type,
+            "proxy_prefix": YUNDA_LIVE_PROXY_PREFIX,
+        }
+        if request_body:
+            params["body_base64"] = base64.b64encode(request_body).decode("ascii")
+        result = self._agent_request(
+            "POST",
+            "/internal/v1/tms/yunda_waybill_proxy",
+            payload={"params": params, "timeout_sec": 180},
+            timeout=max(195, self.settings.agent_timeout_seconds),
+        )
+        if not result.get("ok"):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "韵达原页代理调用失败。", "error": result.get("error")},
+            )
+            return
+        proxy_payload = self._unwrap_yunda_live_proxy_payload(result)
+        if not proxy_payload:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "韵达原页代理返回格式异常。"},
+            )
+            return
+        if proxy_payload.get("ok") is False:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": str(proxy_payload.get("error") or "韵达原页代理失败。")},
+            )
+            return
+        if method.upper() == "POST" and str(proxy_payload.get("remote_path") or remote_path) == YUNDA_LIVE_SAVE_PATH:
+            print_patch = self._persist_yunda_live_save_result(
+                request_body=request_body,
+                request_content_type=request_content_type,
+                proxy_payload=proxy_payload,
+            )
+            proxy_payload = self._patch_proxy_json_body(proxy_payload, print_patch)
+        response_headers = proxy_payload.get("headers") if isinstance(proxy_payload.get("headers"), dict) else {}
+        response_status = HTTPStatus(int(proxy_payload.get("status_code") or 200))
+        self._send_proxy_bytes(
+            handler,
+            response_status,
+            self._decode_proxy_body(proxy_payload),
+            response_headers,
+        )
+
+    def _handle_ronghui_live_proxy(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        *,
+        method: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        remote_path = self._ronghui_live_remote_path(path)
+        is_entry_root = str(path or "").strip().rstrip("/") == RONGHUI_LIVE_PROXY_PREFIX
+        if not remote_path and not is_entry_root:
+            self._send_json(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                {"ok": False, "message": "融辉原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
+        request_content_type = str(handler.headers.get("Content-Type") or "")
+        params = {
+            "method": method.upper(),
+            "path": remote_path,
+            "query": self._flatten_query(query),
+            "headers": self._handler_headers(handler),
+            "content_type": request_content_type,
+            "proxy_prefix": RONGHUI_LIVE_PROXY_PREFIX,
+        }
+        if request_body:
+            params["body_base64"] = base64.b64encode(request_body).decode("ascii")
+        result = self._agent_request(
+            "POST",
+            "/internal/v1/tms/ronghui_waybill_proxy",
+            payload={"params": params, "timeout_sec": 180},
+            timeout=max(195, self.settings.agent_timeout_seconds),
+        )
+        if not result.get("ok"):
+            if str(result.get("error_code") or "") == "AUTH_REQUIRED":
+                self._send_ronghui_auth_required_iframe(
+                    handler,
+                    str(result.get("error") or result.get("message") or "当前未登录或登录态已过期。"),
+                )
+                return
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "融辉原页代理调用失败。", "error": result.get("error")},
+            )
+            return
+        agent_payload = result.get("data") if isinstance(result.get("data"), dict) else {}
+        auth_payload = None
+        if isinstance(agent_payload, dict) and agent_payload.get("ok") is False:
+            auth_payload = agent_payload
+        nested_agent_payload = agent_payload.get("data") if isinstance(agent_payload, dict) else None
+        if isinstance(nested_agent_payload, dict) and nested_agent_payload.get("ok") is False:
+            auth_payload = nested_agent_payload
+        if isinstance(auth_payload, dict) and str(auth_payload.get("error_code") or "") == "AUTH_REQUIRED":
+            self._send_ronghui_auth_required_iframe(
+                handler,
+                str(auth_payload.get("error") or auth_payload.get("message") or "当前未登录或登录态已过期。"),
+            )
+            return
+        proxy_payload = self._unwrap_yunda_live_proxy_payload(result)
+        if not proxy_payload:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": "融辉原页代理返回格式异常。"},
+            )
+            return
+        if proxy_payload.get("ok") is False:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "message": str(proxy_payload.get("error") or "融辉原页代理失败。")},
+            )
+            return
+        if method.upper() == "POST" and str(proxy_payload.get("remote_path") or remote_path) == RONGHUI_LIVE_SAVE_PATH:
+            self._persist_ronghui_live_save_result(
+                request_body=request_body,
+                request_content_type=request_content_type,
+                proxy_payload=proxy_payload,
+            )
+        response_headers = proxy_payload.get("headers") if isinstance(proxy_payload.get("headers"), dict) else {}
+        response_status = HTTPStatus(int(proxy_payload.get("status_code") or 200))
+        self._send_proxy_bytes(
+            handler,
+            response_status,
+            self._decode_proxy_body(proxy_payload),
+            response_headers,
+        )
+
+    def _send_ronghui_auth_required_iframe(self, handler: BaseHTTPRequestHandler, auth_text: str) -> None:
+        body = (
+            "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>"
+            "<pre>AUTH_REQUIRED\n"
+            f"{html.escape(str(auth_text or '当前未登录或登录态已过期。'))}"
+            "</pre></body></html>"
+        ).encode("utf-8")
+        self._send_proxy_bytes(
+            handler,
+            HTTPStatus.OK,
+            body,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
+
+    def _call_yunda_entry_runtime(
+        self,
+        action: str,
+        *,
+        form: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        timeout_sec: int = 180,
+    ) -> tuple[HTTPStatus, dict[str, Any]]:
+        result = self._agent_request(
+            "POST",
+            "/internal/v1/tms/yunda_waybill_entry",
+            payload={
+                "params": {
+                    "action": action,
+                    "form": form or {},
+                    "context": context or {},
+                },
+                "timeout_sec": timeout_sec,
+            },
+            timeout=max(timeout_sec + 15, self.settings.agent_timeout_seconds),
+        )
+        if not result.get("ok"):
+            error = result.get("error")
+            if isinstance(error, dict):
+                message = str(error.get("error") or error.get("message") or "韵达运行时调用失败。")
+            else:
+                message = str(error or "韵达运行时调用失败。")
+            return HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "message": message,
+                "auth_state": None,
+                "data": {},
+                "field_errors": {},
+            }
+
+        outer = result.get("data")
+        if not isinstance(outer, dict):
+            return HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "message": "韵达运行时返回格式异常。",
+                "auth_state": None,
+                "data": {},
+                "field_errors": {},
+            }
+
+        auth_code = str(outer.get("error_code") or "").strip()
+        if auth_code in {"AUTH_REQUIRED", "AUTH_PENDING_CODE"}:
+            message = str(outer.get("error") or "韵达登录态不可用。")
+            return HTTPStatus.OK, {
+                "ok": False,
+                "message": message,
+                "auth_state": {"code": auth_code, "message": message},
+                "data": {},
+                "field_errors": {},
+            }
+
+        payload = outer.get("data")
+        if not isinstance(payload, dict):
+            payload = {
+                "ok": bool(outer.get("ok")),
+                "message": str(outer.get("error") or "韵达运行时返回格式异常。"),
+                "data": {},
+                "field_errors": {},
+            }
+        payload.setdefault("ok", bool(outer.get("ok", False)))
+        payload.setdefault("message", "")
+        payload.setdefault("data", {})
+        payload.setdefault("field_errors", {})
+        payload.setdefault("auth_state", {"code": "AUTHENTICATED"})
+        return HTTPStatus.OK, payload
+
+    def _persist_yunda_runtime_result(
+        self,
+        *,
+        action: str,
+        request_body: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = {
+            "ok": bool(payload.get("ok")),
+            "message": str(payload.get("message") or ""),
+            "data": dict(payload.get("data") or {}),
+            "field_errors": dict(payload.get("field_errors") or {}),
+            "auth_state": payload.get("auth_state"),
+        }
+        if not response["ok"]:
+            return response
+
+        runtime_data = response["data"]
+        normalized_form = runtime_data.get("normalized_form") if isinstance(runtime_data.get("normalized_form"), dict) else {}
+        remote_waybill_no = str(runtime_data.get("waybill_no") or normalized_form.get("LogisticsId") or "").strip()
+        snapshot_request = {
+            "action": action,
+            "request": request_body,
+            "normalized_form": normalized_form,
+        }
+        snapshot_response = {
+            "action": action,
+            "payload": payload,
+        }
+        if action == "save":
+            mapped = build_console_waybill_from_yunda_data(normalized_form, remote_waybill_no=remote_waybill_no)
+            waybill = None
+            waybill_id = None
+            if mapped:
+                waybill = self.repository.upsert_provider_waybill(mapped, source="yunda")
+                waybill_id = int(waybill.get("id", 0) or 0) if waybill else None
+            self.repository.create_waybill_provider_snapshot(
+                provider="yunda",
+                remote_waybill_no=remote_waybill_no,
+                snapshot_kind="save_request",
+                payload=snapshot_request,
+                waybill_id=waybill_id,
+            )
+            self.repository.create_waybill_provider_snapshot(
+                provider="yunda",
+                remote_waybill_no=remote_waybill_no,
+                snapshot_kind="save_response",
+                payload={**snapshot_response, "mapped_record": mapped},
+                waybill_id=waybill_id,
+            )
+            if waybill:
+                runtime_data["local_waybill"] = waybill
+                runtime_data["local_waybill_id"] = waybill_id
+                runtime_data["print_url"] = f"/waybills/{waybill_id}/print?preview=1"
+        elif action in {"drafts/save", "templates/save"}:
+            self.repository.create_waybill_provider_snapshot(
+                provider="yunda",
+                remote_waybill_no=remote_waybill_no,
+                snapshot_kind="draft_save" if action == "drafts/save" else "template_save",
+                payload={
+                    **snapshot_request,
+                    "payload": payload,
+                },
+                waybill_id=None,
+            )
+        elif action.startswith("print/"):
+            waybill = self.repository.get_waybill_by_no(remote_waybill_no, source="yunda") if remote_waybill_no else None
+            waybill_id = int(waybill.get("id", 0) or 0) if waybill else None
+            self.repository.create_waybill_provider_snapshot(
+                provider="yunda",
+                remote_waybill_no=remote_waybill_no,
+                snapshot_kind="print",
+                payload=snapshot_response,
+                waybill_id=waybill_id,
+            )
+            if waybill_id:
+                runtime_data["preview_url"] = f"/waybills/{waybill_id}/print?preview=1"
+        return response
+
+    def _handle_yunda_entry(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        action = YUNDA_ENTRY_ACTIONS.get(path)
+        if not action:
+            self._send_json(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                {"ok": False, "message": "韵达动作不存在。", "data": {}, "field_errors": {}, "auth_state": None},
+            )
+            return
+        body = self._parse_json_body(handler)
+        form = body.get("form") if isinstance(body.get("form"), dict) else {}
+        context = body.get("context") if isinstance(body.get("context"), dict) else {}
+        client_meta = body.get("client_meta") if isinstance(body.get("client_meta"), dict) else {}
+        runtime_context = dict(context)
+        if client_meta:
+            runtime_context["client_meta"] = client_meta
+        status, payload = self._call_yunda_entry_runtime(action, form=form, context=runtime_context)
+        if status == HTTPStatus.OK:
+            payload = self._persist_yunda_runtime_result(action=action, request_body=body, payload=payload)
+        self._send_json(handler, status, payload)

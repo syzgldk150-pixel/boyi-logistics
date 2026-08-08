@@ -1,4 +1,4 @@
-﻿---
+---
 module: OCR识别
 type: 模块文档
 tags: [OCR, 单据录入, Qwen-OCR, 模板配置, MySQL, waybills, 训练样本]

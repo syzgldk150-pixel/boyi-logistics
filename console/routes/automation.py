@@ -56,7 +56,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/tms-session/send-code":
         app._handle_tms_session_action(
             handler,
-            endpoint="/admin/tms/session/send-code",
+            endpoint="/internal/v1/admin/tms/session/send-code",
             payload={},
             success_message="TMS融辉登录已提交；如出现图片验证码，请按图输入后提交。",
             timeout=90,
@@ -66,7 +66,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         values = app._parse_urlencoded_form(handler)
         app._handle_tms_session_action(
             handler,
-            endpoint="/admin/tms/session/credentials",
+            endpoint="/internal/v1/admin/tms/session/credentials",
             payload={
                 "username": str(values.get("username", "") or "").strip(),
                 "password": str(values.get("password", "") or ""),
@@ -79,7 +79,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/tms-session/clear-credentials":
         app._handle_tms_session_action(
             handler,
-            endpoint="/admin/tms/session/credentials/clear",
+            endpoint="/internal/v1/admin/tms/session/credentials/clear",
             payload={},
             success_message="TMS 默认登录配置已清空。",
             timeout=20,
@@ -99,7 +99,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
             return True
         app._handle_tms_session_action(
             handler,
-            endpoint="/admin/tms/session/submit-code",
+            endpoint="/internal/v1/admin/tms/session/submit-code",
             payload={"code": sms_code},
             success_message="TMS 登录成功，共享登录态已更新。",
             timeout=45,
@@ -108,7 +108,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/tms-session/clear":
         app._handle_tms_session_action(
             handler,
-            endpoint="/admin/tms/session/clear",
+            endpoint="/internal/v1/admin/tms/session/clear",
             payload={},
             success_message="TMS 登录态已清除。",
             timeout=20,
@@ -117,21 +117,21 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/admin/import-phase7-resources":
         app._handle_automation_admin_action(
             handler,
-            endpoint="/admin/import-phase7-resources",
+            endpoint="/internal/v1/admin/import-phase7-resources",
             success_message="Phase 7 资源已重新导入。",
         )
         return True
     if path == "/automations/admin/seed-phase7-tasks":
         app._handle_automation_admin_action(
             handler,
-            endpoint="/admin/seed-phase7-tasks",
+            endpoint="/internal/v1/admin/seed-phase7-tasks",
             success_message="Phase 7 默认任务模板已写入并重载调度。",
         )
         return True
     if path == "/automations/admin/reload":
         app._handle_automation_admin_action(
             handler,
-            endpoint="/admin/reload",
+            endpoint="/internal/v1/admin/reload",
             success_message="Agent 运行时配置已重载。",
         )
         return True

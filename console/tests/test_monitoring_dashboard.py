@@ -84,7 +84,7 @@ class MonitoringConsoleTests(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertEqual(7, app.sent_payload["totals"]["total_pending"])
-        self.assertEqual("/admin/monitoring/snapshot?systems=yunda%2Cronghui&force=1", app._agent_calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/admin/monitoring/snapshot?systems=yunda%2Cronghui&force=1", app._agent_calls[0]["endpoint"])
 
     def test_summary_passes_prefer_cached_to_agent(self):
         app = self._build_app(
@@ -109,7 +109,7 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertTrue(app.sent_payload["refreshing"])
         self.assertEqual(
-            "/admin/monitoring/snapshot?systems=yunda%2Cronghui&force=1&prefer_cached=1",
+            "/internal/v1/admin/monitoring/snapshot?systems=yunda%2Cronghui&force=1&prefer_cached=1",
             app._agent_calls[0]["endpoint"],
         )
 
@@ -131,7 +131,7 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertEqual(3, app.sent_payload["counts"]["unsigned_today"])
         self.assertEqual(
-            "/admin/monitoring/daily-sign?force=1&target_date=2026-05-31",
+            "/internal/v1/admin/monitoring/daily-sign?force=1&target_date=2026-05-31",
             app._agent_calls[0]["endpoint"],
         )
 
@@ -159,7 +159,7 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertTrue(app.sent_payload["refreshing"])
         self.assertEqual(
-            "/admin/monitoring/daily-sign?force=1&target_date=2026-05-31&prefer_cached=1",
+            "/internal/v1/admin/monitoring/daily-sign?force=1&target_date=2026-05-31&prefer_cached=1",
             app._agent_calls[0]["endpoint"],
         )
 
@@ -183,7 +183,7 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertEqual("iframe", app.sent_payload["mode"])
         self.assertEqual("POST", app._agent_calls[0]["method"])
-        self.assertEqual("/admin/monitoring/detail-link", app._agent_calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/admin/monitoring/detail-link", app._agent_calls[0]["endpoint"])
         self.assertEqual("yunda:001", app._agent_calls[0]["payload"]["category_id"])
 
     def test_stream_can_send_one_snapshot_event(self):

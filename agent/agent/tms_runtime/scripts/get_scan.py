@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fetch come-scan records and output BILL_CODE SQL list or JSON rows.
 
 Examples:

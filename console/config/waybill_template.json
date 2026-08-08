@@ -1,4 +1,4 @@
-﻿{
+{
   "template_name": "logistics_waybill_v1",
   "description": "当前托运单的本地裁切模板，坐标基于预处理后横向图片。",
   "preprocess": {

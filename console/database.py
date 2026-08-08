@@ -1,4 +1,4 @@
-﻿import json
+import json
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
