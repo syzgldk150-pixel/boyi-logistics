@@ -45,6 +45,17 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("https://mirrors.aliyun.com/pypi/simple", release)
         self.assertIn('--retries "${PIP_RETRIES}"', release)
         self.assertIn('--timeout "${PIP_TIMEOUT_SECONDS}"', release)
+        self.assertIn('release_error stage=${RELEASE_STAGE}', release)
+        for stage in (
+            "static_preflight",
+            "build_release_virtualenvs",
+            "sync_scope:${scope}",
+            "apply_migrations",
+            "activate_release_virtualenvs",
+            "restart_services",
+            "check_health",
+        ):
+            self.assertIn(f'RELEASE_STAGE="{stage}"', release)
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")

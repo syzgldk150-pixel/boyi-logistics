@@ -17,6 +17,7 @@ PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
 PIP_TIMEOUT_SECONDS="${BOYI_PIP_TIMEOUT_SECONDS:-300}"
 MUTATION_STARTED=0
 VENV_ACTIVATED=0
+RELEASE_STAGE="initialization"
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -350,10 +351,17 @@ install_service_units() {
 
 restart_services() {
   [[ "${SKIP_RESTART}" == "1" ]] && return 0
-  local target
+  local target service
   for target in "${REQUESTED_TARGETS[@]}"; do
-    sudo systemctl restart "${SERVICES[$target]}"
-    systemctl is-active --quiet "${SERVICES[$target]}"
+    service="${SERVICES[$target]}"
+    if ! sudo systemctl restart "${service}"; then
+      systemctl show "${service}" -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
+      return 1
+    fi
+    if ! systemctl is-active --quiet "${service}"; then
+      systemctl show "${service}" -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
+      return 1
+    fi
   done
 }
 
@@ -395,8 +403,11 @@ PY
 
 rollback() {
   local exit_code=$?
+  local failed_command="${BASH_COMMAND}"
+  local failed_line="${BASH_LINENO[0]:-unknown}"
   trap - ERR
   set +e
+  echo "release_error stage=${RELEASE_STAGE} line=${failed_line} command=${failed_command}" >&2
   if [[ "${MUTATION_STARTED}" == "1" ]]; then
     echo "Release failed; restoring managed source backup" >&2
     if [[ "${VENV_ACTIVATED}" == "1" ]]; then
@@ -442,24 +453,36 @@ rollback() {
 }
 
 trap rollback ERR
+RELEASE_STAGE="validate_environment"
 validate_environment
+RELEASE_STAGE="backup_managed_sources"
 mkdir -p "${BACKUP_DIR}"
 backup_managed_sources
+RELEASE_STAGE="static_preflight"
 run_static_preflight
+RELEASE_STAGE="build_release_virtualenvs"
 build_release_virtualenvs
 
 MUTATION_STARTED=1
 for scope in "${SCOPES[@]}"; do
+  RELEASE_STAGE="sync_scope:${scope}"
   sync_scope "${scope}"
 done
+RELEASE_STAGE="apply_migrations"
 apply_migrations
+RELEASE_STAGE="install_service_units"
 install_service_units
+RELEASE_STAGE="activate_release_virtualenvs"
 activate_release_virtualenvs
+RELEASE_STAGE="write_release_sha"
 mkdir -p "/home/boyce/agent/runtime"
 printf '%s\n' "${RELEASE_SHA}" >"/home/boyce/agent/runtime/release_sha"
+RELEASE_STAGE="restart_services"
 restart_services
+RELEASE_STAGE="check_health"
 check_health
 
 MUTATION_STARTED=0
+RELEASE_STAGE="cleanup"
 rm -rf -- "${STAGE_ROOT}"
 echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"
