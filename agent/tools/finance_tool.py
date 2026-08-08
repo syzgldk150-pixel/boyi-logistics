@@ -13,9 +13,6 @@ from decimal import Decimal
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINANCE_ROOT = os.path.join(PROJECT_ROOT, "finance_reconciliation")
 
-from dotenv import load_dotenv
-
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 EXPECTED_DATA_DIRS = [

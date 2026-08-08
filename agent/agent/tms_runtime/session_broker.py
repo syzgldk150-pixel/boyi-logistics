@@ -2588,7 +2588,7 @@ class SessionBroker:
                 raise TMSAuthStateError("AUTH_REQUIRED", "当前没有待提交的验证码会话，请先发送验证码")
             pending_since = self._load_meta().get("pending_since") or _format_ts(_now_ts())
             config = self.resolve_login_config()
-            return self._run_in_isolated_thread(lambda: run_submit(config, sms_code, pending_since))
+            return self._submit_code_ronghui(sms_code)
         if not sms_code:
             raise TMSAuthStateError("AUTH_PENDING_CODE", "验证码不能为空")
         with self._lock:

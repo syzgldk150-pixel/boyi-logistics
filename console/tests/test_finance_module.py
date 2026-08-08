@@ -1,6 +1,5 @@
 import io
 import json
-import sys
 import types
 import unittest
 from http import HTTPStatus
@@ -12,11 +11,9 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
-if str(CONSOLE_DIR) not in sys.path:
-    sys.path.insert(0, str(CONSOLE_DIR))
 
-from app import LocalDocFlowApp  # noqa: E402
-from finance_service import FinanceValidationError  # noqa: E402
+from console.app import LocalDocFlowApp
+from console.finance_service import FinanceValidationError
 
 
 class _Handler:
@@ -214,7 +211,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         )
         self.assertEqual("backfill", self.sent_payload["data"]["resource"])
 
-        with patch("app.current_admin_user", return_value={"username": "admin"}):
+        with patch("console.app.current_admin_user", return_value={"username": "admin"}):
             self.app._handle_finance_post(
                 _Handler({"fee_level": "operating"}),
                 "save_mapping",

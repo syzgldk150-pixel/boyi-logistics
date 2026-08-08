@@ -31,6 +31,7 @@ from http.cookies import SimpleCookie
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.config import MODULE_DIR, PROJECT_ROOT, load_settings
+from console.runtime_config import load_console_environment
 from console.database import (
     DocumentRepository,
     WAYBILL_SOURCE_LABELS,
@@ -2426,8 +2427,6 @@ class LocalDocFlowApp:
         if not self._ensure_authorized(handler):
             return
 
-        if self.routes.handle_get(self, handler, path, parsed.path, query):
-            return
         if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
             self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method=method.upper(), query=query)
             return
@@ -2462,7 +2461,7 @@ class LocalDocFlowApp:
             return
         if not self._ensure_authorized(handler):
             return
-        if self.routes.handle_post(self, handler, path, parsed.path, query):
+        if self.routes.handle_get(self, handler, path, parsed.path, query):
             return
 
         if path in {"/", "/portal"}:
@@ -2635,6 +2634,9 @@ class LocalDocFlowApp:
             self._handle_login(handler)
             return
         if not self._ensure_authorized(handler):
+            return
+        query = parse_qs(parsed.query)
+        if self.routes.handle_post(self, handler, path, parsed.path, query):
             return
         if path == "/logout":
             self._handle_logout(handler)
@@ -8644,7 +8646,10 @@ class LocalDocFlowApp:
         payload: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> dict[str, Any]:
-        if not self.settings.agent_internal_api_token:
+        agent_internal_api_token = str(
+            getattr(self.settings, "agent_internal_api_token", "") or ""
+        ).strip()
+        if not agent_internal_api_token:
             return {
                 "ok": False,
                 "status": None,
@@ -8653,7 +8658,7 @@ class LocalDocFlowApp:
         url = f"{self.settings.agent_base_url.rstrip('/')}{endpoint}"
         body: bytes | None = None
         headers: dict[str, str] = {
-            "X-Agent-Internal-Token": self.settings.agent_internal_api_token,
+            "X-Agent-Internal-Token": agent_internal_api_token,
         }
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -9882,4 +9887,5 @@ class LocalDocFlowApp:
 
 
 if __name__ == "__main__":
+    load_console_environment()
     LocalDocFlowApp().run()

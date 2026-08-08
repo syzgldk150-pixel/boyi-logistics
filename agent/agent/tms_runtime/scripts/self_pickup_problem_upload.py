@@ -12,7 +12,6 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import httpx
-from dotenv import load_dotenv
 
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 
@@ -28,7 +27,6 @@ UPLOAD_URL = f"{BASE_URL}/file/upload?sysFileUploadId=ALL"
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPTS_DIR.parents[2]
-load_dotenv(PROJECT_ROOT / ".env")
 
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.scripts.ronghui_problem_upload import upload_problem_item

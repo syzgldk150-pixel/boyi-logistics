@@ -8,6 +8,7 @@
 
 - 改 HTTP API、健康检查、Webhook 入口：
   - `../main.py`
+  - `runtime_config.py`（只在 Agent 服务入口显式加载环境；模块导入不得读取 `.env`）
   - `http_security.py`（公开路径白名单和统一内部 Token 策略）
   - `core.py`
 - 改工具执行、超时、并发控制、子进程调用：
@@ -16,6 +17,8 @@
 - 改工具注册、参数定义、工具发现：
   - `tool_registry.py`
   - `../tools/registry.yaml`
+  - 工具清单在启动和热加载时完整校验：名称唯一、执行器存在且位于项目内、`parameters` 是合法 object schema；发现错误必须启动失败，不能降级为警告。
+  - 新的内部接口放在 `/internal/v1/*`，统一通过 `shared.contracts.api_success/api_failure` 返回 `ok/data/error`；旧接口保留兼容时标记 deprecated 并保持内部 Token 鉴权。
 - 改调度任务、热重载、启停：
   - `scheduler.py`
   - `task_templates.py`

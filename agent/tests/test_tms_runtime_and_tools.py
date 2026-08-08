@@ -2844,6 +2844,11 @@ class TMSRoutesTests(unittest.TestCase):
 
 class ToolRegressionTests(unittest.TestCase):
     def setUp(self):
+        self.internal_token_patch = patch.dict(
+            os.environ,
+            {"AGENT_INTERNAL_API_TOKEN": "test-internal-token"},
+            clear=False,
+        )
         self.send_order_sql_patch = patch(
             "tools.send_order_sync_tool.sync_console_waybills",
             return_value={"ok": True, "upserted": 0, "updates": 0, "creates": 0, "deleted_stale": 0},
@@ -2856,7 +2861,9 @@ class ToolRegressionTests(unittest.TestCase):
             "tools.delivery_status_sync_tool.update_console_waybill_statuses",
             return_value={"ok": True, "updated": 0, "status": "signed"},
         )
+        self.internal_token_patch.start()
         self.send_order_sql_mock = self.send_order_sql_patch.start()
+        self.addCleanup(self.internal_token_patch.stop)
         self.yunda_send_sql_mock = self.yunda_send_sql_patch.start()
         self.delivery_status_sql_mock = self.delivery_status_sql_patch.start()
         self.addCleanup(self.send_order_sql_patch.stop)
@@ -2994,7 +3001,7 @@ class ToolRegressionTests(unittest.TestCase):
             def json(self):
                 return self._payload
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             if url.endswith("/get_price"):
                 return _Response({"ok": True, "data": {"目的网点": "武汉融信站", "精准零担": "273.92元"}})
             if url.endswith("/yunda_price"):
@@ -3027,7 +3034,7 @@ class ToolRegressionTests(unittest.TestCase):
             def json(self):
                 return self._payload
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             if url.endswith("/get_price"):
                 return _Response({"ok": True, "data": {"目的网点": "武汉融信站", "精准零担": "273.92元"}})
             if url.endswith("/yunda_price"):
@@ -3065,7 +3072,7 @@ class ToolRegressionTests(unittest.TestCase):
 
         called_urls: list[str] = []
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             called_urls.append(url)
             if url.endswith("/get_price"):
                 return _Response({"ok": False, "error": "融辉报价无结果"})
@@ -3103,7 +3110,7 @@ class ToolRegressionTests(unittest.TestCase):
             def json(self):
                 return self._payload
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             if url.endswith("/get_price"):
                 return _Response({"ok": True, "data": {"网点不可达": "网点不可达"}})
             if url.endswith("/yunda_price"):
@@ -3137,7 +3144,7 @@ class ToolRegressionTests(unittest.TestCase):
             def json(self):
                 return self._payload
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             if url.endswith("/get_price"):
                 return _Response({"ok": True, "data": {"目的网点": "武汉融信站"}})
             if url.endswith("/yunda_price"):
@@ -3876,10 +3883,11 @@ class ToolRegressionTests(unittest.TestCase):
             def json(self):
                 return {"ok": True}
 
-        def _fake_post(url, json, timeout):
+        def _fake_post(url, json, timeout, headers):
             captured["url"] = url
             captured["json"] = json
             captured["timeout"] = timeout
+            captured["headers"] = headers
             return _Response()
 
         with patch("tools.tms_tool.httpx.post", side_effect=_fake_post):
@@ -3893,6 +3901,7 @@ class ToolRegressionTests(unittest.TestCase):
             )
 
         self.assertEqual({"ok": True}, result)
+        self.assertIn("X-Agent-Internal-Token", captured["headers"])
         self.assertEqual({"bill_codes": ["R0001"]}, captured["json"]["params"])
         self.assertNotIn("params", captured["json"]["params"])
         self.assertEqual(960, captured["json"]["timeout_sec"])

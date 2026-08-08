@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, rules_and_definitions.md]
 status: active
-updated: 2026-08-07
+updated: 2026-08-08
 ---
 
 # 物流 Agent 代码定位索引
@@ -36,9 +36,9 @@ updated: 2026-08-07
 | OCR 工作区、上传、识别、复核、模板配置 | `console/templates/document.html` `console/app.py` `console/ocr_providers.py` `console/task_queue.py` `console/template_store.py` | 页面在模板，OCR 能力在 `ocr_providers.py`，异步队列在 `task_queue.py` |
 | 车辆调度页面、地图、路线可视化 | `console/templates/dispatch.html` `console/app.py` `console/static/style.css` | 调度页基本都在模板与公共样式 |
 | 单号查询 / 快件追踪（融辉、韵达、专线） | `console/app.py` `console/templates/tracking.html` `agent/tracking_number_validation.py` `agent/direct_tool_router.py` `agent/core.py` `agent/tms_runtime/scripts/tracking_query.py` `agent/tms_runtime/scripts/ronghui_tms_tracking.py` `agent/tms_runtime/scripts/query_waybill_detail.py` `agent/tms_runtime/scripts/yunda_waybill_tracking.py` `agent/tms_runtime/scripts/yunda_original_data.py` `agent/tms_runtime/dispatch.py` `tools/track_waybill_tool.py` | 飞书直达查询和 `track_waybill_tool` 先复用 `agent/tracking_number_validation.py` 做本地格式预检，错误格式直接回复不启动查询；有效单号先回 `正在查询单号：...`，`track_waybill` 在 `AgentCore` 内进程调用工具函数，避免通用子进程执行器的同名运行锁挡住多票连续查询；控制台 `/tracking/query` 代理 Agent `/tms/tracking_query` 统一识别单号：`R/RC/200` 走融辉 TMS，`000` 走专线提示，其它纯数字走韵达；融辉 TMS 由 `ronghui_tms_tracking.py` 使用共享登录态进入原页“客服管理 -> 快件跟踪”，解析 `扫描记录` 为 `route_rows`、`运单信息` 为 `waybill_stub` / `waybill_info`、`子单分布` 为 `child_detail_rows`，当 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，复用 `query_waybill_detail.py` 的解密详情覆盖 `waybill_stub` / `waybill_info`；Console 页签为“扫描轨迹 / 运单详情 / 子单详情”，韵达轨迹和基础详情调用 `ky_inms/public/index.php/system/mail/list.html`，从 `logistics` 节点映射 `waybill_stub` / `waybill_info`，收寄件人和电话脱敏时复用原页面“小眼睛”的 `system/mail/getOriginalData.html` 明文字段覆盖详情展示 |
-| Agent HTTP 接口、内部鉴权、`/health`、`/internal/v1/health`、`/chat`、`/run-tool`、`/admin/*` | `main.py` `agent/http_security.py` `agent/core.py` `agent/tool_executor.py` `tools/internal_http.py` `../shared/redaction.py` | 路由在 `main.py`；除精简健康检查、飞书验证和独立 Token Webhook 外统一校验 `X-Agent-Internal-Token`；日志、工具输出和持久化审计统一递归脱敏 |
+| Agent HTTP 接口、内部鉴权、`/health`、`/internal/v1/*`、`/chat`、`/run-tool`、`/admin/*` | `main.py` `agent/runtime_config.py` `agent/http_security.py` `agent/core.py` `agent/tool_executor.py` `tools/internal_http.py` `../shared/contracts.py` `../shared/redaction.py` | 路由在 `main.py`；除精简健康检查、飞书验证和独立 Token Webhook 外统一校验 `X-Agent-Internal-Token`；版本化内部接口统一返回 `ok/data/error`，旧接口保持鉴权并标记废弃；日志、工具输出和持久化审计统一递归脱敏 |
 | Git 源码发布、远端备份、受控删除与失败回滚 | `deploy/publish_to_ecs.ps1` `deploy/remote_release.sh` `deploy/publish_to_ecs.md` | PowerShell 负责 Git/SSH/白名单暂存，远端脚本负责备份、静态与迁移预检、清单同步、重启、SHA 健康检查和自动回滚 |
-| 工具注册、工具参数定义、工具可见性 | `tools/registry.yaml` `agent/tool_registry.py` `agent/tool_executor.py` | 新工具通常先改 `registry.yaml`，再看注册与执行逻辑 |
+| 工具注册、工具参数定义、工具可见性 | `tools/registry.yaml` `agent/tool_registry.py` `agent/scripts/validate_tool_registry.py` `agent/tool_executor.py` | 新工具通常先改 `registry.yaml`，再看注册与执行逻辑；清单在启动和 CI 中完整校验，重复名称、缺执行器或非法参数结构直接失败 |
 | 运单查询、OCR、价格与旧 Excel 财务 ETL 基础工具 | `tools/query_tool.py` `tools/ocr_tool.py` `tools/price_tool.py` `tools/finance_tool.py` | `finance_tool.py` 只对应旧 `finance_reconciliation/` 离线工作簿链路，不得被新财务账本导入或作为失败兜底；飞书地址报价由 `price_tool.py` 编排融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，其余价格口径见价格模块文档 |
 | Phase 7 / 自动化同步链路 / 定时同步链路 | `tools/*sync_tool.py` `tools/phase7_sync_common.py` `tools/split_pending_snapshot.py` `agent/workflow_resource_store.py` `agent/task_templates.py` `agent/scheduler.py` | 同步逻辑在 `tools/`，运行时资源和定时模板在 `agent/`；到货统计完成后刷新分批及有发未到快照 |
 | 韵达网点派件量预测主单表 / 寄件运单同步 / 自动化 Profile 切换 | `tools/yunda_dispatch_forecast_sync_tool.py` `tools/yunda_send_waybills_sync_tool.py` `agent/tms_runtime/scripts/yunda_dispatch_forecast.py` `agent/tms_runtime/scripts/yunda_send_waybills.py` `agent/automation_profile.py` `agent/direct_tool_router.py` `feishu/message_handler.py` | 韵达使用独立 `yunda` 登录态；飞书支持切换融辉/韵达自动化和触发韵达派件预测同步；韵达寄件运单同步同时维护多维表、控制台 SQL 和普通电子表格副本 |
@@ -48,7 +48,7 @@ updated: 2026-08-07
 | R7 到达/发车打卡（后台定时/手动、飞书“到达打卡”/“发车”） | `tools/r7_arrival_checkin_tool.py` `tools/r7_departure_checkin_tool.py` `agent/tms_runtime/scripts/auto_checkin_r7.py` `agent/tms_runtime/scripts/auto_departure_r7.py` `agent/direct_tool_router.py` `feishu/message_handler.py` `console/app.py` | 工具直接调用 R7 脚本；R7 登录独立于顶部 TMS 登录态；发车多车牌在飞书文本 pending 中选择 |
 | 知识库与检索接口 | `knowledge/README.md` `main.py` `agent/core.py` | 知识库文档在 `knowledge/`，接口暴露在 `main.py` |
 | MySQL 资源、任务配置、控制台数据读写 | `console/database.py` `agent/workflow_resource_store.py` | 控制台和 Agent 对数据库的读写集中在这两处 |
-| ECS 部署、systemd、服务启动参数 | `agent.service` `console/console.service` `requirements.txt` `docs/project_overview.md` | 服务进程配置看 systemd 文件，部署口径看总览文档 |
+| ECS 部署、systemd、服务启动参数与工程检查 | `agent.service` `console/console.service` `requirements.txt` `requirements.lock` `pyproject.toml` `.github/workflows/ci.yml` `docs/project_overview.md` | 服务进程配置看 systemd 文件，依赖必须按 lock 文件重建；CI 运行编译、Ruff、工具清单和运行时导入边界检查 |
 
 ## 按目录理解职责
 
