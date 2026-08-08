@@ -53,4 +53,3 @@ jobs:
         run: ruff check console shared
       - name: Test Console
         run: pytest -q console/tests
-          pytest -q console/tests
