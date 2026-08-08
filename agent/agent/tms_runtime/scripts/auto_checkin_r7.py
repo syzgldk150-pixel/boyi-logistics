@@ -21,8 +21,14 @@ import sys
 import time
 from typing import Optional
 
-from browser_manager import launch_browser
-from r7_login import DEFAULT_PASSWORD, DEFAULT_USERNAME, HOME_URL, build_auth, ensure_logged_in
+from agent.tms_runtime.scripts.browser_manager import launch_browser
+from agent.tms_runtime.scripts.r7_login import (
+    DEFAULT_PASSWORD,
+    DEFAULT_USERNAME,
+    HOME_URL,
+    build_auth,
+    ensure_logged_in,
+)
 
 
 ARRIVAL_READY_STATUS_TEXT = "车辆到达"

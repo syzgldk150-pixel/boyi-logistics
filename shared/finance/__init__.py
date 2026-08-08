@@ -59,7 +59,7 @@ from shared.finance.repository import (
     FinanceRepositoryError,
     FinanceSnapshotRejectedError,
 )
-from shared.finance.schema import MYSQL_DDL, mysql_schema_statements
+from shared.finance.schema import FINANCE_REQUIRED_TABLES, MYSQL_DDL, mysql_schema_statements
 from shared.finance.validation import (
     CaptureEvidence,
     ValidationIssue,
@@ -90,6 +90,7 @@ __all__ = [
     "FinanceRepository",
     "FinanceRepositoryError",
     "FinanceSnapshotRejectedError",
+    "FINANCE_REQUIRED_TABLES",
     "InvalidAmountError",
     "MYSQL_DDL",
     "MappingStatus",

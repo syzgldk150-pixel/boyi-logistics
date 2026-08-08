@@ -38,6 +38,7 @@
   - `self_pickup_problem_upload_tool.py`（"自提到货问题件"：读飞书到货表，筛 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 的单号，先 dry-run 预览，确认后调 `/tms/self_pickup_problem_upload` 上传 `开单为自提件` 问题件和货拉拉截图；自提部账号 `ronghui_self_pickup_problem`，大祥S站账号 `ronghui_daxiang_s`，不要使用 `price_default`）
 - R7 到达打卡：
   - `r7_arrival_checkin_tool.py`（直接调用 `agent/tms_runtime/scripts/auto_checkin_r7.py`；使用 R7 登录，不依赖 TMS 共享登录态；写 `r7_arrival_checkin_log` 并按 `daily_success_limit` 控制当天后续定时跳过）
+  - R7 事件、状态和到达/发车打卡日志表由 `../migrations/006_r7_runtime_tables.sql` 创建；工具仅校验表存在，禁止在运行时建表。
 - 工具对外注册定义：
   - `registry.yaml`
 

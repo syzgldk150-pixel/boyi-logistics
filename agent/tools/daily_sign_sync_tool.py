@@ -5,8 +5,6 @@ import os
 import sys
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.workflow_resource_store import get_workflow_resource
 from tools.phase7_sync_common import (

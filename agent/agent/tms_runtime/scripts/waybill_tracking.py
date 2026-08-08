@@ -13,8 +13,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
-from browser_manager import TMSBrowserAuth, launch_browser
-from shared_login import load_named_accounts, resolve_primary_credentials
+from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
+from agent.tms_runtime.scripts.shared_login import load_named_accounts, resolve_primary_credentials
 
 BASE_URL = "https://tms.ronghuiwl.com"
 HOME_URL = f"{BASE_URL}/module/index?mv=index"

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 from urllib.parse import unquote
 
-from browser_manager import TMSBrowserAuth, launch_browser
+from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGIN_URL = "https://tms.ronghuiwl.com/system/login"

@@ -15,6 +15,8 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Ag
 
 `scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 
+Console 保留 `ThreadingHTTPServer`，但已按业务域将认证、自动化、监控、财务、客服、回单、OCR、运单/调度分流到 `routes/`；新路由先加入相应边界模块，`app.py` 仅保留 HTTP 生命周期、认证门禁和兼容服务门面。所有 Console 运行时表均由 `../agent/migrations/` 统一创建，`database.py` 只验证和读写。
+
 ## 修改入口
 
 - 改首页、模块页、公共导航、页面文案：
