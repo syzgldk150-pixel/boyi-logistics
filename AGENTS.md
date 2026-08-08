@@ -46,3 +46,10 @@
 - ECS 是飞书机器人、定时任务和生产自动化的唯一长期运行源；本地 WSL 仅用于开发调试和临时验证。
 - 部署前必须确认本地 Agent 已停止，并确认远端用户、工作目录、Git SHA、备份、迁移预检、健康检查及失败回滚链路。
 - 生产 Console 只监听 `127.0.0.1:8765`；Agent 默认只监听 `127.0.0.1:9000`，公网入口必须经受控代理和鉴权。
+
+## Agent 内部接口安全基线
+
+- `AGENT_INTERNAL_API_TOKEN` 是 Console、Agent 内部工具和飞书内部管理调用共享的服务间凭据；只允许由运行环境注入，不得写入源码、文档、日志或审计记录。
+- Agent 仅公开精简 `/health`、`/feishu/webhook/event` 和带独立 Webhook Token 的 `/webhook/*`；其他 `/admin`、`/tms`、工具、知识库、调度和账号接口统一要求 `X-Agent-Internal-Token`。
+- `/health` 只返回存活状态和 `release_sha`；组件、实例和工具状态只在鉴权后的 `/internal/v1/health` 返回。
+- 日志、工具执行输出、MySQL 工具日志、回单审计和异常文本统一使用 `shared/redaction.py`，新增记录入口不得自建较弱的局部脱敏规则。

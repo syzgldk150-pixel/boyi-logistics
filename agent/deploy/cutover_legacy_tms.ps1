@@ -36,8 +36,9 @@ if ([string]::IsNullOrWhiteSpace($ConsoleAutomationsUrl)) {
 $remoteSpec = "$RemoteUser@$RemoteHost"
 $sshArgs = @(
     "-i", $SshKeyPath,
+    "-o", "IdentitiesOnly=yes",
     "-o", "BatchMode=yes",
-    "-o", "StrictHostKeyChecking=no"
+    "-o", "StrictHostKeyChecking=yes"
 )
 
 function Assert-Command([string]$Name) {
@@ -54,7 +55,7 @@ function Assert-PathExists([string]$PathValue) {
 
 function Invoke-RemotePython([string]$PythonCode) {
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PythonCode))
-    $remoteCommand = "python3 - <<'PY'
+    $remoteCommand = "/home/boyce/agent/.venv/bin/python - <<'PY'
 import base64
 import sys
 
@@ -86,8 +87,12 @@ raise SystemExit(proc.returncode)
 function Invoke-RemoteHealthCheck([string]$Url) {
     $pythonCode = @"
 import urllib.request
+from dotenv import dotenv_values
 
-with urllib.request.urlopen("$Url", timeout=30) as response:
+token = str(dotenv_values("/home/boyce/agent/.env").get("AGENT_INTERNAL_API_TOKEN") or "")
+headers = {"X-Agent-Internal-Token": token} if token else {}
+request = urllib.request.Request("$Url", headers=headers)
+with urllib.request.urlopen(request, timeout=30) as response:
     response.read()
 "@
     [void](Invoke-RemotePython $pythonCode)
@@ -96,8 +101,12 @@ with urllib.request.urlopen("$Url", timeout=30) as response:
 function Get-RemoteJson([string]$Url) {
     $pythonCode = @"
 import urllib.request
+from dotenv import dotenv_values
 
-with urllib.request.urlopen("$Url", timeout=30) as response:
+token = str(dotenv_values("/home/boyce/agent/.env").get("AGENT_INTERNAL_API_TOKEN") or "")
+headers = {"X-Agent-Internal-Token": token} if token else {}
+request = urllib.request.Request("$Url", headers=headers)
+with urllib.request.urlopen(request, timeout=30) as response:
     print(response.read().decode("utf-8"))
 "@
     $raw = Invoke-RemotePython $pythonCode
@@ -116,12 +125,19 @@ function Invoke-RemotePostJson([string]$PathValue, [hashtable]$Payload) {
     $pythonCode = @"
 import base64
 import urllib.request
+from dotenv import dotenv_values
 
 body = base64.b64decode("$bodyB64")
+token = str(dotenv_values("/home/boyce/agent/.env").get("AGENT_INTERNAL_API_TOKEN") or "")
+if not token:
+    raise RuntimeError("AGENT_INTERNAL_API_TOKEN is not configured")
 request = urllib.request.Request(
     "http://127.0.0.1:9000$PathValue",
     data=body,
-    headers={"Content-Type": "application/json"},
+    headers={
+        "Content-Type": "application/json",
+        "X-Agent-Internal-Token": token,
+    },
     method="POST",
 )
 with urllib.request.urlopen(request, timeout=120) as response:
@@ -221,9 +237,17 @@ for line in proc.stdout.splitlines():
 }
 
 Assert-Command "ssh"
+Assert-Command "ssh-keygen"
 Assert-Command "powershell"
 Assert-PathExists $SshKeyPath
 Assert-PathExists $PublishScriptPath
+if ($RemoteUser -ne "boyce") {
+    throw "ECS cutover must use the boyce account."
+}
+& ssh-keygen -F $RemoteHost *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "SSH host key for $RemoteHost is not present in known_hosts."
+}
 
 if (-not $SkipPublish) {
     & powershell -ExecutionPolicy Bypass -File $PublishScriptPath -Target all

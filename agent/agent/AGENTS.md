@@ -8,9 +8,11 @@
 
 - 改 HTTP API、健康检查、Webhook 入口：
   - `../main.py`
+  - `http_security.py`（公开路径白名单和统一内部 Token 策略）
   - `core.py`
 - 改工具执行、超时、并发控制、子进程调用：
   - `tool_executor.py`
+  - 工具参数、实时 stdout/stderr、异常和 MySQL `tool_logs` 必须先经 `../../shared/redaction.py`；不得保存原始请求体或凭据字段。
 - 改工具注册、参数定义、工具发现：
   - `tool_registry.py`
   - `../tools/registry.yaml`

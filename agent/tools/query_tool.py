@@ -9,8 +9,13 @@ import httpx
 from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, WORKSPACE_ROOT)
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+from shared.redaction import redact_text
+from tools.internal_http import internal_api_headers
 
 HTTP_SERVICE_URL = os.getenv("HTTP_SERVICE_URL", "http://127.0.0.1:9000/tms")
 
@@ -30,6 +35,7 @@ def query_status(bill_codes: list[str]) -> dict:
                 "params": {"bill_codes": bill_codes},
                 "timeout_sec": 30,
             },
+            headers=internal_api_headers(),
             timeout=35,
         )
         resp.raise_for_status()
@@ -47,7 +53,7 @@ def query_status(bill_codes: list[str]) -> dict:
     except httpx.TimeoutException:
         return {"error": "签收状态查询超时"}
     except Exception as exc:
-        return {"error": f"签收状态查询失败: {str(exc)[:200]}"}
+        return {"error": f"签收状态查询失败: {redact_text(exc)[:200]}"}
 
 
 def query_detail(bill_code: str) -> dict:
@@ -59,6 +65,7 @@ def query_detail(bill_code: str) -> dict:
                 "params": {"bill_code": bill_code},
                 "timeout_sec": 60,
             },
+            headers=internal_api_headers(),
             timeout=65,
         )
         resp.raise_for_status()
@@ -79,7 +86,7 @@ def query_detail(bill_code: str) -> dict:
     except httpx.TimeoutException:
         return {"error": "运单详情查询超时"}
     except Exception as exc:
-        return {"error": f"运单详情查询失败: {str(exc)[:200]}"}
+        return {"error": f"运单详情查询失败: {redact_text(exc)[:200]}"}
 
 
 def main():

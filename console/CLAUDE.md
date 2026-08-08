@@ -6,6 +6,8 @@
 
 ## 当前职责
 
+Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Agent-Internal-Token`；凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增绕过该入口的 Agent HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
+
 - 提供本地 Web 控制台入口
 - 提供统一后台壳层（左侧导航、顶部路径、右侧辅助栏、共享动效与交互反馈）
 - 承载项目总览页和模块导航

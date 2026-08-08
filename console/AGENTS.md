@@ -3,13 +3,15 @@
 ## ECS 发布入口
 
 - 当用户提到“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”时，优先直接运行固定脚本，不要先搜索其它发布入口：
-  - `powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\agent\deploy\publish_to_ecs.ps1"`
+  - `powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"`
 - 这个脚本会统一处理 `agent` 与 `console` 的 ECS 发布，默认 `auto` 模式会自动判断同步范围并执行远端健康检查。
 - 只有在用户明确指定特殊参数时，才改用 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等变体。
 
 ## 目录职责
 
 `console/` 是与 `agent/` 并列的控制台工作区，负责控制台页面、OCR 工作区、货拉拉调度页面、自动化配置页、财务工作台、客服系统工作台，以及控制台对 MySQL 的读写。
+
+Console 调用 Agent 的所有请求统一经 `_agent_request()` 并发送 `X-Agent-Internal-Token`；凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增绕过该入口的 Agent HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
 ## 修改入口
 
