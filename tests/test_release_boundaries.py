@@ -42,6 +42,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('release_venv="${VENV_ROOT}/${target}-${RELEASE_SHA}"', release)
         self.assertIn('migration_python="${RELEASE_VENVS[agent]}/bin/python"', release)
         self.assertIn("restore_virtualenvs", release)
+        self.assertIn("https://mirrors.aliyun.com/pypi/simple", release)
+        self.assertIn('--retries "${PIP_RETRIES}"', release)
+        self.assertIn('--timeout "${PIP_TIMEOUT_SECONDS}"', release)
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
