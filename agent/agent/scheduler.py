@@ -117,28 +117,15 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
 
 def _load_tasks_from_db(agent_core):
     """从 scheduled_tasks 表加载任务"""
-    import pymysql
-    import json
-
-    mem = agent_core.memory
-    conn = mem._conn()
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            cur.execute("SELECT * FROM scheduled_tasks WHERE enabled=TRUE")
-            tasks = cur.fetchall()
-
-        for task in tasks:
-            _add_job(
-                task_id=task["id"],
-                cron_expr=task["cron_expression"],
-                tool_name=task["tool_name"],
-                tool_params=json.loads(task["tool_params"]) if task["tool_params"] else {},
-                agent_core=agent_core,
-            )
-            logger.info("加载定时任务: %s (%s) → %s", task["name"], task["cron_expression"], task["tool_name"])
-
-    finally:
-        conn.close()
+    for task in agent_core.memory.list_enabled_scheduled_tasks():
+        _add_job(
+            task_id=task["id"],
+            cron_expr=task["cron_expression"],
+            tool_name=task["tool_name"],
+            tool_params=task.get("tool_params") or {},
+            agent_core=agent_core,
+        )
+        logger.info("加载定时任务: %s (%s) → %s", task["name"], task["cron_expression"], task["tool_name"])
 
 
 def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, agent_core):
@@ -228,17 +215,12 @@ def _update_task_status(agent_core, task_id: str, status: str, result):
                 if message_parts:
                     last_message = " | ".join(message_parts)[:1000]
 
-        conn = agent_core.memory._conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE scheduled_tasks
-                SET last_run=NOW(), last_status=%s, last_duration_ms=%s, last_message=%s
-                WHERE id=%s
-                """,
-                (status, duration_ms, last_message, task_id),
-            )
-        conn.close()
+        agent_core.memory.update_scheduled_task_runtime(
+            task_id,
+            last_status=status,
+            last_duration_ms=duration_ms,
+            last_message=last_message,
+        )
     except Exception as e:
         logger.error("更新任务状态失败: %s", e)
 

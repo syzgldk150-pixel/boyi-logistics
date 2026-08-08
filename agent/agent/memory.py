@@ -9,6 +9,8 @@ from typing import Any, Optional
 import pymysql
 from shared.redaction import redact_sensitive
 
+from shared.runtime_repositories import ScheduledTaskRepository
+
 logger = logging.getLogger("agent")
 
 MAX_TOOL_LOG_DEPTH = 6
@@ -74,9 +76,10 @@ def _json_for_storage(value: Any) -> str:
 class Memory:
     def __init__(self):
         self._pool = None
+        self._scheduled_tasks: ScheduledTaskRepository | None = None
 
     def init(self):
-        """初始化数据库连接，创建表"""
+        """Initialize database access; schema changes are deployment migrations."""
         self._connect_params = {
             "host": os.getenv("AGENT_DB_HOST", "127.0.0.1"),
             "port": int(os.getenv("AGENT_DB_PORT", "3306")),
@@ -86,6 +89,10 @@ class Memory:
             "charset": "utf8mb4",
             "autocommit": True,
         }
+        self._scheduled_tasks = ScheduledTaskRepository(
+            self._conn,
+            cursor_factory=pymysql.cursors.DictCursor,
+        )
         self._create_tables()
         logger.info("对话记忆初始化完成 (MySQL %s:%s/%s)",
                      self._connect_params["host"],
@@ -135,20 +142,6 @@ class Memory:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """)
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                        id VARCHAR(64) PRIMARY KEY,
-                        name VARCHAR(128) NOT NULL,
-                        tool_name VARCHAR(64) NOT NULL,
-                        tool_params JSON,
-                        cron_expression VARCHAR(64) NOT NULL,
-                        enabled BOOLEAN DEFAULT TRUE,
-                        last_run DATETIME,
-                        last_status VARCHAR(16),
-                        last_duration_ms INT,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                cur.execute("""
                     CREATE TABLE IF NOT EXISTS knowledge (
                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         category VARCHAR(64),
@@ -156,15 +149,6 @@ class Memory:
                         source VARCHAR(256),
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         FULLTEXT INDEX ft_content (content) WITH PARSER ngram
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS workflow_resources (
-                        resource_key VARCHAR(128) PRIMARY KEY,
-                        config_json JSON NOT NULL,
-                        source VARCHAR(128),
-                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """)
         finally:
@@ -319,60 +303,34 @@ class Memory:
 
     def list_scheduled_tasks(self) -> list[dict]:
         """列出定时任务定义"""
-        conn = self._conn()
-        try:
-            with conn.cursor(pymysql.cursors.DictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                           last_run, last_status, last_duration_ms, created_at
-                    FROM scheduled_tasks
-                    ORDER BY name ASC
-                    """
-                )
-                rows = cur.fetchall()
+        return self._scheduled_task_repository().list_tasks()
 
-            for row in rows:
-                if row.get("tool_params"):
-                    try:
-                        row["tool_params"] = json.loads(row["tool_params"])
-                    except Exception:
-                        pass
-                for field in ("last_run", "created_at"):
-                    if row.get(field) is not None:
-                        row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
-            return rows
-        finally:
-            conn.close()
+    def list_enabled_scheduled_tasks(self) -> list[dict]:
+        return self._scheduled_task_repository().list_tasks(enabled_only=True)
 
     def upsert_scheduled_task(self, task: dict) -> None:
         """新增或更新定时任务"""
-        conn = self._conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO scheduled_tasks
-                        (id, name, tool_name, tool_params, cron_expression, enabled)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        name = VALUES(name),
-                        tool_name = VALUES(tool_name),
-                        tool_params = VALUES(tool_params),
-                        cron_expression = VALUES(cron_expression),
-                        enabled = VALUES(enabled)
-                    """,
-                    (
-                        task["id"],
-                        task["name"],
-                        task["tool_name"],
-                        json.dumps(task.get("tool_params") or {}, ensure_ascii=False),
-                        task["cron_expression"],
-                        bool(task.get("enabled", False)),
-                    ),
-                )
-        finally:
-            conn.close()
+        self._scheduled_task_repository().upsert_task(task)
+
+    def update_scheduled_task_runtime(
+        self,
+        task_id: str,
+        *,
+        last_status: str | None,
+        last_duration_ms: int | None,
+        last_message: str | None,
+    ) -> None:
+        self._scheduled_task_repository().update_runtime(
+            task_id,
+            last_status=last_status,
+            last_duration_ms=last_duration_ms,
+            last_message=last_message,
+        )
+
+    def _scheduled_task_repository(self) -> ScheduledTaskRepository:
+        if self._scheduled_tasks is None:
+            raise RuntimeError("Memory.init() must run before scheduled task access")
+        return self._scheduled_tasks
 
     def status(self) -> str:
         try:
