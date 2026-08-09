@@ -62,6 +62,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
         self.assertNotIn("StrictHostKeyChecking=no", publisher)
         self.assertIn('"app_support.py"', publisher)
+        self.assertIn('"navigation.py"', publisher)
         self.assertIn('"config", "routes", "services", "static", "templates"', publisher)
 
 
