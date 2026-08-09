@@ -4,9 +4,9 @@
 {% block subtitle %}首页 / 韵达与融辉 TMS 实时待办{% endblock %}
 
 {% block page_actions %}
-<button class="primary-btn monitoring-refresh" type="button" data-monitoring-refresh>
+<button class="primary-btn monitoring-refresh" type="button" data-monitoring-refresh aria-label="刷新首页数据" title="刷新首页数据">
   <i data-feather="refresh-cw"></i>
-  立即刷新
+  <span class="monitoring-refresh-label">立即刷新</span>
 </button>
 {% endblock %}
 
@@ -289,8 +289,33 @@
   }
   @media (max-width: 767px) {
     .monitor-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .monitor-metric { min-height: 104px; padding: 14px; }
+    .monitor-metric { min-height: 108px; gap: 6px; padding: 12px; }
     .monitor-metric strong { font-size: 1.55rem; }
+    .monitor-metric small { line-height: 1.4; overflow-wrap: anywhere; }
+    .monitoring-refresh {
+      width: 44px;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: #fff;
+      color: #475569;
+      box-shadow: none;
+    }
+    .monitoring-refresh:hover { border-color: #cbd5e1; background: #f8fafc; color: var(--text-strong); box-shadow: none; transform: none; }
+    .monitoring-refresh .feather { width: 18px; height: 18px; }
+    .monitoring-refresh-label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
     .monitor-dashboard.is-mobile-detail {
       position: fixed;
       z-index: 140;
