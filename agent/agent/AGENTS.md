@@ -68,5 +68,5 @@
 - `../docs/code_navigation_index.md`
 - `../docs/project_overview.md`
 
-- `split_pending_problem_upload` 仅由精确文本“分批”触发，使用 `ronghui_default`；先 dry-run 编号选择再确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
+- `split_pending_problem_upload` 仅由精确文本“分批”触发，使用 `ronghui_default`；dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
 - 少货/分批复用不可独立调度的 `agent.tms_runtime.scripts.ronghui_split_complaint` 真实投诉页面能力，差错成功/重复后才登记问题件；有发未到只登记问题件。旧投诉 target、裸导入和 CLI 不得恢复。
