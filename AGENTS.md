@@ -14,12 +14,6 @@
 
 详细操作和国内网络处理见 `docs/git_workflow.md`。
 
-## Windows / WSL GitHub 工具基线
-
-- 当前开发环境中，工作区和 Linux `git` 位于 WSL `Ubuntu`；GitHub CLI `gh` 仅在 Windows 主机已安装并完成认证。该组合是已确认的基线，无需在后续任务中重复探测或尝试在 WSL 中运行 `gh`。
-- Git 分支、暂存、提交、推送等仓库操作在 WSL 中执行；PR、CI、评审和 GitHub API 查询在 Windows 主机中、以同一工作区的 UNC 路径作为工作目录执行 `gh`。
-- 不要把 Windows 主机的 `gh` 不可用或 WSL 中的 `gh` 缺失误判为仓库、网络或认证故障；只有 Windows 主机上的 `gh` 命令失败时才按 GitHub 认证或网络问题排查。
-
 # 项目结构与边界
 
 `boyi-logistics` 是私有单仓，目录职责如下：
