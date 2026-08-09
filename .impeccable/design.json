@@ -11,7 +11,19 @@
     "typographyMeta": {
       "display": { "displayName": "工作标题", "purpose": "页面与工作区的清晰定位，不用于营销式放大。" },
       "body": { "displayName": "任务正文", "purpose": "表单、状态与说明的稳定可读性。" },
-      "mono": { "displayName": "数据等宽体", "purpose": "单号、代码和需要纵向对比的数据。" }
+      "mono": { "displayName": "数据等宽体", "purpose": "单号、代码和需要纵向对比的数据。" },
+      "families": {
+        "cjk": {
+          "fontFamily": "Source Han Sans SC",
+          "asset": "console/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2",
+          "purpose": "中文界面、状态和业务数据"
+        },
+        "latin": {
+          "fontFamily": "Roboto",
+          "asset": "console/static/assets/fonts/Roboto-Latin-Variable.woff2",
+          "purpose": "英文、数字和拉丁标识"
+        }
+      }
     },
     "shadows": [
       { "name": "surface", "value": "0 4px 20px rgba(0, 0, 0, 0.05)", "purpose": "普通任务面板。" },

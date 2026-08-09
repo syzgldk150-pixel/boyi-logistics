@@ -196,6 +196,14 @@ class LineHaulRepositoryHelperTests(unittest.TestCase):
 
 
 class LineHaulStylesheetTests(unittest.TestCase):
+    def test_reveal_content_is_visible_without_javascript(self):
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+        match = re.search(r"^\[data-reveal\]\s*\{(?P<body>[^}]*)\}", stylesheet, re.MULTILINE)
+
+        self.assertIsNotNone(match)
+        self.assertRegex(match.group("body"), r"opacity\s*:\s*1\s*;")
+        self.assertRegex(match.group("body"), r"transform\s*:\s*none\s*;")
+
     def test_reveal_final_state_removes_transform_so_fixed_modals_use_viewport(self):
         stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
         match = re.search(r"body\.ui-ready\s+\[data-reveal\]\s*\{(?P<body>[^}]*)\}", stylesheet)
