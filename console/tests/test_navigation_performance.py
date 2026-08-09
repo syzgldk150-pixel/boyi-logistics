@@ -57,7 +57,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=font-fallback-order-20260809", template)
+        self.assertIn("/static/style.css?v=mobile-density-20260809", template)
         self.assertIn("/static/assets/fonts/Roboto-Latin-Variable.woff2", template)
         self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", template)
         self.assertIn("/static/style.css?v=font-fallback-order-20260809", login_template)

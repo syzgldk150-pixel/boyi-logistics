@@ -314,6 +314,7 @@
         {% set has_resources = task.resource_bindings %}
         {% set has_account_roles = task.account_role_bindings %}
         {% set is_webhook = task.task_mode == 'webhook' %}
+        {% set has_expandable_settings = has_webhook or task.is_schedulable or has_params or has_resources or has_account_options %}
 
         {# ── 卡片主行 ── #}
         <div class="auto-card-row">
@@ -369,8 +370,12 @@
               <i data-feather="terminal"></i>
             </button>
 
-            {% if has_webhook or task.is_schedulable or has_params or has_resources or has_account_options %}
-            <button class="ghost-btn auto-expand-btn" type="button" data-settings-toggle aria-expanded="{{ 'true' if task.is_open else 'false' }}" aria-controls="task-settings-{{ task.task_id }}">
+            {% if has_expandable_settings %}
+            <button class="ghost-btn auto-expand-btn" type="button" data-settings-toggle data-mobile-card-toggle aria-expanded="{{ 'true' if task.is_open else 'false' }}" aria-controls="task-settings-{{ task.task_id }}" aria-label="展开任务详情">
+              <i data-feather="chevron-down"></i>
+            </button>
+            {% else %}
+            <button class="ghost-btn auto-expand-btn auto-mobile-only-expand" type="button" data-mobile-card-toggle aria-expanded="false" aria-label="展开任务详情">
               <i data-feather="chevron-down"></i>
             </button>
             {% endif %}
@@ -897,6 +902,11 @@
 
   function closeAutomationTaskPanels(form) {
     closePanel(form.querySelector("[data-settings-toggle]"), form.querySelector(".auto-settings"));
+    const mobileDetailsBtn = form.querySelector("[data-mobile-card-toggle]");
+    const card = form.closest(".auto-card");
+    if (mobileDetailsBtn && !form.querySelector(".auto-settings")) mobileDetailsBtn.setAttribute("aria-expanded", "false");
+    mobileDetailsBtn?.setAttribute("aria-label", "展开任务详情");
+    card?.classList.remove("is-mobile-expanded");
   }
 
   function taskSubmitPath(form, submitter) {
@@ -1325,8 +1335,25 @@
     // 图形化设置面板 展开/收起
     const settingsBtn = form.querySelector("[data-settings-toggle]");
     const settingsPanel = form.querySelector(".auto-settings");
+    const mobileDetailsBtn = form.querySelector("[data-mobile-card-toggle]");
+    const card = form.closest(".auto-card");
+    const syncMobileCardDetails = () => {
+      if (!mobileDetailsBtn || !card) return;
+      const expanded = mobileDetailsBtn.getAttribute("aria-expanded") === "true";
+      card.classList.toggle("is-mobile-expanded", expanded);
+      mobileDetailsBtn.setAttribute("aria-label", expanded ? "收起任务详情" : "展开任务详情");
+    };
     if (settingsBtn && settingsPanel) {
-      settingsBtn.addEventListener("click", () => togglePanel(settingsBtn, settingsPanel));
+      settingsBtn.addEventListener("click", () => {
+        togglePanel(settingsBtn, settingsPanel);
+        syncMobileCardDetails();
+      });
+    } else if (mobileDetailsBtn) {
+      mobileDetailsBtn.addEventListener("click", () => {
+        const expanded = mobileDetailsBtn.getAttribute("aria-expanded") === "true";
+        mobileDetailsBtn.setAttribute("aria-expanded", String(!expanded));
+        syncMobileCardDetails();
+      });
     }
 
     // 终端输出面板

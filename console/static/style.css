@@ -1037,6 +1037,7 @@ body.dispatch-page .notice { display: none; }
 .auto-expand-btn:hover { color: var(--text-strong); background: #f3f4f6; }
 .auto-expand-btn .feather { width: 16px; height: 16px; }
 .auto-expand-btn[aria-expanded="true"] { transform: rotate(180deg); color: var(--text-strong); }
+.auto-mobile-only-expand { display: none; }
 
 /* ── Feedback ── */
 .auto-feedback { position: relative; margin-top: 12px; padding: 10px 14px; border-radius: var(--radius-md); border: 1px solid var(--line); background: #f9fafb; font-size: 0.84rem; }
@@ -2372,6 +2373,49 @@ body.dispatch-page .notice { display: none; }
   .nav-search--global { min-height: 44px; }
   .top-header-actions--page { align-items: stretch; justify-content: flex-start; gap: 8px; }
   .top-header-actions--page > * { min-height: 44px; }
+  .auto-page { gap: 14px; }
+  .auto-provider-bar { padding: 0; }
+  .auto-provider-tabs { gap: 3px; padding: 3px; }
+  .auto-provider-tab { min-height: 44px; padding: 0 9px; font-size: 0.82rem; }
+  .auto-stats-bar { gap: 16px; padding: 2px 0; }
+  .auto-card { padding: 12px; }
+  .auto-card-row { align-items: stretch; gap: 8px; }
+  .auto-card-info { width: 100%; }
+  .auto-card-head { gap: 8px 10px; align-items: flex-start; }
+  .auto-card-name {
+    flex: 1 1 190px;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    text-wrap: pretty;
+  }
+  .auto-card:not(.is-mobile-expanded) .auto-mode-badge,
+  .auto-card:not(.is-mobile-expanded) .auto-system-badge,
+  .auto-card:not(.is-mobile-expanded) .auto-terminal-btn,
+  .auto-card:not(.is-mobile-expanded) .auto-resource-alert { display: none; }
+  .auto-card.is-mobile-expanded .auto-mode-badge,
+  .auto-card.is-mobile-expanded .auto-system-badge { min-height: 28px; padding: 2px 8px; }
+  .auto-card-actions { width: 100%; gap: 8px; flex-wrap: nowrap; align-items: center; justify-content: flex-end; }
+  .auto-toggle-wrap { width: 44px; height: 44px; margin-right: 0; flex: 0 0 44px; }
+  .auto-toggle-track { inset: 11px 2px; }
+  .auto-run-btn { flex: 0 0 auto; min-width: 80px; min-height: 44px; padding: 0 12px; justify-content: center; font-size: 0.84rem; }
+  .auto-terminal-btn,
+  .auto-expand-btn,
+  .auto-mobile-only-expand {
+    display: inline-flex;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-color: var(--line);
+    background: #fff;
+    flex: 0 0 44px;
+  }
+  .auto-terminal-btn .feather,
+  .auto-expand-btn .feather { width: 17px; height: 17px; }
   .section-head,
   .section-header,
   .chart-title-row { align-items: flex-start; flex-direction: column; }
