@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-07
+updated: 2026-08-09
 ---
 
 > 2026-07-16: 融辉 TMS 单号查询会从真实 `FIND_SACN_TRACK_BY_CODE` 响应中先取得每个子单的最新扫描，再按完整主单前缀、四位数字子单后缀、当前到达网点和明确的到达类扫描（`到件` / `到达` / `卸车`）去重生成实时 `arrival_progress`。实时子单分布优先于数据库和飞书历史缓存，旧缓存的 `0` 不得覆盖实时统计；缺少明确到达值时飞书显示“无数据”，只有来源明确的零值才显示 `0 件`。
@@ -74,7 +74,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `统计` / `到货统计` / `统计到货数据` / `刷新统计` 等 | `sync_arrival_stats` | deferred（异步执行） |
 | `到达打卡` / `R7到达打卡` | `r7_arrival_checkin` | deferred（异步执行；R7 登录独立于 TMS 登录态） |
 | `发车` / `R7发车` / `发车打卡` | `r7_departure_checkin` | deferred（异步执行；多车牌配置时先进入车牌选择 pending） |
-| `分批`（仅精确文本） | `split_pending_problem_upload` | reply（dry-run 编号列表 → 输入序号选择 → 回显 → 确认执行） |
+| `分批`（仅精确文本） | `split_pending_problem_upload` | reply（dry-run 完整编号列表 → “确认”直接执行全部；输入序号后回显并二次确认部分执行） |
 | `自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等 | `self_pickup_problem_upload` | reply（先 dry_run 预览，再确认执行；默认不上传截图） |
 
 `r7_arrival_checkin` 会写入 MySQL 表 `r7_arrival_checkin_log`。默认匹配 R7 运输状态 `车辆到达` 后执行 `到达待卸`；历史定时任务里保存的 `status_text=已调度` 会在执行到达待卸时自动纠偏为 `车辆到达`。参数 `daily_success_limit` 表示当天需要成功打卡的次数，达到后当天后续定时触发只记录 skipped，不再打开 R7 执行真实打卡。
@@ -200,7 +200,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | type | 用途 | 数据 |
 |---|---|---|
 | `confirm_action` | 通用先预览后确认（如自提到货问题件） | `{tool_name, params, description}` |
-| `split_pending_selection` | 分批 dry-run 后等待数字/多选/区间/“全部” | `{candidates, preview_fingerprint, account_id}` |
+| `split_pending_selection` | 分批 dry-run 后等待“确认”全量执行，或数字/多选/区间部分选择 | `{candidates, preview_fingerprint, account_id}` |
 | `split_pending_confirmation` | 分批选择回显后等待确认 | `{selected_bill_codes, preview_fingerprint, account_id}` |
 | `r7_departure_plate_choice` | 飞书发车打卡多车牌选择；只接受完整车牌号，不接受纯序号 | `{tool_name, params, plate_numbers}` |
 | `confirm_login_for_resume` | 登录态过期，等用户决定是否重登 | `{resume_tool, resume_params}` |
@@ -224,7 +224,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 ## 2026-08-07 分批差错及问题件
 
-- 链路：飞书仅精确文本“分批” → dry-run 返回按每日到货表顺序编号的未完成候选、步骤状态、隐藏成功数量和 `preview_fingerprint` → 用户输入序号/多选/区间/“全部” → 回显 → “确认”携带 `selected_bill_codes` 与指纹正式执行。
+- 链路：飞书仅精确文本“分批” → dry-run 返回按每日到货表顺序编号的未完成候选、步骤状态、隐藏成功数量和 `preview_fingerprint` → 首次列表中回复“确认”会携带全部 `selected_bill_codes` 与指纹直接执行；输入序号/多选/区间时只选择对应运单，回显后再回复“确认”正式执行。
 - 旧文本“分批问题件”“上报分批差错”“分批差错”“上传分批/未到问题件”等只提示发送“分批”，不映射工具；菜单事件也不直接运行分批工具。
 - `0 < 已到 < 应到`：先通过 `ronghui_split_complaint.py` 上报“分批”差错，成功或重复后才登记“少货/分批 / 交接异常”问题件；差错失败跳过该票问题件并继续后续运单。`已到=0<应到` 只登记“有发未到 / 通知类（不顺延时效）”问题件。
 - `split_pending_problem_items` 独立保存差错与问题件状态。同类型数量变化保留已成功结果；类型变化重置所需步骤。完整成功单从后续候选隐藏，失败、未选择和部分成功单继续显示并只补未完成步骤。
