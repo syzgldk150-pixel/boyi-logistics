@@ -160,8 +160,8 @@ def _split_candidate_lines(candidates: list[dict[str, Any]], hidden_completed: i
     lines.extend(
         [
             "",
-            "请输入序号选择：2 / 1,3,5 / 2-4 / 全部。",
-            "回复“取消”放弃；10 分钟内有效。",
+            "回复“确认”直接执行全部；如需部分上传，请输入序号：2 / 1,3,5 / 2-4。",
+            "回复“取消”放弃；部分选择后需再次回复“确认”执行；10 分钟内有效。",
         ]
     )
     return lines
@@ -175,6 +175,36 @@ def _split_selected_lines(selected: list[dict[str, Any]]) -> list[str]:
         )
     lines.extend(["", "回复“确认”正式执行，回复“取消”放弃。10 分钟内有效。"])
     return lines
+
+
+def _split_execution_params(pending: dict[str, Any], selected_bill_codes: list[str]) -> dict[str, Any]:
+    return {
+        "dry_run": False,
+        "account_id": pending.get("account_id") or "ronghui_default",
+        "selected_bill_codes": selected_bill_codes,
+        "preview_fingerprint": str(pending.get("preview_fingerprint") or ""),
+    }
+
+
+async def _execute_split_formal(
+    agent: Any,
+    chat_id: str,
+    pending: dict[str, Any],
+    selected_bill_codes: list[str],
+    *,
+    running_message: str,
+) -> None:
+    if _running_tool_info(agent, SPLIT_TOOL_NAME).get("running"):
+        await _reply_text(chat_id, running_message, reply_type="split_confirmation_running")
+        return
+    clear_pending(chat_id)
+    await _reply_text(chat_id, "程序正在执行：分批差错及问题件")
+    await _execute_and_reply(
+        agent,
+        chat_id,
+        SPLIT_TOOL_NAME,
+        _split_execution_params(pending, selected_bill_codes),
+    )
 
 
 async def _reply_split_lines(chat_id: str, lines: list[str], *, reply_type: str) -> None:
@@ -1271,6 +1301,22 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 await _reply_text(chat_id, "已取消：分批差错及问题件")
                 return
             candidates = pending.get("candidates") if isinstance(pending.get("candidates"), list) else []
+            if is_confirm_text(text):
+                selected_codes = [str(item.get("bill_code") or "").strip() for item in candidates]
+                if not selected_codes or not all(selected_codes):
+                    await _reply_text(chat_id, "候选列表数据无效，请重新发送“分批”。")
+                    clear_pending(chat_id)
+                    return
+                await _execute_split_formal(
+                    agent,
+                    chat_id,
+                    pending,
+                    selected_codes,
+                    running_message=(
+                        "分批差错及问题件任务正在执行中；当前列表仍保留，请稍后再次回复“确认”。"
+                    ),
+                )
+                return
             try:
                 selected_numbers = _parse_split_selection(text, len(candidates))
             except ValueError as exc:
@@ -1311,22 +1357,15 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 await _reply_text(chat_id, "已取消：分批差错及问题件")
                 return
             if is_confirm_text(text):
-                if _running_tool_info(agent, SPLIT_TOOL_NAME).get("running"):
-                    await _reply_text(
-                        chat_id,
-                        "分批差错及问题件任务正在执行中；当前选择仍保留，请稍后再次回复“确认”。",
-                        reply_type="split_confirmation_running",
-                    )
-                    return
-                params = {
-                    "dry_run": False,
-                    "account_id": pending.get("account_id") or "ronghui_default",
-                    "selected_bill_codes": list(pending.get("selected_bill_codes") or []),
-                    "preview_fingerprint": str(pending.get("preview_fingerprint") or ""),
-                }
-                clear_pending(chat_id)
-                await _reply_text(chat_id, "程序正在执行：分批差错及问题件")
-                await _execute_and_reply(agent, chat_id, SPLIT_TOOL_NAME, params)
+                await _execute_split_formal(
+                    agent,
+                    chat_id,
+                    pending,
+                    list(pending.get("selected_bill_codes") or []),
+                    running_message=(
+                        "分批差错及问题件任务正在执行中；当前选择仍保留，请稍后再次回复“确认”。"
+                    ),
+                )
                 return
             await _reply_text(chat_id, "当前选择已保留，请回复“确认”执行或回复“取消”放弃。")
             return
