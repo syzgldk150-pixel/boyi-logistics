@@ -650,10 +650,13 @@
     .shipment-party-row-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 600px) {
-    .tracking-page { gap: 20px; }
-    .tracking-search-box { padding: 24px 20px; }
-    .tracking-input-row { flex-direction: column; }
-    .tracking-search-btn { width: 100%; }
+    .tracking-page { gap: 16px; }
+    .tracking-search-box { padding: 20px 16px; }
+    .tracking-search-desc { margin-bottom: 14px; font-size: 0.84rem; line-height: 1.5; text-wrap: pretty; }
+    .tracking-input-row { gap: 8px; }
+    .tracking-input-wrap { height: 44px; padding: 0 12px; }
+    .tracking-search-btn { width: auto; min-width: 88px; height: 44px; padding: 0 12px; gap: 6px; font-size: 0.88rem; }
+    .tracking-search-btn .feather { width: 16px; height: 16px; }
     .tracking-result-panel { padding: 14px 10px; }
     .r7-summary-strip, .r7-kv-grid, .r7-route-list { grid-template-columns: 1fr; }
     .shipment-hero-stats,
@@ -699,7 +702,7 @@
           type="text"
           id="trackingInput"
           class="tracking-input"
-          placeholder="输入运单号，例如 RC123456、977808459、000123456"
+          placeholder="输入运单号"
           value="{{ initial_tracking_number | default('') }}"
           autocomplete="off"
           spellcheck="false"
