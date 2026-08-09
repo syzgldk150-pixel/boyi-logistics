@@ -139,6 +139,13 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - `stop_backend.sh`
   WSL / Linux 下停止本地控制台
 
+## 移动端导航与视觉壳层
+
+- 唯一导航目录：`navigation.py`。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用其中路由，不得维护模板内副本。
+- 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
+- 统一 Logo：`static/assets/boyi-logistics-logo.png`。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
+- 视觉约束请先看根目录 `PRODUCT.md`、`DESIGN.md` 与 `.impeccable/design.json`。
+
 ## 说明
 
 - 控制台运行时统一使用 `MySQL`，与 Agent 共用同一套数据库

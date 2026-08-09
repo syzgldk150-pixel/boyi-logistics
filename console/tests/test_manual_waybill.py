@@ -13,6 +13,11 @@ if str(CONSOLE_DIR) not in sys.path:
 
 from app import ActionResult, DocumentService, LocalDocFlowApp, ui_label  # noqa: E402
 from database import format_manual_waybill_no  # noqa: E402
+from console.navigation import (  # noqa: E402
+    CONSOLE_NAVIGATION,
+    MOBILE_NAVIGATION_CANDIDATES,
+    mobile_bottom_nav_for_user,
+)
 
 
 def _png_size(path: Path) -> tuple[int, int]:
@@ -247,6 +252,10 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         )
         cls.env.globals["ui_label"] = ui_label
+        cls.env.globals["current_admin_user"] = lambda: None
+        cls.env.globals["console_navigation"] = CONSOLE_NAVIGATION
+        cls.env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
+        cls.env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
 
     def test_document_template_defaults_to_manual_submit(self):
         template = self.env.get_template("document.html")

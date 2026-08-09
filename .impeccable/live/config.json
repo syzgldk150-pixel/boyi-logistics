@@ -1,0 +1,9 @@
+{
+  "files": [
+    "console/templates/base.html",
+    "console/templates/login.html"
+  ],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}

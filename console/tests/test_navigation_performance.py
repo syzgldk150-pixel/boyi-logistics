@@ -57,10 +57,10 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=design-audit-20260607", template)
-        self.assertIn("/static/console_ui.js?v=module-stylesheet-gate-20260712", template)
-        self.assertIn("/static/style.css?v=design-audit-20260607", login_template)
-        self.assertIn("/static/console_ui.js?v=module-stylesheet-gate-20260712", login_template)
+        self.assertIn("/static/style.css?v=mobile-responsive-20260809", template)
+        self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", template)
+        self.assertIn("/static/style.css?v=mobile-responsive-20260809", login_template)
+        self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", login_template)
         self.assertNotIn("partial-nav-logo-20260515", login_template)
 
     def test_public_brand_uses_boyi_logistics_wordmark_with_icon(self):
@@ -75,10 +75,14 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_brand = login_template[login_brand_start:login_brand_end]
 
         for brand in (sidebar_brand, login_brand):
-            self.assertIn("<strong>博益物流</strong>", brand)
-            self.assertIn("brand-mark", brand)
-            self.assertIn("M13 2L3 14h9l-1 8 10-12h-9l1-8z", brand)
+            self.assertIn('src="/static/assets/boyi-logistics-logo.png"', brand)
+            self.assertIn('width="', brand)
+            self.assertIn('height="', brand)
+            self.assertNotIn("M13 2L3 14h9l-1 8 10-12h-9l1-8z", brand)
+            self.assertNotIn("<svg", brand)
             self.assertNotIn("SHIPNOW", brand)
+
+        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "boyi-logistics-logo.png").is_file())
 
     def test_base_template_exposes_keep_alive_tab_shell(self):
         template = (CONSOLE_DIR / "templates" / "base.html").read_text(encoding="utf-8")
@@ -107,7 +111,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertNotIn("tab.main.hidden = true", script)
         self.assertIn("item.main.hidden = !active", script)
         self.assertLess(
-            script.index('".nav-menu .nav-link[href]"'),
+            script.index('"[data-nav-list] .nav-link[href]"'),
             script.index('"[data-shell-home-link][href]"'),
         )
 
