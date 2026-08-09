@@ -22,10 +22,10 @@
 }
 
 :root {
-  --font-cjk: "Source Han Sans SC", system-ui, -apple-system, sans-serif;
-  --font-latin: "Roboto", system-ui, -apple-system, sans-serif;
-  --font-ui: var(--font-latin), var(--font-cjk);
-  --font-display: var(--font-latin), var(--font-cjk);
+  --font-cjk: "Source Han Sans SC";
+  --font-latin: "Roboto";
+  --font-ui: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", Consolas, monospace;
   --bg: #f9f9fb;
   --line: #e5e7eb;
