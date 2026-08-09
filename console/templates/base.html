@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <title>{% block title %}{{ app_title | default('物流 Agent 控制台') }}{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <link rel="stylesheet" href="/static/style.css?v=mobile-responsive-20260809">
+  <link rel="preload" href="/static/assets/fonts/Roboto-Latin-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/style.css?v=font-standardization-20260809">
   <script src="https://unpkg.com/feather-icons"></script>
   {% block head %}{% endblock %}
 </head>

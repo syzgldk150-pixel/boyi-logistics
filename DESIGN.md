@@ -15,12 +15,12 @@ colors:
   info: "#3B82F6"
 typography:
   display:
-    fontFamily: "Noto Sans SC, Source Han Sans SC, system-ui, -apple-system, sans-serif"
+    fontFamily: "Roboto, Source Han Sans SC, system-ui, -apple-system, sans-serif"
     fontSize: "1.65rem"
     fontWeight: 900
     lineHeight: 1.18
   body:
-    fontFamily: "Noto Sans SC, Source Han Sans SC, system-ui, -apple-system, sans-serif"
+    fontFamily: "Roboto, Source Han Sans SC, system-ui, -apple-system, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.6
@@ -95,11 +95,12 @@ components:
 
 ## Typography
 
-**Display Font:** Noto Sans SC, Source Han Sans SC, system-ui, -apple-system, sans-serif
-**Body Font:** Noto Sans SC, Source Han Sans SC, system-ui, -apple-system, sans-serif
+**Chinese Font:** Source Han Sans SC
+**Latin Font:** Roboto
+**Display / Body Stack:** Roboto, Source Han Sans SC, system-ui, -apple-system, sans-serif
 **Label/Mono Font:** JetBrains Mono, Consolas, monospace
 
-**Character:** 使用一套可读性优先的无衬线字族，靠字重与间距区分层级，适合中英文混排、表格数据和高频操作。
+**Character:** 中文固定使用思源黑体，英文和数字固定使用 Roboto，靠字重与间距区分层级，适合中英文混排、表格数据和高频操作。
 
 ### Hierarchy
 
@@ -110,6 +111,8 @@ components:
 - **Mono**（400，继承字号）：单号、代码和需要对齐扫描的数据。
 
 **任务密度规则。** 产品 UI 不使用营销式超大标题，移动端保持可读的固定层级，而非依靠流动字号缩放。
+
+**字体交付规则。** `SourceHanSansCN-VF.ttf.woff2` 和 `Roboto-Latin-Variable.woff2` 必须随 Console 静态资源发布，使用 `@font-face` 和 `font-display: swap`。不得替换为 Google Fonts、系统已安装字体或其他运行时网络依赖。
 
 ## Elevation
 
