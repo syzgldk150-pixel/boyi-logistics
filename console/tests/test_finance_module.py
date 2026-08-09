@@ -14,6 +14,7 @@ CONSOLE_DIR = Path(__file__).resolve().parents[1]
 
 from console.app import LocalDocFlowApp
 from console.finance_service import FinanceValidationError
+from console.navigation import CONSOLE_NAVIGATION
 
 
 class _Handler:
@@ -90,11 +91,10 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.app._send_html = types.MethodType(send_html, self.app)
 
     def test_sidebar_links_to_dedicated_finance_workbench(self):
-        template = (CONSOLE_DIR / "templates" / "base.html").read_text(encoding="utf-8")
+        item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/modules/finance")
 
-        self.assertIn('<a class="nav-link" href="/modules/finance">', template)
-        self.assertIn('<i data-feather="dollar-sign"></i>', template)
-        self.assertIn("<span>财务模块</span>", template)
+        self.assertEqual("dollar-sign", item["icon"])
+        self.assertEqual("财务模块", item["label"])
 
     def test_finance_route_renders_specialized_four_tab_workbench(self):
         self.app._render_finance(_Handler(), {})

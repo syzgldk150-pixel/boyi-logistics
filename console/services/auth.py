@@ -1,6 +1,11 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from console.navigation import (
+    MobileNavigationValidationError,
+    serialize_mobile_bottom_nav,
+    validate_mobile_bottom_nav,
+)
 
 
 class AuthServiceMixin:
@@ -49,6 +54,7 @@ class AuthServiceMixin:
             "display_name": str(session.get("display_name") or ""),
             "avatar_path": str(session.get("avatar_path") or ""),
             "avatar_url": self._admin_avatar_url(str(session.get("avatar_path") or "")),
+            "ui_preferences_json": str(session.get("ui_preferences_json") or "{}"),
             "is_legacy_basic_auth": False,
         }
         self._set_current_admin_user(handler, user)
@@ -70,6 +76,7 @@ class AuthServiceMixin:
             "display_name": username,
             "avatar_path": "",
             "avatar_url": "",
+            "ui_preferences_json": "{}",
             "is_legacy_basic_auth": True,
         }
 
@@ -203,6 +210,74 @@ class AuthServiceMixin:
             handler,
             "/login?message=%E5%B7%B2%E9%80%80%E5%87%BA%E5%90%8E%E5%8F%B0%E3%80%82&kind=success",
             headers=[("Set-Cookie", self._clear_session_cookie_header())],
+        )
+
+    def _handle_mobile_navigation_save(self, handler: BaseHTTPRequestHandler) -> None:
+        user = current_admin_user()
+        if not user or bool(user.get("is_legacy_basic_auth")) or int(user.get("id") or 0) <= 0:
+            self._send_json(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                {
+                    "ok": False,
+                    "data": None,
+                    "error": {
+                        "code": "MOBILE_NAVIGATION_SYNC_UNAVAILABLE",
+                        "message": "应急 Basic Auth 没有管理员账号标识，无法同步移动底栏偏好。",
+                    },
+                },
+            )
+            return
+
+        body = self._parse_json_body(handler)
+        try:
+            routes = validate_mobile_bottom_nav(body.get("routes"))
+        except MobileNavigationValidationError as exc:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "data": None,
+                    "error": {"code": "INVALID_MOBILE_NAVIGATION", "message": str(exc)},
+                },
+            )
+            return
+
+        user_id = int(user["id"])
+        stored_user = self.repository.get_admin_user(user_id)
+        if not stored_user:
+            self._send_json(
+                handler,
+                HTTPStatus.UNAUTHORIZED,
+                {
+                    "ok": False,
+                    "data": None,
+                    "error": {"code": "ADMIN_USER_NOT_FOUND", "message": "当前管理员账号不可用。"},
+                },
+            )
+            return
+
+        preferences_json = serialize_mobile_bottom_nav(stored_user.get("ui_preferences_json"), routes)
+        if not self.repository.update_admin_ui_preferences(user_id, preferences_json):
+            self._send_json(
+                handler,
+                HTTPStatus.CONFLICT,
+                {
+                    "ok": False,
+                    "data": None,
+                    "error": {"code": "MOBILE_NAVIGATION_SAVE_FAILED", "message": "移动底栏偏好未保存。"},
+                },
+            )
+            return
+
+        updated_user = dict(user)
+        updated_user["ui_preferences_json"] = preferences_json
+        self._set_current_admin_user(handler, updated_user)
+        self._send_json(
+            handler,
+            HTTPStatus.OK,
+            {"ok": True, "data": {"routes": list(routes)}, "error": None},
         )
 
     def _render_admin_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:

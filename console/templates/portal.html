@@ -287,6 +287,26 @@
       grid-template-columns: 1fr;
     }
   }
+  @media (max-width: 767px) {
+    .monitor-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .monitor-metric { min-height: 104px; padding: 14px; }
+    .monitor-metric strong { font-size: 1.55rem; }
+    .monitor-dashboard.is-mobile-detail {
+      position: fixed;
+      z-index: 140;
+      inset: 0;
+      display: block;
+      padding: max(8px, env(safe-area-inset-top)) 0 env(safe-area-inset-bottom);
+      background: #fff;
+    }
+    .monitor-dashboard.is-mobile-detail .monitor-metrics,
+    .monitor-dashboard.is-mobile-detail .monitor-grid { display: none; }
+    .monitor-dashboard.is-mobile-detail .monitor-shell { display: block; }
+    .monitor-dashboard.is-mobile-detail .monitor-detail { position: static; min-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border: 0; border-radius: 0; }
+    .monitor-dashboard.is-mobile-detail .monitor-frame-wrap,
+    .monitor-dashboard.is-mobile-detail .monitor-frame,
+    .monitor-dashboard.is-mobile-detail .monitor-placeholder { min-height: 0; height: 100%; }
+  }
 </style>
 
 <div class="monitor-dashboard" data-monitoring-dashboard>
@@ -328,6 +348,9 @@
           <span data-monitoring-detail-subtitle>原系统页面会在这里打开</span>
         </div>
         <div class="monitor-detail-actions">
+          <button class="monitor-icon-btn" type="button" data-monitoring-fullscreen disabled title="全屏查看" aria-label="全屏查看">
+            <i data-feather="maximize-2"></i>
+          </button>
           <button class="monitor-icon-btn" type="button" data-monitoring-open disabled title="新标签打开">
             <i data-feather="external-link"></i>
           </button>
@@ -369,6 +392,7 @@
     detailSubtitle: root.querySelector('[data-monitoring-detail-subtitle]'),
     placeholder: root.querySelector('[data-monitoring-placeholder]'),
     frame: root.querySelector('[data-monitoring-frame]'),
+    fullscreen: root.querySelector('[data-monitoring-fullscreen]'),
     open: root.querySelector('[data-monitoring-open]'),
     reload: root.querySelector('[data-monitoring-reload]'),
     refresh: document.querySelector('[data-monitoring-refresh]')
@@ -637,6 +661,7 @@
       els.frame.hidden = true;
       els.open.disabled = true;
       els.reload.disabled = true;
+      els.fullscreen.disabled = true;
     }
   }
 
@@ -646,6 +671,7 @@
     setText(els.detailSubtitle, '如嵌入受限，请使用新标签打开');
     els.open.disabled = !link.open_url;
     els.reload.disabled = !url;
+    els.fullscreen.disabled = !url;
     if (!url) {
       els.placeholder.hidden = false;
       els.frame.hidden = true;
@@ -657,6 +683,7 @@
       els.frame.dataset.monitoringCurrentSrc = url;
       els.frame.src = url;
     }
+    if (window.matchMedia('(max-width: 767px)').matches) root.classList.add('is-mobile-detail');
   }
 
   function escapeHtml(value) {
@@ -715,6 +742,14 @@
     els.frame.dataset.monitoringCurrentSrc = '';
     els.frame.src = activeLink.embed_url;
     els.frame.dataset.monitoringCurrentSrc = activeLink.embed_url;
+  });
+  els.fullscreen?.addEventListener('click', () => {
+    const enabled = root.classList.toggle('is-mobile-detail');
+    els.fullscreen.setAttribute('aria-label', enabled ? '退出全屏查看' : '全屏查看');
+    els.fullscreen.setAttribute('title', enabled ? '退出全屏查看' : '全屏查看');
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && root.classList.contains('is-mobile-detail')) root.classList.remove('is-mobile-detail');
   });
   els.refresh?.addEventListener('click', () => {
     if (refreshCooldown) return;

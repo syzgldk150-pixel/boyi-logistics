@@ -8,6 +8,11 @@ from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
 from console.services.tms_proxy import TmsProxyServiceMixin
 from console.services.automation import AutomationServiceMixin
 from console.services.documents import DocumentServiceMixin
+from console.navigation import (
+    CONSOLE_NAVIGATION,
+    MOBILE_NAVIGATION_CANDIDATES,
+    mobile_bottom_nav_for_user,
+)
 
 
 class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerServiceMixin, WaybillsReceiptsServiceMixin, TmsProxyServiceMixin, AutomationServiceMixin, DocumentServiceMixin):
@@ -41,6 +46,9 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         )
         self.template_env.globals["ui_label"] = ui_label
         self.template_env.globals["current_admin_user"] = current_admin_user
+        self.template_env.globals["console_navigation"] = CONSOLE_NAVIGATION
+        self.template_env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
+        self.template_env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
         self.project_modules = self._build_project_modules()
         self.finance_service = FinanceService(self.repository, agent_request=self._agent_request)
         self.finance_service.initialize_schema()

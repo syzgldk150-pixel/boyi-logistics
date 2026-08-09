@@ -355,6 +355,20 @@ class DocumentRepository:
             raise RuntimeError(
                 "Console schema is not migrated; run deployment migrations first: " + ", ".join(missing)
             )
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admin_users'
+                """
+            )
+            admin_user_columns = {str(row.get("COLUMN_NAME") or "") for row in cursor.fetchall() or []}
+        if "ui_preferences_json" not in admin_user_columns:
+            raise RuntimeError(
+                "Console schema is not migrated; run deployment migrations first: "
+                "admin_users.ui_preferences_json"
+            )
         self._waybills.ensure_schema()
 
     def count_admin_users(self) -> int:
@@ -369,7 +383,7 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, is_active, last_login_at, created_at, updated_at
+                SELECT id, username, display_name, avatar_path, ui_preferences_json, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 ORDER BY id ASC
                 """
@@ -381,7 +395,7 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, password_hash, is_active, last_login_at, created_at, updated_at
+                SELECT id, username, display_name, avatar_path, ui_preferences_json, password_hash, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 WHERE id = %s
                 """,
@@ -394,7 +408,7 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, password_hash, is_active, last_login_at, created_at, updated_at
+                SELECT id, username, display_name, avatar_path, ui_preferences_json, password_hash, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 WHERE username = %s
                 """,
@@ -471,6 +485,23 @@ class DocumentRepository:
                 (str(avatar_path or "").strip(), _now_iso(), int(user_id)),
             )
 
+    def update_admin_ui_preferences(self, user_id: int, ui_preferences_json: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                UPDATE admin_users
+                SET ui_preferences_json = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (str(ui_preferences_json or "{}"), _now_iso(), int(user_id)),
+            )
+            # The caller has already verified that this administrator exists.
+            # MySQL reports 0 affected rows when an unchanged preference is
+            # submitted in the same timestamp second, which is still a valid
+            # idempotent save rather than a missing-user conflict.
+            return cursor.rowcount >= 0
+
     def record_admin_login(self, user_id: int) -> None:
         with self.connect() as connection:
             cursor = connection.cursor()
@@ -518,6 +549,7 @@ class DocumentRepository:
                     u.username,
                     u.display_name,
                     u.avatar_path,
+                    u.ui_preferences_json,
                     u.is_active
                 FROM admin_sessions s
                 JOIN admin_users u ON u.id = s.user_id
