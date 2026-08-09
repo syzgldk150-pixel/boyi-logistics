@@ -1292,7 +1292,7 @@ def format_split_pending_problem_upload_reply(result: dict[str, Any]) -> str:
         if candidate_count > 20:
             lines.append(f"... 其余 {candidate_count - 20} 单已省略")
         lines.append("")
-        lines.append('请输入序号选择，例如“2”“1,3,5”“2-4”或“全部”。10 分钟内有效。')
+        lines.append('回复“确认”直接执行全部；如需部分上传，请输入序号，例如“2”“1,3,5”或“2-4”。10 分钟内有效。')
         return "\n".join(lines)
 
     if stage in {"selection_required", "preview_expired"}:

@@ -118,6 +118,106 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         self.assertEqual("a" * 64, formal_call[1]["preview_fingerprint"])
         self.assertEqual([600, 600], pending_ttls)
 
+    def test_initial_confirmation_executes_all_previewed_codes(self):
+        replies: list[str] = []
+        pending_store: dict[str, dict[str, Any]] = {}
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeAgent:
+            async def execute_tool(self, tool_name, params):
+                calls.append((tool_name, dict(params)))
+                if params.get("dry_run"):
+                    return {
+                        "success": True,
+                        "data": {
+                            "ok": True,
+                            "stage": "dry_run",
+                            "candidate_count": 3,
+                            "hidden_completed_count": 0,
+                            "preview_fingerprint": "g" * 64,
+                            "candidates": candidates(3),
+                        },
+                    }
+                return {
+                    "success": True,
+                    "data": {
+                        "ok": True,
+                        "stage": "done",
+                        "candidate_count": 3,
+                        "selected_count": 3,
+                        "saved_bills": 3,
+                        "failed_bills": 0,
+                        "results": [],
+                    },
+                }
+
+            async def handle_message(self, *_args, **_kwargs):
+                raise AssertionError("split flow must not reach LLM")
+
+        async def fake_reply(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
+            replies.append(str(text))
+
+        def set_pending(chat_id, payload, ttl_sec=600):
+            pending_store[chat_id] = dict(payload)
+
+        with patch("feishu.bot.get_agent_core", return_value=FakeAgent()), patch.object(
+            message_handler, "get_pending", side_effect=lambda chat_id: pending_store.get(chat_id)
+        ), patch.object(message_handler, "set_pending", side_effect=set_pending), patch.object(
+            message_handler,
+            "clear_pending",
+            side_effect=lambda chat_id: pending_store.pop(chat_id, None),
+        ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
+            asyncio.run(message_handler._process_and_reply("分批", "user", "chat"))
+            self.assertEqual("split_pending_selection", pending_store["chat"]["type"])
+
+            asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
+
+        self.assertNotIn("chat", pending_store)
+        formal_calls = [params for _tool_name, params in calls if not params.get("dry_run")]
+        self.assertEqual(1, len(formal_calls))
+        self.assertEqual(["R0001", "R0002", "R0003"], formal_calls[0]["selected_bill_codes"])
+        self.assertEqual("g" * 64, formal_calls[0]["preview_fingerprint"])
+        self.assertEqual("ronghui_default", formal_calls[0]["account_id"])
+        self.assertFalse(any(reply.startswith("已选择") for reply in replies))
+
+    def test_initial_confirmation_keeps_full_list_when_tool_is_running(self):
+        replies: list[str] = []
+        pending_store = {
+            "chat": {
+                "type": "split_pending_selection",
+                "tool_name": message_handler.SPLIT_TOOL_NAME,
+                "candidates": candidates(2),
+                "preview_fingerprint": "h" * 64,
+            }
+        }
+
+        class FakeAgent:
+            def is_tool_running(self, _tool_name):
+                return True
+
+            async def execute_tool(self, *_args, **_kwargs):
+                raise AssertionError("running tool must not execute")
+
+        async def fake_reply(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
+            replies.append(str(text))
+
+        with patch("feishu.bot.get_agent_core", return_value=FakeAgent()), patch.object(
+            message_handler, "get_pending", side_effect=lambda chat_id: pending_store.get(chat_id)
+        ), patch.object(
+            message_handler,
+            "clear_pending",
+            side_effect=lambda chat_id: pending_store.pop(chat_id, None),
+        ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
+            asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
+
+        self.assertEqual("split_pending_selection", pending_store["chat"]["type"])
+        self.assertIn("当前列表仍保留", replies[-1])
+
+    def test_candidate_prompt_explains_initial_confirmation_executes_all(self):
+        prompt = "\n".join(message_handler._split_candidate_lines(candidates(2), hidden_completed=0))
+        self.assertIn("回复“确认”直接执行全部", prompt)
+        self.assertIn("部分选择后需再次回复“确认”执行", prompt)
+
     def test_invalid_selection_keeps_current_preview(self):
         replies: list[str] = []
         pending_store = {
