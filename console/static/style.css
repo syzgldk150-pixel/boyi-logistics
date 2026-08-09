@@ -1,8 +1,31 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap");
+/*
+ * Bundled console fonts. Roboto handles Latin text and Source Han Sans CN
+ * handles Simplified Chinese. See static/assets/fonts/LICENSES.md.
+ */
+@font-face {
+  font-family: "Source Han Sans SC";
+  src: url("./assets/fonts/SourceHanSansCN-VF.ttf.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("./assets/fonts/Roboto-Latin-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
 
 :root {
-  --font-ui: "Noto Sans SC", "Source Han Sans SC", system-ui, -apple-system, sans-serif;
-  --font-display: "Noto Sans SC", "Source Han Sans SC", system-ui, -apple-system, sans-serif;
+  --font-cjk: "Source Han Sans SC", system-ui, -apple-system, sans-serif;
+  --font-latin: "Roboto", system-ui, -apple-system, sans-serif;
+  --font-ui: var(--font-latin), var(--font-cjk);
+  --font-display: var(--font-latin), var(--font-cjk);
   --font-mono: "JetBrains Mono", Consolas, monospace;
   --bg: #f9f9fb;
   --line: #e5e7eb;
@@ -66,7 +89,7 @@ th, td, .metric-value, .module-card-metric span, .dispatch-route-card-distance-v
 ::-webkit-scrollbar-track { background: transparent; }
 .feather { width: 18px; height: 18px; stroke-width: 2; flex: 0 0 auto; }
 
-[data-reveal] { opacity: 0; transform: translateY(14px); transition: opacity var(--slow), transform var(--slow); }
+[data-reveal] { opacity: 1; transform: none; }
 body.ui-ready [data-reveal] { opacity: 1; transform: none; }
 [data-reveal="sidebar"] { transition-delay: 20ms; }
 [data-reveal="main"] { transition-delay: 60ms; }
