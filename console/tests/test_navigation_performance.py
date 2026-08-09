@@ -57,10 +57,10 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=font-standardization-20260809", template)
+        self.assertIn("/static/style.css?v=font-fallback-order-20260809", template)
         self.assertIn("/static/assets/fonts/Roboto-Latin-Variable.woff2", template)
         self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", template)
-        self.assertIn("/static/style.css?v=font-standardization-20260809", login_template)
+        self.assertIn("/static/style.css?v=font-fallback-order-20260809", login_template)
         self.assertIn("/static/assets/fonts/Roboto-Latin-Variable.woff2", login_template)
         self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", login_template)
         self.assertNotIn("partial-nav-logo-20260515", login_template)
@@ -73,7 +73,14 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn('SourceHanSansCN-VF.ttf.woff2', stylesheet)
         self.assertIn('font-family: "Roboto";', stylesheet)
         self.assertIn('Roboto-Latin-Variable.woff2', stylesheet)
-        self.assertIn("--font-ui: var(--font-latin), var(--font-cjk);", stylesheet)
+        self.assertIn(
+            "--font-ui: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;",
+            stylesheet,
+        )
+        self.assertNotIn(
+            "--font-ui: var(--font-latin), system-ui, -apple-system, sans-serif, var(--font-cjk);",
+            stylesheet,
+        )
         self.assertNotIn("fonts.googleapis.com", stylesheet)
         self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "SourceHanSansCN-VF.ttf.woff2").is_file())
         self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "Roboto-Latin-Variable.woff2").is_file())
