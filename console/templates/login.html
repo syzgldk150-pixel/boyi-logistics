@@ -3,66 +3,34 @@
 <head>
   <meta charset="utf-8">
   <title>登录后台 - {{ app_title | default('物流 Agent 控制台') }}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/static/style.css?v=design-audit-20260607">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="stylesheet" href="/static/style.css?v=mobile-responsive-20260809">
   <script src="https://unpkg.com/feather-icons"></script>
 </head>
 <body class="login-page">
   <main class="login-shell">
     <section class="login-panel" data-reveal="main">
-      <div class="login-brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        </span>
-        <span class="brand-copy">
-          <strong>博益物流</strong>
-        </span>
-      </div>
-
+      <div class="login-brand"><img src="/static/assets/boyi-logistics-logo.png" width="216" height="58" alt="博益物流"></div>
       <div class="login-heading">
         <p class="kicker">Console Access</p>
         <h1>后台管理登录</h1>
         <p>请输入管理员账号和密码进入控制台。</p>
       </div>
-
       {% if message %}
-      <div class="notice notice--{{ message_kind or 'info' }}" data-notice>
-        <div class="notice-copy">
-          <i data-feather="info"></i>
-          <span>{{ message }}</span>
-        </div>
-      </div>
+      <div class="notice notice--{{ message_kind or 'info' }}" data-notice><div class="notice-copy"><i data-feather="info"></i><span>{{ message }}</span></div></div>
       {% endif %}
-
       {% if not has_admin_users %}
-      <div class="notice notice--warning">
-        <div class="notice-copy">
-          <i data-feather="alert-triangle"></i>
-          <span>尚未初始化管理员账号。请先配置 DOCFLOW_ADMIN_USERNAME 和 DOCFLOW_ADMIN_PASSWORD 后重启后台。</span>
-        </div>
-      </div>
+      <div class="notice notice--warning"><div class="notice-copy"><i data-feather="alert-triangle"></i><span>尚未初始化管理员账号。请先配置 DOCFLOW_ADMIN_USERNAME 和 DOCFLOW_ADMIN_PASSWORD 后重启后台。</span></div></div>
       {% endif %}
-
       <form class="login-form" action="/login" method="post" autocomplete="on">
         <input type="hidden" name="next" value="{{ next_url or '/' }}">
-        <label>
-          <span>账号</span>
-          <input class="review-input" type="text" name="username" value="{{ username_value or '' }}" autocomplete="username" required autofocus>
-        </label>
-        <label>
-          <span>密码</span>
-          <input class="review-input" type="password" name="password" autocomplete="current-password" required>
-        </label>
-        <button class="primary-btn login-submit" type="submit">
-          <i data-feather="log-in"></i>
-          <span>登录后台</span>
-        </button>
+        <label><span>账号</span><input class="review-input" type="text" name="username" value="{{ username_value or '' }}" autocomplete="username" required autofocus></label>
+        <label><span>密码</span><input class="review-input" type="password" name="password" autocomplete="current-password" required></label>
+        <button class="primary-btn login-submit" type="submit"><i data-feather="log-in"></i><span>登录后台</span></button>
       </form>
     </section>
   </main>
-  <script src="/static/console_ui.js?v=module-stylesheet-gate-20260712"></script>
-  <script>
-    feather.replace();
-  </script>
+  <script src="/static/console_ui.js?v=mobile-responsive-20260809"></script>
+  <script>feather.replace();</script>
 </body>
 </html>

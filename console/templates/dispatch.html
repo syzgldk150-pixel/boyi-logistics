@@ -65,6 +65,30 @@
   .p-price-val { font-size: 1.12rem; font-family: var(--font-display); font-weight: 800; color: var(--text-strong); }
   .p-price-status { font-size: 0.7rem; color: var(--warning); margin-top: 2px; white-space: nowrap; }
 
+  @media (max-width: 767px) {
+    .dispatch-page .top-header { display: none; }
+    .dispatch-page .main-content {
+      height: calc(100dvh - var(--mobile-brand-h) - var(--mobile-nav-h) - env(safe-area-inset-bottom));
+      min-height: 0;
+      padding: 0 !important;
+    }
+    .map-drawer {
+      top: 12px;
+      right: 12px;
+      bottom: 12px;
+      left: 12px;
+      width: auto;
+      max-height: none;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .drawer-search-box { padding: 14px; }
+    .drawer-scroll-area { min-height: 0; overscroll-behavior: contain; }
+    .route-input { min-height: 44px; font-size: 16px; }
+    .search-action-btn { min-height: 44px; }
+    .route-suggest-list { max-height: min(40dvh, 320px); }
+  }
+
 </style>
 <script>
   window.__dispatchConfig = {{ dispatch_config | tojson }};

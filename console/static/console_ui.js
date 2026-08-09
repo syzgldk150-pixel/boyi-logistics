@@ -166,7 +166,7 @@
 
   function getNavMeta(tabKey) {
     const candidateGroups = [
-      Array.from(document.querySelectorAll(".nav-menu .nav-link[href]")),
+      Array.from(document.querySelectorAll("[data-nav-list] .nav-link[href]")),
       Array.from(document.querySelectorAll("[data-shell-home-link][href]")),
     ];
     for (const links of candidateGroups) {
@@ -510,7 +510,7 @@
 
   function updateActiveNav(pathname = window.location.pathname) {
     const currentPath = pathname || "/";
-    const navLinks = Array.from(document.querySelectorAll(".nav-menu .nav-link"));
+    const navLinks = Array.from(document.querySelectorAll("[data-nav-list] .nav-link, .mobile-bottom-nav__item[href]"));
     const hasSpecificNavMatch = navLinks.some((link) => {
       const href = link.getAttribute("href");
       if (!href || href === "#" || href === "/") {
@@ -613,6 +613,165 @@
         }
       });
     });
+  }
+
+  function getMobileNavigationConfig() {
+    const source = document.querySelector("#mobile-navigation-data");
+    if (!source) return { routes: [], navigation: [], isSyncSupported: false };
+    try {
+      const parsed = JSON.parse(source.textContent || "{}");
+      return {
+        routes: Array.isArray(parsed.routes) ? parsed.routes : [],
+        navigation: Array.isArray(parsed.navigation) ? parsed.navigation : [],
+        isSyncSupported: Boolean(parsed.isSyncSupported),
+      };
+    } catch (_error) {
+      return { routes: [], navigation: [], isSyncSupported: false };
+    }
+  }
+
+  function initMobileNavigation() {
+    const sheet = document.querySelector("[data-mobile-more-sheet]");
+    const openButton = document.querySelector("[data-mobile-more-open]");
+    const closeButton = sheet?.querySelector("[data-mobile-more-close]");
+    const editor = sheet?.querySelector("[data-mobile-navigation-editor]");
+    const editButton = sheet?.querySelector("[data-mobile-navigation-edit-toggle]");
+    const form = sheet?.querySelector("[data-mobile-navigation-form]");
+    const cancelButton = sheet?.querySelector("[data-mobile-navigation-cancel]");
+    const status = sheet?.querySelector("[data-mobile-navigation-status]");
+    if (!sheet || !openButton || !editor || !editButton || !form || sheet.hasAttribute("data-mobile-navigation-bound")) return;
+    sheet.setAttribute("data-mobile-navigation-bound", "true");
+
+    const config = getMobileNavigationConfig();
+    const navigationByRoute = new Map(config.navigation.filter((item) => item && typeof item.route === "string").map((item) => [item.route, item]));
+    let lastFocused = null;
+    const announce = (message) => { if (status) status.textContent = message; };
+    const focusableInSheet = () => Array.from(sheet.querySelectorAll('a[href], button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter((element) => !element.hidden && element.offsetParent !== null);
+    const resetEditor = () => {
+      form.hidden = true;
+      editor.classList.remove("is-editing");
+      editButton.setAttribute("aria-expanded", "false");
+    };
+    const closeSheet = ({ restoreFocus = true } = {}) => {
+      if (sheet.open && typeof sheet.close === "function") sheet.close();
+      else sheet.removeAttribute("open");
+      document.body.classList.remove("has-mobile-sheet");
+      openButton.setAttribute("aria-expanded", "false");
+      resetEditor();
+      if (restoreFocus) window.setTimeout(() => lastFocused?.focus(), 0);
+    };
+    const openSheet = () => {
+      lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : openButton;
+      if (typeof sheet.showModal === "function") {
+        if (!sheet.open) sheet.showModal();
+      } else sheet.setAttribute("open", "");
+      document.body.classList.add("has-mobile-sheet");
+      openButton.setAttribute("aria-expanded", "true");
+      window.setTimeout(() => (closeButton || editButton).focus(), 0);
+    };
+    const updateSlotNumbers = () => {
+      Array.from(form.querySelectorAll("[data-mobile-navigation-slot]")).forEach((slot, index) => {
+        const number = slot.querySelector(".mobile-navigation-slot__index");
+        const label = slot.querySelector("label .sr-only");
+        const up = slot.querySelector('[data-mobile-navigation-move="up"]');
+        const down = slot.querySelector('[data-mobile-navigation-move="down"]');
+        if (number) number.textContent = String(index + 1);
+        if (label) label.textContent = `第 ${index + 1} 个快捷入口`;
+        if (up) up.disabled = index === 0;
+        if (down) down.disabled = index === 2;
+      });
+    };
+    const currentRoutes = () => Array.from(form.querySelectorAll("[data-mobile-navigation-select]")).map((select) => select.value);
+    const updateBottomNavigation = (routes) => {
+      const slots = Array.from(document.querySelectorAll("[data-mobile-nav-slot]"));
+      routes.forEach((route, index) => {
+        const slot = slots[index];
+        const item = navigationByRoute.get(route);
+        if (!slot || !item) return;
+        slot.href = item.route;
+        slot.dataset.mobileRoute = item.route;
+        const label = slot.querySelector("span");
+        if (label) label.textContent = item.mobile_label || item.label;
+        const icon = slot.querySelector("svg, [data-feather]");
+        if (icon) {
+          const marker = document.createElement("i");
+          marker.setAttribute("data-feather", item.icon || "circle");
+          icon.replaceWith(marker);
+          refreshIcons(slot);
+        }
+      });
+      updateActiveNav();
+    };
+
+    openButton.addEventListener("click", openSheet);
+    closeButton?.addEventListener("click", () => closeSheet());
+    sheet.addEventListener("cancel", (event) => { event.preventDefault(); closeSheet(); });
+    sheet.addEventListener("click", (event) => { if (event.target === sheet) closeSheet(); });
+    sheet.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = focusableInSheet();
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+    sheet.addEventListener("close", () => {
+      document.body.classList.remove("has-mobile-sheet");
+      openButton.setAttribute("aria-expanded", "false");
+    });
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("[data-mobile-more-route]")) closeSheet({ restoreFocus: false });
+    }, true);
+    editButton.addEventListener("click", () => {
+      if (!config.isSyncSupported) { announce("应急 Basic Auth 不支持同步移动底栏偏好。"); return; }
+      const editing = form.hidden;
+      form.hidden = !editing;
+      editor.classList.toggle("is-editing", editing);
+      editButton.setAttribute("aria-expanded", String(editing));
+      if (editing) { updateSlotNumbers(); form.querySelector("select")?.focus(); }
+    });
+    cancelButton?.addEventListener("click", resetEditor);
+    form.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-mobile-navigation-move]") : null;
+      if (!target) return;
+      const slot = target.closest("[data-mobile-navigation-slot]");
+      const slots = Array.from(form.querySelectorAll("[data-mobile-navigation-slot]"));
+      const index = slots.indexOf(slot);
+      const direction = target.getAttribute("data-mobile-navigation-move");
+      if (index < 0 || !direction) return;
+      if (direction === "up" && index > 0) slots[index - 1].before(slot);
+      if (direction === "down" && index < slots.length - 1) slots[index + 1].after(slot);
+      updateSlotNumbers();
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const routes = currentRoutes();
+      if (routes.length !== 3 || new Set(routes).size !== 3 || routes.some((route) => !navigationByRoute.has(route))) {
+        announce("请选择三个不同且有效的模块后再保存。");
+        return;
+      }
+      const saveButton = form.querySelector("[data-mobile-navigation-save]");
+      if (saveButton) saveButton.disabled = true;
+      try {
+        const response = await fetch("/settings/profile/mobile-navigation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json", "X-Requested-With": "ConsoleMobileNavigation" },
+          body: JSON.stringify({ routes }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok || !Array.isArray(result.data?.routes)) throw new Error(result.error?.message || "移动底栏偏好未保存。");
+        updateBottomNavigation(result.data.routes);
+        announce("移动底栏已保存，并将在其他设备的下次打开时生效。");
+        resetEditor();
+      } catch (error) {
+        announce(error?.message || "移动底栏偏好未保存。");
+      } finally {
+        if (saveButton) saveButton.disabled = false;
+      }
+    });
+    updateSlotNumbers();
   }
 
   function isPermanentHeadNode(node) {
@@ -1058,7 +1217,7 @@
       "click",
       (event) => {
         const target = event.target instanceof Element ? event.target : null;
-        const link = target?.closest("[data-nav-list] .nav-link[href], [data-shell-home-link][href]");
+        const link = target?.closest("[data-nav-list] a[href], [data-shell-home-link][href]");
         if (!shouldHandleSidebarLink(event, link)) {
           return;
         }
@@ -1099,6 +1258,9 @@
     initCollapses(root);
     initGlobalTrackingSearch(root);
     initAvatarUpload(root);
+    if (root === document) {
+      initMobileNavigation();
+    }
     updateActiveNav();
     refreshIcons(root);
   }

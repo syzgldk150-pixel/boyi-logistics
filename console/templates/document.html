@@ -419,6 +419,33 @@
     .yunda-workspace { grid-template-columns: minmax(0, 1fr); }
     .yunda-grid { grid-template-columns: minmax(0, 1fr); }
   }
+
+  @media (max-width: 767px) {
+    body.entry-tabs-page .top-header,
+    body.yunda-live-page .top-header,
+    body.ronghui-live-page .top-header,
+    body.boyi-frame-page .top-header { display: none !important; }
+    body.entry-tabs-page .main-content,
+    body.yunda-live-page .main-content,
+    body.ronghui-live-page .main-content,
+    body.boyi-frame-page .main-content {
+      height: calc(100dvh - var(--mobile-brand-h) - var(--mobile-nav-h) - env(safe-area-inset-bottom));
+      min-height: 0;
+      padding: 0 !important;
+    }
+    body.yunda-live-page .app-shell,
+    body.ronghui-live-page .app-shell { grid-template-columns: minmax(0, 1fr) !important; }
+    body.yunda-live-page .sidebar,
+    body.ronghui-live-page .sidebar { display: none !important; }
+    .entry-tabs-shell,
+    .entry-frame-stack,
+    .entry-frame-panel,
+    .yunda-card,
+    .yunda-scroll { min-height: 0; }
+    .entry-frame-panel[data-entry-provider="yunda"],
+    .entry-frame-panel[data-entry-provider="ronghui"],
+    .yunda-live-scroll { overflow: auto; overscroll-behavior: contain; }
+  }
 </style>
 {% endblock %}
 

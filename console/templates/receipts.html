@@ -716,7 +716,9 @@
     .receipt-modal { padding: 10px; }
     .receipt-modal-card--preview,
     .receipt-modal-card--review,
-    .receipt-modal-card--audit { width: 100%; height: 96vh; max-height: 96vh; }
+    .receipt-modal-card--audit { width: 100%; height: calc(100dvh - 20px - env(safe-area-inset-bottom)); max-height: calc(100dvh - 20px - env(safe-area-inset-bottom)); }
+    .receipt-table-wrap { overflow-x: auto; overflow-y: auto; max-height: calc(100dvh - 300px - var(--mobile-nav-h) - env(safe-area-inset-bottom)); overscroll-behavior-x: contain; }
+    .receipt-table { min-width: 920px; }
     .receipt-preview-body { grid-template-columns: minmax(0, 1fr); }
     .receipt-preview-nav { display: none; }
     .receipt-review-image-overlay .receipt-preview-nav { display: inline-flex; }

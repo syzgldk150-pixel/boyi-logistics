@@ -48,6 +48,13 @@
 - 页面和第三方接口逻辑必须来自真实页面、真实请求或官方契约；缺字段、多候选或解析失败必须显式失败，不得猜测或静默回退。
 - ECS 固定使用 `boyce@123.57.106.70` 和既有系统 SSH 配置；禁止 `root`、密码回退和跳过主机密钥校验。
 
+## Console 移动端框架
+
+- Console 的唯一导航目录在 `console/navigation.py`；桌面侧栏、移动底栏、更多面板和后端白名单都从这里读取，禁止在模板或路由中复制导航清单。
+- 管理员移动底栏偏好只保存到 `admin_users.ui_preferences_json`，其 schema 迁移必须新增到 `agent/migrations/`。应急 Basic Auth 没有管理员 ID，必须明确拒绝同步，不得以浏览器本地存储回退。
+- 通用壳层在 `console/templates/base.html`、`console/static/style.css` 和 `console/static/console_ui.js`；Logo 资源为 `console/static/assets/boyi-logistics-logo.png`。响应式页面必须保留 WCAG 2.2 AA 的键盘、焦点、触控和减弱动效支持。
+- 视觉与产品约束见根目录 `PRODUCT.md`、`DESIGN.md` 及 `.impeccable/`；结构改动时同步维护它们。
+
 ## 本地与生产隔离
 
 - ECS 是飞书机器人、定时任务和生产自动化的唯一长期运行源；本地 WSL 仅用于开发调试和临时验证。
