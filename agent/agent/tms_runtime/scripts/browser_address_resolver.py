@@ -95,10 +95,10 @@ class BrowserAddressResolver:
         self._page = None
         self._frame = None
 
-    def resolve(self, address: str) -> Dict[str, str]:
+    def resolve(self, address: str) -> Dict[str, Any]:
         return self._run_on_worker(self._resolve, address)
 
-    def _resolve(self, address: str) -> Dict[str, str]:
+    def _resolve(self, address: str) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
         for _ in range(2):
             try:
@@ -628,7 +628,7 @@ class BrowserAddressResolver:
             address,
         )
 
-    def _resolve_once(self, address: str) -> Dict[str, str]:
+    def _resolve_once(self, address: str) -> Dict[str, Any]:
         if self._page is None or self._frame is None:
             raise RuntimeError("browser resolver frame not ready")
 
@@ -658,13 +658,14 @@ class BrowserAddressResolver:
             raise RuntimeError("browser resolver destination code remained empty")
         return values
 
-    def _read_values(self) -> Dict[str, str]:
+    def _read_values(self) -> Dict[str, Any]:
         if self._frame is None:
             raise RuntimeError("browser resolver frame not ready")
         raw = self._frame.evaluate(
             """
             () => {
                 const gv = (id) => (document.getElementById(id) || {}).value || '';
+                const insureStatusControl = window.mini && mini.get('BL_INSURESTATUS');
                 return {
                     address: gv('ACCEPT_MAN_ADDRESS$text'),
                     province: gv('ACCEPT_PROVINCE$text'),
@@ -678,6 +679,9 @@ class BrowserAddressResolver:
                     destination_center_code: gv('DESTINATION_CENTER_CODE$value'),
                     dispatch_site_name: gv('DISPATCH_UNDERLING_SITE_CODE$text'),
                     dispatch_site_code: gv('DISPATCH_UNDERLING_SITE_CODE$value'),
+                    pricing_context: insureStatusControl ? {
+                        BL_INSURESTATUS: insureStatusControl.getValue(),
+                    } : null,
                 };
             }
             """
@@ -689,6 +693,9 @@ class BrowserAddressResolver:
         county = str(raw.get("county_value", "") or (county_parts[-1] if county_parts else ""))
         if "|" in county:
             county = county_parts[-1] if county_parts else ""
+        pricing_context = raw.get("pricing_context")
+        if not isinstance(pricing_context, dict) or "BL_INSURESTATUS" not in pricing_context:
+            raise RuntimeError("browser resolver pricing context missing: BL_INSURESTATUS")
         return {
             "address": str(raw.get("address", "") or ""),
             "province": province,
@@ -701,4 +708,7 @@ class BrowserAddressResolver:
             "destination_center_code": str(raw.get("destination_center_code", "") or ""),
             "dispatch_site_name": str(raw.get("dispatch_site_name", "") or ""),
             "dispatch_site_code": str(raw.get("dispatch_site_code", "") or ""),
+            "pricing_context": {
+                "BL_INSURESTATUS": pricing_context["BL_INSURESTATUS"],
+            },
         }

@@ -10,7 +10,7 @@ Flow (derived from the TMS front-end logic):
 5) /dataQuery/findAllByCallId?id=FIND_CREATE_BILL_SEND_CENTER -> send center
 6) /dataQuery/findAllByCallId?id=FIND_CREATE_BILL_DISP_CENTER(_NEW) -> destination center
 7) /dataQuery/findAllByCallId?id=FIND_PLAN_GOODS_ROUTE -> plan route name
-8) /dataOperation/batchExecProcedure (P_CALC_CLIENT_PRICE_BILL_SHOW4) -> fee breakdown
+8) /dataOperation/batchExecProcedure (P_CALC_CLIENT_PRICE_BILL_SH_ZB) -> fee breakdown
 9) /dataQuery/findAllByCallId?id=FIND_SITE_DISP_INFO&SITE_CODE=... -> site info
 
 Notes:
@@ -47,7 +47,7 @@ BATCH_PROC_URL = f"{BASE_ORIGIN}/dataOperation/batchExecProcedure"
 EXEC_PROC_URL = f"{BASE_ORIGIN}/dataOperation/execProcedure"
 INDEX_URL = f"{BASE_ORIGIN}/module/index?mv=index"
 
-PROC_CALC_PRICE = "P_CALC_CLIENT_PRICE_BILL_SHOW4"
+PROC_CALC_PRICE = "P_CALC_CLIENT_PRICE_BILL_SH_ZB"
 
 DEFAULT_HEADERS = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -63,7 +63,10 @@ DISCOUNT_KEYS = {
     "REC_DISPATCH_FEE_DIS",
     "TRANSFER_FEE_DIS",
     "REC_SHORTHAUL_FEE_DIS",
+    "REC_PERIOD_FEE_DIS",
 }
+
+PAGE_PRICING_CONTEXT_FIELDS = ("BL_INSURESTATUS",)
 
 ENTRY_DEFAULT_INSURANCE = "3000"
 ENTRY_DEFAULT_INSURANCE_FEE = "3"
@@ -508,6 +511,16 @@ def _resolve_destination_via_browser(
     destination_name = _clean_str(browser_result.get("destination_name", ""))
     if not destination_code:
         raise PriceCalcError("browser resolver destination code missing")
+    pricing_context = browser_result.get("pricing_context")
+    if not isinstance(pricing_context, dict):
+        raise PriceCalcError("browser resolver pricing context missing")
+    missing_pricing_fields = [
+        field for field in PAGE_PRICING_CONTEXT_FIELDS if field not in pricing_context
+    ]
+    if missing_pricing_fields:
+        raise PriceCalcError(
+            "browser resolver pricing context missing: " + ", ".join(missing_pricing_fields)
+        )
 
     dest_list = _post_json_list(
         session,
@@ -547,6 +560,9 @@ def _resolve_destination_via_browser(
         "destination": destination,
         "dispatch": dispatch,
         "temp_dest_code": destination_code,
+        "pricing_context": {
+            field: pricing_context[field] for field in PAGE_PRICING_CONTEXT_FIELDS
+        },
     }
 
 
@@ -930,6 +946,16 @@ def _build_base_payload(
     }
 
 
+def _apply_page_pricing_context(
+    base_data: Dict[str, Any],
+    pricing_context: Dict[str, Any],
+) -> None:
+    for field in PAGE_PRICING_CONTEXT_FIELDS:
+        if field not in pricing_context:
+            raise PriceCalcError(f"page pricing context missing: {field}")
+        base_data[field] = pricing_context[field]
+
+
 def _apply_center_route_info(
     base_data: Dict[str, Any],
     send_site_info: Dict[str, Any],
@@ -1059,6 +1085,7 @@ def fetch_prices(address: str, weight: float, volume: float, config_path: Option
     dispatch = resolved["dispatch"]
     temp_dest_code = resolved["temp_dest_code"]
     used_address = resolved["used_address"]
+    pricing_context = resolved["pricing_context"]
 
     send_site_info = _fetch_site_and_center(session, ctx.get("site_code", ""))
     send_center = _fetch_send_center(session, ctx.get("site_code", ""))
@@ -1084,6 +1111,7 @@ def fetch_prices(address: str, weight: float, volume: float, config_path: Option
         emp_code,
         emp_name,
     )
+    _apply_page_pricing_context(base_data, pricing_context)
     _apply_center_route_info(base_data, send_site_info, send_center, dest_center, route_name, dispatch)
 
     prices: Dict[str, float] = {}

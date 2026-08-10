@@ -415,6 +415,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                     "destination_center_code": "57401",
                     "dispatch_site_name": "浙江宁波象山丹西公司一分部",
                     "dispatch_site_code": "5740252",
+                    "pricing_context": {"BL_INSURESTATUS": "1"},
                 }
 
             def close(self):
@@ -468,6 +469,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertEqual("5740252", result["temp_dest_code"])
         self.assertEqual("浙江宁波象山丹西公司一分部", result["dispatch"]["dispatch_site_name"])
+        self.assertEqual({"BL_INSURESTATUS": "1"}, result["pricing_context"])
 
     def test_ronghui_fetch_prices_reports_entry_page_resolver_failure(self):
         from agent.tms_runtime.scripts import get_price as ronghui_get_price
@@ -544,6 +546,97 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("3000", payload["INSURANCE"])
         self.assertEqual("3", payload["INSURANCE_FEE"])
 
+    def test_ronghui_price_uses_entry_page_context_and_current_procedure(self):
+        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+
+        captured = {}
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "success": True,
+                    "result": {
+                        "data": [
+                            {
+                                "INSURANCE": "9000",
+                                "TRANSPORT_FEE": "529",
+                                "TRANSPORT_FEE_DIS": "158.7",
+                                "PERIOD_FEE": "23",
+                                "REC_SPECIAL_CAR": "190",
+                                "REC_DELIVERY_FEE": "23",
+                                "TARIFF_FEE": "30",
+                                "INSURANCE_FEE": "9",
+                            }
+                        ]
+                    },
+                }
+
+        class Session:
+            def post(self, url, data=None, headers=None, timeout=None):
+                captured.update(url=url, data=data, headers=headers, timeout=timeout)
+                return Response()
+
+        payload = {"PRODUCT_CODE": "002", "DISPATCH_MODE": "派送"}
+        ronghui_get_price._apply_page_pricing_context(
+            payload,
+            {"BL_INSURESTATUS": "1"},
+        )
+        total = ronghui_get_price._calc_price(Session(), payload)
+
+        self.assertEqual("P_CALC_CLIENT_PRICE_BILL_SH_ZB", captured["data"]["procedureName"])
+        posted_row = json.loads(captured["data"]["data"])[0]
+        self.assertEqual("1", posted_row["BL_INSURESTATUS"])
+        self.assertEqual(Decimal("645.30"), total)
+
+    def test_browser_address_resolver_reads_required_page_pricing_context(self):
+        from agent.tms_runtime.scripts import browser_address_resolver
+
+        class FakeFrame:
+            def evaluate(self, _script):
+                return {
+                    "address": "福建省福州市福清市福建绿生园农业有限公司",
+                    "province": "福建省",
+                    "city": "福州市",
+                    "county_text": "福建省|福州市|福清市",
+                    "county_value": "福清市",
+                    "town": "",
+                    "destination_name": "福州服务大厅",
+                    "destination_code": "5910082",
+                    "destination_center_name": "福州分拨",
+                    "destination_center_code": "59101",
+                    "dispatch_site_name": "福州服务大厅",
+                    "dispatch_site_code": "5910082",
+                    "pricing_context": {"BL_INSURESTATUS": "1"},
+                }
+
+        resolver = browser_address_resolver.BrowserAddressResolver()
+        resolver._frame = FakeFrame()
+        self.addCleanup(resolver.close)
+
+        result = resolver._read_values()
+
+        self.assertEqual({"BL_INSURESTATUS": "1"}, result["pricing_context"])
+
+    def test_browser_address_resolver_rejects_missing_page_pricing_context(self):
+        from agent.tms_runtime.scripts import browser_address_resolver
+
+        class FakeFrame:
+            def evaluate(self, _script):
+                return {
+                    "destination_code": "5910082",
+                    "pricing_context": None,
+                }
+
+        resolver = browser_address_resolver.BrowserAddressResolver()
+        resolver._frame = FakeFrame()
+        self.addCleanup(resolver.close)
+
+        with self.assertRaisesRegex(RuntimeError, "BL_INSURESTATUS"):
+            resolver._read_values()
+
     def test_ronghui_price_sum_matches_entry_page_total_with_insurance_fee(self):
         from agent.tms_runtime.scripts import get_price as ronghui_get_price
 
@@ -553,6 +646,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 "TRANSPORT_FEE_DIS": "7.05",
                 "REC_DISPATCH_FEE": "30",
                 "REC_DISPATCH_FEE_DIS": "15",
+                "REC_PERIOD_FEE_DIS": "2",
                 "OPERATE_FEE": "1.98",
                 "PERIOD_FEE": "3",
                 "TARIFF_FEE": "5",
@@ -563,7 +657,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(Decimal("150.94"), total)
+        self.assertEqual(Decimal("148.94"), total)
 
     def test_browser_address_resolver_triggers_miniui_blur_with_page_context(self):
         from agent.tms_runtime.scripts import browser_address_resolver

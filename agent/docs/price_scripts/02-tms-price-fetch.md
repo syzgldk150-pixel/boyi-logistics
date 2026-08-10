@@ -201,7 +201,7 @@ batch_run.py
 6. FIND_PLAN_GOODS_ROUTE         → 运输路线
 7. FIND_TAB_WEIGHT_RATIO         → 体积重量系数
 8. FIND_SITE_DISP_INFO           → 网点派送信息
-9. P_CALC_CLIENT_PRICE_BILL_SHOW4 → 存储过程计算价格
+9. P_CALC_CLIENT_PRICE_BILL_SH_ZB → 存储过程计算价格
 
 > 地址解析不再使用 `/map/inputtipsDTH` 的 `areaResults` 拆词结果去调用 `FIND_DESTINATION_BY_NAME` 兜底。录单页没有解析出目的网点时，该地址直接按解析失败处理，避免把路名中的地名误当作目的网点。
 > 无头浏览器里的录单页若缺少 `$Z.user.getUserInfo()`、`SITE_LEVELS` 当前站点等级选中行或地图对象，地址 blur 回调会被页面脚本打断；解析器只合并补齐页面公开登录字段、按 `loginSiteType` 选中真实 `SITE_LEVELS` 行；如果页面未创建 `SITE_LEVELS` MiniUI 控件，则用已登录用户的真实 `loginSiteType` 注入一个只供页面脚本读取的兼容控件。`SITE_LEVELS` 下拉接口可能返回 `label/value` 而不是 `LEVELS/TEXT`，解析器会先归一化字段再选中，并补地图空实现，不改变目的网点匹配算法，无法明确匹配站点等级时显式返回解析失败。

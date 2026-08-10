@@ -243,7 +243,7 @@ cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch" && python -u
 | `_resolve_destination_code()` | 处理二级网点逻辑，返回有效目的地代码                                                                     |
 | `_fetch_send_center()`        | 查询发货中心信息                                                                               |
 | `_fetch_destination_center()` | 查询目的地中心（优先 NEW 接口，降级旧接口）                                                               |
-| `_calc_price()`               | POST `/dataOperation/batchExecProcedure`，调用存储过程 `P_CALC_CLIENT_PRICE_BILL_SHOW4` 计算总费用 |
+| `_calc_price()`               | POST `/dataOperation/batchExecProcedure`，调用存储过程 `P_CALC_CLIENT_PRICE_BILL_SH_ZB` 计算总费用 |
 | `_build_base_payload()`       | 构造价格计算所需的完整参数体                                                                         |
 | `fetch_prices()`              | 对外完整接口：输入地址/重量/体积，返回各产品报价字典                                                            |
 
@@ -327,7 +327,7 @@ Step 2 ─ TMS 批量报价（已完成 2026-03-02，97475行）
          · _fetch_send/dest_center()  查询中转中心
          · _fetch_plan_route_name()   查询运输路线
          · 遍历8重量区间 × 产品 × 自提/派送
-             └─ P_CALC_CLIENT_PRICE_BILL_SHOW4  计算总费用
+             └─ P_CALC_CLIENT_PRICE_BILL_SH_ZB  计算总费用
     ├─ 每10条保存进度 → batch_progress.json
     └─ 每10条更新输出 → 全国省市县TMS价格表.xlsx
 
