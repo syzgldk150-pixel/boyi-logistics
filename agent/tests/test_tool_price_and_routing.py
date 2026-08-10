@@ -545,6 +545,9 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertEqual("3000", payload["INSURANCE"])
         self.assertEqual("3", payload["INSURANCE_FEE"])
+        self.assertEqual("内蒙古自治区-呼伦贝尔市", payload["CITY_NAME"])
+        self.assertEqual("呼伦贝尔市-满洲里市", payload["COUNTY_NAME"])
+        self.assertEqual("呼伦贝尔市-满洲里市-", payload["TOWN_NAME"])
 
     def test_ronghui_price_uses_entry_page_context_and_current_procedure(self):
         from agent.tms_runtime.scripts import get_price as ronghui_get_price
@@ -580,6 +583,13 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 return Response()
 
         payload = {"PRODUCT_CODE": "002", "DISPATCH_MODE": "派送"}
+        payload.update(
+            {
+                "CITY_NAME": "福建省-福州市",
+                "COUNTY_NAME": "福州市-福清市",
+                "TOWN_NAME": "福州市-福清市-镜洋镇",
+            }
+        )
         ronghui_get_price._apply_page_pricing_context(
             payload,
             {"BL_INSURESTATUS": "1"},
@@ -589,6 +599,9 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("P_CALC_CLIENT_PRICE_BILL_SH_ZB", captured["data"]["procedureName"])
         posted_row = json.loads(captured["data"]["data"])[0]
         self.assertEqual("1", posted_row["BL_INSURESTATUS"])
+        self.assertEqual("福建省-福州市", posted_row["CITY_NAME"])
+        self.assertEqual("福州市-福清市", posted_row["COUNTY_NAME"])
+        self.assertEqual("福州市-福清市-镜洋镇", posted_row["TOWN_NAME"])
         self.assertEqual(Decimal("645.30"), total)
 
     def test_browser_address_resolver_reads_required_page_pricing_context(self):

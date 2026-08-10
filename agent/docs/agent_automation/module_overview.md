@@ -7,7 +7,7 @@ status: active
 updated: 2026-08-10
 ---
 
-> 2026-08-10: 融辉地址报价改为使用当前运单录入页的真实存储过程 `P_CALC_CLIENT_PRICE_BILL_SH_ZB`，并从地址解析后的 MiniUI 表单透传 `BL_INSURESTATUS` 计价状态；该字段缺失时显式失败，不再用不完整 payload 得出缺少末端派送费、直送服务费的低报价。折扣合计同步纳入页面现有的 `REC_PERIOD_FEE_DIS`。
+> 2026-08-10: 融辉地址报价改为使用当前运单录入页的真实存储过程 `P_CALC_CLIENT_PRICE_BILL_SH_ZB`，从地址解析后的 MiniUI 表单透传 `BL_INSURESTATUS` 计价状态，并按原页 `clientCalcCs()` 同步生成 `CITY_NAME` / `COUNTY_NAME` / `TOWN_NAME` 派送区域字段；计价状态缺失时显式失败，不再用不完整 payload 得出缺少末端派送费、直送服务费的低报价。折扣合计同步纳入页面现有的 `REC_PERIOD_FEE_DIS`。
 > 2026-07-16: 融辉 TMS 单号查询会从真实 `FIND_SACN_TRACK_BY_CODE` 响应中先取得每个子单的最新扫描，再按完整主单前缀、四位数字子单后缀、当前到达网点和明确的到达类扫描（`到件` / `到达` / `卸车`）去重生成实时 `arrival_progress`。实时子单分布优先于数据库和飞书历史缓存，旧缓存的 `0` 不得覆盖实时统计；缺少明确到达值时飞书显示“无数据”，只有来源明确的零值才显示 `0 件`。
 > 2026-07-03: 融辉 TMS 单号查询的扫描接口必须携带“快件跟踪”菜单页 `authenticationKey/pageId` 和真实 `Referer`，否则 TMS 返回“非法的请求”并被误报为无扫描记录；当 `FIND_SACN_TRACK_BY_CODE_MAIN` 返回空但普通扫描接口有同一主单 `BILL_CODE` 行时，按精确主单号筛选普通扫描行作为 `route_rows`，仍不使用不确定候选或历史值兜底。
 > 2026-06-22: 融辉单号查询已切换为融辉 TMS 原页/接口数据，扫描轨迹、运单详情和子单详情均由 TMS 适配器提供。
