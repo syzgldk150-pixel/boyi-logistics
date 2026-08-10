@@ -4,7 +4,7 @@ type: 模块文档
 tags: [TMS, API, OCR登录, 批量报价, 同名消歧, 断点续传, 网点匹配]
 related: [[01-amap-address-fetch], [03-quote-sheet-generation], [TMS价格结构分析], [tms-batch-quote-resume]]
 status: active
-updated: 2026-06-16
+updated: 2026-08-10
 ---
 
 # 模块二：TMS 系统价格获取
@@ -43,7 +43,7 @@ updated: 2026-06-16
 | `repair_mismatch.py` | 脚本 | **定向修复**：修复同名区县错配/地址库错误/处理异常（仅重跑受影响区县） |
 | `repair_selected_regions.py` | 脚本 | **指定区域重跑**：按 `省份|城市|区/县` 只重跑少量区域，并写回原始价表 |
 | `weight_scan.py` | 脚本 | **逐公斤扫描**：单地址 1-3000kg 逐公斤测试价格，输出阶梯变化规律 |
-| `get_price.py` | 库 | **核心 API 封装**：地址报价先复用真实“运单录入”页完整地址解析，拿到目的网点/派件网点后再计算价格；不再拆分地址做目的网点兜底匹配 |
+| `get_price.py` | 库 | **核心 API 封装**：地址报价先复用真实“运单录入”页完整地址解析，拿到目的网点/派件网点后再计算价格；分拨服务大厅的自提价按原页切换到同分拨唯一同名自提部后重新计算，不再拆分地址做目的网点兜底匹配 |
 | `browser_address_resolver.py` | 库 | **录单页地址解析器**：复用 Playwright 登录后的“运单录入”页真实输入链路，通过详细地址控件 blur 获取目的网点、派件网点和省市区字段；无头页面会补齐公开登录上下文和地图空实现，避免页面解析函数被展示依赖打断 |
 | `login_manager.py` | 库 | **登录管理器**：ddddocr OCR 识别验证码，requests.Session 无浏览器登录 |
 | `shared/price_utils.py` | 共享库 | **Decimal 工具**：费用求和、单价除法、利润加计，统一财务精度 |
@@ -198,16 +198,19 @@ batch_run.py
 3. FIND_SITE_AND_CENTER          → 查站点中心
 4. FIND_CREATE_BILL_SEND_CENTER  → 发货中心
 5. FIND_CREATE_BILL_DISP_CENTER  → 目的地中心（NEW→OLD 降级）
-6. FIND_PLAN_GOODS_ROUTE         → 运输路线
-7. FIND_TAB_WEIGHT_RATIO         → 体积重量系数
-8. FIND_SITE_DISP_INFO           → 网点派送信息
-9. P_CALC_CLIENT_PRICE_BILL_SH_ZB → 存储过程计算价格
+6. FIND_TAB_SITE_BY_LEVELS       → 仅当目的地等级为“分拨服务大厅”时，按目的分拨查“自提部”并要求唯一同名匹配
+7. FIND_CREATE_BILL_DESTINATION  → 读取自提部详情；自提使用该网点，派送继续使用原服务大厅
+8. FIND_PLAN_GOODS_ROUTE         → 运输路线
+9. FIND_TAB_WEIGHT_RATIO         → 体积重量系数
+10. FIND_SITE_DISP_INFO          → 网点派送信息
+11. P_CALC_CLIENT_PRICE_BILL_SH_ZB → 存储过程计算价格
 
 > 地址解析不再使用 `/map/inputtipsDTH` 的 `areaResults` 拆词结果去调用 `FIND_DESTINATION_BY_NAME` 兜底。录单页没有解析出目的网点时，该地址直接按解析失败处理，避免把路名中的地名误当作目的网点。
 > 无头浏览器里的录单页若缺少 `$Z.user.getUserInfo()`、`SITE_LEVELS` 当前站点等级选中行或地图对象，地址 blur 回调会被页面脚本打断；解析器只合并补齐页面公开登录字段、按 `loginSiteType` 选中真实 `SITE_LEVELS` 行；如果页面未创建 `SITE_LEVELS` MiniUI 控件，则用已登录用户的真实 `loginSiteType` 注入一个只供页面脚本读取的兼容控件。`SITE_LEVELS` 下拉接口可能返回 `label/value` 而不是 `LEVELS/TEXT`，解析器会先归一化字段再选中，并补地图空实现，不改变目的网点匹配算法，无法明确匹配站点等级时显式返回解析失败。
 > 浏览器地址解析器内部使用专用单线程 worker 执行同步 Playwright 操作；即使报价入口从 FastAPI/飞书的 `asyncio` 调用链触发，也不得在事件循环线程里直接启动或复用同步 Playwright 对象。Agent 运行时必须通过包内路径加载 `agent.tms_runtime.scripts.browser_address_resolver` / `login_manager` / `address_utils` 等运行时模块，避免离线报价脚本目录里的同名模块或 `sys.modules` 缓存串线；`tools.price_tool` 的旧本地报价兜底只能在隔离的导入上下文中临时加载 `price_scripts`，结束后必须恢复 `sys.path` 和相关模块缓存。
 > Agent 单地址报价会区分真实不可达和解析器异常：明确的目的地停用/不可用才返回 `网点不可达`；录单页解析超时、目的地字段缺失等不确定失败返回 `error_code=RONGHUI_ADDRESS_RESOLVE_FAILED` 和 `address_resolution_error`。`price_tool.py` 会把融辉单侧失败保留在 `ronghui` 段，不再覆盖韵达报价结果。
 > 计费 payload 必须保留运单录入页的默认保价字段：`INSURANCE=3000`、`INSURANCE_FEE=3`。如果留空或传 0，融辉后端过程会按 2000 保价返回 2 元保费，导致报价总额比录单页“总金额”少 1 元。
+> 目的地详情 `LEVELS=分拨服务大厅` 且页面计价状态 `BL_INSURESTATUS=1` 时，普通自提不可用。单地址报价按原页 `dispModeChange()` 调用 `FIND_TAB_SITE_BY_LEVELS(SITE_CODE=目的分拨, LEVELS=自提部)`，只接受名称由 `xxx服务大厅` 精确替换为 `xxx自提部` 的唯一候选；随后用自提部目的地、派件网点和 `BL_INSURESTATUS=3` 计算自提价。派送价仍使用原服务大厅和状态 `1`，飞书额外显示“自提网点”避免把自提部价格误解为服务大厅自提。
 ```
 
 ### 产品规则

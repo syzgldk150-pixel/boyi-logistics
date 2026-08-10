@@ -604,6 +604,225 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("福州市-福清市-镜洋镇", posted_row["TOWN_NAME"])
         self.assertEqual(Decimal("645.30"), total)
 
+    def test_service_hall_pickup_destination_uses_exact_pickup_site(self):
+        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+
+        calls = []
+
+        def fake_post_json_list(_session, call_id, payload=None):
+            calls.append((call_id, payload))
+            if call_id == "FIND_TAB_SITE_BY_LEVELS":
+                return [
+                    {
+                        "DESTINATION_CODE": "591017",
+                        "DESTINATION_NAME": "福州自提部",
+                    }
+                ]
+            if call_id == "FIND_CREATE_BILL_DESTINATION":
+                return [
+                    {
+                        "DESTINATION_CODE": "591017",
+                        "DESTINATION_NAME": "福州自提部",
+                        "SITE_CODE": "591017",
+                        "SITE_NAME": "福州自提部",
+                        "SITE_TYPE": "一级网点",
+                        "LEVELS": "自提部",
+                    }
+                ]
+            raise AssertionError(f"unexpected call id: {call_id}")
+
+        with patch.object(
+            ronghui_get_price,
+            "_post_json_list",
+            side_effect=fake_post_json_list,
+        ):
+            result = ronghui_get_price._resolve_service_hall_pickup_destination(
+                object(),
+                {
+                    "DESTINATION_CODE": "5910082",
+                    "DESTINATION_NAME": "福州服务大厅",
+                    "SITE_CODE": "5910082",
+                    "SITE_NAME": "福州服务大厅",
+                    "LEVELS": "分拨服务大厅",
+                },
+                "59101",
+                {"BL_INSURESTATUS": "1"},
+            )
+
+        self.assertEqual("591017", result["DESTINATION_CODE"])
+        self.assertEqual("福州自提部", result["DESTINATION_NAME"])
+        self.assertEqual(
+            (
+                "FIND_TAB_SITE_BY_LEVELS",
+                {"SITE_CODE": "59101", "LEVELS": "自提部"},
+            ),
+            calls[0],
+        )
+
+    def test_service_hall_pickup_destination_rejects_non_exact_candidate(self):
+        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+
+        with patch.object(
+            ronghui_get_price,
+            "_post_json_list",
+            return_value=[
+                {
+                    "DESTINATION_CODE": "591099",
+                    "DESTINATION_NAME": "其他自提部",
+                }
+            ],
+        ):
+            with self.assertRaisesRegex(
+                ronghui_get_price.PriceCalcError,
+                "service hall pickup destination not unique: 福州自提部",
+            ):
+                ronghui_get_price._resolve_service_hall_pickup_destination(
+                    object(),
+                    {
+                        "DESTINATION_NAME": "福州服务大厅",
+                        "LEVELS": "分拨服务大厅",
+                    },
+                    "59101",
+                    {"BL_INSURESTATUS": "1"},
+                )
+
+    def test_service_hall_fetch_prices_uses_pickup_site_only_for_self_pickup(self):
+        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+
+        class Auth:
+            config = {"test_user_data": {}}
+
+            def login_and_get_session(self):
+                return object()
+
+        service_hall = {
+            "DESTINATION_CODE": "5910082",
+            "DESTINATION_NAME": "福州服务大厅",
+            "SITE_CODE": "5910082",
+            "SITE_NAME": "福州服务大厅",
+            "SITE_TYPE": "一级网点",
+            "LEVELS": "分拨服务大厅",
+        }
+        pickup_site = {
+            "DESTINATION_CODE": "591017",
+            "DESTINATION_NAME": "福州自提部",
+            "SITE_CODE": "591017",
+            "SITE_NAME": "福州自提部",
+            "SITE_TYPE": "一级网点",
+            "LEVELS": "自提部",
+        }
+        captured_payloads = []
+
+        def fake_post_json_list(_session, call_id, payload=None):
+            if call_id == "FIND_TAB_SITE_BY_LEVELS":
+                self.assertEqual(
+                    {"SITE_CODE": "59101", "LEVELS": "自提部"},
+                    payload,
+                )
+                return [
+                    {
+                        "DESTINATION_CODE": "591017",
+                        "DESTINATION_NAME": "福州自提部",
+                    }
+                ]
+            if call_id == "FIND_CREATE_BILL_DESTINATION":
+                self.assertEqual({"DESTINATION_CODE": "591017"}, payload)
+                return [pickup_site]
+            raise AssertionError(f"unexpected call id: {call_id}")
+
+        def fake_calc_price(_session, payload):
+            captured_payloads.append(dict(payload))
+            if payload["DISPATCH_MODE"] == "自提":
+                return Decimal("500.00")
+            return Decimal("600.00")
+
+        resolved = {
+            "used_address": "福建省福州市福清市镜洋镇福建绿生园农业有限公司",
+            "addr_info": {
+                "province": "福建省",
+                "city": "福州市",
+                "county": "福清市",
+                "town": "镜洋镇",
+            },
+            "search_name": "福州服务大厅",
+            "destination": service_hall,
+            "dispatch": {
+                "dispatch_site_code": "5910082",
+                "dispatch_site_name": "福州服务大厅",
+                "dispatch_finance_center": "",
+                "dispatch_finance_center_code": "",
+            },
+            "temp_dest_code": "5910082",
+            "pricing_context": {"BL_INSURESTATUS": "1"},
+        }
+
+        with (
+            patch.object(ronghui_get_price, "TMSAuth", return_value=Auth()),
+            patch.object(
+                ronghui_get_price,
+                "_fetch_login_context",
+                return_value={
+                    "site_code": "7390004",
+                    "site_name": "邵阳大祥站",
+                    "emp_code": "73900040001",
+                    "emp_name": "邵阳大祥站(管理员)",
+                },
+            ),
+            patch.object(
+                ronghui_get_price,
+                "resolve_address_destination",
+                return_value=resolved,
+            ),
+            patch.object(ronghui_get_price, "_fetch_site_and_center", return_value={}),
+            patch.object(
+                ronghui_get_price,
+                "_fetch_send_center",
+                return_value={"SITE_CODE": "73901", "SITE_NAME": "长沙分拨"},
+            ),
+            patch.object(
+                ronghui_get_price,
+                "_fetch_destination_center",
+                return_value={"SITE_CODE": "59101", "SITE_NAME": "福州分拨"},
+            ),
+            patch.object(
+                ronghui_get_price,
+                "_fetch_plan_route_name",
+                return_value="邵阳操作场 - 长沙分拨 - 泉州分拨 - 福州分拨",
+            ),
+            patch.object(ronghui_get_price, "_fetch_weight_ratio", return_value=5000),
+            patch.object(
+                ronghui_get_price,
+                "_post_json_list",
+                side_effect=fake_post_json_list,
+            ),
+            patch.object(ronghui_get_price, "_calc_price", side_effect=fake_calc_price),
+            patch.object(ronghui_get_price, "_fetch_site_info", return_value={}),
+        ):
+            result = ronghui_get_price.fetch_prices(
+                "福建省福州市福清市镜洋镇福建绿生园农业有限公司",
+                2300,
+                1,
+            )
+
+        pickup_payload = next(
+            row
+            for row in captured_payloads
+            if row["PRODUCT_CODE"] == "002" and row["DISPATCH_MODE"] == "自提"
+        )
+        dispatch_payload = next(
+            row
+            for row in captured_payloads
+            if row["PRODUCT_CODE"] == "002" and row["DISPATCH_MODE"] == "派送"
+        )
+        self.assertEqual("福州服务大厅", result["目的网点"])
+        self.assertEqual("福州自提部", result["自提网点"])
+        self.assertEqual("591017", pickup_payload["DESTINATION_CODE"])
+        self.assertEqual("591017", pickup_payload["DISPATCH_SITE_CODE"])
+        self.assertEqual("3", pickup_payload["BL_INSURESTATUS"])
+        self.assertEqual("5910082", dispatch_payload["DESTINATION_CODE"])
+        self.assertEqual("5910082", dispatch_payload["DISPATCH_SITE_CODE"])
+        self.assertEqual("1", dispatch_payload["BL_INSURESTATUS"])
+
     def test_browser_address_resolver_reads_required_page_pricing_context(self):
         from agent.tms_runtime.scripts import browser_address_resolver
 

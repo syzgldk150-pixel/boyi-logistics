@@ -27,6 +27,7 @@ import logging
 import re
 import threading
 import sys
+from decimal import Decimal
 from urllib.parse import unquote
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -74,6 +75,12 @@ DISCOUNT_KEYS = {
 }
 
 PAGE_PRICING_CONTEXT_FIELDS = ("BL_INSURESTATUS",)
+SERVICE_HALL_LEVEL = "分拨服务大厅"
+PICKUP_SITE_LEVEL = "自提部"
+SERVICE_HALL_SUFFIX = "服务大厅"
+PICKUP_SITE_SUFFIX = "自提部"
+SERVICE_HALL_INSURE_STATUS = "1"
+DISTRIBUTION_PICKUP_INSURE_STATUS = "3"
 
 ENTRY_DEFAULT_INSURANCE = "3000"
 ENTRY_DEFAULT_INSURANCE_FEE = "3"
@@ -820,6 +827,67 @@ def _compute_dispatch_info(dest: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _resolve_service_hall_pickup_destination(
+    session,
+    destination: Dict[str, Any],
+    destination_center_code: str,
+    pricing_context: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if _clean_str(destination.get("LEVELS")) != SERVICE_HALL_LEVEL:
+        return None
+
+    hall_name = _clean_str(destination.get("DESTINATION_NAME")) or _clean_str(
+        destination.get("SITE_NAME")
+    )
+    if not hall_name.endswith(SERVICE_HALL_SUFFIX):
+        raise PriceCalcError(f"service hall destination name invalid: {hall_name or 'missing'}")
+    if str(pricing_context.get("BL_INSURESTATUS", "")) != SERVICE_HALL_INSURE_STATUS:
+        raise PriceCalcError("service hall pricing context is not distribution delivery")
+    if not destination_center_code:
+        raise PriceCalcError(f"service hall destination center missing: {hall_name}")
+
+    pickup_name = f"{hall_name[:-len(SERVICE_HALL_SUFFIX)]}{PICKUP_SITE_SUFFIX}"
+    candidates = _post_json_list(
+        session,
+        "FIND_TAB_SITE_BY_LEVELS",
+        {
+            "SITE_CODE": destination_center_code,
+            "LEVELS": PICKUP_SITE_LEVEL,
+        },
+    )
+    exact_candidates = [
+        row
+        for row in candidates
+        if _clean_str(row.get("DESTINATION_NAME")) == pickup_name
+        and _clean_str(row.get("DESTINATION_CODE"))
+    ]
+    if len(exact_candidates) != 1:
+        raise PriceCalcError(
+            f"service hall pickup destination not unique: {pickup_name} "
+            f"(matched {len(exact_candidates)})"
+        )
+
+    pickup_code = _clean_str(exact_candidates[0].get("DESTINATION_CODE"))
+    details = _post_json_list(
+        session,
+        "FIND_CREATE_BILL_DESTINATION",
+        {"DESTINATION_CODE": pickup_code},
+    )
+    exact_details = [
+        row
+        for row in details
+        if _clean_str(row.get("DESTINATION_CODE")) == pickup_code
+        and _clean_str(row.get("DESTINATION_NAME")) == pickup_name
+        and _clean_str(row.get("LEVELS")) == PICKUP_SITE_LEVEL
+    ]
+    if len(exact_details) != 1:
+        raise PriceCalcError(
+            f"service hall pickup destination detail not unique: {pickup_name} "
+            f"(matched {len(exact_details)})"
+        )
+    return exact_details[0]
+
+
 def _fetch_weight_ratio(session, send_site_code: str, destination_code: str) -> int:
     payload = {
         "SEND_SITE_CODE": send_site_code,
@@ -1036,15 +1104,72 @@ def _apply_center_route_info(
     base_data["REC_MAN_CODE"] = base_data.get("TAKE_PIECE_EMPLOYEE_CODE", "")
 
 
+def _build_pricing_mode_base(
+    session,
+    *,
+    ctx: Dict[str, str],
+    addr_info: Dict[str, str],
+    destination: Dict[str, Any],
+    dispatch: Dict[str, str],
+    used_address: str,
+    weight: float,
+    volume: float,
+    emp_code: str,
+    emp_name: str,
+    pricing_context: Dict[str, Any],
+    send_site_info: Dict[str, Any],
+    send_center: Dict[str, Any],
+) -> Tuple[Dict[str, Any], float, str]:
+    send_center_code, _ = _center_code_name(send_center)
+    dest_center = _fetch_destination_center(
+        session,
+        dispatch.get("dispatch_site_code", ""),
+        send_center_code,
+    )
+    dest_center_code, _ = _center_code_name(dest_center)
+    route_name = _fetch_plan_route_name(session, send_center_code, dest_center_code)
+    destination_code = _clean_str(destination.get("DESTINATION_CODE"))
+    weight_ratio = _fetch_weight_ratio(session, ctx.get("site_code", ""), destination_code)
+    volume_weight = _volume_weight(volume, weight_ratio)
+    settlement_weight = _settlement_weight(weight, volume_weight)
+
+    base_data = _build_base_payload(
+        ctx,
+        addr_info,
+        destination,
+        dispatch,
+        used_address,
+        weight,
+        volume,
+        volume_weight,
+        settlement_weight,
+        emp_code,
+        emp_name,
+    )
+    _apply_page_pricing_context(base_data, pricing_context)
+    _apply_center_route_info(
+        base_data,
+        send_site_info,
+        send_center,
+        dest_center,
+        route_name,
+        dispatch,
+    )
+    return base_data, settlement_weight, dest_center_code
+
+
 def build_output(
-    prices: Dict[str, float],
-    dispatch_prices: Dict[str, float],
+    prices: Dict[str, Decimal],
+    dispatch_prices: Dict[str, Decimal],
     dispatch_site_name: str,
     site_info: Dict[str, Any],
+    pickup_site_name: str = "",
 ) -> Dict[str, Any]:
     output: Dict[str, Any] = {}
     if dispatch_site_name:
         output["目的网点"] = dispatch_site_name
+    if pickup_site_name and pickup_site_name != dispatch_site_name:
+        output["自提网点"] = pickup_site_name
 
     for product_name, fee in prices.items():
         output[product_name] = _format_money(fee)
@@ -1099,50 +1224,80 @@ def fetch_prices(address: str, weight: float, volume: float, config_path: Option
     addr_info = resolved["addr_info"]
     destination = resolved["destination"]
     dispatch = resolved["dispatch"]
-    temp_dest_code = resolved["temp_dest_code"]
     used_address = resolved["used_address"]
     pricing_context = resolved["pricing_context"]
 
     send_site_info = _fetch_site_and_center(session, ctx.get("site_code", ""))
     send_center = _fetch_send_center(session, ctx.get("site_code", ""))
-    send_center_code, _ = _center_code_name(send_center)
-    dest_center = _fetch_destination_center(session, dispatch.get("dispatch_site_code", ""), send_center_code)
-    dest_center_code, _ = _center_code_name(dest_center)
-    route_name = _fetch_plan_route_name(session, send_center_code, dest_center_code)
 
-    weight_ratio = _fetch_weight_ratio(session, ctx.get("site_code", ""), temp_dest_code)
-    volume_weight = _volume_weight(volume, weight_ratio)
-    settlement_weight = _settlement_weight(weight, volume_weight)
-
-    base_data = _build_base_payload(
-        ctx,
-        addr_info,
-        destination,
-        dispatch,
-        used_address,
-        weight,
-        volume,
-        volume_weight,
-        settlement_weight,
-        emp_code,
-        emp_name,
+    dispatch_base_data, dispatch_settlement_weight, destination_center_code = (
+        _build_pricing_mode_base(
+            session,
+            ctx=ctx,
+            addr_info=addr_info,
+            destination=destination,
+            dispatch=dispatch,
+            used_address=used_address,
+            weight=weight,
+            volume=volume,
+            emp_code=emp_code,
+            emp_name=emp_name,
+            pricing_context=pricing_context,
+            send_site_info=send_site_info,
+            send_center=send_center,
+        )
     )
-    _apply_page_pricing_context(base_data, pricing_context)
-    _apply_center_route_info(base_data, send_site_info, send_center, dest_center, route_name, dispatch)
 
-    prices: Dict[str, float] = {}
-    dispatch_prices: Dict[str, float] = {}
-    for product in _available_products(settlement_weight, use_collar=False):
-        base = dict(base_data)
-        base["PRODUCT_CODE"] = product["PRODUCT_CODE"]
-        base["PRODUCT_TYPE"] = product["PRODUCT_TYPE"]
-        base["GOODS_CODE"] = product["PRODUCT_CODE"]
+    pickup_destination = _resolve_service_hall_pickup_destination(
+        session,
+        destination,
+        destination_center_code,
+        pricing_context,
+    )
+    pickup_site_name = ""
+    if pickup_destination is None:
+        pickup_base_data = dispatch_base_data
+        pickup_settlement_weight = dispatch_settlement_weight
+    else:
+        pickup_dispatch = _compute_dispatch_info(pickup_destination)
+        if not pickup_dispatch.get("dispatch_site_code"):
+            raise PriceCalcError("service hall pickup dispatch site missing")
+        pickup_site_name = pickup_dispatch.get("dispatch_site_name", "")
+        pickup_base_data, pickup_settlement_weight, _ = _build_pricing_mode_base(
+            session,
+            ctx=ctx,
+            addr_info=addr_info,
+            destination=pickup_destination,
+            dispatch=pickup_dispatch,
+            used_address=used_address,
+            weight=weight,
+            volume=volume,
+            emp_code=emp_code,
+            emp_name=emp_name,
+            pricing_context={
+                "BL_INSURESTATUS": DISTRIBUTION_PICKUP_INSURE_STATUS,
+            },
+            send_site_info=send_site_info,
+            send_center=send_center,
+        )
 
-        data_pick = dict(base)
+    prices: Dict[str, Decimal] = {}
+    dispatch_prices: Dict[str, Decimal] = {}
+    for product in _available_products(pickup_settlement_weight, use_collar=False):
+        data_pick = dict(pickup_base_data)
+        data_pick["PRODUCT_CODE"] = product["PRODUCT_CODE"]
+        data_pick["PRODUCT_TYPE"] = product["PRODUCT_TYPE"]
+        data_pick["GOODS_CODE"] = product["PRODUCT_CODE"]
         data_pick["DISPATCH_MODE"] = "自提"
         fee_pick = _calc_price(session, data_pick)
         if fee_pick is not None:
             prices[product["PRODUCT_TYPE"]] = fee_pick
+
+    for product in _available_products(dispatch_settlement_weight, use_collar=False):
+        base = dict(dispatch_base_data)
+        base["PRODUCT_CODE"] = product["PRODUCT_CODE"]
+        base["PRODUCT_TYPE"] = product["PRODUCT_TYPE"]
+        base["GOODS_CODE"] = product["PRODUCT_CODE"]
 
         data_dispatch = dict(base)
         data_dispatch["DISPATCH_MODE"] = "派送"
@@ -1154,7 +1309,13 @@ def fetch_prices(address: str, weight: float, volume: float, config_path: Option
     if dispatch.get("dispatch_site_code"):
         site_info = _fetch_site_info(session, dispatch["dispatch_site_code"])
 
-    return build_output(prices, dispatch_prices, dispatch.get("dispatch_site_name", ""), site_info)
+    return build_output(
+        prices,
+        dispatch_prices,
+        dispatch.get("dispatch_site_name", ""),
+        site_info,
+        pickup_site_name,
+    )
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:

@@ -176,6 +176,27 @@ class FeishuMessageHandlerTests(unittest.TestCase):
             ],
         )
 
+    def test_price_reply_shows_service_hall_pickup_site(self):
+        rendered = format_price_reply({
+            "success": True,
+            "data": {
+                "目的网点": "福州服务大厅",
+                "自提网点": "福州自提部",
+                "精准零担": "500.00元",
+                "精准零担(派送)": "600.00元",
+            },
+        })
+
+        self.assertEqual(
+            "\n".join([
+                "目的网点：福州服务大厅",
+                "自提网点：福州自提部",
+                "精准零担：500.00元",
+                "精准零担(派送)：600.00元",
+            ]),
+            rendered,
+        )
+
     def test_combined_price_reply_formats_yunda_details(self):
         messages = format_price_reply_messages({
             "success": True,

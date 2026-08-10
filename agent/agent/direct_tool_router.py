@@ -1505,6 +1505,8 @@ def _format_ronghui_price_payload(payload: dict[str, Any], *, title: str = "") -
         lines.append(title)
     if payload.get("目的网点"):
         lines.append(f"目的网点：{payload['目的网点']}")
+    if payload.get("自提网点"):
+        lines.append(f"自提网点：{payload['自提网点']}")
 
     for key in _pickup_price_order():
         if payload.get(key) not in (None, "", "/"):
