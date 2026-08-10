@@ -21,7 +21,7 @@ def test_public_routes_do_not_require_internal_token() -> None:
 
 def test_protected_route_fails_when_server_token_is_missing() -> None:
     failure = authenticate_internal_request(
-        path="/admin/accounts",
+        path="/internal/v1/admin/accounts",
         expected_token="",
         provided_token="",
     )
@@ -33,7 +33,7 @@ def test_protected_route_fails_when_server_token_is_missing() -> None:
 def test_protected_route_rejects_missing_or_wrong_token() -> None:
     for provided in ("", "wrong"):
         failure = authenticate_internal_request(
-            path="/tms/get_price",
+            path="/internal/v1/tms/get_price",
             expected_token="correct",
             provided_token=provided,
         )
@@ -44,7 +44,7 @@ def test_protected_route_rejects_missing_or_wrong_token() -> None:
 def test_protected_route_accepts_matching_token() -> None:
     assert INTERNAL_API_TOKEN_HEADER == "X-Agent-Internal-Token"
     assert authenticate_internal_request(
-        path="/run-tool",
+        path="/internal/v1/tools/run",
         expected_token="correct",
         provided_token="correct",
     ) is None

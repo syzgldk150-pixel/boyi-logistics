@@ -8,7 +8,7 @@
 - Agent 编排与工具调度
 - 飞书消息接入
 - 知识库、调度模板、Phase 7 同步链路
-- 价格获取、财务对账等业务工具封装
+- 价格获取、融辉/韵达在线财务同步等业务工具封装
 
 ## 不在这里改什么
 
@@ -30,12 +30,12 @@
   项目文档、模块说明、代码定位索引
 - `price_scripts/`
   价格工具底层业务目录
-- `finance_reconciliation/`
-  财务 ETL 底层业务目录
+- `../shared/finance/`
+  在线财务账本、快照、费用映射和精度校验共享模块
 
 ## 常见修改入口
 
-- 改 `/health`、`/chat`、`/run-tool`
+- 改 `/health`、`/internal/v1/chat`、`/internal/v1/tools/run`
   看 `main.py`、`agent/core.py`
 - 改工具执行或超时并发
   看 `agent/tool_executor.py`
@@ -60,32 +60,32 @@
 如果需要单独拉起 Agent：
 
 ```bash
-cd /home/deng/projects/agent
+cd /home/deng/projects/boyi-logistics/agent
 ./start_agent.sh
 ```
 
 停止：
 
 ```bash
-cd /home/deng/projects/agent
+cd /home/deng/projects/boyi-logistics/agent
 ./stop_agent.sh
 ```
 
 ## TMS 本地验证
 
-- TMS 兼容业务接口统一挂在 `:9000/tms/*`
-- TMS 登录态管理接口统一挂在 `:9000/admin/tms/session/*`
+- TMS 内部业务接口统一挂在 `:9000/internal/v1/tms/*`
+- TMS 登录态管理接口统一挂在 `:9000/internal/v1/admin/tms/session/*`
 - 本地验证优先从并列目录启动控制台：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./start_backend.sh
 ```
 
 - 然后默认打开首页大盘 `http://127.0.0.1:8765/`；需要验证 TMS 登录态时再进入 `/automations`
 - 页面顶部支持保存默认账号、密码、手机号；验证码发送固定使用这套已保存配置
-- 凭据运行态保存在 `agent/tms_runtime/state/login_profile.json`，不进入版本控制
-- 本地未验证通过前，不执行 ECS 发版或旧服务切换
+- 凭据运行态保存在 `agent/agent/tms_runtime/state/login_profile.json`，不进入版本控制
+- 本地未验证通过前，不执行 ECS 发版
 
 ## 飞书机器人接入
 
@@ -110,7 +110,7 @@ cd /home/deng/projects/console
 
 ## 与服务器的对应关系
 
-- 本地：`/home/deng/projects/agent`
+- 本地：`/home/deng/projects/boyi-logistics/agent`
 - 服务器：`/home/boyce/agent`
 
 目录结构应尽量保持一致，避免本地可改、服务器难同步。

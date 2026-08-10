@@ -468,7 +468,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
             replies.append((reply_type, text))
 
         async def fake_post_admin(path, body=None):
-            self.assertEqual(path, "/admin/tms/yunda-session/send-code")
+            self.assertEqual(path, "/internal/v1/admin/tms/yunda-session/send-code")
             return {
                 "ok": True,
                 "profile": "yunda",
@@ -509,7 +509,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
             replies.append((reply_type, text))
 
         async def fake_post_admin(path, body=None):
-            self.assertEqual(path, "/admin/tms/session/send-code")
+            self.assertEqual(path, "/internal/v1/admin/tms/session/send-code")
             return {
                 "ok": True,
                 "profile": "default",
@@ -550,7 +550,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
             replies.append((reply_type, text))
 
         async def fake_post_admin(path, body=None):
-            self.assertEqual(path, "/admin/tms/session/send-code")
+            self.assertEqual(path, "/internal/v1/admin/tms/session/send-code")
             return {
                 "ok": True,
                 "profile": "default",
@@ -652,7 +652,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
             await message_handler._process_and_reply("1", "user-1", "chat-1")
 
         clear_pending.assert_called_once_with("chat-1")
-        self.assertEqual([("/admin/accounts/ronghui_default/login", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/accounts/ronghui_default/login", None)], admin_calls)
         self.assertEqual("account:ronghui_default", pending_calls[0][1]["auth_session"])
         self.assertIn("正在自动识别图片验证码并登录", replies[0])
 
@@ -688,8 +688,8 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             await message_handler._process_and_reply("123456", "user-1", "chat-1")
 
-        self.assertEqual(["/admin/accounts"], get_calls)
-        self.assertEqual([("/admin/accounts/yunda_default/submit-code", {"code": "123456"})], post_calls)
+        self.assertEqual(["/internal/v1/admin/accounts"], get_calls)
+        self.assertEqual([("/internal/v1/admin/accounts/yunda_default/submit-code", {"code": "123456"})], post_calls)
         self.assertIn("正在校验验证码", replies[0])
         self.assertEqual("登录成功", replies[-1])
 

@@ -163,7 +163,7 @@ class DocumentServiceMixin:
                 outputs=("结构化字段", "归档原图", "预处理图片", "数据库记录"),
                 dependencies=(),
                 consumers=("finance", "ai-service", "customer-service"),
-                commands=("cd /home/deng/projects/console && ./start_backend.sh",),
+                commands=("cd /home/deng/projects/boyi-logistics/console && ./start_backend.sh",),
             ),
             "pricing": ProjectModule(
                 slug="pricing",
@@ -187,18 +187,18 @@ class DocumentServiceMixin:
             "finance": ProjectModule(
                 slug="finance",
                 name="财务对账",
-                status="etl-ready",
-                summary="生成财务对账结果、月度 ETL 数据和核验报表。",
-                code_path="finance_reconciliation/",
-                docs_path="docs/finance_reconciliation/",
+                status="ready",
+                summary="同步融辉和韵达逐笔交易，提供统一账本、费用绑定、BI 与失败审计。",
+                code_path="shared/finance/ + agent/agent/tms_runtime/scripts/*finance* + agent/tools/finance_sync_service.py + console/finance_service.py",
+                docs_path="agent/docs/finance_module.md",
                 route="/modules/finance",
-                workspace_path="",
-                current_focus="运单对账、月度损益和差异核验。",
-                inputs=("支付流水", "平台订单", "运单数据", "发票数据", "价格底表"),
-                outputs=("财务工作簿", "清洗中间表", "月度损益", "差异清单"),
-                dependencies=("ocr", "pricing"),
+                workspace_path="/modules/finance",
+                current_focus="逐笔账本、平台费用绑定、同步批次审计和 BI 查询。",
+                inputs=("融辉财务页面", "韵达财务页面", "业务账号", "费用映射"),
+                outputs=("逐笔交易账本", "不可变快照", "费用绑定", "同步批次", "BI 汇总"),
+                dependencies=(),
                 consumers=("ai-service", "customer-service"),
-                commands=('cd /d C:\\Users\\DENG\\Desktop\\agent\\finance_reconciliation && python -m etl.main',),
+                commands=("打开 /modules/finance 查看账本，或通过自动化任务运行 sync_finance_bills。",),
             ),
             "customer-service": ProjectModule(
                 slug="customer-service",
@@ -255,7 +255,6 @@ class DocumentServiceMixin:
         pricing_file_count = 0
         if pricing_output_dir.exists():
             pricing_file_count = sum(1 for item in pricing_output_dir.rglob("*") if item.is_file())
-        finance_report = PROJECT_ROOT / "璐㈠姟瀵硅处" / "output" / "reports" / "璐㈠姟瀵硅处鎶ヨ〃.xlsx"
         ai_dir = PROJECT_ROOT / "agent"
         ai_file_count = 0
         if ai_dir.exists():
@@ -289,14 +288,14 @@ class DocumentServiceMixin:
                 "workspace_label": "查看价格模块",
             },
             "finance": {
-                "metric_label": "报表状态",
-                "metric_value": "已生成" if finance_report.exists() else "待生成",
+                "metric_label": "模块状态",
+                "metric_value": "已接入",
                 "highlights": [
-                    "多渠道财务对账",
-                    "月度损益与发票差异",
-                    "清洗表与核验链路",
+                    "融辉 / 韵达逐笔账本",
+                    "费用映射与不可变快照",
+                    "同步批次与失败审计",
                 ],
-                "workspace_label": "查看财务模块",
+                "workspace_label": "进入财务工作台",
             },
             "customer-service": {
                 "metric_label": "接入状态",

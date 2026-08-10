@@ -2,8 +2,8 @@
 module: 车辆调度
 type: 模块文档
 tags: [车辆调度, 派单, 线路规划, 运力管理, 车辆管理]
-related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_reconciliation/module_overview.md]
-status: 开发中
+related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_module.md]
+status: planned
 updated: 2026-03-31
 ---
 

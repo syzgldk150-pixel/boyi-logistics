@@ -5,6 +5,32 @@ from __future__ import annotations
 from typing import Any
 
 
+def handle_public_get(
+    app: Any,
+    handler: Any,
+    path: str,
+    _raw_path: str,
+    query: dict[str, list[str]],
+) -> bool:
+    if path == "/login":
+        app._render_login(handler, query)
+        return True
+    return False
+
+
+def handle_public_post(
+    app: Any,
+    handler: Any,
+    path: str,
+    _raw_path: str,
+    _query: dict[str, list[str]],
+) -> bool:
+    if path == "/login":
+        app._handle_login(handler)
+        return True
+    return False
+
+
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path == "/settings/accounts":
         app._render_admin_accounts(handler, query)

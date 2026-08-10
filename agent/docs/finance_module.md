@@ -2,7 +2,7 @@
 module: 财务工作台
 type: 模块文档
 tags: [融辉, 韵达, 财务同步, 费用绑定, BI, Decimal]
-related: [[finance-reconciliation], [finance-data-baseline]]
+related: [common/finance_data_baseline.md, project_overview.md]
 status: active
 updated: 2026-07-12
 ---
@@ -13,7 +13,7 @@ updated: 2026-07-12
 
 本模块负责从融辉和韵达真实财务页面同步逐笔交易、平台汇总和费用项目，并为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计和 BI 查询。
 
-旧 `finance_reconciliation/` 与 `tools/finance_tool.py` 仍是离线 Excel ETL。新模块不得导入旧 ETL，也不得在运行失败时回退到旧工作簿、历史导出文件或上一次成功值。
+旧 Excel ETL 已从项目删除。财务工作台只使用真实页面、共享 MySQL 账本与版本化 Agent API；运行失败时不得回退到历史工作簿、历史导出文件或上一次成功值。
 
 ## 数据源口径
 
@@ -122,15 +122,15 @@ updated: 2026-07-12
 - `POST /finance/backfill`
 - `POST /finance/sync-batches/{id}/retry`
 
-Console 只查询共享 MySQL 账本或调用 Agent 的 `/run-tool` 执行 `sync_finance_bills`。Console 不直接访问第三方页面，也不接触第三方登录态。
+Console 只查询共享 MySQL 账本或调用 Agent 的 `/internal/v1/tools/run` 执行 `sync_finance_bills`。Console 不直接访问第三方页面，也不接触第三方登录态。
 
 `GET /finance/sync-batches` 在批次汇总之外返回最新失败的 `platform/account_id/target_date/error_code/error_message`，同步记录页可直接定位失败来源。显式无数据日期会以零值进入趋势和账号对比；没有成功或无数据运行的日期不会被静默补零。
 
 ## 代码入口
 
 - 公共领域与仓储：`../shared/finance/`。
-- 融辉/韵达严格响应适配：`agent/tms_runtime/scripts/ronghui_finance_adapter.py`、`agent/tms_runtime/scripts/yunda_finance_adapter.py`。
-- 真实页面发现与只读查询：`agent/tms_runtime/scripts/finance_live_capture.py`。
+- 融辉/韵达严格响应适配：`agent/agent/tms_runtime/scripts/ronghui_finance_adapter.py`、`agent/agent/tms_runtime/scripts/yunda_finance_adapter.py`。
+- 真实页面发现与只读查询：`agent/agent/tms_runtime/scripts/finance_live_capture.py`。
 - 多账号编排：`tools/finance_sync_service.py`。
 - 工具入口与双重单实例锁：`tools/sync_finance_bills_tool.py`。
 - 定时和启动补拉：`agent/scheduler.py`、`agent/task_templates.py`。
@@ -144,6 +144,6 @@ Console 只查询共享 MySQL 账本或调用 Agent 的 `/run-tool` 执行 `sync
 
 ```bash
 cd /home/deng/projects && python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
-cd /home/deng/projects/agent && PYTHONPATH=/home/deng/projects/agent:/home/deng/projects python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
-cd /home/deng/projects/console && PYTHONPATH=/home/deng/projects/console:/home/deng/projects python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
+cd /home/deng/projects/boyi-logistics/agent && PYTHONPATH=/home/deng/projects/boyi-logistics/agent:/home/deng/projects/boyi-logistics python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
+cd /home/deng/projects/boyi-logistics/console && PYTHONPATH=/home/deng/projects/boyi-logistics/console:/home/deng/projects/boyi-logistics python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
 ```

@@ -1,4 +1,4 @@
-"""TMS gateway tool that calls the embedded agent /tms HTTP layer."""
+"""TMS gateway tool that calls the versioned Agent HTTP layer."""
 
 import json
 import os
@@ -12,21 +12,22 @@ WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 from shared.redaction import redact_text
 from tools.internal_http import internal_api_headers
 
-HTTP_SERVICE_URL = os.getenv("HTTP_SERVICE_URL", "http://127.0.0.1:9000/tms")
+HTTP_SERVICE_URL = os.getenv(
+    "HTTP_SERVICE_URL",
+    "http://127.0.0.1:9000/internal/v1/tms",
+)
 
 
 def _build_url(endpoint: str) -> str:
     base_url = HTTP_SERVICE_URL.rstrip("/")
     path = endpoint if str(endpoint).startswith("/") else f"/{endpoint}"
-    if path.startswith("/tms/"):
-        if base_url.endswith("/tms"):
-            return f"{base_url[:-4]}{path}"
-        return f"{base_url}{path}"
+    if path.startswith(("/tms/", "/admin/")):
+        raise ValueError(f"legacy Agent endpoint is not supported: {path}")
     return f"{base_url}{path}"
 
 
 def call_http_service(endpoint: str, params: dict | None = None) -> dict:
-    """Call the embedded TMS HTTP compatibility layer."""
+    """Call a versioned internal TMS endpoint."""
     url = _build_url(endpoint)
     request_params = params or {}
     is_task_request = isinstance(request_params.get("params"), dict) or "timeout_sec" in request_params

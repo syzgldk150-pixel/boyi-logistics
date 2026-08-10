@@ -211,6 +211,7 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         app_source = "\n".join(
             (
                 (CONSOLE_DIR / "app.py").read_text(encoding="utf-8"),
+                (CONSOLE_DIR / "routes" / "receipts.py").read_text(encoding="utf-8"),
                 (CONSOLE_DIR / "services" / "waybills_receipts.py").read_text(encoding="utf-8"),
             )
         )

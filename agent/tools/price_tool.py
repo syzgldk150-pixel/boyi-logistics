@@ -1,4 +1,4 @@
-"""Quote tool that prefers the embedded /tms/get_price price session."""
+"""Quote tool that prefers the versioned Agent price endpoints."""
 
 import importlib.util
 import io
@@ -18,7 +18,10 @@ WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 from shared.redaction import redact_text
 from tools.internal_http import internal_api_headers
 
-HTTP_SERVICE_URL = os.getenv("HTTP_SERVICE_URL", "http://127.0.0.1:9000/tms")
+HTTP_SERVICE_URL = os.getenv(
+    "HTTP_SERVICE_URL",
+    "http://127.0.0.1:9000/internal/v1/tms",
+)
 PRICE_TOOL_PREFER_HTTP = str(os.getenv("PRICE_TOOL_PREFER_HTTP", "1")).strip().lower() not in {
     "0",
     "false",

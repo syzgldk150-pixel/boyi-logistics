@@ -2,7 +2,7 @@
 module: 项目总览
 type: 架构文档
 tags: [项目总览, 模块关系, 本地控制台, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
-related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
+related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
 updated: 2026-08-09
 ---
@@ -16,7 +16,7 @@ updated: 2026-08-09
 - 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖由精确锁文件重建；ECS 发布按 Git SHA 创建并原子切换虚拟环境。
 - Console 保留 `ThreadingHTTPServer`，`app.py` 是组合入口，业务服务位于 `console/services/`，路由识别位于 `console/routes/`。
 - TMS SessionBroker 是稳定门面，provider 执行、适配器、持久化和验证器已分层；`agent/agent/` 不再依赖 `tools` 或 `feishu`。
-- Console 到 Agent 的调用全部进入 `/internal/v1/*`，使用统一 `ok/data/error` 契约；旧接口仅作鉴权后的 deprecated 兼容层。
+- Console、飞书处理器和工具到 Agent 的调用全部进入 `/internal/v1/*`，使用统一 `ok/data/error` 契约；旧内部接口已移除。
 - 数据库 DDL 只由版本化 SQL 迁移执行；仓库卫生、导入边界、接口契约、工具 Schema、Ruff、编译和测试均由 CI 门禁。
 - 文本文件统一 UTF-8 无 BOM；聚合测试已按领域拆分，单个 Python 文件上限为 3,000 行。
 
@@ -29,7 +29,7 @@ updated: 2026-08-09
 - `价格获取`
   负责高德地址库、融辉 TMS 批量报价、客户报价表和价格分析。
 - `财务对账`
-  新工作台负责融辉/韵达逐笔账本、费用项目绑定、BI 和同步审计；旧离线 ETL 继续负责支付流水、发票和工作簿差异报表，两条链路隔离。
+  负责融辉/韵达逐笔账本、费用项目绑定、BI 和同步审计。
 - `车辆调度`
   负责车辆资源管理与智能调度，实时追踪运力状态、线路规划和运单分配。
 - `AI客服`
@@ -41,8 +41,8 @@ updated: 2026-08-09
    纸质托运单进入 OCR 工作区，转成结构化运单字段。
 2. `高德 + TMS -> 价格获取`
    地址库和平台报价生成标准价格资产，供客服报价和内部测算使用。
-3. `OCR结果 + 支付/发票/平台流水 -> 财务对账`
-   运单和流水汇总后生成月度损益、差异和校验结果。
+3. `融辉/韵达财务页面 -> 财务对账`
+   真实平台逐笔交易进入共享账本、不可变快照、费用映射和 BI 查询。
 4. `OCR + 价格 + 车辆信息 -> 车辆调度`
    根据运单数据和价格基线进行智能派车、线路优化和运力监控。
 5. `OCR + 价格 + 财务 + 调度 -> AI客服`
@@ -76,17 +76,15 @@ updated: 2026-08-09
 
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
 - 项目级本地控制台已接入 `OCR / 价格获取 / 财务对账 / 车辆调度 / AI客服` 5 个模块入口。
-- 目前可交互运行的是 `OCR 工作区`、`融辉/韵达财务工作台` 和 `车辆调度工作区`。
-- 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；旧 `finance_reconciliation/` Excel ETL 保持独立。
-- `车辆调度` 已完成工作区页面（车辆列表、调度看板、快速调度面板），当前使用演示数据。
-- `AI客服` 当前没有单独目录，运行时能力集中在 `agent/`、`feishu/` 和飞书工具链。
-- ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
-- ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
+- 目前可交互运行的是 `OCR 工作区` 和 `融辉/韵达财务工作台`；车辆调度与 AI 客服仅保留模块入口和说明页。
+- 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；旧 Excel ETL 已移除。
+- `车辆调度` 与 `AI客服` 尚未开发，本次不扩展其实现。
+- ECS 上的 Agent 服务保留公开 `/health`、飞书事件与独立 Token Webhook；其余运行时、知识库、调度和 TMS 接口统一位于 `/internal/v1/*`。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
 - `sync_daily_should_sign` 使用 R13 独立 SSO，账号资源通过 `workflow_resources.phase7.r13_credentials` 维护，不复用顶部共享 TMS 登录态。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
-- `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由 `agent/tools/` 和 `agent/tms_runtime/` 统一承载；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
+- `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由 `agent/tools/` 和 `agent/agent/tms_runtime/` 统一承载；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
 - `sync_yunda_dispatch_forecast` 使用韵达独立登录态 `yunda`，默认每天 17:00 拉取次日“网点派件量预测主单表”并按应派时间覆盖写入飞书多维表格；融辉既有自动化继续使用 `ronghui/default` 登录态。
 - `sync_yunda_send_waybills` 使用同一套韵达登录态 `yunda`，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入 `phase7.yunda_send_waybills_bitable`；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
@@ -99,7 +97,7 @@ updated: 2026-08-09
 - `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
 - 2026-05-22: `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。
-- TMS 底层 HTTP / 浏览器脚本已并入 `agent/tms_runtime/`，不再依赖 ECS `root` 账户下的 `/root/http_service`。
+- TMS 底层 HTTP / 浏览器脚本已并入 `agent/agent/tms_runtime/`，不再依赖 ECS `root` 账户下的 `/root/http_service`。
 - Phase 7 运行期 MySQL 当前承载共享配置表 `workflow_resources`、`scheduled_tasks`、到货统计所需的快照表 / 视图，以及给控制台 `/waybills` 运单查询使用的 `waybills` 同步记录。
 - ECS 上的控制台已独立部署为 `console.service`，仅监听 `127.0.0.1:8765`；公网入口固定为 `https://boyi.homes`，由 Nginx 终止 TLS 并反向代理，HTTP 和 `www.boyi.homes` 统一跳转到根域名 HTTPS。
 - 2026-05-18：`/automation-accounts` 账号编辑弹层支持点击页面其他区域自动收起；已保存密码仅在页面显示为掩码，保存时若未输入新密码会保留 Agent 侧原密码，`凭据已配置` 状态使用成功色展示。
@@ -111,4 +109,4 @@ updated: 2026-08-09
 - 新增控制台入口 `/automations`，用于统一维护 Agent 自动化参数，并在页面顶部按分类管理 TMS融辉图片验证码登录态（旧短信验证码页兼容）与韵达账号密码/图片验证码登录态。
 - `/automations` 顶部现支持保存默认账号、密码；融辉当前不再要求手机号，旧短信页出现时仍可使用保存的手机号。本地验证通过前不进入 ECS 切换。
 - 控制台页现在直接操作共享 MySQL 中的 `workflow_resources` 与 `scheduled_tasks`。
-- 任务在控制台保存后会触发 Agent `/admin/reload`，把最新的调度定义即时重载到 APScheduler。
+- 任务在控制台保存后会触发 Agent `/internal/v1/admin/reload`，把最新的调度定义即时重载到 APScheduler。

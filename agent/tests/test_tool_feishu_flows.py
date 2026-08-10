@@ -224,7 +224,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("四川省泸州市泸县241乡道东南侧，800，5", "user-1", "chat-1"))
 
         self.assertEqual("get_price", calls["execute_tool"][0])
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/price-session/send-code", None)], admin_calls)
         self.assertEqual(1, len(pending_calls))
         self.assertEqual("chat-1", pending_calls[0][0])
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
@@ -272,7 +272,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("四川省泸州市泸县241乡道东南侧，800，5", "user-1", "chat-1"))
 
         self.assertEqual("get_price", calls["execute_tool"][0])
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/price-session/send-code", None)], admin_calls)
         self.assertEqual(1, len(pending_calls))
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
@@ -320,7 +320,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
 
         self.assertEqual(("sync_arrival_stats", {}), calls["execute_tool"])
         self.assertEqual("程序正在执行", replies[0])
-        self.assertEqual([("/admin/tms/session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/session/send-code", None)], admin_calls)
         self.assertEqual(1, len(pending_calls))
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
         self.assertEqual("default", pending_calls[0][1]["auth_session"])
@@ -539,7 +539,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
                 ):
                     asyncio.run(message_handler._process_and_reply("是", "user-1", "chat-1"))
 
-                self.assertEqual([("/admin/tms/session/send-code", None)], admin_calls)
+                self.assertEqual([("/internal/v1/admin/tms/session/send-code", None)], admin_calls)
                 self.assertIn("正在自动识别图片验证码并登录（操作场账号）", replies[0])
                 self.assertIn("验证码已发送", replies[-1])
                 restored = pending_actions.get_pending("chat-1")
@@ -664,7 +664,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("操作场登陆", "user-1", "chat-1"))
 
-        self.assertEqual([("/admin/tms/session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/session/send-code", None)], admin_calls)
         self.assertEqual(1, len(pending_calls))
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
         self.assertEqual("default", pending_calls[0][1]["auth_session"])
@@ -704,7 +704,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("报价发验证码", "user-1", "chat-1"))
 
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/price-session/send-code", None)], admin_calls)
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
         self.assertIsNone(pending_calls[0][1]["resume_tool"])
         self.assertIn("正在自动识别图片验证码并登录（大祥账号）", replies[0])
@@ -744,7 +744,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("1", "user-1", "chat-1"))
 
         clear_pending.assert_called_once_with("chat-1")
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/price-session/send-code", None)], admin_calls)
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
         self.assertIn("正在自动识别图片验证码并登录（大祥账号）", replies[0])
@@ -867,7 +867,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("操作场登录", "user-1", "chat-1"))
 
         clear_pending.assert_called_once_with("chat-1")
-        self.assertEqual([("/admin/tms/session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/session/send-code", None)], admin_calls)
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
         self.assertEqual("default", pending_calls[0][1]["auth_session"])
         self.assertIsNone(pending_calls[0][1]["resume_tool"])
@@ -906,7 +906,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("123456", "user-1", "chat-1"))
 
-        self.assertEqual([("/admin/tms/session/submit-code", {"code": "123456"})], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/session/submit-code", {"code": "123456"})], admin_calls)
         clear_pending.assert_called_once_with("chat-1")
         self.assertIn("正在校验验证码", replies[0])
         self.assertEqual("登录成功", replies[-1])
@@ -928,7 +928,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
 
         async def _fake_get_admin(path):
             get_calls.append(path)
-            if path == "/admin/tms/session/status":
+            if path == "/internal/v1/admin/tms/session/status":
                 return {"ok": True, "status": "pending_code", "pending_code": True}
             return {"ok": True, "status": "logged_out", "pending_code": False}
 
@@ -945,8 +945,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("123456", "user-1", "chat-1"))
 
-        self.assertEqual(["/admin/accounts", "/admin/tms/session/status"], get_calls)
-        self.assertEqual([("/admin/tms/session/submit-code", {"code": "123456"})], post_calls)
+        self.assertEqual(["/internal/v1/admin/accounts", "/internal/v1/admin/tms/session/status"], get_calls)
+        self.assertEqual([("/internal/v1/admin/tms/session/submit-code", {"code": "123456"})], post_calls)
         self.assertIn("正在校验验证码（操作场账号）", replies[0])
         self.assertEqual("登录成功", replies[-1])
 
@@ -988,7 +988,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("是", "user-1", "chat-1"))
 
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/price-session/send-code", None)], admin_calls)
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
         self.assertIn("验证码已发送", replies[-1])
@@ -1028,7 +1028,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("123456", "user-1", "chat-1"))
 
-        self.assertEqual([("/admin/tms/price-session/submit-code", {"code": "123456"})], admin_calls)
+        self.assertEqual([("/internal/v1/admin/tms/price-session/submit-code", {"code": "123456"})], admin_calls)
         self.assertEqual([("get_price", {"address": "长沙", "weight": 800.0})], execute_calls)
         self.assertIn("登录成功", replies[-2])
         self.assertIn("目的网点：测试站", replies[-1])

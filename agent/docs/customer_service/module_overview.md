@@ -16,7 +16,7 @@ updated: 2026-06-22
 - Console 页面入口：`/modules/customer-service`
 - Console 设置接口：`GET/POST /customer-service/problem-settings`
 - Console 问题件接口：`/customer-service/problems/query|detail|mark-read|reply|publish|attachments/upload`；附件图片预览接口为 `GET /customer-service/problems/attachments/preview`
-- Agent target：`/tms/customer_service_problem`
+- Agent target：`/internal/v1/tms/customer_service_problem`
 
 ## Console 交互口径
 
@@ -79,8 +79,8 @@ updated: 2026-06-22
 - Console 模板：`console/templates/customer_service.html`
 - Console 前端：`console/static/customer_service.js`
 - Console 样式：`console/static/style.css`
-- Agent target：`agent/tms_runtime/scripts/customer_service_problem.py`
-- Agent 调度注册：`agent/tms_runtime/dispatch.py`
+- Agent target：`agent/agent/tms_runtime/scripts/customer_service_problem.py`
+- Agent 调度注册：`agent/agent/tms_runtime/dispatch.py`
 
 ## 原页抓取规则
 

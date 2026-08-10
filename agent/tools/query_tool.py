@@ -1,4 +1,4 @@
-"""Waybill query tool backed by the embedded agent /tms gateway."""
+"""Waybill query tool backed by the versioned Agent gateway."""
 
 import json
 import os
@@ -13,7 +13,10 @@ WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 from shared.redaction import redact_text
 from tools.internal_http import internal_api_headers
 
-HTTP_SERVICE_URL = os.getenv("HTTP_SERVICE_URL", "http://127.0.0.1:9000/tms")
+HTTP_SERVICE_URL = os.getenv(
+    "HTTP_SERVICE_URL",
+    "http://127.0.0.1:9000/internal/v1/tms",
+)
 
 _SPLIT_RE = re.compile(r"[,\s;，；]+")
 

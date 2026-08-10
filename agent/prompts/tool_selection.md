@@ -9,7 +9,7 @@
 | 查运单/单号/物流 | query_waybill | 输入运单号 |
 | 报价/多少钱/价格 | get_price | 优先输入完整地址、重量、体积；兼容旧版发站/到站/重量 |
 | 识别/看图/图片 | ocr_recognize | 输入图片路径 |
-| 对账/财务/ETL | finance_etl | 输入月份 |
+| 融辉/韵达财务账单同步、补扫 | sync_finance_bills | 输入同步模式、业务日期或补扫天数 |
 | 查扫描/签收/寄件 | tms_query | 调 http-service 对应端点 |
 | 发飞书/写表格/通知 | feishu_operation | 调 lark-cli |
 

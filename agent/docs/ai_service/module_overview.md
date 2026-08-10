@@ -2,8 +2,8 @@
 module: AI客服
 type: 模块文档
 tags: [AI客服, 查单, 报价问答, 异常解释, 工单]
-related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_reconciliation/module_overview.md]
-status: active
+related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_module.md]
+status: planned
 updated: 2026-04-28
 ---
 

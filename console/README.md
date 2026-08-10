@@ -54,7 +54,7 @@
 WSL / Linux：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./start_backend.sh
 ```
 
@@ -75,28 +75,28 @@ cd /home/deng/projects/console
 如果只想以前台方式跑当前控制台：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./start_backend.sh --foreground
 ```
 
 如果只想启动控制台，不自动拉起 Agent：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./start_backend.sh --no-agent
 ```
 
 停止：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./stop_backend.sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-wsl bash -lc 'cd /home/deng/projects/console && ./start_backend.sh'
+wsl bash -lc 'cd /home/deng/projects/boyi-logistics/console && ./start_backend.sh'
 ```
 
 稳定启动默认依赖 `tmux`。当前脚本会自动复用固定会话名：
@@ -159,7 +159,7 @@ wsl bash -lc 'cd /home/deng/projects/console && ./start_backend.sh'
 
 ## 与服务器的对应关系
 
-- 本地：`/home/deng/projects/console`
+- 本地：`/home/deng/projects/boyi-logistics/console`
 - 服务器：`/home/boyce/console`
 
 目录结构尽量保持一致，避免本地改完后服务器路径错位。

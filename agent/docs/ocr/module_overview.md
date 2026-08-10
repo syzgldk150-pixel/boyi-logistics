@@ -95,7 +95,7 @@ OpenCV 只保留这 5 件事：
 ## 运行方式
 
 ```powershell
-wsl bash -lc 'cd /home/deng/projects/console && ./start_backend.sh'
+wsl bash -lc 'cd /home/deng/projects/boyi-logistics/console && ./start_backend.sh'
 ```
 
 页面入口：

@@ -433,7 +433,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Logistics Agent", version="0.1.0", lifespan=lifespan)
-app.include_router(tms_router, deprecated=True)
 app.include_router(tms_router, prefix="/internal/v1")
 
 
@@ -681,8 +680,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
 
 
-@app.post("/chat", deprecated=True)
-async def chat(req: ChatRequest):
+async def _chat(req: ChatRequest):
     return await _runtime().handle_message(
         message=req.message,
         user_id=req.user_id,
@@ -692,7 +690,7 @@ async def chat(req: ChatRequest):
 
 @app.post("/internal/v1/chat")
 async def internal_chat(req: ChatRequest):
-    return api_success(await chat(req))
+    return api_success(await _chat(req))
 
 
 class ToolRequest(BaseModel):
@@ -700,30 +698,15 @@ class ToolRequest(BaseModel):
     params: dict = {}
 
 
-@app.post("/run-tool", deprecated=True)
-async def run_tool(req: ToolRequest):
-    return await _runtime().execute_tool(req.tool_name, req.params)
-
-
 class CancelToolRequest(BaseModel):
     tool_name: str
     started_at: str = ""
-
-
-@app.post("/cancel-tool", deprecated=True)
-async def cancel_tool(req: CancelToolRequest):
-    return await _runtime().cancel_tool(req.tool_name, req.started_at)
 
 
 class KnowledgeRequest(BaseModel):
     content: str
     category: str | None = None
     source: str | None = None
-
-
-@app.get("/tools", deprecated=True)
-async def list_tools():
-    return {"tools": _runtime().registry.list_tools()}
 
 
 @app.get("/internal/v1/tools")
@@ -755,8 +738,7 @@ async def internal_cancel_tool(req: CancelToolRequest):
     return api_success(result)
 
 
-@app.post("/admin/reload", deprecated=True)
-async def reload_runtime():
+async def _reload_runtime():
     runtime = _runtime()
     result = runtime.reload_runtime_config()
     logger.info("Runtime configuration reloaded")
@@ -766,11 +748,10 @@ async def reload_runtime():
 
 @app.post("/internal/v1/admin/reload")
 async def internal_reload_runtime():
-    return api_success(await reload_runtime())
+    return api_success(await _reload_runtime())
 
 
-@app.post("/knowledge", deprecated=True)
-async def add_knowledge(req: KnowledgeRequest):
+async def _add_knowledge(req: KnowledgeRequest):
     record_id = _runtime().memory.add_knowledge(
         content=req.content,
         category=req.category,
@@ -781,22 +762,20 @@ async def add_knowledge(req: KnowledgeRequest):
 
 @app.post("/internal/v1/knowledge")
 async def internal_add_knowledge(req: KnowledgeRequest):
-    return api_success(await add_knowledge(req))
+    return api_success(await _add_knowledge(req))
 
 
-@app.get("/knowledge/search", deprecated=True)
-async def search_knowledge(q: str, limit: int = 5):
+async def _search_knowledge(q: str, limit: int = 5):
     rows = _runtime().memory.search_knowledge(q, limit=max(1, min(limit, 20)))
     return {"query": q, "results": rows}
 
 
 @app.get("/internal/v1/knowledge/search")
 async def internal_search_knowledge(q: str, limit: int = 5):
-    return api_success(await search_knowledge(q, limit))
+    return api_success(await _search_knowledge(q, limit))
 
 
-@app.get("/tool-output/{tool_name}", deprecated=True)
-async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
+async def _get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
     """获取工具的实时 shell 输出"""
     return _runtime().executor.get_running_output(
         tool_name,
@@ -807,11 +786,10 @@ async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = "")
 
 @app.get("/internal/v1/tool-output/{tool_name}")
 async def internal_get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
-    return api_success(await get_tool_output(tool_name, offset, started_at))
+    return api_success(await _get_tool_output(tool_name, offset, started_at))
 
 
-@app.get("/tool-logs", deprecated=True)
-async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
+async def _get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
     rows = _runtime().memory.get_tool_logs(
         limit=max(1, min(limit, 100)),
         tool_name=tool_name,
@@ -827,12 +805,7 @@ async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: 
 
 @app.get("/internal/v1/tool-logs")
 async def internal_get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
-    return api_success(await get_tool_logs(limit, tool_name, success))
-
-
-@app.get("/scheduled-tasks", deprecated=True)
-async def scheduled_tasks():
-    return {"rows": _runtime().memory.list_scheduled_tasks()}
+    return api_success(await _get_tool_logs(limit, tool_name, success))
 
 
 @app.get("/internal/v1/scheduled-tasks")
@@ -840,8 +813,7 @@ async def internal_scheduled_tasks():
     return api_success({"rows": _runtime().memory.list_scheduled_tasks()})
 
 
-@app.post("/admin/seed-phase7-tasks", deprecated=True)
-async def seed_phase7_tasks():
+async def _seed_phase7_tasks():
     runtime = _runtime()
     seeded = []
     for task in PHASE7_SCHEDULED_TASK_TEMPLATES:
@@ -854,12 +826,7 @@ async def seed_phase7_tasks():
 
 @app.post("/internal/v1/admin/seed-phase7-tasks")
 async def internal_seed_phase7_tasks():
-    return api_success(await seed_phase7_tasks())
-
-
-@app.get("/workflow-resources", deprecated=True)
-async def workflow_resources():
-    return {"rows": list_workflow_resources()}
+    return api_success(await _seed_phase7_tasks())
 
 
 @app.get("/internal/v1/workflow-resources")
@@ -867,8 +834,7 @@ async def internal_workflow_resources():
     return api_success({"rows": list_workflow_resources()})
 
 
-@app.post("/admin/import-phase7-resources", deprecated=True)
-async def import_phase7_resource_configs():
+async def _import_phase7_resource_configs():
     imported = import_phase7_resources()
     logger.info("Imported Phase 7 workflow resources into MySQL: %s", ", ".join(imported))
     return {"status": "ok", "imported": imported}
@@ -876,7 +842,7 @@ async def import_phase7_resource_configs():
 
 @app.post("/internal/v1/admin/import-phase7-resources")
 async def internal_import_phase7_resource_configs():
-    return api_success(await import_phase7_resource_configs())
+    return api_success(await _import_phase7_resource_configs())
 
 
 if __name__ == "__main__":

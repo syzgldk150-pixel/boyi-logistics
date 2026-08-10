@@ -473,7 +473,7 @@ def run_track_waybill(params: dict[str, Any]) -> dict[str, Any]:
         "timeout_sec": int(params.get("timeout_sec") or 180),
         "client_timeout_sec": int(params.get("client_timeout_sec") or 195),
     }
-    tms_result = call_http_service("/tms/tracking_query", request_body)
+    tms_result = call_http_service("/tracking_query", request_body)
     if auth_error := tms_auth_error_result(tms_result):
         return auth_error
     payload = _extract_payload(tms_result)

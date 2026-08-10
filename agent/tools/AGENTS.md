@@ -2,23 +2,24 @@
 
 ## 目录职责
 
-`tools/` 是业务能力实现层。绝大多数功能修复、新增同步链路、飞书写入、财务 ETL、TMS 查询都从这里开始。
+`tools/` 是业务能力实现层。绝大多数功能修复、新增同步链路、飞书写入、在线财务同步、TMS 查询都从这里开始。
 
 ## 修改入口
 
 - 运单查询：
   - `query_tool.py`
 - 单号追踪：
-  - `track_waybill_tool.py`（调用 Agent `/tms/tracking_query`，统一分发融辉 TMS、韵达和专线单号）
+  - `track_waybill_tool.py`（调用 Agent `/internal/v1/tms/tracking_query`，统一分发融辉 TMS、韵达和专线单号）
 - OCR 工具封装：
   - `ocr_tool.py`
 - 价格查询与 TMS 对接：
   - `price_tool.py`
   - `tms_tool.py`
   - `internal_http.py`（本机 Agent HTTP 请求头；缺少 `AGENT_INTERNAL_API_TOKEN` 时显式失败）
-  - 地址报价会同时调用融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
-- 财务 ETL：
-  - `finance_tool.py`
+  - 地址报价会同时调用融辉 `/internal/v1/tms/get_price` 和韵达 `/internal/v1/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
+- 在线财务同步：
+  - `sync_finance_bills_tool.py`
+  - `finance_sync_service.py`
 - 飞书 CLI：
   - `feishu_cli_tool.py`
 - Phase 7 同步链路：
@@ -35,9 +36,9 @@
   - `phase7_mysql_store.py`（Phase 7 共享 MySQL 存储；包含 `waybill_data` 到货基础表，也维护控制台 `waybills` 表的同步 upsert 入口；`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存明确来源返回的当前扫描状态，同步时必须保留手动作废的 `cancelled`）
   - `phase7_sync_common.py`
 - TMS 投诉/问题件上报：
-  - `self_pickup_problem_upload_tool.py`（"自提到货问题件"：读飞书到货表，筛 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 的单号，先 dry-run 预览，确认后调 `/tms/self_pickup_problem_upload` 上传 `开单为自提件` 问题件和货拉拉截图；自提部账号 `ronghui_self_pickup_problem`，大祥S站账号 `ronghui_daxiang_s`，不要使用 `price_default`）
+  - `self_pickup_problem_upload_tool.py`（"自提到货问题件"：读飞书到货表，筛 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 的单号，先 dry-run 预览，确认后调 `/internal/v1/tms/self_pickup_problem_upload` 上传 `开单为自提件` 问题件和货拉拉截图；自提部账号 `ronghui_self_pickup_problem`，大祥S站账号 `ronghui_daxiang_s`，不要使用 `price_default`）
 - R7 到达打卡：
-  - `r7_arrival_checkin_tool.py`（直接调用 `agent/tms_runtime/scripts/auto_checkin_r7.py`；使用 R7 登录，不依赖 TMS 共享登录态；写 `r7_arrival_checkin_log` 并按 `daily_success_limit` 控制当天后续定时跳过）
+  - `r7_arrival_checkin_tool.py`（直接调用 `agent/agent/tms_runtime/scripts/auto_checkin_r7.py`；使用 R7 登录，不依赖 TMS 共享登录态；写 `r7_arrival_checkin_log` 并按 `daily_success_limit` 控制当天后续定时跳过）
   - R7 事件、状态和到达/发车打卡日志表由 `../migrations/006_r7_runtime_tables.sql` 创建；工具仅校验表存在，禁止在运行时建表。
 - 工具对外注册定义：
   - `registry.yaml`
@@ -55,10 +56,10 @@
 ## Phase 7 补充说明
 
 - `tms_tool.py`
-  - 默认走 `http://127.0.0.1:9000/tms/*` 兼容层
+  - 默认走 `http://127.0.0.1:9000/internal/v1/tms/*` 兼容层
   - 所有本机 Agent HTTP 调用必须使用 `internal_http.internal_api_headers()` 发送 `X-Agent-Internal-Token`
-  - 当前线上权威执行源已切换为 `agent/tms_runtime/`
-  - 图片/短信验证码共享登录态由 `agent` 的 `/admin/tms/session/*` 管理
+  - 当前线上权威执行源已切换为 `agent/agent/tms_runtime/`
+  - 图片/短信验证码共享登录态由 `agent` 的 `/internal/v1/admin/internal/v1/tms/session/*` 管理
 
 ## 相关文档
 

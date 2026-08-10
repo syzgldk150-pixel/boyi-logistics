@@ -44,3 +44,20 @@ def handle_post(app: Any, handler: Any, path: str, raw_path: str, query: dict[st
         app._handle_yunda_receipt_live_proxy(handler, raw_path, method="POST", query=query)
         return True
     return False
+
+
+def handle_write(
+    app: Any,
+    handler: Any,
+    _path: str,
+    raw_path: str,
+    query: dict[str, list[str]],
+    method: str,
+) -> bool:
+    if raw_path.startswith("/receipts/ronghui/live"):
+        app._handle_ronghui_receipt_live_proxy(handler, raw_path, method=method, query=query)
+        return True
+    if raw_path.startswith("/receipts/yunda/live"):
+        app._handle_yunda_receipt_live_proxy(handler, raw_path, method=method, query=query)
+        return True
+    return False

@@ -55,9 +55,9 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual([("73901", 0, 1), ("73901", 1, 1), ("73901", 2, 1)], calls)
 
     def test_default_http_service_urls_point_to_agent_tms(self):
-        self.assertEqual(tms_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
-        self.assertEqual(query_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
-        self.assertEqual(price_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
+        self.assertEqual(tms_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/internal/v1/tms")
+        self.assertEqual(query_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/internal/v1/tms")
+        self.assertEqual(price_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/internal/v1/tms")
 
     def test_local_price_module_load_does_not_pollute_legacy_helper_modules(self):
         price_module_dir = str(Path(price_tool.PRICE_GET_MODULE).resolve().parent)
@@ -891,19 +891,19 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "HTTP_SERVICE_URL": "http://legacy-service:8000/tms",
+                "HTTP_SERVICE_URL": "http://127.0.0.1:9000/internal/v1/tms",
                 "AGENT_PORT": "9100",
             },
             clear=False,
         ):
             self.assertEqual(message_handler._admin_base_url(), "http://127.0.0.1:9100")
 
-    def test_feishu_admin_base_allows_explicit_agent_admin_url(self):
+    def test_feishu_admin_base_allows_explicit_agent_base_url(self):
         with patch.dict(
             "os.environ",
             {
-                "AGENT_ADMIN_BASE_URL": "http://agent.internal:9000/tms",
-                "HTTP_SERVICE_URL": "http://legacy-service:8000/tms",
+                "AGENT_ADMIN_BASE_URL": "http://agent.internal:9000",
+                "HTTP_SERVICE_URL": "http://agent.internal:9000/internal/v1/tms",
             },
             clear=False,
         ):
@@ -1068,7 +1068,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual(960, captured["json"]["timeout_sec"])
 
     def test_tms_tool_preserves_json_http_error_payload(self):
-        request = tms_tool.httpx.Request("POST", "http://127.0.0.1:9000/tms/get_qianshou")
+        request = tms_tool.httpx.Request("POST", "http://127.0.0.1:9000/internal/v1/tms/get_qianshou")
         response = tms_tool.httpx.Response(
             500,
             json={"ok": False, "error_type": "RuntimeError", "error": "R13 SSO login failed"},
@@ -1777,7 +1777,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         def _fake_call_http_service(endpoint, params):
             calls.append(endpoint)
-            if endpoint == "/tms/tracking_query":
+            if endpoint == "/tracking_query":
                 return {
                     "ok": True,
                     "data": {
@@ -1814,7 +1814,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         ):
             result = track_waybill_tool.run_track_waybill({"tracking_number": "R00014513348"})
 
-        self.assertEqual(["/tms/tracking_query", "/query_waybill_detail"], calls)
+        self.assertEqual(["/tracking_query", "/query_waybill_detail"], calls)
         self.assertEqual("李四", result["waybill_stub"]["recipient_name"])
         self.assertEqual("13900000000", result["waybill_stub"]["recipient_phone"])
         self.assertEqual("湖南省邵阳市双清区建设南路1号", result["waybill_stub"]["recipient_address"])

@@ -87,22 +87,6 @@ tools:
     timeout: 60
     heavy: true
 
-  - name: finance_etl
-    description: "运行财务对账 ETL 管道，生成报表并返回指定月份或全量摘要"
-    parameters:
-      type: object
-      properties:
-        month:
-          type: string
-          description: "可选，月份摘要范围，格式 YYYY-MM，如 2026-03"
-        input_path:
-          type: string
-          description: "可选，元数据目录路径，或包含 metadata/ 的项目目录路径"
-      required: []
-    executor: tools/finance_tool.py
-    timeout: 600
-    heavy: true
-
   - name: sync_daily_send_orders
     description: "Phase 7 第一批：拉取融辉寄件数据并按发件日期替换写入飞书多维表格"
     parameters:

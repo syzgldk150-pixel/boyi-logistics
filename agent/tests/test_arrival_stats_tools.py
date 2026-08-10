@@ -676,7 +676,7 @@ class ArrivalStatsToolTests(unittest.TestCase):
 
         self.assertEqual("yunda", result["type"])
         self.assertEqual("977808459", result["tracking_number"])
-        self.assertEqual("/tms/tracking_query", call_http.call_args.args[0])
+        self.assertEqual("/tracking_query", call_http.call_args.args[0])
         self.assertEqual("977808459", call_http.call_args.args[1]["params"]["tracking_number"])
 
     def test_track_waybill_tool_rejects_invalid_r_tracking_number_without_http_call(self):

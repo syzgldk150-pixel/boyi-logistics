@@ -290,8 +290,6 @@ def _admin_base_url() -> str:
         port = str(os.getenv("AGENT_PORT") or "9000").strip() or "9000"
         raw = f"http://127.0.0.1:{port}"
     raw = raw.rstrip("/")
-    if raw.endswith("/tms"):
-        raw = raw[:-4]
     return raw
 
 
@@ -375,13 +373,13 @@ def _auth_session_path(auth_session: str, action: str) -> str:
     account_id = _auth_account_id(auth_session)
     if account_id:
         normalized_action = "login" if action.strip("/") == "send-code" else action.strip("/")
-        return f"/admin/accounts/{account_id}/{normalized_action}"
+        return f"/internal/v1/admin/accounts/{account_id}/{normalized_action}"
     if auth_session == "price":
-        prefix = "/admin/tms/price-session"
+        prefix = "/internal/v1/admin/tms/price-session"
     elif auth_session == "yunda":
-        prefix = "/admin/tms/yunda-session"
+        prefix = "/internal/v1/admin/tms/yunda-session"
     else:
-        prefix = "/admin/tms/session"
+        prefix = "/internal/v1/admin/tms/session"
     return f"{prefix}/{action.lstrip('/')}"
 
 
@@ -495,7 +493,7 @@ def _account_options_from_accounts_payload(
 
 
 async def _fetch_login_account_options(*, pending_only: bool = False) -> list[dict[str, Any]]:
-    payload = await _get_admin("/admin/accounts")
+    payload = await _get_admin("/internal/v1/admin/accounts")
     if not payload.get("ok"):
         logger.warning("Failed to fetch automation account choices: %s", str(payload)[:300])
         return []
