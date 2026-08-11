@@ -109,6 +109,33 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(payload["profile"], "default")
         self.assertEqual(calls, [("ronghui_default", True)])
 
+    def test_admin_account_auto_login_route_persists_checkbox_value(self):
+        calls = []
+
+        class FakeAccountManager:
+            def set_auto_login(self, account_id, enabled):
+                calls.append((account_id, enabled))
+                return {
+                    "account_id": account_id,
+                    "auto_login_enabled": enabled,
+                    "auto_login_failure_count": 0,
+                    "auto_login_blocked": False,
+                }
+
+        routes_module._ACCOUNT_LIST_CACHE.update(
+            {"payload": {"accounts": [{"account_id": "ronghui_default"}]}, "cached_at": 1}
+        )
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            response = self.client.post(
+                "/internal/v1/admin/accounts/ronghui_default/auto-login",
+                json={"enabled": False},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([("ronghui_default", False)], calls)
+        self.assertFalse(response.json()["data"]["account"]["auto_login_enabled"])
+        self.assertEqual({}, routes_module._ACCOUNT_LIST_CACHE)
+
     def test_admin_accounts_route_passes_force_to_manager(self):
         calls = []
 
@@ -304,6 +331,31 @@ class TMSRoutesTests(unittest.TestCase):
         payload = response.json()
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error_code"], "AUTH_UNAVAILABLE")
+
+    def test_legacy_clear_routes_disable_auto_login_through_account_manager(self):
+        calls = []
+
+        class FakeAccountManager:
+            def clear_session(self, account_id):
+                calls.append(account_id)
+                return {
+                    "account_id": account_id,
+                    "status": "logged_out",
+                    "auto_login_enabled": False,
+                }
+
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            default_response = self.client.post("/admin/tms/session/clear")
+            price_response = self.client.post("/admin/tms/price-session/clear")
+            yunda_response = self.client.post("/admin/tms/yunda-session/clear")
+
+        self.assertEqual(
+            ["ronghui_default", "price_default", "yunda_default"],
+            calls,
+        )
+        self.assertFalse(default_response.json()["auto_login_enabled"])
+        self.assertFalse(price_response.json()["auto_login_enabled"])
+        self.assertFalse(yunda_response.json()["auto_login_enabled"])
 
     def test_price_session_routes_use_price_broker(self):
         calls: list[str] = []

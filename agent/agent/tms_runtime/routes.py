@@ -52,6 +52,10 @@ class AccountActiveRequest(BaseModel):
     is_active: bool = True
 
 
+class AccountAutoLoginRequest(BaseModel):
+    enabled: bool = True
+
+
 class MonitoringDetailLinkRequest(BaseModel):
     system: str = ""
     category_id: str = ""
@@ -113,6 +117,11 @@ def _store_account_list_cache(payload: dict[str, Any]) -> None:
                 "cached_at": time.time(),
             }
         )
+
+
+def _invalidate_account_list_cache() -> None:
+    with _ACCOUNT_LIST_CACHE_LOCK:
+        _ACCOUNT_LIST_CACHE.clear()
 
 
 def update_account_list_cache_status(status_payload: dict[str, Any]) -> bool:
@@ -219,6 +228,7 @@ def automation_account_create(req: AccountCreateRequest):
             name=req.name,
             account_purpose=req.account_purpose,
         )
+        _invalidate_account_list_cache()
         return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
@@ -237,16 +247,14 @@ def automation_account_status(account_id: str, force: bool = False):
 @router.post("/admin/accounts/{account_id}/credentials")
 def automation_account_save_credentials(account_id: str, req: CredentialsRequest):
     try:
-        return _success_response(
-            {
-                "credentials": _account_manager().save_credentials(
-                    account_id,
-                    username=req.username,
-                    password=req.password,
-                    phone=req.phone,
-                )
-            }
+        credentials = _account_manager().save_credentials(
+            account_id,
+            username=req.username,
+            password=req.password,
+            phone=req.phone,
         )
+        _invalidate_account_list_cache()
+        return _success_response({"credentials": credentials})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -254,7 +262,9 @@ def automation_account_save_credentials(account_id: str, req: CredentialsRequest
 @router.post("/admin/accounts/{account_id}/credentials/clear")
 def automation_account_clear_credentials(account_id: str):
     try:
-        return _success_response({"credentials": _account_manager().clear_credentials(account_id)})
+        credentials = _account_manager().clear_credentials(account_id)
+        _invalidate_account_list_cache()
+        return _success_response({"credentials": credentials})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -262,7 +272,9 @@ def automation_account_clear_credentials(account_id: str):
 @router.post("/admin/accounts/{account_id}/login")
 def automation_account_login(account_id: str):
     try:
-        return _success_response(_account_manager().login(account_id))
+        status = _account_manager().login(account_id)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
@@ -270,7 +282,9 @@ def automation_account_login(account_id: str):
 @router.post("/admin/accounts/{account_id}/submit-code")
 def automation_account_submit_code(account_id: str, req: SubmitCodeRequest):
     try:
-        return _success_response(_account_manager().submit_code(account_id, req.code))
+        status = _account_manager().submit_code(account_id, req.code)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
@@ -278,7 +292,9 @@ def automation_account_submit_code(account_id: str, req: SubmitCodeRequest):
 @router.post("/admin/accounts/{account_id}/clear-session")
 def automation_account_clear_session(account_id: str):
     try:
-        return _success_response(_account_manager().clear_session(account_id))
+        status = _account_manager().clear_session(account_id)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -286,7 +302,9 @@ def automation_account_clear_session(account_id: str):
 @router.post("/admin/accounts/{account_id}/default")
 def automation_account_set_default(account_id: str):
     try:
-        return _success_response({"account": _account_manager().set_default(account_id)})
+        account = _account_manager().set_default(account_id)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -294,7 +312,19 @@ def automation_account_set_default(account_id: str):
 @router.post("/admin/accounts/{account_id}/active")
 def automation_account_set_active(account_id: str, req: AccountActiveRequest):
     try:
-        return _success_response({"account": _account_manager().set_active(account_id, req.is_active)})
+        account = _account_manager().set_active(account_id, req.is_active)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
+    except TMSAuthStateError as exc:
+        return _account_error_response(exc)
+
+
+@router.post("/admin/accounts/{account_id}/auto-login")
+def automation_account_set_auto_login(account_id: str, req: AccountAutoLoginRequest):
+    try:
+        account = _account_manager().set_auto_login(account_id, req.enabled)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -348,7 +378,9 @@ def tms_session_submit_code(req: SubmitCodeRequest):
 
 @router.post("/admin/tms/session/clear")
 def tms_session_clear():
-    return _success_response(_session_broker().clear())
+    status = _account_manager().clear_session("ronghui_default")
+    update_account_list_cache_status(status)
+    return _success_response(status)
 
 
 @router.get("/admin/tms/price-session/status")
@@ -400,7 +432,9 @@ def tms_price_session_submit_code(req: SubmitCodeRequest):
 
 @router.post("/admin/tms/price-session/clear")
 def tms_price_session_clear():
-    return _success_response(_session_broker("price").clear())
+    status = _account_manager().clear_session("price_default")
+    update_account_list_cache_status(status)
+    return _success_response(status)
 
 
 @router.get("/admin/tms/yunda-session/status")
@@ -452,7 +486,9 @@ def tms_yunda_session_submit_code(req: SubmitCodeRequest):
 
 @router.post("/admin/tms/yunda-session/clear")
 def tms_yunda_session_clear():
-    return _success_response(_session_broker("yunda").clear())
+    status = _account_manager().clear_session("yunda_default")
+    update_account_list_cache_status(status)
+    return _success_response(status)
 
 
 @router.get("/admin/monitoring/snapshot")

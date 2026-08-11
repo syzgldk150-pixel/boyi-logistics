@@ -308,13 +308,15 @@ class ProviderSessionAdapterBase:
                 last_captcha_image = captcha_image
                 last_captcha_image_mime = captcha_image_mime or "image/png"
 
-        return self._write_ronghui_image_pending_state_locked(
+        result = self._write_ronghui_image_pending_state_locked(
             session,
             config,
             captcha_image=last_captcha_image,
             captcha_image_mime=last_captcha_image_mime,
             message=self._ronghui_auto_login_fallback_message(),
         )
+        result["auto_login_attempts_exhausted"] = True
+        return result
 
     def _write_ronghui_image_pending_state_locked(
         self,
@@ -1503,13 +1505,15 @@ class ProviderSessionAdapterBase:
             if last_error
             else self._ronghui_auto_login_fallback_message()
         )
-        return self._save_yunda_pending_state_locked(
+        result = self._save_yunda_pending_state_locked(
             context,
             page,
             config=config,
             message=fallback_message,
             pending_since=pending_since,
         )
+        result["auto_login_attempts_exhausted"] = True
+        return result
 
     def _run_yunda_password_login(
         self,

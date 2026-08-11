@@ -27,6 +27,8 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
                     "system_label": "TMS融辉",
                     "is_default": True,
                     "is_active": True,
+                    "auto_login_enabled": True,
+                    "auto_login_blocked": False,
                     "session_capable": True,
                     "login_kind": "image",
                     "has_saved_credentials": True,
@@ -61,6 +63,8 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
                     "system_label": "TMS融辉",
                     "is_default": True,
                     "is_active": True,
+                    "auto_login_enabled": False,
+                    "auto_login_blocked": False,
                     "session_capable": True,
                     "login_kind": "image",
                     "has_saved_credentials": False,
@@ -128,6 +132,17 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertIn("登录态有效", html)
         self.assertIn("未保存账号密码", html)
         self.assertIn("当前只检测到浏览器登录态", html)
+
+    def test_account_page_exposes_clear_auto_login_and_disable_semantics(self):
+        html = self._render()
+
+        self.assertIn("自动登录与断线提醒", html)
+        self.assertIn("连续失败 3 次即暂停", html)
+        self.assertIn('name="auto_login_enabled"', html)
+        self.assertIn("清除会话并关闭自动登录", html)
+        self.assertIn("不会删除部署环境变量", html)
+        self.assertIn("停止任务使用与登录监控", html)
+        self.assertIn("自动登录关闭", html)
 
 
 if __name__ == "__main__":

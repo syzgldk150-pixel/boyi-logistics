@@ -130,6 +130,101 @@ class AutomationAccountManagerTests(unittest.TestCase):
             ],
         )
 
+    def test_auto_login_disabled_skips_validation_and_login(self):
+        calls: list[tuple[str, Any]] = []
+
+        class FakeBroker:
+            def describe_status(self, *, validate=True, force=False):
+                calls.append(("describe", validate, force))
+                return {
+                    "status": "logged_out",
+                    "label": "未登录",
+                    "status_tone": "neutral",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "",
+                }
+
+            def send_code(self):
+                raise AssertionError("disabled auto-login must not attempt login")
+
+        self.manager.set_auto_login("ronghui_default", False)
+        with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            status = self.manager.check_status_with_auto_login("ronghui_default", force=True)
+
+        self.assertEqual([("describe", False, False)], calls)
+        self.assertFalse(status["auto_login_enabled"])
+        self.assertEqual("已退出", status["label"])
+        self.assertTrue(status["monitoring_paused"])
+
+    def test_clear_session_disables_auto_login_without_clearing_credentials(self):
+        calls: list[str] = []
+
+        class FakeBroker:
+            def clear(self):
+                calls.append("clear")
+                return {
+                    "status": "logged_out",
+                    "label": "已退出",
+                    "status_tone": "neutral",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "has_saved_credentials": True,
+                }
+
+        with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            status = self.manager.clear_session("ronghui_default")
+
+        account = next(
+            item
+            for item in self.manager.list_accounts(include_status=False)
+            if item["account_id"] == "ronghui_default"
+        )
+        self.assertEqual(["clear"], calls)
+        self.assertFalse(account["auto_login_enabled"])
+        self.assertFalse(status["auto_login_enabled"])
+        self.assertTrue(status["has_saved_credentials"])
+
+    def test_auto_login_pauses_after_three_failed_cycles(self):
+        calls: list[tuple[str, Any]] = []
+
+        class FakeBroker:
+            def describe_status(self, *, validate=True, force=False):
+                calls.append(("describe", validate, force))
+                return {
+                    "status": "expired",
+                    "label": "已过期",
+                    "status_tone": "error",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "session expired",
+                }
+
+            def send_code(self):
+                calls.append(("send_code",))
+                return {
+                    "status": "error",
+                    "label": "自动登录失败",
+                    "status_tone": "error",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "账号或密码错误",
+                }
+
+        with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            results = [
+                self.manager.check_status_with_auto_login("ronghui_default", force=True)
+                for _ in range(3)
+            ]
+            paused_status = self.manager.check_status_with_auto_login("ronghui_default", force=True)
+
+        self.assertEqual(3, calls.count(("send_code",)))
+        self.assertEqual(3, results[-1]["auto_login_failure_count"])
+        self.assertTrue(results[-1]["auto_login_blocked"])
+        self.assertEqual("自动登录已暂停", results[-1]["label"])
+        self.assertEqual("自动登录已暂停", paused_status["label"])
+        self.assertEqual(("describe", False, False), calls[-1])
+
     def test_force_status_check_keeps_pending_code_without_resending(self):
         calls: list[tuple[str, Any]] = []
 
