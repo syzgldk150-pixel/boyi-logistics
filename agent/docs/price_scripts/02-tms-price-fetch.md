@@ -29,7 +29,7 @@ updated: 2026-06-16
   - RC1：14/16 修复成功（根因：address_database.json 地址指向同名他城），2 个为 TMS 系统盲区
   - RC2：17 个地址已修正
   - RC3：100 个全部修复成功
-- Agent `price_tool` 已接入本模块：飞书单地址报价默认通过 Agent `/internal/v1/tms/get_price`，使用独立的 `price` TMS 短信登录态（`/internal/v1/admin/internal/v1/tms/price-session/*`）；批量报价脚本仍保留本目录 `get_price.py` / `login_manager.py` 的离线采集入口。
+- Agent `price_tool` 已接入本模块：飞书单地址报价默认通过 Agent `/internal/v1/tms/get_price`，使用独立的 `price` TMS 短信登录态（`/internal/v1/admin/tms/price-session/*`）；批量报价脚本仍保留本目录 `get_price.py` / `login_manager.py` 的离线采集入口。
 
 ---
 

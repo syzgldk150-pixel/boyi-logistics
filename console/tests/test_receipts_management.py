@@ -11,6 +11,7 @@ from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -1109,7 +1110,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("console.services.waybills_receipts.open_url_without_redirect", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1122,7 +1123,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("console.services.waybills_receipts.open_url_without_redirect", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1138,7 +1139,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("console.services.waybills_receipts.open_url_without_redirect", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://tms.ronghuiwl.com/rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1176,7 +1177,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_attachment_rejects_non_whitelisted_direct_image_host(self):
         app = _build_app(_ReceiptRepo())
 
-        with patch("console.services.waybills_receipts.urlopen") as mocked_urlopen:
+        with patch("console.services.waybills_receipts.open_url_without_redirect") as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://example.test/k13/demo.jpg",
@@ -1184,6 +1185,26 @@ class ReceiptRouteTests(unittest.TestCase):
 
         self.assertIsNone(result)
         mocked_urlopen.assert_not_called()
+
+    def test_receipt_attachment_rejects_redirect_to_non_whitelisted_host(self):
+        app = _build_app(_ReceiptRepo())
+        source_url = "https://rhk13.obs.cn-east-3.myhuaweicloud.com/k13/demo.jpg"
+        redirect = HTTPError(
+            source_url,
+            302,
+            "Found",
+            {"Location": "http://127.0.0.1/private.jpg"},
+            None,
+        )
+
+        with patch(
+            "console.services.waybills_receipts.open_url_without_redirect",
+            side_effect=redirect,
+        ) as mocked_open:
+            result = app._fetch_direct_receipt_attachment(source_url)
+
+        self.assertIsNone(result)
+        mocked_open.assert_called_once()
 
     def test_receipts_query_rejects_incomplete_date_range_without_agent_call(self):
         repo = _ReceiptRepo()

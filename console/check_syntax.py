@@ -1,8 +1,10 @@
 import traceback
+from pathlib import Path
 
 try:
-    with open('app.py', encoding='utf-8') as f:
-        compile(f.read(), 'app.py', 'exec')
+    app_path = Path(__file__).resolve().with_name("app.py")
+    with app_path.open(encoding="utf-8") as f:
+        compile(f.read(), str(app_path), "exec")
     print("Syntax OK")
 except SyntaxError as e:
     print("SyntaxError found:")

@@ -7,6 +7,8 @@ from urllib.parse import quote, urljoin
 
 import requests
 
+from shared.redaction import redact_sensitive, redact_text
+
 
 DEFAULT_SSO_ORIGIN = "https://sso.ronghuiwl.com"
 DEFAULT_R7_ORIGIN = "https://r7.ronghuiwl.com"
@@ -145,12 +147,12 @@ class R7SSOAuth:
         except requests.RequestException as exc:
             detail = ""
             if getattr(exc, "response", None) is not None:
-                detail = f" status={exc.response.status_code} body={(exc.response.text or '')[:200]}"
+                detail = f" status={exc.response.status_code} body={redact_text((exc.response.text or '')[:200])}"
             raise RuntimeError(f"SSO login request failed.{detail}") from exc
 
         content_type = response.headers.get("Content-Type", "")
         if "application/json" not in content_type:
-            snippet = (response.text or "")[:200]
+            snippet = redact_text((response.text or "")[:200])
             raise RuntimeError(f"Unexpected login response: {content_type} {snippet}")
 
         parsed = response.json() if response.content else {}
@@ -161,8 +163,8 @@ class R7SSOAuth:
         if parsed.get("code") in (200, 0) and token:
             return str(token)
 
-        message = parsed.get("message") or parsed.get("msg") or parsed
-        raise RuntimeError(f"SSO login failed: {message}")
+        message = parsed.get("message") or parsed.get("msg") or redact_sensitive(parsed)
+        raise RuntimeError(f"SSO login failed: {redact_text(message)}")
 
     def _exchange_token(self, token: str) -> None:
         exchange_url = self._build_url(self.r7_origin, self.exchange_api)
@@ -177,8 +179,8 @@ class R7SSOAuth:
     def _verify_authenticated(self) -> bool:
         try:
             response = self.session.get(self.welcome_url, allow_redirects=False, timeout=10)
-        except Exception:
-            return True
+        except requests.RequestException as exc:
+            raise RuntimeError("R7 authentication verification request failed.") from exc
 
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("Location", "")
@@ -188,7 +190,8 @@ class R7SSOAuth:
             body = response.text or ""
             if "sso.ronghuiwl.com" in body:
                 return False
-        return response.status_code < 500
+            return True
+        return False
 
     def login_and_get_session(
         self,
@@ -224,8 +227,8 @@ class R7SSOAuth:
                     return self.session
             except Exception as exc:
                 last_error = exc
-                logger.warning("R7 SSO login failed on attempt %s: %s", attempt, exc)
+                logger.warning("R7 SSO login failed on attempt %s: %s", attempt, redact_text(exc))
             time.sleep(1.0)
 
-        suffix = f" Last error: {last_error}" if last_error else ""
+        suffix = f" Last error: {redact_text(last_error)}" if last_error else ""
         raise RuntimeError(f"R7 SSO login failed after multiple attempts.{suffix}")

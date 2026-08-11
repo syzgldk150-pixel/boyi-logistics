@@ -134,6 +134,37 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fast_result["success"])
         self.assertEqual(fast_result["data"], {"tool": "fast"})
 
+    async def test_output_capture_and_live_lines_are_bounded(self):
+        noisy_script = self._write_temp_script(
+            "tool-output-limit-",
+            """
+            import sys
+
+            for index in range(20):
+                print(f"line-{index}-" + "x" * 100)
+            print("y" * 1024, file=sys.stderr)
+            """,
+        )
+
+        result = await self.executor.execute(
+            {
+                "name": "noisy_tool",
+                "executor": os.path.relpath(noisy_script, PROJECT_ROOT),
+                "timeout": 5,
+                "max_output_bytes": 128,
+                "max_live_lines": 3,
+                "max_live_line_chars": 40,
+            },
+            {},
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual("TOOL_OUTPUT_LIMIT_EXCEEDED", result["error_code"])
+        output = self.executor.get_running_output("noisy_tool")
+        self.assertLessEqual(len(output["lines"]), 3)
+        self.assertIn("实时日志已截断", output["lines"][-1])
+        self.assertTrue(all(len(line) <= 40 for line in output["lines"][:-1]))
+
 
 if __name__ == "__main__":
     unittest.main()

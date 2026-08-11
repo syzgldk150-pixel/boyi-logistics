@@ -136,7 +136,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 - `feishu/message_handler.py` — `_is_auth_required` / `_request_relogin` / `_execute_and_reply`
 - `feishu/notify.py` — 主动通知目标记录与 TMS 登录态断开提醒发送
 - `agent/agent/tms_runtime/session_broker.py` — 登录态、send_code / submit_code 的真正实现
-- `agent/agent/tms_runtime/routes.py` — `/internal/v1/admin/internal/v1/tms/session/*` 端点
+- `agent/agent/tms_runtime/routes.py` — `/internal/v1/admin/tms/session/*` 端点
 
 ### 4. 主动登录/发验证码
 
@@ -155,7 +155,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 [Bot] "登录成功"
 ```
 
-如果文本中包含 `大祥`、`报价`、`价格` 或 `price`，例如 `大祥登录`、`价格发验证码`，则优先从账号管理中选择默认大祥账号。`操作场` / `后台` 选择默认融辉账号，`韵达` / `yunda` 选择默认韵达账号。若账号管理接口不可用，旧 `/internal/v1/admin/internal/v1/tms/*-session` 路径仍保留兼容。
+如果文本中包含 `大祥`、`报价`、`价格` 或 `price`，例如 `大祥登录`、`价格发验证码`，则优先从账号管理中选择默认大祥账号。`操作场` / `后台` 选择默认融辉账号，`韵达` / `yunda` 选择默认韵达账号。若账号管理接口不可用，`/internal/v1/admin/tms/*-session` 路径仍保留兼容。
 
 如果短信验证码已经由后台按钮或接口发出，但飞书内存 pending 丢失，用户直接回复 4-8 位验证码时，机器人会先检查账号管理里是否只有一个账号处于 `pending_code`。只有一个时直接提交；多个账号同时待验证时，先要求用户选择账号，避免把验证码提交到错误账号。
 
@@ -219,7 +219,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 - 飞书新增 `track_waybill` 直达工具，入口在 `tools/track_waybill_tool.py`，统一调用 Agent `/internal/v1/tms/tracking_query`。
 - 文本命令入口在 `agent/direct_tool_router.py`：支持裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>`；`R/RC/200` 识别为融辉，`000` 识别为专线，其它纯数字识别为韵达。
-- 韵达查询脚本在 `agent/agent/tms_runtime/scripts/yunda_waybill_tracking.py`，复用 `yunda` 登录态和 `/internal/v1/admin/internal/v1/tms/yunda-session/*` 登录恢复流程，不新增凭据读取。
+- 韵达查询脚本在 `agent/agent/tms_runtime/scripts/yunda_waybill_tracking.py`，复用 `yunda` 登录态和 `/internal/v1/admin/tms/yunda-session/*` 登录恢复流程，不新增凭据读取。
 - 回复格式由 `format_track_waybill_reply` 生成：首行 `查询单号：xxx`，后续为 `【时间 状态】描述`；默认展示全部轨迹，超过飞书文本长度时保留最新记录并提示截断。
 
 ## 2026-08-07 分批差错及问题件

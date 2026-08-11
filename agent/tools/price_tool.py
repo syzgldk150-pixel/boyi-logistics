@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import math
 import os
 import sys
 import threading
@@ -362,19 +363,29 @@ def run_price_tool(params: dict) -> dict:
     address = str(params.get("address", "")).strip()
     from_station = str(params.get("from_station", "")).strip()
     to_station = str(params.get("to_station", "")).strip()
-    raw_weight = params.get("weight", 0)
+    if "weight" not in params or params.get("weight") in (None, ""):
+        return {"error": "weight 必填且必须大于 0", "error_code": "INVALID_PARAMS"}
+    raw_weight = params.get("weight")
     raw_volume = params.get("volume", 0.1)
     config = params.get("config")
 
+    if isinstance(raw_weight, bool):
+        return {"error": "weight 必须是数字", "error_code": "INVALID_PARAMS"}
     try:
         weight = float(raw_weight)
     except (TypeError, ValueError):
-        return {"error": "weight 必须是数字"}
+        return {"error": "weight 必须是数字", "error_code": "INVALID_PARAMS"}
+    if not math.isfinite(weight) or weight <= 0:
+        return {"error": "weight 必须是有限的正数", "error_code": "INVALID_PARAMS"}
 
+    if isinstance(raw_volume, bool):
+        return {"error": "volume 必须是数字", "error_code": "INVALID_PARAMS"}
     try:
         volume = float(raw_volume)
     except (TypeError, ValueError):
-        return {"error": "volume 必须是数字"}
+        return {"error": "volume 必须是数字", "error_code": "INVALID_PARAMS"}
+    if not math.isfinite(volume) or volume <= 0:
+        return {"error": "volume 必须是有限的正数", "error_code": "INVALID_PARAMS"}
 
     if address:
         return get_combined_price(

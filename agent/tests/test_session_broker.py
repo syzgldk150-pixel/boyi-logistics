@@ -627,6 +627,22 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(result["phone"], "13800000000")
         self.assertTrue(self.broker._login_profile_path.exists())
         self.assertTrue(self.broker.describe_status(validate=False)["has_saved_credentials"])
+        persisted = json.loads(self.broker._login_profile_path.read_text(encoding="utf-8"))
+        self.assertNotIn("password", persisted)
+        self.assertNotIn("demo-pass", json.dumps(persisted, ensure_ascii=False))
+
+    def test_saved_password_is_not_available_after_process_restart(self):
+        self.broker.save_credentials(username="demo-user", password="demo-pass", phone="13800000000")
+        restarted = SessionBroker()
+        self._configure_broker_state(restarted)
+
+        with patch.dict("os.environ", {}, clear=True):
+            config = restarted.resolve_login_config()
+            status = restarted.get_saved_credentials()
+
+        self.assertEqual(config.username, "")
+        self.assertEqual(config.password, "")
+        self.assertFalse(status["has_saved_credentials"])
 
     def test_default_ronghui_credentials_do_not_require_phone(self):
         result = self.broker.save_credentials(username="demo-user", password="demo-pass", phone="")

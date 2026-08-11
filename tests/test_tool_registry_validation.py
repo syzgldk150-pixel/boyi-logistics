@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from agent.tool_registry import ToolRegistry, validate_registry
+from agent.tool_registry import ToolRegistry, validate_registry, validate_tool_parameters
 
 
 def _tool(*, name: str = "valid") -> dict:
@@ -61,6 +61,28 @@ class ToolRegistryValidationTests(unittest.TestCase):
             registry_path.write_text("tools:\n  - name: missing-fields\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "description"):
                 ToolRegistry(registry_path=registry_path, project_root=Path(root))
+
+    def test_runtime_validation_enforces_required_type_and_numeric_bounds(self):
+        tool = _tool()
+        tool["parameters"] = {
+            "type": "object",
+            "properties": {
+                "weight": {"type": "number", "exclusiveMinimum": 0},
+                "labels": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["weight"],
+        }
+
+        with self.assertRaisesRegex(ValueError, "missing required"):
+            validate_tool_parameters(tool, {})
+        with self.assertRaisesRegex(ValueError, "greater than 0"):
+            validate_tool_parameters(tool, {"weight": 0})
+        with self.assertRaisesRegex(ValueError, "must be number"):
+            validate_tool_parameters(tool, {"weight": True})
+        with self.assertRaisesRegex(ValueError, r"labels\[0\] must be string"):
+            validate_tool_parameters(tool, {"weight": 1, "labels": [3]})
+
+        validate_tool_parameters(tool, {"weight": 1.5, "labels": ["ok"]})
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
 import base64
-import cgi
 import contextvars
 import hashlib
 import hmac
@@ -20,13 +19,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email import policy
+from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, urlencode, unquote, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, quote, urlencode, unquote, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from http.cookies import SimpleCookie
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -55,6 +56,17 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+class NoRedirectHandler(HTTPRedirectHandler):
+    """Expose redirects to callers so each target can be validated first."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def open_url_without_redirect(request: Request, *, timeout: float):
+    return build_opener(NoRedirectHandler()).open(request, timeout=timeout)
 
 ADMIN_SESSION_COOKIE = "docflow_admin_session"
 ADMIN_PASSWORD_ALGORITHM = "pbkdf2_sha256"
@@ -154,6 +166,33 @@ class ActionResult:
     message: str
     waybill_id: int | None = None
     waybill_no: str = ""
+
+
+@dataclass
+class MultipartField:
+    name: str
+    filename: str
+    file: io.BytesIO
+    value: Any
+
+
+class MultipartForm(dict[str, MultipartField | list[MultipartField]]):
+    def add(self, field: MultipartField) -> None:
+        existing = self.get(field.name)
+        if existing is None:
+            self[field.name] = field
+        elif isinstance(existing, list):
+            existing.append(field)
+        else:
+            self[field.name] = [existing, field]
+
+    def getvalue(self, name: str, default: Any = None) -> Any:
+        field = self.get(name)
+        if field is None:
+            return default
+        if isinstance(field, list):
+            return [item.value for item in field]
+        return field.value
 
 
 @dataclass(frozen=True)

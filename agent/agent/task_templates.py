@@ -20,6 +20,8 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
                 "timeout_sec": 600,
                 "params": {
                     "mode": "api",
+                    "sitecode": "7390004",
+                    "sitefbcode": "73901",
                     "site_name": "邵阳大祥站",
                     "site_fb_name": "邵阳操作场",
                     "first_type": "交件到港",

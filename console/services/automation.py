@@ -1631,11 +1631,13 @@ class AutomationServiceMixin:
             headers["Content-Type"] = "application/json; charset=utf-8"
 
         request = Request(url, data=body, headers=headers, method=method.upper())
+        effective_timeout = float(timeout or self.settings.agent_timeout_seconds)
+        if effective_timeout <= 0:
+            effective_timeout = float(self.settings.agent_timeout_seconds)
+        if effective_timeout <= 0:
+            effective_timeout = 30.0
         try:
-            if timeout is None:
-                response_handle = urlopen(request)
-            else:
-                response_handle = urlopen(request, timeout=timeout or self.settings.agent_timeout_seconds)
+            response_handle = urlopen(request, timeout=effective_timeout)
             with response_handle as response:
                 raw = response.read().decode("utf-8")
                 data = json.loads(raw) if raw else {}

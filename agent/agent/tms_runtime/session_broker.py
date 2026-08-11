@@ -57,6 +57,8 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         self._pending_login_state_path = self._state_dir / "pending_login_state.json"
         self._login_profile_path = self._state_dir / "login_profile.json"
         self._lock = threading.RLock()
+        # Console-entered passwords are deliberately process-local.
+        self._volatile_credentials: dict[str, str] = {}
         self._pending: PendingBrowser | None = None
         self._provider_adapter: SessionProviderAdapter = (
             YundaSessionAdapter(self) if self._login_mode.startswith("yunda") else RonghuiSessionAdapter(self)

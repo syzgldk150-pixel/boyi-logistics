@@ -1,13 +1,16 @@
 """Automation account registry and credential facade.
 
-The console uses this module through admin APIs. Passwords remain in Agent
-runtime state files and are never returned by GET-style payloads.
+The console uses this module through admin APIs. Passwords entered through the
+Console remain in process memory and are never written to state files or
+returned by GET-style payloads.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +18,7 @@ from typing import Any
 
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import SAVED_PASSWORD_MASK, get_session_broker
+from shared.redaction import redact_text
 
 
 STATE_DIR = Path(__file__).resolve().parent / "state"
@@ -219,7 +223,29 @@ def _read_json(path: Path, default: Any) -> Any:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        temp_path.chmod(0o600)
+        os.replace(temp_path, path)
+        path.chmod(0o600)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _local_credential_path(account_id: str) -> Path:
@@ -252,6 +278,7 @@ class AccountRecord:
 class AutomationAccountManager:
     def __init__(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self._volatile_credentials: dict[str, dict[str, Any]] = {}
 
     def _load_accounts(self) -> list[dict[str, Any]]:
         raw = _read_json(ACCOUNTS_PATH, [])
@@ -508,19 +535,34 @@ class AutomationAccountManager:
         return get_session_broker(profile)
 
     def _load_local_credentials(self, account_id: str) -> dict[str, Any]:
-        payload = _read_json(_local_credential_path(account_id), {})
+        path = _local_credential_path(account_id)
+        payload = _read_json(path, {})
         if not isinstance(payload, dict):
             return _empty_credentials()
+        if "password" in payload:
+            sanitized = {key: value for key, value in payload.items() if key != "password"}
+            try:
+                _write_json(path, sanitized)
+            except OSError:
+                pass
         result = _empty_credentials()
         result.update(
             {
                 "username": str(payload.get("username") or "").strip(),
-                "password": str(payload.get("password") or "").strip(),
                 "phone": str(payload.get("phone") or "").strip(),
                 "updated_at": str(payload.get("updated_at") or "").strip(),
                 "last_validation_at": str(payload.get("last_validation_at") or "").strip(),
             }
         )
+        volatile = self._volatile_credentials.get(account_id, {})
+        if volatile:
+            result.update(
+                {
+                    "username": str(volatile.get("username") or result["username"]).strip(),
+                    "password": str(volatile.get("password") or "").strip(),
+                    "phone": str(volatile.get("phone") or result["phone"]).strip(),
+                }
+            )
         return result
 
     def private_credentials(self, account_id: str) -> dict[str, Any]:
@@ -582,7 +624,11 @@ class AutomationAccountManager:
             missing.append("手机号")
         if missing:
             raise TMSAuthStateError("AUTH_REQUIRED", "、".join(missing) + "不能为空。")
-        _write_json(_local_credential_path(row["account_id"]), payload)
+        self._volatile_credentials[row["account_id"]] = dict(payload)
+        _write_json(
+            _local_credential_path(row["account_id"]),
+            {key: value for key, value in payload.items() if key != "password"},
+        )
         return self.public_credentials(row["account_id"])
 
     def _public_credentials(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -594,6 +640,7 @@ class AutomationAccountManager:
         row = self._get_account_row(account_id)
         if SYSTEMS[row["system"]].get("session_capable"):
             return self._public_credentials(self._broker(row).clear_saved_credentials())
+        self._volatile_credentials.pop(row["account_id"], None)
         _local_credential_path(row["account_id"]).unlink(missing_ok=True)
         return self.public_credentials(row["account_id"])
 
@@ -650,7 +697,7 @@ class AutomationAccountManager:
                 "status_tone": "error",
                 "authenticated": False,
                 "pending_code": False,
-                "last_error_summary": str(exc),
+                "last_error_summary": redact_text(exc),
                 "authenticated_at": "",
                 "pending_since": "",
                 "expires_at": status.get("expires_at", ""),

@@ -82,6 +82,7 @@ def fetch_dispatch_records(
         data=payload,
         headers=headers,
         allow_redirects=False,
+        timeout=30,
     )
     resp.raise_for_status()
     return resp.json()

@@ -1,6 +1,7 @@
 """工具注册表：从 registry.yaml 加载工具定义，转换为 OpenAI function calling 格式"""
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,79 @@ logger = logging.getLogger("agent")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PROJECT_ROOT / "tools" / "registry.yaml"
 _JSON_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean", "array", "object"})
+
+
+def _matches_schema_type(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (isinstance(value, int) or math.isfinite(value))
+        )
+    return False
+
+
+def validate_parameter_value(schema: dict[str, Any], value: Any, *, path: str = "params") -> None:
+    """Validate the supported runtime subset of the registry JSON schema."""
+
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list) and one_of:
+        for candidate in one_of:
+            try:
+                validate_parameter_value(candidate, value, path=path)
+                return
+            except ValueError:
+                continue
+        raise ValueError(f"{path} does not match any allowed schema")
+
+    expected = schema.get("type")
+    if expected not in _JSON_SCHEMA_TYPES or not _matches_schema_type(value, expected):
+        raise ValueError(f"{path} must be {expected}")
+
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path} must be one of {schema['enum']}")
+
+    if expected in {"integer", "number"}:
+        minimum = schema.get("minimum")
+        exclusive_minimum = schema.get("exclusiveMinimum")
+        if minimum is not None and value < minimum:
+            raise ValueError(f"{path} must be greater than or equal to {minimum}")
+        if exclusive_minimum is not None and value <= exclusive_minimum:
+            raise ValueError(f"{path} must be greater than {exclusive_minimum}")
+
+    if expected == "object":
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        missing = [name for name in required if name not in value]
+        if missing:
+            raise ValueError(f"{path} is missing required properties: {', '.join(missing)}")
+        for name, item in value.items():
+            property_schema = properties.get(name)
+            if isinstance(property_schema, dict):
+                validate_parameter_value(property_schema, item, path=f"{path}.{name}")
+
+    if expected == "array":
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                validate_parameter_value(item_schema, item, path=f"{path}[{index}]")
+
+
+def validate_tool_parameters(tool: dict[str, Any], params: Any) -> None:
+    validate_parameter_value(
+        tool.get("parameters", {"type": "object", "properties": {}}),
+        params,
+    )
 
 
 def _validation_error(index: int, message: str) -> ValueError:
@@ -148,6 +222,12 @@ class ToolRegistry:
     def get_tool(self, name: str) -> dict | None:
         self.reload_if_changed()
         return self._tools.get(name)
+
+    def validate_params(self, name: str, params: Any) -> None:
+        tool = self.get_tool(name)
+        if tool is None:
+            raise ValueError(f"unknown tool: {name}")
+        validate_tool_parameters(tool, params)
 
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())

@@ -30,14 +30,16 @@ _COOKIE_HEADER = re.compile(
     re.IGNORECASE,
 )
 _QUOTED_ASSIGNMENT = re.compile(
-    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token|api[_-]?key|"
-    r"access[_-]?key|private[_-]?key|authorization|authentication(?:[_-]?key)?|cookie)"
+    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token(?:[_-]?value)?|api[_-]?key|"
+    r"access[_-]?token|access[_-]?key|private[_-]?key|authorization|authentication(?:[_-]?key)?|"
+    r"cookie|storage[_-]?state|session[_-]?(?:state|id)|request[_-]?body|raw[_-]?request)"
     r"[\"']?\s*[:=]\s*)(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE,
 )
 _ASSIGNMENT = re.compile(
-    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token|api[_-]?key|"
-    r"access[_-]?key|private[_-]?key|authorization|authentication(?:[_-]?key)?|cookie)"
+    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token(?:[_-]?value)?|api[_-]?key|"
+    r"access[_-]?token|access[_-]?key|private[_-]?key|authorization|authentication(?:[_-]?key)?|"
+    r"cookie|storage[_-]?state|session[_-]?(?:state|id)|request[_-]?body|raw[_-]?request)"
     r"[\"']?\s*[:=]\s*)(?P<value>[^\s,;}\"']+)",
     re.IGNORECASE,
 )

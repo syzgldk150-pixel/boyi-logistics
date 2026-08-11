@@ -49,3 +49,16 @@ def test_authentication_keys_and_full_cookie_headers_are_masked() -> None:
     assert "private-session" not in redacted
     assert "also-private" not in redacted
     assert "safe=visible" in redacted
+
+
+def test_camel_case_tokens_and_raw_state_assignments_are_masked() -> None:
+    text = (
+        "{'tokenValue': 'private-token', 'accessToken': 'private-access', "
+        "'storageState': 'private-state', 'requestBody': 'private-body'}"
+    )
+
+    redacted = redact_text(text)
+
+    for secret in ("private-token", "private-access", "private-state", "private-body"):
+        assert secret not in redacted
+    assert redacted.count(REDACTED) == 4

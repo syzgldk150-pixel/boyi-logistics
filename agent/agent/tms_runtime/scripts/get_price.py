@@ -25,6 +25,7 @@ import datetime as dt
 import importlib.util
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -1154,11 +1155,18 @@ if __name__ == "__main__":
 
 def run_once(params: Dict[str, Any]) -> Any:
     address = _clean_str((params or {}).get("address"))
-    weight = float((params or {}).get("weight", 0))
+    raw_weight = (params or {}).get("weight")
+    if raw_weight in (None, "") or isinstance(raw_weight, bool):
+        raise ValueError("weight is required and must be a positive number")
+    weight = float(raw_weight)
+    if not math.isfinite(weight) or weight <= 0:
+        raise ValueError("weight must be a finite positive number")
     raw_volume = (params or {}).get("volume", None)
     if raw_volume is None or raw_volume == "":
         volume = 0.1
     else:
         volume = float(raw_volume)
+    if isinstance(raw_volume, bool) or not math.isfinite(volume) or volume <= 0:
+        raise ValueError("volume must be a finite positive number")
     config_path = (params or {}).get("config")
     return fetch_prices(address, weight, volume, config_path=config_path)

@@ -46,7 +46,7 @@ class LocalDocFlowApp(
         self.task_queue = DocumentTaskQueue(self.settings.ocr_worker_count, self.service.process_document)
         self.service.attach_task_queue(self.task_queue)
         self.task_queue.start()
-        self.recovered_documents = []  # self.service.recover_pending_documents()  # TEMP: skip DB
+        self.recovered_documents = self.service.recover_pending_documents()
         self.template_env = Environment(
             loader=FileSystemLoader(MODULE_DIR / "templates"),
             autoescape=select_autoescape(["html", "xml"]),

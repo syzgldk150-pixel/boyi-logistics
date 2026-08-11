@@ -40,15 +40,30 @@ class SessionPersistenceMixin:
         raw = self._state_store.read_dict(self._login_profile_path)
         if raw is None:
             return self._empty_credentials()
+        if "password" in raw:
+            # Remove the legacy plaintext field without retaining or logging it.
+            sanitized = {key: value for key, value in raw.items() if key != "password"}
+            try:
+                self._state_store.write_dict(self._login_profile_path, sanitized)
+            except OSError:
+                logger.warning("Failed to sanitize legacy TMS login profile: %s", self._login_profile_path)
         payload = self._empty_credentials()
         payload.update(
             {
                 "username": str(raw.get("username") or "").strip(),
-                "password": str(raw.get("password") or "").strip(),
                 "phone": str(raw.get("phone") or "").strip(),
                 "updated_at": str(raw.get("updated_at") or "").strip(),
             }
         )
+        volatile = getattr(self, "_volatile_credentials", {})
+        if volatile:
+            payload.update(
+                {
+                    "username": str(volatile.get("username") or payload["username"]).strip(),
+                    "password": str(volatile.get("password") or "").strip(),
+                    "phone": str(volatile.get("phone") or payload["phone"]).strip(),
+                }
+            )
         return payload
 
     def _load_env_credentials_locked(self) -> dict[str, str]:
@@ -97,7 +112,11 @@ class SessionPersistenceMixin:
             missing.append("手机号")
         if missing:
             raise TMSAuthStateError("AUTH_REQUIRED", f"{'、'.join(missing)}不能为空。")
-        self._state_store.write_dict(self._login_profile_path, payload)
+        self._volatile_credentials = dict(payload)
+        self._state_store.write_dict(
+            self._login_profile_path,
+            {key: value for key, value in payload.items() if key != "password"},
+        )
         return self._credentials_status_locked()
 
     def get_saved_credentials(self) -> dict[str, Any]:
@@ -110,6 +129,7 @@ class SessionPersistenceMixin:
 
     def clear_saved_credentials(self) -> dict[str, Any]:
         with self._lock:
+            self._volatile_credentials.clear()
             try:
                 self._state_store.remove(self._login_profile_path)
             except Exception:
@@ -121,21 +141,13 @@ class SessionPersistenceMixin:
         login_path = _env_first(self._login_path_envs) or self._login_path_default
         home_path = _env_first(self._home_path_envs) or self._home_path_default
         saved = self._load_saved_credentials_locked()
-        username = (
-            saved.get("username")
-            or _env_first(self._username_envs)
-            or ""
-        ).strip()
-        password = (
-            saved.get("password")
-            or _env_first(self._password_envs)
-            or ""
-        ).strip()
-        phone = (
-            saved.get("phone")
-            or _env_first(self._phone_envs)
-            or ""
-        ).strip()
+        env = self._load_env_credentials_locked()
+        # Treat each credential source as a unit; never pair a saved username
+        # with an unrelated environment password.
+        credentials = saved if self._has_complete_credentials(saved) else env
+        username = str(credentials.get("username") or "").strip()
+        password = str(credentials.get("password") or "").strip()
+        phone = str(credentials.get("phone") or "").strip()
         return LoginConfig(
             base_origin=base_origin,
             login_url=_join_origin_path(base_origin, login_path),

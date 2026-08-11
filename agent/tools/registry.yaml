@@ -50,7 +50,7 @@ tools:
     heavy: false
 
   - name: get_price
-    description: "查询物流报价。默认走 Agent /tms/get_price；兼容旧版发站/到站/重量查询"
+    description: "查询物流报价。默认走 Agent /internal/v1/tms/get_price；兼容发站/到站/重量查询"
     parameters:
       type: object
       properties:
@@ -65,9 +65,11 @@ tools:
           description: "兼容旧版：到站名称"
         weight:
           type: number
+          exclusiveMinimum: 0
           description: "重量(kg)"
         volume:
           type: number
+          exclusiveMinimum: 0
           description: "可选：体积(m³)，默认 0.1"
       required: [weight]
     executor: tools/price_tool.py

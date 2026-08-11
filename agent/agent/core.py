@@ -13,7 +13,7 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
 )
 from agent.llm_client import LLMClient
-from agent.tool_registry import ToolRegistry
+from agent.tool_registry import ToolRegistry, validate_tool_parameters
 from agent.tool_executor import ToolExecutor
 from agent.memory import Memory
 from shared.redaction import redact_sensitive, redact_text
@@ -70,6 +70,17 @@ class AgentCore:
                 logger.info("加载 prompt: %s", filename)
 
     async def _execute_tool_config(self, tool_name: str, tool_config: dict, params: dict) -> dict:
+        try:
+            validate_tool_parameters(tool_config, params)
+        except ValueError as exc:
+            safe_error = redact_text(exc)
+            logger.warning("tool=%s | invalid_params=%s", tool_name, safe_error)
+            return {
+                "success": False,
+                "error_code": "INVALID_TOOL_PARAMS",
+                "error": safe_error,
+                "duration_s": 0,
+            }
         direct_runner = self._direct_tool_runners.get(tool_name)
         if direct_runner is not None:
             start = time.time()

@@ -1234,9 +1234,36 @@ class WaybillsReceiptsServiceMixin:
         suffix = Path(parsed.path or "").suffix.lower()
         if suffix not in RECEIPT_IMAGE_SUFFIXES:
             return None
-        request = Request(source_url, headers={"Accept": "image/*,*/*", "User-Agent": "Mozilla/5.0"})
+        current_url = source_url
+        response = None
         try:
-            with urlopen(request, timeout=180) as response:
+            for _redirect_count in range(4):
+                current = urlparse(current_url)
+                current_host = str(current.hostname or "").strip().lower()
+                if current.scheme.lower() != "https" or current_host not in RONGHUI_DIRECT_ATTACHMENT_HOSTS:
+                    return None
+                request = Request(
+                    current_url,
+                    headers={"Accept": "image/*,*/*", "User-Agent": "Mozilla/5.0"},
+                )
+                try:
+                    response = open_url_without_redirect(request, timeout=180)
+                    break
+                except HTTPError as exc:
+                    if exc.code not in {301, 302, 303, 307, 308}:
+                        return None
+                    location = str(exc.headers.get("Location") or "").strip()
+                    if not location:
+                        return None
+                    current_url = urljoin(current_url, location)
+            if response is None:
+                return None
+            with response:
+                final_url = str(getattr(response, "geturl", lambda: current_url)() or current_url)
+                final = urlparse(final_url)
+                final_host = str(final.hostname or "").strip().lower()
+                if final.scheme.lower() != "https" or final_host not in RONGHUI_DIRECT_ATTACHMENT_HOSTS:
+                    return None
                 status_code = int(getattr(response, "status", 200) or 200)
                 if status_code < 200 or status_code >= 300:
                     return None
@@ -1259,7 +1286,7 @@ class WaybillsReceiptsServiceMixin:
         if not self._looks_like_receipt_image(payload):
             return None
         if not content_type:
-            content_type = mimetypes.guess_type(parsed.path or "")[0] or "application/octet-stream"
+            content_type = mimetypes.guess_type(urlparse(current_url).path or "")[0] or "application/octet-stream"
         return payload, content_type
 
     def _fetch_receipt_attachment_source(self, attachment: dict[str, Any], source_url: str) -> tuple[bytes, str] | None:

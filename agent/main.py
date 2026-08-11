@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -695,7 +695,7 @@ async def internal_chat(req: ChatRequest):
 
 class ToolRequest(BaseModel):
     tool_name: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
 
 
 class CancelToolRequest(BaseModel):

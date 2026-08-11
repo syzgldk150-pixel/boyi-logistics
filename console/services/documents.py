@@ -840,15 +840,52 @@ class DocumentServiceMixin:
         )
 
     def _parse_multipart_form(self, handler: BaseHTTPRequestHandler):
-        return cgi.FieldStorage(
-            fp=handler.rfile,
-            headers=handler.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": handler.headers.get("Content-Type", ""),
-                "CONTENT_LENGTH": handler.headers.get("Content-Length", "0"),
-            },
+        content_type = str(handler.headers.get("Content-Type", "") or "").strip()
+        if not content_type.lower().startswith("multipart/form-data"):
+            raise ValueError("Content-Type must be multipart/form-data")
+        try:
+            content_length = int(handler.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid multipart Content-Length") from exc
+        if content_length < 0:
+            raise ValueError("Invalid multipart Content-Length")
+
+        body = handler.rfile.read(content_length)
+        if len(body) != content_length:
+            raise ValueError("Incomplete multipart request body")
+        message = BytesParser(policy=policy.default).parsebytes(
+            (
+                f"Content-Type: {content_type}\r\n"
+                "MIME-Version: 1.0\r\n\r\n"
+            ).encode("utf-8")
+            + body
         )
+        if not message.is_multipart():
+            raise ValueError("Invalid multipart request body")
+
+        form = MultipartForm()
+        for part in message.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+            name = str(part.get_param("name", header="content-disposition") or "").strip()
+            if not name:
+                continue
+            filename = str(part.get_filename() or "")
+            payload = part.get_payload(decode=True) or b""
+            if filename:
+                value: Any = payload
+            else:
+                charset = part.get_content_charset() or "utf-8"
+                value = payload.decode(charset, errors="replace")
+            form.add(
+                MultipartField(
+                    name=name,
+                    filename=filename,
+                    file=io.BytesIO(payload),
+                    value=value,
+                )
+            )
+        return form
 
     def _parse_urlencoded_form(self, handler: BaseHTTPRequestHandler) -> dict[str, str]:
         content_length = int(handler.headers.get("Content-Length", "0"))

@@ -84,7 +84,7 @@ cd /home/deng/projects/boyi-logistics/console
 
 - 然后默认打开首页大盘 `http://127.0.0.1:8765/`；需要验证 TMS 登录态时再进入 `/automations`
 - 页面顶部支持保存默认账号、密码、手机号；验证码发送固定使用这套已保存配置
-- 凭据运行态保存在 `agent/agent/tms_runtime/state/login_profile.json`，不进入版本控制
+- 账号、手机号等非敏感登录配置保存在 `agent/agent/tms_runtime/state/login_profile.json`；密码仅来自环境变量或当前 Agent 进程内存，不写入磁盘和版本控制
 - 本地未验证通过前，不执行 ECS 发版
 
 ## 飞书机器人接入

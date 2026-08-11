@@ -101,6 +101,7 @@ updated: 2026-08-09
 - Phase 7 运行期 MySQL 当前承载共享配置表 `workflow_resources`、`scheduled_tasks`、到货统计所需的快照表 / 视图，以及给控制台 `/waybills` 运单查询使用的 `waybills` 同步记录。
 - ECS 上的控制台已独立部署为 `console.service`，仅监听 `127.0.0.1:8765`；公网入口固定为 `https://boyi.homes`，由 Nginx 终止 TLS 并反向代理，HTTP 和 `www.boyi.homes` 统一跳转到根域名 HTTPS。
 - 2026-05-18：`/automation-accounts` 账号编辑弹层支持点击页面其他区域自动收起；已保存密码仅在页面显示为掩码，保存时若未输入新密码会保留 Agent 侧原密码，`凭据已配置` 状态使用成功色展示。
+- 2026-08-11：后台输入的密码改为仅保存在当前 Agent 进程内存，不再写入 `login_profile.json`；服务重启后需重新输入密码或由环境变量提供。
 - 2026-05-20：融辉 TMS 登录态默认切换为图片验证码；顶部 `/automations` 和业务账号管理页会展示 Agent 返回的验证码图片，融辉/大祥报价登录配置不再要求手机号，旧短信验证码页仍兼容。
 - 2026-05-31：自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站改为 TMS融辉账号用途，其中 `price_default` 继续使用独立 `price` 登录态，避免影响普通 TMS 登录态。
 

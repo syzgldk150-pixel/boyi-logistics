@@ -59,7 +59,7 @@
   - 默认走 `http://127.0.0.1:9000/internal/v1/tms/*` 兼容层
   - 所有本机 Agent HTTP 调用必须使用 `internal_http.internal_api_headers()` 发送 `X-Agent-Internal-Token`
   - 当前线上权威执行源已切换为 `agent/agent/tms_runtime/`
-  - 图片/短信验证码共享登录态由 `agent` 的 `/internal/v1/admin/internal/v1/tms/session/*` 管理
+- 图片/短信验证码共享登录态由 `agent` 的 `/internal/v1/admin/tms/session/*` 管理
 
 ## 相关文档
 

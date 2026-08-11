@@ -40,10 +40,6 @@ MENU_URL = f"{ROOT_URL}/menuTreeExtend/loadMenu"
 TARGET_MENU_TEXT = "网点到离港记录"
 ADD_OPERATION_KEY = "TAB_REACH_OR_LEAVE_PORT_DETNEW_ADD"
 LIST_PAGE_MARKERS = ("SITE_FB_NAME", "REACH_OR_LEAVE_PORT_TYPE", "REALITY_DATE")
-DEFAULT_SITE_CODE = "7390004"
-DEFAULT_SITE_FB_CODE = "73901"
-DEFAULT_SITE_NAME = "邵阳大祥站"
-DEFAULT_SITE_FB_NAME = "邵阳操作场"
 DEFAULT_FIRST_TYPE = "交件到港"
 DEFAULT_SECOND_TYPE = "接件离港"
 
@@ -267,10 +263,10 @@ def submit_clockin(records: List[Dict[str, Any]], session: Any, page_context: Di
 
 
 def submit_dual_clockin(
-    sitecode: str = DEFAULT_SITE_CODE,
-    sitefbcode: str = DEFAULT_SITE_FB_CODE,
-    sitename: str = DEFAULT_SITE_NAME,
-    sitefbname: str = DEFAULT_SITE_FB_NAME,
+    sitecode: str,
+    sitefbcode: str,
+    sitename: str,
+    sitefbname: str,
     createsite: str = "",
     createsitecode: str = "",
     createman: str = "",
@@ -402,20 +398,15 @@ def _has_explicit_param(params: Dict[str, Any], *names: str) -> bool:
 
 
 def _validate_clockin_params(params: Dict[str, Any]) -> None:
-    site_name = str(_get_param(params, "sitename", "site_name", default=DEFAULT_SITE_NAME) or "").strip()
-    site_fb_name = str(_get_param(params, "sitefbname", "site_fb_name", default=DEFAULT_SITE_FB_NAME) or "").strip()
-
-    if site_name and site_name != DEFAULT_SITE_NAME and not _has_explicit_param(params, "sitecode"):
-        raise ValueError(
-            f"site_name={site_name} requires explicit sitecode; "
-            f"the default sitecode {DEFAULT_SITE_CODE} only matches {DEFAULT_SITE_NAME}"
-        )
-
-    if site_fb_name and site_fb_name != DEFAULT_SITE_FB_NAME and not _has_explicit_param(params, "sitefbcode"):
-        raise ValueError(
-            f"site_fb_name={site_fb_name} requires explicit sitefbcode; "
-            f"the default sitefbcode {DEFAULT_SITE_FB_CODE} only matches {DEFAULT_SITE_FB_NAME}"
-        )
+    required = {
+        "sitecode": ("sitecode",),
+        "sitefbcode": ("sitefbcode",),
+        "site_name": ("sitename", "site_name"),
+        "site_fb_name": ("sitefbname", "site_fb_name"),
+    }
+    missing = [label for label, names in required.items() if not _has_explicit_param(params, *names)]
+    if missing:
+        raise ValueError(f"clock-in requires explicit parameters: {', '.join(missing)}")
 
 
 def _repair_text(value: Any) -> str:
@@ -449,10 +440,10 @@ def run_api(params: Dict[str, Any] | None = None) -> Dict[str, Any]:
     params = params or {}
     _validate_clockin_params(params)
     return submit_dual_clockin(
-        sitecode=str(_get_param(params, "sitecode", default=DEFAULT_SITE_CODE)),
-        sitefbcode=str(_get_param(params, "sitefbcode", default=DEFAULT_SITE_FB_CODE)),
-        sitename=str(_get_param(params, "sitename", "site_name", default=DEFAULT_SITE_NAME)),
-        sitefbname=str(_get_param(params, "sitefbname", "site_fb_name", default=DEFAULT_SITE_FB_NAME)),
+        sitecode=str(_get_param(params, "sitecode", default="")).strip(),
+        sitefbcode=str(_get_param(params, "sitefbcode", default="")).strip(),
+        sitename=str(_get_param(params, "sitename", "site_name", default="")).strip(),
+        sitefbname=str(_get_param(params, "sitefbname", "site_fb_name", default="")).strip(),
         createsite=str(_get_param(params, "createsite", "create_site", default="")),
         createsitecode=str(_get_param(params, "createsitecode", "create_site_code", default="")),
         createman=str(_get_param(params, "createman", "create_man", default="")),
@@ -464,9 +455,7 @@ def run_api(params: Dict[str, Any] | None = None) -> Dict[str, Any]:
 
 
 def run_browser(params: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    params = params or {}
-    logger.warning("clock_in_dual browser mode is not implemented; falling back to api mode")
-    return run_api(params)
+    raise NotImplementedError("clock_in_dual browser mode is not implemented")
 
 
 def run_once(params: Dict[str, Any] | None = None) -> Dict[str, Any]:

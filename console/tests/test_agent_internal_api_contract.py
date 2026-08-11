@@ -45,10 +45,19 @@ class AgentInternalApiContractTests(unittest.TestCase):
 
     def test_success_envelope_is_unwrapped_once(self):
         envelope = {"ok": True, "data": {"rows": [1]}, "error": None}
-        with patch("console.services.automation.urlopen", return_value=_Response(envelope)):
+        with patch("console.services.automation.urlopen", return_value=_Response(envelope)) as mocked_open:
             result = self._app()._agent_request("GET", "/internal/v1/tools")
 
         self.assertEqual({"ok": True, "status": 200, "data": {"rows": [1]}}, result)
+        self.assertEqual(10, mocked_open.call_args.kwargs["timeout"])
+
+    def test_explicit_timeout_is_forwarded_and_zero_uses_default(self):
+        envelope = {"ok": True, "data": {}, "error": None}
+        with patch("console.services.automation.urlopen", return_value=_Response(envelope)) as mocked_open:
+            self._app()._agent_request("GET", "/internal/v1/tools", timeout=7)
+            self.assertEqual(7, mocked_open.call_args.kwargs["timeout"])
+            self._app()._agent_request("GET", "/internal/v1/tools", timeout=0)
+            self.assertEqual(10, mocked_open.call_args.kwargs["timeout"])
 
     def test_malformed_versioned_response_fails_explicitly(self):
         with patch("console.services.automation.urlopen", return_value=_Response({"rows": []})):

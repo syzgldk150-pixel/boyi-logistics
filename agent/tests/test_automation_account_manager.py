@@ -21,7 +21,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
             item.stop()
         self.tempdir.cleanup()
 
-    def test_local_credentials_preserve_password_and_show_success_status(self):
+    def test_local_credentials_keep_password_in_memory_only(self):
         result = self.manager.save_credentials(
             "r7_default",
             username="73901001",
@@ -37,12 +37,21 @@ class AutomationAccountManagerTests(unittest.TestCase):
         )
         private = self.manager.private_credentials("r7_default")
         status = self.manager.describe_status("r7_default", validate=False)
+        persisted = json.loads(
+            account_manager_module._local_credential_path("r7_default").read_text(encoding="utf-8")
+        )
 
         self.assertTrue(masked_result["has_saved_credentials"])
         self.assertEqual(masked_result["password"], "")
         self.assertEqual(private["password"], "r7-secret-pass")
         self.assertEqual(status["status_tone"], "success")
         self.assertEqual(status["label"], "凭据已配置")
+        self.assertNotIn("password", persisted)
+        self.assertNotIn("r7-secret-pass", json.dumps(persisted, ensure_ascii=False))
+
+        restarted = account_manager_module.AutomationAccountManager()
+        self.assertEqual(restarted.private_credentials("r7_default")["password"], "")
+        self.assertFalse(restarted.public_credentials("r7_default")["has_saved_credentials"])
 
     def test_default_ronghui_account_status_maps_to_default_profile(self):
         calls: list[tuple[str, Any]] = []

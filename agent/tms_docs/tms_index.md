@@ -5,7 +5,7 @@
 ## 1. 文档说明
 
 - 本页只保留全局架构、菜单层级、模块文档入口和特殊说明。
-- 详细的 DOM 结构、接口链路、参数映射、保存逻辑已经拆到 `http_service/tms_docs/` 下的模块文档。
+- 详细的 DOM 结构、接口链路、参数映射、保存逻辑已经拆到本目录的模块文档。
 
 ## 2. 全局架构
 
@@ -20,13 +20,13 @@
 
 ## 3. 模块文档入口
 
-- [运单管理](./tms_docs/waybill_management.md)：叶子页 `14` 个，分组节点 `1` 个
-- [扫描管理](./tms_docs/scan_management.md)：叶子页 `19` 个，分组节点 `1` 个
-- [签收管理](./tms_docs/sign_management.md)：叶子页 `3` 个，分组节点 `0` 个
-- [预付款管理](./tms_docs/prepayment_management.md)：叶子页 `11` 个，分组节点 `0` 个
-- [客服管理](./tms_docs/customer_service_management.md)：叶子页 `11` 个，分组节点 `2` 个
-- [投诉管理](./tms_docs/complaint_management.md)：叶子页 `3` 个，分组节点 `0` 个
-- [回单管理](./tms_docs/receipt_management.md)：叶子页 `10` 个，分组节点 `0` 个
+- [运单管理](./waybill_management.md)：叶子页 `14` 个，分组节点 `1` 个
+- [扫描管理](./scan_management.md)：叶子页 `19` 个，分组节点 `1` 个
+- [签收管理](./sign_management.md)：叶子页 `3` 个，分组节点 `0` 个
+- [预付款管理](./prepayment_management.md)：叶子页 `11` 个，分组节点 `0` 个
+- [客服管理](./customer_service_management.md)：叶子页 `11` 个，分组节点 `2` 个
+- [投诉管理](./complaint_management.md)：叶子页 `3` 个，分组节点 `0` 个
+- [回单管理](./receipt_management.md)：叶子页 `10` 个，分组节点 `0` 个
 
 ## 4. 菜单层级
 

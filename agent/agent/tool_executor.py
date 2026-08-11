@@ -22,6 +22,10 @@ LOCK_FILE = os.path.join(PROJECT_ROOT, "logs", ".heavy_task.lock")
 CANCEL_MESSAGE = "任务已取消"
 HEAVY_LOCK_RETRY_SECONDS = 0.5
 DEFAULT_HEAVY_QUEUE_TIMEOUT = 900.0
+DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_LIVE_OUTPUT_LINES = 2_000
+DEFAULT_MAX_LIVE_LINE_CHARS = 4_000
+OUTPUT_TRUNCATED_LINE = "[control] 输出过多，后续实时日志已截断。"
 
 
 def _resolve_python() -> str:
@@ -106,7 +110,12 @@ class ToolExecutor:
             return {"ok": False, "message": "任务已结束，无需取消。", "code": "NOT_RUNNING"}
 
         entry["cancel_requested"] = True
-        entry["lines"].append("[control] 已请求取消执行，正在停止子进程…")
+        lines = entry["lines"]
+        max_lines = max(1, int(entry.get("max_live_lines", DEFAULT_MAX_LIVE_OUTPUT_LINES)))
+        if len(lines) >= max_lines:
+            lines[-1] = "[control] 已请求取消执行，正在停止子进程…"
+        else:
+            lines.append("[control] 已请求取消执行，正在停止子进程…")
         await self._terminate_process(proc, force=False)
         asyncio.create_task(self._ensure_process_stopped(proc))
         return {"ok": True, "message": "已发送取消请求，正在停止脚本。", "started_at": entry_started_at}
@@ -200,6 +209,9 @@ class ToolExecutor:
         timeout = tool_config.get("timeout", 300)
         heavy = tool_config.get("heavy", False)
         queue_timeout = float(tool_config.get("queue_timeout", DEFAULT_HEAVY_QUEUE_TIMEOUT))
+        max_output_bytes = max(1, int(tool_config.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)))
+        max_live_lines = max(1, int(tool_config.get("max_live_lines", DEFAULT_MAX_LIVE_OUTPUT_LINES)))
+        max_live_line_chars = max(32, int(tool_config.get("max_live_line_chars", DEFAULT_MAX_LIVE_LINE_CHARS)))
 
         if not os.path.exists(executor):
             return {"success": False, "error": f"执行脚本不存在: {executor}"}
@@ -232,6 +244,7 @@ class ToolExecutor:
                 "started_at": started_at,
                 "cancel_requested": False,
                 "proc": None,
+                "max_live_lines": max_live_lines,
             }
             entry = self._running_outputs[name]
             buf = entry["lines"]
@@ -259,16 +272,25 @@ class ToolExecutor:
 
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
+            capture_state = {"remaining": max_output_bytes, "truncated": False}
 
             def append_output_line(text: str, *, is_stderr: bool) -> None:
                 text = redact_text(text)
                 if is_stderr:
                     if text.startswith("[progress] "):
-                        buf.append(text[len("[progress] "):])
+                        rendered = text[len("[progress] "):]
                     else:
-                        buf.append("[stderr] " + text)
-                    return
-                buf.append(text)
+                        rendered = "[stderr] " + text
+                else:
+                    rendered = text
+                if len(rendered) > max_live_line_chars:
+                    suffix = "…[line clipped]"
+                    rendered = rendered[: max_live_line_chars - len(suffix)] + suffix
+                if len(buf) < max_live_lines:
+                    buf.append(rendered)
+                elif not entry.get("live_output_truncated"):
+                    entry["live_output_truncated"] = True
+                    buf[-1] = OUTPUT_TRUNCATED_LINE
 
             async def read_stream(reader, chunk_store: list[bytes], *, is_stderr: bool) -> None:
                 pending = ""
@@ -276,7 +298,13 @@ class ToolExecutor:
                     chunk = await reader.read(4096)
                     if not chunk:
                         break
-                    chunk_store.append(chunk)
+                    remaining = int(capture_state["remaining"])
+                    if remaining > 0:
+                        stored = chunk[:remaining]
+                        chunk_store.append(stored)
+                        capture_state["remaining"] = remaining - len(stored)
+                    if len(chunk) > remaining:
+                        capture_state["truncated"] = True
                     pending += chunk.decode("utf-8", errors="replace")
                     while True:
                         newline_index = pending.find("\n")
@@ -320,7 +348,10 @@ class ToolExecutor:
 
             if exit_code != 0:
                 if cancel_requested:
-                    entry["lines"].append("[control] 任务已取消。")
+                    if len(entry["lines"]) >= max_live_lines:
+                        entry["lines"][-1] = "[control] 任务已取消。"
+                    else:
+                        entry["lines"].append("[control] 任务已取消。")
                     logger.info("tool=%s | cancelled=true | duration=%ss", name, duration)
                     self._last_run = {
                         "tool": name,
@@ -336,6 +367,26 @@ class ToolExecutor:
                 if exit_code == 137:
                     return {"success": False, "error": "工具被 OOM Kill，内存不足"}
                 return {"success": False, "error": f"工具执行失败(exit {exit_code}): {err_msg}"}
+
+            if capture_state["truncated"]:
+                logger.error(
+                    "tool=%s | error=output_limit(%d bytes) | duration=%ss",
+                    name,
+                    max_output_bytes,
+                    duration,
+                )
+                self._last_run = {
+                    "tool": name,
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "success": False,
+                    "duration_s": duration,
+                }
+                return {
+                    "success": False,
+                    "error_code": "TOOL_OUTPUT_LIMIT_EXCEEDED",
+                    "error": f"工具输出超过上限（{max_output_bytes} bytes）",
+                    "duration_s": duration,
+                }
 
             raw_output = stdout.decode("utf-8", errors="replace").strip()
             try:
