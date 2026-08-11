@@ -8,6 +8,8 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
+
 try:
     from agent.tms_runtime.errors import TMSAuthStateError
 except Exception:  # pragma: no cover - allows isolated script tests without FastAPI deps.
@@ -24,7 +26,7 @@ AUDIT_STATUS_BY_RESULT = {
 }
 RONGHUI_ORIGIN = "https://tms.ronghuiwl.com"
 RONGHUI_SAVE_TABLES_URL = f"{RONGHUI_ORIGIN}/dataOperation/saveTables"
-RONGHUI_SESSION_PROFILE = "price"
+RONGHUI_SESSION_PROFILE = PRICE_SESSION_PROFILE
 RONGHUI_AUDIT_MENU_BY_DIRECTION = {
     "send": ("2910", "寄方回单跟踪"),
     "receive": ("2911", "派方回单处理"),

@@ -3,6 +3,15 @@
 from _tms_runtime_test_support import *  # noqa: F403
 
 
+def _resolved_r7_test_params(params, **_kwargs):
+    resolved = dict(params or {})
+    resolved.setdefault("account_id", "r7_default")
+    resolved.setdefault("session_profile", "r7_default")
+    resolved.setdefault("username", "synthetic-r7-user")
+    resolved.setdefault("password", "synthetic-r7-password")
+    return resolved
+
+
 class AgentExecutionToolTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(
@@ -340,7 +349,7 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual("agent_tms_combined", result["data"]["mode"])
 
-    def test_r7_arrival_checkin_tool_uses_r7_script_without_secret_params(self):
+    def test_r7_arrival_checkin_tool_passes_managed_credentials_only_to_script_runtime(self):
         captured: dict[str, Any] = {}
 
         def _fake_run_once(params):
@@ -354,6 +363,10 @@ class AgentExecutionToolTests(unittest.TestCase):
             }
 
         with (
+            patch(
+                "tools.r7_arrival_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
             patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=0),
             patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
@@ -377,8 +390,12 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertTrue(captured["headless"])
         self.assertTrue(captured["do_arrive_wait_unload"])
         self.assertNotIn("daily_success_limit", captured)
-        self.assertNotIn("username", captured)
-        self.assertNotIn("password", captured)
+        self.assertEqual("should-not-be-stored", captured["username"])
+        self.assertEqual("should-not-be-stored", captured["password"])
+        self.assertEqual(
+            "***",
+            r7_arrival_checkin_tool._sanitize_for_log(captured)["password"],
+        )
         self.assertNotIn("timeout_sec", captured)
         self.assertNotIn("_scheduled_task", captured)
         self.assertEqual("success", insert_log.call_args.kwargs["status"])
@@ -393,6 +410,10 @@ class AgentExecutionToolTests(unittest.TestCase):
             return {"ok": True, "stage": "checkbox_clicked", "message": "checkbox clicked"}
 
         with (
+            patch(
+                "tools.r7_arrival_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
             patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=0),
             patch("tools.r7_arrival_checkin_tool._insert_log"),
@@ -408,6 +429,10 @@ class AgentExecutionToolTests(unittest.TestCase):
 
     def test_r7_arrival_checkin_tool_skips_when_daily_limit_reached(self):
         with (
+            patch(
+                "tools.r7_arrival_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
             patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=1),
             patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
@@ -426,6 +451,10 @@ class AgentExecutionToolTests(unittest.TestCase):
 
     def test_r7_arrival_checkin_tool_marks_script_not_ok_as_error(self):
         with (
+            patch(
+                "tools.r7_arrival_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
             patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=0),
             patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
@@ -441,7 +470,7 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertIn("未找到满足条件的行", result["error"])
         self.assertEqual("failure", insert_log.call_args.kwargs["status"])
 
-    def test_r7_departure_checkin_tool_uses_script_without_secret_params(self):
+    def test_r7_departure_checkin_tool_passes_managed_credentials_only_to_script_runtime(self):
         captured: dict[str, Any] = {}
 
         def _fake_run_once(params):
@@ -461,6 +490,10 @@ class AgentExecutionToolTests(unittest.TestCase):
             }
 
         with (
+            patch(
+                "tools.r7_departure_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_departure_checkin_tool._prepare_log_storage"),
             patch("tools.r7_departure_checkin_tool._count_successes_today", return_value=0),
             patch("tools.r7_departure_checkin_tool._insert_log") as insert_log,
@@ -489,8 +522,12 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertEqual("湘AK6980,湘B12345", captured["plate_numbers"])
         self.assertTrue(captured["headless"])
         self.assertNotIn("daily_success_limit", captured)
-        self.assertNotIn("username", captured)
-        self.assertNotIn("password", captured)
+        self.assertEqual("should-not-be-stored", captured["username"])
+        self.assertEqual("should-not-be-stored", captured["password"])
+        self.assertEqual(
+            "***",
+            r7_departure_checkin_tool._sanitize_for_log(captured)["password"],
+        )
         self.assertNotIn("timeout_sec", captured)
         self.assertNotIn("_scheduled_task", captured)
         self.assertEqual("success", insert_log.call_args.kwargs["status"])
@@ -499,6 +536,10 @@ class AgentExecutionToolTests(unittest.TestCase):
 
     def test_r7_departure_checkin_tool_skips_when_daily_limit_reached(self):
         with (
+            patch(
+                "tools.r7_departure_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_departure_checkin_tool._prepare_log_storage"),
             patch("tools.r7_departure_checkin_tool._count_successes_today", return_value=1),
             patch("tools.r7_departure_checkin_tool._insert_log") as insert_log,
@@ -515,6 +556,10 @@ class AgentExecutionToolTests(unittest.TestCase):
 
     def test_r7_departure_checkin_tool_marks_script_not_ok_as_error(self):
         with (
+            patch(
+                "tools.r7_departure_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
             patch("tools.r7_departure_checkin_tool._prepare_log_storage"),
             patch("tools.r7_departure_checkin_tool._count_successes_today", return_value=0),
             patch("tools.r7_departure_checkin_tool._insert_log") as insert_log,

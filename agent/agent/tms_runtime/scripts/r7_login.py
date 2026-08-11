@@ -130,7 +130,7 @@ def _inject_http_sso_state(page: Any, *, token: str, session: Any) -> None:
 
 
 def _login_with_http_sso(page: Any, auth: TMSBrowserAuth, *, username: str, password: str) -> None:
-    sso_auth = R7SSOAuth()
+    sso_auth = R7SSOAuth(state_path=getattr(auth, "sso_state_path", None))
     session = sso_auth.login_and_get_session(
         username=username,
         password=password,
@@ -148,21 +148,25 @@ def _login_with_http_sso(page: Any, auth: TMSBrowserAuth, *, username: str, pass
         raise RuntimeError(f"R7 HTTP SSO state was injected but browser is still on login page. url={page.url}")
 
 
-def build_auth(*, max_attempts: int = 6) -> TMSBrowserAuth:
+def build_auth(*, max_attempts: int = 3, account_id: str = "r7_default") -> TMSBrowserAuth:
     """
     创建 R7 SSO 的浏览器登录器。
     """
 
-    return TMSBrowserAuth(
+    auth = TMSBrowserAuth(
         base_url="https://sso.ronghuiwl.com",
         login_path="/sso/#/login?redirect=https://r7.ronghuiwl.com/gateway/sso/auth/login&back=https://r7.ronghuiwl.com/",
         home_path="/",
         selectors=DEFAULT_SELECTORS,
-        max_attempts=max_attempts,
+        max_attempts=min(max(1, int(max_attempts)), 3),
         home_url=HOME_URL,
         login_url=LOGIN_URL,
         use_shared_session=False,
     )
+    from agent.tms_runtime.sso_session_persistence import default_sso_state_path
+
+    auth.sso_state_path = default_sso_state_path(account_id or "r7_default")
+    return auth
 
 
 def ensure_logged_in(page: Any, auth: TMSBrowserAuth, *, username: str, password: str) -> None:
@@ -193,7 +197,7 @@ def login(
     *,
     username: str = DEFAULT_USERNAME,
     password: str = DEFAULT_PASSWORD,
-    max_attempts: int = 6,
+    max_attempts: int = 3,
 ) -> TMSBrowserAuth:
     """
     快捷方法：创建 auth 并登录，返回 auth。

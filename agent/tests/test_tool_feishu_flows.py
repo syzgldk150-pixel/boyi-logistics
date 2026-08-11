@@ -224,16 +224,17 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("四川省泸州市泸县241乡道东南侧，800，5", "user-1", "chat-1"))
 
         self.assertEqual("get_price", calls["execute_tool"][0])
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual("price_default", calls["execute_tool"][1]["account_id"])
+        self.assertEqual([("/admin/accounts/price_default/login", None)], admin_calls)
         self.assertEqual(1, len(pending_calls))
         self.assertEqual("chat-1", pending_calls[0][0])
         self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
-        self.assertEqual("price", pending_calls[0][1]["auth_session"])
+        self.assertEqual("account:price_default", pending_calls[0][1]["auth_session"])
         self.assertEqual("get_price", pending_calls[0][1]["resume_tool"])
         self.assertIn("验证码已发送", replies[-1])
         self.assertNotIn("报价失败", replies[-1])
 
-    def test_feishu_price_auth_required_sends_code_without_confirmation(self):
+    def test_feishu_price_auth_required_respects_account_login_confirmation(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []
         admin_calls: list[tuple[str, dict[str, Any] | None]] = []
@@ -272,14 +273,13 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("四川省泸州市泸县241乡道东南侧，800，5", "user-1", "chat-1"))
 
         self.assertEqual("get_price", calls["execute_tool"][0])
-        self.assertEqual([("/admin/tms/price-session/send-code", None)], admin_calls)
+        self.assertEqual("price_default", calls["execute_tool"][1]["account_id"])
+        self.assertEqual([], admin_calls)
         self.assertEqual(1, len(pending_calls))
-        self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
-        self.assertEqual("price", pending_calls[0][1]["auth_session"])
+        self.assertEqual("confirm_login_for_resume", pending_calls[0][1]["type"])
+        self.assertEqual("account:price_default", pending_calls[0][1]["auth_session"])
         self.assertEqual("get_price", pending_calls[0][1]["resume_tool"])
-        self.assertIn("正在自动识别图片验证码并登录", replies[-2])
-        self.assertIn("验证码已发送", replies[-1])
-        self.assertNotIn("是否现在发送", "\n".join(replies))
+        self.assertIn("是否现在发送", replies[-1])
 
     def test_feishu_deferred_tool_auth_pending_waits_for_sms_code(self):
         calls: dict[str, Any] = {}
