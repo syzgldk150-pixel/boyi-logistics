@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 
 {% block title %}单号查询 | {{ app_title }}{% endblock %}
-{% block breadcrumb %}单号查询{% endblock %}
-{% block subtitle %}运单 / 单号查询{% endblock %}
+{% block breadcrumb %}物流跟踪{% endblock %}
+{% block subtitle %}按运单号查询运输轨迹{% endblock %}
 
 {% block content %}
 <style>
@@ -26,6 +26,7 @@
   .tracking-input-row { display: flex; gap: 12px; align-items: center; max-width: 760px; margin: 0 auto; }
   .tracking-input-wrap {
     flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -59,7 +60,7 @@
     flex-shrink: 0;
     transition: opacity var(--fast);
   }
-  .tracking-type-badge--rh { background: #fef2f2; color: var(--accent); border: 1px solid #fecaca; }
+  .tracking-type-badge--rh { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
   .tracking-type-badge--yd { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
   .tracking-type-badge--zx { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 
@@ -558,7 +559,7 @@
     z-index: 1;
     transition: border-color var(--fast), background var(--fast), box-shadow var(--fast);
   }
-  .timeline-node:first-child .timeline-dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12); }
+  .timeline-node:first-child .timeline-dot { border-color: var(--focus-strong); background: var(--focus-strong); box-shadow: 0 0 0 4px var(--focus); }
   .timeline-node-time {
     font-size: 0.78rem;
     color: var(--muted);
