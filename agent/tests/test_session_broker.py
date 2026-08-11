@@ -725,8 +725,11 @@ class SessionBrokerTests(unittest.TestCase):
             ):
                 default_broker = get_session_broker("default")
                 ronghui_broker = get_session_broker("ronghui")
-                yunda_broker = get_session_broker("yunda")
-                custom_yunda_broker = get_session_broker("yunda_ops_01")
+                yunda_broker = self._configure_broker_state(get_session_broker("yunda"), "yunda-profile")
+                custom_yunda_broker = self._configure_broker_state(
+                    get_session_broker("yunda_ops_01"),
+                    "yunda-custom-profile",
+                )
                 config = yunda_broker.resolve_login_config()
 
             self.assertIs(default_broker, ronghui_broker)
