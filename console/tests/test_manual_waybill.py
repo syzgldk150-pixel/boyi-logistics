@@ -895,9 +895,10 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("window.setTimeout(() => previewWaybill(), 220);", html)
         self.assertNotIn("window.setTimeout(() => printWaybill(), 220);", html)
 
-    def test_notice_default_uses_brand_accent(self):
+    def test_notice_default_uses_full_neutral_border(self):
         css = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
-        self.assertIn("border-left: 4px solid var(--accent)", css)
+        self.assertIn("border: 1px solid var(--line)", css)
+        self.assertNotIn("border-left: 4px solid var(--accent)", css)
         self.assertNotIn("border-left: 4px solid var(--info)", css)
 
 

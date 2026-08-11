@@ -3,7 +3,7 @@
 {% block body_class %}receipts-page-body{% endblock %}
 {% block title %}回单管理 | {{ app_title }}{% endblock %}
 {% block breadcrumb %}回单管理{% endblock %}
-{% block subtitle %}运单管理 / 统一回单{% endblock %}
+{% block subtitle %}登记、审核与查看回单图片{% endblock %}
 
 {% block content %}
 <style>
@@ -42,7 +42,7 @@
   }
   .receipt-field input:focus,
   .receipt-field select:focus {
-    border-color: #111827;
+    border-color: var(--text-strong);
     outline: none;
     box-shadow: 0 0 0 3px rgba(17, 24, 39, .08);
   }
@@ -69,7 +69,7 @@
   .receipt-date-range-control i { width: 16px; height: 16px; color: var(--muted); }
   .receipt-date-range-control:focus,
   .receipt-date-range-control[aria-expanded="true"] {
-    border-color: #111827;
+    border-color: var(--text-strong);
     outline: none;
     box-shadow: 0 0 0 3px rgba(17, 24, 39, .08);
   }
@@ -271,7 +271,7 @@
     min-width: 26px;
     min-height: 26px;
     border-radius: var(--radius-md);
-    background: #111827;
+    background: var(--primary);
     color: #fff;
     font-size: .78rem;
     font-weight: 850;
@@ -531,7 +531,7 @@
     min-height: 0;
     border: 1px solid rgba(255,255,255,.12);
     border-radius: var(--radius-md);
-    background: #111827;
+    background: var(--primary);
     overflow: hidden;
     cursor: grab;
   }

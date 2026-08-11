@@ -1,17 +1,22 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-09T11:04:32+08:00",
+  "generatedAt": "2026-08-12T00:00:00+08:00",
   "title": "Design System: 博益物流控制台",
   "extensions": {
+    "reference": {
+      "name": "Cal.com",
+      "url": "https://getdesign.md/cal/design-md",
+      "adaptation": "Near-monochrome product UI adapted for a Chinese logistics operations console"
+    },
     "colorMeta": {
-      "canvas": { "role": "neutral", "displayName": "调度画布", "canonical": "oklch(98.3% 0.004 285)", "tonalRamp": ["#FFFFFF", "#F9F9FB", "#E5E7EB"] },
-      "ink": { "role": "neutral", "displayName": "石墨操作", "canonical": "oklch(21% 0.03 264)", "tonalRamp": ["#4B5563", "#111827", "#000000"] },
-      "accent": { "role": "primary", "displayName": "操作红", "canonical": "oklch(63.7% 0.208 25.3)", "tonalRamp": ["#FEF2F2", "#EF4444", "#B91C1C"] }
+      "canvas": { "role": "neutral", "displayName": "画布", "canonical": "oklch(100% 0 0)", "tonalRamp": ["#FFFFFF", "#F8F9FA", "#F5F5F5"] },
+      "ink": { "role": "neutral", "displayName": "近黑主操作", "canonical": "oklch(17.8% 0 0)", "tonalRamp": ["#374151", "#242424", "#111111"] },
+      "focus": { "role": "focus", "displayName": "焦点蓝", "canonical": "oklch(62.3% 0.214 259.8)", "tonalRamp": ["#EFF6FF", "#3B82F6", "#1D4ED8"] },
+      "danger": { "role": "danger", "displayName": "异常红", "canonical": "oklch(63.7% 0.208 25.3)", "tonalRamp": ["#FEF2F2", "#EF4444", "#B91C1C"] }
     },
     "typographyMeta": {
-      "display": { "displayName": "工作标题", "purpose": "页面与工作区的清晰定位，不用于营销式放大。" },
-      "body": { "displayName": "任务正文", "purpose": "表单、状态与说明的稳定可读性。" },
-      "mono": { "displayName": "数据等宽体", "purpose": "单号、代码和需要纵向对比的数据。" },
+      "pageTitle": { "displayName": "页面标题", "purpose": "定位当前工作区，不使用营销式超大标题。" },
+      "body": { "displayName": "任务正文", "purpose": "表单、状态和高密度数据的稳定可读性。" },
       "families": {
         "cjk": {
           "fontFamily": "Source Han Sans SC",
@@ -19,25 +24,25 @@
           "purpose": "中文界面、状态和业务数据"
         },
         "latin": {
-          "fontFamily": "Roboto",
-          "asset": "console/static/assets/fonts/Roboto-Latin-Variable.woff2",
+          "fontFamily": "Inter",
+          "asset": "console/static/assets/fonts/InterVariable.woff2",
           "purpose": "英文、数字和拉丁标识"
         }
       }
     },
     "shadows": [
-      { "name": "surface", "value": "0 4px 20px rgba(0, 0, 0, 0.05)", "purpose": "普通任务面板。" },
-      { "name": "interactive", "value": "0 10px 26px rgba(15, 23, 42, 0.08)", "purpose": "可点击容器的短暂状态反馈。" }
+      { "name": "control", "value": "0 1px 2px rgba(17, 17, 17, 0.06)", "purpose": "分段控制当前项和必要的控件层级。" },
+      { "name": "overlay", "value": "0 8px 24px rgba(17, 17, 17, 0.12)", "purpose": "对话框、菜单和抽屉。" }
     ],
     "motion": [
-      { "name": "fast", "value": "160ms ease", "purpose": "控件状态切换。" },
-      { "name": "standard", "value": "220ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "抽屉、面板和页面状态反馈。" },
+      { "name": "fast", "value": "120ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "悬停、按下与焦点状态。" },
+      { "name": "standard", "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "抽屉、面板和状态反馈。" },
       { "name": "reduced", "value": "0.01ms", "purpose": "prefers-reduced-motion 下的即时替代。" }
     ],
     "breakpoints": [
-      { "name": "phone", "value": "767px" },
-      { "name": "tablet", "value": "980px" },
-      { "name": "desktop", "value": "1024px" }
+      { "name": "compact", "value": "640px" },
+      { "name": "mobile-shell", "value": "767px" },
+      { "name": "desktop-shell", "value": "1024px" }
     ]
   },
   "components": [
@@ -45,23 +50,31 @@
       "name": "主操作按钮",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "用于保存、提交等不可替代的操作。",
-      "html": "<button class=\"ds-button-primary\">保存变更</button>",
-      "css": ".ds-button-primary { min-height: 42px; padding: 0 16px; border: 0; border-radius: 8px; background: #111827; color: #fff; font: 600 14px system-ui; }"
+      "description": "用于保存、提交和新增等当前页面唯一主操作。",
+      "html": "<button class=\"primary-btn\">保存设置</button>",
+      "css": ".primary-btn { min-height: 40px; padding: 0 16px; border-radius: 6px; background: #111111; color: #FFFFFF; }"
+    },
+    {
+      "name": "分段控制",
+      "kind": "tabs",
+      "refersTo": "segmented-control",
+      "description": "用于少量互斥状态筛选，浅灰容器内使用白色当前项。",
+      "html": "<div class=\"segmented-control\"><button aria-pressed=\"true\">全部</button><button>待处理</button></div>",
+      "css": ".segmented-control { padding: 4px; border-radius: 8px; background: #F5F5F5; }"
     },
     {
       "name": "移动底栏",
       "kind": "nav",
-      "refersTo": "navigation-active",
-      "description": "固定在安全区上方，保留首页、三个账号同步的快捷入口和更多。",
-      "html": "<nav class=\"ds-mobile-nav\"><a>首页</a><a>查单</a><a>回单</a><a>自动化</a><button>更多</button></nav>",
-      "css": ".ds-mobile-nav { display: flex; min-height: 64px; background: #fff; border-top: 1px solid #E5E7EB; } .ds-mobile-nav > * { min-width: 44px; min-height: 44px; color: #4B5563; }"
+      "refersTo": "mobile-bottom-navigation",
+      "description": "固定在安全区上方，保留首页、三个用户同步入口和更多。",
+      "html": "<nav class=\"mobile-bottom-nav\"><a>首页</a><a>运单</a><a>跟踪</a><a>服务</a><button>更多</button></nav>",
+      "css": ".mobile-bottom-nav { min-height: 68px; background: #FFFFFF; border-top: 1px solid #E5E7EB; }"
     }
   ],
   "narrative": {
-    "northStar": "物流调度台",
-    "rules": ["任务先于装饰", "单一强调", "平面优先", "移动端重排而非缩小"],
-    "dos": ["状态同时提供文字和颜色", "宽表仅在自身容器内滚动", "所有移动触控目标不小于 44px"],
-    "donts": ["不要隐藏移动端核心功能", "不要用渐变文字或玻璃拟态", "不要用模糊兜底掩盖失败"]
+    "northStar": "Calm Operations Console",
+    "rules": ["任务优先", "近单色", "平面优先", "高密度可扫描", "移动端结构重排"],
+    "dos": ["主操作使用近黑", "焦点使用蓝色外环", "状态同时提供文本和颜色", "宽表只在自身容器滚动", "移动触控目标不小于 44px"],
+    "donts": ["不用红色导航强调", "不用渐变或玻璃拟态", "不用彩色粗侧边条", "不用虚构数据", "不用模糊兜底掩盖失败"]
   }
 }
