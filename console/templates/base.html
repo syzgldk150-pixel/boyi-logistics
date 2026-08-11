@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <title>{% block title %}{{ app_title | default('物流 Agent 控制台') }}{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <link rel="preload" href="/static/assets/fonts/Roboto-Latin-Variable.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=account-status-20260811">
+  <link rel="preload" href="/static/assets/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/style.css?v=cal-console-20260812">
   <script src="https://unpkg.com/feather-icons"></script>
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   {% set right_sidebar_content %}{% block right_sidebar %}{% endblock %}{% endset %}
   {% set page_breadcrumb %}{% block breadcrumb %}分析大盘{% endblock %}{% endset %}
   {% set page_subtitle %}{% block subtitle %}首页 / 分析报表{% endblock %}{% endset %}
@@ -73,8 +74,12 @@
       </nav>
     </aside>
 
-    <main class="main-content {% block main_class %}{% endblock %}" data-reveal="main" data-console-main data-console-tab-title="{{ page_breadcrumb | striptags | trim | e }}">
+    <main class="main-content {% block main_class %}{% endblock %}" id="main-content" data-reveal="main" data-console-main data-console-tab-title="{{ page_breadcrumb | striptags | trim | e }}">
       <header class="top-header">
+        <div class="breadcrumb-group">
+          <h1 class="page-title">{{ page_breadcrumb | safe }}</h1>
+          {% if page_subtitle | striptags | trim %}<p class="page-subtitle">{{ page_subtitle | safe }}</p>{% endif %}
+        </div>
         <div class="console-tab-bar" data-console-tabs aria-label="已打开模块">
           <div class="console-tab-strip" data-console-tab-list role="tablist" aria-label="模块历史"></div>
           <template data-console-tab-template>
@@ -180,7 +185,7 @@
   </dialog>
 
   <script id="mobile-navigation-data" type="application/json">{{ {'routes': mobile_nav, 'navigation': mobile_navigation_items, 'isSyncSupported': mobile_nav_sync_supported} | tojson }}</script>
-  <script src="/static/console_ui.js?v=mobile-responsive-20260809"></script>
+  <script src="/static/console_ui.js?v=cal-console-20260812"></script>
   {% block scripts %}{% endblock %}
   <script>window.ConsoleUI?.initPage?.();</script>
 </body>

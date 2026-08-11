@@ -31,6 +31,19 @@ class _AutomationAccountsTemplateEnv:
 
 
 class NavigationPerformanceTests(unittest.TestCase):
+    def test_cal_console_design_tokens_and_project_spec_are_versioned(self):
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+        design = (CONSOLE_DIR.parent / "DESIGN.md").read_text(encoding="utf-8")
+
+        self.assertIn("--primary: #111111", stylesheet)
+        self.assertIn("--focus-strong: #3b82f6", stylesheet)
+        self.assertIn("--surface: #f8f9fa", stylesheet)
+        self.assertIn("Cal.com design-md", design)
+        self.assertIn("Source Han Sans SC", design)
+        self.assertIn("InterVariable.woff2", design)
+        self.assertIn("新页面交付清单", design)
+        self.assertNotIn("border-left: 3px solid transparent", stylesheet)
+
     def test_console_ui_has_abortable_navigation_and_page_runtime_cleanup(self):
         script = (CONSOLE_DIR / "static" / "console_ui.js").read_text(encoding="utf-8")
 
@@ -57,12 +70,12 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=account-status-20260811", template)
-        self.assertIn("/static/assets/fonts/Roboto-Latin-Variable.woff2", template)
-        self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", template)
-        self.assertIn("/static/style.css?v=account-status-20260811", login_template)
-        self.assertIn("/static/assets/fonts/Roboto-Latin-Variable.woff2", login_template)
-        self.assertIn("/static/console_ui.js?v=mobile-responsive-20260809", login_template)
+        self.assertIn("/static/style.css?v=cal-console-20260812", template)
+        self.assertIn("/static/assets/fonts/InterVariable.woff2", template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260812", template)
+        self.assertIn("/static/style.css?v=cal-console-20260812", login_template)
+        self.assertIn("/static/assets/fonts/InterVariable.woff2", login_template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260812", login_template)
         self.assertNotIn("partial-nav-logo-20260515", login_template)
 
     def test_console_bundles_the_specified_cjk_and_latin_fonts(self):
@@ -71,8 +84,8 @@ class NavigationPerformanceTests(unittest.TestCase):
 
         self.assertIn('font-family: "Source Han Sans SC";', stylesheet)
         self.assertIn('SourceHanSansCN-VF.ttf.woff2', stylesheet)
-        self.assertIn('font-family: "Roboto";', stylesheet)
-        self.assertIn('Roboto-Latin-Variable.woff2', stylesheet)
+        self.assertIn('font-family: "Inter";', stylesheet)
+        self.assertIn('InterVariable.woff2', stylesheet)
         self.assertIn(
             "--font-ui: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;",
             stylesheet,
@@ -83,7 +96,8 @@ class NavigationPerformanceTests(unittest.TestCase):
         )
         self.assertNotIn("fonts.googleapis.com", stylesheet)
         self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "SourceHanSansCN-VF.ttf.woff2").is_file())
-        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "Roboto-Latin-Variable.woff2").is_file())
+        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "InterVariable.woff2").is_file())
+        self.assertFalse((CONSOLE_DIR / "static" / "assets" / "fonts" / "Roboto-Latin-Variable.woff2").exists())
         self.assertIn('data-ui-submit', login_template)
         self.assertIn('role="alert"', login_template)
 
@@ -173,7 +187,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn(".console-tab.is-pinned .console-tab-close", stylesheet)
         self.assertIn("display: none", stylesheet)
         self.assertIn("border-radius: 0", stylesheet)
-        self.assertIn("--header-h: 96px", stylesheet)
+        self.assertIn("--header-h: 88px", stylesheet)
         self.assertIn("--header-x-pad", stylesheet)
         self.assertIn("--content-x-pad: var(--header-x-pad)", stylesheet)
         self.assertIn("--tab-gap", stylesheet)
@@ -199,9 +213,9 @@ class NavigationPerformanceTests(unittest.TestCase):
         stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
         dispatch = (CONSOLE_DIR / "templates" / "dispatch.html").read_text(encoding="utf-8")
 
-        self.assertIn("--header-h: 96px", stylesheet)
-        self.assertIn("--tab-gap: 24px", stylesheet)
-        self.assertIn("--tab-font-size: 0.95rem", stylesheet)
+        self.assertIn("--header-h: 88px", stylesheet)
+        self.assertIn("--tab-gap: 16px", stylesheet)
+        self.assertIn("--tab-font-size: 0.875rem", stylesheet)
         self.assertIn(".console-tab-bar { position: static; flex: 1 1 auto;", stylesheet)
         self.assertIn("min-height: 52px", stylesheet)
         self.assertIn(".console-tab-title span", stylesheet)
@@ -220,7 +234,7 @@ class NavigationPerformanceTests(unittest.TestCase):
     def test_header_actions_keep_content_sized_controls(self):
         stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
-        self.assertIn("--radius-sm: 6px", stylesheet)
+        self.assertIn("--radius-sm: 4px", stylesheet)
         self.assertIn("--shadow-hover:", stylesheet)
         self.assertIn(".top-header-actions--page { flex: 0 0 auto;", stylesheet)
         self.assertIn("flex-wrap: nowrap", stylesheet)

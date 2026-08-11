@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block breadcrumb %}消息监控大盘{% endblock %}
-{% block subtitle %}首页 / 韵达与融辉 TMS 实时待办{% endblock %}
+{% block breadcrumb %}调度工作台{% endblock %}
+{% block subtitle %}韵达与融辉 TMS 实时待办{% endblock %}
 
 {% block page_actions %}
 <button class="primary-btn monitoring-refresh" type="button" data-monitoring-refresh aria-label="刷新首页数据" title="刷新首页数据">
@@ -171,7 +171,7 @@
     min-width: 42px;
     height: 34px;
     border-radius: 8px;
-    background: #111827;
+    background: var(--primary);
     color: #fff;
     display: grid;
     place-items: center;

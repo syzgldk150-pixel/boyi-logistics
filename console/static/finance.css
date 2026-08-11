@@ -1,5 +1,5 @@
 .finance-main {
-  --finance-ink: #111827;
+  --finance-ink: #111111;
   --finance-text: #374151;
   --finance-muted: #667085;
   --finance-line: #e5e7eb;
@@ -9,6 +9,7 @@
   --finance-green: #047857;
   --finance-green-soft: #ecfdf5;
   --finance-blue: #2563eb;
+  --finance-focus: #3b82f6;
   --finance-amber: #a16207;
 }
 
@@ -30,7 +31,7 @@
   min-width: 0;
   color: var(--finance-text);
   font-family: var(--font-ui);
-  font-size: 1rem;
+  font-size: .875rem;
 }
 
 .finance-filter-shell,
@@ -38,7 +39,7 @@
 .finance-metric-band {
   background: #fff;
   border: 1px solid var(--finance-line);
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .finance-filter-shell {
@@ -71,7 +72,7 @@
 }
 
 .finance-range-btn:hover { color: var(--finance-ink); background: #fff; }
-.finance-range-btn.is-active { color: #fff; background: var(--finance-red); }
+.finance-range-btn.is-active { color: #fff; background: var(--finance-ink); }
 
 .finance-date-fields {
   display: flex;
@@ -82,7 +83,7 @@
 .finance-date-separator {
   display: inline-grid;
   place-items: center;
-  min-height: 42px;
+  min-height: 40px;
   color: var(--finance-muted);
   font-size: .875rem;
 }
@@ -109,7 +110,7 @@
   min-height: 42px;
   padding: 0 11px;
   border: 1px solid #d1d5db;
-  border-radius: 8px;
+  border-radius: 6px;
   color: var(--finance-ink);
   background: #fff;
   font-size: .875rem;
@@ -130,7 +131,7 @@
 .finance-bar-button:focus-visible,
 .finance-chart-point:focus-visible,
 .finance-data-details summary:focus-visible {
-  outline: 2px solid var(--finance-red);
+  outline: 2px solid var(--finance-focus);
   outline-offset: 2px;
 }
 
@@ -194,7 +195,7 @@
 }
 
 .finance-tab:hover { color: var(--finance-ink); background: var(--finance-soft); }
-.finance-tab.is-active { color: var(--finance-red); background: var(--finance-red-soft); }
+.finance-tab.is-active { color: var(--finance-ink); background: #fff; box-shadow: 0 1px 2px rgba(17,17,17,.06); }
 .finance-tab .feather { width: 16px; height: 16px; }
 
 .finance-tab-panel { display: grid; gap: 16px; min-width: 0; }

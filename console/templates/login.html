@@ -4,17 +4,29 @@
   <meta charset="utf-8">
   <title>登录后台 - {{ app_title | default('物流 Agent 控制台') }}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <link rel="preload" href="/static/assets/fonts/Roboto-Latin-Variable.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=account-status-20260811">
+  <link rel="preload" href="/static/assets/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/style.css?v=cal-console-20260812">
   <script src="https://unpkg.com/feather-icons"></script>
 </head>
 <body class="login-page">
   <main class="login-shell">
-    <section class="login-panel" data-reveal="main">
+    <aside class="login-context" aria-label="控制台功能说明">
+      <div class="login-context__inner">
+        <span class="login-context__mark" aria-hidden="true"><i data-feather="truck"></i></span>
+        <p class="login-context__label">博益物流控制台</p>
+        <h2>集中处理运单、回单、客服与自动化任务。</h2>
+        <ul class="login-context__list">
+          <li><i data-feather="check"></i><span>查询真实业务状态与处理结果</span></li>
+          <li><i data-feather="check"></i><span>在桌面与移动端完成核心操作</span></li>
+          <li><i data-feather="check"></i><span>统一管理后台与业务账号</span></li>
+        </ul>
+      </div>
+    </aside>
+    <section class="login-panel" aria-labelledby="login-title" data-reveal="main">
       <div class="login-brand"><img src="/static/assets/boyi-logistics-logo.png" width="216" height="58" alt="博益物流"></div>
       <div class="login-heading">
-        <p class="kicker">Console Access</p>
-        <h1>后台管理登录</h1>
+        <p class="kicker">安全访问</p>
+        <h1 id="login-title">登录后台</h1>
         <p>请输入管理员账号和密码进入控制台。</p>
       </div>
       {% if message %}
@@ -31,7 +43,7 @@
       </form>
     </section>
   </main>
-  <script src="/static/console_ui.js?v=mobile-responsive-20260809"></script>
+  <script src="/static/console_ui.js?v=cal-console-20260812"></script>
   <script>feather.replace();</script>
 </body>
 </html>
