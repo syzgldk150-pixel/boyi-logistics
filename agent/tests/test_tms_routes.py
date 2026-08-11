@@ -136,6 +136,28 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertFalse(response.json()["data"]["account"]["auto_login_enabled"])
         self.assertEqual({}, routes_module._ACCOUNT_LIST_CACHE)
 
+    def test_admin_account_name_route_updates_visible_note(self):
+        calls = []
+
+        class FakeAccountManager:
+            def update_name(self, account_id, name):
+                calls.append((account_id, name))
+                return {"account_id": account_id, "name": name}
+
+        routes_module._ACCOUNT_LIST_CACHE.update(
+            {"payload": {"accounts": [{"account_id": "ronghui_default"}]}, "cached_at": 1}
+        )
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            response = self.client.post(
+                "/internal/v1/admin/accounts/ronghui_default/name",
+                json={"name": "融辉自提专用账号"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([("ronghui_default", "融辉自提专用账号")], calls)
+        self.assertEqual("融辉自提专用账号", response.json()["data"]["account"]["name"])
+        self.assertEqual({}, routes_module._ACCOUNT_LIST_CACHE)
+
     def test_admin_accounts_route_passes_force_to_manager(self):
         calls = []
 

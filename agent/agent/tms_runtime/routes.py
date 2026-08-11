@@ -48,6 +48,10 @@ class AccountCreateRequest(BaseModel):
     account_purpose: str = ""
 
 
+class AccountNameRequest(BaseModel):
+    name: str = ""
+
+
 class AccountActiveRequest(BaseModel):
     is_active: bool = True
 
@@ -240,6 +244,16 @@ def automation_account_status(account_id: str, force: bool = False):
         status = _account_manager().check_status_with_auto_login(account_id, force=force)
         update_account_list_cache_status(status)
         return _success_response(status)
+    except TMSAuthStateError as exc:
+        return _account_error_response(exc)
+
+
+@router.post("/admin/accounts/{account_id}/name")
+def automation_account_update_name(account_id: str, req: AccountNameRequest):
+    try:
+        account = _account_manager().update_name(account_id, req.name)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 

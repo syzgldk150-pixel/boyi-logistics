@@ -23,6 +23,7 @@ ACCOUNTS_PATH = STATE_DIR / "automation_accounts.json"
 LOCAL_ACCOUNT_DIR = STATE_DIR / "automation_account_credentials"
 
 ACCOUNT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
+ACCOUNT_NAME_MAX_LENGTH = 80
 SYSTEMS: dict[str, dict[str, Any]] = {
     "ronghui": {
         "label": "TMS融辉",
@@ -512,6 +513,28 @@ class AutomationAccountManager:
         rows.append(row)
         self._save_accounts(rows)
         return self._public_account(row)
+
+    def update_name(self, account_id: str, name: str) -> dict[str, Any]:
+        """Update the user-facing account note without touching runtime state."""
+        row = self._get_account_row(account_id)
+        label = str(name or "").strip()
+        if not label:
+            raise TMSAuthStateError("INVALID_ACCOUNT_NAME", "账号备注不能为空。")
+        if len(label) > ACCOUNT_NAME_MAX_LENGTH:
+            raise TMSAuthStateError(
+                "INVALID_ACCOUNT_NAME",
+                f"账号备注不能超过 {ACCOUNT_NAME_MAX_LENGTH} 个字符。",
+            )
+        rows = self._load_accounts()
+        now = _now_label()
+        for item in rows:
+            if item["account_id"] != row["account_id"]:
+                continue
+            item["name"] = label
+            item["updated_at"] = now
+            break
+        self._save_accounts(rows)
+        return self._public_account(self._get_account_row(account_id))
 
     def set_default(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)

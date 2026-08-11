@@ -19,6 +19,30 @@ class AutomationSubmissionTests(unittest.TestCase):
         app._parse_urlencoded_form = lambda handler: form_values
         return app
 
+    def test_account_name_action_proxies_note_without_status_refresh(self):
+        app = self._make_app({"name": "  融辉自提专用账号  "})
+        captured = {}
+
+        def proxy(handler, method, endpoint, **kwargs):
+            captured.update({"method": method, "endpoint": endpoint, **kwargs})
+            return True
+
+        app._proxy_automation_account_action = proxy
+
+        handled = app._handle_automation_account_post(
+            None,
+            "/automation-accounts/ronghui_default/name",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual("POST", captured["method"])
+        self.assertEqual(
+            "/internal/v1/admin/accounts/ronghui_default/name",
+            captured["endpoint"],
+        )
+        self.assertEqual({"name": "融辉自提专用账号"}, captured["payload"])
+        self.assertFalse(captured["refresh_status"])
+
     def test_run_now_allows_scheduled_task_without_cron(self):
         app = self._make_app(
             {
