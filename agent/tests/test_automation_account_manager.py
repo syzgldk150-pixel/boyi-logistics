@@ -396,6 +396,31 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertTrue(result["session_capable"])
         self.assertNotIn("password", result)
 
+    def test_price_account_login_starts_immediately_even_when_auto_login_is_off(self):
+        calls = []
+
+        class FakeBroker(ManualCredentialsBroker):
+            def send_code(self):
+                calls.append("send_code")
+                return {
+                    "status": "authenticated",
+                    "authenticated": True,
+                    "pending_code": False,
+                    "profile": "price",
+                }
+
+        def fake_get_session_broker(profile):
+            calls.append(profile)
+            return FakeBroker()
+
+        with patch.object(account_manager_module, "get_session_broker", side_effect=fake_get_session_broker):
+            result = self.manager.login("price_default")
+
+        self.assertFalse(result["auto_login_enabled"])
+        self.assertEqual(result["session_profile"], "price")
+        self.assertEqual(calls.count("send_code"), 1)
+        self.assertTrue(all(item == "price" for item in calls if item != "send_code"))
+
     def test_account_submit_code_response_includes_context_and_hides_password(self):
         class FakeBroker(ManualCredentialsBroker):
             def submit_code(self, code):
