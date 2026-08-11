@@ -819,8 +819,6 @@ class AutomationAccountManager:
             self._broker(row).clear_saved_credentials()
         else:
             _local_credential_path(row["account_id"]).unlink(missing_ok=True)
-            if self._uses_sso_session(row):
-                self._sso_auth(row).clear_persisted_session()
         self._set_auto_login_state(
             row["account_id"],
             enabled=False,
