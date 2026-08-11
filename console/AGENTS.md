@@ -156,7 +156,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - 唯一导航目录：`navigation.py`。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用其中路由，不得维护模板内副本。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
-- 统一 Logo：`static/assets/boyi-logistics-logo.png`。字体为版本化资源 `static/assets/fonts/SourceHanSansCN-VF.ttf.woff2` 与 `static/assets/fonts/Roboto-Latin-Variable.woff2`，中文固定用思源黑体，英文和数字固定用 Roboto，不得引入在线字体服务。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
+- 统一 Logo：`static/assets/boyi-logistics-logo.png`。字体为版本化资源 `static/assets/fonts/SourceHanSansCN-VF.ttf.woff2` 与 `static/assets/fonts/InterVariable.woff2`，中文固定用思源黑体，英文和数字固定用 Inter，不得引入在线字体服务。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
 - 视觉约束请先看根目录 `PRODUCT.md`、`DESIGN.md` 与 `.impeccable/design.json`。
 
 ## 相关文档

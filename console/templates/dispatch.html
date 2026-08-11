@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 
 {% block title %}货拉拉调度与比价{% endblock %}
+{% block breadcrumb %}调度比价{% endblock %}
+{% block subtitle %}规划路线并比较可用运输方案{% endblock %}
 
 {% block body_class %}dispatch-page map-only-view{% endblock %}
 
@@ -50,12 +52,12 @@
   .result-section { padding: 16px; }
   .result-header { font-size: 0.76rem; font-weight: 800; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
 
-  .distance-overview { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: var(--shadow-soft); }
-  .distance-val strong { font-size: 1.55rem; font-family: var(--font-display); font-weight: 800; color: var(--text-strong); }
+  .distance-overview { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: none; }
+  .distance-val strong { font-size: 1.55rem; font-family: var(--font-display); font-weight: 600; color: var(--text-strong); }
   .distance-val span { font-size: 0.78rem; color: var(--muted); font-weight: 600; margin-left: 4px; }
 
-  .platform-card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; transition: all var(--fast); box-shadow: var(--shadow-soft); }
-  .platform-card:hover { border-color: var(--accent); }
+  .platform-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; transition: background var(--fast), border-color var(--fast); box-shadow: none; }
+  .platform-card:hover { border-color: #d1d5db; background: var(--surface); }
   .p-info { display: flex; align-items: center; gap: 12px; }
   .p-icon { width: 30px; height: 30px; border-radius: 4px; background: #e5e7eb; display: grid; place-items: center; }
   .p-icon .feather { width: 16px; height: 16px; color: currentColor; stroke-width: 2.4; }
@@ -190,9 +192,9 @@
         </div>
       </div>
 
-      <div class="platform-card" id="card-internal" style="border-color: var(--accent);">
+      <div class="platform-card" id="card-internal" style="border-color: var(--text-strong);">
         <div class="p-info">
-          <div class="p-icon" style="background:var(--accent); color:#fff;"><i data-feather="award"></i></div>
+          <div class="p-icon" style="background:var(--text-strong); color:#fff;"><i data-feather="award"></i></div>
           <div>
             <div class="p-name">我们报价</div>
             <div class="p-meta">基于实时路线估算</div>

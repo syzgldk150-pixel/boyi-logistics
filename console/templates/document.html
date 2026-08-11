@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 
-{% block title %}{% if document %}Waybill #{{ document.id }}{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}OCR Mode{% else %}Manual Entry{% endif %}{% endblock %}
+{% block title %}{% if document %}运单 #{{ document.id }}{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}OCR 队列{% else %}运单录入{% endif %}{% endblock %}
+{% block breadcrumb %}{% if document %}运单审核{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}OCR 队列{% else %}运单录入{% endif %}{% endblock %}
+{% block subtitle %}{% if document %}核对识别结果并完成运单{% elif ocr_mode %}上传单据并处理识别队列{% else %}录入、报价与打印运单{% endif %}{% endblock %}
 
 {% block body_class %}ocr-page no-scroll{% if boyi_frame_mode|default(false) %} boyi-frame-page{% elif (not document) and (not ocr_mode) %} entry-tabs-page{% elif yunda_mode %} yunda-live-page{% elif ronghui_mode %} ronghui-live-page{% endif %}{% endblock %}
 
@@ -111,7 +113,7 @@
     display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 8px;
     border-radius: 6px; color: var(--text); font-size: .74rem; font-weight: 800; text-decoration: none; cursor: pointer;
   }
-  .mode-switch [aria-pressed="true"] { background: #111827; color: #fff; }
+  .mode-switch [aria-pressed="true"] { background: var(--primary); color: #fff; }
   [data-mode-panel][hidden] { display: none !important; }
   .mode-panel { animation: modeFade .16s ease-out; }
   @keyframes modeFade {
@@ -198,11 +200,11 @@
     display: grid; gap: 8px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px;
     background: #fff; color: var(--text);
   }
-  .manual-quote-item.is-best { border-color: #111827; box-shadow: inset 3px 0 0 #111827; }
+  .manual-quote-item.is-best { border-color: var(--text-strong); background: var(--surface); box-shadow: 0 0 0 1px var(--text-strong); }
   .manual-quote-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
   .manual-quote-name { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-strong); font-size: .84rem; font-weight: 900; }
   .manual-quote-badge { padding: 2px 6px; border-radius: 999px; background: #eef2f7; color: var(--muted); font-size: .68rem; font-weight: 900; white-space: nowrap; }
-  .manual-quote-price { color: #111827; font-family: var(--font-display); font-size: 1.15rem; font-weight: 900; white-space: nowrap; }
+  .manual-quote-price { color: var(--text-strong); font-family: var(--font-display); font-size: 1.15rem; font-weight: 600; white-space: nowrap; }
   .manual-quote-meta { display: grid; gap: 3px; color: var(--muted); font-size: .74rem; font-weight: 700; line-height: 1.35; }
   .manual-quote-meta span { overflow-wrap: anywhere; }
   .manual-quote-select { justify-self: end; height: 30px; min-height: 30px; padding: 0 10px; font-size: .74rem; border-radius: 6px; }
@@ -338,11 +340,11 @@
   .yd-field-wide { grid-column: span 3; }
   .yd-field-medium { grid-column: span 2; }
   .yd-field-small { grid-column: span 1; }
-  .yd-label { flex: 0 0 auto; color: #111827; font-weight: 700; white-space: nowrap; }
+  .yd-label { flex: 0 0 auto; color: var(--text-strong); font-weight: 600; white-space: nowrap; }
   .yd-label.required::after { content: "＊"; color: #f23a30; margin-left: 3px; font-weight: 900; }
   .yd-input, .yd-select, .yd-textarea {
     width: 100%; min-width: 0; border: 1px solid #d7dde8; border-radius: 3px; background: #ffffdf;
-    color: #111827; font-size: 13px; font-weight: 500; outline: none;
+    color: var(--text-strong); font-size: 13px; font-weight: 500; outline: none;
   }
   .yd-input, .yd-select { height: 22px; padding: 0 7px; }
   .yd-textarea { min-height: 44px; padding: 6px 7px; resize: vertical; line-height: 1.4; }
@@ -397,10 +399,10 @@
   .yd-modal-backdrop[hidden] { display: none; }
   .yd-modal { width: min(620px, 100%); max-height: 78vh; overflow: hidden; display: flex; flex-direction: column; border-radius: 8px; background: #fff; box-shadow: 0 24px 60px rgba(15, 23, 42, .26); }
   .yd-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
-  .yd-modal-head h3 { margin: 0; font-size: 16px; color: #111827; }
+  .yd-modal-head h3 { margin: 0; font-size: 16px; color: var(--text-strong); }
   .yd-modal-body { padding: 14px 16px; overflow: auto; display: grid; gap: 10px; }
   .yd-list-item { border: 1px solid #d8dde8; border-radius: 6px; padding: 10px; background: #fbfcfe; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
-  .yd-list-item strong { display: block; color: #111827; font-size: 13px; }
+  .yd-list-item strong { display: block; color: var(--text-strong); font-size: 13px; }
   .yd-list-item span { display: block; margin-top: 3px; color: #64748b; font-size: 12px; }
   .yd-list-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -433,8 +435,15 @@
       min-height: 0;
       padding: 0 !important;
     }
+    body.boyi-frame-page { padding-bottom: 0; }
+    body.boyi-frame-page .main-content { height: 100dvh; }
+    body.boyi-frame-page .mobile-brand-bar,
+    body.boyi-frame-page .mobile-bottom-nav,
+    body.boyi-frame-page .mobile-more-sheet { display: none !important; }
+    body.entry-tabs-page .app-shell,
     body.yunda-live-page .app-shell,
     body.ronghui-live-page .app-shell { grid-template-columns: minmax(0, 1fr) !important; }
+    body.entry-tabs-page .sidebar,
     body.yunda-live-page .sidebar,
     body.ronghui-live-page .sidebar { display: none !important; }
     .entry-tabs-shell,

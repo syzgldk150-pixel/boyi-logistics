@@ -11,19 +11,19 @@ MOBILE_BOTTOM_NAV_SLOTS = 3
 DEFAULT_MOBILE_BOTTOM_NAV = ("/tracking", "/receipts", "/automations")
 
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = (
-    {"route": "/", "label": "首页大盘", "mobile_label": "首页", "icon": "grid", "section": "primary"},
+    {"route": "/", "label": "概览", "mobile_label": "首页", "icon": "grid", "section": "primary"},
     {"route": "/ocr", "label": "运单录入", "mobile_label": "录单", "icon": "file-text", "section": "primary"},
     {"route": "/waybills", "label": "寄件运单查询", "mobile_label": "运单", "icon": "list", "section": "primary"},
-    {"route": "/tracking", "label": "单号查询", "mobile_label": "查单", "icon": "search", "section": "primary"},
+    {"route": "/tracking", "label": "物流跟踪", "mobile_label": "跟踪", "icon": "search", "section": "primary"},
     {"route": "/receipts", "label": "回单管理", "mobile_label": "回单", "icon": "image", "section": "primary"},
-    {"route": "/modules/customer-service", "label": "客服系统", "mobile_label": "客服", "icon": "headphones", "section": "primary"},
+    {"route": "/modules/customer-service", "label": "客户服务", "mobile_label": "客服", "icon": "headphones", "section": "primary"},
     {"route": "/modules/finance", "label": "财务模块", "mobile_label": "财务", "icon": "dollar-sign", "section": "primary"},
     {"route": "/dispatch", "label": "货拉拉调度", "mobile_label": "调度", "icon": "map-pin", "section": "primary"},
     {"route": "/line-haul-contacts", "label": "专线分流", "mobile_label": "专线", "icon": "map", "section": "primary"},
     {"route": "/automations", "label": "自动化", "mobile_label": "自动化", "icon": "sliders", "section": "primary"},
-    {"route": "/automation-accounts", "label": "账号管理", "mobile_label": "账号", "icon": "users", "section": "primary"},
+    {"route": "/automation-accounts", "label": "业务账号", "mobile_label": "账号", "icon": "users", "section": "primary"},
     {"route": "/templates/new", "label": "模板配置", "mobile_label": "模板", "icon": "layout", "section": "primary"},
-    {"route": "/settings/accounts", "label": "系统设置", "mobile_label": "设置", "icon": "settings", "section": "system"},
+    {"route": "/settings/accounts", "label": "系统管理", "mobile_label": "设置", "icon": "settings", "section": "system"},
 )
 
 NAVIGATION_BY_ROUTE = {item["route"]: item for item in CONSOLE_NAVIGATION}

@@ -225,12 +225,12 @@
     font-weight: 750;
     cursor: pointer;
   }
-  .waybill-calendar-day:hover { background: #fef2f2; color: var(--accent); }
+  .waybill-calendar-day:hover { background: var(--accent-soft); color: var(--focus-strong); }
   .waybill-calendar-day.is-outside { color: var(--muted); font-weight: 650; }
-  .waybill-calendar-day.is-in-range { border-radius: 0; background: #fef2f2; color: var(--text-strong); }
+  .waybill-calendar-day.is-in-range { border-radius: 0; background: var(--accent-soft); color: var(--text-strong); }
   .waybill-calendar-day.is-range-start,
   .waybill-calendar-day.is-range-end { border-radius: 6px; background: var(--accent); color: #fff; }
-  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px rgba(239, 68, 68, .45); }
+  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px var(--focus-strong); }
   .waybill-calendar-presets {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
