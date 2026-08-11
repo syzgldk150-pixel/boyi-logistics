@@ -18,6 +18,27 @@ HTTP_SERVICE_URL = os.getenv(
 )
 
 
+def _unwrap_versioned_tms_response(payload: object) -> dict:
+    """Restore the TMS task payload beneath the versioned internal envelope.
+
+    ``EnvelopedRoute`` wraps every ``/internal/v1/*`` response in
+    ``ok/data/error``.  TMS task routes already return their own
+    ``ok/data`` payload, so callers of this gateway must receive that inner
+    task payload to retain the established tool contract.
+    """
+    if not isinstance(payload, dict):
+        return {"error": "tms service returned a non-object response"}
+
+    inner = payload.get("data")
+    is_versioned_envelope = {"ok", "data", "error"}.issubset(payload)
+    is_task_payload = isinstance(inner, dict) and "ok" in inner and (
+        "data" in inner or "error" in inner
+    )
+    if is_versioned_envelope and is_task_payload:
+        return inner
+    return payload
+
+
 def _build_url(endpoint: str) -> str:
     base_url = HTTP_SERVICE_URL.rstrip("/")
     path = endpoint if str(endpoint).startswith("/") else f"/{endpoint}"
@@ -52,7 +73,7 @@ def call_http_service(endpoint: str, params: dict | None = None) -> dict:
             timeout=timeout_sec,
         )
         resp.raise_for_status()
-        return resp.json()
+        return _unwrap_versioned_tms_response(resp.json())
     except httpx.TimeoutException:
         return {"error": f"tms service timeout: {url}", "timeout_sec": timeout_sec}
     except httpx.HTTPStatusError as exc:
@@ -61,8 +82,9 @@ def call_http_service(endpoint: str, params: dict | None = None) -> dict:
         except Exception:
             payload = None
         if isinstance(payload, dict):
-            payload.setdefault("http_status", exc.response.status_code)
-            return payload
+            result = _unwrap_versioned_tms_response(payload)
+            result.setdefault("http_status", exc.response.status_code)
+            return result
         return {
             "error": (
                 f"tms service returned {exc.response.status_code}: "

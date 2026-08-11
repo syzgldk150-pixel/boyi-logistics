@@ -1067,6 +1067,51 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertNotIn("params", captured["json"]["params"])
         self.assertEqual(960, captured["json"]["timeout_sec"])
 
+    def test_tms_tool_unwraps_versioned_tms_task_response(self):
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "ok": True,
+                    "data": {
+                        "ok": True,
+                        "cost_sec": 0.1,
+                        "data": [{"bill_code": "R0001"}],
+                    },
+                    "error": None,
+                }
+
+        with patch("tools.tms_tool.httpx.post", return_value=_Response()):
+            result = tms_tool.call_http_service("/get_scan", {"output_format": "json"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([{"bill_code": "R0001"}], result["data"])
+
+    def test_tms_tool_unwraps_versioned_tms_task_error(self):
+        request = tms_tool.httpx.Request("POST", "http://127.0.0.1:9000/internal/v1/tms/yunda_price")
+        response = tms_tool.httpx.Response(
+            500,
+            json={
+                "ok": False,
+                "data": {"ok": False, "error_type": "RuntimeError", "error": "weight query failed"},
+                "error": {"code": "http_500", "message": "Internal request failed"},
+            },
+            request=request,
+        )
+
+        class _Response:
+            def raise_for_status(self):
+                raise tms_tool.httpx.HTTPStatusError("server error", request=request, response=response)
+
+        with patch("tools.tms_tool.httpx.post", return_value=_Response()):
+            result = tms_tool.call_http_service("/yunda_price", {})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("weight query failed", result["error"])
+        self.assertEqual(500, result["http_status"])
+
     def test_tms_tool_preserves_json_http_error_payload(self):
         request = tms_tool.httpx.Request("POST", "http://127.0.0.1:9000/internal/v1/tms/get_qianshou")
         response = tms_tool.httpx.Response(
