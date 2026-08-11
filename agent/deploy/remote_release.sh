@@ -8,9 +8,9 @@ SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
 
 DEPLOY_ROOT="/home/boyce/.boyi-deploy"
-BACKUP_ROOT="/home/boyce/.boyi-backups"
-BACKUP_DIR="${BACKUP_ROOT}/$(basename "${STAGE_ROOT}")"
+BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
+LEGACY_BACKUP_ROOT="/home/boyce/.boyi-backups"
 VENV_ROOT="/home/boyce/.boyi-venvs"
 PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
@@ -227,6 +227,52 @@ remove_new_virtualenvs() {
       rm -rf -- "${release_venv}"
     fi
   done
+}
+
+prune_inactive_virtualenvs() {
+  local target active_venv active_release candidate candidate_release
+  local -a stale_venvs=()
+
+  for target in agent console; do
+    active_venv="${ROOTS[$target]}/.venv"
+    [[ -L "${active_venv}" ]] || {
+      echo "Active virtual environment is not a symlink: ${active_venv}" >&2
+      return 1
+    }
+    active_release="$(readlink -f -- "${active_venv}")"
+    [[ -d "${active_release}" && "${active_release}" == "${VENV_ROOT}/${target}-"* ]] || {
+      echo "Active virtual environment is outside the managed release root: ${active_venv}" >&2
+      return 1
+    }
+
+    while IFS= read -r -d '' candidate; do
+      candidate_release="$(readlink -f -- "${candidate}")"
+      [[ "${candidate_release}" == "${VENV_ROOT}/${target}-"* ]] || {
+        echo "Refusing to remove unmanaged virtual environment: ${candidate}" >&2
+        return 1
+      }
+      if [[ "${candidate_release}" != "${active_release}" ]]; then
+        stale_venvs+=("${candidate_release}")
+      fi
+    done < <(find "${VENV_ROOT}" -mindepth 1 -maxdepth 1 -type d -name "${target}-*" -print0)
+  done
+
+  for candidate_release in "${stale_venvs[@]}"; do
+    rm -rf -- "${candidate_release}"
+  done
+}
+
+cleanup_successful_release() {
+  local cleanup_status=0
+  prune_inactive_virtualenvs || cleanup_status=$?
+  if [[ "${LEGACY_BACKUP_ROOT}" == "/home/boyce/.boyi-backups" ]]; then
+    rm -rf -- "${LEGACY_BACKUP_ROOT}" || cleanup_status=$?
+  else
+    echo "Refusing to remove unexpected legacy backup root: ${LEGACY_BACKUP_ROOT}" >&2
+    cleanup_status=1
+  fi
+  rm -rf -- "${STAGE_ROOT}" || cleanup_status=$?
+  return "${cleanup_status}"
 }
 
 backup_managed_sources() {
@@ -491,6 +537,7 @@ RELEASE_STAGE="check_health"
 check_health
 
 MUTATION_STARTED=0
-RELEASE_STAGE="cleanup"
-rm -rf -- "${STAGE_ROOT}"
+trap - ERR
+RELEASE_STAGE="cleanup_successful_release"
+cleanup_successful_release
 echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"
