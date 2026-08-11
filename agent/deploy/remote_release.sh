@@ -11,7 +11,9 @@ DEPLOY_ROOT="/home/boyce/.boyi-deploy"
 BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
 LEGACY_BACKUP_ROOT="/home/boyce/.boyi-backups"
+LEGACY_AGENT_BACKUP_ROOT="/home/boyce/agent_backups"
 VENV_ROOT="/home/boyce/.boyi-venvs"
+PIP_CACHE_ROOT="/home/boyce/.cache/pip"
 PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
 PIP_TIMEOUT_SECONDS="${BOYI_PIP_TIMEOUT_SECONDS:-300}"
@@ -269,6 +271,18 @@ cleanup_successful_release() {
     rm -rf -- "${LEGACY_BACKUP_ROOT}" || cleanup_status=$?
   else
     echo "Refusing to remove unexpected legacy backup root: ${LEGACY_BACKUP_ROOT}" >&2
+    cleanup_status=1
+  fi
+  if [[ "${LEGACY_AGENT_BACKUP_ROOT}" == "/home/boyce/agent_backups" ]]; then
+    rm -rf -- "${LEGACY_AGENT_BACKUP_ROOT}" || cleanup_status=$?
+  else
+    echo "Refusing to remove unexpected legacy agent backup root: ${LEGACY_AGENT_BACKUP_ROOT}" >&2
+    cleanup_status=1
+  fi
+  if [[ "${PIP_CACHE_ROOT}" == "/home/boyce/.cache/pip" ]]; then
+    rm -rf -- "${PIP_CACHE_ROOT}" || cleanup_status=$?
+  else
+    echo "Refusing to remove unexpected pip cache root: ${PIP_CACHE_ROOT}" >&2
     cleanup_status=1
   fi
   rm -rf -- "${STAGE_ROOT}" || cleanup_status=$?

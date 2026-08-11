@@ -51,7 +51,7 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 8. 将当前同名 systemd unit 写入当次临时回滚目录，再安装新 unit、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
 9. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问。
 10. 任一步失败，删除本次新增受管文件、恢复备份和旧发布清单，并重启旧版本。
-11. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/`，并清理 `/home/boyce/.boyi-venvs/` 中所有非当前 Agent/Console 环境；ECS 不持久保留发布备份或旧虚拟环境。
+11. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/` 与 `/home/boyce/agent_backups/`，清理 `/home/boyce/.boyi-venvs/` 中所有非当前 Agent/Console 环境，并删除仅用于安装依赖的 `/home/boyce/.cache/pip/`；ECS 不持久保留发布备份、旧虚拟环境或安装缓存。
 
 `/health` 是公开的精简存活接口，只返回状态和 `release_sha`。详细组件状态位于带 `X-Agent-Internal-Token` 的 `/internal/v1/health`。
 
