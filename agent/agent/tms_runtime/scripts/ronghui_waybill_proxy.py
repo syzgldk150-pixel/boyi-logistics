@@ -12,13 +12,14 @@ from html import escape, unescape
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
 
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
 from agent.tms_runtime.session_broker import get_session_broker
 
 
 ORDER_ENTRY_MENU_ID = "1622"
-RONGHUI_WAYBILL_SESSION_PROFILE = "price"
+RONGHUI_WAYBILL_SESSION_PROFILE = PRICE_SESSION_PROFILE
 RONGHUI_ENTRY_PATH = "/widget/home"
 RONGHUI_ENTRY_REFERER = f"{RONGHUI_ORIGIN}{RONGHUI_ENTRY_PATH}"
 MENU_PATH = "/menuTreeExtend/loadMenu"

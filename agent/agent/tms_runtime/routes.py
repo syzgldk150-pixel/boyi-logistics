@@ -11,8 +11,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from agent.tms_runtime.dispatch import TARGETS, TaskRequest, execute_target
 from agent.api_contracts import EnvelopedRoute
+from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
+from agent.tms_runtime.dispatch import TARGETS, TaskRequest, execute_target
 from agent.tms_runtime.errors import TMSAuthStateError, auth_error_payload
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.monitoring import (
@@ -20,7 +21,6 @@ from agent.tms_runtime.monitoring import (
     build_monitoring_detail_link,
     build_monitoring_snapshot,
 )
-from agent.tms_runtime.session_broker import get_session_broker
 
 
 router = APIRouter(route_class=EnvelopedRoute)
@@ -48,8 +48,16 @@ class AccountCreateRequest(BaseModel):
     account_purpose: str = ""
 
 
+class AccountNameRequest(BaseModel):
+    name: str = ""
+
+
 class AccountActiveRequest(BaseModel):
     is_active: bool = True
+
+
+class AccountAutoLoginRequest(BaseModel):
+    enabled: bool = True
 
 
 class MonitoringDetailLinkRequest(BaseModel):
@@ -63,16 +71,6 @@ class MonitoringDetailLinkRequest(BaseModel):
 
 def _success_response(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, **payload}
-
-
-def _public_credentials_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    public_payload = dict(payload)
-    public_payload["password"] = ""
-    return public_payload
-
-
-def _session_broker(profile_name: str = "default"):
-    return get_session_broker(profile_name)
 
 
 def _account_manager():
@@ -113,6 +111,11 @@ def _store_account_list_cache(payload: dict[str, Any]) -> None:
                 "cached_at": time.time(),
             }
         )
+
+
+def _invalidate_account_list_cache() -> None:
+    with _ACCOUNT_LIST_CACHE_LOCK:
+        _ACCOUNT_LIST_CACHE.clear()
 
 
 def update_account_list_cache_status(status_payload: dict[str, Any]) -> bool:
@@ -219,6 +222,7 @@ def automation_account_create(req: AccountCreateRequest):
             name=req.name,
             account_purpose=req.account_purpose,
         )
+        _invalidate_account_list_cache()
         return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
@@ -234,19 +238,27 @@ def automation_account_status(account_id: str, force: bool = False):
         return _account_error_response(exc)
 
 
+@router.post("/admin/accounts/{account_id}/name")
+def automation_account_update_name(account_id: str, req: AccountNameRequest):
+    try:
+        account = _account_manager().update_name(account_id, req.name)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
+    except TMSAuthStateError as exc:
+        return _account_error_response(exc)
+
+
 @router.post("/admin/accounts/{account_id}/credentials")
 def automation_account_save_credentials(account_id: str, req: CredentialsRequest):
     try:
-        return _success_response(
-            {
-                "credentials": _account_manager().save_credentials(
-                    account_id,
-                    username=req.username,
-                    password=req.password,
-                    phone=req.phone,
-                )
-            }
+        credentials = _account_manager().save_credentials(
+            account_id,
+            username=req.username,
+            password=req.password,
+            phone=req.phone,
         )
+        _invalidate_account_list_cache()
+        return _success_response({"credentials": credentials})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -254,7 +266,9 @@ def automation_account_save_credentials(account_id: str, req: CredentialsRequest
 @router.post("/admin/accounts/{account_id}/credentials/clear")
 def automation_account_clear_credentials(account_id: str):
     try:
-        return _success_response({"credentials": _account_manager().clear_credentials(account_id)})
+        credentials = _account_manager().clear_credentials(account_id)
+        _invalidate_account_list_cache()
+        return _success_response({"credentials": credentials})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -262,7 +276,9 @@ def automation_account_clear_credentials(account_id: str):
 @router.post("/admin/accounts/{account_id}/login")
 def automation_account_login(account_id: str):
     try:
-        return _success_response(_account_manager().login(account_id))
+        status = _account_manager().login(account_id)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
@@ -270,7 +286,9 @@ def automation_account_login(account_id: str):
 @router.post("/admin/accounts/{account_id}/submit-code")
 def automation_account_submit_code(account_id: str, req: SubmitCodeRequest):
     try:
-        return _success_response(_account_manager().submit_code(account_id, req.code))
+        status = _account_manager().submit_code(account_id, req.code)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
@@ -278,7 +296,9 @@ def automation_account_submit_code(account_id: str, req: SubmitCodeRequest):
 @router.post("/admin/accounts/{account_id}/clear-session")
 def automation_account_clear_session(account_id: str):
     try:
-        return _success_response(_account_manager().clear_session(account_id))
+        status = _account_manager().clear_session(account_id)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -286,7 +306,9 @@ def automation_account_clear_session(account_id: str):
 @router.post("/admin/accounts/{account_id}/default")
 def automation_account_set_default(account_id: str):
     try:
-        return _success_response({"account": _account_manager().set_default(account_id)})
+        account = _account_manager().set_default(account_id)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -294,7 +316,19 @@ def automation_account_set_default(account_id: str):
 @router.post("/admin/accounts/{account_id}/active")
 def automation_account_set_active(account_id: str, req: AccountActiveRequest):
     try:
-        return _success_response({"account": _account_manager().set_active(account_id, req.is_active)})
+        account = _account_manager().set_active(account_id, req.is_active)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
+    except TMSAuthStateError as exc:
+        return _account_error_response(exc)
+
+
+@router.post("/admin/accounts/{account_id}/auto-login")
+def automation_account_set_auto_login(account_id: str, req: AccountAutoLoginRequest):
+    try:
+        account = _account_manager().set_auto_login(account_id, req.enabled)
+        _invalidate_account_list_cache()
+        return _success_response({"account": account})
     except TMSAuthStateError as exc:
         return _account_error_response(exc)
 
@@ -307,100 +341,114 @@ def tms_session_status(force: bool = False):
 @router.post("/admin/tms/session/send-code")
 def tms_session_send_code():
     try:
-        return _success_response(_session_broker().send_code())
+        status = _account_manager().login("ronghui_default")
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.get("/admin/tms/session/credentials")
 def tms_session_credentials():
-    return _success_response(_public_credentials_payload(_session_broker().get_saved_credentials()))
+    return _success_response(_account_manager().public_credentials("ronghui_default"))
 
 
 @router.post("/admin/tms/session/credentials")
 def tms_session_save_credentials(req: CredentialsRequest):
     try:
-        return _success_response(
-            _public_credentials_payload(
-                _session_broker().save_credentials(
-                    username=req.username,
-                    password=req.password,
-                    phone=req.phone,
-                )
-            )
+        credentials = _account_manager().save_credentials(
+            "ronghui_default",
+            username=req.username,
+            password=req.password,
+            phone=req.phone,
         )
+        _invalidate_account_list_cache()
+        return _success_response(credentials)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.post("/admin/tms/session/credentials/clear")
 def tms_session_clear_credentials():
-    return _success_response(_public_credentials_payload(_session_broker().clear_saved_credentials()))
+    credentials = _account_manager().clear_credentials("ronghui_default")
+    _invalidate_account_list_cache()
+    return _success_response(credentials)
 
 
 @router.post("/admin/tms/session/submit-code")
 def tms_session_submit_code(req: SubmitCodeRequest):
     try:
-        return _success_response(_session_broker().submit_code(req.code))
+        status = _account_manager().submit_code("ronghui_default", req.code)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.post("/admin/tms/session/clear")
 def tms_session_clear():
-    return _success_response(_session_broker().clear())
+    status = _account_manager().clear_session("ronghui_default")
+    update_account_list_cache_status(status)
+    return _success_response(status)
 
 
 @router.get("/admin/tms/price-session/status")
 def tms_price_session_status(force: bool = False):
-    return _success_response(_account_manager().describe_status("price_default", validate=True, force=force))
+    return _success_response(_account_manager().describe_status(PRICE_ACCOUNT_ID, validate=True, force=force))
 
 
 @router.post("/admin/tms/price-session/send-code")
 def tms_price_session_send_code():
     try:
-        return _success_response(_session_broker("price").send_code())
+        status = _account_manager().login(PRICE_ACCOUNT_ID)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.get("/admin/tms/price-session/credentials")
 def tms_price_session_credentials():
-    return _success_response(_public_credentials_payload(_session_broker("price").get_saved_credentials()))
+    return _success_response(_account_manager().public_credentials(PRICE_ACCOUNT_ID))
 
 
 @router.post("/admin/tms/price-session/credentials")
 def tms_price_session_save_credentials(req: CredentialsRequest):
     try:
-        return _success_response(
-            _public_credentials_payload(
-                _session_broker("price").save_credentials(
-                    username=req.username,
-                    password=req.password,
-                    phone=req.phone,
-                )
-            )
+        credentials = _account_manager().save_credentials(
+            PRICE_ACCOUNT_ID,
+            username=req.username,
+            password=req.password,
+            phone=req.phone,
         )
+        _invalidate_account_list_cache()
+        return _success_response(credentials)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.post("/admin/tms/price-session/credentials/clear")
 def tms_price_session_clear_credentials():
-    return _success_response(_public_credentials_payload(_session_broker("price").clear_saved_credentials()))
+    credentials = _account_manager().clear_credentials(PRICE_ACCOUNT_ID)
+    _invalidate_account_list_cache()
+    return _success_response(credentials)
 
 
 @router.post("/admin/tms/price-session/submit-code")
 def tms_price_session_submit_code(req: SubmitCodeRequest):
     try:
-        return _success_response(_session_broker("price").submit_code(req.code))
+        status = _account_manager().submit_code(PRICE_ACCOUNT_ID, req.code)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.post("/admin/tms/price-session/clear")
 def tms_price_session_clear():
-    return _success_response(_session_broker("price").clear())
+    status = _account_manager().clear_session(PRICE_ACCOUNT_ID)
+    update_account_list_cache_status(status)
+    return _success_response(status)
 
 
 @router.get("/admin/tms/yunda-session/status")
@@ -411,48 +459,55 @@ def tms_yunda_session_status(force: bool = False):
 @router.post("/admin/tms/yunda-session/send-code")
 def tms_yunda_session_send_code():
     try:
-        return _success_response(_session_broker("yunda").send_code())
+        status = _account_manager().login("yunda_default")
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.get("/admin/tms/yunda-session/credentials")
 def tms_yunda_session_credentials():
-    return _success_response(_public_credentials_payload(_session_broker("yunda").get_saved_credentials()))
+    return _success_response(_account_manager().public_credentials("yunda_default"))
 
 
 @router.post("/admin/tms/yunda-session/credentials")
 def tms_yunda_session_save_credentials(req: CredentialsRequest):
     try:
-        return _success_response(
-            _public_credentials_payload(
-                _session_broker("yunda").save_credentials(
-                    username=req.username,
-                    password=req.password,
-                    phone=req.phone,
-                )
-            )
+        credentials = _account_manager().save_credentials(
+            "yunda_default",
+            username=req.username,
+            password=req.password,
+            phone=req.phone,
         )
+        _invalidate_account_list_cache()
+        return _success_response(credentials)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.post("/admin/tms/yunda-session/credentials/clear")
 def tms_yunda_session_clear_credentials():
-    return _success_response(_public_credentials_payload(_session_broker("yunda").clear_saved_credentials()))
+    credentials = _account_manager().clear_credentials("yunda_default")
+    _invalidate_account_list_cache()
+    return _success_response(credentials)
 
 
 @router.post("/admin/tms/yunda-session/submit-code")
 def tms_yunda_session_submit_code(req: SubmitCodeRequest):
     try:
-        return _success_response(_session_broker("yunda").submit_code(req.code))
+        status = _account_manager().submit_code("yunda_default", req.code)
+        update_account_list_cache_status(status)
+        return _success_response(status)
     except TMSAuthStateError as exc:
         return JSONResponse(status_code=200, content=auth_error_payload(exc))
 
 
 @router.post("/admin/tms/yunda-session/clear")
 def tms_yunda_session_clear():
-    return _success_response(_session_broker("yunda").clear())
+    status = _account_manager().clear_session("yunda_default")
+    update_account_list_cache_status(status)
+    return _success_response(status)
 
 
 @router.get("/admin/monitoring/snapshot")

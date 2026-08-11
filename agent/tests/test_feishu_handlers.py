@@ -18,7 +18,7 @@ def _admin_accounts_payload(*, pending_accounts: set[str] | None = None) -> dict
     pending_accounts = pending_accounts or set()
     accounts = [
         ("ronghui_default", "TMS融辉默认账号", "ronghui", "TMS融辉", "default", True),
-        ("price_default", "大祥报价账号", "price", "大祥报价", "price", True),
+        ("price_default", "大祥报价账号", "ronghui", "TMS融辉", "price_default", True),
         ("yunda_default", "韵达默认账号", "yunda", "韵达", "yunda", True),
     ]
     return {
@@ -29,6 +29,8 @@ def _admin_accounts_payload(*, pending_accounts: set[str] | None = None) -> dict
                 "name": name,
                 "system": system,
                 "system_label": system_label,
+                "account_purpose": "price" if account_id == "price_default" else "general",
+                "account_purpose_label": "大祥报价" if account_id == "price_default" else "普通账号",
                 "session_profile": session_profile,
                 "session_capable": True,
                 "is_active": True,
@@ -615,7 +617,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("login_account_choice", pending_calls[0][1]["type"])
         self.assertEqual("account:ronghui_default", pending_calls[0][1]["options"][0]["auth_session"])
         self.assertIn("1. TMS融辉默认账号 (ronghui_default) · TMS融辉", replies[-1])
-        self.assertIn("2. 大祥报价账号 (price_default) · 大祥报价", replies[-1])
+        self.assertIn("2. 大祥报价账号 (price_default) · TMS融辉 / 大祥报价", replies[-1])
 
     async def test_login_choice_reply_uses_account_login_endpoint(self):
         replies: list[str] = []
@@ -855,6 +857,44 @@ class TmsAccountMonitorTests(unittest.TestCase):
         ):
             self.assertTrue(main._should_start_tms_session_alert_monitor())
 
+    def test_session_monitor_skips_accounts_with_auto_login_disabled_or_blocked(self):
+        class FakeManager:
+            def describe_status(self, account_id, *, validate=True, force=False):
+                raise AssertionError("paused accounts must not be validated")
+
+            def check_status_with_auto_login(self, account_id, *, force=False):
+                raise AssertionError("paused accounts must not attempt auto-login")
+
+        base_account = {
+            "account_id": "ronghui_default",
+            "system": "ronghui",
+            "session_capable": True,
+            "is_active": True,
+        }
+
+        disabled = _check_tms_account_session(
+            FakeManager(),
+            {**base_account, "auto_login_enabled": False},
+        )
+        blocked = _check_tms_account_session(
+            FakeManager(),
+            {
+                **base_account,
+                "auto_login_enabled": True,
+                "auto_login_blocked": True,
+            },
+        )
+
+        self.assertFalse(disabled["monitored"])
+        self.assertFalse(disabled["should_alert"])
+        self.assertFalse(blocked["monitored"])
+        self.assertFalse(blocked["should_alert"])
+        self.assertFalse(
+            main._should_alert_tms_session_status(
+                {"status": "error", "auto_login_enabled": False}
+            )
+        )
+
     def test_disconnected_account_auto_login_success_does_not_alert(self):
         account = {
             "account_id": "ronghui_default",
@@ -864,6 +904,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "default",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
 
         class FakeManager:
@@ -912,6 +953,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "yunda",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
 
         class FakeManager:
@@ -953,6 +995,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "default",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
 
         class FakeManager:
@@ -987,6 +1030,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "yunda",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
         timeout_message = (
             "HTTPSConnectionPool(host='rpts-kyprts.yunda56.com', port=8081): "

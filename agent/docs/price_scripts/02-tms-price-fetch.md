@@ -4,7 +4,7 @@ type: 模块文档
 tags: [TMS, API, OCR登录, 批量报价, 同名消歧, 断点续传, 网点匹配]
 related: [[01-amap-address-fetch], [03-quote-sheet-generation], [TMS价格结构分析], [tms-batch-quote-resume]]
 status: active
-updated: 2026-06-16
+updated: 2026-08-11
 ---
 
 # 模块二：TMS 系统价格获取
@@ -29,7 +29,7 @@ updated: 2026-06-16
   - RC1：14/16 修复成功（根因：address_database.json 地址指向同名他城），2 个为 TMS 系统盲区
   - RC2：17 个地址已修正
   - RC3：100 个全部修复成功
-- Agent `price_tool` 已接入本模块：飞书单地址报价默认通过 Agent `/tms/get_price`，使用独立的 `price` TMS 短信登录态（`/admin/tms/price-session/*`）；批量报价脚本仍保留本目录 `get_price.py` / `login_manager.py` 的离线采集入口。
+- Agent `price_tool` 已接入本模块：飞书单地址报价默认通过 Agent `/tms/get_price`，请求明确携带账号管理中的 `price_default`，由 AccountManager 解析该账号的 `price_default` session profile；后台“立即登录”、自动登录监控、飞书报价和原页代理复用同一账号登录态，不再由报价工具写死特殊 `price` 身份。兼容 `/admin/tms/price-session/*` 仅保留给旧调用方并映射到 `price_default`；批量报价脚本仍保留本目录 `get_price.py` / `login_manager.py` 的离线采集入口。
 
 ---
 

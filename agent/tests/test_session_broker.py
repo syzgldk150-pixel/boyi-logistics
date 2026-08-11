@@ -182,14 +182,14 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(len(session.post_calls), 1)
         self.assertEqual(session.post_calls[0]["data"]["validateCode"], "ab12")
 
-    def test_auto_login_ronghui_falls_back_to_manual_after_four_failed_attempts(self):
+    def test_auto_login_ronghui_falls_back_to_manual_after_three_failed_attempts(self):
         session = _CaptchaPostSession([
             _DummyResponse(status_code=200, text="validateCode system/login", headers={"Content-Type": "text/html"})
-            for _ in range(4)
+            for _ in range(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS)
         ])
         fetch_side_effect = [
             (f"captcha-{idx}".encode("utf-8"), f"data:image/png;base64,Y2FwdGNoYS0{idx}", "image/png")
-            for idx in range(1, 5)
+            for idx in range(1, session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS + 1)
         ]
         with (
             patch.object(self.broker, "_fetch_ronghui_captcha_challenge", side_effect=fetch_side_effect),
@@ -201,18 +201,19 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(result["challenge_type"], "image")
         self.assertTrue(result["captcha_image"].startswith("data:image/png;base64,"))
         self.assertTrue(result["last_error_summary"])
-        self.assertIn("4", result["last_error_summary"])
+        self.assertIn(str(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS), result["last_error_summary"])
+        self.assertTrue(result["auto_login_attempts_exhausted"])
         self.assertTrue(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker._pending_login_state_path.exists())
-        self.assertEqual(len(session.post_calls), 4)
+        self.assertEqual(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS, len(session.post_calls))
 
     def test_price_profile_send_code_reuses_auto_image_login_flow(self):
         price_broker = self._configure_broker_state(
             SessionBroker(
                 profile_name="price",
-                username_envs=PRICE_USERNAME_ENVS,
-                password_envs=PRICE_PASSWORD_ENVS,
-                phone_envs=PRICE_PHONE_ENVS,
+                username_envs=(),
+                password_envs=(),
+                phone_envs=(),
             ),
             "price",
         )
@@ -318,7 +319,7 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(1, len(page.clicked))
         self.assertEqual(page.filled[session_broker_module.YUNDA_CAPTCHA_INPUT], "yd12")
 
-    def test_yunda_image_captcha_auto_login_falls_back_after_four_failures(self):
+    def test_yunda_image_captcha_auto_login_falls_back_after_three_failures(self):
         yunda_config = LoginConfig(
             base_origin="https://ky-sso.yunda56.com",
             login_url="https://ky-sso.yunda56.com/login",
@@ -346,7 +347,8 @@ class SessionBrokerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "pending_code")
         self.assertEqual(result["challenge_type"], "image")
-        self.assertIn("4", result["last_error_summary"])
+        self.assertIn(str(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS), result["last_error_summary"])
+        self.assertTrue(result["auto_login_attempts_exhausted"])
         self.assertTrue(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker._pending_login_state_path.exists())
         self.assertEqual(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS, len(page.clicked))
@@ -693,39 +695,20 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(config.password, "env-pass")
         self.assertEqual(config.phone, "13900002222")
 
-    def test_price_profile_uses_price_envs_and_separate_state_dir(self):
-        price_broker = SessionBroker(
-            profile_name="price",
-            username_envs=PRICE_USERNAME_ENVS,
-            password_envs=PRICE_PASSWORD_ENVS,
-            phone_envs=PRICE_PHONE_ENVS,
-        )
-        state_dir = Path(self.tempdir.name) / "price"
-        price_broker._state_dir = state_dir
-        price_broker._meta_path = state_dir / "session_meta.json"
-        price_broker._storage_state_path = state_dir / "storage_state.json"
-        price_broker._cookies_path = state_dir / "cookies.json"
-        price_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        price_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        price_broker._login_profile_path = state_dir / "login_profile.json"
-        state_dir.mkdir(parents=True, exist_ok=True)
+    def test_managed_ronghui_profiles_use_saved_credentials_and_separate_state_dirs(self):
+        session_broker_module._SESSION_BROKERS.clear()
+        try:
+            price_broker = get_session_broker("price")
+            custom_broker = get_session_broker("ronghui_ops_01")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "TMS_DAXIANGUSERNAME": "price-user",
-                "TMS_DAXIANGPASSWORD": "price-pass",
-                "TMS_DAXIANGPHONE": "13800003333",
-            },
-            clear=False,
-        ):
-            config = price_broker.resolve_login_config()
-
-        self.assertEqual(price_broker.profile_name, "price")
-        self.assertEqual(config.username, "price-user")
-        self.assertEqual(config.password, "price-pass")
-        self.assertEqual(config.phone, "13800003333")
-        self.assertIn("price", str(price_broker._state_dir))
+            self.assertEqual(price_broker.profile_name, "price")
+            self.assertEqual(price_broker._username_envs, ())
+            self.assertEqual(price_broker._password_envs, ())
+            self.assertEqual(custom_broker._username_envs, ())
+            self.assertNotEqual(price_broker._state_dir, custom_broker._state_dir)
+            self.assertIn("price", str(price_broker._state_dir))
+        finally:
+            session_broker_module._SESSION_BROKERS.clear()
 
     def test_yunda_profile_uses_independent_state_and_ronghui_alias(self):
         session_broker_module._SESSION_BROKERS.clear()
@@ -742,7 +725,11 @@ class SessionBrokerTests(unittest.TestCase):
             ):
                 default_broker = get_session_broker("default")
                 ronghui_broker = get_session_broker("ronghui")
-                yunda_broker = get_session_broker("yunda")
+                yunda_broker = self._configure_broker_state(get_session_broker("yunda"), "yunda-profile")
+                custom_yunda_broker = self._configure_broker_state(
+                    get_session_broker("yunda_ops_01"),
+                    "yunda-custom-profile",
+                )
                 config = yunda_broker.resolve_login_config()
 
             self.assertIs(default_broker, ronghui_broker)
@@ -756,6 +743,8 @@ class SessionBrokerTests(unittest.TestCase):
             self.assertEqual(config.phone, "13800004444")
             self.assertEqual(yunda_broker._login_mode, "yunda_password")
             self.assertFalse(yunda_broker._require_phone)
+            self.assertEqual(custom_yunda_broker._login_mode, "yunda_password")
+            self.assertEqual(custom_yunda_broker._username_envs, ())
         finally:
             session_broker_module._SESSION_BROKERS.clear()
 
@@ -804,6 +793,7 @@ class SessionBrokerTests(unittest.TestCase):
             clear=False,
         ):
             credentials = yunda_broker.get_saved_credentials()
+            manual_credentials = yunda_broker.get_manual_credentials()
             config = yunda_broker.resolve_login_config()
             status = yunda_broker.describe_status(validate=False)
 
@@ -813,6 +803,10 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(credentials["credential_source"], "env")
         self.assertEqual(credentials["username"], "")
         self.assertEqual(credentials["password"], "")
+        self.assertFalse(manual_credentials["has_saved_credentials"])
+        self.assertFalse(manual_credentials["has_manual_credentials"])
+        self.assertFalse(manual_credentials["has_env_credentials"])
+        self.assertEqual(manual_credentials["credential_source"], "")
         self.assertEqual(config.username, "env-user")
         self.assertEqual(config.password, "env-pass")
         self.assertTrue(status["has_saved_credentials"])

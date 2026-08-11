@@ -41,6 +41,19 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
             customer_service_problem._normalize_direction("my_published", platform="yunda"),
         )
 
+    def test_ronghui_default_session_uses_managed_price_account_profile(self):
+        self.assertEqual(
+            "price_default",
+            customer_service_problem._session_profile("ronghui", {}),
+        )
+        self.assertEqual(
+            "ronghui_custom_profile",
+            customer_service_problem._session_profile(
+                "ronghui",
+                {"session_profile": "ronghui_custom_profile"},
+            ),
+        )
+
     def test_dispatch_resolves_explicit_customer_service_account_id(self):
         from agent.tms_runtime import dispatch as dispatch_module
 

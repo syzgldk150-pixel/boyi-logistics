@@ -507,7 +507,7 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
                 handler,
                 endpoint="/internal/v1/admin/tms/session/clear",
                 payload={},
-                success_message="TMS 登录态已清除。",
+                success_message="TMS 已退出登录，自动登录与断线提醒已关闭。",
                 timeout=20,
             )
             return

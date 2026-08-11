@@ -69,6 +69,9 @@ tools:
         volume:
           type: number
           description: "可选：体积(m³)，默认 0.1"
+        account_id:
+          type: string
+          description: "可选：账号管理中的融辉报价账号 ID；飞书直达报价默认使用 price_default"
       required: [weight]
     executor: tools/price_tool.py
     timeout: 60
@@ -587,6 +590,9 @@ tools:
     parameters:
       type: object
       properties:
+        account_id:
+          type: string
+          description: "可选：账号管理中的 R7 账号 ID；默认使用 R7 默认账号"
         status_text:
           type: string
           description: "待打卡任务的运输状态，默认 车辆到达；旧的 已调度 参数会在执行到达待卸时自动纠偏"
@@ -614,7 +620,7 @@ tools:
           description: "浏览器动作延迟毫秒，默认 0"
         max_login_attempts:
           type: integer
-          description: "R7 登录重试次数，默认 6"
+          description: "R7 登录重试次数，默认且最多 3 次"
         after_action_delay_ms:
           type: integer
           description: "打卡后验证前等待毫秒，默认 1500"
@@ -631,6 +637,9 @@ tools:
     parameters:
       type: object
       properties:
+        account_id:
+          type: string
+          description: "可选：账号管理中的 R7 账号 ID；默认使用 R7 默认账号"
         status_text:
           type: string
           description: "待打卡任务的运输状态，默认 已调度"
@@ -658,7 +667,7 @@ tools:
           description: "浏览器动作延迟毫秒，默认 0"
         max_login_attempts:
           type: integer
-          description: "R7 登录重试次数，默认 6"
+          description: "R7 登录重试次数，默认且最多 3 次"
         after_action_delay_ms:
           type: integer
           description: "打卡后验证前等待毫秒，默认 1500"

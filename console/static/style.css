@@ -1269,6 +1269,7 @@ body.dispatch-page .notice { display: none; }
 .automation-account-add-btn .feather { width: 18px; height: 18px; stroke-width: 2.5; }
 .automation-account-create { position: absolute; top: calc(100% + 10px); right: 0; z-index: 50; width: min(920px, calc(100vw - 360px)); display: grid; grid-template-columns: minmax(160px, 1fr) minmax(170px, 1fr) minmax(135px, 0.75fr) minmax(145px, 0.8fr) auto; gap: 10px; align-items: end; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; box-shadow: 0 18px 45px rgba(15,23,42,0.14); }
 .automation-account-create label,
+.automation-account-name-form label,
 .automation-account-credentials label,
 .automation-account-code label { display: flex; flex-direction: column; gap: 6px; color: var(--text-strong); font-size: 0.78rem; font-weight: 800; }
 .automation-account-table-card { overflow: visible; border: 1px solid var(--line); border-radius: var(--radius-xl); background: #fff; box-shadow: var(--shadow-soft); }
@@ -1281,23 +1282,36 @@ body.dispatch-page .notice { display: none; }
 .automation-account-table th:last-child { border-top-right-radius: var(--radius-xl); text-align: right; }
 .automation-account-table td { color: var(--text-strong); font-size: 0.91rem; font-weight: 650; }
 .automation-account-table th:nth-child(1) { width: 14%; }
-.automation-account-table th:nth-child(2) { width: 16%; }
-.automation-account-table th:nth-child(3) { width: 15%; }
-.automation-account-table th:nth-child(4) { width: 18%; }
+.automation-account-table th:nth-child(2) { width: 12%; }
+.automation-account-table th:nth-child(3) { width: 11%; }
+.automation-account-table th:nth-child(4) { width: 14%; }
 .automation-account-table th:nth-child(5) { width: 19%; }
-.automation-account-table th:nth-child(6) { width: 18%; }
+.automation-account-table th:nth-child(6) { width: 15%; }
+.automation-account-table th:nth-child(7) { width: 15%; }
 .automation-account-table tr:last-child td { border-bottom: 0; }
 .automation-account-table tbody tr:hover td { background: #fcfcfd; }
 .automation-account-table tbody tr.is-disabled td { color: #94a3b8; background: #fafafa; }
 .automation-account-system-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
 .automation-account-system { display: inline-flex; color: var(--text-strong); font-weight: 850; white-space: nowrap; }
-.automation-account-name { color: #64748b; font-size: 0.76rem; font-weight: 750; line-height: 1.2; }
+.automation-account-name { color: #64748b; font-size: 0.76rem; font-weight: 750; line-height: 1.2; overflow-wrap: anywhere; }
 .automation-account-mini-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
 .automation-account-mini-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: 6px; background: #f1f5f9; color: #64748b; font-size: 0.68rem; font-weight: 850; }
+.automation-account-mini-badge[hidden] { display: none !important; }
 .automation-account-mini-badge--purpose { background: #eff6ff; color: #2563eb; }
 .automation-account-mini-badge--credentials.automation-account-mini-badge--success { background: #f0fdf4; color: #16a34a; }
 .automation-account-mini-badge--credentials.automation-account-mini-badge--warning { background: #fffbeb; color: #d97706; }
 .automation-account-mini-badge--muted { background: #f1f5f9; color: #64748b; }
+.automation-account-inline-auto-login { display: flex; min-width: 132px; flex-direction: column; align-items: flex-start; gap: 4px; }
+.automation-account-auto-login-switch { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; padding: 0 4px 0 0; border: 0; border-radius: var(--radius-md); background: transparent; color: #64748b; font: inherit; font-size: 0.8rem; font-weight: 850; cursor: pointer; transition: color 160ms ease, opacity 160ms ease; }
+.automation-account-auto-login-switch:hover:not([disabled]) { color: var(--text-strong); }
+.automation-account-auto-login-switch:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--focus); }
+.automation-account-auto-login-switch[disabled] { color: #94a3b8; cursor: not-allowed; opacity: 0.72; }
+.automation-account-switch-track { position: relative; display: inline-flex; width: 38px; height: 22px; flex: 0 0 auto; align-items: center; padding: 2px; border-radius: 999px; background: #cbd5e1; transition: background 160ms ease; }
+.automation-account-switch-thumb { width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(15,23,42,0.3); transform: translateX(0); transition: transform 160ms ease; }
+.automation-account-auto-login-switch.is-active .automation-account-switch-track { background: #2563eb; }
+.automation-account-auto-login-switch.is-active .automation-account-switch-thumb { transform: translateX(16px); }
+.automation-account-inline-auto-login small { max-width: 150px; color: #64748b; font-size: 0.68rem; font-weight: 650; line-height: 1.35; }
+.automation-account-auto-login-unsupported { display: inline-flex; min-height: 28px; align-items: center; padding: 0 9px; border-radius: 6px; background: #f1f5f9; color: #94a3b8; font-size: 0.74rem; font-weight: 800; }
 .automation-account-status-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .automation-account-status { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border-radius: 6px; font-size: 0.82rem; font-weight: 850; white-space: nowrap; }
 .automation-account-status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -1316,6 +1330,7 @@ body.dispatch-page .notice { display: none; }
 .automation-account-action-link { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0; color: #475569; font-size: 0.84rem; font-weight: 850; cursor: pointer; background: transparent; border: 0; }
 .automation-account-action-link[data-account-primary-action] { width: 100%; justify-content: flex-start; }
 .automation-account-action-link:hover { color: var(--text-strong); }
+.automation-account-action-link[disabled] { color: #94a3b8; cursor: not-allowed; }
 .automation-account-details { position: relative; display: inline-flex; }
 .automation-account-edit { justify-content: center; }
 .automation-account-menu { justify-content: flex-end; }
@@ -1327,9 +1342,21 @@ body.dispatch-page .notice { display: none; }
 .automation-account-edit-panel,
 .automation-account-menu-panel { position: absolute; top: calc(100% + 9px); right: 0; z-index: 40; border: 1px solid #e2e8f0; border-radius: var(--radius-lg); background: #fff; box-shadow: 0 18px 42px rgba(15,23,42,0.12); }
 .automation-account-edit-panel { width: min(700px, calc(100vw - 360px)); padding: 14px; }
-.automation-account-menu-panel { width: 210px; padding: 8px; }
+.automation-account-name-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+.automation-account-name-form label small { color: #64748b; font-size: 0.7rem; font-weight: 650; line-height: 1.35; }
+.automation-account-name-save { min-height: 42px; gap: 8px; }
+.automation-account-name-save .feather { width: 15px; height: 15px; }
+.automation-account-edit-divider { display: flex; align-items: center; gap: 10px; margin: 13px 0 11px; color: #64748b; font-size: 0.7rem; font-weight: 800; }
+.automation-account-edit-divider::after { content: ""; height: 1px; flex: 1; background: var(--line); }
+.automation-account-form-error { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: 0.74rem; font-weight: 750; line-height: 1.4; }
+.automation-account-form-error[hidden] { display: none !important; }
+.automation-account-menu-panel { width: 250px; padding: 8px; }
 .automation-account-menu-panel form { width: 100%; }
-.automation-account-menu-panel .ghost-btn { width: 100%; justify-content: flex-start; min-height: 38px; border-color: transparent; background: #fff; color: #334155; box-shadow: none; }
+.automation-account-menu-panel .ghost-btn { width: 100%; justify-content: flex-start; align-items: flex-start; gap: 10px; min-height: 48px; padding: 8px 10px; border-color: transparent; background: #fff; color: #334155; box-shadow: none; }
+.automation-account-menu-panel .ghost-btn > .feather { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 2px; }
+.automation-account-menu-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; white-space: normal; }
+.automation-account-menu-copy strong { color: inherit; font-size: 0.82rem; font-weight: 850; line-height: 1.25; }
+.automation-account-menu-copy small { color: #64748b; font-size: 0.7rem; font-weight: 650; line-height: 1.35; }
 .automation-account-menu-panel .ghost-btn:hover { border-color: #e2e8f0; background: #f8fafc; color: var(--text-strong); }
 .automation-account-menu-panel .ghost-btn[disabled] { border-color: transparent; background: #fff; color: #94a3b8; opacity: 0.72; cursor: not-allowed; }
 .automation-account-menu-panel .ghost-btn--danger { border-color: transparent; background: #fff; color: #991b1b; }
@@ -1442,7 +1469,7 @@ body.dispatch-page .notice { display: none; }
   .automation-account-tabs { gap: 8px; padding-bottom: 12px; }
   .automation-account-tab { min-height: 36px; padding: 0 12px; font-size: 0.84rem; }
   .automation-account-create { right: auto; left: 0; width: min(420px, calc(100vw - 32px)); grid-template-columns: 1fr; }
-  .automation-account-table { min-width: 920px; }
+  .automation-account-table { min-width: 1060px; }
   .automation-account-table th,
   .automation-account-table td { padding: 14px 16px; }
   .automation-account-actions-stack,
@@ -1452,6 +1479,7 @@ body.dispatch-page .notice { display: none; }
   .automation-account-inline-error { text-align: left; }
   .automation-account-edit-panel { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-height: calc(100vh - 32px); overflow-y: auto; }
   .automation-account-menu-panel { right: auto; left: 0; }
+  .automation-account-name-form,
   .automation-account-credentials,
   .automation-account-code { grid-template-columns: 1fr; }
   .line-haul-compact-head { align-items: flex-start; flex-direction: column; }

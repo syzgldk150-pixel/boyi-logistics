@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID, PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import SAVED_PASSWORD_MASK, get_session_broker
 
@@ -22,11 +24,13 @@ ACCOUNTS_PATH = STATE_DIR / "automation_accounts.json"
 LOCAL_ACCOUNT_DIR = STATE_DIR / "automation_account_credentials"
 
 ACCOUNT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
+ACCOUNT_NAME_MAX_LENGTH = 80
 SYSTEMS: dict[str, dict[str, Any]] = {
     "ronghui": {
         "label": "TMS融辉",
         "login_kind": "image",
         "session_capable": True,
+        "session_backend": "tms",
         "default_session_profile": "default",
         "custom_profile_prefix": "ronghui",
         "require_phone": False,
@@ -35,6 +39,7 @@ SYSTEMS: dict[str, dict[str, Any]] = {
         "label": "韵达",
         "login_kind": "password",
         "session_capable": True,
+        "session_backend": "tms",
         "default_session_profile": "yunda",
         "custom_profile_prefix": "yunda",
         "require_phone": False,
@@ -42,13 +47,19 @@ SYSTEMS: dict[str, dict[str, Any]] = {
     "r7": {
         "label": "R7",
         "login_kind": "password",
-        "session_capable": False,
+        "session_capable": True,
+        "session_backend": "sso",
+        "default_session_profile": "r7_default",
+        "custom_profile_prefix": "r7",
         "require_phone": False,
     },
     "r13": {
         "label": "R13",
         "login_kind": "password",
-        "session_capable": False,
+        "session_capable": True,
+        "session_backend": "sso",
+        "default_session_profile": "r13_default",
+        "custom_profile_prefix": "r13",
         "require_phone": False,
     },
 }
@@ -72,6 +83,7 @@ RONGHUI_PURPOSE_PROFILE_PREFIXES = {
 }
 
 AUTO_LOGIN_STATUSES = {"expired", "logged_out", "error"}
+AUTO_LOGIN_FAILURE_LIMIT = 3
 
 DEFAULT_ACCOUNTS: list[dict[str, Any]] = [
     {
@@ -107,12 +119,12 @@ DEFAULT_ACCOUNTS: list[dict[str, Any]] = [
         "session_profile": "yunda",
     },
     {
-        "account_id": "price_default",
+        "account_id": PRICE_ACCOUNT_ID,
         "system": "ronghui",
         "name": "大祥报价账号",
         "account_purpose": "price",
         "is_default": True,
-        "session_profile": "price",
+        "session_profile": PRICE_SESSION_PROFILE,
     },
     {
         "account_id": "r7_default",
@@ -173,7 +185,7 @@ def _infer_account_purpose(system: str, row: dict[str, Any]) -> str:
         return "general"
     account_id = str(row.get("account_id") or "").strip()
     session_profile = str(row.get("session_profile") or "").strip()
-    if account_id == "price_default" or session_profile == "price" or session_profile.startswith("price_"):
+    if account_id == PRICE_ACCOUNT_ID or session_profile == "price" or session_profile.startswith("price_"):
         return "price"
     if account_id == "ronghui_self_pickup_problem" or session_profile == "self_pickup_problem_upload":
         return "self_pickup_problem"
@@ -252,6 +264,20 @@ class AccountRecord:
 class AutomationAccountManager:
     def __init__(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_price_session()
+        self._auto_login_locks: dict[str, threading.Lock] = {}
+        self._auto_login_locks_guard = threading.Lock()
+
+    @staticmethod
+    def _migrate_legacy_price_session() -> None:
+        legacy_dir = STATE_DIR / "price"
+        account_dir = STATE_DIR / PRICE_SESSION_PROFILE
+        if legacy_dir.exists() and not account_dir.exists():
+            legacy_dir.replace(account_dir)
+
+    def _auto_login_lock(self, account_id: str) -> threading.Lock:
+        with self._auto_login_locks_guard:
+            return self._auto_login_locks.setdefault(account_id, threading.Lock())
 
     def _load_accounts(self) -> list[dict[str, Any]]:
         raw = _read_json(ACCOUNTS_PATH, [])
@@ -278,6 +304,25 @@ class AutomationAccountManager:
             row["name"] = str(row.get("name") or account_id).strip()
             row["is_active"] = bool(row.get("is_active", True))
             row["is_default"] = bool(row.get("is_default", False))
+            raw_failure_count = row.get("auto_login_failure_count", 0)
+            try:
+                failure_count = max(int(raw_failure_count), 0)
+            except (TypeError, ValueError):
+                failure_count = 0
+            failure_count = min(failure_count, AUTO_LOGIN_FAILURE_LIMIT)
+            auto_login_enabled = bool(row.get("auto_login_enabled", False))
+            auto_login_blocked = bool(row.get("auto_login_blocked", False)) or (
+                failure_count >= AUTO_LOGIN_FAILURE_LIMIT
+            )
+            if (
+                row.get("auto_login_enabled") != auto_login_enabled
+                or row.get("auto_login_failure_count") != failure_count
+                or row.get("auto_login_blocked") != auto_login_blocked
+            ):
+                changed = True
+            row["auto_login_enabled"] = auto_login_enabled
+            row["auto_login_failure_count"] = failure_count
+            row["auto_login_blocked"] = auto_login_blocked
             row["created_at"] = str(row.get("created_at") or now)
             row["updated_at"] = str(row.get("updated_at") or row["created_at"])
             previous_profile = str(row.get("session_profile") or "")
@@ -292,6 +337,9 @@ class AutomationAccountManager:
             row = {
                 **default,
                 "is_active": True,
+                "auto_login_enabled": False,
+                "auto_login_failure_count": 0,
+                "auto_login_blocked": False,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -339,6 +387,53 @@ class AutomationAccountManager:
     def _save_accounts(self, rows: list[dict[str, Any]]) -> None:
         _write_json(ACCOUNTS_PATH, rows)
 
+    def _set_auto_login_state(
+        self,
+        account_id: str,
+        *,
+        enabled: bool | None = None,
+        failure_count: int | None = None,
+        blocked: bool | None = None,
+    ) -> dict[str, Any]:
+        rows = self._load_accounts()
+        now = _now_label()
+        updated: dict[str, Any] | None = None
+        for item in rows:
+            if item["account_id"] != account_id:
+                continue
+            if enabled is not None:
+                item["auto_login_enabled"] = bool(enabled)
+            if failure_count is not None:
+                item["auto_login_failure_count"] = min(
+                    max(int(failure_count), 0),
+                    AUTO_LOGIN_FAILURE_LIMIT,
+                )
+            if blocked is not None:
+                item["auto_login_blocked"] = bool(blocked)
+            item["updated_at"] = now
+            updated = item
+            break
+        if updated is None:
+            raise TMSAuthStateError("ACCOUNT_NOT_FOUND", "账号不存在。")
+        self._save_accounts(rows)
+        return dict(updated)
+
+    def _reset_auto_login_failures(self, account_id: str) -> dict[str, Any]:
+        row = self._get_account_row(account_id)
+        if not row.get("auto_login_failure_count") and not row.get("auto_login_blocked"):
+            return row
+        return self._set_auto_login_state(account_id, failure_count=0, blocked=False)
+
+    def _record_auto_login_failure(self, account_id: str, *, exhausted: bool = False) -> dict[str, Any]:
+        row = self._get_account_row(account_id)
+        current = int(row.get("auto_login_failure_count") or 0)
+        next_count = AUTO_LOGIN_FAILURE_LIMIT if exhausted else min(current + 1, AUTO_LOGIN_FAILURE_LIMIT)
+        return self._set_auto_login_state(
+            account_id,
+            failure_count=next_count,
+            blocked=next_count >= AUTO_LOGIN_FAILURE_LIMIT,
+        )
+
     def _coerce_session_profile(self, row: dict[str, Any]) -> str:
         system = str(row.get("system") or "").strip().lower()
         config = SYSTEMS.get(system, {})
@@ -367,6 +462,69 @@ class AutomationAccountManager:
             prefix = str(config.get("custom_profile_prefix") or system)
         return f"{prefix}_{_slug(account_id)}"
 
+    @staticmethod
+    def _session_backend(row: dict[str, Any]) -> str:
+        return str(SYSTEMS[str(row.get("system") or "")].get("session_backend") or "").strip()
+
+    def _uses_tms_broker(self, row: dict[str, Any]) -> bool:
+        return self._session_backend(row) == "tms"
+
+    def _uses_sso_session(self, row: dict[str, Any]) -> bool:
+        return self._session_backend(row) == "sso"
+
+    def _sso_state_path(self, row: dict[str, Any]) -> Path:
+        return _local_credential_path(row["account_id"]).with_name("sso_session.json")
+
+    def _sso_auth(self, row: dict[str, Any]):
+        state_path = self._sso_state_path(row)
+        if row["system"] == "r7":
+            from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
+
+            return R7SSOAuth(config_path="", state_path=state_path)
+        if row["system"] == "r13":
+            from agent.tms_runtime.scripts.r13_login_manager import R13SSOAuth
+
+            return R13SSOAuth(config_path="", state_path=state_path)
+        raise TMSAuthStateError("UNSUPPORTED_ACTION", "该账号没有可用的统一登录后端。")
+
+    def _describe_sso_status(self, row: dict[str, Any], *, validate: bool) -> dict[str, Any]:
+        auth = self._sso_auth(row)
+        return auth.persisted_status(
+            validate=validate,
+            validator=auth._verify_authenticated,
+            attach_bearer=True,
+        )
+
+    def _login_sso(self, row: dict[str, Any], *, allow_cached: bool = True) -> dict[str, Any]:
+        credentials = self.private_credentials(row["account_id"])
+        if not credentials.get("username") or not credentials.get("password"):
+            raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码。")
+        auth = self._sso_auth(row)
+        kwargs = {
+            "username": credentials["username"],
+            "password": credentials["password"],
+            "max_attempts": 1,
+            "exchange": True,
+            "verify": True,
+            "allow_cached": allow_cached,
+            "allow_fresh_login": True,
+        }
+        if row["system"] == "r13":
+            kwargs["account_key"] = None
+        try:
+            auth.login_and_get_session(**kwargs)
+        except Exception as exc:
+            system_label = str(SYSTEMS[row["system"]].get("label") or row["system"])
+            raise TMSAuthStateError(
+                "LOGIN_FAILED",
+                f"{system_label} 登录失败，已停止重试；请检查账号密码或账号状态。",
+            ) from exc
+        return auth.persisted_status(
+            validate=False,
+            validator=auth._verify_authenticated,
+            attach_bearer=True,
+        )
+
     def _get_account_row(self, account_id: str) -> dict[str, Any]:
         safe_id = _safe_account_id(account_id)
         for row in self._load_accounts():
@@ -392,6 +550,13 @@ class AutomationAccountManager:
                     payload["status"] = self.check_status_with_auto_login(row["account_id"], force=force)
                 else:
                     payload["status"] = self.describe_status(row["account_id"], validate=validate, force=force)
+                for field in (
+                    "auto_login_enabled",
+                    "auto_login_failure_count",
+                    "auto_login_blocked",
+                ):
+                    if field in payload["status"]:
+                        payload[field] = payload["status"][field]
                 payload["credentials"] = self.public_credentials(row["account_id"])
             accounts.append(payload)
         return accounts
@@ -418,6 +583,9 @@ class AutomationAccountManager:
             "name": label,
             "is_active": True,
             "is_default": False,
+            "auto_login_enabled": False,
+            "auto_login_failure_count": 0,
+            "auto_login_blocked": False,
             "created_at": now,
             "updated_at": now,
         }
@@ -425,6 +593,28 @@ class AutomationAccountManager:
         rows.append(row)
         self._save_accounts(rows)
         return self._public_account(row)
+
+    def update_name(self, account_id: str, name: str) -> dict[str, Any]:
+        """Update the user-facing account note without touching runtime state."""
+        row = self._get_account_row(account_id)
+        label = str(name or "").strip()
+        if not label:
+            raise TMSAuthStateError("INVALID_ACCOUNT_NAME", "账号备注不能为空。")
+        if len(label) > ACCOUNT_NAME_MAX_LENGTH:
+            raise TMSAuthStateError(
+                "INVALID_ACCOUNT_NAME",
+                f"账号备注不能超过 {ACCOUNT_NAME_MAX_LENGTH} 个字符。",
+            )
+        rows = self._load_accounts()
+        now = _now_label()
+        for item in rows:
+            if item["account_id"] != row["account_id"]:
+                continue
+            item["name"] = label
+            item["updated_at"] = now
+            break
+        self._save_accounts(rows)
+        return self._public_account(self._get_account_row(account_id))
 
     def set_default(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
@@ -464,6 +654,24 @@ class AutomationAccountManager:
         self._save_accounts(rows)
         return self._public_account(self._get_account_row(account_id))
 
+    def set_auto_login(self, account_id: str, enabled: bool) -> dict[str, Any]:
+        row = self._get_account_row(account_id)
+        if enabled:
+            if not row.get("is_active", True):
+                raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用，请先启用账号。")
+            if not SYSTEMS[row["system"]].get("session_capable"):
+                raise TMSAuthStateError("UNSUPPORTED_ACTION", "该账号类型不支持自动登录。")
+            credentials = self._manual_credentials_for_row(row)
+            if not credentials.get("has_manual_credentials"):
+                raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码，再开启自动登录。")
+        row = self._set_auto_login_state(
+            account_id,
+            enabled=bool(enabled),
+            failure_count=0,
+            blocked=False,
+        )
+        return self._public_account(row)
+
     def _public_account(self, row: dict[str, Any]) -> dict[str, Any]:
         config = SYSTEMS[row["system"]]
         purpose = str(row.get("account_purpose") or "general").strip().lower() or "general"
@@ -476,6 +684,10 @@ class AutomationAccountManager:
             "name": row["name"],
             "is_active": bool(row.get("is_active", True)),
             "is_default": bool(row.get("is_default")),
+            "auto_login_enabled": bool(row.get("auto_login_enabled", False)),
+            "auto_login_failure_count": int(row.get("auto_login_failure_count") or 0),
+            "auto_login_failure_limit": AUTO_LOGIN_FAILURE_LIMIT,
+            "auto_login_blocked": bool(row.get("auto_login_blocked", False)),
             "login_kind": config["login_kind"],
             "session_capable": bool(config.get("session_capable")),
             "session_profile": row.get("session_profile", ""),
@@ -487,6 +699,7 @@ class AutomationAccountManager:
         config = SYSTEMS[row["system"]]
         purpose = str(row.get("account_purpose") or "general").strip().lower() or "general"
         result = dict(payload or {})
+        result.update(self._manual_credentials_for_row(row))
         result.update(
             {
                 "account_id": row["account_id"],
@@ -498,6 +711,11 @@ class AutomationAccountManager:
                 "login_kind": config["login_kind"],
                 "session_capable": bool(config.get("session_capable")),
                 "session_profile": row.get("session_profile", ""),
+                "is_active": bool(row.get("is_active", True)),
+                "auto_login_enabled": bool(row.get("auto_login_enabled", False)),
+                "auto_login_failure_count": int(row.get("auto_login_failure_count") or 0),
+                "auto_login_failure_limit": AUTO_LOGIN_FAILURE_LIMIT,
+                "auto_login_blocked": bool(row.get("auto_login_blocked", False)),
             }
         )
         result.pop("password", None)
@@ -506,6 +724,29 @@ class AutomationAccountManager:
     def _broker(self, row: dict[str, Any]):
         profile = self._coerce_session_profile(row)
         return get_session_broker(profile)
+
+    def _manual_credentials_for_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        if self._uses_tms_broker(row):
+            payload = self._broker(row).get_manual_credentials()
+        else:
+            private = self._load_local_credentials(row["account_id"])
+            has_manual = bool(private.get("username") and private.get("password"))
+            payload = {
+                **private,
+                "has_saved_credentials": has_manual,
+                "has_manual_credentials": has_manual,
+                "has_env_credentials": False,
+                "credential_source": "saved" if has_manual else "",
+            }
+        result = dict(payload)
+        result["password"] = ""
+        result["has_saved_credentials"] = bool(result.get("has_manual_credentials"))
+        result["has_manual_credentials"] = bool(result.get("has_manual_credentials"))
+        result["has_env_credentials"] = False
+        result["credential_source"] = "saved" if result["has_manual_credentials"] else ""
+        if not result["has_manual_credentials"]:
+            result.update({"username": "", "phone": "", "updated_at": ""})
+        return result
 
     def _load_local_credentials(self, account_id: str) -> dict[str, Any]:
         payload = _read_json(_local_credential_path(account_id), {})
@@ -525,7 +766,7 @@ class AutomationAccountManager:
 
     def private_credentials(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        if SYSTEMS[row["system"]].get("session_capable"):
+        if self._uses_tms_broker(row):
             config = self._broker(row).resolve_login_config()
             return {
                 "username": config.username,
@@ -537,31 +778,18 @@ class AutomationAccountManager:
 
     def public_credentials(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        if SYSTEMS[row["system"]].get("session_capable"):
-            payload = self._broker(row).get_saved_credentials()
-        else:
-            private = self._load_local_credentials(row["account_id"])
-            has_saved = bool(private.get("username") and private.get("password"))
-            payload = {
-                **private,
-                "has_saved_credentials": has_saved,
-                "has_manual_credentials": has_saved,
-                "has_env_credentials": False,
-                "credential_source": "saved" if has_saved else "",
-            }
-        public_payload = dict(payload)
-        public_payload["password"] = ""
-        return public_payload
+        return self._manual_credentials_for_row(row)
 
     def save_credentials(self, account_id: str, *, username: str, password: str, phone: str = "") -> dict[str, Any]:
         row = self._get_account_row(account_id)
         config = SYSTEMS[row["system"]]
-        if config.get("session_capable"):
-            return self._public_credentials(self._broker(row).save_credentials(
+        if self._uses_tms_broker(row):
+            self._broker(row).save_credentials(
                 username=username,
                 password=password,
                 phone=phone,
-            ))
+            )
+            return self.public_credentials(row["account_id"])
 
         existing = self._load_local_credentials(row["account_id"])
         incoming_password = str(password or "").strip()
@@ -585,25 +813,44 @@ class AutomationAccountManager:
         _write_json(_local_credential_path(row["account_id"]), payload)
         return self.public_credentials(row["account_id"])
 
-    def _public_credentials(self, payload: dict[str, Any]) -> dict[str, Any]:
-        public_payload = dict(payload)
-        public_payload["password"] = ""
-        return public_payload
-
     def clear_credentials(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        if SYSTEMS[row["system"]].get("session_capable"):
-            return self._public_credentials(self._broker(row).clear_saved_credentials())
-        _local_credential_path(row["account_id"]).unlink(missing_ok=True)
+        if self._uses_tms_broker(row):
+            self._broker(row).clear_saved_credentials()
+        else:
+            _local_credential_path(row["account_id"]).unlink(missing_ok=True)
+        self._set_auto_login_state(
+            row["account_id"],
+            enabled=False,
+            failure_count=0,
+            blocked=False,
+        )
         return self.public_credentials(row["account_id"])
 
     def describe_status(self, account_id: str, *, validate: bool = True, force: bool = False) -> dict[str, Any]:
         row = self._get_account_row(account_id)
         config = SYSTEMS[row["system"]]
-        if config.get("session_capable"):
+        credentials = self._manual_credentials_for_row(row)
+        if row.get("auto_login_enabled", False) and not credentials.get("has_manual_credentials"):
+            row = self._set_auto_login_state(
+                row["account_id"],
+                enabled=False,
+                failure_count=0,
+                blocked=False,
+            )
+        monitoring_enabled = bool(
+            row.get("is_active", True)
+            and row.get("auto_login_enabled", False)
+            and not row.get("auto_login_blocked", False)
+        )
+        validate = bool(validate and monitoring_enabled)
+        if self._uses_tms_broker(row):
             status = self._broker(row).describe_status(validate=validate, force=force)
+            status.update(credentials)
+        elif self._uses_sso_session(row):
+            status = self._describe_sso_status(row, validate=validate)
+            status.update(credentials)
         else:
-            credentials = self.public_credentials(row["account_id"])
             has_credentials = bool(credentials.get("has_saved_credentials"))
             status = {
                 "status": "logged_out" if has_credentials else "error",
@@ -621,6 +868,43 @@ class AutomationAccountManager:
             }
             status.update(credentials)
             status["last_validation_at"] = credentials.get("last_validation_at") or credentials.get("updated_at", "")
+        if not row.get("is_active", True):
+            status.update(
+                {
+                    "label": "已停用",
+                    "status_tone": "neutral",
+                    "last_error_summary": "",
+                    "monitoring_paused": True,
+                    "account_disabled": True,
+                }
+            )
+        elif config.get("session_capable") and not row.get("auto_login_enabled", False):
+            raw_status = str(status.get("status") or "")
+            if raw_status == "logged_out":
+                paused_label = "已退出"
+            elif raw_status == "authenticated":
+                paused_label = "已登录（未监控）"
+            else:
+                paused_label = "自动登录已关闭"
+            status.update(
+                {
+                    "label": paused_label,
+                    "status_tone": "warning" if raw_status == "authenticated" else "neutral",
+                    "last_error_summary": "",
+                    "monitoring_paused": True,
+                }
+            )
+        elif config.get("session_capable") and row.get("auto_login_blocked", False):
+            status.update(
+                {
+                    "label": "自动登录已暂停",
+                    "status_tone": "warning",
+                    "last_error_summary": (
+                        f"连续自动登录失败 {AUTO_LOGIN_FAILURE_LIMIT} 次，为防止账号锁定已暂停；请手动登录。"
+                    ),
+                    "monitoring_paused": True,
+                }
+            )
         status["account_id"] = row["account_id"]
         status["account_name"] = row["name"]
         status["system"] = row["system"]
@@ -633,6 +917,11 @@ class AutomationAccountManager:
         status["login_kind"] = config["login_kind"]
         status["session_capable"] = bool(config.get("session_capable"))
         status["session_profile"] = row.get("session_profile", "")
+        status["is_active"] = bool(row.get("is_active", True))
+        status["auto_login_enabled"] = bool(row.get("auto_login_enabled", False))
+        status["auto_login_failure_count"] = int(row.get("auto_login_failure_count") or 0)
+        status["auto_login_failure_limit"] = AUTO_LOGIN_FAILURE_LIMIT
+        status["auto_login_blocked"] = bool(row.get("auto_login_blocked", False))
         status.pop("password", None)
         return status
 
@@ -643,14 +932,22 @@ class AutomationAccountManager:
         status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         status = dict(status or {})
+        failure_count = int(row.get("auto_login_failure_count") or 0)
+        blocked = bool(row.get("auto_login_blocked", False))
+        error_summary = str(exc)
+        if blocked:
+            error_summary = (
+                f"连续自动登录失败 {failure_count} 次，为防止账号锁定已暂停；请手动登录。"
+                f"最后错误：{error_summary}"
+            )
         status.update(
             {
                 "status": "error",
-                "label": "自动登录失败",
-                "status_tone": "error",
+                "label": "自动登录已暂停" if blocked else "自动登录失败",
+                "status_tone": "warning" if blocked else "error",
                 "authenticated": False,
                 "pending_code": False,
-                "last_error_summary": str(exc),
+                "last_error_summary": error_summary,
                 "authenticated_at": "",
                 "pending_since": "",
                 "expires_at": status.get("expires_at", ""),
@@ -661,70 +958,114 @@ class AutomationAccountManager:
         return self._with_account_context(row, status)
 
     def check_status_with_auto_login(self, account_id: str, *, force: bool = True) -> dict[str, Any]:
-        row = self._get_account_row(account_id)
-        config = SYSTEMS[row["system"]]
-        status = self.describe_status(account_id, validate=True, force=force)
-        if not config.get("session_capable"):
-            return status
-        if str(status.get("status") or "").strip() not in AUTO_LOGIN_STATUSES:
-            return status
-        try:
-            return self.login(account_id)
-        except Exception as exc:
-            return self._login_error_status(row, exc, status)
+        safe_id = _safe_account_id(account_id)
+        with self._auto_login_lock(safe_id):
+            row = self._get_account_row(safe_id)
+            credentials = self._manual_credentials_for_row(row)
+            if not credentials.get("has_manual_credentials"):
+                if row.get("auto_login_enabled", False) or row.get("auto_login_blocked", False):
+                    self._set_auto_login_state(
+                        safe_id,
+                        enabled=False,
+                        failure_count=0,
+                        blocked=False,
+                    )
+                return self.describe_status(safe_id, validate=False, force=False)
+            if (
+                not row.get("is_active", True)
+                or not row.get("auto_login_enabled", False)
+                or row.get("auto_login_blocked", False)
+            ):
+                return self.describe_status(safe_id, validate=False, force=False)
+            status = self.describe_status(safe_id, validate=True, force=force)
+            if str(status.get("status") or "").strip() == "authenticated":
+                row = self._reset_auto_login_failures(safe_id)
+                return self._with_account_context(row, status)
+            if str(status.get("status") or "").strip() not in AUTO_LOGIN_STATUSES:
+                return status
+            try:
+                result = (
+                    self._broker(row).send_code()
+                    if self._uses_tms_broker(row)
+                    else self._login_sso(row, allow_cached=False)
+                )
+                result_status = str(result.get("status") or "").strip()
+                if result_status == "authenticated":
+                    row = self._reset_auto_login_failures(safe_id)
+                elif result.get("auto_login_attempts_exhausted"):
+                    row = self._record_auto_login_failure(safe_id, exhausted=True)
+                elif result_status == "error":
+                    row = self._record_auto_login_failure(safe_id)
+                else:
+                    return self._with_account_context(row, result)
+                if row.get("auto_login_blocked", False):
+                    last_error = str(result.get("last_error_summary") or "").strip()
+                    blocked_summary = (
+                        f"连续自动登录失败 {AUTO_LOGIN_FAILURE_LIMIT} 次，为防止账号锁定已暂停；请手动登录。"
+                    )
+                    if last_error:
+                        blocked_summary = f"{blocked_summary}最后错误：{last_error}"
+                    result = {
+                        **result,
+                        "label": "自动登录已暂停",
+                        "status_tone": "warning",
+                        "last_error_summary": blocked_summary,
+                    }
+                return self._with_account_context(row, result)
+            except Exception as exc:
+                row = self._record_auto_login_failure(safe_id)
+                return self._login_error_status(row, exc, status)
 
     def login(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        config = SYSTEMS[row["system"]]
-        if config.get("session_capable"):
-            return self._with_account_context(row, self._broker(row).send_code())
+        if not row.get("is_active", True):
+            raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用，请先启用账号。")
+        if self._uses_tms_broker(row):
+            credentials = self._manual_credentials_for_row(row)
+            if not credentials.get("has_manual_credentials"):
+                raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码，再登录。")
+            result = self._broker(row).send_code()
+            if result.get("auto_login_attempts_exhausted"):
+                row = self._record_auto_login_failure(row["account_id"], exhausted=True)
+            elif str(result.get("status") or "").strip() != "error":
+                row = self._reset_auto_login_failures(row["account_id"])
+            return self._with_account_context(row, result)
         credentials = self.private_credentials(row["account_id"])
         if not credentials.get("username") or not credentials.get("password"):
             raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码。")
-        # R7/R13 do not maintain a long-lived shared browser state in v1; this
-        # action verifies that stored credentials can be resolved and used.
-        if row["system"] == "r7":
-            from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
-
-            auth = R7SSOAuth(config_path="")
-            auth.login_and_get_session(
-                username=credentials["username"],
-                password=credentials["password"],
-                max_attempts=1,
-                exchange=False,
-                verify=False,
-            )
-        elif row["system"] == "r13":
-            from agent.tms_runtime.scripts.r13_login_manager import R13SSOAuth
-
-            auth = R13SSOAuth(config_path="")
-            auth.login_and_get_session(
-                username=credentials["username"],
-                password=credentials["password"],
-                max_attempts=1,
-                exchange=False,
-                verify=False,
-            )
-        credentials["last_validation_at"] = _now_label()
-        _write_json(_local_credential_path(row["account_id"]), credentials)
-        return self._with_account_context(row, {
-            "status": "logged_out",
-            "label": "凭据验证通过",
-            "status_tone": "success",
-            "last_validation_at": credentials["last_validation_at"],
-            "has_saved_credentials": True,
-        })
+        result = self._login_sso(row, allow_cached=True)
+        return self._with_account_context(row, result)
 
     def submit_code(self, account_id: str, code: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        if not SYSTEMS[row["system"]].get("session_capable"):
+        if not row.get("is_active", True):
+            raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用，请先启用账号。")
+        if not self._uses_tms_broker(row):
             raise TMSAuthStateError("UNSUPPORTED_ACTION", "该账号类型不需要验证码提交。")
-        return self._with_account_context(row, self._broker(row).submit_code(code))
+        result = self._broker(row).submit_code(code)
+        if str(result.get("status") or "").strip() != "error":
+            row = self._reset_auto_login_failures(row["account_id"])
+        return self._with_account_context(row, result)
 
     def clear_session(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        if SYSTEMS[row["system"]].get("session_capable"):
+        if self._uses_tms_broker(row):
+            row = self._set_auto_login_state(
+                row["account_id"],
+                enabled=False,
+                failure_count=0,
+                blocked=False,
+            )
             return self._with_account_context(row, self._broker(row).clear())
+        if self._uses_sso_session(row):
+            row = self._set_auto_login_state(
+                row["account_id"],
+                enabled=False,
+                failure_count=0,
+                blocked=False,
+            )
+            self._sso_auth(row).clear_persisted_session()
+            return self._with_account_context(row, self._describe_sso_status(row, validate=False))
         return self.describe_status(account_id, validate=False)
 
     def default_account_for_system(self, system: str, purpose: str = "") -> dict[str, Any] | None:
@@ -768,8 +1109,7 @@ class AutomationAccountManager:
         row = self._get_account_row(account_id)
         if not row.get("is_active", True):
             raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用。")
-        config = SYSTEMS[row["system"]]
-        if config.get("session_capable"):
+        if self._uses_tms_broker(row):
             effective["session_profile"] = self._coerce_session_profile(row)
             return effective
         credentials = self.private_credentials(row["account_id"])
@@ -777,6 +1117,8 @@ class AutomationAccountManager:
             raise TMSAuthStateError("AUTH_REQUIRED", f"{row['name']} 未保存账号密码。")
         effective["username"] = credentials["username"]
         effective["password"] = credentials["password"]
+        if self._uses_sso_session(row):
+            effective["session_profile"] = self._coerce_session_profile(row)
         if credentials.get("phone"):
             effective["phone"] = credentials["phone"]
         return effective
@@ -814,8 +1156,7 @@ class AutomationAccountManager:
         if target_account_field:
             effective[target_account_field] = account_id
 
-        config = SYSTEMS[row["system"]]
-        if config.get("session_capable"):
+        if self._uses_tms_broker(row):
             target_session_field = str(output_session_profile_field or "")
             if target_session_field:
                 effective[target_session_field] = self._coerce_session_profile(row)
@@ -830,6 +1171,8 @@ class AutomationAccountManager:
             effective[str(output_password_field)] = credentials["password"]
         if output_phone_field and credentials.get("phone"):
             effective[str(output_phone_field)] = credentials["phone"]
+        if self._uses_sso_session(row) and output_session_profile_field:
+            effective[str(output_session_profile_field)] = self._coerce_session_profile(row)
         return effective
 
 

@@ -6,6 +6,7 @@ from math import ceil
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.tms_runtime.scripts.r13_login_manager import R13SSOAuth
+from agent.tms_runtime.sso_session_persistence import default_sso_state_path
 
 
 API_URL = "https://r13.ronghuiwl.com/gateway/site/waybillSignWarn/pageGet"
@@ -132,8 +133,12 @@ def fetch_qianshou(
     page: int,
     fetch_all: bool = True,
     max_pages: int = 500,
+    account_id: str = "r13_default",
 ) -> List[Dict[str, Any]]:
-    auth = R13SSOAuth(config_path=config_path)
+    auth = R13SSOAuth(
+        config_path=config_path,
+        state_path=default_sso_state_path(account_id or "r13_default"),
+    )
     session = auth.login_and_get_session(
         username=username,
         password=password,
@@ -263,6 +268,7 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
         page=page,
         fetch_all=fetch_all,
         max_pages=max_pages,
+        account_id=str(params.get("account_id") or params.get("r13_account_id") or "r13_default"),
     )
 
 

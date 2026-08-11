@@ -959,7 +959,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        get_broker.assert_called_once_with("price")
+        get_broker.assert_called_once_with("price_default")
         self.assertEqual(1, len(session.calls))
         self.assertEqual("https://tms.ronghuiwl.com/widget/home?page=next&_winid=abc", session.calls[0]["url"])
         self.assertEqual("/widget/home", result["remote_path"])
