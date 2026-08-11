@@ -4,10 +4,13 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
+CONSOLE_DIR = Path(__file__).resolve().parents[1]
+
+
 class AutomationAccountsTemplateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        template_dir = Path(__file__).resolve().parents[1] / "templates"
+        template_dir = CONSOLE_DIR / "templates"
         cls.env = Environment(
             loader=FileSystemLoader(template_dir),
             autoescape=select_autoescape(["html", "xml"]),
@@ -161,6 +164,17 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertIn("停止任务使用与登录监控", html)
         self.assertNotIn("环境变量凭据", html)
         self.assertNotIn("不会删除部署环境变量", html)
+
+    def test_disabled_badge_is_hidden_for_active_accounts_and_action_is_reversible(self):
+        html = self._render()
+        template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertEqual(2, html.count("data-account-disabled-badge hidden>已停用</span>"))
+        self.assertIn(".automation-account-mini-badge[hidden] { display: none !important; }", stylesheet)
+        self.assertIn("'停用账号' if account.is_active else '重新启用账号'", template)
+        self.assertIn('active ? "停用账号" : "重新启用账号"', template)
+        self.assertIn("恢复任务使用与登录监控", template)
 
 
 if __name__ == "__main__":

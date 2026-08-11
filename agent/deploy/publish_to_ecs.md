@@ -47,11 +47,14 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`。
 5. 在本次 `/home/boyce/.boyi-deploy/release-*/_rollback/` 内临时备份当前受管源码和发布清单，只供本次失败回滚使用。
 6. 对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口。
-7. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-8. 将当前同名 systemd unit 写入当次临时回滚目录，再安装新 unit、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
-9. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问。
-10. 任一步失败，删除本次新增受管文件、恢复备份和旧发布清单，并重启旧版本。
-11. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/` 与 `/home/boyce/agent_backups/`，清理 `/home/boyce/.boyi-venvs/` 中所有非当前 Agent/Console 环境，并删除仅用于安装依赖的 `/home/boyce/.cache/pip/`；ECS 不持久保留发布备份、旧虚拟环境或安装缓存。
+7. 分别计算 Agent、Console `requirements.lock` 的 SHA-256，再生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；若当前共享环境的哈希一致且分别通过两份锁文件校验，直接复用。只有任一锁变化或校验失败时，才创建新的共享环境并一次性安装两份锁文件的并集。
+8. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
+9. 将当前同名 systemd unit 写入当次临时回滚目录，再安装新 unit、按需原子切换虚拟环境、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
+10. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问；成功后把锁文件哈希写入当前环境供后续发布判定。
+11. 任一步失败，删除本次新建环境与新增受管文件、恢复旧虚拟环境、源码备份和发布清单，并重启旧版本。
+12. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/` 与 `/home/boyce/agent_backups/`，清理 `/home/boyce/.boyi-venvs/` 中所有非当前环境，并删除仅用于安装依赖的 `/home/boyce/.cache/pip/`；ECS 最终只保留一个 Agent/Console 共用运行环境，不持久保留发布备份、旧虚拟环境或安装缓存。
+
+业务代码频繁提交但锁文件未变时，发布仍会同步受管源码并重启受影响服务，但不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化时才承担完整依赖安装成本。
 
 `/health` 是公开的精简存活接口，只返回状态和 `release_sha`。详细组件状态位于带 `X-Agent-Internal-Token` 的 `/internal/v1/health`。
 

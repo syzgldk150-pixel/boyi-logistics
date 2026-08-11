@@ -216,8 +216,8 @@
                         <button class="ghost-btn" type="submit">
                           <i data-feather="{{ 'pause-circle' if account.is_active else 'play-circle' }}" data-account-active-icon></i>
                           <span class="automation-account-menu-copy">
-                            <strong data-account-active-label>{{ '停用账号' if account.is_active else '启用账号' }}</strong>
-                            <small data-account-active-description>{{ '停止任务使用与登录监控' if account.is_active else '恢复任务选择与执行' }}</small>
+                            <strong data-account-active-label>{{ '停用账号' if account.is_active else '重新启用账号' }}</strong>
+                            <small data-account-active-description>{{ '停止任务使用与登录监控' if account.is_active else '恢复任务使用与登录监控' }}</small>
                           </span>
                         </button>
                       </form>
@@ -606,9 +606,9 @@
       const activeInput = row.querySelector('input[name="target_active"]');
       if (activeInput) activeInput.value = active ? "0" : "1";
       const activeLabel = row.querySelector("[data-account-active-label]");
-      if (activeLabel) activeLabel.textContent = active ? "停用账号" : "启用账号";
+      if (activeLabel) activeLabel.textContent = active ? "停用账号" : "重新启用账号";
       const activeDescription = row.querySelector("[data-account-active-description]");
-      if (activeDescription) activeDescription.textContent = active ? "停止任务使用与登录监控" : "恢复任务选择与执行";
+      if (activeDescription) activeDescription.textContent = active ? "停止任务使用与登录监控" : "恢复任务使用与登录监控";
       const activeIcon = row.querySelector("[data-account-active-icon]");
       if (activeIcon) activeIcon.setAttribute("data-feather", active ? "pause-circle" : "play-circle");
     }

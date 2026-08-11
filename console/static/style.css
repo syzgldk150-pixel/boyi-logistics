@@ -1296,6 +1296,7 @@ body.dispatch-page .notice { display: none; }
 .automation-account-name { color: #64748b; font-size: 0.76rem; font-weight: 750; line-height: 1.2; overflow-wrap: anywhere; }
 .automation-account-mini-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
 .automation-account-mini-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: 6px; background: #f1f5f9; color: #64748b; font-size: 0.68rem; font-weight: 850; }
+.automation-account-mini-badge[hidden] { display: none !important; }
 .automation-account-mini-badge--purpose { background: #eff6ff; color: #2563eb; }
 .automation-account-mini-badge--credentials.automation-account-mini-badge--success { background: #f0fdf4; color: #16a34a; }
 .automation-account-mini-badge--credentials.automation-account-mini-badge--warning { background: #fffbeb; color: #d97706; }

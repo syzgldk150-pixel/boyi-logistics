@@ -39,9 +39,13 @@ declare -A PYTHON_BINS=(
   [console]="/home/boyce/console/.venv/bin/python"
 )
 declare -A UNIT_PATHS=()
-declare -A RELEASE_VENVS=()
+RELEASE_VENV=""
+CREATED_VENV=0
+declare -A VENV_SWITCHED=()
+DEPENDENCY_HASH=""
 declare -A PREVIOUS_VENV_LINKS=()
 declare -A PREVIOUS_VENV_DIRS=()
+RUNTIME_TARGETS=(agent console)
 
 IFS=',' read -r -a REQUESTED_TARGETS <<<"${TARGETS_CSV}"
 SCOPES=(shared)
@@ -84,7 +88,7 @@ validate_environment() {
   }
 
   local target service actual_work_dir unit_path runtime_python
-  for target in "${REQUESTED_TARGETS[@]}"; do
+  for target in "${RUNTIME_TARGETS[@]}"; do
     service="${SERVICES[$target]}"
     actual_work_dir="$(systemctl show "${service}" -p WorkingDirectory --value)"
     [[ "${actual_work_dir}" == "${WORK_DIRS[$target]}" ]] || {
@@ -142,54 +146,109 @@ validate_environment() {
 }
 
 build_release_virtualenvs() {
-  local target bootstrap_python release_venv lock_file verifier
+  local bootstrap_python release_venv verifier agent_lock console_lock
+  local agent_hash console_hash lock_hash active_agent active_console active_hash metadata_file
   verifier="${STAGE_ROOT}/agent/scripts/verify_locked_environment.py"
   [[ -f "${verifier}" ]] || {
     echo "Missing locked-environment verifier" >&2
     return 1
   }
+  agent_lock="${STAGE_ROOT}/agent/requirements.lock"
+  console_lock="${STAGE_ROOT}/console/requirements.lock"
+  [[ -f "${agent_lock}" && -f "${console_lock}" ]] || {
+    echo "Both exact dependency locks are required for the shared runtime" >&2
+    return 1
+  }
+
+  bootstrap_python="$(readlink -f -- "${PYTHON_BINS[agent]}")"
+  [[ -x "${bootstrap_python}" ]] || {
+    echo "Could not resolve base Python for shared runtime" >&2
+    return 1
+  }
+  "${bootstrap_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' || {
+    echo "Resolved base Python is not Python 3.10: ${bootstrap_python}" >&2
+    return 1
+  }
+
+  agent_hash="$(sha256sum "${agent_lock}" | awk '{print $1}')"
+  console_hash="$(sha256sum "${console_lock}" | awk '{print $1}')"
+  lock_hash="$(printf 'agent=%s\nconsole=%s\n' "${agent_hash}" "${console_hash}" | sha256sum | awk '{print $1}')"
+  [[ "${lock_hash}" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "Could not calculate shared dependency lock hash" >&2
+    return 1
+  }
+  DEPENDENCY_HASH="${lock_hash}"
+
+  active_agent="$(readlink -f -- "${ROOTS[agent]}/.venv")"
+  active_console="$(readlink -f -- "${ROOTS[console]}/.venv")"
+  active_hash=""
+  if [[ "${active_agent}" == "${active_console}" ]]; then
+    metadata_file="${active_agent}/.boyi-requirements.sha256"
+    if [[ -f "${metadata_file}" ]]; then
+      active_hash="$(head -n 1 "${metadata_file}" | tr -d '[:space:]')"
+    fi
+  fi
+
+  if [[ "${active_hash}" == "${lock_hash}" ]] && \
+    "${active_agent}/bin/python" "${verifier}" "${agent_lock}" --python-version 3.10 && \
+    "${active_agent}/bin/python" "${verifier}" "${console_lock}" --python-version 3.10; then
+    RELEASE_VENV="${active_agent}"
+    echo "Reusing shared virtual environment for dependency lock ${lock_hash}"
+    return 0
+  fi
+
   mkdir -p "${VENV_ROOT}"
-  for target in "${REQUESTED_TARGETS[@]}"; do
-    bootstrap_python="$(readlink -f -- "${PYTHON_BINS[$target]}")"
-    [[ -x "${bootstrap_python}" ]] || {
-      echo "Could not resolve base Python for ${target}" >&2
+  release_venv="${VENV_ROOT}/runtime-deps-${lock_hash}"
+  if [[ -d "${release_venv}" ]]; then
+    if "${release_venv}/bin/python" "${verifier}" "${agent_lock}" --python-version 3.10 && \
+      "${release_venv}/bin/python" "${verifier}" "${console_lock}" --python-version 3.10; then
+      RELEASE_VENV="${release_venv}"
+      CREATED_VENV=1
+      echo "Reusing prepared shared virtual environment for dependency lock ${lock_hash}"
+      return 0
+    fi
+    if [[ "${release_venv}" == "${active_agent}" || "${release_venv}" == "${active_console}" ]]; then
+      echo "Active shared dependency environment failed verification: ${release_venv}" >&2
       return 1
-    }
-    "${bootstrap_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' || {
-      echo "Resolved base Python is not Python 3.10 for ${target}: ${bootstrap_python}" >&2
-      return 1
-    }
-    lock_file="${STAGE_ROOT}/${target}/requirements.lock"
-    [[ -f "${lock_file}" ]] || {
-      echo "Missing exact dependency lock for ${target}" >&2
-      return 1
-    }
-    release_venv="${VENV_ROOT}/${target}-${RELEASE_SHA}"
-    [[ ! -e "${release_venv}" ]] || {
-      echo "Release virtual environment already exists: ${release_venv}" >&2
-      return 1
-    }
-    "${bootstrap_python}" -m venv "${release_venv}"
-    RELEASE_VENVS[$target]="${release_venv}"
-    "${release_venv}/bin/python" -m pip install --disable-pip-version-check \
-      --index-url "${PIP_INDEX_URL}" \
-      --retries "${PIP_RETRIES}" \
-      --timeout "${PIP_TIMEOUT_SECONDS}" \
-      --requirement "${lock_file}"
-    "${release_venv}/bin/python" "${verifier}" "${lock_file}" --python-version 3.10
-  done
+    fi
+    rm -rf -- "${release_venv}"
+  elif [[ -e "${release_venv}" ]]; then
+    echo "Shared dependency environment path is not a directory: ${release_venv}" >&2
+    return 1
+  fi
+
+  "${bootstrap_python}" -m venv "${release_venv}"
+  RELEASE_VENV="${release_venv}"
+  CREATED_VENV=1
+  "${release_venv}/bin/python" -m pip install --disable-pip-version-check \
+    --index-url "${PIP_INDEX_URL}" \
+    --retries "${PIP_RETRIES}" \
+    --timeout "${PIP_TIMEOUT_SECONDS}" \
+    --requirement "${agent_lock}" \
+    --requirement "${console_lock}"
+  "${release_venv}/bin/python" "${verifier}" "${agent_lock}" --python-version 3.10
+  "${release_venv}/bin/python" "${verifier}" "${console_lock}" --python-version 3.10
+  printf '%s\n' "${lock_hash}" >"${release_venv}/.boyi-requirements.sha256"
 }
 
 activate_release_virtualenvs() {
-  [[ "${SKIP_RESTART}" == "1" ]] && {
-    echo "Cannot activate locked dependencies when service restart is disabled" >&2
+  local target active_venv active_agent active_console previous_dir
+  active_agent="$(readlink -f -- "${ROOTS[agent]}/.venv")"
+  active_console="$(readlink -f -- "${ROOTS[console]}/.venv")"
+  if [[ "${active_agent}" == "${RELEASE_VENV}" && "${active_console}" == "${RELEASE_VENV}" ]]; then
+    echo "Keeping active shared virtual environment: ${RELEASE_VENV}"
+    return 0
+  fi
+  [[ "${SKIP_RESTART}" != "1" ]] || {
+    echo "Cannot activate changed dependencies when service restart is disabled" >&2
     return 1
   }
-  local target active_venv previous_dir service
+
   VENV_ACTIVATED=1
-  for target in "${REQUESTED_TARGETS[@]}"; do
-    service="${SERVICES[$target]}"
-    sudo systemctl stop "${service}"
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    sudo systemctl stop "${SERVICES[$target]}"
+  done
+  for target in "${RUNTIME_TARGETS[@]}"; do
     active_venv="${ROOTS[$target]}/.venv"
     if [[ -L "${active_venv}" ]]; then
       PREVIOUS_VENV_LINKS[$target]="$(readlink "${active_venv}")"
@@ -202,15 +261,17 @@ activate_release_virtualenvs() {
       echo "Unsupported active virtual environment path: ${active_venv}" >&2
       return 1
     fi
-    ln -s "${RELEASE_VENVS[$target]}" "${active_venv}"
+    ln -s "${RELEASE_VENV}" "${active_venv}"
+    VENV_SWITCHED[$target]="1"
   done
 }
 
 restore_virtualenvs() {
   local target active_venv
-  for target in "${REQUESTED_TARGETS[@]}"; do
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    [[ "${VENV_SWITCHED[$target]:-}" == "1" ]] || continue
     active_venv="${ROOTS[$target]}/.venv"
-    if [[ -L "${active_venv}" && "$(readlink "${active_venv}")" == "${RELEASE_VENVS[$target]:-}" ]]; then
+    if [[ -L "${active_venv}" && "$(readlink -f -- "${active_venv}")" == "$(readlink -f -- "${RELEASE_VENV}")" ]]; then
       rm -- "${active_venv}"
     fi
     if [[ -n "${PREVIOUS_VENV_LINKS[$target]:-}" ]]; then
@@ -222,42 +283,60 @@ restore_virtualenvs() {
 }
 
 remove_new_virtualenvs() {
-  local target release_venv
-  for target in "${REQUESTED_TARGETS[@]}"; do
-    release_venv="${RELEASE_VENVS[$target]:-}"
-    if [[ -n "${release_venv}" && "${release_venv}" == "${VENV_ROOT}/${target}-"* ]]; then
-      rm -rf -- "${release_venv}"
-    fi
+  [[ "${CREATED_VENV}" == "1" ]] || return 0
+  if [[ -n "${RELEASE_VENV}" && "${RELEASE_VENV}" == "${VENV_ROOT}/runtime-deps-"* ]]; then
+    rm -rf -- "${RELEASE_VENV}"
+  fi
+}
+
+record_active_dependency_hashes() {
+  local target active_release expected_release metadata_temp
+  expected_release="$(readlink -f -- "${RELEASE_VENV}")"
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    active_release="$(readlink -f -- "${ROOTS[$target]}/.venv")"
+    [[ "${active_release}" == "${expected_release}" ]] || {
+      echo "Active ${target} environment changed during release" >&2
+      return 1
+    }
   done
+  metadata_temp="${expected_release}/.boyi-requirements.sha256.tmp"
+  printf '%s\n' "${DEPENDENCY_HASH}" >"${metadata_temp}"
+  mv -- "${metadata_temp}" "${expected_release}/.boyi-requirements.sha256"
 }
 
 prune_inactive_virtualenvs() {
-  local target active_venv active_release candidate candidate_release
+  local target active_venv active_release shared_release candidate candidate_release
   local -a stale_venvs=()
 
-  for target in agent console; do
+  shared_release="$(readlink -f -- "${ROOTS[agent]}/.venv")"
+  for target in "${RUNTIME_TARGETS[@]}"; do
     active_venv="${ROOTS[$target]}/.venv"
     [[ -L "${active_venv}" ]] || {
       echo "Active virtual environment is not a symlink: ${active_venv}" >&2
       return 1
     }
     active_release="$(readlink -f -- "${active_venv}")"
-    [[ -d "${active_release}" && "${active_release}" == "${VENV_ROOT}/${target}-"* ]] || {
+    [[ -d "${active_release}" && "${active_release}" == "${VENV_ROOT}/runtime-deps-"* ]] || {
       echo "Active virtual environment is outside the managed release root: ${active_venv}" >&2
       return 1
     }
-
-    while IFS= read -r -d '' candidate; do
-      candidate_release="$(readlink -f -- "${candidate}")"
-      [[ "${candidate_release}" == "${VENV_ROOT}/${target}-"* ]] || {
-        echo "Refusing to remove unmanaged virtual environment: ${candidate}" >&2
-        return 1
-      }
-      if [[ "${candidate_release}" != "${active_release}" ]]; then
-        stale_venvs+=("${candidate_release}")
-      fi
-    done < <(find "${VENV_ROOT}" -mindepth 1 -maxdepth 1 -type d -name "${target}-*" -print0)
+    [[ "${active_release}" == "${shared_release}" ]] || {
+      echo "Agent and Console are not using the same virtual environment" >&2
+      return 1
+    }
   done
+
+  while IFS= read -r -d '' candidate; do
+    candidate_release="$(readlink -f -- "${candidate}")"
+    case "${candidate_release}" in
+      "${VENV_ROOT}/agent-"*|"${VENV_ROOT}/console-"*|"${VENV_ROOT}/runtime-deps-"*) ;;
+      *) echo "Refusing to remove unmanaged virtual environment: ${candidate}" >&2; return 1 ;;
+    esac
+    if [[ "${candidate_release}" != "${shared_release}" ]]; then
+      stale_venvs+=("${candidate_release}")
+    fi
+  done < <(find "${VENV_ROOT}" -mindepth 1 -maxdepth 1 -type d \
+    \( -name 'agent-*' -o -name 'console-*' -o -name 'runtime-deps-*' \) -print0)
 
   for candidate_release in "${stale_venvs[@]}"; do
     rm -rf -- "${candidate_release}"
@@ -368,8 +447,8 @@ apply_migrations() {
     return 1
   }
   local migration_python="${PYTHON_BINS[agent]}"
-  if [[ -n "${RELEASE_VENVS[agent]:-}" ]]; then
-    migration_python="${RELEASE_VENVS[agent]}/bin/python"
+  if [[ -n "${RELEASE_VENV}" ]]; then
+    migration_python="${RELEASE_VENV}/bin/python"
   fi
   MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${migration_python}" "${runner}"
 }
@@ -420,7 +499,11 @@ install_service_units() {
 restart_services() {
   [[ "${SKIP_RESTART}" == "1" ]] && return 0
   local target service
-  for target in "${REQUESTED_TARGETS[@]}"; do
+  local -a restart_targets=("${REQUESTED_TARGETS[@]}")
+  if [[ "${VENV_ACTIVATED}" == "1" ]]; then
+    restart_targets=("${RUNTIME_TARGETS[@]}")
+  fi
+  for target in "${restart_targets[@]}"; do
     service="${SERVICES[$target]}"
     if ! sudo systemctl restart "${service}"; then
       systemctl show "${service}" -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
@@ -436,7 +519,11 @@ restart_services() {
 check_health() {
   [[ "${SKIP_HEALTH}" == "1" ]] && return 0
   local target attempt body healthy
-  for target in "${REQUESTED_TARGETS[@]}"; do
+  local -a health_targets=("${REQUESTED_TARGETS[@]}")
+  if [[ "${VENV_ACTIVATED}" == "1" ]]; then
+    health_targets=("${RUNTIME_TARGETS[@]}")
+  fi
+  for target in "${health_targets[@]}"; do
     healthy=0
     for attempt in {1..15}; do
       if [[ "${target}" == "agent" ]]; then
@@ -480,7 +567,7 @@ rollback() {
     echo "Release failed; restoring managed source backup" >&2
     if [[ "${VENV_ACTIVATED}" == "1" ]]; then
       local stopped_target
-      for stopped_target in "${REQUESTED_TARGETS[@]}"; do
+      for stopped_target in "${RUNTIME_TARGETS[@]}"; do
         sudo systemctl stop "${SERVICES[$stopped_target]}"
       done
       restore_virtualenvs
@@ -549,6 +636,8 @@ RELEASE_STAGE="restart_services"
 restart_services
 RELEASE_STAGE="check_health"
 check_health
+RELEASE_STAGE="record_dependency_hashes"
+record_active_dependency_hashes
 
 MUTATION_STARTED=0
 trap - ERR
