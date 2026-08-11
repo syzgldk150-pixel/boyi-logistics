@@ -136,13 +136,18 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
     def test_account_page_exposes_clear_auto_login_and_disable_semantics(self):
         html = self._render()
 
-        self.assertIn("自动登录与断线提醒", html)
-        self.assertIn("连续失败 3 次即暂停", html)
+        self.assertIn("<th>自动登录</th>", html)
+        self.assertIn('role="switch"', html)
+        self.assertIn('aria-checked="true"', html)
+        self.assertIn("data-account-auto-login-switch", html)
+        self.assertIn("定时校验并自动恢复", html)
+        self.assertIn("先保存账号密码", html)
         self.assertIn('name="auto_login_enabled"', html)
         self.assertIn("清除会话并关闭自动登录", html)
-        self.assertIn("不会删除部署环境变量", html)
+        self.assertIn("清空账号密码并关闭自动登录", html)
         self.assertIn("停止任务使用与登录监控", html)
-        self.assertIn("自动登录关闭", html)
+        self.assertNotIn("环境变量凭据", html)
+        self.assertNotIn("不会删除部署环境变量", html)
 
 
 if __name__ == "__main__":

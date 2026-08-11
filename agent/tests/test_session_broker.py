@@ -806,6 +806,7 @@ class SessionBrokerTests(unittest.TestCase):
             clear=False,
         ):
             credentials = yunda_broker.get_saved_credentials()
+            manual_credentials = yunda_broker.get_manual_credentials()
             config = yunda_broker.resolve_login_config()
             status = yunda_broker.describe_status(validate=False)
 
@@ -815,6 +816,10 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(credentials["credential_source"], "env")
         self.assertEqual(credentials["username"], "")
         self.assertEqual(credentials["password"], "")
+        self.assertFalse(manual_credentials["has_saved_credentials"])
+        self.assertFalse(manual_credentials["has_manual_credentials"])
+        self.assertFalse(manual_credentials["has_env_credentials"])
+        self.assertEqual(manual_credentials["credential_source"], "")
         self.assertEqual(config.username, "env-user")
         self.assertEqual(config.password, "env-pass")
         self.assertTrue(status["has_saved_credentials"])

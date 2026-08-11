@@ -81,6 +81,7 @@
             <th>所属系统</th>
             <th>登录账号</th>
             <th>绑定手机号</th>
+            <th>自动登录</th>
             <th>当前状态</th>
             <th>最近校验时间</th>
             <th>操作</th>
@@ -92,8 +93,8 @@
         {% set creds = account.credentials or {} %}
         {% set status_value = status.status or '' %}
         {% set challenge_type = status.challenge_type or 'sms' %}
-        {% set primary_label = '已停用' if not account.is_active else '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '刷新' if status_value == 'authenticated' else '登录' if account.session_capable and account.login_kind == 'image' else '去登录' if account.session_capable else '重新验证' %}
-          <tr class="{% if not account.is_active %}is-disabled{% endif %}" data-account-row data-account-system="{{ account.system }}" data-account-id="{{ account.account_id }}" data-account-active="{{ 'true' if account.is_active else 'false' }}" data-account-auto-login="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-blocked="{{ 'true' if account.auto_login_blocked else 'false' }}" data-account-status="{{ status_value }}" data-account-challenge-type="{{ challenge_type }}" data-account-login-kind="{{ account.login_kind or '' }}" data-account-session-capable="{{ 'true' if account.session_capable else 'false' }}" data-account-has-credentials="{{ 'true' if account.has_saved_credentials else 'false' }}" data-account-has-manual-credentials="{{ 'true' if account.has_manual_credentials else 'false' }}" data-account-has-env-credentials="{{ 'true' if account.has_env_credentials else 'false' }}" data-account-credential-source="{{ account.credential_source or '' }}"{% if account_filter and account.system != account_filter %} hidden{% endif %}>
+        {% set primary_label = '已停用' if not account.is_active else '先保存凭据' if not account.has_manual_credentials else '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '刷新' if status_value == 'authenticated' else '登录' if account.session_capable and account.login_kind == 'image' else '去登录' if account.session_capable else '重新验证' %}
+          <tr class="{% if not account.is_active %}is-disabled{% endif %}" data-account-row data-account-system="{{ account.system }}" data-account-id="{{ account.account_id }}" data-account-active="{{ 'true' if account.is_active else 'false' }}" data-account-auto-login="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-blocked="{{ 'true' if account.auto_login_blocked else 'false' }}" data-account-status="{{ status_value }}" data-account-challenge-type="{{ challenge_type }}" data-account-login-kind="{{ account.login_kind or '' }}" data-account-session-capable="{{ 'true' if account.session_capable else 'false' }}" data-account-has-credentials="{{ 'true' if account.has_saved_credentials else 'false' }}" data-account-has-manual-credentials="{{ 'true' if account.has_manual_credentials else 'false' }}"{% if account_filter and account.system != account_filter %} hidden{% endif %}>
             <td>
               <div class="automation-account-system-cell">
                 <strong class="automation-account-system">{{ account.system_label }}</strong>
@@ -102,13 +103,28 @@
                   {% if account.credentials_label %}
                   <span class="automation-account-mini-badge automation-account-mini-badge--credentials automation-account-mini-badge--{{ account.credentials_tone or 'muted' }}" data-account-credentials-badge>{{ account.credentials_label }}</span>
                   {% endif %}
-                  <span class="automation-account-mini-badge automation-account-mini-badge--auto{% if not account.auto_login_enabled %} automation-account-mini-badge--muted{% endif %}" data-account-auto-login-badge>{{ '自动登录' if account.auto_login_enabled else '自动登录关闭' }}</span>
                   <span class="automation-account-mini-badge automation-account-mini-badge--muted" data-account-disabled-badge{% if account.is_active %} hidden{% endif %}>已停用</span>
                 </div>
               </div>
             </td>
             <td data-account-username>{{ creds.username or '-' }}</td>
             <td data-account-phone>{{ masked_phone(creds.phone) }}</td>
+            <td>
+              {% if account.session_capable %}
+              <form class="automation-account-inline-auto-login" action="/automation-accounts/{{ account.account_id }}/auto-login" method="post" data-account-action-form data-account-auto-login-form>
+                <input type="hidden" name="auto_login_enabled" value="{{ 0 if account.auto_login_enabled else 1 }}" data-account-auto-login-value>
+                <button class="automation-account-auto-login-switch{% if account.auto_login_enabled %} is-active{% endif %}" type="submit" role="switch" aria-checked="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-switch{% if not account.is_active or not account.has_manual_credentials %} disabled{% endif %}>
+                  <span class="automation-account-switch-track" aria-hidden="true"><span class="automation-account-switch-thumb"></span></span>
+                  <span data-account-auto-login-label>{{ '已暂停' if account.auto_login_blocked else '已开启' if account.auto_login_enabled else '已关闭' }}</span>
+                </button>
+                <small data-account-auto-login-note>
+                  {% if not account.has_manual_credentials %}先保存账号密码{% elif not account.is_active %}账号已停用{% elif account.auto_login_blocked %}连续失败 3 次，已暂停{% elif account.auto_login_enabled %}定时校验并自动恢复{% else %}不监控，不自动重试{% endif %}
+                </small>
+              </form>
+              {% else %}
+              <span class="automation-account-auto-login-unsupported">不支持</span>
+              {% endif %}
+            </td>
             <td>
               <div class="automation-account-status-stack">
                 <span class="automation-account-status{% if account.status_tone %} automation-account-status--{{ account.status_tone }}{% endif %}" data-account-status-pill>
@@ -124,7 +140,7 @@
               <div class="automation-account-actions-stack">
                 <div class="automation-account-row-actions">
                   <form action="/automation-accounts/{{ account.account_id }}/login" method="post" data-account-action-form data-account-login-form>
-                    <button class="automation-account-action-link" type="submit" data-account-primary-action{% if not account.is_active %} disabled{% endif %}>{{ primary_label }}</button>
+                    <button class="automation-account-action-link" type="submit" data-account-primary-action{% if not account.is_active or not account.has_manual_credentials %} disabled{% endif %}>{{ primary_label }}</button>
                   </form>
 
                   <details class="automation-account-details automation-account-edit">
@@ -148,18 +164,6 @@
                           保存
                         </button>
                       </form>
-                      {% if account.session_capable %}
-                      <form class="automation-account-auto-login" action="/automation-accounts/{{ account.account_id }}/auto-login" method="post" data-account-action-form data-account-auto-login-form>
-                        <label class="automation-account-check-row">
-                          <input type="checkbox" name="auto_login_enabled" value="1" data-account-auto-login-input{% if account.auto_login_enabled %} checked{% endif %}>
-                          <span>
-                            <strong>自动登录与断线提醒</strong>
-                            <small>开启后定时校验并自动恢复；连续失败 3 次即暂停，避免账号被锁。</small>
-                          </span>
-                        </label>
-                        <button class="ghost-btn" type="submit">保存设置</button>
-                      </form>
-                      {% endif %}
                     </div>
                   </details>
 
@@ -190,7 +194,7 @@
                           <i data-feather="trash-2"></i>
                           <span class="automation-account-menu-copy">
                             <strong>清空保存凭据</strong>
-                            <small>不会删除部署环境变量</small>
+                            <small>清空账号密码并关闭自动登录</small>
                           </span>
                         </button>
                       </form>
@@ -227,7 +231,7 @@
           </tr>
         {% endfor %}
           <tr data-account-empty-row{% if account_rows %} hidden{% endif %}>
-            <td class="automation-account-empty" colspan="6">暂无<span data-account-empty-label>{{ account_filter_label }}</span>账号。</td>
+            <td class="automation-account-empty" colspan="7">暂无<span data-account-empty-label>{{ account_filter_label }}</span>账号。</td>
           </tr>
         </tbody>
       </table>
@@ -302,27 +306,17 @@
 
   function updateCredentialDataset(row, payload) {
     if (!row || !payload || typeof payload !== "object") return;
-    if ("has_saved_credentials" in payload) {
-      row.dataset.accountHasCredentials = asFlag(payload.has_saved_credentials) ? "true" : "false";
-    }
-    if ("has_manual_credentials" in payload) {
-      row.dataset.accountHasManualCredentials = asFlag(payload.has_manual_credentials) ? "true" : "false";
-    }
-    if ("has_env_credentials" in payload) {
-      row.dataset.accountHasEnvCredentials = asFlag(payload.has_env_credentials) ? "true" : "false";
-    }
-    if ("credential_source" in payload) {
-      row.dataset.accountCredentialSource = String(payload.credential_source || "");
-    }
+    const hasManual = "has_manual_credentials" in payload
+      ? asFlag(payload.has_manual_credentials)
+      : asFlag(payload.has_saved_credentials);
+    row.dataset.accountHasCredentials = hasManual ? "true" : "false";
+    row.dataset.accountHasManualCredentials = hasManual ? "true" : "false";
   }
 
   function credentialDisplay(row) {
     const hasManual = row?.dataset.accountHasManualCredentials === "true";
-    const hasEnv = row?.dataset.accountHasEnvCredentials === "true";
-    const source = String(row?.dataset.accountCredentialSource || "");
-    if (hasManual) return { label: "已保存账号密码", tone: "success", hasCredentials: true, source };
-    if (hasEnv || source === "env") return { label: "环境变量凭据", tone: "success", hasCredentials: true, source: "env" };
-    return { label: "未保存账号密码", tone: "warning", hasCredentials: false, source };
+    if (hasManual) return { label: "已保存账号密码", tone: "success", hasCredentials: true };
+    return { label: "未保存账号密码", tone: "warning", hasCredentials: false };
   }
 
   function applyCredentialBadge(row) {
@@ -335,12 +329,34 @@
     badge.classList.add(`automation-account-mini-badge--${meta.tone}`);
   }
 
-  function applyAutoLoginBadge(row) {
-    const badge = row?.querySelector("[data-account-auto-login-badge]");
-    if (!badge) return;
+  function applyAutoLoginControl(row) {
+    const button = row?.querySelector("[data-account-auto-login-switch]");
+    if (!button) return;
+    const form = button.form;
+    const value = form?.querySelector("[data-account-auto-login-value]");
+    const label = button.querySelector("[data-account-auto-login-label]");
+    const note = form?.querySelector("[data-account-auto-login-note]");
     const enabled = row.dataset.accountAutoLogin === "true";
-    badge.textContent = enabled ? "自动登录" : "自动登录关闭";
-    badge.classList.toggle("automation-account-mini-badge--muted", !enabled);
+    const active = row.dataset.accountActive === "true";
+    const hasManual = row.dataset.accountHasManualCredentials === "true";
+    const blocked = row.dataset.accountAutoLoginBlocked === "true";
+    const loading = form?.dataset.submitting === "true";
+    button.setAttribute("aria-checked", enabled ? "true" : "false");
+    button.classList.toggle("is-active", enabled);
+    button.disabled = loading || !active || !hasManual;
+    if (value) value.value = enabled ? "0" : "1";
+    if (label) label.textContent = blocked ? "已暂停" : enabled ? "已开启" : "已关闭";
+    if (note) {
+      note.textContent = !hasManual
+        ? "先保存账号密码"
+        : !active
+          ? "账号已停用"
+          : blocked
+            ? "连续失败 3 次，已暂停"
+            : enabled
+              ? "定时校验并自动恢复"
+              : "不监控，不自动重试";
+    }
   }
 
   function statusDisplay(row, state = {}) {
@@ -351,6 +367,20 @@
         label: "已停用",
         tone: "neutral",
         note: "不参与任务执行与登录监控；停用操作不会退出当前会话。",
+      };
+    }
+    if (row?.dataset.accountSessionCapable === "true" && !meta.hasCredentials) {
+      if (status === "authenticated") {
+        return {
+          label: "登录态有效",
+          tone: "warning",
+          note: "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。",
+        };
+      }
+      return {
+        label: "未配置",
+        tone: "neutral",
+        note: "请先保存账号密码；保存后再按需开启自动登录。",
       };
     }
     if (row?.dataset.accountAutoLogin !== "true") {
@@ -367,20 +397,10 @@
         note: "连续失败达到 3 次，为防止账号锁定已停止重试；请手动登录。",
       };
     }
-    if (row?.dataset.accountSessionCapable === "true" && status === "authenticated" && !meta.hasCredentials) {
-      return {
-        label: "登录态有效",
-        tone: "warning",
-        note: "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。",
-      };
-    }
-    const note = row?.dataset.accountSessionCapable === "true" && status === "authenticated" && meta.source === "env"
-      ? "账号密码来自环境变量，编辑框不会回显。"
-      : String(state.status_note || "");
     return {
       label: String(state.label || row?.querySelector("[data-account-status-label]")?.textContent || "未知"),
       tone: String(state.status_tone || "neutral"),
-      note,
+      note: String(state.status_note || ""),
     };
   }
 
@@ -498,7 +518,9 @@
       button.textContent = "处理中";
     } else {
       const row = accountRow(button);
-      button.disabled = button.matches("[data-account-primary-action]") && row?.dataset.accountActive !== "true";
+      button.disabled = button.matches("[data-account-primary-action]") && (
+        row?.dataset.accountActive !== "true" || row?.dataset.accountHasManualCredentials !== "true"
+      );
       if (button.matches("[data-account-primary-action]")) {
         button.textContent = row ? actionLabel(row, {}) : (button.dataset.originalHtml || button.textContent);
         delete button.dataset.originalHtml;
@@ -506,6 +528,7 @@
         button.innerHTML = button.dataset.originalHtml;
         delete button.dataset.originalHtml;
       }
+      if (button.matches("[data-account-auto-login-switch]")) applyAutoLoginControl(row);
     }
   }
 
@@ -519,6 +542,7 @@
 
   function actionLabel(row, state) {
     if (row.dataset.accountActive !== "true") return "已停用";
+    if (row.dataset.accountHasManualCredentials !== "true") return "先保存凭据";
     const status = String(state?.status || row.dataset.accountStatus || "");
     const challengeType = String(state?.challenge_type || state?.challengeType || row.dataset.accountChallengeType || "");
     if (status === "pending_code") return challengeType === "image" ? "刷新验证码" : "重新发送";
@@ -545,7 +569,7 @@
       }
     }
     applyCredentialBadge(row);
-    applyAutoLoginBadge(row);
+    applyAutoLoginControl(row);
     applyStatusDisplay(row, {});
   }
 
@@ -558,7 +582,7 @@
       const disabledBadge = row.querySelector("[data-account-disabled-badge]");
       if (disabledBadge) disabledBadge.hidden = active;
       const primary = row.querySelector("[data-account-primary-action]");
-      if (primary) primary.disabled = !active;
+      if (primary) primary.disabled = !active || row.dataset.accountHasManualCredentials !== "true";
       const activeInput = row.querySelector('input[name="target_active"]');
       if (activeInput) activeInput.value = active ? "0" : "1";
       const activeLabel = row.querySelector("[data-account-active-label]");
@@ -571,13 +595,11 @@
     if ("auto_login_enabled" in account) {
       const enabled = asFlag(account.auto_login_enabled);
       row.dataset.accountAutoLogin = enabled ? "true" : "false";
-      const checkbox = row.querySelector("[data-account-auto-login-input]");
-      if (checkbox) checkbox.checked = enabled;
     }
     if ("auto_login_blocked" in account) {
       row.dataset.accountAutoLoginBlocked = asFlag(account.auto_login_blocked) ? "true" : "false";
     }
-    applyAutoLoginBadge(row);
+    applyAutoLoginControl(row);
     applyStatusDisplay(row, {});
     const primary = row.querySelector("[data-account-primary-action]");
     if (primary) primary.textContent = actionLabel(row, {});
@@ -594,15 +616,13 @@
     if ("is_active" in state) row.dataset.accountActive = asFlag(state.is_active) ? "true" : "false";
     if ("auto_login_enabled" in state) {
       row.dataset.accountAutoLogin = asFlag(state.auto_login_enabled) ? "true" : "false";
-      const checkbox = row.querySelector("[data-account-auto-login-input]");
-      if (checkbox) checkbox.checked = asFlag(state.auto_login_enabled);
     }
     if ("auto_login_blocked" in state) {
       row.dataset.accountAutoLoginBlocked = asFlag(state.auto_login_blocked) ? "true" : "false";
     }
     updateCredentialDataset(row, state);
     applyCredentialBadge(row);
-    applyAutoLoginBadge(row);
+    applyAutoLoginControl(row);
 
     applyStatusDisplay(row, state);
 
@@ -619,7 +639,7 @@
     const primary = row.querySelector("[data-account-primary-action]");
     if (primary) {
       primary.textContent = actionLabel(row, state);
-      primary.disabled = row.dataset.accountActive !== "true";
+      primary.disabled = row.dataset.accountActive !== "true" || row.dataset.accountHasManualCredentials !== "true";
     }
 
     const codeForm = row.querySelector("[data-account-code-form]");
@@ -737,7 +757,6 @@
       if (payload.account) applyAccountMetadata(row, payload.account);
       if (payload.credentials) applyCredentials(row, payload.credentials, { forcePasswordReset: true });
       if (payload.state) applyState(row, payload.state, { focus: true });
-      else await refreshRowStatus(row);
 
       if (payload.ok === false) {
         const message = payload.message || "操作失败。";
@@ -752,10 +771,13 @@
         return;
       }
 
+      if (!payload.state) await refreshRowStatus(row);
+
       if (!isCodeForm) form.closest("details")?.removeAttribute("open");
     } catch (err) {
       setInlineError(row, err instanceof Error ? err.message : String(err || "操作失败。"));
     } finally {
+      delete form.dataset.submitting;
       setButtonLoading(submitter, false);
       if (!isCodeForm && row?.dataset.accountStatus === "pending_code") {
         const input = row.querySelector("[data-account-code-input]");
@@ -766,7 +788,6 @@
           });
         }
       }
-      delete form.dataset.submitting;
     }
   }
 
@@ -803,6 +824,7 @@
   }, { once: true });
   applyAccountFilter(page.querySelector("[data-account-tabs]")?.dataset.initialFilter || accountFilterFromUrl(), { updateUrl: false });
   page.querySelectorAll('input[name="password"][data-password-saved]').forEach(setupPasswordMask);
+  page.querySelectorAll("[data-account-row]").forEach(applyAutoLoginControl);
 
   page.querySelectorAll("[data-account-code-input]").forEach((input) => {
     const row = accountRow(input);

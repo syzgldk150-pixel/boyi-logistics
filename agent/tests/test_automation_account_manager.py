@@ -1,6 +1,21 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
 from _tms_runtime_test_support import *  # noqa: F403
+from agent.tms_runtime.errors import TMSAuthStateError
+
+
+class ManualCredentialsBroker:
+    def get_manual_credentials(self):
+        return {
+            "username": "saved-user",
+            "password": "",
+            "phone": "",
+            "updated_at": "2026-06-01 12:00:00",
+            "has_saved_credentials": True,
+            "has_manual_credentials": True,
+            "has_env_credentials": False,
+            "credential_source": "saved",
+        }
 
 
 class AutomationAccountManagerTests(unittest.TestCase):
@@ -47,7 +62,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
     def test_default_ronghui_account_status_maps_to_default_profile(self):
         calls: list[tuple[str, Any]] = []
 
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def describe_status(self, *, validate=True, force=False):
                 calls.append(("describe", validate, force))
                 return {
@@ -73,7 +88,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
             status = self.manager.describe_status("ronghui_default", validate=True, force=True)
 
         self.assertEqual(calls[0], ("profile", "default"))
-        self.assertEqual(calls[1], ("describe", True, True))
+        self.assertEqual(calls[-1], ("describe", False, True))
         self.assertEqual(status["profile"], "default")
         self.assertEqual(status["account_id"], "ronghui_default")
         self.assertEqual(status["system"], "ronghui")
@@ -81,7 +96,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
     def test_force_status_check_auto_logs_in_expired_session(self):
         calls: list[tuple[str, Any]] = []
 
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def describe_status(self, *, validate=True, force=False):
                 calls.append(("describe", validate, force))
                 return {
@@ -117,6 +132,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
                 }
 
         with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            self.manager.set_auto_login("ronghui_default", True)
             status = self.manager.check_status_with_auto_login("ronghui_default", force=True)
 
         self.assertEqual(status["status"], "authenticated")
@@ -133,7 +149,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
     def test_auto_login_disabled_skips_validation_and_login(self):
         calls: list[tuple[str, Any]] = []
 
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def describe_status(self, *, validate=True, force=False):
                 calls.append(("describe", validate, force))
                 return {
@@ -160,7 +176,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
     def test_clear_session_disables_auto_login_without_clearing_credentials(self):
         calls: list[str] = []
 
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def clear(self):
                 calls.append("clear")
                 return {
@@ -188,7 +204,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
     def test_auto_login_pauses_after_three_failed_cycles(self):
         calls: list[tuple[str, Any]] = []
 
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def describe_status(self, *, validate=True, force=False):
                 calls.append(("describe", validate, force))
                 return {
@@ -212,6 +228,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
                 }
 
         with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            self.manager.set_auto_login("ronghui_default", True)
             results = [
                 self.manager.check_status_with_auto_login("ronghui_default", force=True)
                 for _ in range(3)
@@ -228,7 +245,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
     def test_force_status_check_keeps_pending_code_without_resending(self):
         calls: list[tuple[str, Any]] = []
 
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def describe_status(self, *, validate=True, force=False):
                 calls.append(("describe", validate, force))
                 return {
@@ -252,6 +269,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
                 raise AssertionError("pending_code accounts must not resend code")
 
         with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            self.manager.set_auto_login("yunda_default", True)
             status = self.manager.check_status_with_auto_login("yunda_default", force=True)
 
         self.assertEqual(status["status"], "pending_code")
@@ -355,7 +373,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertEqual(1, params["days"])
 
     def test_account_login_response_includes_context_and_hides_password(self):
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def send_code(self):
                 return {
                     "status": "authenticated",
@@ -379,7 +397,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertNotIn("password", result)
 
     def test_account_submit_code_response_includes_context_and_hides_password(self):
-        class FakeBroker:
+        class FakeBroker(ManualCredentialsBroker):
             def submit_code(self, code):
                 return {
                     "status": "authenticated",
@@ -396,3 +414,116 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertEqual(result["account_id"], "ronghui_default")
         self.assertEqual(result["session_profile"], "default")
         self.assertNotIn("password", result)
+
+    def test_accounts_default_to_auto_login_disabled(self):
+        accounts = {
+            item["account_id"]: item
+            for item in self.manager.list_accounts(include_status=False)
+        }
+        created = self.manager.create_account(
+            account_id="ronghui_ops_02",
+            system="ronghui",
+            name="融辉运营账号 02",
+        )
+
+        self.assertFalse(accounts["ronghui_default"]["auto_login_enabled"])
+        self.assertFalse(accounts["price_default"]["auto_login_enabled"])
+        self.assertFalse(created["auto_login_enabled"])
+
+    def test_environment_only_credentials_are_not_account_credentials(self):
+        class EnvOnlyBroker:
+            def get_manual_credentials(self):
+                return {
+                    "username": "",
+                    "password": "",
+                    "phone": "",
+                    "has_saved_credentials": False,
+                    "has_manual_credentials": False,
+                    "has_env_credentials": False,
+                    "credential_source": "",
+                }
+
+            def get_saved_credentials(self):
+                raise AssertionError("account management must not read environment credentials")
+
+        with patch.object(account_manager_module, "get_session_broker", return_value=EnvOnlyBroker()):
+            credentials = self.manager.public_credentials("price_default")
+            with self.assertRaises(TMSAuthStateError) as raised:
+                self.manager.set_auto_login("price_default", True)
+
+        self.assertFalse(credentials["has_saved_credentials"])
+        self.assertFalse(credentials["has_env_credentials"])
+        self.assertEqual("", credentials["credential_source"])
+        self.assertEqual("AUTH_REQUIRED", raised.exception.code)
+
+    def test_missing_saved_credentials_disable_legacy_auto_login_before_validation(self):
+        calls: list[tuple[str, Any]] = []
+
+        class NoCredentialsBroker:
+            def get_manual_credentials(self):
+                return {
+                    "username": "",
+                    "password": "",
+                    "phone": "",
+                    "has_saved_credentials": False,
+                    "has_manual_credentials": False,
+                    "has_env_credentials": False,
+                    "credential_source": "",
+                }
+
+            def describe_status(self, *, validate=True, force=False):
+                calls.append(("describe", validate, force))
+                return {
+                    "status": "logged_out",
+                    "label": "未登录",
+                    "status_tone": "neutral",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "",
+                }
+
+            def send_code(self):
+                raise AssertionError("missing credentials must never open the login page")
+
+        self.manager._set_auto_login_state("ronghui_default", enabled=True)
+        with patch.object(account_manager_module, "get_session_broker", return_value=NoCredentialsBroker()):
+            status = self.manager.check_status_with_auto_login("ronghui_default", force=True)
+
+        self.assertEqual([("describe", False, False)], calls)
+        self.assertFalse(status["auto_login_enabled"])
+        self.assertTrue(status["monitoring_paused"])
+
+    def test_clear_credentials_also_disables_auto_login(self):
+        class StatefulBroker(ManualCredentialsBroker):
+            has_credentials = True
+
+            def get_manual_credentials(self):
+                payload = super().get_manual_credentials()
+                if self.has_credentials:
+                    return payload
+                return {
+                    "username": "",
+                    "password": "",
+                    "phone": "",
+                    "has_saved_credentials": False,
+                    "has_manual_credentials": False,
+                    "has_env_credentials": False,
+                    "credential_source": "",
+                }
+
+            def clear_saved_credentials(self):
+                self.has_credentials = False
+                return self.get_manual_credentials()
+
+        broker = StatefulBroker()
+        with patch.object(account_manager_module, "get_session_broker", return_value=broker):
+            self.manager.set_auto_login("ronghui_default", True)
+            credentials = self.manager.clear_credentials("ronghui_default")
+
+        account = next(
+            item
+            for item in self.manager.list_accounts(include_status=False)
+            if item["account_id"] == "ronghui_default"
+        )
+        self.assertFalse(credentials["has_saved_credentials"])
+        self.assertFalse(account["auto_login_enabled"])

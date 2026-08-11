@@ -139,7 +139,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 ## 后台账号与域名登录
 
 - 后台主认证方式为 `/login` 登录页 + MySQL 管理员账号 + `HttpOnly` 会话 Cookie，账号管理页为 `/settings/accounts`。
-- 自动化业务账号管理页为 `/automation-accounts`，只代理 Agent 侧账号元数据、凭据保存和登录态操作；账号系统只展示真实外部系统（TMS融辉、韵达、R7、R13），不在账号页维护“大祥报价 / 自提问题件 / 大祥S站”等用途标签；这些业务使用关系在 `/automations` 每个脚本卡片的账号角色绑定里选择。不要把业务账号密码落到 Console/MySQL，也不要在 GET 响应或页面中回显密码。
+- 自动化业务账号管理页为 `/automation-accounts`，只代理 Agent 侧账号元数据、凭据保存和登录态操作；账号系统只展示真实外部系统（TMS融辉、韵达、R7、R13），不在账号页维护“大祥报价 / 自提问题件 / 大祥S站”等用途标签；这些业务使用关系在 `/automations` 每个脚本卡片的账号角色绑定里选择。不要把业务账号密码落到 Console/MySQL，也不要在 GET 响应或页面中回显密码。自动登录开关必须在账号列表直接可见、默认关闭，且只在页面已保存完整账号密码时允许开启；不得显示“环境变量凭据”。
 - 首个管理员通过环境变量 `DOCFLOW_ADMIN_USERNAME`、`DOCFLOW_ADMIN_PASSWORD` 引导创建；不要把真实账号密码写进代码或文档。
 - `DOCFLOW_SESSION_SECRET` 用于签名会话 Cookie，生产/绑定域名时必须配置为固定随机值。
 - 生产入口固定为 `https://boyi.homes`，`www.boyi.homes` 与 HTTP 请求统一跳转到根域名 HTTPS；Nginx 配置维护在 `../agent/deploy/nginx/`。
