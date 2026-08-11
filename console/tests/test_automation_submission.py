@@ -19,6 +19,30 @@ class AutomationSubmissionTests(unittest.TestCase):
         app._parse_urlencoded_form = lambda handler: form_values
         return app
 
+    def test_account_name_action_proxies_note_without_status_refresh(self):
+        app = self._make_app({"name": "  融辉自提专用账号  "})
+        captured = {}
+
+        def proxy(handler, method, endpoint, **kwargs):
+            captured.update({"method": method, "endpoint": endpoint, **kwargs})
+            return True
+
+        app._proxy_automation_account_action = proxy
+
+        handled = app._handle_automation_account_post(
+            None,
+            "/automation-accounts/ronghui_default/name",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual("POST", captured["method"])
+        self.assertEqual(
+            "/internal/v1/admin/accounts/ronghui_default/name",
+            captured["endpoint"],
+        )
+        self.assertEqual({"name": "融辉自提专用账号"}, captured["payload"])
+        self.assertFalse(captured["refresh_status"])
+
     def test_run_now_allows_scheduled_task_without_cron(self):
         app = self._make_app(
             {
@@ -302,6 +326,56 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("未保存账号密码", accounts[0]["credentials_label"])
         self.assertEqual("warning", accounts[0]["credentials_tone"])
         self.assertIn("只检测到浏览器登录态", accounts[0]["status_note"])
+
+    def test_fetch_accounts_marks_auto_login_disabled_and_failure_circuit(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app._agent_request = lambda *args, **kwargs: {
+            "ok": True,
+            "data": {
+                "ok": True,
+                "accounts": [
+                    {
+                        "account_id": "ronghui_manual",
+                        "name": "手动登录账号",
+                        "system": "ronghui",
+                        "is_active": True,
+                        "session_capable": True,
+                        "auto_login_enabled": False,
+                        "status": {
+                            "status": "logged_out",
+                            "label": "自动登录失败",
+                            "last_error_summary": "旧错误",
+                        },
+                        "credentials": {},
+                    },
+                    {
+                        "account_id": "yunda_blocked",
+                        "name": "韵达熔断账号",
+                        "system": "yunda",
+                        "is_active": True,
+                        "session_capable": True,
+                        "auto_login_enabled": True,
+                        "auto_login_blocked": True,
+                        "auto_login_failure_limit": 3,
+                        "status": {
+                            "status": "error",
+                            "label": "自动登录失败",
+                            "last_error_summary": "账号或密码错误",
+                        },
+                        "credentials": {},
+                    },
+                ],
+            },
+        }
+
+        accounts, warning = app._fetch_automation_accounts(force=False)
+
+        self.assertEqual("", warning)
+        self.assertEqual("已退出", accounts[0]["status_label"])
+        self.assertEqual("", accounts[0]["status"]["last_error_summary"])
+        self.assertIn("不做定时登录校验", accounts[0]["status_note"])
+        self.assertEqual("自动登录已暂停", accounts[1]["status_label"])
+        self.assertIn("连续失败达到 3 次", accounts[1]["status_note"])
 
     def test_delivery_status_can_save_daily_schedule_without_webhook_params(self):
         app = self._make_app(

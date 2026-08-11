@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
 from agent.tms_runtime.session_broker import YUNDA_INMS_ORIGIN, get_session_broker
@@ -582,7 +583,7 @@ def _fetch_ronghui(params: dict[str, Any], *, direction: str) -> tuple[list[dict
     page_size = _coerce_int(params.get("page_size"), DEFAULT_PAGE_SIZE)
     max_pages = _coerce_int(params.get("max_pages"), DEFAULT_MAX_PAGES)
     timeout_sec = _coerce_int(params.get("timeout_sec"), 60)
-    session_profile = _clean(params.get("session_profile")) or "price"
+    session_profile = _clean(params.get("session_profile")) or PRICE_SESSION_PROFILE
     session = get_session_broker(session_profile).build_requests_session(validate=True)
     login_site_code = _resolve_ronghui_login_site_code(session, params)
     call_id = _ronghui_process_call_id(direction)

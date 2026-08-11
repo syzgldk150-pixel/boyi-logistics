@@ -23,7 +23,7 @@ from agent.tms_runtime.account_manager import resolve_account_params
 DEFAULT_SCRIPT_PARAMS: dict[str, Any] = {
     "headless": True,
     "slow_mo_ms": 0,
-    "max_login_attempts": 6,
+    "max_login_attempts": 3,
     "status_text": "已调度",
     "verify_status_text": "装车待发",
     "class_name": "邵阳操作场-长沙",
@@ -274,6 +274,8 @@ def _build_script_params(params: dict[str, Any]) -> dict[str, Any]:
             continue
         lowered = key.lower()
         if lowered in SECRET_PARAM_KEYS:
+            if lowered in {"username", "password"}:
+                script_params[key] = raw_value
             continue
         if lowered in CONTROL_PARAM_KEYS or lowered.startswith("_"):
             continue
@@ -282,7 +284,7 @@ def _build_script_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_r7_departure_checkin(params: dict[str, Any] | None = None) -> dict[str, Any]:
-    raw_params = resolve_account_params(_coerce_params(params))
+    raw_params = resolve_account_params(_coerce_params(params), default_system="r7")
     script_params = _build_script_params(raw_params)
     daily_success_limit = _daily_success_limit(raw_params)
     business_date = _today()

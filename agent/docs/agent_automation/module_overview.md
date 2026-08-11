@@ -4,9 +4,11 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-09
+updated: 2026-08-11
 ---
 
+> 2026-08-11: 后台账号列表新增直接可见的账号级“自动登录”开关，所有现有/新增账号缺省关闭。账号管理只把页面明确保存的完整账号密码认作可用凭据，不展示或使用部署环境变量兜底；未保存凭据时不能开启自动登录或发起登录，历史残留的开启状态也会在访问登录页前自动关闭。“退出登录”和“清空保存凭据”都会关闭自动登录；关闭后不再定时校验、自动重登或发送飞书断线提醒。“停用账号”停止任务选择、任务执行与登录监控，但不等同于退出。自动登录连续失败上限为 3 次，第 3 次失败后持久熔断，避免账号被锁。
+> 2026-08-11: 账号列表中系统名下方的灰色账号备注由账号 `name` 提供；“编辑”面板可通过 `/admin/accounts/{account_id}/name` 单独修改并持久化。备注保存只更新 `name/updated_at`，不改凭据、登录态、启停或自动登录设置，也不触发额外的登录态校验。
 > 2026-07-16: 融辉 TMS 单号查询会从真实 `FIND_SACN_TRACK_BY_CODE` 响应中先取得每个子单的最新扫描，再按完整主单前缀、四位数字子单后缀、当前到达网点和明确的到达类扫描（`到件` / `到达` / `卸车`）去重生成实时 `arrival_progress`。实时子单分布优先于数据库和飞书历史缓存，旧缓存的 `0` 不得覆盖实时统计；缺少明确到达值时飞书显示“无数据”，只有来源明确的零值才显示 `0 件`。
 > 2026-07-03: 融辉 TMS 单号查询的扫描接口必须携带“快件跟踪”菜单页 `authenticationKey/pageId` 和真实 `Referer`，否则 TMS 返回“非法的请求”并被误报为无扫描记录；当 `FIND_SACN_TRACK_BY_CODE_MAIN` 返回空但普通扫描接口有同一主单 `BILL_CODE` 行时，按精确主单号筛选普通扫描行作为 `route_rows`，仍不使用不确定候选或历史值兜底。
 > 2026-06-22: 融辉单号查询已切换为融辉 TMS 原页/接口数据，扫描轨迹、运单详情和子单详情均由 TMS 适配器提供。
@@ -61,8 +63,8 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | 触发文本（regex 容忍同义词组合） | 工具 | 模式 |
 |---|---|---|
 | `登录` / `登陆` / `发验证码` / `重新登录` / `登录态验证` 等 | 账号选择 pending | pending（动态列出 `/automation-accounts` 里的启用账号；回复序号、账号名或账号 ID 后登录） |
-| `大祥登录` / `报价登录` / `价格发验证码` / `price验证码` 等 | `/admin/accounts/{account_id}/login`（默认大祥账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 4 次后才人工输入） |
-| `操作场登录` / `后台发验证码` / `后台保存账号登录` 等 | `/admin/accounts/{account_id}/login`（默认融辉操作场账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 4 次后才人工输入） |
+| `大祥登录` / `报价登录` / `价格发验证码` / `price验证码` 等 | `/admin/accounts/{account_id}/login`（默认大祥账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 3 次后转人工输入并暂停自动重试） |
+| `操作场登录` / `后台发验证码` / `后台保存账号登录` 等 | `/admin/accounts/{account_id}/login`（默认融辉操作场账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 3 次后转人工输入并暂停自动重试） |
 | `韵达登录` / `韵达发验证码` / `yunda验证码` 等 | `/admin/accounts/{account_id}/login`（默认韵达账号） | pending 或直接 authenticated（图片验证码先 OCR；转手机验证码时飞书接管短信码输入） |
 | `切换到融辉自动化` / `切换到韵达自动化` / `当前自动化状态` | `automation_profile` | reply（切换或查看后台自动化 Profile；默认 `ronghui`） |
 | `报价` / `价格` + `地址,重量[,体积]` | `get_price` | reply（直接出报价；体积可为数字或 `长*宽*高*件数+...` 厘米表达式；融辉保价金额按录单页默认 3000，韵达申明价值使用页面按重量自动调整后的默认值） |
@@ -110,7 +112,9 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 
 任意工具结果含 `AUTH_REQUIRED` / `当前未登录` / `登录态已过期` / `登录态已失效` 关键字时，机器人替换为友好提示并发起重新登录流程，登录成功后自动续跑原任务。
 
-后台登录态监控以 `/automation-accounts` 账号管理里的所有启用账号为准。账号管理页的强制刷新和飞书定时轮询共用 `AutomationAccountManager.check_status_with_auto_login()`，统一执行“校验 → 必要时自动登录 → 返回最终状态”。飞书监控拿到最终状态后会调用 `agent/tms_runtime/routes.py` 的账号列表缓存回写入口，后台页批量轮询也用 `force=1&prefer_cached=1` 触发同一套强制刷新；因此页面展示、手动刷新和飞书告警都以同一份最终状态为准，只允许短时间缓存刷新延迟。共享 session 账号为 `expired` / `logged_out` / `error` 时，先调用对应 `/admin/accounts/{account_id}/login` 自动恢复；如果 OCR 自动登录成功，不发送任何提醒。只有进入 `pending_code`、自动登录异常或 4 次图片验证码识别失败时，`feishu/notify.py` 才按账号维度发送一次提醒。通知目标优先读取 `FEISHU_TMS_ALERT_CHAT_ID` 等环境变量；如果未配置，则使用机器人最近收到消息的 chat_id。机器人在同一账号同一断开状态内不重复刷屏，重新登录成功后下次断开会再次提醒。
+后台登录态监控只处理 `/automation-accounts` 中处于启用状态、已在页面保存完整账号密码且打开“自动登录”开关的共享 session 账号；开关默认关闭。账号管理页和飞书定时轮询共用 `AutomationAccountManager.check_status_with_auto_login()`，统一执行“校验 → 必要时自动登录 → 返回最终状态”。页面未保存凭据、关闭开关、停用账号或进入失败熔断时，该账号会在校验前被跳过，不访问登录页，也不发送飞书断线提醒；部署环境变量凭据不参与账号管理的凭据判断或登录。飞书监控拿到最终状态后会调用 `agent/tms_runtime/routes.py` 的账号列表缓存回写入口，后台页批量轮询也用 `force=1&prefer_cached=1` 更新展示。共享 session 账号为 `expired` / `logged_out` / `error` 时才尝试自动恢复；如果自动登录成功，不发送提醒。连续自动登录失败达到 3 次后持久暂停，防止账号锁定；当次可发送一次需要人工处理的提醒，后续轮询不再重试或重复推送。手动登录成功或用户重新开启开关会清零失败计数。通知目标优先读取 `FEISHU_TMS_ALERT_CHAT_ID` 等环境变量；如果未配置，则使用机器人最近收到消息的 chat_id。
+
+2026-08-11 起，账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。大祥报价不再保留写死的 `price` 身份，统一绑定账号 `price_default` 及同名 profile，后台登录、飞书报价和融辉原页代理复用同一登录态。
 
 **完整流程：**
 
@@ -122,7 +126,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
   ↓
 [用户] "是"
 [Bot] 调 POST /admin/accounts/{account_id}/login
-[Bot] 若 OCR 直接成功则续跑原任务；若转短信验证码或 4 次图片 OCR 失败，提示直接回复验证码
+[Bot] 若 OCR 直接成功则续跑原任务；若转短信验证码或 3 次图片 OCR 失败，提示直接回复验证码并暂停自动重试
 [注册 pending: waiting_code_for_resume {resume_tool, resume_params}]
   ↓
 [用户] "654321"

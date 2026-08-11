@@ -30,7 +30,7 @@
   - `tms_runtime/scripts/`
   - `tms_runtime/scripts/` 中与 `price_scripts/` 旧离线脚本重名的模块（如 `login_manager`、`address_utils`、`get_price`、`browser_address_resolver`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager` / `import get_price`，避免旧脚本目录或 `sys.modules` 缓存串线。
   - `SessionBroker` 是对旧调用方的统一门面；融辉/韵达验证码流程分别经 provider adapter，文件状态只由 state store 管理，登录响应识别只放在纯 validator 中。调度器不得访问其私有状态或按目录顺序加载脚本。
-  - 操作场账号登录态走 `/admin/tms/session/*`，账号密码来自后台 Agent 自动化页面保存值；大祥账号独立登录态走 `/admin/tms/price-session/*`，账号密码来自 `TMS_DAXIANGUSERNAME` 等环境变量；韵达账号独立登录态走 `/admin/tms/yunda-session/*`，用于韵达报表、查单、寄件同步、`/tms/yunda_price` 报价接口、Console 韵达录入页签的 `/tms/yunda_waybill_proxy` 原页同源代理，以及客服系统 `kyproblem.yunda56.com` 问题件接口
+- 融辉、韵达、R7、R13 全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；凭据只来自后台账号管理保存值。大祥报价任务显式绑定 `price_default` 及其 `price_default` profile，后台登录与飞书报价复用同一状态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
   - 韵达账号绿色状态必须校验主站、报表 `searchData`、`kyinms`、消息中心和 `kyproblem` 问题件页；登录/验证码成功后 `SessionBroker` 会初始化这些子系统并写入同一份 `storage_state`，不能只用主站已登录判断业务可用。
   - `tms_runtime/scripts/yunda_waybill_proxy.py` 只允许代理 `https://kyinms.yunda56.com/ky_inms/public/...`，由 Console `/ocr/yunda/live/...` 使用；该代理会向原页注入预填和本地打印监听脚本，保存响应带 `shipnow_autoprint_url` 时打开 Console 本地打印页；新增韵达原页接口时优先复用该 allowlist 代理，不要把浏览器 Cookie 或鉴权头透传给 Console。
 - 改 Phase 7 资源导入、运行时资源存储：

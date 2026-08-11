@@ -276,7 +276,7 @@ def run_once(params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     password = str(params.get("password") or DEFAULT_PASSWORD)
     headless = _as_bool(params.get("headless"), default=True)
     slow_mo_ms = int(params.get("slow_mo_ms") or 0)
-    max_login_attempts = int(params.get("max_login_attempts") or 6)
+    max_login_attempts = min(max(1, int(params.get("max_login_attempts") or 3)), 3)
     after_search_delay_ms = int(params.get("after_search_delay_ms") or 0)
     after_action_delay_ms = int(params.get("after_action_delay_ms") or 1500)
     confirm_clicks_max = int(params.get("confirm_clicks_max") or 1)
@@ -291,7 +291,10 @@ def run_once(params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
             slow_mo_ms=slow_mo_ms,
             use_tms_storage_state=False,
         )
-        auth = build_auth(max_attempts=max_login_attempts)
+        auth = build_auth(
+            max_attempts=max_login_attempts,
+            account_id=str(params.get("account_id") or params.get("session_profile") or "r7_default"),
+        )
 
         stage = "login"
         do_login(page, auth, username=username, password=password)

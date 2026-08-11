@@ -109,6 +109,55 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(payload["profile"], "default")
         self.assertEqual(calls, [("ronghui_default", True)])
 
+    def test_admin_account_auto_login_route_persists_checkbox_value(self):
+        calls = []
+
+        class FakeAccountManager:
+            def set_auto_login(self, account_id, enabled):
+                calls.append((account_id, enabled))
+                return {
+                    "account_id": account_id,
+                    "auto_login_enabled": enabled,
+                    "auto_login_failure_count": 0,
+                    "auto_login_blocked": False,
+                }
+
+        routes_module._ACCOUNT_LIST_CACHE.update(
+            {"payload": {"accounts": [{"account_id": "ronghui_default"}]}, "cached_at": 1}
+        )
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            response = self.client.post(
+                "/internal/v1/admin/accounts/ronghui_default/auto-login",
+                json={"enabled": False},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([("ronghui_default", False)], calls)
+        self.assertFalse(response.json()["data"]["account"]["auto_login_enabled"])
+        self.assertEqual({}, routes_module._ACCOUNT_LIST_CACHE)
+
+    def test_admin_account_name_route_updates_visible_note(self):
+        calls = []
+
+        class FakeAccountManager:
+            def update_name(self, account_id, name):
+                calls.append((account_id, name))
+                return {"account_id": account_id, "name": name}
+
+        routes_module._ACCOUNT_LIST_CACHE.update(
+            {"payload": {"accounts": [{"account_id": "ronghui_default"}]}, "cached_at": 1}
+        )
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            response = self.client.post(
+                "/internal/v1/admin/accounts/ronghui_default/name",
+                json={"name": "融辉自提专用账号"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([("ronghui_default", "融辉自提专用账号")], calls)
+        self.assertEqual("融辉自提专用账号", response.json()["data"]["account"]["name"])
+        self.assertEqual({}, routes_module._ACCOUNT_LIST_CACHE)
+
     def test_admin_accounts_route_passes_force_to_manager(self):
         calls = []
 
@@ -249,31 +298,41 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(payload["accounts"][0]["status"]["last_error_summary"], "缺少登录配置")
         self.assertEqual(payload["accounts"][1]["status"]["status"], "authenticated")
 
-    def test_credentials_routes_use_broker(self):
-        fake_broker = types.SimpleNamespace(
-            get_saved_credentials=lambda: {
-                "username": "demo-user",
-                "password": "demo-pass",
-                "phone": "13800000000",
-                "updated_at": "2026-04-22 12:00:00",
-                "has_saved_credentials": True,
-            },
-            save_credentials=lambda username, password, phone: {
-                "username": username,
-                "password": password,
-                "phone": phone,
-                "updated_at": "2026-04-22 12:00:00",
-                "has_saved_credentials": True,
-            },
-            clear_saved_credentials=lambda: {
-                "username": "",
-                "password": "",
-                "phone": "",
-                "updated_at": "",
-                "has_saved_credentials": False,
-            },
-        )
-        with patch("agent.tms_runtime.routes.get_session_broker", return_value=fake_broker):
+    def test_legacy_credentials_routes_use_account_manager(self):
+        calls = []
+
+        class FakeAccountManager:
+            def public_credentials(self, account_id):
+                calls.append(("public", account_id))
+                return {
+                    "username": "demo-user",
+                    "password": "",
+                    "phone": "13800000000",
+                    "updated_at": "2026-04-22 12:00:00",
+                    "has_saved_credentials": True,
+                }
+
+            def save_credentials(self, account_id, *, username, password, phone):
+                calls.append(("save", account_id, username, password, phone))
+                return {
+                    "username": username,
+                    "password": "",
+                    "phone": phone,
+                    "updated_at": "2026-04-22 12:00:00",
+                    "has_saved_credentials": True,
+                }
+
+            def clear_credentials(self, account_id):
+                calls.append(("clear", account_id))
+                return {
+                    "username": "",
+                    "password": "",
+                    "phone": "",
+                    "updated_at": "",
+                    "has_saved_credentials": False,
+                }
+
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
             get_response = self.client.get("/admin/tms/session/credentials")
             save_response = self.client.post(
                 "/admin/tms/session/credentials",
@@ -289,6 +348,9 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(save_response.json()["password"], "")
         self.assertEqual(clear_response.status_code, 200)
         self.assertFalse(clear_response.json()["has_saved_credentials"])
+        self.assertEqual(calls[0], ("public", "ronghui_default"))
+        self.assertEqual(calls[1][0:3], ("save", "ronghui_default", "saved-user"))
+        self.assertEqual(calls[2], ("clear", "ronghui_default"))
 
     def test_send_code_route_returns_auth_unavailable_payload(self):
         def _raise():
@@ -296,8 +358,8 @@ class TMSRoutesTests(unittest.TestCase):
 
             raise TMSAuthStateError("AUTH_UNAVAILABLE", "Playwright Python 依赖未安装。")
 
-        fake_broker = types.SimpleNamespace(send_code=_raise)
-        with patch("agent.tms_runtime.routes.get_session_broker", return_value=fake_broker):
+        fake_manager = types.SimpleNamespace(login=lambda _account_id: _raise())
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=fake_manager):
             response = self.client.post("/admin/tms/session/send-code")
 
         self.assertEqual(response.status_code, 200)
@@ -305,18 +367,42 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error_code"], "AUTH_UNAVAILABLE")
 
-    def test_price_session_routes_use_price_broker(self):
-        calls: list[str] = []
-        fake_broker = types.SimpleNamespace(
-            send_code=lambda: {"status": "pending_code", "profile": "price"},
-            submit_code=lambda code: {"status": "authenticated", "submitted": code, "profile": "price"},
+    def test_legacy_clear_routes_disable_auto_login_through_account_manager(self):
+        calls = []
+
+        class FakeAccountManager:
+            def clear_session(self, account_id):
+                calls.append(account_id)
+                return {
+                    "account_id": account_id,
+                    "status": "logged_out",
+                    "auto_login_enabled": False,
+                }
+
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            default_response = self.client.post("/admin/tms/session/clear")
+            price_response = self.client.post("/admin/tms/price-session/clear")
+            yunda_response = self.client.post("/admin/tms/yunda-session/clear")
+
+        self.assertEqual(
+            ["ronghui_default", "price_default", "yunda_default"],
+            calls,
         )
+        self.assertFalse(default_response.json()["auto_login_enabled"])
+        self.assertFalse(price_response.json()["auto_login_enabled"])
+        self.assertFalse(yunda_response.json()["auto_login_enabled"])
 
-        def _fake_get_session_broker(profile_name="default"):
-            calls.append(profile_name)
-            return fake_broker
-
-        with patch("agent.tms_runtime.routes.get_session_broker", side_effect=_fake_get_session_broker):
+    def test_price_session_routes_use_price_account(self):
+        calls: list[str] = []
+        fake_manager = types.SimpleNamespace(
+            login=lambda account_id: calls.append(account_id) or {"status": "pending_code", "profile": "price"},
+            submit_code=lambda account_id, code: calls.append(account_id) or {
+                "status": "authenticated",
+                "submitted": code,
+                "profile": "price",
+            },
+        )
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=fake_manager):
             send_response = self.client.post("/admin/tms/price-session/send-code")
             submit_response = self.client.post("/admin/tms/price-session/submit-code", json={"code": "123456"})
 
@@ -324,20 +410,19 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(submit_response.status_code, 200)
         self.assertEqual(send_response.json()["profile"], "price")
         self.assertEqual(submit_response.json()["submitted"], "123456")
-        self.assertEqual(["price", "price"], calls)
+        self.assertEqual(["price_default", "price_default"], calls)
 
-    def test_yunda_session_routes_use_yunda_broker(self):
+    def test_yunda_session_routes_use_yunda_account(self):
         calls: list[str] = []
-        fake_broker = types.SimpleNamespace(
-            send_code=lambda: {"status": "pending_code", "profile": "yunda"},
-            submit_code=lambda code: {"status": "authenticated", "submitted": code, "profile": "yunda"},
+        fake_manager = types.SimpleNamespace(
+            login=lambda account_id: calls.append(account_id) or {"status": "pending_code", "profile": "yunda"},
+            submit_code=lambda account_id, code: calls.append(account_id) or {
+                "status": "authenticated",
+                "submitted": code,
+                "profile": "yunda",
+            },
         )
-
-        def _fake_get_session_broker(profile_name="default"):
-            calls.append(profile_name)
-            return fake_broker
-
-        with patch("agent.tms_runtime.routes.get_session_broker", side_effect=_fake_get_session_broker):
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=fake_manager):
             send_response = self.client.post("/admin/tms/yunda-session/send-code")
             submit_response = self.client.post("/admin/tms/yunda-session/submit-code", json={"code": "123456"})
 
@@ -345,7 +430,7 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(submit_response.status_code, 200)
         self.assertEqual(send_response.json()["profile"], "yunda")
         self.assertEqual(submit_response.json()["submitted"], "123456")
-        self.assertEqual(["yunda", "yunda"], calls)
+        self.assertEqual(["yunda_default", "yunda_default"], calls)
 
     def test_get_price_route_uses_dispatch_layer(self):
         async def fake_execute_target(name, req):

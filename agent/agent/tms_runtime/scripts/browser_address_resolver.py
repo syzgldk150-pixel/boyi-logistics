@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 from urllib.parse import unquote
 
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -120,12 +121,15 @@ class BrowserAddressResolver:
         self._login_and_open_tab()
 
     def _login_and_open_tab(self) -> None:
-        self._playwright, self._browser, self._context, self._page = launch_browser(headless=True, profile="price")
+        self._playwright, self._browser, self._context, self._page = launch_browser(
+            headless=True,
+            profile=PRICE_SESSION_PROFILE,
+        )
         auth = TMSBrowserAuth(
             base_url="https://tms.ronghuiwl.com",
             login_url=LOGIN_URL,
             home_url=INDEX_URL,
-            profile="price",
+            profile=PRICE_SESSION_PROFILE,
         )
         auth.login(self._page, username=self.username, password=self.password)
 
@@ -246,7 +250,7 @@ class BrowserAddressResolver:
             from agent.tms_runtime.session_broker import get_session_broker
         except Exception:
             return {}
-        session = get_session_broker("price").build_requests_session(validate=True)
+        session = get_session_broker(PRICE_SESSION_PROFILE).build_requests_session(validate=True)
         return self._parse_user_info_cookie(session.cookies.get("userInfo"))
 
     def _load_page_user_info_from_context(self) -> Dict[str, Any]:

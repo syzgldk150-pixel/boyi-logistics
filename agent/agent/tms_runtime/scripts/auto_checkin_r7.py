@@ -1126,7 +1126,7 @@ def checkin_task_and_verify_manual_arrival(params: Optional[dict] = None) -> dic
     password = str(params.get("password") or DEFAULT_PASSWORD)
     headless = _as_bool(params.get("headless"), default=True)
     slow_mo_ms = int(params.get("slow_mo_ms") or 0)
-    max_login_attempts = int(params.get("max_login_attempts") or 6)
+    max_login_attempts = min(max(1, int(params.get("max_login_attempts") or 3)), 3)
     apply_last_3_days = _as_bool(params.get("apply_last_3_days"), default=True)
 
     confirm_clicks_max = int(params.get("confirm_clicks_max") or 2)
@@ -1142,7 +1142,10 @@ def checkin_task_and_verify_manual_arrival(params: Optional[dict] = None) -> dic
             slow_mo_ms=slow_mo_ms,
             use_tms_storage_state=False,
         )
-        auth = build_auth(max_attempts=max_login_attempts)
+        auth = build_auth(
+            max_attempts=max_login_attempts,
+            account_id=str(params.get("account_id") or params.get("session_profile") or "r7_default"),
+        )
 
         stage = "login"
         do_login(page, auth, username=username, password=password)
@@ -1352,7 +1355,7 @@ def run_once(params: Optional[dict] = None) -> dict:
 
     headless = _as_bool(params.get("headless"), default=True)
     slow_mo_ms = int(params.get("slow_mo_ms") or 0)
-    max_login_attempts = int(params.get("max_login_attempts") or 6)
+    max_login_attempts = min(max(1, int(params.get("max_login_attempts") or 3)), 3)
     do_arrive_wait_unload = _as_bool(params.get("do_arrive_wait_unload"), default=True)
     stop_after_arrive = _as_bool(params.get("stop_after_arrive") or params.get("skip_confirm"), default=False)
     status_text = normalize_arrival_status_text(
@@ -1379,7 +1382,10 @@ def run_once(params: Optional[dict] = None) -> dict:
             slow_mo_ms=slow_mo_ms,
             use_tms_storage_state=False,
         )
-        auth = build_auth(max_attempts=max_login_attempts)
+        auth = build_auth(
+            max_attempts=max_login_attempts,
+            account_id=str(params.get("account_id") or params.get("session_profile") or "r7_default"),
+        )
 
         stage = "login"
         do_login(page, auth, username=username, password=password)
@@ -1765,7 +1771,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=TARGET_VERIFY_STATUS_TEXT,
         help=f'验证运输状态文字（默认 "{TARGET_VERIFY_STATUS_TEXT}"）',
     )
-    parser.add_argument("--max-login-attempts", type=int, default=6, help="登录重试次数（默认 6）")
+    parser.add_argument("--max-login-attempts", type=int, default=3, help="登录重试次数（最多 3 次）")
     parser.add_argument(
         "--poll-interval-seconds",
         type=int,

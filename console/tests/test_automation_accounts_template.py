@@ -4,10 +4,13 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
+CONSOLE_DIR = Path(__file__).resolve().parents[1]
+
+
 class AutomationAccountsTemplateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        template_dir = Path(__file__).resolve().parents[1] / "templates"
+        template_dir = CONSOLE_DIR / "templates"
         cls.env = Environment(
             loader=FileSystemLoader(template_dir),
             autoescape=select_autoescape(["html", "xml"]),
@@ -27,6 +30,8 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
                     "system_label": "TMS融辉",
                     "is_default": True,
                     "is_active": True,
+                    "auto_login_enabled": True,
+                    "auto_login_blocked": False,
                     "session_capable": True,
                     "login_kind": "image",
                     "has_saved_credentials": True,
@@ -61,6 +66,8 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
                     "system_label": "TMS融辉",
                     "is_default": True,
                     "is_active": True,
+                    "auto_login_enabled": False,
+                    "auto_login_blocked": False,
                     "session_capable": True,
                     "login_kind": "image",
                     "has_saved_credentials": False,
@@ -109,6 +116,19 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertIn("document.activeElement === input", html)
         self.assertIn("setPasswordSavedState(passwordInput, !!credentials.has_saved_credentials)", html)
 
+    def test_account_note_is_editable_and_updates_without_login_status_check(self):
+        html = self._render()
+
+        self.assertIn('data-account-name>融辉运营账号 01</span>', html)
+        self.assertIn('action="/automation-accounts/ronghui_ops_01/name"', html)
+        self.assertIn('data-account-name-form', html)
+        self.assertIn('data-account-name-input', html)
+        self.assertIn('maxlength="80"', html)
+        self.assertIn('value="融辉运营账号 01"', html)
+        self.assertIn("显示在所属系统下方，用于区分账号用途。", html)
+        self.assertIn('row.querySelector("[data-account-name]")', html)
+        self.assertIn("if (!payload.state && !isNameForm) await refreshRowStatus(row);", html)
+
     def test_account_management_hides_purpose_and_default_account_fields(self):
         html = self._render()
 
@@ -128,6 +148,37 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertIn("登录态有效", html)
         self.assertIn("未保存账号密码", html)
         self.assertIn("当前只检测到浏览器登录态", html)
+
+    def test_account_page_exposes_clear_auto_login_and_disable_semantics(self):
+        html = self._render()
+        template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")
+
+        self.assertIn("<th>自动登录</th>", html)
+        self.assertIn('role="switch"', html)
+        self.assertIn('aria-checked="true"', html)
+        self.assertIn("data-account-auto-login-switch", html)
+        self.assertIn("定时校验与掉线恢复", html)
+        self.assertIn("保存凭据后可立即登录", html)
+        self.assertIn("仅关闭监控，仍可手动登录", template)
+        self.assertIn("立即执行一次登录；自动登录开关只控制定时校验与掉线恢复", html)
+        self.assertIn("重新登录", html)
+        self.assertIn('name="auto_login_enabled"', html)
+        self.assertIn("清除会话并关闭自动登录", html)
+        self.assertIn("清空账号密码并关闭自动登录", html)
+        self.assertIn("停止任务使用与登录监控", html)
+        self.assertNotIn("环境变量凭据", html)
+        self.assertNotIn("不会删除部署环境变量", html)
+
+    def test_disabled_badge_is_hidden_for_active_accounts_and_action_is_reversible(self):
+        html = self._render()
+        template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertEqual(2, html.count("data-account-disabled-badge hidden>已停用</span>"))
+        self.assertIn(".automation-account-mini-badge[hidden] { display: none !important; }", stylesheet)
+        self.assertIn("'停用账号' if account.is_active else '重新启用账号'", template)
+        self.assertIn('active ? "停用账号" : "重新启用账号"', template)
+        self.assertIn("恢复任务使用与登录监控", template)
 
 
 if __name__ == "__main__":

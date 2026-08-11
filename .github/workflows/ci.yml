@@ -16,11 +16,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install Agent lock and quality tools
+      - name: Install shared production locks and Agent quality tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r agent/requirements.lock
+          python -m pip install -r agent/requirements.lock -r console/requirements.lock
           python agent/scripts/verify_locked_environment.py agent/requirements.lock
+          python agent/scripts/verify_locked_environment.py console/requirements.lock
           python -m pip install ruff==0.16.2 pytest==9.1.1
       - name: Compile source
         run: python -m compileall -q agent shared tests

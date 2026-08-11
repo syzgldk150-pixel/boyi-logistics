@@ -33,6 +33,7 @@ from decimal import Decimal
 from urllib.parse import unquote
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 from agent.tms_runtime.scripts.address_utils import (
     generate_address_candidates,
@@ -1009,8 +1010,15 @@ def build_output(
     return output
 
 
-def fetch_prices(address: str, weight: float, volume: float, config_path: Optional[str] = None) -> Dict[str, Any]:
-    auth = TMSAuth(config_path, profile="price")
+def fetch_prices(
+    address: str,
+    weight: float,
+    volume: float,
+    config_path: Optional[str] = None,
+    *,
+    session_profile: str = PRICE_SESSION_PROFILE,
+) -> Dict[str, Any]:
+    auth = TMSAuth(config_path, profile=session_profile)
     auth.config.setdefault("test_user_data", {})
     if DEFAULT_LOGIN_USER:
         auth.config["test_user_data"]["operator_uid"] = DEFAULT_LOGIN_USER
@@ -1161,4 +1169,11 @@ def run_once(params: Dict[str, Any]) -> Any:
     else:
         volume = float(raw_volume)
     config_path = (params or {}).get("config")
-    return fetch_prices(address, weight, volume, config_path=config_path)
+    session_profile = _clean_str((params or {}).get("session_profile")) or PRICE_SESSION_PROFILE
+    return fetch_prices(
+        address,
+        weight,
+        volume,
+        config_path=config_path,
+        session_profile=session_profile,
+    )

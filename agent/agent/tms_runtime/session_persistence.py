@@ -77,6 +77,19 @@ class SessionPersistenceMixin:
             "credential_source": credential_source,
         }
 
+    def _manual_credentials_status_locked(self) -> dict[str, Any]:
+        """Return only credentials explicitly saved through account management."""
+        saved = self._load_saved_credentials_locked()
+        has_manual_credentials = self._has_complete_credentials(saved)
+        return {
+            **saved,
+            "password": "",
+            "has_saved_credentials": has_manual_credentials,
+            "has_manual_credentials": has_manual_credentials,
+            "has_env_credentials": False,
+            "credential_source": "saved" if has_manual_credentials else "",
+        }
+
     def _save_credentials_locked(self, *, username: str, password: str, phone: str) -> dict[str, Any]:
         existing = self._load_saved_credentials_locked()
         incoming_password = str(password or "").strip()
@@ -103,6 +116,10 @@ class SessionPersistenceMixin:
     def get_saved_credentials(self) -> dict[str, Any]:
         with self._lock:
             return self._credentials_status_locked()
+
+    def get_manual_credentials(self) -> dict[str, Any]:
+        with self._lock:
+            return self._manual_credentials_status_locked()
 
     def save_credentials(self, *, username: str, password: str, phone: str) -> dict[str, Any]:
         with self._lock:

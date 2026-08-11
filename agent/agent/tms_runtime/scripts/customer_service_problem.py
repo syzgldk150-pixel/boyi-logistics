@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
+
 try:
     from agent.tms_runtime.errors import TMSAuthStateError
 except Exception:  # pragma: no cover - keeps direct script tests lightweight.
@@ -240,7 +242,7 @@ def _session_profile(platform: str, params: dict[str, Any]) -> str:
     profile = _clean_text(params.get("session_profile"))
     if profile:
         return profile
-    return "yunda" if platform == "yunda" else "price"
+    return "yunda" if platform == "yunda" else PRICE_SESSION_PROFILE
 
 
 def _build_session(platform: str, params: dict[str, Any]) -> Any:

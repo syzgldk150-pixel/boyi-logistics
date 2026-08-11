@@ -2,10 +2,17 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import quote, urljoin
 
 import requests
+
+from agent.tms_runtime.sso_session_persistence import (
+    MAX_SSO_LOGIN_ATTEMPTS,
+    SSOSessionPersistenceMixin,
+    default_sso_state_path,
+)
 
 
 DEFAULT_SSO_ORIGIN = "https://sso.ronghuiwl.com"
@@ -14,12 +21,12 @@ DEFAULT_LOGIN_API = "/gateway/sso/auth/login"
 DEFAULT_EXCHANGE_API = "/gateway/sso/auth/login"
 
 
-class R13SSOAuth:
+class R13SSOAuth(SSOSessionPersistenceMixin):
     """
     Headless SSO login helper for r13.ronghuiwl.com using requests.Session.
     """
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, *, state_path: Optional[str | Path] = None):
         if config_path is None:
             config_path = os.environ.get(
                 "CONFIG_PATH",
@@ -48,6 +55,7 @@ class R13SSOAuth:
             self.session.trust_env = False
         self._apply_headers()
         self.last_token: Optional[str] = None
+        self.state_path = Path(state_path) if state_path else default_sso_state_path("r13_default")
 
     def _apply_headers(self) -> None:
         headers = self.config.get("r13_headers") or {}
@@ -183,7 +191,7 @@ class R13SSOAuth:
         try:
             response = self.session.get(self.welcome_url, allow_redirects=False, timeout=10)
         except Exception:
-            return True
+            return False
 
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("Location", "")
@@ -205,11 +213,23 @@ class R13SSOAuth:
         attach_bearer: bool = True,
         exchange: bool = True,
         verify: Optional[bool] = None,
+        allow_cached: bool = True,
+        allow_fresh_login: bool = True,
     ) -> requests.Session:
         logger = logging.getLogger(__name__)
-        username, password = self._resolve_credentials(username, password, account_key)
         if verify is None:
             verify = exchange
+        if allow_cached and self.restore_persisted_session(
+            validate=bool(verify),
+            validator=self._verify_authenticated,
+            attach_bearer=attach_bearer,
+        ):
+            return self.session
+        if not allow_fresh_login:
+            raise RuntimeError("R13 登录态不存在或已失效，请先在账号管理中登录。")
+
+        username, password = self._resolve_credentials(username, password, account_key)
+        max_attempts = min(max(1, int(max_attempts)), MAX_SSO_LOGIN_ATTEMPTS)
 
         last_error: Optional[BaseException] = None
         for attempt in range(1, max_attempts + 1):
@@ -222,16 +242,19 @@ class R13SSOAuth:
                     self._exchange_token(token)
                 if verify:
                     if self._verify_authenticated():
+                        self._save_sso_state(status="authenticated")
                         logger.info("R13 SSO login succeeded on attempt %s.", attempt)
                         return self.session
                     logger.info("R13 SSO login not verified on attempt %s, retrying.", attempt)
                 else:
+                    self._save_sso_state(status="authenticated")
                     logger.info("R13 SSO token acquired on attempt %s.", attempt)
                     return self.session
             except Exception as exc:
                 last_error = exc
-                logger.warning("R13 SSO login failed on attempt %s: %s", attempt, exc)
+                logger.warning("R13 SSO login failed on attempt %s: %s", attempt, type(exc).__name__)
             time.sleep(1.0)
 
-        suffix = f" Last error: {last_error}" if last_error else ""
+        self._save_sso_state(status="expired", error="R13 SSO 登录失败")
+        suffix = f" Last error type: {type(last_error).__name__}" if last_error else ""
         raise RuntimeError(f"R13 SSO login failed after multiple attempts.{suffix}")

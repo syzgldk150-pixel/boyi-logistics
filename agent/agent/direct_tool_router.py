@@ -7,6 +7,7 @@ import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
+from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 from agent.tracking_number_validation import validate_tracking_number
 
 PRICE_PREFIX_RE = re.compile(r"^\s*(?:报价|价格)(?:查询)?\s*[:：]?\s*(.+?)\s*$", re.IGNORECASE)
@@ -416,7 +417,7 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
     if price_params:
         return {
             "tool_name": "get_price",
-            "params": price_params,
+            "params": {**price_params, "account_id": PRICE_ACCOUNT_ID},
             "mode": "reply",
         }
 

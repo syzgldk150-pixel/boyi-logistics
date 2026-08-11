@@ -4,16 +4,16 @@ type: 架构文档
 tags: [项目总览, 模块关系, 本地控制台, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-09
+updated: 2026-08-11
 ---
 
 # 物流 Agent 项目总览
 
 > 本文件是项目总览的唯一规范副本；仓库根或 `agent/` 根目录不得保留同名重复文档。
 
-## 2026-08-09 架构基线
+## 2026-08-11 架构基线
 
-- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖由精确锁文件重建；ECS 发布按 Git SHA 创建并原子切换虚拟环境。
+- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖分别由精确锁文件约束；ECS 发布按两份锁文件的联合哈希复用唯一共享环境，仅在依赖变化或校验失败时重建，成功后删除所有非当前环境。
 - Console 保留 `ThreadingHTTPServer`，`app.py` 是组合入口，业务服务位于 `console/services/`，路由识别位于 `console/routes/`。
 - TMS SessionBroker 是稳定门面，provider 执行、适配器、持久化和验证器已分层；`agent/agent/` 不再依赖 `tools` 或 `feishu`。
 - Console 到 Agent 的调用全部进入 `/internal/v1/*`，使用统一 `ok/data/error` 契约；旧接口仅作鉴权后的 deprecated 兼容层。
@@ -104,7 +104,8 @@ updated: 2026-08-09
 - ECS 上的控制台已独立部署为 `console.service`，仅监听 `127.0.0.1:8765`；公网入口固定为 `https://boyi.homes`，由 Nginx 终止 TLS 并反向代理，HTTP 和 `www.boyi.homes` 统一跳转到根域名 HTTPS。
 - 2026-05-18：`/automation-accounts` 账号编辑弹层支持点击页面其他区域自动收起；已保存密码仅在页面显示为掩码，保存时若未输入新密码会保留 Agent 侧原密码，`凭据已配置` 状态使用成功色展示。
 - 2026-05-20：融辉 TMS 登录态默认切换为图片验证码；顶部 `/automations` 和业务账号管理页会展示 Agent 返回的验证码图片，融辉/大祥报价登录配置不再要求手机号，旧短信验证码页仍兼容。
-- 2026-05-31：自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站改为 TMS融辉账号用途，其中 `price_default` 继续使用独立 `price` 登录态，避免影响普通 TMS 登录态。
+- 2026-05-31：自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
+- 2026-08-11：账号页统一所有系统的管理契约：“立即登录”执行真实登录，自动登录只控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
 
 ## 2026-04-03 Update
 
