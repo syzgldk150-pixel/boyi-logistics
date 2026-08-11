@@ -744,6 +744,17 @@ class AuthServiceMixin:
         quoted_id = quote(account_id, safe="")
         values = self._parse_urlencoded_form(handler)
 
+        if action == "name":
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/name",
+                payload={"name": str(values.get("name", "") or "").strip()},
+                success_message="账号备注已保存。",
+                timeout=12,
+                account_id=account_id,
+                refresh_status=False,
+            )
         if action == "credentials":
             return self._proxy_automation_account_action(
                 handler,
@@ -858,6 +869,7 @@ class AuthServiceMixin:
         success_message: str,
         timeout: int,
         account_id: str = "",
+        refresh_status: bool = True,
     ) -> bool:
         result = self._agent_request(method, endpoint, payload=payload, timeout=timeout)
         message = success_message
@@ -886,7 +898,7 @@ class AuthServiceMixin:
                 direct_state = self._automation_account_state_from_payload(response_payload)
                 if direct_state is not None:
                     response["state"] = direct_state
-                elif account_id:
+                elif account_id and refresh_status:
                     status_result = self._fetch_automation_account_status_state(account_id)
                     if status_result.get("ok"):
                         response["state"] = status_result.get("state") or {}

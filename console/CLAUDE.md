@@ -51,7 +51,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - `templates/admin_accounts.html`
   后台账号管理页，入口为 `/settings/accounts`
 - `templates/automation_accounts.html`
-  自动化业务账号管理页，入口为 `/automation-accounts`；集中展示融辉、韵达、大祥报价、R7、R13 等 Agent 业务账号状态，并代理凭据保存、验证码/登录、清除登录态、默认账号和启停操作；业务账号密码只写入 Agent state，不写入 Console/MySQL，不在 GET 页面回显
+  自动化业务账号管理页，入口为 `/automation-accounts`；集中展示融辉、韵达、大祥报价、R7、R13 等 Agent 业务账号状态，并代理账号灰色备注、凭据保存、验证码/登录、清除登录态、默认账号和启停操作；备注可在“编辑”中单独保存并即时更新，保存备注不触发登录态校验；业务账号密码只写入 Agent state，不写入 Console/MySQL，不在 GET 页面回显
 - `templates/customer_service.html`
   客服系统专用工作台，入口为 `/modules/customer-service`；第一版只做问题件闭环，账号设置只保存融辉/韵达 `account_id` 和轮询间隔，查询和处理动作通过 Console `/customer-service/problems/*` 代理 Agent `/tms/customer_service_problem`，问题件详情不落库；查询异常必须保留并展示每个账号的 `platform/account_label/error_code/message`；登录账号 `739010002` 只展示发布网点和通知网点都为 `邵阳操作场` 的问题件
 - `templates/finance.html`、`static/finance.css`、`static/finance.js`
@@ -126,7 +126,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 专线分流页是基础资料维护界面，列表只读；编辑按钮打开弹窗表单，提交后通过 `/line-haul-contacts/{id}/update` 写入 MySQL
 - 导航搜索为前端本地筛选，不走后端接口
 - 后台登录使用 `/login`，账号管理使用 `/settings/accounts`，会话通过 `HttpOnly` Cookie 保护
-- 自动化业务账号管理使用 `/automation-accounts`，与后台管理员账号完全分离；任务绑定只保存 `account_id` 到自动化参数，旧任务仍兼容 `session_profile`。自动登录开关必须在账号列表直接可见、默认关闭，且只在页面已保存完整账号密码时允许开启；不得显示“环境变量凭据”。
+- 自动化业务账号管理使用 `/automation-accounts`，与后台管理员账号完全分离；任务绑定只保存 `account_id` 到自动化参数，旧任务仍兼容 `session_profile`。系统名下方的灰色账号备注可在“编辑”中单独修改，保存时不触发登录态校验。自动登录开关必须在账号列表直接可见、默认关闭，且只在页面已保存完整账号密码时允许开启；不得显示“环境变量凭据”。
 
 ## 启动方式
 

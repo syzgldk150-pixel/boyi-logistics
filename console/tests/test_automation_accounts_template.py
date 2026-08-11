@@ -113,6 +113,19 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertIn("document.activeElement === input", html)
         self.assertIn("setPasswordSavedState(passwordInput, !!credentials.has_saved_credentials)", html)
 
+    def test_account_note_is_editable_and_updates_without_login_status_check(self):
+        html = self._render()
+
+        self.assertIn('data-account-name>融辉运营账号 01</span>', html)
+        self.assertIn('action="/automation-accounts/ronghui_ops_01/name"', html)
+        self.assertIn('data-account-name-form', html)
+        self.assertIn('data-account-name-input', html)
+        self.assertIn('maxlength="80"', html)
+        self.assertIn('value="融辉运营账号 01"', html)
+        self.assertIn("显示在所属系统下方，用于区分账号用途。", html)
+        self.assertIn('row.querySelector("[data-account-name]")', html)
+        self.assertIn("if (!payload.state && !isNameForm) await refreshRowStatus(row);", html)
+
     def test_account_management_hides_purpose_and_default_account_fields(self):
         html = self._render()
 

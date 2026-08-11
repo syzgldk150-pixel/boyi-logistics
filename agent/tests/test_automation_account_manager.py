@@ -430,6 +430,35 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertFalse(accounts["price_default"]["auto_login_enabled"])
         self.assertFalse(created["auto_login_enabled"])
 
+    def test_update_name_persists_account_note_without_changing_runtime_settings(self):
+        before = next(
+            item
+            for item in self.manager.list_accounts(include_status=False)
+            if item["account_id"] == "ronghui_default"
+        )
+
+        updated = self.manager.update_name("ronghui_default", "  融辉自提专用账号  ")
+        reloaded = account_manager_module.AutomationAccountManager()
+        persisted = next(
+            item
+            for item in reloaded.list_accounts(include_status=False)
+            if item["account_id"] == "ronghui_default"
+        )
+
+        self.assertEqual("融辉自提专用账号", updated["name"])
+        self.assertEqual("融辉自提专用账号", persisted["name"])
+        self.assertEqual(before["system"], persisted["system"])
+        self.assertEqual(before["session_profile"], persisted["session_profile"])
+        self.assertEqual(before["is_active"], persisted["is_active"])
+        self.assertEqual(before["auto_login_enabled"], persisted["auto_login_enabled"])
+
+    def test_update_name_rejects_blank_or_overlong_note(self):
+        for value in ("   ", "备注" * 41):
+            with self.subTest(value_length=len(value)):
+                with self.assertRaises(TMSAuthStateError) as raised:
+                    self.manager.update_name("ronghui_default", value)
+                self.assertEqual("INVALID_ACCOUNT_NAME", raised.exception.code)
+
     def test_environment_only_credentials_are_not_account_credentials(self):
         class EnvOnlyBroker:
             def get_manual_credentials(self):

@@ -152,6 +152,6 @@ docs/
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
 - 韵达录入页签：`http://127.0.0.1:8765/ocr?mode=yunda`，Console 同源 `/ocr/yunda/live/...` 转发到 Agent `/tms/yunda_waybill_proxy`，Agent 使用 `yunda` 登录态代理韵达原始 `kyinms.yunda56.com/ky_inms/public/...` 页面与接口，成功保存后由 Console 写入本地 `waybills`，并通过保存响应里的 `shipnow_autoprint_url` 打开 Console 本地热敏打印页。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
-- 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；业务账号密码不得写入 Console/MySQL 或 GET 响应。自动登录默认关闭，只能在页面保存完整账号密码后手动开启；账号管理不得把部署环境变量凭据计入或展示为已保存凭据。
+- 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；列表中系统名下方的灰色账号备注来自 `name`，可在“编辑”中单独修改，且不会改动凭据、登录态或自动登录设置。业务账号密码不得写入 Console/MySQL 或 GET 响应。自动登录默认关闭，只能在页面保存完整账号密码后手动开启；账号管理不得把部署环境变量凭据计入或展示为已保存凭据。
 - 启动脚本：`console/start_backend.sh`
 - 停止脚本：`console/stop_backend.sh`

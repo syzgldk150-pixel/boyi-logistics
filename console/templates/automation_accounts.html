@@ -98,7 +98,7 @@
             <td>
               <div class="automation-account-system-cell">
                 <strong class="automation-account-system">{{ account.system_label }}</strong>
-                <span class="automation-account-name">{{ account.name }}</span>
+                <span class="automation-account-name" data-account-name>{{ account.name }}</span>
                 <div class="automation-account-mini-badges">
                   {% if account.credentials_label %}
                   <span class="automation-account-mini-badge automation-account-mini-badge--credentials automation-account-mini-badge--{{ account.credentials_tone or 'muted' }}" data-account-credentials-badge>{{ account.credentials_label }}</span>
@@ -146,6 +146,19 @@
                   <details class="automation-account-details automation-account-edit">
                     <summary class="automation-account-action-link">编辑</summary>
                     <div class="automation-account-edit-panel">
+                      <form class="automation-account-name-form" action="/automation-accounts/{{ account.account_id }}/name" method="post" data-account-action-form data-account-name-form>
+                        <label>
+                          <span>账号备注</span>
+                          <input class="review-input compact-input" type="text" name="name" value="{{ account.name }}" maxlength="80" autocomplete="off" placeholder="例如：自提问题件上传账号" data-account-name-input required>
+                          <small>显示在所属系统下方，用于区分账号用途。</small>
+                        </label>
+                        <button class="ghost-btn automation-account-name-save" type="submit">
+                          <i data-feather="save"></i>
+                          保存备注
+                        </button>
+                        <p class="automation-account-form-error" data-account-form-error hidden></p>
+                      </form>
+                      <div class="automation-account-edit-divider"><span>登录凭据</span></div>
                       <form class="automation-account-credentials" action="/automation-accounts/{{ account.account_id }}/credentials" method="post" data-account-action-form>
                         <label>
                           <span>账号</span>
@@ -532,8 +545,8 @@
     }
   }
 
-  function setInlineError(row, message) {
-    const error = row?.querySelector("[data-account-inline-error]");
+  function setInlineError(row, message, form = null) {
+    const error = form?.querySelector("[data-account-form-error]") || row?.querySelector("[data-account-inline-error]");
     if (!error) return;
     const text = String(message || "").trim();
     error.textContent = text;
@@ -575,6 +588,13 @@
 
   function applyAccountMetadata(row, account) {
     if (!row || !account || typeof account !== "object") return;
+    if ("name" in account) {
+      const name = String(account.name || "").trim();
+      const display = row.querySelector("[data-account-name]");
+      const input = row.querySelector("[data-account-name-input]");
+      if (display && name) display.textContent = name;
+      if (input && name) input.value = name;
+    }
     if ("is_active" in account) {
       const active = asFlag(account.is_active);
       row.dataset.accountActive = active ? "true" : "false";
@@ -732,7 +752,8 @@
     const row = accountRow(form);
     const submitter = event.submitter instanceof HTMLElement ? event.submitter : form.querySelector('button[type="submit"]');
     const isCodeForm = form.matches("[data-account-code-form]");
-    setInlineError(row, "");
+    const isNameForm = form.matches("[data-account-name-form]");
+    setInlineError(row, "", form);
     setButtonLoading(submitter, true);
 
     try {
@@ -760,7 +781,7 @@
 
       if (payload.ok === false) {
         const message = payload.message || "操作失败。";
-        setInlineError(row, message);
+        setInlineError(row, message, form);
         if (isCodeForm) {
           const input = form.querySelector("[data-account-code-input]");
           if (input) {
@@ -771,11 +792,11 @@
         return;
       }
 
-      if (!payload.state) await refreshRowStatus(row);
+      if (!payload.state && !isNameForm) await refreshRowStatus(row);
 
       if (!isCodeForm) form.closest("details")?.removeAttribute("open");
     } catch (err) {
-      setInlineError(row, err instanceof Error ? err.message : String(err || "操作失败。"));
+      setInlineError(row, err instanceof Error ? err.message : String(err || "操作失败。"), form);
     } finally {
       delete form.dataset.submitting;
       setButtonLoading(submitter, false);
