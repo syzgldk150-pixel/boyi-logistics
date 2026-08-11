@@ -180,6 +180,10 @@ class YundaPriceError(RuntimeError):
     """Raised when the Yunda pricing API cannot produce a usable price."""
 
 
+class YundaUnavailableError(YundaPriceError):
+    """Raised when the real Yunda site response marks an address as out of range."""
+
+
 def _decimal_amount(value: Any, *, field_name: str) -> Decimal:
     text = _clean_text(value).replace(",", "")
     if not text:
@@ -466,10 +470,20 @@ def _require_entry_weight_success(payload: Any) -> dict[str, Any]:
         raise YundaPriceError(f"韵达重量接口返回格式异常: {type(payload).__name__}")
     info = _clean_text(payload.get("info"))
     if info and info.lower() not in {"1", "true", "ok", "success"}:
-        message = _clean_text(payload.get("msg") or payload.get("message") or payload.get("error"))
+        message = _clean_text(
+            payload.get("msg")
+            or payload.get("message")
+            or payload.get("error")
+            or payload.get("data")
+        )
         raise YundaPriceError(f"韵达重量接口失败: {message or info}")
     if payload.get("ok") is False or payload.get("success") is False:
-        message = _clean_text(payload.get("msg") or payload.get("message") or payload.get("error"))
+        message = _clean_text(
+            payload.get("msg")
+            or payload.get("message")
+            or payload.get("error")
+            or payload.get("data")
+        )
         raise YundaPriceError(f"韵达重量接口失败: {message or 'ok=false'}")
     for key in ("data", "Tfr", "Del"):
         if not _clean_text(payload.get(key)) and payload.get(key) != 0:
@@ -1000,10 +1014,26 @@ def _site_row(payload: Any, *, destination_code: str = "") -> dict[str, Any]:
         raise YundaPriceError("韵达网点匹配结果缺少可用网点")
     destination_code = _clean_text(destination_code)
     if destination_code:
-        for row in rows:
-            if _clean_text(row.get("target_center_code")) == destination_code:
-                return row
-    return rows[0]
+        matches = [
+            row
+            for row in rows
+            if _clean_text(row.get("target_center_code")) == destination_code
+        ]
+        if len(matches) != 1:
+            raise YundaPriceError(
+                f"韵达网点匹配结果无法唯一定位目的网点: destination_code={destination_code} candidates={len(matches)}"
+            )
+        row = matches[0]
+    else:
+        if len(rows) != 1:
+            raise YundaPriceError(f"韵达网点匹配结果存在多个候选: candidates={len(rows)}")
+        row = rows[0]
+
+    site_code = _clean_text(row.get("target_center_code")).upper()
+    site_name = _clean_text(row.get("target_center"))
+    if site_code == "OR" or site_name == "超区":
+        raise YundaUnavailableError("韵达网点匹配结果为超区")
+    return row
 
 
 def fetch_yunda_address_detail(
@@ -1097,12 +1127,20 @@ def fetch_yunda_prices(
     referer = _clean_text(page_context.get("page_url")) or ENTRY_INDEX_URL
     remote_context = _fetch_remote_context(session, referer=referer)
     entry_defaults = _entry_base_form(page_context, remote_context)
-    address_detail = fetch_yunda_address_detail(
-        session,
-        address=address_text,
-        created_dot_code=entry_defaults.get("CreatedDotCode"),
-        settle_number=weight_text,
-    )
+    try:
+        address_detail = fetch_yunda_address_detail(
+            session,
+            address=address_text,
+            created_dot_code=entry_defaults.get("CreatedDotCode"),
+            settle_number=weight_text,
+        )
+    except YundaUnavailableError as exc:
+        return {
+            "source": "yunda_price",
+            "网点不可达": "网点不可达",
+            "unavailable": True,
+            "unavailable_reason": _clean_text(exc),
+        }
     weight_payload = _fetch_entry_weight(
         session,
         referer=referer,

@@ -1769,6 +1769,94 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
 
         self.assertEqual("2000", form["InsuredAmount"])
 
+    def test_yunda_price_returns_unavailable_for_real_super_region_marker(self):
+        class Response:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            text = "{}"
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class Session:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, headers=None, allow_redirects=None, timeout=None):
+                self.calls.append(url)
+                if url == yunda_price.ADDRESS_ANALYSIS_URL:
+                    return Response({
+                        "info": "1",
+                        "data": {
+                            "Buyer_Province": "140000",
+                            "Buyer_City": "140900",
+                            "Buyer_Area": "140931",
+                            "Buyer_Province_Name": "山西省",
+                            "Buyer_City_Name": "忻州市",
+                            "Buyer_Area_Name": "保德县",
+                            "Buyer_Address": "兴保铁路工业园区",
+                        },
+                    })
+                if url == yunda_price.ADDRESS_SITE_URL:
+                    return Response({
+                        "info": "1",
+                        "data": {
+                            "140931203": {
+                                "target_center_code": "OR",
+                                "target_center": "超区",
+                                "BuyerTownCode": "140931203",
+                                "BuyerTown": "冯家川乡",
+                            }
+                        },
+                    })
+                raise AssertionError(f"unexpected request: {url}")
+
+        session = Session()
+        with (
+            patch.object(
+                yunda_price,
+                "_fetch_entry_context",
+                return_value={"page_url": yunda_price.ENTRY_INDEX_URL},
+            ),
+            patch.object(
+                yunda_price,
+                "_fetch_remote_context",
+                return_value={"current_time": "2026-08-11 14:20:00"},
+            ),
+            patch.object(
+                yunda_price,
+                "_entry_base_form",
+                return_value={"CreatedDotCode": "56739382"},
+            ),
+        ):
+            result = yunda_price.fetch_yunda_prices(
+                session,
+                address="山西省忻州市保德县兴保铁路工业园区",
+                weight=672,
+                volume=0.1,
+            )
+
+        self.assertTrue(result["unavailable"])
+        self.assertEqual("网点不可达", result["网点不可达"])
+        self.assertIn("超区", result["unavailable_reason"])
+        self.assertNotIn(yunda_price.ENTRY_WEIGHT_URL, session.calls)
+
+    def test_yunda_price_weight_error_uses_real_response_message(self):
+        with self.assertRaisesRegex(
+            yunda_price.YundaPriceError,
+            "结算重量接口:数据库操作异常",
+        ):
+            yunda_price._require_entry_weight_success({
+                "info": 0,
+                "data": "结算重量接口:数据库操作异常",
+            })
+
     def test_yunda_price_uses_entry_weight_api_for_large_volume_chargeable_weight(self):
         html = """
         <html><body>

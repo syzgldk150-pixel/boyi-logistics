@@ -151,6 +151,74 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("agent_tms", result["mode"])
         self.assertNotIn("data", result)
 
+    def test_price_tool_unwraps_versioned_task_response_data(self):
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "ok": True,
+                    "data": {
+                        "ok": True,
+                        "cost_sec": 0.2,
+                        "data": {"目的网点": "泸州泸县站", "融速达": "computed-price"},
+                    },
+                    "error": None,
+                }
+
+        with patch("tools.price_tool.httpx.post", return_value=_Response()):
+            result = price_tool.get_price_via_http(
+                address="四川省泸州市泸县241乡道东南侧",
+                weight=800,
+                volume=5,
+            )
+
+        self.assertEqual("泸州泸县站", result["目的网点"])
+        self.assertEqual("computed-price", result["融速达"])
+        self.assertEqual("agent_tms", result["mode"])
+        self.assertNotIn("data", result)
+
+    def test_price_tool_unwraps_versioned_yunda_task_error(self):
+        request = price_tool.httpx.Request(
+            "POST",
+            "http://127.0.0.1:9000/internal/v1/tms/yunda_price",
+        )
+        response = price_tool.httpx.Response(
+            500,
+            json={
+                "ok": False,
+                "data": {
+                    "ok": False,
+                    "error_type": "YundaPriceError",
+                    "error": "韵达重量接口失败: 结算重量接口:数据库操作异常",
+                },
+                "error": {"code": "http_500", "message": "Internal request failed"},
+            },
+            request=request,
+        )
+
+        class _Response:
+            def raise_for_status(self):
+                raise price_tool.httpx.HTTPStatusError(
+                    "server error",
+                    request=request,
+                    response=response,
+                )
+
+        with patch("tools.price_tool.httpx.post", return_value=_Response()):
+            result = price_tool.get_yunda_price_via_http(
+                address="山西省忻州市保德县兴保铁路工业园区",
+                weight=672,
+            )
+
+        self.assertEqual(
+            "韵达重量接口失败: 结算重量接口:数据库操作异常",
+            result["error"],
+        )
+        self.assertEqual(500, result["http_status"])
+        self.assertNotIn("http_500", result["error"])
+
     def test_price_tool_combines_ronghui_and_yunda_address_quotes(self):
         class _Response:
             def __init__(self, payload):

@@ -17,7 +17,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 
 from shared.redaction import redact_text
-from tools.internal_http import internal_api_headers
+from tools.internal_http import internal_api_headers, unwrap_versioned_task_response
 
 HTTP_SERVICE_URL = os.getenv(
     "HTTP_SERVICE_URL",
@@ -126,6 +126,50 @@ def get_price_via_script(
         return {"error": f"本地报价脚本执行失败: {redact_text(exc)[:200]}"}
 
 
+def _error_text(value: object, *, default: str) -> str:
+    if isinstance(value, dict):
+        for key in ("message", "error", "detail", "code"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+        return default
+    return str(value or default).strip()
+
+
+def _decode_price_http_payload(payload: object, *, default_error: str) -> dict:
+    data = unwrap_versioned_task_response(payload)
+    if data.get("ok") is False:
+        result = {
+            "error": _error_text(data.get("error") or data.get("message"), default=default_error),
+            "mode": "agent_tms",
+        }
+        if data.get("error_code"):
+            result["error_code"] = data.get("error_code")
+        if data.get("data") is not None:
+            result["data"] = data.get("data")
+        return result
+
+    payload_data = data.get("data") if "data" in data else data
+    if isinstance(payload_data, dict):
+        result = dict(payload_data)
+        result.setdefault("mode", "agent_tms")
+        return result
+    return {"mode": "agent_tms", "result": payload_data}
+
+
+def _decode_price_http_error(exc: httpx.HTTPStatusError, *, default_error: str) -> dict:
+    try:
+        payload = exc.response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        result = _decode_price_http_payload(payload, default_error=default_error)
+        result.setdefault("error", default_error)
+        result["http_status"] = exc.response.status_code
+        return result
+    return {"error": f"{default_error}: {redact_text(exc)[:200]}"}
+
+
 def get_price_via_http(
     *,
     address: str = "",
@@ -145,40 +189,11 @@ def get_price_via_http(
     try:
         resp = httpx.post(url, json=payload, headers=internal_api_headers(), timeout=60)
         resp.raise_for_status()
-        data = resp.json()
-        if isinstance(data, dict):
-            if data.get("ok") is False:
-                error_text = str(data.get("error") or data.get("message") or "报价查询失败")
-                result = {
-                    "error": error_text,
-                    "mode": "agent_tms",
-                }
-                if data.get("error_code"):
-                    result["error_code"] = data.get("error_code")
-                if data.get("data") is not None:
-                    result["data"] = data.get("data")
-                return result
-            payload_data = data.get("data") if "data" in data else data
-            if isinstance(payload_data, dict):
-                payload_data.setdefault("mode", "agent_tms")
-                return payload_data
-            return {"mode": "agent_tms", "result": payload_data}
-        return data
+        return _decode_price_http_payload(resp.json(), default_error="报价查询失败")
     except httpx.TimeoutException:
         return {"error": "报价查询超时"}
     except httpx.HTTPStatusError as exc:
-        try:
-            payload = exc.response.json()
-        except Exception:
-            payload = None
-        if isinstance(payload, dict):
-            error_text = str(payload.get("error") or payload.get("message") or "报价查询失败")
-            result = {"error": error_text, "mode": "agent_tms"}
-            if payload.get("error_code"):
-                result["error_code"] = payload.get("error_code")
-            result["data"] = payload
-            return result
-        return {"error": f"报价查询失败: {redact_text(exc)[:200]}"}
+        return _decode_price_http_error(exc, default_error="报价查询失败")
     except Exception as exc:
         return {"error": f"报价查询失败: {redact_text(exc)[:200]}"}
 
@@ -267,40 +282,11 @@ def get_yunda_price_via_http(
     try:
         resp = httpx.post(url, json=payload, headers=internal_api_headers(), timeout=75)
         resp.raise_for_status()
-        data = resp.json()
-        if isinstance(data, dict):
-            if data.get("ok") is False:
-                error_text = str(data.get("error") or data.get("message") or "韵达报价查询失败")
-                result = {
-                    "error": error_text,
-                    "mode": "agent_tms",
-                }
-                if data.get("error_code"):
-                    result["error_code"] = data.get("error_code")
-                if data.get("data") is not None:
-                    result["data"] = data.get("data")
-                return result
-            payload_data = data.get("data") if "data" in data else data
-            if isinstance(payload_data, dict):
-                payload_data.setdefault("mode", "agent_tms")
-                return payload_data
-            return {"mode": "agent_tms", "result": payload_data}
-        return {"mode": "agent_tms", "result": data}
+        return _decode_price_http_payload(resp.json(), default_error="韵达报价查询失败")
     except httpx.TimeoutException:
         return {"error": "韵达报价查询超时"}
     except httpx.HTTPStatusError as exc:
-        try:
-            payload = exc.response.json()
-        except Exception:
-            payload = None
-        if isinstance(payload, dict):
-            error_text = str(payload.get("error") or payload.get("message") or "韵达报价查询失败")
-            result = {"error": error_text, "mode": "agent_tms"}
-            if payload.get("error_code"):
-                result["error_code"] = payload.get("error_code")
-            result["data"] = payload
-            return result
-        return {"error": f"韵达报价查询失败: {redact_text(exc)[:200]}"}
+        return _decode_price_http_error(exc, default_error="韵达报价查询失败")
     except Exception as exc:
         return {"error": f"韵达报价查询失败: {redact_text(exc)[:200]}"}
 

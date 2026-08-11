@@ -49,7 +49,7 @@
   - `core.py`（`track_waybill` 由 `AgentCore` 进程内调用 `tools.track_waybill_tool.run_track_waybill`，不走通用子进程执行器的同名运行锁，便于多票单号连续查询快速反馈）
   - `automation_profile.py`
   - 当前已注册：登录验证码（`登录/登陆/发验证码/重新登录` 先选择大祥账号、操作场账号或韵达账号；带 `大祥/报价/价格/price` 时走大祥账号，带 `操作场/后台` 时走操作场账号，带 `韵达/yunda` 时走韵达账号）、单号查询（裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>` 先做本地格式预检，通过后走 `track_waybill`）、报价（`报价/价格 ...` 或 `地址，重量`，同一地址请求会返回融辉和韵达两段报价；融辉段使用真实运单录入页详细地址 blur 解析得到目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做 `areaName`/区县/城市拆词兜底；韵达段先按页面 `getInsuredAmount.html` 规则用重量同步最低申明价值，再调用运单录入页 `price.html`，最终口径为页面的 `Number(CostTotal)+Number(短信费)` 后 `getFloatStr_1()` 截两位，并使用运单录入地址解析/网点匹配明细，飞书不传申明价值）、到货清单同步（`arrivelist/到货清单/预到达清单`）、扫描（`扫描/获取并扫描数据/...`）、R7 到达打卡（`到达打卡`）、R7 发车打卡（`发车/R7发车/发车打卡`）、上报分批差错（`上报分批差错` 等）、自提到货问题件（`自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等）、统计到货数据（`统计/到货统计/...`）
-  - `get_price` 由 `AgentCore` 进程内调用 `tools.price_tool.run_price_tool`，不走通用子进程执行器的重任务锁；`tools/price_tool.py` 内部并发请求融辉 `/internal/v1/tms/get_price` 和韵达 `/internal/v1/tms/yunda_price`，但仍分别按 `price` 与 `yunda` 登录态处理登录恢复。
+  - `get_price` 由 `AgentCore` 进程内调用 `tools.price_tool.run_price_tool`，不走通用子进程执行器的重任务锁；`tools/price_tool.py` 内部并发请求融辉 `/internal/v1/tms/get_price` 和韵达 `/internal/v1/tms/yunda_price`，两段响应统一解开 API 信封与 TMS 任务信封后再格式化，但仍分别按 `price` 与 `yunda` 登录态处理登录恢复。韵达真实网点匹配若唯一结果为 `target_center=超区` 或 `target_center_code=OR`，必须直接返回不可到达，不得继续调用重量或价格接口。
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机
   - TMS 工具返回登录态错误时必须顶层包含 `error_code=AUTH_REQUIRED` / `AUTH_PENDING_CODE`，不能只返回“格式异常”；共享解析在 `../tools/phase7_sync_common.py`

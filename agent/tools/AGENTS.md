@@ -15,8 +15,8 @@
 - 价格查询与 TMS 对接：
   - `price_tool.py`
   - `tms_tool.py`
-  - `internal_http.py`（本机 Agent HTTP 请求头；缺少 `AGENT_INTERNAL_API_TOKEN` 时显式失败）
-  - 地址报价会同时调用融辉 `/internal/v1/tms/get_price` 和韵达 `/internal/v1/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
+  - `internal_http.py`（本机 Agent HTTP 请求头与统一 `ok/data/error` 任务响应解包；缺少 `AGENT_INTERNAL_API_TOKEN` 时显式失败）
+  - 地址报价会同时调用融辉 `/internal/v1/tms/get_price` 和韵达 `/internal/v1/tms/yunda_price`；两段结果必须先解开统一接口信封和 TMS 任务信封后再格式化；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
 - 在线财务同步：
   - `sync_finance_bills_tool.py`
   - `finance_sync_service.py`
