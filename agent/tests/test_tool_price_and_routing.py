@@ -59,6 +59,22 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual(query_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
         self.assertEqual(price_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
 
+    def test_price_tool_defaults_to_managed_price_account(self):
+        with patch.object(
+            price_tool,
+            "get_combined_price",
+            return_value={"ok": True},
+        ) as get_combined_price:
+            result = price_tool.run_price_tool(
+                {
+                    "address": "浙江省台州市椒江区",
+                    "weight": 2000,
+                }
+            )
+
+        self.assertEqual({"ok": True}, result)
+        self.assertEqual("price_default", get_combined_price.call_args.kwargs["account_id"])
+
     def test_local_price_module_load_does_not_pollute_legacy_helper_modules(self):
         price_module_dir = str(Path(price_tool.PRICE_GET_MODULE).resolve().parent)
         price_script_root = str(Path(price_tool.PRICE_SCRIPT_ROOT).resolve())
@@ -958,6 +974,9 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         class _FailingR7SSOAuth:
             last_token = ""
 
+            def __init__(self, *args, **kwargs):
+                pass
+
             def login_and_get_session(self, **kwargs):
                 raise RuntimeError("http login unavailable")
 
@@ -975,6 +994,9 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
     def test_r7_ensure_logged_in_reports_http_and_browser_failures(self):
         class _FailingR7SSOAuth:
             last_token = ""
+
+            def __init__(self, *args, **kwargs):
+                pass
 
             def login_and_get_session(self, **kwargs):
                 raise RuntimeError("http login unavailable")

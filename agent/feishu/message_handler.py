@@ -24,6 +24,7 @@ from agent.direct_tool_router import (
     parse_verify_code,
 )
 from agent.pending_actions import clear_pending, get_pending, set_pending
+from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from feishu.notify import remember_chat_id
 from shared.redaction import redact_text
 from tools.internal_http import internal_api_headers
@@ -570,7 +571,7 @@ async def _resolve_login_command_session(auth_session: str) -> str:
         return normalized
     system_by_session = {
         "default": "ronghui",
-        "price": "price",
+        "price": "ronghui",
         "yunda": "yunda",
     }
     system = system_by_session.get(normalized)
@@ -578,13 +579,19 @@ async def _resolve_login_command_session(auth_session: str) -> str:
         return normalized
     options = await _fetch_login_account_options()
     preferred = [option for option in options if str(option.get("system") or "") == system]
+    if normalized == "price":
+        preferred = [
+            option
+            for option in preferred
+            if str(option.get("account_purpose") or "").strip().lower() == "price"
+        ]
     default_option = next((option for option in preferred if bool(option.get("is_default"))), None)
     default_option = default_option or next(
         (
             option
             for option in preferred
             if str(option.get("session_profile") or "").strip()
-            in {"default", "price", "yunda", "self_pickup_problem_upload"}
+            in {"default", PRICE_SESSION_PROFILE, "yunda", "self_pickup_problem_upload"}
         ),
         None,
     )

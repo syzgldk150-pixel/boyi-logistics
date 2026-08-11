@@ -11,8 +11,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from agent.tms_runtime.dispatch import TARGETS, TaskRequest, execute_target
 from agent.api_contracts import EnvelopedRoute
+from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
+from agent.tms_runtime.dispatch import TARGETS, TaskRequest, execute_target
 from agent.tms_runtime.errors import TMSAuthStateError, auth_error_payload
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.monitoring import (
@@ -393,13 +394,13 @@ def tms_session_clear():
 
 @router.get("/admin/tms/price-session/status")
 def tms_price_session_status(force: bool = False):
-    return _success_response(_account_manager().describe_status("price_default", validate=True, force=force))
+    return _success_response(_account_manager().describe_status(PRICE_ACCOUNT_ID, validate=True, force=force))
 
 
 @router.post("/admin/tms/price-session/send-code")
 def tms_price_session_send_code():
     try:
-        status = _account_manager().login("price_default")
+        status = _account_manager().login(PRICE_ACCOUNT_ID)
         update_account_list_cache_status(status)
         return _success_response(status)
     except TMSAuthStateError as exc:
@@ -408,14 +409,14 @@ def tms_price_session_send_code():
 
 @router.get("/admin/tms/price-session/credentials")
 def tms_price_session_credentials():
-    return _success_response(_account_manager().public_credentials("price_default"))
+    return _success_response(_account_manager().public_credentials(PRICE_ACCOUNT_ID))
 
 
 @router.post("/admin/tms/price-session/credentials")
 def tms_price_session_save_credentials(req: CredentialsRequest):
     try:
         credentials = _account_manager().save_credentials(
-            "price_default",
+            PRICE_ACCOUNT_ID,
             username=req.username,
             password=req.password,
             phone=req.phone,
@@ -428,7 +429,7 @@ def tms_price_session_save_credentials(req: CredentialsRequest):
 
 @router.post("/admin/tms/price-session/credentials/clear")
 def tms_price_session_clear_credentials():
-    credentials = _account_manager().clear_credentials("price_default")
+    credentials = _account_manager().clear_credentials(PRICE_ACCOUNT_ID)
     _invalidate_account_list_cache()
     return _success_response(credentials)
 
@@ -436,7 +437,7 @@ def tms_price_session_clear_credentials():
 @router.post("/admin/tms/price-session/submit-code")
 def tms_price_session_submit_code(req: SubmitCodeRequest):
     try:
-        status = _account_manager().submit_code("price_default", req.code)
+        status = _account_manager().submit_code(PRICE_ACCOUNT_ID, req.code)
         update_account_list_cache_status(status)
         return _success_response(status)
     except TMSAuthStateError as exc:
@@ -445,7 +446,7 @@ def tms_price_session_submit_code(req: SubmitCodeRequest):
 
 @router.post("/admin/tms/price-session/clear")
 def tms_price_session_clear():
-    status = _account_manager().clear_session("price_default")
+    status = _account_manager().clear_session(PRICE_ACCOUNT_ID)
     update_account_list_cache_status(status)
     return _success_response(status)
 

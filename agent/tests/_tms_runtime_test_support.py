@@ -85,7 +85,7 @@ def _admin_accounts_payload(*, pending_accounts: set[str] | None = None) -> dict
     pending_accounts = pending_accounts or set()
     accounts = [
         ("ronghui_default", "TMS融辉默认账号", "ronghui", "TMS融辉", "general", "普通TMS账号", "default", True),
-        ("price_default", "大祥报价账号", "ronghui", "TMS融辉", "price", "大祥报价", "price", True),
+        ("price_default", "大祥报价账号", "ronghui", "TMS融辉", "price", "大祥报价", "price_default", True),
         ("yunda_default", "韵达默认账号", "yunda", "韵达", "general", "普通账号", "yunda", True),
     ]
     return {

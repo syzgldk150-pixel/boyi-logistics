@@ -12,6 +12,8 @@ from functools import lru_cache
 
 import httpx
 
+from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 
@@ -129,6 +131,7 @@ def get_price_via_http(
     to_station: str = "",
     weight: float,
     volume: float = 0.1,
+    account_id: str = "",
 ) -> dict:
     url = f"{HTTP_SERVICE_URL}/get_price"
     payload: dict[str, object] = {"weight": weight}
@@ -138,6 +141,8 @@ def get_price_via_http(
     else:
         payload["from_station"] = from_station
         payload["to_station"] = to_station
+    if account_id:
+        payload["account_id"] = account_id
     try:
         resp = httpx.post(url, json=payload, headers=internal_api_headers(), timeout=60)
         resp.raise_for_status()
@@ -307,10 +312,16 @@ def get_combined_price(
     weight: float,
     volume: float = 0.1,
     config: str | None = None,
+    account_id: str = "",
 ) -> dict:
     def _fetch_ronghui() -> dict:
         if PRICE_TOOL_PREFER_HTTP:
-            return get_price_via_http(address=address, weight=weight, volume=volume)
+            return get_price_via_http(
+                address=address,
+                weight=weight,
+                volume=volume,
+                account_id=account_id,
+            )
         return get_price_via_script(address, weight, volume=volume, config=config)
 
     def _fetch_yunda() -> dict:
@@ -328,7 +339,11 @@ def get_combined_price(
 
     ronghui_failed = _is_failed_result(ronghui)
     if ronghui_failed and _is_auth_failure(ronghui):
-        return _provider_failure("融辉", ronghui, auth_session="price")
+        auth_session = f"account:{account_id}" if account_id else "price"
+        failure = _provider_failure("融辉", ronghui, auth_session=auth_session)
+        if account_id:
+            failure["account_id"] = account_id
+        return failure
     ronghui_payload = _provider_unavailable("融辉", ronghui) if ronghui_failed else ronghui
 
     yunda_failed = _is_failed_result(yunda)
@@ -362,6 +377,9 @@ def run_price_tool(params: dict) -> dict:
     raw_weight = params.get("weight", 0)
     raw_volume = params.get("volume", 0.1)
     config = params.get("config")
+    account_id = str(
+        params.get("account_id") or params.get("accountId") or PRICE_ACCOUNT_ID
+    ).strip()
 
     try:
         weight = float(raw_weight)
@@ -379,9 +397,15 @@ def run_price_tool(params: dict) -> dict:
             weight=weight,
             volume=volume,
             config=config,
+            account_id=account_id,
         )
     if from_station and to_station:
-        return get_price_via_http(from_station=from_station, to_station=to_station, weight=weight)
+        return get_price_via_http(
+            from_station=from_station,
+            to_station=to_station,
+            weight=weight,
+            account_id=account_id,
+        )
     return {"error": "缺少 address，或缺少 from_station/to_station"}
 
 

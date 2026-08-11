@@ -56,8 +56,96 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertTrue(masked_result["has_saved_credentials"])
         self.assertEqual(masked_result["password"], "")
         self.assertEqual(private["password"], "r7-secret-pass")
-        self.assertEqual(status["status_tone"], "success")
-        self.assertEqual(status["label"], "凭据已配置")
+        self.assertEqual(status["status"], "logged_out")
+        self.assertEqual(status["label"], "已退出")
+        self.assertTrue(status["session_capable"])
+
+    def test_r7_and_r13_share_unified_login_auto_login_and_logout_controls(self):
+        class FakeSSOAuth:
+            def __init__(self):
+                self.authenticated = False
+                self.login_calls: list[dict[str, Any]] = []
+                self.clear_calls = 0
+
+            def _verify_authenticated(self):
+                return self.authenticated
+
+            def login_and_get_session(self, **kwargs):
+                self.login_calls.append(dict(kwargs))
+                self.authenticated = True
+                return object()
+
+            def clear_persisted_session(self):
+                self.clear_calls += 1
+                self.authenticated = False
+
+            def persisted_status(self, *, validate, validator, attach_bearer=True):
+                if validate and self.authenticated:
+                    self.authenticated = bool(validator())
+                return {
+                    "status": "authenticated" if self.authenticated else "logged_out",
+                    "label": "已登录" if self.authenticated else "已退出",
+                    "status_tone": "success" if self.authenticated else "neutral",
+                    "authenticated": self.authenticated,
+                    "pending_code": False,
+                    "last_validation_at": "2026-08-11 18:30:00" if validate else "",
+                    "last_error_summary": "",
+                    "authenticated_at": "2026-08-11 18:29:00" if self.authenticated else "",
+                    "pending_since": "",
+                    "expires_at": "",
+                    "challenge_type": "",
+                    "challenge_label": "",
+                }
+
+        for account_id in ("r7_default", "r13_default"):
+            with self.subTest(account_id=account_id):
+                auth = FakeSSOAuth()
+                self.manager.save_credentials(
+                    account_id,
+                    username=f"{account_id}-user",
+                    password=f"{account_id}-password",
+                )
+                with patch.object(self.manager, "_sso_auth", return_value=auth):
+                    logged_in = self.manager.login(account_id)
+                    auto_login = self.manager.set_auto_login(account_id, True)
+                    checked = self.manager.describe_status(account_id, validate=True, force=True)
+                    logged_out = self.manager.clear_session(account_id)
+
+                self.assertEqual("authenticated", logged_in["status"])
+                self.assertTrue(logged_in["session_capable"])
+                self.assertTrue(auto_login["auto_login_enabled"])
+                self.assertEqual("authenticated", checked["status"])
+                self.assertEqual("logged_out", logged_out["status"])
+                self.assertFalse(logged_out["auto_login_enabled"])
+                self.assertEqual(1, auth.clear_calls)
+                self.assertEqual(1, len(auth.login_calls))
+                self.assertEqual(1, auth.login_calls[0]["max_attempts"])
+                self.assertTrue(auth.login_calls[0]["exchange"])
+                self.assertTrue(auth.login_calls[0]["verify"])
+
+    def test_sso_manual_login_failure_stops_after_one_attempt_and_returns_account_error(self):
+        class FailingSSOAuth:
+            def __init__(self):
+                self.calls = 0
+
+            def login_and_get_session(self, **kwargs):
+                self.calls += 1
+                raise RuntimeError("synthetic upstream failure")
+
+        auth = FailingSSOAuth()
+        self.manager.save_credentials(
+            "r7_default",
+            username="r7-user",
+            password="r7-password",
+        )
+
+        with patch.object(self.manager, "_sso_auth", return_value=auth):
+            with self.assertRaises(TMSAuthStateError) as raised:
+                self.manager.login("r7_default")
+
+        self.assertEqual("LOGIN_FAILED", raised.exception.code)
+        self.assertEqual(1, auth.calls)
+        self.assertNotIn("synthetic upstream failure", str(raised.exception))
 
     def test_default_ronghui_account_status_maps_to_default_profile(self):
         calls: list[tuple[str, Any]] = []
@@ -319,9 +407,20 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertEqual("TMS融辉", accounts["price_default"]["system_label"])
         self.assertEqual("price", accounts["price_default"]["account_purpose"])
         self.assertEqual("大祥报价", accounts["price_default"]["account_purpose_label"])
-        self.assertEqual("price", accounts["price_default"]["session_profile"])
+        self.assertEqual("price_default", accounts["price_default"]["session_profile"])
         self.assertTrue(accounts["price_default"]["is_default"])
         self.assertNotIn("price", {item["system"] for item in accounts.values()})
+
+    def test_legacy_price_runtime_directory_moves_to_price_default_without_duplication(self):
+        legacy_dir = account_manager_module.STATE_DIR / "price"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "migration-marker.txt").write_text("synthetic", encoding="utf-8")
+
+        account_manager_module.AutomationAccountManager()
+
+        migrated_dir = account_manager_module.STATE_DIR / "price_default"
+        self.assertFalse(legacy_dir.exists())
+        self.assertEqual("synthetic", (migrated_dir / "migration-marker.txt").read_text(encoding="utf-8"))
 
     def test_defaults_are_scoped_by_system_and_purpose(self):
         self.manager.create_account(
@@ -351,7 +450,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
         )
 
         self.assertEqual("price_default", params["account_id"])
-        self.assertEqual("price", params["session_profile"])
+        self.assertEqual("price_default", params["session_profile"])
 
     def test_resolve_role_account_params_injects_r13_credentials(self):
         self.manager.save_credentials(
@@ -406,7 +505,7 @@ class AutomationAccountManagerTests(unittest.TestCase):
                     "status": "authenticated",
                     "authenticated": True,
                     "pending_code": False,
-                    "profile": "price",
+                    "profile": "price_default",
                 }
 
         def fake_get_session_broker(profile):
@@ -417,9 +516,9 @@ class AutomationAccountManagerTests(unittest.TestCase):
             result = self.manager.login("price_default")
 
         self.assertFalse(result["auto_login_enabled"])
-        self.assertEqual(result["session_profile"], "price")
+        self.assertEqual(result["session_profile"], "price_default")
         self.assertEqual(calls.count("send_code"), 1)
-        self.assertTrue(all(item == "price" for item in calls if item != "send_code"))
+        self.assertTrue(all(item == "price_default" for item in calls if item != "send_code"))
 
     def test_account_submit_code_response_includes_context_and_hides_password(self):
         class FakeBroker(ManualCredentialsBroker):

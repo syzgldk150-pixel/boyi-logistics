@@ -133,6 +133,7 @@ def _resolve_token(
     browser_headless: bool,
     browser_slow_mo_ms: int,
     browser_channel: Optional[str],
+    account_id: str,
 ) -> str:
     if token:
         return _validate_token_ascii(str(token), source="--token")
@@ -154,8 +155,13 @@ def _resolve_token(
     # Prefer headless SSO login (requests) to obtain tokenValue, avoiding Playwright in server/sandbox envs.
     try:
         from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
+        from agent.tms_runtime.sso_session_persistence import default_sso_state_path
 
-        auth = R7SSOAuth(config_path=config_path, disable_proxy=bool(disable_proxy))
+        auth = R7SSOAuth(
+            config_path=config_path,
+            disable_proxy=bool(disable_proxy),
+            state_path=default_sso_state_path(account_id or "r7_default"),
+        )
         auth.login_and_get_session(
             username=username,
             password=password,
@@ -203,7 +209,7 @@ def _resolve_token(
             channel=browser_channel or None,
             use_tms_storage_state=False,
         )
-        auth = build_auth(max_attempts=max(1, int(max_attempts)))
+        auth = build_auth(max_attempts=max(1, int(max_attempts)), account_id=account_id or "r7_default")
         ensure_logged_in(page, auth, username=username_value, password=password_value)
 
         # Ensure we're in r7 origin so we can read r7 localStorage.
@@ -264,6 +270,7 @@ def fetch_carline(
     browser_headless: bool,
     browser_slow_mo_ms: int,
     browser_channel: Optional[str],
+    account_id: str = "r7_default",
 ) -> List[Dict[str, Any]]:
     token_value = _resolve_token(
         token=token,
@@ -275,6 +282,7 @@ def fetch_carline(
         browser_headless=browser_headless,
         browser_slow_mo_ms=browser_slow_mo_ms,
         browser_channel=browser_channel,
+        account_id=account_id,
     )
     session = _build_session(disable_proxy=disable_proxy)
 
@@ -372,6 +380,7 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
         browser_headless=_coerce_bool(params.get("browser_headless") or params.get("browserHeadless"), default=True),
         browser_slow_mo_ms=_coerce_int(params.get("browser_slow_mo_ms") or params.get("browserSlowMoMs"), default=0),
         browser_channel=(params.get("browser_channel") or params.get("browserChannel") or None),
+        account_id=str(params.get("account_id") or params.get("session_profile") or "r7_default"),
     )
 
 

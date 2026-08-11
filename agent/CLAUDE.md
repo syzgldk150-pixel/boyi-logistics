@@ -152,6 +152,6 @@ docs/
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
 - 韵达录入页签：`http://127.0.0.1:8765/ocr?mode=yunda`，Console 同源 `/ocr/yunda/live/...` 转发到 Agent `/tms/yunda_waybill_proxy`，Agent 使用 `yunda` 登录态代理韵达原始 `kyinms.yunda56.com/ky_inms/public/...` 页面与接口，成功保存后由 Console 写入本地 `waybills`，并通过保存响应里的 `shipnow_autoprint_url` 打开 Console 本地热敏打印页。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
-- 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；列表中系统名下方的灰色账号备注来自 `name`，可在“编辑”中单独修改，且不会改动凭据、登录态或自动登录设置。业务账号密码不得写入 Console/MySQL 或 GET 响应。点击“立即登录”必须立刻执行一次真实登录，与自动登录开关无关；自动登录只控制定时校验和掉线恢复。大祥报价 `price_default` 与其他账号统一经过 AccountManager 保存凭据、登录、提交验证码和清理状态，但继续使用独立 `price` Cookie/会话目录，防止不同真实账号互相覆盖；所有非默认账号 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，只能在页面保存完整账号密码后手动开启；账号管理不得把部署环境变量凭据计入或展示为已保存凭据。
+- 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；所有账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用，协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不会改动凭据或状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。大祥报价显式使用 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一状态；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，只能在页面保存完整凭据后开启；账号管理不得把环境变量凭据计入或展示为已保存凭据。
 - 启动脚本：`console/start_backend.sh`
 - 停止脚本：`console/stop_backend.sh`

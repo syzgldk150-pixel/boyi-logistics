@@ -19,6 +19,7 @@ import requests
 from agent.tms_runtime.scripts.browser_manager import launch_browser
 from agent.tms_runtime.scripts.r7_login import HOME_URL, build_auth, ensure_logged_in
 from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
+from agent.tms_runtime.sso_session_persistence import default_sso_state_path
 
 
 PRE_ARRIVE_PAGE_URL = "https://r7.ronghuiwl.com/operateManage/preArriveList"
@@ -490,11 +491,14 @@ def _run_once_http(params: Dict[str, Any]) -> Any:
     auth = R7SSOAuth(
         config_path=_clean_str(params.get("config_path")) or None,
         disable_proxy=disable_proxy,
+        state_path=default_sso_state_path(
+            _clean_str(params.get("account_id") or params.get("session_profile")) or "r7_default"
+        ),
     )
     session = auth.login_and_get_session(
         username=username,
         password=password,
-        max_attempts=max(1, int(params.get("max_attempts", 6) or 6)),
+        max_attempts=min(max(1, int(params.get("max_attempts", 3) or 3)), 3),
         attach_bearer=False,
         exchange=True,
         verify=False,
@@ -629,7 +633,10 @@ def _run_once_browser(params: Dict[str, Any]) -> Any:
             channel=(str(params.get("browser_channel") or "").strip() or None),
             use_tms_storage_state=False,
         )
-        auth = build_auth(max_attempts=max(1, int(params.get("max_attempts", 6) or 6)))
+        auth = build_auth(
+            max_attempts=min(max(1, int(params.get("max_attempts", 3) or 3)), 3),
+            account_id=_clean_str(params.get("account_id") or params.get("session_profile")) or "r7_default",
+        )
         ensure_logged_in(page, auth, username=username, password=password)
 
         page.goto(PRE_ARRIVE_PAGE_URL, wait_until="domcontentloaded", timeout=60_000)
