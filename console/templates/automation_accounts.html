@@ -93,7 +93,7 @@
         {% set creds = account.credentials or {} %}
         {% set status_value = status.status or '' %}
         {% set challenge_type = status.challenge_type or 'sms' %}
-        {% set primary_label = '已停用' if not account.is_active else '先保存凭据' if not account.has_manual_credentials else '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '刷新' if status_value == 'authenticated' else '登录' if account.session_capable and account.login_kind == 'image' else '去登录' if account.session_capable else '重新验证' %}
+        {% set primary_label = '已停用' if not account.is_active else '先保存凭据' if not account.has_manual_credentials else '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '重新登录' if status_value == 'authenticated' else '立即登录' if account.session_capable else '重新验证' %}
           <tr class="{% if not account.is_active %}is-disabled{% endif %}" data-account-row data-account-system="{{ account.system }}" data-account-id="{{ account.account_id }}" data-account-active="{{ 'true' if account.is_active else 'false' }}" data-account-auto-login="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-blocked="{{ 'true' if account.auto_login_blocked else 'false' }}" data-account-status="{{ status_value }}" data-account-challenge-type="{{ challenge_type }}" data-account-login-kind="{{ account.login_kind or '' }}" data-account-session-capable="{{ 'true' if account.session_capable else 'false' }}" data-account-has-credentials="{{ 'true' if account.has_saved_credentials else 'false' }}" data-account-has-manual-credentials="{{ 'true' if account.has_manual_credentials else 'false' }}"{% if account_filter and account.system != account_filter %} hidden{% endif %}>
             <td>
               <div class="automation-account-system-cell">
@@ -118,7 +118,7 @@
                   <span data-account-auto-login-label>{{ '已暂停' if account.auto_login_blocked else '已开启' if account.auto_login_enabled else '已关闭' }}</span>
                 </button>
                 <small data-account-auto-login-note>
-                  {% if not account.has_manual_credentials %}先保存账号密码{% elif not account.is_active %}账号已停用{% elif account.auto_login_blocked %}连续失败 3 次，已暂停{% elif account.auto_login_enabled %}定时校验并自动恢复{% else %}不监控，不自动重试{% endif %}
+                  {% if not account.has_manual_credentials %}保存凭据后可立即登录{% elif not account.is_active %}账号已停用{% elif account.auto_login_blocked %}连续失败 3 次，已暂停{% elif account.auto_login_enabled %}定时校验与掉线恢复{% else %}仅关闭监控，仍可手动登录{% endif %}
                 </small>
               </form>
               {% else %}
@@ -140,7 +140,7 @@
               <div class="automation-account-actions-stack">
                 <div class="automation-account-row-actions">
                   <form action="/automation-accounts/{{ account.account_id }}/login" method="post" data-account-action-form data-account-login-form>
-                    <button class="automation-account-action-link" type="submit" data-account-primary-action{% if not account.is_active or not account.has_manual_credentials %} disabled{% endif %}>{{ primary_label }}</button>
+                    <button class="automation-account-action-link" type="submit" data-account-primary-action title="立即执行一次登录；自动登录开关只控制定时校验与掉线恢复"{% if not account.is_active or not account.has_manual_credentials %} disabled{% endif %}>{{ primary_label }}</button>
                   </form>
 
                   <details class="automation-account-details automation-account-edit">
@@ -361,14 +361,14 @@
     if (label) label.textContent = blocked ? "已暂停" : enabled ? "已开启" : "已关闭";
     if (note) {
       note.textContent = !hasManual
-        ? "先保存账号密码"
+        ? "保存凭据后可立即登录"
         : !active
           ? "账号已停用"
           : blocked
             ? "连续失败 3 次，已暂停"
             : enabled
-              ? "定时校验并自动恢复"
-              : "不监控，不自动重试";
+              ? "定时校验与掉线恢复"
+              : "仅关闭监控，仍可手动登录";
     }
   }
 
@@ -559,9 +559,9 @@
     const status = String(state?.status || row.dataset.accountStatus || "");
     const challengeType = String(state?.challenge_type || state?.challengeType || row.dataset.accountChallengeType || "");
     if (status === "pending_code") return challengeType === "image" ? "刷新验证码" : "重新发送";
-    if (status === "authenticated") return "刷新";
+    if (status === "authenticated") return "重新登录";
     if (row.dataset.accountSessionCapable === "true") {
-      return row.dataset.accountLoginKind === "image" ? "登录" : "去登录";
+      return "立即登录";
     }
     return "重新验证";
   }

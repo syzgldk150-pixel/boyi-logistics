@@ -211,9 +211,9 @@ class SessionBrokerTests(unittest.TestCase):
         price_broker = self._configure_broker_state(
             SessionBroker(
                 profile_name="price",
-                username_envs=PRICE_USERNAME_ENVS,
-                password_envs=PRICE_PASSWORD_ENVS,
-                phone_envs=PRICE_PHONE_ENVS,
+                username_envs=(),
+                password_envs=(),
+                phone_envs=(),
             ),
             "price",
         )
@@ -695,39 +695,20 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(config.password, "env-pass")
         self.assertEqual(config.phone, "13900002222")
 
-    def test_price_profile_uses_price_envs_and_separate_state_dir(self):
-        price_broker = SessionBroker(
-            profile_name="price",
-            username_envs=PRICE_USERNAME_ENVS,
-            password_envs=PRICE_PASSWORD_ENVS,
-            phone_envs=PRICE_PHONE_ENVS,
-        )
-        state_dir = Path(self.tempdir.name) / "price"
-        price_broker._state_dir = state_dir
-        price_broker._meta_path = state_dir / "session_meta.json"
-        price_broker._storage_state_path = state_dir / "storage_state.json"
-        price_broker._cookies_path = state_dir / "cookies.json"
-        price_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        price_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        price_broker._login_profile_path = state_dir / "login_profile.json"
-        state_dir.mkdir(parents=True, exist_ok=True)
+    def test_managed_ronghui_profiles_use_saved_credentials_and_separate_state_dirs(self):
+        session_broker_module._SESSION_BROKERS.clear()
+        try:
+            price_broker = get_session_broker("price")
+            custom_broker = get_session_broker("ronghui_ops_01")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "TMS_DAXIANGUSERNAME": "price-user",
-                "TMS_DAXIANGPASSWORD": "price-pass",
-                "TMS_DAXIANGPHONE": "13800003333",
-            },
-            clear=False,
-        ):
-            config = price_broker.resolve_login_config()
-
-        self.assertEqual(price_broker.profile_name, "price")
-        self.assertEqual(config.username, "price-user")
-        self.assertEqual(config.password, "price-pass")
-        self.assertEqual(config.phone, "13800003333")
-        self.assertIn("price", str(price_broker._state_dir))
+            self.assertEqual(price_broker.profile_name, "price")
+            self.assertEqual(price_broker._username_envs, ())
+            self.assertEqual(price_broker._password_envs, ())
+            self.assertEqual(custom_broker._username_envs, ())
+            self.assertNotEqual(price_broker._state_dir, custom_broker._state_dir)
+            self.assertIn("price", str(price_broker._state_dir))
+        finally:
+            session_broker_module._SESSION_BROKERS.clear()
 
     def test_yunda_profile_uses_independent_state_and_ronghui_alias(self):
         session_broker_module._SESSION_BROKERS.clear()
@@ -745,6 +726,7 @@ class SessionBrokerTests(unittest.TestCase):
                 default_broker = get_session_broker("default")
                 ronghui_broker = get_session_broker("ronghui")
                 yunda_broker = get_session_broker("yunda")
+                custom_yunda_broker = get_session_broker("yunda_ops_01")
                 config = yunda_broker.resolve_login_config()
 
             self.assertIs(default_broker, ronghui_broker)
@@ -758,6 +740,8 @@ class SessionBrokerTests(unittest.TestCase):
             self.assertEqual(config.phone, "13800004444")
             self.assertEqual(yunda_broker._login_mode, "yunda_password")
             self.assertFalse(yunda_broker._require_phone)
+            self.assertEqual(custom_yunda_broker._login_mode, "yunda_password")
+            self.assertEqual(custom_yunda_broker._username_envs, ())
         finally:
             session_broker_module._SESSION_BROKERS.clear()
 

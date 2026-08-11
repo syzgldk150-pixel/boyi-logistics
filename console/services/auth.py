@@ -775,7 +775,7 @@ class AuthServiceMixin:
                 "POST",
                 f"/internal/v1/admin/accounts/{quoted_id}/login",
                 payload={},
-                success_message="登录或验证请求已提交，请按状态提示继续。",
+                success_message="已立即执行一次登录；自动登录开关只控制后续定时校验与掉线恢复。",
                 timeout=90,
                 account_id=account_id,
             )

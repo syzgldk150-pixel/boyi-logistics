@@ -187,19 +187,15 @@ def get_session_broker(profile_name: str = "default") -> SessionBroker:
     if normalized == "ronghui":
         normalized = "default"
     if normalized not in _SESSION_BROKERS:
-        if normalized == "price" or normalized.startswith("price_"):
+        if normalized == "yunda" or normalized.startswith("yunda_"):
+            username_envs = YUNDA_USERNAME_ENVS if normalized == "yunda" else ()
+            password_envs = YUNDA_PASSWORD_ENVS if normalized == "yunda" else ()
+            phone_envs = YUNDA_PHONE_ENVS if normalized == "yunda" else ()
             _SESSION_BROKERS[normalized] = SessionBroker(
                 profile_name=normalized,
-                username_envs=PRICE_USERNAME_ENVS,
-                password_envs=PRICE_PASSWORD_ENVS,
-                phone_envs=PRICE_PHONE_ENVS,
-            )
-        elif normalized == "yunda" or normalized.startswith("yunda_"):
-            _SESSION_BROKERS[normalized] = SessionBroker(
-                profile_name=normalized,
-                username_envs=YUNDA_USERNAME_ENVS,
-                password_envs=YUNDA_PASSWORD_ENVS,
-                phone_envs=YUNDA_PHONE_ENVS,
+                username_envs=username_envs,
+                password_envs=password_envs,
+                phone_envs=phone_envs,
                 base_origin_envs=YUNDA_BASE_ORIGIN_ENVS,
                 base_origin_default=YUNDA_BASE_ORIGIN,
                 login_path_envs=YUNDA_LOGIN_PATH_ENVS,
@@ -211,6 +207,16 @@ def get_session_broker(profile_name: str = "default") -> SessionBroker:
                 login_page_marker="",
                 login_mode="yunda_password",
                 require_phone=False,
+            )
+        elif normalized != "default":
+            # Every managed non-default account owns an independent saved
+            # credential file and session directory. It must never inherit a
+            # deployment-wide username/password from another account.
+            _SESSION_BROKERS[normalized] = SessionBroker(
+                profile_name=normalized,
+                username_envs=(),
+                password_envs=(),
+                phone_envs=(),
             )
         else:
             _SESSION_BROKERS[normalized] = SessionBroker(profile_name=normalized)
