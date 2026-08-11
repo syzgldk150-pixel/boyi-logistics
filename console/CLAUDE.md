@@ -126,7 +126,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 专线分流页是基础资料维护界面，列表只读；编辑按钮打开弹窗表单，提交后通过 `/line-haul-contacts/{id}/update` 写入 MySQL
 - 导航搜索为前端本地筛选，不走后端接口
 - 后台登录使用 `/login`，账号管理使用 `/settings/accounts`，会话通过 `HttpOnly` Cookie 保护
-- 自动化业务账号管理使用 `/automation-accounts`，与后台管理员账号完全分离；任务绑定只保存 `account_id` 到自动化参数，旧任务仍兼容 `session_profile`
+- 自动化业务账号管理使用 `/automation-accounts`，与后台管理员账号完全分离；任务绑定只保存 `account_id` 到自动化参数，旧任务仍兼容 `session_profile`。自动登录开关必须在账号列表直接可见、默认关闭，且只在页面已保存完整账号密码时允许开启；不得显示“环境变量凭据”。
 
 ## 启动方式
 

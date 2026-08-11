@@ -440,30 +440,20 @@ class AuthServiceMixin:
             credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
             safe_credentials = dict(credentials)
             safe_credentials["password"] = ""
-            has_manual_credentials = bool(
-                safe_credentials.get("has_manual_credentials")
-                or status.get("has_manual_credentials")
-            )
-            has_env_credentials = bool(
-                safe_credentials.get("has_env_credentials")
-                or status.get("has_env_credentials")
-            )
-            credential_source = str(
-                safe_credentials.get("credential_source")
-                or status.get("credential_source")
-                or ""
-            ).strip()
-            has_saved_credentials = bool(
-                safe_credentials.get("has_saved_credentials")
-                or status.get("has_saved_credentials")
-                or has_manual_credentials
-                or has_env_credentials
+            has_manual_credentials = bool(safe_credentials.get("has_manual_credentials"))
+            has_env_credentials = False
+            credential_source = "saved" if has_manual_credentials else ""
+            has_saved_credentials = has_manual_credentials
+            safe_credentials.update(
+                {
+                    "has_saved_credentials": has_saved_credentials,
+                    "has_manual_credentials": has_manual_credentials,
+                    "has_env_credentials": False,
+                    "credential_source": credential_source,
+                }
             )
             if has_manual_credentials:
                 credentials_label = "已保存账号密码"
-                credentials_tone = "success"
-            elif has_env_credentials or credential_source == "env":
-                credentials_label = "环境变量凭据"
                 credentials_tone = "success"
             else:
                 credentials_label = "未保存账号密码"
@@ -472,13 +462,17 @@ class AuthServiceMixin:
             status_label = str(status.get("label") or "")
             status_tone = str(status.get("status_tone") or "")
             status_note = ""
-            auto_login_enabled = bool(account.get("auto_login_enabled", True))
+            auto_login_enabled = bool(account.get("auto_login_enabled", False))
             auto_login_blocked = bool(account.get("auto_login_blocked", False))
             if not bool(account.get("is_active", True)):
                 status_label = "已停用"
                 status_tone = "neutral"
                 status_note = "不参与任务执行与登录监控；停用操作不会退出当前会话。"
                 status["last_error_summary"] = ""
+            elif bool(account.get("session_capable")) and raw_status_value == "authenticated" and not has_saved_credentials:
+                status_label = "登录态有效"
+                status_tone = "warning"
+                status_note = "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。"
             elif not auto_login_enabled:
                 if raw_status_value == "logged_out":
                     status_label = "已退出"
@@ -494,12 +488,6 @@ class AuthServiceMixin:
                 status_label = "自动登录已暂停"
                 status_tone = "warning"
                 status_note = f"连续失败达到 {failure_limit} 次，为防止账号锁定已停止重试；请手动登录。"
-            elif bool(account.get("session_capable")) and raw_status_value == "authenticated" and not has_saved_credentials:
-                status_label = "登录态有效"
-                status_tone = "warning"
-                status_note = "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。"
-            elif bool(account.get("session_capable")) and raw_status_value == "authenticated" and (has_env_credentials or credential_source == "env"):
-                status_note = "账号密码来自环境变量，编辑框不会回显。"
             status["label"] = status_label
             status["status_tone"] = status_tone
             status["status_note"] = status_note
@@ -817,7 +805,7 @@ class AuthServiceMixin:
                 "POST",
                 f"/internal/v1/admin/accounts/{quoted_id}/credentials/clear",
                 payload={},
-                success_message="后台保存的账号凭据已清空，部署环境变量未更改。",
+                success_message="后台保存的账号凭据已清空，自动登录已关闭。",
                 timeout=20,
                 account_id=account_id,
             )

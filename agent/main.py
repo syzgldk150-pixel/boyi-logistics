@@ -278,7 +278,7 @@ def _check_tms_account_session(account_manager, account: dict) -> dict:
     if (
         not bool(account.get("is_active", True))
         or not bool(account.get("session_capable", False))
-        or not bool(account.get("auto_login_enabled", True))
+        or not bool(account.get("auto_login_enabled", False))
         or bool(account.get("auto_login_blocked", False))
     ):
         return {"monitored": False, "should_alert": False, "status_payload": {}, "previous": {}}

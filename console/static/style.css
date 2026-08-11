@@ -1281,11 +1281,12 @@ body.dispatch-page .notice { display: none; }
 .automation-account-table th:last-child { border-top-right-radius: var(--radius-xl); text-align: right; }
 .automation-account-table td { color: var(--text-strong); font-size: 0.91rem; font-weight: 650; }
 .automation-account-table th:nth-child(1) { width: 14%; }
-.automation-account-table th:nth-child(2) { width: 16%; }
-.automation-account-table th:nth-child(3) { width: 15%; }
-.automation-account-table th:nth-child(4) { width: 18%; }
+.automation-account-table th:nth-child(2) { width: 12%; }
+.automation-account-table th:nth-child(3) { width: 11%; }
+.automation-account-table th:nth-child(4) { width: 14%; }
 .automation-account-table th:nth-child(5) { width: 19%; }
-.automation-account-table th:nth-child(6) { width: 18%; }
+.automation-account-table th:nth-child(6) { width: 15%; }
+.automation-account-table th:nth-child(7) { width: 15%; }
 .automation-account-table tr:last-child td { border-bottom: 0; }
 .automation-account-table tbody tr:hover td { background: #fcfcfd; }
 .automation-account-table tbody tr.is-disabled td { color: #94a3b8; background: #fafafa; }
@@ -1297,8 +1298,18 @@ body.dispatch-page .notice { display: none; }
 .automation-account-mini-badge--purpose { background: #eff6ff; color: #2563eb; }
 .automation-account-mini-badge--credentials.automation-account-mini-badge--success { background: #f0fdf4; color: #16a34a; }
 .automation-account-mini-badge--credentials.automation-account-mini-badge--warning { background: #fffbeb; color: #d97706; }
-.automation-account-mini-badge--auto { background: #eff6ff; color: #2563eb; }
 .automation-account-mini-badge--muted { background: #f1f5f9; color: #64748b; }
+.automation-account-inline-auto-login { display: flex; min-width: 132px; flex-direction: column; align-items: flex-start; gap: 4px; }
+.automation-account-auto-login-switch { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; padding: 0 4px 0 0; border: 0; border-radius: var(--radius-md); background: transparent; color: #64748b; font: inherit; font-size: 0.8rem; font-weight: 850; cursor: pointer; transition: color 160ms ease, opacity 160ms ease; }
+.automation-account-auto-login-switch:hover:not([disabled]) { color: var(--text-strong); }
+.automation-account-auto-login-switch:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--focus); }
+.automation-account-auto-login-switch[disabled] { color: #94a3b8; cursor: not-allowed; opacity: 0.72; }
+.automation-account-switch-track { position: relative; display: inline-flex; width: 38px; height: 22px; flex: 0 0 auto; align-items: center; padding: 2px; border-radius: 999px; background: #cbd5e1; transition: background 160ms ease; }
+.automation-account-switch-thumb { width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(15,23,42,0.3); transform: translateX(0); transition: transform 160ms ease; }
+.automation-account-auto-login-switch.is-active .automation-account-switch-track { background: #2563eb; }
+.automation-account-auto-login-switch.is-active .automation-account-switch-thumb { transform: translateX(16px); }
+.automation-account-inline-auto-login small { max-width: 150px; color: #64748b; font-size: 0.68rem; font-weight: 650; line-height: 1.35; }
+.automation-account-auto-login-unsupported { display: inline-flex; min-height: 28px; align-items: center; padding: 0 9px; border-radius: 6px; background: #f1f5f9; color: #94a3b8; font-size: 0.74rem; font-weight: 800; }
 .automation-account-status-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .automation-account-status { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border-radius: 6px; font-size: 0.82rem; font-weight: 850; white-space: nowrap; }
 .automation-account-status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -1342,13 +1353,6 @@ body.dispatch-page .notice { display: none; }
 .automation-account-menu-panel .ghost-btn--danger:hover { border-color: #fee2e2; background: #fffafa; color: var(--danger); }
 .automation-account-credentials { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }
 .automation-account-credentials .primary-btn { min-height: 42px; }
-.automation-account-auto-login { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-.automation-account-check-row { display: flex !important; min-width: 0; flex: 1; flex-direction: row !important; align-items: flex-start; gap: 10px !important; cursor: pointer; }
-.automation-account-check-row input { width: 18px; height: 18px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--accent); }
-.automation-account-check-row > span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-.automation-account-check-row strong { color: var(--text-strong); font-size: 0.82rem; font-weight: 850; line-height: 1.3; }
-.automation-account-check-row small { max-width: 62ch; color: #64748b; font-size: 0.72rem; font-weight: 650; line-height: 1.45; }
-.automation-account-auto-login .ghost-btn { flex: 0 0 auto; min-height: 38px; box-shadow: none; }
 .automation-account-code { display: grid; grid-template-columns: minmax(130px, 1fr) auto; gap: 10px; align-items: end; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .automation-account-inline-code[hidden],
 .automation-account-captcha[hidden],
@@ -1455,7 +1459,7 @@ body.dispatch-page .notice { display: none; }
   .automation-account-tabs { gap: 8px; padding-bottom: 12px; }
   .automation-account-tab { min-height: 36px; padding: 0 12px; font-size: 0.84rem; }
   .automation-account-create { right: auto; left: 0; width: min(420px, calc(100vw - 32px)); grid-template-columns: 1fr; }
-  .automation-account-table { min-width: 920px; }
+  .automation-account-table { min-width: 1060px; }
   .automation-account-table th,
   .automation-account-table td { padding: 14px 16px; }
   .automation-account-actions-stack,
@@ -1467,8 +1471,6 @@ body.dispatch-page .notice { display: none; }
   .automation-account-menu-panel { right: auto; left: 0; }
   .automation-account-credentials,
   .automation-account-code { grid-template-columns: 1fr; }
-  .automation-account-auto-login { align-items: stretch; flex-direction: column; }
-  .automation-account-auto-login .ghost-btn { width: 100%; min-height: 44px; }
   .line-haul-compact-head { align-items: flex-start; flex-direction: column; }
   .line-haul-results-meta,
   .line-haul-footer { align-items: flex-start; flex-direction: column; }

@@ -902,6 +902,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "default",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
 
         class FakeManager:
@@ -950,6 +951,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "yunda",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
 
         class FakeManager:
@@ -991,6 +993,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "default",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
 
         class FakeManager:
@@ -1025,6 +1028,7 @@ class TmsAccountMonitorTests(unittest.TestCase):
             "session_profile": "yunda",
             "session_capable": True,
             "is_active": True,
+            "auto_login_enabled": True,
         }
         timeout_message = (
             "HTTPSConnectionPool(host='rpts-kyprts.yunda56.com', port=8081): "
