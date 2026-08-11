@@ -45,12 +45,13 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 2. 检查本地 Agent 已停止。
 3. 校验 SSH 主机密钥、远端用户和 systemd 工作目录。
 4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`。
-5. 在 `/home/boyce/.boyi-backups/` 备份当前受管源码和发布清单。
+5. 在本次 `/home/boyce/.boyi-deploy/release-*/_rollback/` 内临时备份当前受管源码和发布清单，只供本次失败回滚使用。
 6. 对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口。
 7. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-8. 备份并安装同名 systemd unit、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
+8. 将当前同名 systemd unit 写入当次临时回滚目录，再安装新 unit、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
 9. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问。
 10. 任一步失败，删除本次新增受管文件、恢复备份和旧发布清单，并重启旧版本。
+11. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/`，并清理 `/home/boyce/.boyi-venvs/` 中所有非当前 Agent/Console 环境；ECS 不持久保留发布备份或旧虚拟环境。
 
 `/health` 是公开的精简存活接口，只返回状态和 `release_sha`。详细组件状态位于带 `X-Agent-Internal-Token` 的 `/internal/v1/health`。
 
@@ -71,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 
 `-SkipRestart` 和 `-SkipHealthCheck` 仅用于用户明确授权的维护场景。常规生产发布不得跳过重启或健康检查。
 
-本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。临时暂存目录在流程结束后自动清理。
+本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地和远端临时暂存目录在流程结束后自动清理；失败回滚材料仅存在于当次远端暂存目录中，不作为长期备份保留。
 
 ## Nginx 边界
 

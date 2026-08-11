@@ -36,7 +36,7 @@
 - Console 保持现有 HTTP 框架；`console/app.py` 只负责组合、生命周期和请求分发，业务实现必须进入 `console/services/`，路由识别进入 `console/routes/`。
 - TMS SessionBroker 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别位于 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 和 `session_validation_service.py`，调度器只依赖公开接口。
 - `agent/agent/` 不得依赖 `tools` 或 `feishu`；跨包回调和事件必须由 `agent/main.py` 组合注入，或通过 `shared/runtime_events.py` 的中立契约发布。
-- 生产与 CI 固定使用 Python 3.10；服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 精确固定。发布为每个 Git SHA 构建独立虚拟环境并在健康检查前原子切换，失败时恢复旧环境和源码。
+- 生产与 CI 固定使用 Python 3.10；服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 精确固定。发布为每个 Git SHA 构建独立虚拟环境并在健康检查前原子切换，失败时从当次暂存目录恢复旧环境和源码；成功后删除临时回滚材料、持久发布备份和所有非当前 Agent/Console 虚拟环境。
 - 提交前运行 Ruff、工具清单、仓库卫生、内部 API 契约与导入边界检查，GitHub Actions 也必须覆盖这些检查。跟踪文本统一 UTF-8 无 BOM，单个 Python 文件不得超过 3,000 行。
 - `.env` 只允许由服务或脚本入口通过显式 bootstrap 加载一次；库模块、测试导入和共享模块不得读取 `.env`、创建运行目录或连接数据库。
 
@@ -58,7 +58,7 @@
 ## 本地与生产隔离
 
 - ECS 是飞书机器人、定时任务和生产自动化的唯一长期运行源；本地 WSL 仅用于开发调试和临时验证。
-- 部署前必须确认本地 Agent 已停止，并确认远端用户、工作目录、Git SHA、备份、迁移预检、健康检查及失败回滚链路。
+- 部署前必须确认本地 Agent 已停止，并确认远端用户、工作目录、Git SHA、当次临时回滚材料、迁移预检、健康检查及失败回滚链路；ECS 不持久保留发布备份或旧虚拟环境。
 - 生产 Console 只监听 `127.0.0.1:8765`；Agent 默认只监听 `127.0.0.1:9000`，公网入口必须经受控代理和鉴权。
 
 ## Agent 内部接口安全基线

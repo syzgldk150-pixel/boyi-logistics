@@ -47,6 +47,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('--retries "${PIP_RETRIES}"', release)
         self.assertIn('--timeout "${PIP_TIMEOUT_SECONDS}"', release)
         self.assertIn('release_error stage=${RELEASE_STAGE}', release)
+        self.assertNotIn('\nBACKUP_ROOT=', release)
+        self.assertIn('BACKUP_DIR="${STAGE_ROOT}/_rollback"', release)
+        self.assertIn('LEGACY_BACKUP_ROOT="/home/boyce/.boyi-backups"', release)
+        self.assertIn("prune_inactive_virtualenvs", release)
+        self.assertIn('find "${VENV_ROOT}" -mindepth 1 -maxdepth 1 -type d', release)
+        self.assertIn('rm -rf -- "${LEGACY_BACKUP_ROOT}"', release)
+        self.assertLess(execution.index("check_health"), execution.index("cleanup_successful_release"))
+        self.assertLess(execution.index("MUTATION_STARTED=0"), execution.index("cleanup_successful_release"))
         for stage in (
             "static_preflight",
             "build_release_virtualenvs",
@@ -55,6 +63,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "activate_release_virtualenvs",
             "restart_services",
             "check_health",
+            "cleanup_successful_release",
         ):
             self.assertIn(f'RELEASE_STAGE="{stage}"', release)
 
