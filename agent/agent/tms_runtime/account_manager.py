@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +73,7 @@ RONGHUI_PURPOSE_PROFILE_PREFIXES = {
 }
 
 AUTO_LOGIN_STATUSES = {"expired", "logged_out", "error"}
+AUTO_LOGIN_FAILURE_LIMIT = 3
 
 DEFAULT_ACCOUNTS: list[dict[str, Any]] = [
     {
@@ -252,6 +254,12 @@ class AccountRecord:
 class AutomationAccountManager:
     def __init__(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self._auto_login_locks: dict[str, threading.Lock] = {}
+        self._auto_login_locks_guard = threading.Lock()
+
+    def _auto_login_lock(self, account_id: str) -> threading.Lock:
+        with self._auto_login_locks_guard:
+            return self._auto_login_locks.setdefault(account_id, threading.Lock())
 
     def _load_accounts(self) -> list[dict[str, Any]]:
         raw = _read_json(ACCOUNTS_PATH, [])
@@ -278,6 +286,25 @@ class AutomationAccountManager:
             row["name"] = str(row.get("name") or account_id).strip()
             row["is_active"] = bool(row.get("is_active", True))
             row["is_default"] = bool(row.get("is_default", False))
+            raw_failure_count = row.get("auto_login_failure_count", 0)
+            try:
+                failure_count = max(int(raw_failure_count), 0)
+            except (TypeError, ValueError):
+                failure_count = 0
+            failure_count = min(failure_count, AUTO_LOGIN_FAILURE_LIMIT)
+            auto_login_enabled = bool(row.get("auto_login_enabled", True))
+            auto_login_blocked = bool(row.get("auto_login_blocked", False)) or (
+                failure_count >= AUTO_LOGIN_FAILURE_LIMIT
+            )
+            if (
+                row.get("auto_login_enabled") != auto_login_enabled
+                or row.get("auto_login_failure_count") != failure_count
+                or row.get("auto_login_blocked") != auto_login_blocked
+            ):
+                changed = True
+            row["auto_login_enabled"] = auto_login_enabled
+            row["auto_login_failure_count"] = failure_count
+            row["auto_login_blocked"] = auto_login_blocked
             row["created_at"] = str(row.get("created_at") or now)
             row["updated_at"] = str(row.get("updated_at") or row["created_at"])
             previous_profile = str(row.get("session_profile") or "")
@@ -292,6 +319,9 @@ class AutomationAccountManager:
             row = {
                 **default,
                 "is_active": True,
+                "auto_login_enabled": True,
+                "auto_login_failure_count": 0,
+                "auto_login_blocked": False,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -338,6 +368,53 @@ class AutomationAccountManager:
 
     def _save_accounts(self, rows: list[dict[str, Any]]) -> None:
         _write_json(ACCOUNTS_PATH, rows)
+
+    def _set_auto_login_state(
+        self,
+        account_id: str,
+        *,
+        enabled: bool | None = None,
+        failure_count: int | None = None,
+        blocked: bool | None = None,
+    ) -> dict[str, Any]:
+        rows = self._load_accounts()
+        now = _now_label()
+        updated: dict[str, Any] | None = None
+        for item in rows:
+            if item["account_id"] != account_id:
+                continue
+            if enabled is not None:
+                item["auto_login_enabled"] = bool(enabled)
+            if failure_count is not None:
+                item["auto_login_failure_count"] = min(
+                    max(int(failure_count), 0),
+                    AUTO_LOGIN_FAILURE_LIMIT,
+                )
+            if blocked is not None:
+                item["auto_login_blocked"] = bool(blocked)
+            item["updated_at"] = now
+            updated = item
+            break
+        if updated is None:
+            raise TMSAuthStateError("ACCOUNT_NOT_FOUND", "账号不存在。")
+        self._save_accounts(rows)
+        return dict(updated)
+
+    def _reset_auto_login_failures(self, account_id: str) -> dict[str, Any]:
+        row = self._get_account_row(account_id)
+        if not row.get("auto_login_failure_count") and not row.get("auto_login_blocked"):
+            return row
+        return self._set_auto_login_state(account_id, failure_count=0, blocked=False)
+
+    def _record_auto_login_failure(self, account_id: str, *, exhausted: bool = False) -> dict[str, Any]:
+        row = self._get_account_row(account_id)
+        current = int(row.get("auto_login_failure_count") or 0)
+        next_count = AUTO_LOGIN_FAILURE_LIMIT if exhausted else min(current + 1, AUTO_LOGIN_FAILURE_LIMIT)
+        return self._set_auto_login_state(
+            account_id,
+            failure_count=next_count,
+            blocked=next_count >= AUTO_LOGIN_FAILURE_LIMIT,
+        )
 
     def _coerce_session_profile(self, row: dict[str, Any]) -> str:
         system = str(row.get("system") or "").strip().lower()
@@ -418,6 +495,9 @@ class AutomationAccountManager:
             "name": label,
             "is_active": True,
             "is_default": False,
+            "auto_login_enabled": True,
+            "auto_login_failure_count": 0,
+            "auto_login_blocked": False,
             "created_at": now,
             "updated_at": now,
         }
@@ -464,6 +544,16 @@ class AutomationAccountManager:
         self._save_accounts(rows)
         return self._public_account(self._get_account_row(account_id))
 
+    def set_auto_login(self, account_id: str, enabled: bool) -> dict[str, Any]:
+        self._get_account_row(account_id)
+        row = self._set_auto_login_state(
+            account_id,
+            enabled=bool(enabled),
+            failure_count=0,
+            blocked=False,
+        )
+        return self._public_account(row)
+
     def _public_account(self, row: dict[str, Any]) -> dict[str, Any]:
         config = SYSTEMS[row["system"]]
         purpose = str(row.get("account_purpose") or "general").strip().lower() or "general"
@@ -476,6 +566,10 @@ class AutomationAccountManager:
             "name": row["name"],
             "is_active": bool(row.get("is_active", True)),
             "is_default": bool(row.get("is_default")),
+            "auto_login_enabled": bool(row.get("auto_login_enabled", True)),
+            "auto_login_failure_count": int(row.get("auto_login_failure_count") or 0),
+            "auto_login_failure_limit": AUTO_LOGIN_FAILURE_LIMIT,
+            "auto_login_blocked": bool(row.get("auto_login_blocked", False)),
             "login_kind": config["login_kind"],
             "session_capable": bool(config.get("session_capable")),
             "session_profile": row.get("session_profile", ""),
@@ -498,6 +592,11 @@ class AutomationAccountManager:
                 "login_kind": config["login_kind"],
                 "session_capable": bool(config.get("session_capable")),
                 "session_profile": row.get("session_profile", ""),
+                "is_active": bool(row.get("is_active", True)),
+                "auto_login_enabled": bool(row.get("auto_login_enabled", True)),
+                "auto_login_failure_count": int(row.get("auto_login_failure_count") or 0),
+                "auto_login_failure_limit": AUTO_LOGIN_FAILURE_LIMIT,
+                "auto_login_blocked": bool(row.get("auto_login_blocked", False)),
             }
         )
         result.pop("password", None)
@@ -600,6 +699,12 @@ class AutomationAccountManager:
     def describe_status(self, account_id: str, *, validate: bool = True, force: bool = False) -> dict[str, Any]:
         row = self._get_account_row(account_id)
         config = SYSTEMS[row["system"]]
+        monitoring_enabled = bool(
+            row.get("is_active", True)
+            and row.get("auto_login_enabled", True)
+            and not row.get("auto_login_blocked", False)
+        )
+        validate = bool(validate and monitoring_enabled)
         if config.get("session_capable"):
             status = self._broker(row).describe_status(validate=validate, force=force)
         else:
@@ -621,6 +726,43 @@ class AutomationAccountManager:
             }
             status.update(credentials)
             status["last_validation_at"] = credentials.get("last_validation_at") or credentials.get("updated_at", "")
+        if not row.get("is_active", True):
+            status.update(
+                {
+                    "label": "已停用",
+                    "status_tone": "neutral",
+                    "last_error_summary": "",
+                    "monitoring_paused": True,
+                    "account_disabled": True,
+                }
+            )
+        elif not row.get("auto_login_enabled", True):
+            raw_status = str(status.get("status") or "")
+            if raw_status == "logged_out":
+                paused_label = "已退出"
+            elif raw_status == "authenticated":
+                paused_label = "已登录（未监控）"
+            else:
+                paused_label = "自动登录已关闭"
+            status.update(
+                {
+                    "label": paused_label,
+                    "status_tone": "warning" if raw_status == "authenticated" else "neutral",
+                    "last_error_summary": "",
+                    "monitoring_paused": True,
+                }
+            )
+        elif row.get("auto_login_blocked", False):
+            status.update(
+                {
+                    "label": "自动登录已暂停",
+                    "status_tone": "warning",
+                    "last_error_summary": (
+                        f"连续自动登录失败 {AUTO_LOGIN_FAILURE_LIMIT} 次，为防止账号锁定已暂停；请手动登录。"
+                    ),
+                    "monitoring_paused": True,
+                }
+            )
         status["account_id"] = row["account_id"]
         status["account_name"] = row["name"]
         status["system"] = row["system"]
@@ -633,6 +775,11 @@ class AutomationAccountManager:
         status["login_kind"] = config["login_kind"]
         status["session_capable"] = bool(config.get("session_capable"))
         status["session_profile"] = row.get("session_profile", "")
+        status["is_active"] = bool(row.get("is_active", True))
+        status["auto_login_enabled"] = bool(row.get("auto_login_enabled", True))
+        status["auto_login_failure_count"] = int(row.get("auto_login_failure_count") or 0)
+        status["auto_login_failure_limit"] = AUTO_LOGIN_FAILURE_LIMIT
+        status["auto_login_blocked"] = bool(row.get("auto_login_blocked", False))
         status.pop("password", None)
         return status
 
@@ -643,14 +790,22 @@ class AutomationAccountManager:
         status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         status = dict(status or {})
+        failure_count = int(row.get("auto_login_failure_count") or 0)
+        blocked = bool(row.get("auto_login_blocked", False))
+        error_summary = str(exc)
+        if blocked:
+            error_summary = (
+                f"连续自动登录失败 {failure_count} 次，为防止账号锁定已暂停；请手动登录。"
+                f"最后错误：{error_summary}"
+            )
         status.update(
             {
                 "status": "error",
-                "label": "自动登录失败",
-                "status_tone": "error",
+                "label": "自动登录已暂停" if blocked else "自动登录失败",
+                "status_tone": "warning" if blocked else "error",
                 "authenticated": False,
                 "pending_code": False,
-                "last_error_summary": str(exc),
+                "last_error_summary": error_summary,
                 "authenticated_at": "",
                 "pending_since": "",
                 "expires_at": status.get("expires_at", ""),
@@ -661,23 +816,65 @@ class AutomationAccountManager:
         return self._with_account_context(row, status)
 
     def check_status_with_auto_login(self, account_id: str, *, force: bool = True) -> dict[str, Any]:
-        row = self._get_account_row(account_id)
-        config = SYSTEMS[row["system"]]
-        status = self.describe_status(account_id, validate=True, force=force)
-        if not config.get("session_capable"):
-            return status
-        if str(status.get("status") or "").strip() not in AUTO_LOGIN_STATUSES:
-            return status
-        try:
-            return self.login(account_id)
-        except Exception as exc:
-            return self._login_error_status(row, exc, status)
+        safe_id = _safe_account_id(account_id)
+        with self._auto_login_lock(safe_id):
+            row = self._get_account_row(safe_id)
+            config = SYSTEMS[row["system"]]
+            if (
+                not row.get("is_active", True)
+                or not row.get("auto_login_enabled", True)
+                or row.get("auto_login_blocked", False)
+            ):
+                return self.describe_status(safe_id, validate=False, force=False)
+            status = self.describe_status(safe_id, validate=True, force=force)
+            if not config.get("session_capable"):
+                return status
+            if str(status.get("status") or "").strip() == "authenticated":
+                row = self._reset_auto_login_failures(safe_id)
+                return self._with_account_context(row, status)
+            if str(status.get("status") or "").strip() not in AUTO_LOGIN_STATUSES:
+                return status
+            try:
+                result = self._broker(row).send_code()
+                result_status = str(result.get("status") or "").strip()
+                if result_status == "authenticated":
+                    row = self._reset_auto_login_failures(safe_id)
+                elif result.get("auto_login_attempts_exhausted"):
+                    row = self._record_auto_login_failure(safe_id, exhausted=True)
+                elif result_status == "error":
+                    row = self._record_auto_login_failure(safe_id)
+                else:
+                    return self._with_account_context(row, result)
+                if row.get("auto_login_blocked", False):
+                    last_error = str(result.get("last_error_summary") or "").strip()
+                    blocked_summary = (
+                        f"连续自动登录失败 {AUTO_LOGIN_FAILURE_LIMIT} 次，为防止账号锁定已暂停；请手动登录。"
+                    )
+                    if last_error:
+                        blocked_summary = f"{blocked_summary}最后错误：{last_error}"
+                    result = {
+                        **result,
+                        "label": "自动登录已暂停",
+                        "status_tone": "warning",
+                        "last_error_summary": blocked_summary,
+                    }
+                return self._with_account_context(row, result)
+            except Exception as exc:
+                row = self._record_auto_login_failure(safe_id)
+                return self._login_error_status(row, exc, status)
 
     def login(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
+        if not row.get("is_active", True):
+            raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用，请先启用账号。")
         config = SYSTEMS[row["system"]]
         if config.get("session_capable"):
-            return self._with_account_context(row, self._broker(row).send_code())
+            result = self._broker(row).send_code()
+            if result.get("auto_login_attempts_exhausted"):
+                row = self._record_auto_login_failure(row["account_id"], exhausted=True)
+            elif str(result.get("status") or "").strip() != "error":
+                row = self._reset_auto_login_failures(row["account_id"])
+            return self._with_account_context(row, result)
         credentials = self.private_credentials(row["account_id"])
         if not credentials.get("username") or not credentials.get("password"):
             raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码。")
@@ -717,13 +914,24 @@ class AutomationAccountManager:
 
     def submit_code(self, account_id: str, code: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
+        if not row.get("is_active", True):
+            raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用，请先启用账号。")
         if not SYSTEMS[row["system"]].get("session_capable"):
             raise TMSAuthStateError("UNSUPPORTED_ACTION", "该账号类型不需要验证码提交。")
-        return self._with_account_context(row, self._broker(row).submit_code(code))
+        result = self._broker(row).submit_code(code)
+        if str(result.get("status") or "").strip() != "error":
+            row = self._reset_auto_login_failures(row["account_id"])
+        return self._with_account_context(row, result)
 
     def clear_session(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
         if SYSTEMS[row["system"]].get("session_capable"):
+            row = self._set_auto_login_state(
+                row["account_id"],
+                enabled=False,
+                failure_count=0,
+                blocked=False,
+            )
             return self._with_account_context(row, self._broker(row).clear())
         return self.describe_status(account_id, validate=False)
 

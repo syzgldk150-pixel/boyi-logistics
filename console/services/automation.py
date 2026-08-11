@@ -1342,7 +1342,7 @@ class AutomationServiceMixin:
                 profile=normalized,
                 endpoint=self._automation_session_agent_endpoint(normalized, "clear"),
                 payload={},
-                success_message=f"{label} 登录态已清除。",
+                success_message=f"{label} 已退出登录，自动登录与断线提醒已关闭。",
                 timeout=20,
             )
             return True

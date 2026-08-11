@@ -855,6 +855,44 @@ class TmsAccountMonitorTests(unittest.TestCase):
         ):
             self.assertTrue(main._should_start_tms_session_alert_monitor())
 
+    def test_session_monitor_skips_accounts_with_auto_login_disabled_or_blocked(self):
+        class FakeManager:
+            def describe_status(self, account_id, *, validate=True, force=False):
+                raise AssertionError("paused accounts must not be validated")
+
+            def check_status_with_auto_login(self, account_id, *, force=False):
+                raise AssertionError("paused accounts must not attempt auto-login")
+
+        base_account = {
+            "account_id": "ronghui_default",
+            "system": "ronghui",
+            "session_capable": True,
+            "is_active": True,
+        }
+
+        disabled = _check_tms_account_session(
+            FakeManager(),
+            {**base_account, "auto_login_enabled": False},
+        )
+        blocked = _check_tms_account_session(
+            FakeManager(),
+            {
+                **base_account,
+                "auto_login_enabled": True,
+                "auto_login_blocked": True,
+            },
+        )
+
+        self.assertFalse(disabled["monitored"])
+        self.assertFalse(disabled["should_alert"])
+        self.assertFalse(blocked["monitored"])
+        self.assertFalse(blocked["should_alert"])
+        self.assertFalse(
+            main._should_alert_tms_session_status(
+                {"status": "error", "auto_login_enabled": False}
+            )
+        )
+
     def test_disconnected_account_auto_login_success_does_not_alert(self):
         account = {
             "account_id": "ronghui_default",

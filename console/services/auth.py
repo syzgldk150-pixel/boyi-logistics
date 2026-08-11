@@ -472,7 +472,29 @@ class AuthServiceMixin:
             status_label = str(status.get("label") or "")
             status_tone = str(status.get("status_tone") or "")
             status_note = ""
-            if bool(account.get("session_capable")) and raw_status_value == "authenticated" and not has_saved_credentials:
+            auto_login_enabled = bool(account.get("auto_login_enabled", True))
+            auto_login_blocked = bool(account.get("auto_login_blocked", False))
+            if not bool(account.get("is_active", True)):
+                status_label = "已停用"
+                status_tone = "neutral"
+                status_note = "不参与任务执行与登录监控；停用操作不会退出当前会话。"
+                status["last_error_summary"] = ""
+            elif not auto_login_enabled:
+                if raw_status_value == "logged_out":
+                    status_label = "已退出"
+                elif raw_status_value == "authenticated":
+                    status_label = "已登录（未监控）"
+                else:
+                    status_label = "自动登录已关闭"
+                status_tone = "warning" if raw_status_value == "authenticated" else "neutral"
+                status_note = "不做定时登录校验、自动登录或飞书断线提醒；仍可手动登录。"
+                status["last_error_summary"] = ""
+            elif auto_login_blocked:
+                failure_limit = int(account.get("auto_login_failure_limit") or 3)
+                status_label = "自动登录已暂停"
+                status_tone = "warning"
+                status_note = f"连续失败达到 {failure_limit} 次，为防止账号锁定已停止重试；请手动登录。"
+            elif bool(account.get("session_capable")) and raw_status_value == "authenticated" and not has_saved_credentials:
                 status_label = "登录态有效"
                 status_tone = "warning"
                 status_note = "当前只检测到浏览器登录态，未保存账号密码；登录态失效后需重新登录。"
@@ -496,6 +518,8 @@ class AuthServiceMixin:
             account["has_env_credentials"] = has_env_credentials
             account["credentials_label"] = credentials_label
             account["credentials_tone"] = credentials_tone
+            account["auto_login_enabled"] = auto_login_enabled
+            account["auto_login_blocked"] = auto_login_blocked
             accounts.append(account)
         return accounts, ""
 
@@ -783,7 +807,7 @@ class AuthServiceMixin:
                 "POST",
                 f"/internal/v1/admin/accounts/{quoted_id}/clear-session",
                 payload={},
-                success_message="登录态已清除。",
+                success_message="已退出登录，自动登录与断线提醒已关闭。",
                 timeout=20,
                 account_id=account_id,
             )
@@ -793,7 +817,7 @@ class AuthServiceMixin:
                 "POST",
                 f"/internal/v1/admin/accounts/{quoted_id}/credentials/clear",
                 payload={},
-                success_message="账号凭据已清空。",
+                success_message="后台保存的账号凭据已清空，部署环境变量未更改。",
                 timeout=20,
                 account_id=account_id,
             )
@@ -815,6 +839,22 @@ class AuthServiceMixin:
                 f"/internal/v1/admin/accounts/{quoted_id}/active",
                 payload={"is_active": target_active},
                 success_message="账号状态已更新。",
+                timeout=12,
+                account_id=account_id,
+            )
+        if action == "auto-login":
+            enabled = str(values.get("auto_login_enabled", "") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            return self._proxy_automation_account_action(
+                handler,
+                "POST",
+                f"/internal/v1/admin/accounts/{quoted_id}/auto-login",
+                payload={"enabled": enabled},
+                success_message="自动登录与断线提醒已开启。" if enabled else "自动登录与断线提醒已关闭。",
                 timeout=12,
                 account_id=account_id,
             )
@@ -871,6 +911,9 @@ class AuthServiceMixin:
                     public_credentials = dict(credentials)
                     public_credentials["password"] = ""
                     response["credentials"] = public_credentials
+                account = response_payload.get("account")
+                if isinstance(account, dict):
+                    response["account"] = dict(account)
             self._send_json(handler, HTTPStatus.OK, response)
             return True
         self._redirect_with_message(handler, "/automation-accounts", message, kind)

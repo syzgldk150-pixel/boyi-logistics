@@ -182,14 +182,14 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(len(session.post_calls), 1)
         self.assertEqual(session.post_calls[0]["data"]["validateCode"], "ab12")
 
-    def test_auto_login_ronghui_falls_back_to_manual_after_four_failed_attempts(self):
+    def test_auto_login_ronghui_falls_back_to_manual_after_three_failed_attempts(self):
         session = _CaptchaPostSession([
             _DummyResponse(status_code=200, text="validateCode system/login", headers={"Content-Type": "text/html"})
-            for _ in range(4)
+            for _ in range(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS)
         ])
         fetch_side_effect = [
             (f"captcha-{idx}".encode("utf-8"), f"data:image/png;base64,Y2FwdGNoYS0{idx}", "image/png")
-            for idx in range(1, 5)
+            for idx in range(1, session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS + 1)
         ]
         with (
             patch.object(self.broker, "_fetch_ronghui_captcha_challenge", side_effect=fetch_side_effect),
@@ -201,10 +201,11 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(result["challenge_type"], "image")
         self.assertTrue(result["captcha_image"].startswith("data:image/png;base64,"))
         self.assertTrue(result["last_error_summary"])
-        self.assertIn("4", result["last_error_summary"])
+        self.assertIn(str(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS), result["last_error_summary"])
+        self.assertTrue(result["auto_login_attempts_exhausted"])
         self.assertTrue(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker._pending_login_state_path.exists())
-        self.assertEqual(len(session.post_calls), 4)
+        self.assertEqual(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS, len(session.post_calls))
 
     def test_price_profile_send_code_reuses_auto_image_login_flow(self):
         price_broker = self._configure_broker_state(
@@ -318,7 +319,7 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(1, len(page.clicked))
         self.assertEqual(page.filled[session_broker_module.YUNDA_CAPTCHA_INPUT], "yd12")
 
-    def test_yunda_image_captcha_auto_login_falls_back_after_four_failures(self):
+    def test_yunda_image_captcha_auto_login_falls_back_after_three_failures(self):
         yunda_config = LoginConfig(
             base_origin="https://ky-sso.yunda56.com",
             login_url="https://ky-sso.yunda56.com/login",
@@ -346,7 +347,8 @@ class SessionBrokerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "pending_code")
         self.assertEqual(result["challenge_type"], "image")
-        self.assertIn("4", result["last_error_summary"])
+        self.assertIn(str(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS), result["last_error_summary"])
+        self.assertTrue(result["auto_login_attempts_exhausted"])
         self.assertTrue(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker._pending_login_state_path.exists())
         self.assertEqual(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS, len(page.clicked))

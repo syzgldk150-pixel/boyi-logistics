@@ -206,6 +206,10 @@ def _is_transient_tms_session_status(status_payload: dict) -> bool:
 
 
 def _should_alert_tms_session_status(status_payload: dict) -> bool:
+    if status_payload.get("auto_login_enabled") is False:
+        return False
+    if bool(status_payload.get("account_disabled")):
+        return False
     status = str(status_payload.get("status") or "").strip()
     if status not in TMS_SESSION_ALERT_STATUSES:
         return False
@@ -271,7 +275,12 @@ def _should_start_tms_session_alert_monitor() -> bool:
 
 
 def _check_tms_account_session(account_manager, account: dict) -> dict:
-    if not bool(account.get("is_active", True)) or not bool(account.get("session_capable", False)):
+    if (
+        not bool(account.get("is_active", True))
+        or not bool(account.get("session_capable", False))
+        or not bool(account.get("auto_login_enabled", True))
+        or bool(account.get("auto_login_blocked", False))
+    ):
         return {"monitored": False, "should_alert": False, "status_payload": {}, "previous": {}}
 
     account_id = str(account.get("account_id") or "").strip()
