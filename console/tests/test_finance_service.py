@@ -1,7 +1,9 @@
 import sys
+import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
@@ -9,6 +11,7 @@ if str(CONSOLE_DIR) not in sys.path:
     sys.path.insert(0, str(CONSOLE_DIR))
 
 from finance_service import (  # noqa: E402
+    FinancePartialFailureError,
     FinanceService,
     FinanceUpstreamError,
     FinanceUnprocessableError,
@@ -19,10 +22,13 @@ from finance_service import (  # noqa: E402
 
 
 class _FakeFinanceRepository:
-    def __init__(self):
+    def __init__(self, runtime_dir):
         self.calls = []
         self.initialize_error = None
         self.save_error = None
+        self.knowledge_items = []
+        self.latest_export = None
+        self.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
 
     def initialize_schema(self):
         self.calls.append(("initialize_schema",))
@@ -37,6 +43,14 @@ class _FakeFinanceRepository:
             "net_change": "40.00",
             "waybill_cost": "50.00",
             "operating_cost": "30.00",
+            "waybill_net": "-50.00",
+            "operating_net": "-30.00",
+            "classified_net": "-80.00",
+            "unclassified_net": "-2.00",
+            "missing_waybill_net": "-3.00",
+            "classified_rows": 8,
+            "unclassified_rows": 2,
+            "missing_waybill_rows": 1,
             "pending_fee_items": 2,
             "latest_success_at": "2026-07-12 00:01:00",
             "data_through_date": "2026-07-11",
@@ -45,21 +59,25 @@ class _FakeFinanceRepository:
             "accounts": [
                 {
                     "platform": "ronghui",
-                    "account_id": "a",
+                    "account_id": "price_default",
                     "login_account": "账号 A",
                     "total_income": "100.00",
                     "total_expense": "80.00",
                     "waybill_cost": "50.00",
                     "operating_cost": "30.00",
+                    "waybill_net": "-50.00",
+                    "operating_net": "-30.00",
                 },
                 {
-                    "platform": "yunda",
-                    "account_id": "b",
+                    "platform": "ronghui",
+                    "account_id": "ronghui_daxiang_s",
                     "login_account": "账号 B",
                     "total_income": "20.00",
                     "total_expense": "20.00",
                     "waybill_cost": None,
                     "operating_cost": None,
+                    "waybill_net": None,
+                    "operating_net": None,
                 },
             ],
         }
@@ -88,7 +106,7 @@ class _FakeFinanceRepository:
             "items": [
                 {
                     "fee_item_id": 1,
-                    "platform": "yunda",
+                    "platform": "ronghui",
                     "primary_fee_name": "项目甲",
                     "secondary_fee_name": "",
                     "mapping_status": "pending",
@@ -96,18 +114,15 @@ class _FakeFinanceRepository:
                 },
                 {
                     "fee_item_id": 2,
-                    "platform": "yunda",
+                    "platform": "ronghui",
                     "primary_fee_name": "项目乙",
                     "secondary_fee_name": "",
                     "mapping_status": "bound",
-                    "booking_fee_name": "录单项目乙",
+                    "booking_fee_name": "派件费",
                 },
             ],
             "total": 2,
-            "booking_fee_items": {
-                "ronghui": ["派件费"],
-                "yunda": ["派送费"],
-            },
+            "booking_fee_items": {"ronghui": ["派件费"]},
         }
 
     def save_fee_mapping(self, **kwargs):
@@ -118,12 +133,39 @@ class _FakeFinanceRepository:
 
     def list_sync_batches(self, *, limit, offset, status=None):
         self.calls.append(("list_sync_batches", limit, offset, status))
-        return {"items": [{"id": 3, "status": "success"}], "total": 1, "limit": limit, "offset": offset}
+        return {
+            "items": [
+                {
+                    "id": 3,
+                    "status": "failed",
+                    "failed_sources": [
+                        {"platform": "yunda", "account_id": "yunda_default"}
+                    ],
+                }
+            ],
+            "total": 1,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def get_knowledge_snapshot(self):
+        self.calls.append(("get_knowledge_snapshot",))
+        return {"version_no": 1, "items": list(self.knowledge_items)}
+
+    def record_knowledge_export(self, **kwargs):
+        self.calls.append(("record_knowledge_export", kwargs))
+        return 5
+
+    def latest_knowledge_export(self):
+        self.calls.append(("latest_knowledge_export",))
+        return self.latest_export
 
 
 class FinanceServiceTests(unittest.TestCase):
     def setUp(self):
-        self.repository = _FakeFinanceRepository()
+        self.runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
+        self.repository = _FakeFinanceRepository(self.runtime.name)
         self.agent_calls = []
         self.agent_result = {"ok": True, "data": {"ok": True, "batch_id": 12}}
 
@@ -136,11 +178,11 @@ class FinanceServiceTests(unittest.TestCase):
     def test_default_period_is_current_month_and_filters_are_explicit(self):
         filters = parse_finance_filters(
             {
-                "platform": ["yunda"],
-                "account_id": ["account-a"],
+                "platform": ["ronghui"],
+                "account_id": ["price_default"],
                 "direction": ["expense"],
                 "fee_level": ["waybill"],
-                "fee_name": ["派送费"],
+                "fee_name": ["派件费"],
                 "waybill_no": ["WB001"],
             },
             today=date(2026, 7, 12),
@@ -148,12 +190,29 @@ class FinanceServiceTests(unittest.TestCase):
 
         self.assertEqual(date(2026, 7, 1), filters.start_date)
         self.assertEqual(date(2026, 7, 12), filters.end_date)
-        self.assertEqual("yunda", filters.platform)
-        self.assertEqual("account-a", filters.account_id)
+        self.assertEqual("ronghui", filters.platform)
+        self.assertEqual("price_default", filters.account_id)
         self.assertEqual("expense", filters.direction)
         self.assertEqual("waybill", filters.fee_level)
-        self.assertEqual("派送费", filters.fee_name)
+        self.assertEqual("派件费", filters.fee_name)
         self.assertEqual("WB001", filters.waybill_no)
+
+    def test_unlaunched_yunda_filters_are_rejected(self):
+        cases = (
+            (
+                {"platform": ["yunda"]},
+                "平台 yunda 的财务来源尚未启用",
+            ),
+            (
+                {"account_id": ["yunda_default"]},
+                "账号 yunda_default 不是已启用的财务来源",
+            ),
+        )
+
+        for query, message in cases:
+            with self.subTest(query=query):
+                with self.assertRaisesRegex(FinanceValidationError, message):
+                    parse_finance_filters(query, today=date(2026, 7, 12))
 
     def test_schema_initialization_uses_shared_repository_contract(self):
         self.service.initialize_schema()
@@ -184,10 +243,10 @@ class FinanceServiceTests(unittest.TestCase):
         payload = self.service.get_summary({}, today=date(2026, 7, 12))
 
         self.assertEqual("120.00", payload["total_income"])
-        self.assertEqual("100.00", payload["accounts"][0]["waybill_cost_plot"])
-        self.assertEqual("60.00", payload["accounts"][0]["operating_cost_plot"])
-        self.assertIsNone(payload["accounts"][1]["waybill_cost_plot"])
-        self.assertIsNone(payload["accounts"][1]["operating_cost_plot"])
+        self.assertEqual("100.00", payload["accounts"][0]["waybill_net_plot"])
+        self.assertEqual("60.00", payload["accounts"][0]["operating_net_plot"])
+        self.assertIsNone(payload["accounts"][1]["waybill_net_plot"])
+        self.assertIsNone(payload["accounts"][1]["operating_net_plot"])
         self.assertEqual("100.00", payload["expense_ranking"][0]["expense_plot"])
         self.assertEqual("50.00", payload["expense_ranking"][1]["expense_plot"])
         self.assertEqual({"start_date": "2026-07-01", "end_date": "2026-07-12"}, payload["period"])
@@ -215,21 +274,55 @@ class FinanceServiceTests(unittest.TestCase):
     def test_mapping_filters_are_server_side_and_do_not_use_account_id(self):
         payload = self.service.list_fee_mappings(
             {
-                "platform": ["yunda"],
+                "platform": ["ronghui"],
                 "account_id": ["ignored-by-contract"],
                 "effective_month": ["2026-07"],
                 "status": ["bound"],
-                "search": ["录单项目乙"],
+                "search": ["派件费"],
             }
         )
 
         self.assertEqual(1, payload["total"])
         self.assertEqual(2, payload["items"][0]["fee_item_id"])
-        self.assertEqual(
-            {"ronghui": ["派件费"], "yunda": ["派送费"]},
-            payload["booking_fee_items"],
+        self.assertEqual({"ronghui": ["派件费"]}, payload["booking_fee_items"])
+        self.assertIn(("list_fee_mappings", "ronghui", "2026-07"), self.repository.calls)
+
+    def test_unlaunched_yunda_mapping_filter_is_rejected_before_repository_call(self):
+        calls_before = list(self.repository.calls)
+
+        with self.assertRaisesRegex(
+            FinanceValidationError, "平台 yunda 的财务来源尚未启用"
+        ):
+            self.service.list_fee_mappings({"platform": ["yunda"]})
+
+        self.assertEqual(calls_before, self.repository.calls)
+
+    def test_sync_history_preserves_unlaunched_yunda_source_identity(self):
+        payload = self.service.list_sync_batches({})
+
+        source = payload["items"][0]["failed_sources"][0]
+        self.assertEqual("yunda", source["platform"])
+        self.assertEqual("yunda_default", source["account_id"])
+
+    def test_knowledge_status_rebuilds_mirror_when_enabled_mapping_count_changes(self):
+        stale = Path(self.runtime.name) / "finance_knowledge" / "finance_rules_v1.md"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("stale", encoding="utf-8")
+        self.repository.knowledge_items = [{"platform": "ronghui"}]
+        self.repository.latest_export = {
+            "version_no": 1,
+            "mapping_count": 2,
+            "relative_path": "finance_knowledge/finance_rules_v1.md",
+            "content_sha256": "invalid-for-enabled-source-set",
+        }
+
+        payload = self.service.knowledge_status()
+
+        self.assertTrue(payload["consistent"])
+        export_call = next(
+            call for call in reversed(self.repository.calls) if call[0] == "record_knowledge_export"
         )
-        self.assertIn(("list_fee_mappings", "yunda", "2026-07"), self.repository.calls)
+        self.assertEqual(1, export_call[1]["mapping_count"])
 
     def test_save_mapping_ignores_untrusted_direction_and_passes_audit_fields(self):
         payload = self.service.save_fee_mapping(
@@ -237,6 +330,7 @@ class FinanceServiceTests(unittest.TestCase):
             {
                 "direction": "income",
                 "fee_level": "waybill",
+                "canonical_subject_name": "派送费",
                 "booking_fee_name": "派送费",
                 "effective_start_month": "2026-07",
                 "effective_end_month": "",
@@ -246,8 +340,10 @@ class FinanceServiceTests(unittest.TestCase):
             changed_by="admin",
         )
 
-        self.assertEqual({"mapping_id": 9, "fee_item_id": 4}, payload)
-        call = self.repository.calls[-1][1]
+        self.assertEqual(9, payload["mapping_id"])
+        self.assertEqual(4, payload["fee_item_id"])
+        self.assertEqual(1, payload["knowledge_export"]["version_no"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
         self.assertNotIn("direction", call)
         self.assertEqual("waybill", call["fee_level"])
         self.assertEqual("派送费", call["booking_fee_name"])
@@ -259,6 +355,7 @@ class FinanceServiceTests(unittest.TestCase):
             4,
             {
                 "fee_level": "operating",
+                "canonical_subject_name": "运营固定费",
                 "booking_fee_name": "",
                 "effective_start_month": "2026-07",
                 "include_in_cost": False,
@@ -267,8 +364,10 @@ class FinanceServiceTests(unittest.TestCase):
             changed_by="admin",
         )
 
-        self.assertEqual({"mapping_id": 9, "fee_item_id": 4}, payload)
-        self.assertNotIn("direction", self.repository.calls[-1][1])
+        self.assertEqual(9, payload["mapping_id"])
+        self.assertEqual(4, payload["fee_item_id"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
+        self.assertNotIn("direction", call)
 
     def test_locked_repository_direction_validation_is_preserved(self):
         self.repository.save_error = ValueError("only expense mappings may be included in cost")
@@ -280,6 +379,7 @@ class FinanceServiceTests(unittest.TestCase):
                 4,
                 {
                     "fee_level": "operating",
+                    "canonical_subject_name": "运营固定费",
                     "booking_fee_name": "",
                     "effective_start_month": "2026-07",
                     "include_in_cost": True,
@@ -294,6 +394,7 @@ class FinanceServiceTests(unittest.TestCase):
             {
                 "direction": "expense",
                 "fee_level": "operating",
+                "canonical_subject_name": "运营固定费",
                 "booking_fee_name": "",
                 "effective_start_month": "2026-07",
                 "include_in_cost": True,
@@ -302,26 +403,33 @@ class FinanceServiceTests(unittest.TestCase):
             changed_by="admin",
         )
 
-        self.assertEqual("", self.repository.calls[-1][1]["booking_fee_name"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
+        self.assertEqual("", call["booking_fee_name"])
 
-    def test_waybill_mapping_requires_booking_fee_item(self):
-        with self.assertRaisesRegex(FinanceValidationError, "请填写对应录单项目"):
-            self.service.save_fee_mapping(
-                5,
-                {
-                    "direction": "expense",
-                    "fee_level": "waybill",
-                    "booking_fee_name": "",
-                    "effective_start_month": "2026-07",
-                    "include_in_cost": True,
-                    "reason": "尝试保存未绑定运单级费用",
-                },
-                changed_by="admin",
-            )
+    def test_waybill_mapping_allows_no_booking_field_but_requires_waybill(self):
+        payload = self.service.save_fee_mapping(
+            5,
+            {
+                "direction": "expense",
+                "fee_level": "waybill",
+                "canonical_subject_name": "电子标签服务费",
+                "booking_fee_name": "",
+                "requires_waybill": True,
+                "effective_start_month": "2026-07",
+                "include_in_cost": True,
+                "reason": "不强制绑定开单页面字段",
+            },
+            changed_by="admin",
+        )
+
+        self.assertEqual(9, payload["mapping_id"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
+        self.assertEqual("", call["booking_fee_name"])
+        self.assertTrue(call["requires_waybill"])
 
     def test_sync_uses_agent_tool_without_login_context(self):
         payload = self.service.start_sync(
-            {"platform": "yunda", "account_id": "account-a", "rescan_days": 7}
+            {"platform": "ronghui", "account_id": "price_default", "rescan_days": 7}
         )
 
         self.assertEqual(12, payload["batch_id"])
@@ -330,11 +438,70 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(21600, call["timeout"])
         self.assertEqual("sync_finance_bills", call["payload"]["tool_name"])
         self.assertEqual(
-            {"mode": "sync", "rescan_days": 7, "platform": "yunda", "account_id": "account-a"},
+            {
+                "mode": "sync",
+                "rescan_days": 7,
+                "platform": "ronghui",
+                "account_id": "price_default",
+            },
             call["payload"]["params"],
         )
         self.assertNotIn("login_account", call["payload"]["params"])
         self.assertNotIn("session_profile", call["payload"]["params"])
+
+    def test_unlaunched_yunda_sync_scopes_are_rejected_without_agent_call(self):
+        backfill_dates = {"start_date": "2026-07-01", "end_date": "2026-07-11"}
+        cases = (
+            (
+                self.service.start_sync,
+                {"platform": "yunda"},
+                "平台 yunda 的财务来源尚未启用",
+            ),
+            (
+                self.service.start_sync,
+                {"account_id": "yunda_default"},
+                "账号 yunda_default 不是已启用的财务来源",
+            ),
+            (
+                self.service.start_backfill,
+                {**backfill_dates, "platform": "yunda"},
+                "平台 yunda 的财务来源尚未启用",
+            ),
+            (
+                self.service.start_backfill,
+                {**backfill_dates, "account_id": "yunda_default"},
+                "账号 yunda_default 不是已启用的财务来源",
+            ),
+        )
+
+        for operation, body, message in cases:
+            with self.subTest(operation=operation.__name__, body=body):
+                calls_before = list(self.agent_calls)
+                with self.assertRaisesRegex(FinanceValidationError, message):
+                    operation(body)
+                self.assertEqual(calls_before, self.agent_calls)
+
+    def test_sync_unwraps_internal_api_executor_and_tool_result(self):
+        self.agent_result = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "success": True,
+                "duration_s": 1.25,
+                "data": {
+                    "ok": True,
+                    "success": True,
+                    "status": "success",
+                    "batch_id": 31,
+                },
+            },
+        }
+
+        payload = self.service.start_sync({})
+
+        self.assertEqual(31, payload["batch_id"])
+        self.assertEqual("success", payload["status"])
+        self.assertNotIn("data", payload)
 
     def test_backfill_requires_real_date_range(self):
         with self.assertRaisesRegex(FinanceValidationError, "请填写回溯开始日期"):
@@ -368,6 +535,74 @@ class FinanceServiceTests(unittest.TestCase):
                 self.agent_result = response
                 with self.assertRaises(FinanceUpstreamError):
                     self.service.start_sync({})
+
+    def test_sync_rejects_final_failed_and_partial_failed_statuses(self):
+        failures = (
+            (
+                {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "success": True,
+                        "data": {
+                            "ok": True,
+                            "success": True,
+                            "status": "failed",
+                            "batch_id": 41,
+                        },
+                    },
+                },
+                "财务同步失败",
+            ),
+            (
+                {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "success": True,
+                        "data": {
+                            "ok": True,
+                            "success": True,
+                            "partial_success": True,
+                            "status": "partial_failed",
+                            "batch_id": 42,
+                        },
+                    },
+                },
+                "财务同步部分失败",
+            ),
+        )
+
+        for response, message in failures:
+            with self.subTest(response=response):
+                self.agent_result = response
+                with self.assertRaisesRegex(FinanceUpstreamError, message):
+                    self.service.start_sync({})
+
+        self.agent_result = failures[1][0]
+        with self.assertRaises(FinancePartialFailureError) as raised:
+            self.service.start_sync({})
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", raised.exception.error_code)
+
+        self.agent_result = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "success": False,
+                "error_code": "FINANCE_SYNC_PARTIAL_FAILED",
+                "error": "部分财务账号或日期同步失败",
+                "data": {
+                    "ok": False,
+                    "success": False,
+                    "partial_success": True,
+                    "status": "partial_failed",
+                    "batch_id": 43,
+                },
+            },
+        }
+        with self.assertRaises(FinancePartialFailureError) as executor_raised:
+            self.service.start_sync({})
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", executor_raised.exception.error_code)
 
     def test_missing_shared_repository_is_explicitly_unavailable(self):
         service = FinanceService(object())

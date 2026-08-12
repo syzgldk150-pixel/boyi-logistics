@@ -359,6 +359,11 @@ def upload_problem_item(
     return {
         "bill_code": bill_code,
         "saved": True,
+        "external_id": guid,
+        "problem_type": problem_type,
+        "registered_at": problem_row.get("REGISTER_DATE"),
+        "registration_saved_at": problem_row.get("REGISTER_SAVE_DATE"),
+        "registered_site": problem_row.get("REGISTER_SITE"),
         "notice_site": notice_site,
         "notice_site_code": notice_site_code,
         "destination_site": _clean_text(bill_info.get("DESTINATION")),

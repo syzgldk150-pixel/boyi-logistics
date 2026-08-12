@@ -102,10 +102,15 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `static/finance.js`
   - `finance_service.py`
   - `app.py`
-  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 同步记录”四个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
-  - Console 接口为 `/finance/summary|trend|entries|fee-mappings|sync-batches`、`POST /finance/sync|backfill`、`POST /finance/fee-mappings/{id}`、`POST /finance/sync-batches/{id}/retry`；同步动作只调用 Agent `sync_finance_bills` 工具，不接收或透传账号密码、Cookie、Token、登录态等字段。
+  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 异常审批 / 运单净额 / 同步记录”六个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
+  - 财务生产来源由 `shared/finance/sources.py` 统一声明；当前只展示和同步融辉三个启用账号。韵达通用业务账号不等于韵达财务已上线，财务平台筛选不得展示韵达，当前失败告警不得统计历史韵达失败；“同步记录”继续保留历史运行审计。
+  - Console 接口为 `/finance/summary|trend|entries|fee-mappings|review-cases|waybill-facts|knowledge|sync-batches`、`POST /finance/sync|backfill|reviews/analyze`、`POST /finance/fee-mappings/{id}`、`POST /finance/review-cases/{id}/reject`、`POST /finance/sync-batches/{id}/retry`；同步动作只调用 Agent `sync_finance_bills` 工具，不接收或透传账号密码、Cookie、Token、登录态等字段。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。
+- 改全局智能模型设置：
+  - `templates/llm_settings.html`、`static/llm_settings.css`、`static/llm_settings.js`、`routes/llm_settings.py`、`services/llm_settings.py`
+  - 页面入口为 `/settings/llm`。只有真实会话中的 `super_admin` 可保存、刷新、测试、激活、回滚或清除 DeepSeek/GLM 配置；所有写请求必须通过同源 CSRF 校验。普通管理员只能看到当前供应商、模型、是否配置和健康状态。
+  - API Key 输入框不得回填，空值或掩码表示保留；Console 不保存或记录密钥，只通过带内部令牌的 Agent 管理接口转发。禁止自定义 Base URL、自动切换供应商、回退环境配置或复用旧 AI 结果。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`
@@ -126,7 +131,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 运单录入与打印
 
-- `/ocr` 默认进入页内多页签录单工作区，支持博益、韵达、融辉任意组合同时打开，最多 6 个总页签；刷新或重新进入不恢复页签和表单内容，只按 URL 初始化一个入口页签，避免把收寄件信息持久化到浏览器存储。完整 OCR 上传/队列从 `/ocr?mode=ocr` 打开，单据详情仍走 `/documents/{id}`；博益手工录单作为内部 frame 入口 `/ocr/boyi/frame` 承载，不包含外层多页签壳。
+- `/ocr` 默认进入页内多页签录单工作区，支持博益、韵达、融辉任意组合同时打开，最多 6 个总页签；刷新或重新进入不恢复页签和表单内容，只按 URL 初始化一个入口页签，避免把收寄件信息持久化到浏览器存储。完整 OCR 上传/队列从 `/ocr?mode=ocr` 打开，OCR 标题栏内的紧凑“模板配置”按钮进入 `/templates/new`，模板配置不作为桌面侧栏或移动导航的独立模块；单据详情仍走 `/documents/{id}`；博益手工录单作为内部 frame 入口 `/ocr/boyi/frame` 承载，不包含外层多页签壳。
 - `/ocr?mode=yunda` 兼容入口会在多页签壳中创建一个韵达初始页签；每个韵达实例都是独立 iframe，嵌入 Console 同源 `/ocr/yunda/live/ky_inms/public/...`，Console 转发到 Agent `/tms/yunda_waybill_proxy`，GET/POST/PUT/PATCH/DELETE 会透传到原页代理；Agent 使用 `yunda` 登录态代理 `kyinms.yunda56.com` 原页面与接口；成功保存响应会同步写入本地 `waybills`，并在原页保存 JSON 中追加 `shipnow_print_url`/`shipnow_autoprint_url`，由代理注入脚本打开 Console 本地热敏打印页，避免依赖韵达原页的 C-Lodop 弹窗；旧 `/ocr/yunda/*` JSON 入口保留作兜底。
 - `/ocr?mode=ronghui` 兼容入口会在多页签壳中创建一个融辉初始页签；每个融辉实例都是独立 iframe，访问 Console 同源 `/ocr/ronghui/live`，Console 转发到 Agent `/tms/ronghui_waybill_proxy`，GET/POST/PUT/PATCH/DELETE 会透传到原页代理；Agent 使用账号管理中的大祥报价 `price_default` 登录态以浏览器 XHR 头动态解析菜单 id `1622` 的 `/widget/home` 页面，菜单或页面返回登录页时透传 `AUTH_REQUIRED`；Console 会把 `AUTH_REQUIRED` 转成可读同源 iframe 提示，供前端切到登录引导；融辉原页代理目标在 Agent 调度层允许 12 并发以承接浏览器首屏接口突发；Agent 对固定字典/站点/客户下拉 GET 初始化接口短缓存 5 分钟并忽略 `_` 缓存破坏参数，运行时代理脚本也会移除这些安全初始化接口 URL 的 `_` 参数以启用 Chrome 缓存，不缓存生成单号、日期、保存提交或带关键字的地址查询；`/static/...` 大 JS/图片资源直连融辉原站以避免代理大文件，CSS 与字体资源保留同源代理以避免字体 CORS 导致 MiniUI 图标显示异常，Console 转发这些静态响应时必须保留 Agent 给出的 `Cache-Control`，Agent 会把大祥报价登录态里的必要 `userInfo` 字段桥接到同源 Cookie，并把初始地图 iframe 延迟到目的地/派件网点地图相关操作时再加载，代理重写允许的融辉业务页面/接口链接、JSON/XML/XHTML/text/SVG 响应 URL（含 `\/` 斜杠转义形式）、协议相对 URL、跳转响应头 `Location/Refresh`、移除响应头和 HTML meta CSP、静态和动态 meta refresh、静态和动态 `<base href>`、静态和动态 iframe `srcdoc`、静态和动态 `<object data>`、组件 `url/data-url/data-src/data-href/poster/background` 属性、动态样式 URL（`style/cssText/setProperty/insertRule`，含 `url(...)` 与 `@import`）、动态 XHR/fetch/jQuery Ajax/MiniUI `mini.open`/`mini.ajax`/Beacon/SSE/Worker/表单提交、DOM URL 属性（含图片、脚本、iframe、表单、媒体、source/track/embed/object、area/input image）、动态 HTML 注入入口（`innerHTML/outerHTML/insertAdjacentHTML/document.write/writeln`）、DOM 子树和 URL 属性变化扫描（MutationObserver）、`window.open` URL、`history.pushState/replaceState` URL 和静态 `location.assign/replace` 参数；成功保存响应只写请求/响应快照，不强行映射为本地运单。
 - 手工录单提交到 `/waybills/manual`，成功后写入 `waybills`；默认自动打印仍跳转 `/waybills/{id}/print?autoprint=1`，frame 内保存失败或不打印时可通过 `return_to=/ocr/boyi/frame` 留在本 frame。

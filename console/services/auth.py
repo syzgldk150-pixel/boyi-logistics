@@ -1,5 +1,7 @@
 """Console application services grouped by business responsibility."""
 
+from collections.abc import Mapping
+
 from console.app_support import *  # noqa: F403
 from console.navigation import (
     MobileNavigationValidationError,
@@ -9,6 +11,25 @@ from console.navigation import (
 
 
 class AuthServiceMixin:
+    @staticmethod
+    def _is_super_admin_user(user: Mapping[str, Any] | None) -> bool:
+        value = user or {}
+        return (
+            not bool(value.get("is_legacy_basic_auth"))
+            and str(value.get("role") or "") == "super_admin"
+            and int(value.get("id") or 0) > 0
+        )
+
+    def _require_super_admin_account_write(self, handler: BaseHTTPRequestHandler) -> bool:
+        if self._is_super_admin_user(current_admin_user()):
+            return True
+        self._send_text(
+            handler,
+            HTTPStatus.FORBIDDEN,
+            "Super administrator permission is required.",
+        )
+        return False
+
     def _ensure_authorized(self, handler: BaseHTTPRequestHandler) -> bool:
         user = self._authenticated_user_from_request(handler)
         if user:
@@ -55,6 +76,7 @@ class AuthServiceMixin:
             "avatar_path": str(session.get("avatar_path") or ""),
             "avatar_url": self._admin_avatar_url(str(session.get("avatar_path") or "")),
             "ui_preferences_json": str(session.get("ui_preferences_json") or "{}"),
+            "role": str(session.get("role") or "admin"),
             "is_legacy_basic_auth": False,
         }
         self._set_current_admin_user(handler, user)
@@ -77,6 +99,7 @@ class AuthServiceMixin:
             "avatar_path": "",
             "avatar_url": "",
             "ui_preferences_json": "{}",
+            "role": "legacy_admin",
             "is_legacy_basic_auth": True,
         }
 
@@ -285,6 +308,7 @@ class AuthServiceMixin:
         body = template.render(
             app_title=self.settings.app_title,
             users=self.repository.list_admin_users(),
+            is_super_admin=str((current_admin_user() or {}).get("role") or "") == "super_admin",
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )
@@ -932,6 +956,8 @@ class AuthServiceMixin:
         return None
 
     def _handle_admin_account_create(self, handler: BaseHTTPRequestHandler) -> None:
+        if not self._require_super_admin_account_write(handler):
+            return
         values = self._parse_urlencoded_form(handler)
         username = str(values.get("username", "") or "").strip()
         display_name = str(values.get("display_name", "") or "").strip()
@@ -954,6 +980,8 @@ class AuthServiceMixin:
         self._redirect_with_message(handler, "/settings/accounts", f"账号已创建：{username}", "success")
 
     def _handle_admin_account_toggle(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        if not self._require_super_admin_account_write(handler):
+            return
         user_id = self._parse_admin_user_id(path, "toggle")
         if user_id is None:
             self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
@@ -972,6 +1000,8 @@ class AuthServiceMixin:
         self._redirect_with_message(handler, "/settings/accounts", message, "success")
 
     def _handle_admin_account_reset_password(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        if not self._require_super_admin_account_write(handler):
+            return
         user_id = self._parse_admin_user_id(path, "reset-password")
         if user_id is None:
             self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
@@ -986,6 +1016,27 @@ class AuthServiceMixin:
             return
         self.repository.update_admin_user_password(user_id, hash_admin_password(password))
         self._redirect_with_message(handler, "/settings/accounts", "密码已重置，原有会话已失效。", "success")
+
+    def _handle_admin_account_role(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        current_user = current_admin_user() or {}
+        if bool(current_user.get("is_legacy_basic_auth")) or str(current_user.get("role") or "") != "super_admin":
+            self._send_text(handler, HTTPStatus.FORBIDDEN, "Super administrator permission is required.")
+            return
+        user_id = self._parse_admin_user_id(path, "role")
+        if user_id is None or not self.repository.get_admin_user(user_id):
+            self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
+            return
+        values = self._parse_urlencoded_form(handler)
+        role = str(values.get("role") or "").strip()
+        if role not in {"admin", "super_admin"}:
+            self._redirect_with_message(handler, "/settings/accounts", "管理员角色无效。", "warning")
+            return
+        try:
+            self.repository.set_admin_user_role(user_id, role)
+        except ValueError as exc:
+            self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+            return
+        self._redirect_with_message(handler, "/settings/accounts", "管理员角色已更新，原会话已失效。", "success")
 
     def _handle_admin_avatar_upload(self, handler: BaseHTTPRequestHandler) -> None:
         user = current_admin_user() or {}

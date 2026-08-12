@@ -80,14 +80,32 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertNotIn('\nBACKUP_ROOT=', release)
         self.assertIn('BACKUP_DIR="${STAGE_ROOT}/_rollback"', release)
         self.assertIn('LEGACY_BACKUP_ROOT="/home/boyce/.boyi-backups"', release)
+        self.assertIn(
+            'LEGACY_FINANCE_ETL_ROOT="/home/boyce/agent/finance_reconciliation"',
+            release,
+        )
+        self.assertIn(
+            'mv -- "${LEGACY_FINANCE_ETL_ROOT}" "${retired_path}"',
+            release,
+        )
+        self.assertIn(
+            'mv -- "${retired_path}" "${LEGACY_FINANCE_ETL_ROOT}"',
+            release,
+        )
+        self.assertNotIn('rm -rf -- "${LEGACY_FINANCE_ETL_ROOT}"', release)
         self.assertIn("prune_inactive_virtualenvs", release)
         self.assertIn('find "${VENV_ROOT}" -mindepth 1 -maxdepth 1 -type d', release)
         self.assertIn('rm -rf -- "${LEGACY_BACKUP_ROOT}"', release)
         self.assertLess(execution.index("check_health"), execution.index("cleanup_successful_release"))
         self.assertLess(execution.index("MUTATION_STARTED=0"), execution.index("cleanup_successful_release"))
+        self.assertLess(
+            execution.index('RELEASE_STAGE="retire_legacy_finance_etl"'),
+            execution.index('RELEASE_STAGE="sync_scope:${scope}"'),
+        )
         for stage in (
             "static_preflight",
             "build_release_virtualenvs",
+            "retire_legacy_finance_etl",
             "sync_scope:${scope}",
             "apply_migrations",
             "activate_release_virtualenvs",

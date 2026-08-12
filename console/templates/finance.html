@@ -44,8 +44,7 @@
       <span>平台</span>
       <select data-finance-platform>
         <option value="all">全部平台</option>
-        <option value="ronghui">融辉</option>
-        <option value="yunda">韵达</option>
+        {% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}
       </select>
     </label>
     <label class="finance-field finance-field--account">
@@ -64,6 +63,12 @@
     <p class="finance-live-status" role="status" aria-live="polite" data-finance-status>正在读取本月财务数据。</p>
     <p class="finance-freshness" data-finance-freshness>数据截止日期：读取中</p>
   </div>
+  <div class="finance-integrity-strip" aria-label="分类完整性">
+    <span data-finance-classified>已分类：读取中</span>
+    <span data-finance-unclassified>未分类：读取中</span>
+    <span data-finance-missing-waybill>缺失运单号：读取中</span>
+    <span data-finance-llm-health>智能模型：读取中</span>
+  </div>
   <div class="finance-error" role="alert" hidden data-finance-error></div>
   <noscript><div class="finance-error">财务工作台需要启用 JavaScript 才能查询和更新数据。</div></noscript>
 
@@ -77,6 +82,12 @@
     <button id="finance-tab-mappings" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-mappings" tabindex="-1" data-finance-tab="mappings">
       <i data-feather="git-merge" aria-hidden="true"></i><span>费用项目绑定</span>
     </button>
+    <button id="finance-tab-reviews" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-reviews" tabindex="-1" data-finance-tab="reviews">
+      <i data-feather="alert-circle" aria-hidden="true"></i><span>异常审批</span>
+    </button>
+    <button id="finance-tab-waybill-facts" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-waybill-facts" tabindex="-1" data-finance-tab="waybill-facts">
+      <i data-feather="package" aria-hidden="true"></i><span>运单财务</span>
+    </button>
     <button id="finance-tab-sync" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-sync" tabindex="-1" data-finance-tab="sync">
       <i data-feather="clock" aria-hidden="true"></i><span>同步记录</span>
     </button>
@@ -89,9 +100,9 @@
         ('total_income', '收入', 'all'),
         ('total_expense', '支出', 'all'),
         ('net_change', '收支差额', 'all'),
-        ('waybill_cost', '运单级成本', 'waybill'),
-        ('operating_cost', '运营级成本', 'operating'),
-        ('pending_fee_items', '待绑定费用项目', 'pending')
+        ('waybill_net', '运单财务净额', 'waybill'),
+        ('operating_net', '运营级净额', 'operating'),
+        ('unclassified_net', '未分类净额', 'pending')
       ] %}
       <button class="finance-metric" type="button" data-finance-metric="{{ key }}" data-finance-drill-level="{{ drill }}" aria-label="查看{{ label }}明细">
         <span>{{ label }}</span>
@@ -161,22 +172,38 @@
       <section class="finance-panel finance-account-panel" aria-labelledby="finance-account-title">
         <div class="finance-panel-head">
           <div>
-            <h2 id="finance-account-title">账号两级成本对比</h2>
-            <p>在同一尺度比较运单级与运营级成本，点击账号进入明细。</p>
+            <h2 id="finance-account-title">账号两级财务净额对比</h2>
+            <p>按平台原始收支方向比较运单净额与运营净额，点击账号进入明细。</p>
           </div>
         </div>
         <div class="finance-bar-list" data-finance-account-costs aria-busy="true"></div>
-        <div class="finance-inline-empty" hidden data-finance-account-empty>当前范围没有账号成本数据。</div>
+        <div class="finance-inline-empty" hidden data-finance-account-empty>当前范围没有账号财务净额数据。</div>
         <details class="finance-data-details">
-          <summary>查看账号成本数据表</summary>
+          <summary>查看账号财务净额数据表</summary>
           <div class="finance-table-wrap">
             <table class="finance-table finance-table--compact">
-              <caption class="visually-hidden">账号成本对比等价数据表</caption>
-              <thead><tr><th scope="col">平台</th><th scope="col">账号</th><th scope="col">支出</th><th scope="col">运单级成本</th><th scope="col">运营级成本</th></tr></thead>
+              <caption class="visually-hidden">账号财务净额对比等价数据表</caption>
+              <thead><tr><th scope="col">平台</th><th scope="col">账号</th><th scope="col">支出</th><th scope="col">运单财务净额</th><th scope="col">运营级净额</th></tr></thead>
               <tbody data-finance-account-table></tbody>
             </table>
           </div>
         </details>
+      </section>
+
+      <section class="finance-panel" aria-labelledby="finance-operating-trend-title">
+        <div class="finance-panel-head">
+          <div>
+            <h2 id="finance-operating-trend-title">运营级固定费用趋势</h2>
+            <p>仅汇总已确认的运营级科目，保留平台原始收入、支出与净额方向。</p>
+          </div>
+        </div>
+        <div class="finance-table-wrap">
+          <table class="finance-table finance-table--compact">
+            <caption class="visually-hidden">运营级固定费用每日趋势</caption>
+            <thead><tr><th>日期</th><th>收入</th><th>支出</th><th>净额</th></tr></thead>
+            <tbody data-finance-operating-trend-table><tr><td colspan="4">读取中</td></tr></tbody>
+          </table>
+        </div>
       </section>
     </div>
   </section>
@@ -188,7 +215,7 @@
         <button class="primary-btn" type="submit"><i data-feather="search" aria-hidden="true"></i><span>查询明细</span></button>
       </div>
       <div class="finance-filter-grid">
-        <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+        <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
         <label class="finance-field"><span>账号</span><select name="account_id" data-finance-entry-account><option value="all">全部账号</option></select></label>
         <label class="finance-field"><span>收支方向</span><select name="direction"><option value="all">全部方向</option><option value="income">收入</option><option value="expense">支出</option></select></label>
         <label class="finance-field"><span>费用级别</span><select name="fee_level"><option value="all">全部级别</option><option value="waybill">运单级</option><option value="operating">运营级</option></select></label>
@@ -229,7 +256,7 @@
       <span class="finance-policy-badge">收入方向不可计入成本</span>
     </section>
     <form class="finance-panel finance-mapping-filters" data-finance-mapping-form>
-      <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+      <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
       <label class="finance-field"><span>绑定状态</span><select name="status"><option value="all">全部状态</option><option value="pending">待绑定</option><option value="bound">已绑定</option></select></label>
       <label class="finance-field"><span>生效月份</span><input type="month" name="effective_month"></label>
       <label class="finance-field finance-field--grow"><span>搜索费用项目</span><input type="search" name="search" autocomplete="off" placeholder="一级、二级或录单项目"></label>
@@ -246,8 +273,35 @@
         </table>
       </div>
     </section>
-    <datalist id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"></datalist>
-    <datalist id="finance-booking-yunda" data-finance-booking-fee-items="yunda"></datalist>
+    {% for platform in finance_platforms %}<datalist id="finance-booking-{{ platform.value }}" data-finance-booking-fee-items="{{ platform.value }}"></datalist>{% endfor %}
+  </section>
+
+  <section id="finance-panel-reviews" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-reviews" tabindex="0" hidden data-finance-panel="reviews">
+    <section class="finance-panel finance-mapping-intro">
+      <div><h2>未知费用与异常审批</h2><p>AI 只分析脱敏聚合证据并提出建议；正式分类必须由管理员确认。未知项目不会进入正式 KPI。</p></div>
+      <button class="primary-btn" type="button" data-finance-analyze-reviews><i data-feather="cpu" aria-hidden="true"></i><span>分析待处理项目</span></button>
+    </section>
+    <form class="finance-panel finance-mapping-filters" data-finance-review-form>
+      <label class="finance-field"><span>审批状态</span><select name="status"><option value="open">待审批</option><option value="approved">已确认</option><option value="rejected">已驳回</option><option value="all">全部</option></select></label>
+      <button class="ghost-btn" type="submit">刷新审批单</button>
+    </form>
+    <section class="finance-panel finance-table-panel">
+      <div class="finance-panel-head"><div><h2>审批清单</h2><p data-finance-review-count>尚未查询。</p></div></div>
+      <div class="finance-table-state" data-finance-review-state aria-live="polite"></div>
+      <div class="finance-table-wrap"><table class="finance-table finance-review-table"><thead><tr><th>项目</th><th>方向</th><th>日期 / 笔数</th><th>净额</th><th>运单覆盖</th><th>AI 建议</th><th>操作</th></tr></thead><tbody data-finance-review-body></tbody></table></div>
+    </section>
+  </section>
+
+  <section id="finance-panel-waybill-facts" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-waybill-facts" tabindex="0" hidden data-finance-panel="waybill-facts">
+    <form class="finance-panel finance-mapping-filters" data-finance-waybill-form>
+      <label class="finance-field"><span>运单号</span><input name="waybill_no" type="search" autocomplete="off"></label>
+      <button class="primary-btn" type="submit"><i data-feather="search"></i><span>查询运单财务</span></button>
+    </form>
+    <section class="finance-panel finance-table-panel">
+      <div class="finance-panel-head"><div><h2>运单财务事实</h2><p data-finance-waybill-count>尚未查询。</p></div><a class="ghost-btn" href="#" data-finance-knowledge-link hidden download>下载知识镜像</a></div>
+      <div class="finance-table-state" data-finance-waybill-state aria-live="polite"></div>
+      <div class="finance-table-wrap"><table class="finance-table finance-waybill-table"><thead><tr><th>日期</th><th>平台 / 账号</th><th>运单号</th><th>标准科目</th><th>收入</th><th>支出</th><th>净额</th><th>映射版本</th></tr></thead><tbody data-finance-waybill-body></tbody></table></div>
+    </section>
   </section>
 
   <section id="finance-panel-sync" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-sync" tabindex="0" hidden data-finance-panel="sync">
@@ -255,7 +309,7 @@
       <form class="finance-panel finance-sync-form" data-finance-sync-form>
         <div class="finance-panel-head"><div><h2>手动同步</h2><p>默认重扫最近 7 天，Agent 按账号管理绑定登录。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
           <label class="finance-field"><span>账号</span><select name="account_id" data-finance-sync-account><option value="all">全部账号</option></select></label>
           <label class="finance-field"><span>目标日期（可选）</span><input type="date" name="target_date" max="{{ today }}"></label>
           <label class="finance-field"><span>重扫天数</span><input type="number" name="rescan_days" min="1" max="31" value="7"></label>
@@ -265,7 +319,7 @@
       <form class="finance-panel finance-sync-form" data-finance-backfill-form>
         <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按明确日期范围创建回溯批次，不使用历史成功值补齐。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
           <label class="finance-field"><span>账号</span><select name="account_id" data-finance-backfill-account><option value="all">全部账号</option></select></label>
           <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" required max="{{ today }}"></label>
           <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" required max="{{ today }}"></label>
@@ -292,5 +346,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=finance-workbench-20260712"></script>
+<script src="/static/finance.js?v=finance-sources-20260813"></script>
 {% endblock %}
