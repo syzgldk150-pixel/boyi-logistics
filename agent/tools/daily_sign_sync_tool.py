@@ -348,16 +348,12 @@ def _sign_query_window(params: dict[str, Any]) -> tuple[str, str]:
 def _sync_sign_events(params: dict[str, Any], known_main_codes: set[str]) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
     start, end = _sign_query_window(params)
     response = call_http_service(
-        "/get_scan",
+        "/get_sign_records",
         {
             "params": {
                 "start": start,
                 "end": end,
-                "scan_type": "签收",
-                "site_code": params.get("sign_site_code"),
-                "use_login_site_code": True,
-                "output_format": "json",
-                "page_size": int(params.get("sign_page_size") or 500),
+                  "page_size": int(params.get("sign_page_size") or 500),
                 "max_pages": int(params.get("sign_max_pages") or 500),
                 "account_id": params.get("sign_account_id") or "ronghui_daxiang_s",
             },
