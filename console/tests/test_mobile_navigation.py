@@ -211,12 +211,12 @@ class MobileNavigationTests(unittest.TestCase):
         base = (CONSOLE_DIR / "templates" / "base.html").read_text(encoding="utf-8")
         login = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
-        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "boyi-logistics-logo.png").is_file())
+        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "boyi-logistics-logo-7e1f2994.webp").is_file())
         self.assertIn('viewport-fit=cover', base)
         self.assertIn('data-mobile-bottom-nav', base)
         self.assertIn('data-mobile-more-sheet', base)
-        self.assertIn('/static/assets/boyi-logistics-logo.png', base)
-        self.assertIn('/static/assets/boyi-logistics-logo.png', login)
+        self.assertIn('/static/assets/boyi-logistics-logo-7e1f2994.webp', base)
+        self.assertIn('/static/assets/boyi-logistics-logo-7e1f2994.webp', login)
         self.assertNotIn("M13 2L3 14h9l-1 8 10-12h-9l1-8z", base)
         self.assertNotIn("M13 2L3 14h9l-1 8 10-12h-9l1-8z", login)
 
