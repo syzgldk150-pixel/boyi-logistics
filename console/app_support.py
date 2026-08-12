@@ -816,7 +816,6 @@ AUTOMATION_RUN_TIMEOUTS = {
     "self_pickup_problem_upload": 7200,
     "r7_arrival_checkin": 1200,
     "r7_departure_checkin": 1200,
-    "finance_etl": 1800,
     "split_pending_problem_upload": 7200,
 }
 
@@ -829,14 +828,12 @@ AUTOMATION_LONG_RUNNING_TOOLS = {
     "self_pickup_problem_upload",
     "r7_arrival_checkin",
     "r7_departure_checkin",
-    "finance_etl",
     "split_pending_problem_upload",
 }
 
 UI_LABELS = {
     "ready": "就绪",
     "maintained": "持续维护",
-    "etl-ready": "ETL就绪",
     "planned": "规划中",
     "in-progress": "开发中",
     "queued": "排队中",

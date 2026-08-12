@@ -11,6 +11,4 @@ APScheduler==3.11.2
 lark-oapi==1.5.3
 ddddocr==1.6.1
 playwright==1.58.0
-pandas==2.3.3
 openpyxl==3.1.5
-xlrd==2.0.2

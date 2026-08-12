@@ -2,7 +2,7 @@
 
 ## 目录职责
 
-`tools/` 是业务能力实现层。绝大多数功能修复、新增同步链路、飞书写入、财务 ETL、TMS 查询都从这里开始。
+`tools/` 是业务能力实现层。绝大多数功能修复、新增同步链路、飞书写入、财务账本同步、TMS 查询都从这里开始。
 
 ## 修改入口
 
@@ -17,8 +17,10 @@
   - `tms_tool.py`
   - `internal_http.py`（本机 Agent HTTP 请求头；缺少 `AGENT_INTERNAL_API_TOKEN` 时显式失败）
   - 地址报价会同时调用融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
-- 财务 ETL：
-  - `finance_tool.py`
+- 财务账本同步：
+  - `finance_sync_service.py`（融辉/韵达多账号、多日期编排与提交前校验）
+  - `sync_finance_bills_tool.py`（工具入口与进程/数据库双重单实例锁）
+  - 真实页面采集位于 `../agent/tms_runtime/scripts/*finance*`，共享领域与仓储位于 `../../shared/finance/`
 - 飞书 CLI：
   - `feishu_cli_tool.py`
 - Phase 7 同步链路：
