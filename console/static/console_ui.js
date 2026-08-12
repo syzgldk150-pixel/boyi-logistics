@@ -215,6 +215,16 @@
     return Array.from(list.querySelectorAll("[data-console-tab]")).find((element) => element.dataset.consoleTabKey === tabKey) || null;
   }
 
+  function getPinnedHomeTab() {
+    return {
+      key: "/",
+      url: new URL("/", window.location.href),
+      title: "概览",
+      icon: "grid",
+      pinned: true,
+    };
+  }
+
   function updateTabElement(tabElement, tab) {
     tabElement.dataset.consoleTabKey = tab.key;
     tabElement.classList.toggle("is-pinned", Boolean(tab.pinned));
@@ -271,16 +281,17 @@
   }
 
   function renderTabs() {
-    const homeTab = openTabs.get("/");
+    const homeTab = openTabs.get("/") || getPinnedHomeTab();
     const otherTabs = Array.from(openTabs.values()).filter((tab) => tab.key !== "/");
-    const tabs = homeTab ? [homeTab, ...otherTabs] : otherTabs;
+    const tabs = [homeTab, ...otherTabs];
     getTabLists().forEach((list) => {
       const tabsRoot = list.closest("[data-console-tabs]");
       if (tabsRoot) {
         tabsRoot.hidden = tabs.length === 0;
       }
       Array.from(list.querySelectorAll("[data-console-tab]")).forEach((tabElement) => {
-        if (!openTabs.has(tabElement.dataset.consoleTabKey || "")) {
+        const tabKey = tabElement.dataset.consoleTabKey || "";
+        if (tabKey !== "/" && !openTabs.has(tabKey)) {
           tabElement.remove();
         }
       });
@@ -370,6 +381,12 @@
   function activateTab(tabKey, options = {}) {
     const tab = openTabs.get(tabKey);
     if (!tab) {
+      if (tabKey === "/") {
+        ensureModuleTab(new URL("/", window.location.href), {
+          pushState: options.pushState !== false,
+        });
+        return true;
+      }
       return false;
     }
     syncActiveHead(tab);
@@ -405,11 +422,11 @@
 
   function closeTab(tabKey, options = {}) {
     const tab = openTabs.get(tabKey);
-    if (!tab || (tab.pinned && !options.force) || (openTabs.size <= 1 && !options.force)) {
+    if (!tab || (tab.pinned && !options.force)) {
       return false;
     }
     const wasActive = activeTabKey === tabKey;
-    const nextTab = pickNextTab(tab);
+    const nextTab = pickNextTab(tab) || getPinnedHomeTab();
     cleanupPageRuntime(tab.runtime);
     tab.main.remove();
     tab.aside?.remove();
