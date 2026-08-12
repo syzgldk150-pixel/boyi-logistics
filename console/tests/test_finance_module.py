@@ -188,6 +188,31 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
 
+    def test_sync_actions_use_final_status_instead_of_any_2xx_as_success(self):
+        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
+
+        self.assertIn("function syncActionFeedback", script)
+        self.assertIn('status === "partial_failed" || result.partial_success === true', script)
+        self.assertIn('status === "failed" || result.success === false || result.ok === false', script)
+        self.assertIn('error.code === "FINANCE_SYNC_PARTIAL_FAILED"', script)
+        self.assertIn('setStatus(`同步部分完成：${error.message}`, "warning")', script)
+        self.assertIn("await loadBatches();\n          await loadOverview();", script)
+        self.assertIn('setStatus(`批次重试部分完成：${error.message}`, "warning")', script)
+        retry_source = script.split("async function retryBatch", 1)[1].split(
+            "$$('[data-finance-tab]')", 1
+        )[0]
+        retry_success = retry_source.split("} catch (error) {", 1)[0]
+        retry_partial = retry_source.split(
+            'if (error.code === "FINANCE_SYNC_PARTIAL_FAILED") {', 1
+        )[1].split("} else {", 1)[0]
+        self.assertIn("await loadBatches();", retry_success)
+        self.assertIn("await loadOverview();", retry_success)
+        self.assertIn("await loadBatches();", retry_partial)
+        self.assertIn("await loadOverview();", retry_partial)
+        self.assertIn("setStatus(feedback.message, feedback.tone)", script)
+        self.assertNotIn("同步任务已创建，批次", script)
+        self.assertNotIn('已提交重试。`, "success"', script)
+
     def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
         routes = (

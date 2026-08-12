@@ -51,6 +51,9 @@ RONGHUI_SOURCE_PAYLOAD_FIELDS = (
     "FINANCE_DATE",
     "BALANCE_DATE",
     "BALANCE_TYPE",
+    "BALANCE_PRE_CONFIRM_MONEY",
+    "BALANCE_CUR_MONEY_TEXT",
+    "BALANCE_BACK_CONFIRM_MONEY",
     "CENTER_NAME",
     "SITE_NAME",
     "QUANTITY",
@@ -107,6 +110,14 @@ def normalize_ronghui_row(
             "融辉财务行金额为零，无法确定收支方向",
             stage="ronghui_normalize",
         )
+    old_amount = amount_storage_text(row[field_bindings["old_amount"]], field="old_amount")
+    new_amount = amount_storage_text(row[field_bindings["new_amount"]], field="new_amount")
+    if Decimal(old_amount) + amount_decimal != Decimal(new_amount):
+        raise FinanceCaptureError(
+            "BALANCE_EQUATION_MISMATCH",
+            "融辉财务行前余额、本次金额与后余额反算不一致",
+            stage="ronghui_normalize",
+        )
     zero = amount_storage_text(Decimal("0.0000"), field="direction_zero")
     record: dict[str, Any] = {
         "platform": "ronghui",
@@ -119,8 +130,8 @@ def normalize_ronghui_row(
         "expend": amount_storage_text(-amount_decimal, field="expend") if amount_decimal < 0 else zero,
         "source_site_code": source_site_code,
         "source_site_name": source_site_name,
-        "old_amount": amount_storage_text(row[field_bindings["old_amount"]], field="old_amount"),
-        "new_amount": amount_storage_text(row[field_bindings["new_amount"]], field="new_amount"),
+        "old_amount": old_amount,
+        "new_amount": new_amount,
         "source_reference": clean_text(row[field_bindings["balance_order"]]),
         "balance_order": clean_text(row[field_bindings["balance_order"]]),
         "bill_code": clean_text(row[field_bindings["bill_code"]]),

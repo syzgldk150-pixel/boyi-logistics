@@ -117,6 +117,38 @@
       }[status] || [displayText(status, "未知"), ""];
     }
 
+    function syncActionFeedback(payload, fallbackBatchId = 0, actionLabel = "同步") {
+      const result = payload && typeof payload === "object" ? payload : {};
+      const status = String(result.status || "").trim().toLowerCase();
+      const batchId = result.batch_id || result.id || fallbackBatchId;
+      const subject = batchId ? `批次 #${batchId}` : "财务同步";
+      if (status === "partial_failed" || result.partial_success === true) {
+        return {
+          message: `${subject}部分完成，但仍有账号或日期失败，请查看同步记录。`,
+          tone: "warning",
+        };
+      }
+      if (status === "failed" || result.success === false || result.ok === false) {
+        return {
+          message: `${subject}${actionLabel}失败，请查看同步记录。`,
+          tone: "error",
+        };
+      }
+      if (status === "success") {
+        return { message: `${subject}${actionLabel}完成。`, tone: "success" };
+      }
+      if (status === "no_data") {
+        return { message: `${subject}${actionLabel}完成，原页明确无数据。`, tone: "warning" };
+      }
+      if (status === "queued" || status === "running") {
+        return { message: `${subject}已提交，当前状态：${syncStatusMeta(status)[0]}。`, tone: "info" };
+      }
+      return {
+        message: `${subject}请求已提交，请以同步记录中的最终状态为准。`,
+        tone: "info",
+      };
+    }
+
     function setStatus(message, tone = "") {
       if (!statusNode) return;
       statusNode.textContent = message;
@@ -1069,12 +1101,18 @@
       setButtonBusy(button, true, busyLabel);
       try {
         const payload = await fetchJson(endpoint, { method: "POST", body: JSON.stringify(body) });
-        const batchId = payload.batch_id || payload.id;
-        setStatus(batchId ? `同步任务已创建，批次 #${batchId}。` : "同步任务已创建。", "success");
+        const feedback = syncActionFeedback(payload);
         await loadBatches();
         await loadOverview();
+        setStatus(feedback.message, feedback.tone);
       } catch (error) {
-        setStatus(`同步任务未创建：${error.message}`, "error");
+        if (error.code === "FINANCE_SYNC_PARTIAL_FAILED") {
+          await loadBatches();
+          await loadOverview();
+          setStatus(`同步部分完成：${error.message}`, "warning");
+        } else {
+          setStatus(`同步任务未创建：${error.message}`, "error");
+        }
       } finally {
         setButtonBusy(button, false, busyLabel);
       }
@@ -1084,11 +1122,19 @@
       const batchId = Number(row.dataset.batchId || 0);
       setButtonBusy(button, true, "重试中");
       try {
-        await fetchJson(`${ENDPOINTS.batches}/${batchId}/retry`, { method: "POST", body: "{}" });
-        setStatus(`批次 #${batchId} 已提交重试。`, "success");
+        const payload = await fetchJson(`${ENDPOINTS.batches}/${batchId}/retry`, { method: "POST", body: "{}" });
+        const feedback = syncActionFeedback(payload, batchId, "重试");
         await loadBatches();
+        await loadOverview();
+        setStatus(feedback.message, feedback.tone);
       } catch (error) {
-        setStatus(`批次重试失败：${error.message}`, "error");
+        if (error.code === "FINANCE_SYNC_PARTIAL_FAILED") {
+          await loadBatches();
+          await loadOverview();
+          setStatus(`批次重试部分完成：${error.message}`, "warning");
+        } else {
+          setStatus(`批次重试失败：${error.message}`, "error");
+        }
       } finally {
         setButtonBusy(button, false, "重试中");
       }

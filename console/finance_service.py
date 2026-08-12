@@ -86,6 +86,35 @@ class FinanceUpstreamError(FinanceError):
     http_status = 502
 
 
+class FinancePartialFailureError(FinanceUpstreamError):
+    error_code = "FINANCE_SYNC_PARTIAL_FAILED"
+
+
+def _sync_error_message(payload: Mapping[str, Any], default: str) -> str:
+    error: Any = payload.get("error") or payload.get("message")
+    if isinstance(error, Mapping):
+        error = error.get("message") or error.get("error")
+    message = str(error or "").strip()
+    return message or default
+
+
+def _raise_for_sync_failure(payload: Mapping[str, Any]) -> None:
+    status = str(payload.get("status") or "").strip().lower()
+    error_code = str(payload.get("error_code") or "").strip().upper()
+    if (
+        status == "partial_failed"
+        or payload.get("partial_success") is True
+        or error_code == "FINANCE_SYNC_PARTIAL_FAILED"
+    ):
+        raise FinancePartialFailureError(
+            "财务同步部分失败，请在同步记录中查看失败账号和日期。"
+        )
+    if payload.get("ok") is False or payload.get("success") is False or status == "failed":
+        raise FinanceUpstreamError(
+            _sync_error_message(payload, "财务同步失败，请查看同步记录。")
+        )
+
+
 def _first(query: Mapping[str, Any], name: str) -> str:
     value = query.get(name, "")
     if isinstance(value, (list, tuple)):
@@ -734,24 +763,27 @@ class FinanceService:
         )
         if not isinstance(result, dict):
             raise FinanceContractError("Agent 同步接口返回格式异常。")
-        if result.get("ok") is False or result.get("success") is False:
-            error = result.get("error") or result.get("message") or "Agent 未完成财务同步。"
-            if isinstance(error, dict):
-                error = error.get("message") or error.get("error") or str(error)
-            raise FinanceUpstreamError(str(error))
-        data = result.get("data")
-        if isinstance(data, dict) and data.get("ok") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        if isinstance(data, dict) and data.get("success") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        nested_result = data.get("result") if isinstance(data, dict) else None
-        if isinstance(nested_result, dict) and (
-            nested_result.get("ok") is False or nested_result.get("success") is False
+        _raise_for_sync_failure(result)
+
+        api_data: Any = result.get("data") if result.get("ok") is True else result
+        if not isinstance(api_data, Mapping):
+            raise FinanceContractError("Agent 同步接口未返回执行结果。")
+        _raise_for_sync_failure(api_data)
+
+        tool_data: Any = api_data
+        if (
+            isinstance(api_data.get("data"), Mapping)
+            and ("success" in api_data or "duration_s" in api_data)
         ):
-            raise FinanceUpstreamError(
-                str(nested_result.get("message") or nested_result.get("error") or "财务同步失败。")
-            )
-        return dict(data) if isinstance(data, dict) else dict(result)
+            tool_data = api_data["data"]
+        if not isinstance(tool_data, Mapping):
+            raise FinanceContractError("Agent 同步工具未返回标准结果。")
+        _raise_for_sync_failure(tool_data)
+
+        nested_result = tool_data.get("result")
+        if isinstance(nested_result, Mapping):
+            _raise_for_sync_failure(nested_result)
+        return dict(tool_data)
 
 
 def _required_text(value: Any, *, field_name: str, max_length: int = 160) -> str:
