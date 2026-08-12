@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import sys
@@ -46,6 +47,35 @@ def _resolve_batch_size(params: dict) -> int:
         or params.get("scan_next_batch_size")
         or 50
     )
+
+
+def _resolve_get_scan_request_params(params: dict, request_body: dict) -> dict[str, Any]:
+    request_params = dict(request_body.get("params") or {})
+    request_params.setdefault("output_format", "json")
+
+    target_date = str(params.get("target_date") or "").strip()
+    if target_date:
+        conflicting_fields = [
+            key
+            for key in ("date", "start", "end")
+            if request_params.get(key) not in (None, "")
+        ]
+        if conflicting_fields:
+            joined_fields = ", ".join(conflicting_fields)
+            raise ValueError(
+                "target_date 不能与 request_body.params 中的日期参数同时设置："
+                f"{joined_fields}"
+            )
+        try:
+            parsed_date = dt.date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise ValueError("target_date 必须是 YYYY-MM-DD 格式") from exc
+        request_params["date"] = parsed_date.strftime("%Y/%m/%d")
+
+    for key in ("session_profile", "account_id", "accountId"):
+        if params.get(key) not in (None, "") and key not in request_params:
+            request_params[key] = params[key]
+    return request_params
 
 
 def _coerce_code_set(value: Any) -> set[str]:
@@ -117,11 +147,7 @@ def _trigger_scan_flow(params: dict) -> dict:
 def run_scan_sync(params: dict) -> dict:
     _emit_progress("开始获取扫描数据")
     request_body = dict(params.get("request_body") or {})
-    request_params = dict(request_body.get("params") or {})
-    request_params.setdefault("output_format", "json")
-    for key in ("session_profile", "account_id", "accountId"):
-        if params.get(key) not in (None, "") and key not in request_params:
-            request_params[key] = params[key]
+    request_params = _resolve_get_scan_request_params(params, request_body)
     get_scan_result = call_http_service(
         "/get_scan",
         {
