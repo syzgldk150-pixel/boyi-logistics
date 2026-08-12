@@ -4,7 +4,7 @@ from agent.direct_tool_router import format_self_pickup_problem_upload_reply
 
 
 class SelfPickupProblemReplyTests(unittest.TestCase):
-    def test_done_reply_labels_and_lists_skipped_bills_without_problem_content_reason(self):
+    def test_done_reply_only_keeps_outcome_counts(self):
         text = format_self_pickup_problem_upload_reply(
             {
                 "stage": "done",
@@ -30,11 +30,32 @@ class SelfPickupProblemReplyTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("跳过：1", text)
-        self.assertIn("跳过 1", text)
-        self.assertIn("跳过单号：R_SKIP", text)
-        self.assertNotIn("货物未齐跳过", text)
-        self.assertNotIn("已登记跳过", text)
+        self.assertEqual("自提到货问题件已完成\n完成：1 单\n跳过：1 单", text)
+
+    def test_preview_reply_only_keeps_candidate_count_and_confirmation(self):
+        text = format_self_pickup_problem_upload_reply(
+            {
+                "stage": "dry_run",
+                "candidate_count": 1,
+                "source": {"sheet_title": "每日到货表"},
+                "screenshot_enabled": False,
+                "source_summaries": [
+                    {
+                        "source_name": "邵阳大祥S站自提",
+                        "candidate_count": 1,
+                        "candidates": [{"bill_code": "R00019410354"}],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            "自提到货问题件待确认：1 单\n回复“确认”执行，回复“取消”放弃。10 分钟内有效。",
+            text,
+        )
+        self.assertNotIn("来源", text)
+        self.assertNotIn("截图", text)
+        self.assertNotIn("R00019410354", text)
 
 
 if __name__ == "__main__":

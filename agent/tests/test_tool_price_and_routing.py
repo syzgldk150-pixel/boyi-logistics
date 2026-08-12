@@ -1209,10 +1209,11 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("邵阳自提部：1 单", reply)
-        self.assertIn("邵阳大祥S站自提：1 单", reply)
-        self.assertIn("R0001", reply)
-        self.assertIn("R0002", reply)
+        self.assertIn("自提到货问题件待确认：2 单", reply)
+        self.assertNotIn("邵阳自提部", reply)
+        self.assertNotIn("邵阳大祥S站自提", reply)
+        self.assertNotIn("R0001", reply)
+        self.assertNotIn("R0002", reply)
         self.assertNotIn("账号", reply)
         self.assertNotIn("登录态", reply)
         self.assertNotIn("ronghui_self_pickup_problem", reply)

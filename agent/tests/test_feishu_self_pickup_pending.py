@@ -63,8 +63,8 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                 {"dry_run": False, "account_id": "ronghui_self_pickup_problem"},
                 pending_store["chat-1"]["params"],
             )
-            self.assertIn("待上传自提到货问题件候选 0 单", replies[-1])
-            self.assertIn('确认上传请回复"确认"', replies[-1])
+            self.assertIn("自提到货问题件待确认：0 单", replies[-1])
+            self.assertIn("回复“确认”执行", replies[-1])
 
             asyncio.run(message_handler._process_and_reply("取消", "user-1", "chat-1"))
 

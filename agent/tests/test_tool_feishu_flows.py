@@ -179,7 +179,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual(("sync_arrive_list", {}), calls["execute_tool"])
         self.assertEqual("程序正在执行", replies[0])
         self.assertIn("到货清单同步已完成", replies[-1])
-        self.assertIn("派件预报：2", replies[-1])
+        self.assertIn("完成：2 单", replies[-1])
 
     def test_feishu_price_auth_pending_waits_for_sms_code(self):
         calls: dict[str, Any] = {}
@@ -377,7 +377,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual(2, len(calls))
         self.assertEqual(("sync_arrival_stats", {}), calls[-1])
         self.assertEqual([], pending_calls)
-        self.assertIn("missing_resource", replies[-1])
+        self.assertIn("统计到货数据部分完成", replies[-1])
+        self.assertIn("未完成：未齐货物表", replies[-1])
         self.assertNotIn("AUTH_REQUIRED", replies[-1])
 
     def test_feishu_direct_tool_clears_stale_login_pending(self):
@@ -426,7 +427,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
 
         clear_pending.assert_called_once_with("chat-1")
         self.assertEqual([("sync_arrival_stats", {})], calls)
-        self.assertIn("missing_resource", replies[-1])
+        self.assertIn("统计到货数据部分完成", replies[-1])
+        self.assertIn("未完成：未齐货物表", replies[-1])
 
     def test_feishu_llm_selected_tool_auth_required_uses_login_resume_flow(self):
         replies: list[str] = []
@@ -1227,10 +1229,11 @@ class ToolFeishuFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("扫描任务已完成", reply)
-        self.assertIn("拉取扫描记录：10", reply)
-        self.assertIn("失败批次：1/2", reply)
-        self.assertIn("已签收跳过：1", reply)
+        self.assertIn("扫描任务部分完成", reply)
+        self.assertIn("完成：5 单", reply)
+        self.assertIn("失败：1 批", reply)
+        self.assertIn("跳过：1 单", reply)
+        self.assertNotIn("刷新扫描索引", reply)
 
     def test_scan_sync_reply_uses_nested_scan_next_error(self):
         reply = direct_tool_router.format_tool_reply(
@@ -1273,9 +1276,4 @@ class ToolFeishuFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("到货清单同步已完成", reply)
-        self.assertIn("派件预报：5", reply)
-        self.assertIn("主单数：4", reply)
-        self.assertIn("跳过回单号：2", reply)
-        self.assertIn("MySQL：覆盖 4", reply)
-        self.assertIn("主飞书表：写入 4 行", reply)
+        self.assertEqual("到货清单同步已完成\n完成：4 单\n跳过：2 单", reply)

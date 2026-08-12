@@ -45,6 +45,7 @@
   - LLM 产生工具调用后，最终回复必须来自工具结果 formatter，不能采用 LLM 对工具结果的自由总结
 - 改飞书文本指令直达路由（不走 LLM 的确定性命令）：
   - `direct_tool_router.py`
+  - 飞书脚本执行回执统一使用精简结果：成功只显示“已完成”和实际完成数量；存在子步骤失败时显示“部分完成/未完成”及失败项，不展示来源表、内部表写入状态、归档状态、耗时等调试明细。需要确认的自提问题件预览只保留候选数量和确认/取消提示；分批预览因支持序号选择，继续保留编号列表。
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）
   - `core.py`（`track_waybill` 由 `AgentCore` 进程内调用 `tools.track_waybill_tool.run_track_waybill`，不走通用子进程执行器的同名运行锁，便于多票单号连续查询快速反馈）
   - `automation_profile.py`

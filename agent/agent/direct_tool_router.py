@@ -852,6 +852,42 @@ def format_automation_profile_reply(result: dict[str, Any]) -> str:
     return f"当前自动化：{label or profile or '融辉自动化'}"
 
 
+def _first_count(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _int_count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _completion_title(label: str, *, completed: int | None = None, failed: int = 0) -> str:
+    if failed <= 0:
+        return f"{label}已完成"
+    if completed is not None and completed <= 0:
+        return f"{label}未完成"
+    return f"{label}部分完成"
+
+
+def _incomplete_section(section: Any) -> str:
+    if not isinstance(section, dict):
+        return ""
+    if section.get("error"):
+        return str(section.get("error")).strip()
+    if section.get("skipped"):
+        reason = str(section.get("reason") or "已跳过").strip()
+        return "缺少配置" if reason == "missing_resource" else reason
+    if section.get("ok") is False:
+        return "执行失败"
+    return ""
+
+
 def format_send_order_sync_reply(result: dict[str, Any]) -> str:
     if not result.get("success", False):
         error_text = str(result.get("error") or "融辉寄件数据同步失败").strip()
@@ -862,26 +898,12 @@ def format_send_order_sync_reply(result: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"融辉寄件数据同步失败：{payload['error']}"
     lines = ["融辉寄件数据同步已完成"]
-    if payload.get("start_date") and payload.get("end_date"):
-        lines.append(f"发件日期范围：{payload['start_date']} 至 {payload['end_date']}")
-        if payload.get("days") not in (None, ""):
-            lines.append(f"同步天数：{payload['days']}")
-    for label, key in (
-        ("发件日期", "target_date"),
-        ("接口原始记录", "raw_fetched"),
-        ("拉取记录", "fetched"),
-        ("跳过回单号", "skipped_receipt_like"),
-        ("更新记录", "updates"),
-        ("新增记录", "creates"),
-        ("删除旧记录", "deleted"),
-        ("写入记录", "written"),
-        ("SQL写入", "sql_upserted"),
-        ("SQL删除旧记录", "sql_deleted_stale"),
-        ("电子表格写入", "sheet_rows"),
-    ):
-        value = payload.get(key)
-        if value not in (None, ""):
-            lines.append(f"{label}：{value}")
+    completed = _first_count(payload, "written", "sql_upserted", "fetched")
+    if completed is not None:
+        lines.append(f"完成：{completed} 单")
+    skipped = payload.get("skipped_receipt_like")
+    if skipped not in (None, "", 0):
+        lines.append(f"跳过：{skipped} 单")
     return "\n".join(lines)
 
 
@@ -895,16 +917,9 @@ def format_yunda_dispatch_forecast_reply(result: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"韵达派件预测同步失败：{payload['error']}"
     lines = ["韵达派件预测同步已完成"]
-    for label, key in (
-        ("应派时间", "target_date"),
-        ("接口总数", "total"),
-        ("拉取记录", "fetched"),
-        ("删除旧记录", "deleted"),
-        ("写入记录", "written"),
-    ):
-        value = payload.get(key)
-        if value not in (None, ""):
-            lines.append(f"{label}：{value}")
+    completed = _first_count(payload, "written", "fetched", "total")
+    if completed is not None:
+        lines.append(f"完成：{completed} 单")
     return "\n".join(lines)
 
 
@@ -918,23 +933,9 @@ def format_yunda_send_waybills_reply(result: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"韵达寄件运单同步失败：{payload['error']}"
     lines = ["韵达寄件运单同步已完成"]
-    if payload.get("start_date") and payload.get("end_date"):
-        lines.append(f"寄件日期范围：{payload['start_date']} 至 {payload['end_date']}")
-        if payload.get("days") not in (None, ""):
-            lines.append(f"同步天数：{payload['days']}")
-    for label, key in (
-        ("寄件日期", "target_date"),
-        ("接口总数", "total"),
-        ("拉取记录", "fetched"),
-        ("更新记录", "updates"),
-        ("新增记录", "creates"),
-        ("写入记录", "written"),
-        ("SQL写入", "sql_upserted"),
-        ("SQL删除旧记录", "sql_deleted_stale"),
-    ):
-        value = payload.get(key)
-        if value not in (None, ""):
-            lines.append(f"{label}：{value}")
+    completed = _first_count(payload, "written", "sql_upserted", "fetched", "total")
+    if completed is not None:
+        lines.append(f"完成：{completed} 单")
     return "\n".join(lines)
 
 
@@ -995,23 +996,9 @@ def format_r7_departure_checkin_reply(result: dict[str, Any]) -> str:
     lines = ["R7 发车打卡已完成"]
     detail = payload.get("detail")
     if isinstance(detail, dict):
-        for label, key in (
-            ("班次", "class_name"),
-            ("计划发车", "departure_time"),
-            ("目标状态", "status_text"),
-            ("验证状态", "verify_status_text"),
-            ("今日成功", "success_count_today"),
-            ("一天次数", "daily_success_limit"),
-        ):
-            value = str(detail.get(key) or "").strip()
-            if value:
-                lines.append(f"{label}：{value}")
         plate_numbers = detail.get("plate_numbers")
         if isinstance(plate_numbers, list) and plate_numbers:
             lines.append(f"车牌：{', '.join(str(item) for item in plate_numbers)}")
-    cost_sec = payload.get("cost_sec")
-    if cost_sec not in (None, ""):
-        lines.append(f"耗时：{cost_sec} 秒")
     return "\n".join(lines)
 
 
@@ -1055,26 +1042,11 @@ def format_r7_arrival_checkin_reply(result: dict[str, Any]) -> str:
         return "\n".join(lines)
 
     lines = ["R7 到达打卡已完成"]
-    stage = str(payload.get("stage") or "").strip()
-    if stage:
-        lines.append(f"阶段：{stage}")
     detail = payload.get("detail")
     if isinstance(detail, dict):
-        for label, key in (
-            ("任务号", "task_no"),
-            ("目标状态", "status_text"),
-            ("验证状态", "verify_status_text"),
-            ("当前状态", "verify_status"),
-            ("计划发车", "departure_time"),
-            ("今日成功", "success_count_today"),
-            ("一天次数", "daily_success_limit"),
-        ):
-            value = str(detail.get(key) or "").strip()
-            if value:
-                lines.append(f"{label}：{value}")
-    cost_sec = payload.get("cost_sec")
-    if cost_sec not in (None, ""):
-        lines.append(f"耗时：{cost_sec} 秒")
+        task_no = str(detail.get("task_no") or detail.get("task_number") or "").strip()
+        if task_no:
+            lines.append(f"任务号：{task_no}")
     return "\n".join(lines)
 
 
@@ -1105,51 +1077,41 @@ def format_scan_sync_reply(result: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"扫描任务失败：{payload['error']}"
 
-    lines = ["扫描任务已完成"]
-    for label, key in (
-        ("拉取扫描记录", "fetched"),
-        ("刷新扫描索引", "normalized"),
-        ("待扫描子单", "child_items"),
-        ("scan_next 批次", "batches"),
-    ):
-        value = payload.get(key)
-        if value is not None:
-            lines.append(f"{label}：{value}")
-
-    scan_index_result = payload.get("scan_index_result")
-    if isinstance(scan_index_result, dict) and scan_index_result.get("replaced") is not None:
-        lines.append(f"索引写入：{scan_index_result.get('replaced')}")
-
     batch_results = payload.get("batch_results")
+    failed_batches: list[dict[str, Any]] = []
     if isinstance(batch_results, list):
         failed_batches = [
             row for row in batch_results
             if isinstance(row, dict) and not row.get("ok")
         ]
-        if failed_batches:
-            lines.append(f"失败批次：{len(failed_batches)}/{len(batch_results)}")
-            for row in failed_batches[:5]:
-                raw = row.get("raw") if isinstance(row, dict) else {}
-                if isinstance(raw, dict):
-                    error_text = _scan_sync_batch_error(raw)
-                else:
-                    error_text = str(raw or "未知错误").strip()
-                lines.append(f"- 第 {row.get('batch', '?')} 批：{error_text[:120]}")
-        else:
-            lines.append("scan_next 结果：全部成功")
+    flow_result = payload.get("flow_result")
+    flow_failed = isinstance(flow_result, dict) and bool(flow_result.get("error"))
+    has_batch_item_counts = isinstance(batch_results, list) and any(
+        isinstance(row, dict) and row.get("items") is not None
+        for row in batch_results
+    )
+    completed = (
+        sum(
+            _int_count(row.get("items"))
+            for row in batch_results
+            if isinstance(row, dict) and row.get("ok")
+        )
+        if has_batch_item_counts
+        else _int_count(payload.get("child_items"))
+    )
+    failure_count = len(failed_batches) + (1 if flow_failed else 0)
+    lines = [_completion_title("扫描任务", completed=completed, failed=failure_count)]
+    lines.append(f"完成：{completed} 单")
 
     skipped_signed_count = payload.get("skipped_signed_count")
     if skipped_signed_count not in (None, "", 0):
-        lines.append(f"已签收跳过：{skipped_signed_count}")
-
-    flow_result = payload.get("flow_result")
-    if isinstance(flow_result, dict):
-        if flow_result.get("skipped"):
-            lines.append("后续流程：已跳过")
-        elif flow_result.get("ok"):
-            lines.append("后续流程：已触发")
-        elif flow_result.get("error"):
-            lines.append(f"后续流程：失败：{str(flow_result.get('error'))[:80]}")
+        lines.append(f"跳过：{skipped_signed_count} 单")
+    if failed_batches:
+        first = failed_batches[0]
+        error_text = _scan_sync_batch_error(first.get("raw"))
+        lines.append(f"失败：{len(failed_batches)} 批（{error_text[:80]}）")
+    if flow_failed:
+        lines.append(f"后续流程未完成：{str(flow_result.get('error'))[:80]}")
     return "\n".join(lines)
 
 
@@ -1164,47 +1126,25 @@ def format_arrive_list_sync_reply(result: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"到货清单同步失败：{payload['error']}"
 
-    lines = ["到货清单同步已完成"]
-    for label, key in (
-        ("派件预报", "fetched"),
-        ("主单数", "bill_codes"),
-        ("跳过回单号", "skipped_receipt_like"),
-        ("基础清单", "detail_records"),
-    ):
-        value = payload.get(key)
-        if value is not None:
-            lines.append(f"{label}：{value}")
-
-    mysql_result = payload.get("mysql_result")
-    if isinstance(mysql_result, dict):
-        replaced = mysql_result.get("replaced")
-        if mysql_result.get("skipped") and replaced is not None:
-            lines.append(f"MySQL：演练未写入，预计覆盖 {replaced}")
-        elif replaced is not None:
-            lines.append(f"MySQL：覆盖 {replaced}")
-        elif mysql_result.get("error"):
-            lines.append(f"MySQL：失败：{str(mysql_result.get('error'))[:80]}")
-
-    def _append_sheet_summary(label: str, section: Any) -> None:
-        if not isinstance(section, dict):
-            return
-        if section.get("error"):
-            lines.append(f"{label}：失败：{str(section.get('error'))[:80]}")
-            return
-        rows = section.get("rows")
-        if section.get("skipped"):
-            if rows is not None:
-                lines.append(f"{label}：演练未写入，预计 {rows} 行")
-            else:
-                lines.append(f"{label}：演练未写入")
-            return
-        if rows is not None:
-            lines.append(f"{label}：写入 {rows} 行")
-        elif section.get("ok") is not None:
-            lines.append(f"{label}：{'成功' if section.get('ok') else '失败'}")
-
-    _append_sheet_summary("主飞书表", payload.get("primary_result"))
-    _append_sheet_summary("副飞书表", payload.get("secondary_result"))
+    sections = (
+        ("数据库", payload.get("mysql_result")),
+        ("主飞书表", payload.get("primary_result")),
+        ("副飞书表", payload.get("secondary_result")),
+    )
+    incomplete = [
+        (label, reason)
+        for label, section in sections
+        if (reason := _incomplete_section(section))
+    ]
+    completed = _int_count(payload.get("bill_codes"))
+    lines = [_completion_title("到货清单同步", completed=completed, failed=len(incomplete))]
+    lines.append(f"完成：{completed} 单")
+    skipped = payload.get("skipped_receipt_like")
+    if skipped not in (None, "", 0):
+        lines.append(f"跳过：{skipped} 单")
+    if incomplete:
+        labels = "、".join(label for label, _reason in incomplete)
+        lines.append(f"未完成：{labels}")
     return "\n".join(lines)
 
 
@@ -1219,35 +1159,29 @@ def format_arrival_stats_reply(result: dict[str, Any]) -> str:
     if payload.get("error"):
         return f"统计到货数据失败：{payload['error']}"
 
-    def _summary(section: dict[str, Any] | Any) -> str:
-        if not isinstance(section, dict):
-            return "未知"
-        if section.get("skipped"):
-            reason = section.get("reason") or "已跳过"
-            return f"跳过（{reason}）"
-        if section.get("error"):
-            return f"失败：{str(section['error'])[:60]}"
-        if section.get("ok") is False:
-            return "失败"
-        return "成功"
-
     records = payload.get("records")
-    main_trackings = payload.get("main_trackings")
     count_result = payload.get("count_result") or {}
     arrived_nonzero = count_result.get("arrived_nonzero") if isinstance(count_result, dict) else None
-
-    lines = ["统计到货数据已完成"]
-    if main_trackings is not None:
-        lines.append(f"扫描索引主单：{main_trackings}")
-    if records is not None:
-        lines.append(f"统计主单记录：{records}")
+    sections = (
+        ("主统计表", payload.get("primary_result")),
+        ("副统计表", payload.get("secondary_result")),
+        ("未齐货物表", payload.get("pending_result")),
+        ("分批及有发未到表", payload.get("split_pending_result")),
+        ("归档快照", payload.get("archive_result")),
+    )
+    incomplete = [
+        (label, reason)
+        for label, section in sections
+        if (reason := _incomplete_section(section))
+    ]
+    completed = _int_count(records)
+    lines = [_completion_title("统计到货数据", completed=completed, failed=len(incomplete))]
+    lines.append(f"完成：{completed} 单")
     if arrived_nonzero is not None:
-        lines.append(f"已到货主单：{arrived_nonzero}")
-    lines.append(f"主统计表：{_summary(payload.get('primary_result'))}")
-    lines.append(f"副统计表：{_summary(payload.get('secondary_result'))}")
-    lines.append(f"未齐货物表：{_summary(payload.get('pending_result'))}")
-    lines.append(f"分批及有发未到表：{_summary(payload.get('split_pending_result'))}")
-    lines.append(f"归档快照：{_summary(payload.get('archive_result'))}")
+        lines.append(f"已到货：{arrived_nonzero} 单")
+    if incomplete:
+        labels = "、".join(label for label, _reason in incomplete)
+        lines.append(f"未完成：{labels}")
     return "\n".join(lines)
 
 
@@ -1301,20 +1235,14 @@ def format_split_pending_problem_upload_reply(result: dict[str, Any]) -> str:
 
     saved = int(payload.get("saved_bills") or 0)
     failed = int(payload.get("failed_bills") or 0)
-    database_rows = int(payload.get("database_rows") or 0)
-    target_rows = int(payload.get("target_sheet_rows") or 0)
     failed_codes = payload.get("failed_bill_codes") if isinstance(payload.get("failed_bill_codes"), list) else []
     results = payload.get("results") if isinstance(payload.get("results"), list) else []
     lines = [
-        f"{SPLIT_PENDING_PROBLEM_LABEL}执行完成",
-        f"当前未齐：{candidate_count}",
-        f"少货/分批：{split_count}",
-        f"有发未到：{pending_count}",
-        f"目标 Sheet：{target_rows} 行",
-        f"数据库快照：{database_rows} 行",
-        f"融辉成功：{saved}",
-        f"融辉失败：{failed}",
+        _completion_title(SPLIT_PENDING_PROBLEM_LABEL, completed=saved, failed=failed),
+        f"完成：{saved} 单",
     ]
+    if failed:
+        lines.append(f"失败：{failed} 单")
     if failed_codes:
         head = ", ".join(str(code) for code in failed_codes[:10])
         if len(failed_codes) > 10:
@@ -1326,7 +1254,7 @@ def format_split_pending_problem_upload_reply(result: dict[str, Any]) -> str:
     ]
     if failed_results:
         lines.append("失败原因：")
-        for item in failed_results[:5]:
+        for item in failed_results[:3]:
             bill_code = str(item.get("bill_code") or "?")
             complaint = item.get("complaint") if isinstance(item.get("complaint"), dict) else {}
             problem_item = item.get("problem_item") if isinstance(item.get("problem_item"), dict) else {}
@@ -1337,8 +1265,8 @@ def format_split_pending_problem_upload_reply(result: dict[str, Any]) -> str:
                 or problem_item.get("message")
                 or "步骤未完整成功"
             ).replace("\n", " ")
-            if len(error_text) > 160:
-                error_text = error_text[:160] + "..."
+            if len(error_text) > 80:
+                error_text = error_text[:80] + "..."
             lines.append(f"- {bill_code}: {error_text}")
     return "\n".join(lines)
 
@@ -1357,55 +1285,11 @@ def format_self_pickup_problem_upload_reply(result: dict[str, Any]) -> str:
     stage = str(payload.get("stage") or "").strip()
     candidate_count = int(payload.get("candidate_count") or 0)
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
-    sheet_title = str(source.get("sheet_title") or source.get("sheet_id") or "").strip()
     destination_site = str(source.get("destination_site") or "邵阳自提部").strip()
-    source_summaries = payload.get("source_summaries") if isinstance(payload.get("source_summaries"), list) else []
-
-    def append_source_lines(lines: list[str], *, include_results: bool) -> None:
-        if not source_summaries:
-            return
-        lines.append("来源明细：")
-        for summary in source_summaries:
-            if not isinstance(summary, dict):
-                continue
-            name = str(summary.get("source_name") or summary.get("destination_site") or "未知来源").strip()
-            count = int(summary.get("candidate_count") or 0)
-            if include_results:
-                saved = int(summary.get("saved_bills") or 0)
-                skipped = int(summary.get("skipped_bills") or 0)
-                failed = int(summary.get("failed_bills") or 0)
-                uploaded = int(summary.get("uploaded_files_total") or 0)
-                lines.append(f"- {name}：候选 {count}，成功 {saved}，跳过 {skipped}，失败 {failed}，截图 {uploaded}")
-            else:
-                lines.append(f"- {name}：{count} 单")
-                candidates = summary.get("candidates") if isinstance(summary.get("candidates"), list) else []
-                for item in candidates[:10]:
-                    if isinstance(item, dict):
-                        lines.append(f"  - {item.get('bill_code')}")
-                if count > 10:
-                    lines.append(f"  ... 其余 {count - 10} 单已省略")
 
     if stage == "dry_run":
-        candidates = payload.get("candidates") or []
-        lines = [f"待上传{SELF_PICKUP_PROBLEM_LABEL}候选 {candidate_count} 单"]
-        if sheet_title:
-            lines.append(f"来源表：{sheet_title}")
-        if not source_summaries:
-            lines.append(f"目的站点：{destination_site}")
-        if payload.get("screenshot_enabled"):
-            lines.append("截图：已启用，可选附加到问题件")
-        else:
-            lines.append("截图：不上传")
-        append_source_lines(lines, include_results=False)
-        if not source_summaries:
-            preview_count = min(len(candidates), 20)
-            for item in candidates[:preview_count]:
-                if isinstance(item, dict):
-                    lines.append(f"- {item.get('bill_code')}")
-            if candidate_count > preview_count:
-                lines.append(f"... 其余 {candidate_count - preview_count} 单已省略")
-        lines.append("")
-        lines.append('确认上传请回复"确认"，放弃请回复"取消"。10 分钟内有效。')
+        lines = [f"{SELF_PICKUP_PROBLEM_LABEL}待确认：{candidate_count} 单"]
+        lines.append('回复“确认”执行，回复“取消”放弃。10 分钟内有效。')
         return "\n".join(lines)
 
     if stage == "no_candidates" or candidate_count == 0:
@@ -1414,30 +1298,17 @@ def format_self_pickup_problem_upload_reply(result: dict[str, Any]) -> str:
     saved = int(payload.get("saved_bills") or 0)
     skipped = int(payload.get("skipped_bills") or 0)
     failed = int(payload.get("failed_bills") or 0)
-    uploaded_total = int(payload.get("uploaded_files_total") or 0)
     failed_codes = payload.get("failed_bill_codes") or []
     results = payload.get("results") or []
 
     lines = [
-        f"{SELF_PICKUP_PROBLEM_LABEL}完成",
-        f"候选单号：{candidate_count}",
-        f"成功上传：{saved}",
-        f"跳过：{skipped}",
-        f"失败：{failed}",
-        f"附加截图文件：{uploaded_total}",
+        _completion_title(SELF_PICKUP_PROBLEM_LABEL, completed=saved, failed=failed),
+        f"完成：{saved} 单",
     ]
-    if sheet_title:
-        lines.append(f"来源表：{sheet_title}")
-    append_source_lines(lines, include_results=True)
-    skipped_results = [
-        row for row in results
-        if isinstance(row, dict) and row.get("skipped")
-    ]
-    if skipped_results:
-        head = ", ".join(str(row.get("bill_code") or "?") for row in skipped_results[:10])
-        if len(skipped_results) > 10:
-            head += f" 等 {len(skipped_results)} 单"
-        lines.append(f"跳过单号：{head}")
+    if skipped:
+        lines.append(f"跳过：{skipped} 单")
+    if failed:
+        lines.append(f"失败：{failed} 单")
     if failed_codes:
         head = ", ".join(str(code) for code in failed_codes[:10])
         if len(failed_codes) > 10:
@@ -1450,14 +1321,14 @@ def format_self_pickup_problem_upload_reply(result: dict[str, Any]) -> str:
     ]
     if failed_results:
         lines.append("失败原因：")
-        for row in failed_results[:5]:
+        for row in failed_results[:3]:
             bill = row.get("bill_code") or "?"
             msg = str(row.get("error") or row.get("message") or "未知错误").strip().replace("\n", " ")
-            if len(msg) > 160:
-                msg = msg[:160] + "..."
+            if len(msg) > 80:
+                msg = msg[:80] + "..."
             lines.append(f"- {bill}: {msg}")
-        if len(failed_results) > 5:
-            lines.append(f"... 其余 {len(failed_results) - 5} 单原因略")
+        if len(failed_results) > 3:
+            lines.append(f"... 其余 {len(failed_results) - 3} 单原因略")
     return "\n".join(lines)
 
 
