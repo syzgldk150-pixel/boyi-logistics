@@ -100,10 +100,15 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
+        blocked_extensions = publisher[
+            publisher.index("$BlockedExtensions = @(") : publisher.index("function Assert-Command")
+        ]
         self.assertNotIn("StrictHostKeyChecking=no", publisher)
         self.assertIn('"app_support.py"', publisher)
         self.assertIn('"navigation.py"', publisher)
         self.assertIn('"config", "routes", "services", "static", "templates"', publisher)
+        self.assertNotIn('".webp"', blocked_extensions)
+        self.assertIn('if ($extension -in @(".png", ".jpg", ".jpeg", ".webp"))', publisher)
 
     def test_shared_runtime_uses_headless_opencv_for_both_services(self):
         agent_lock = (REPOSITORY_ROOT / "agent" / "requirements.lock").read_text(encoding="utf-8")
