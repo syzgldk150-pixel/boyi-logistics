@@ -520,7 +520,7 @@ class DocumentServiceMixin:
         message = f"Template saved: {saved_name}"
         if set_active:
             message += " and set as active template."
-        self._redirect_with_message(handler, "/ocr", message, "success")
+        self._redirect_with_message(handler, "/ocr?mode=ocr", message, "success")
 
     def _handle_upload(self, handler: BaseHTTPRequestHandler) -> None:
         form = self._parse_multipart_form(handler)

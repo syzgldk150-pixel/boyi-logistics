@@ -305,14 +305,16 @@ def _detail_address(row: dict[str, Any]) -> str:
 
 
 def _build_detail_request(bill_codes: list[str], params: dict) -> dict:
+    enrich_addresses = _coerce_bool(params.get("enrich_addresses"), default=True)
     request_params: dict[str, Any] = {
         "items": [{"bill_code": bill_code} for bill_code in bill_codes],
         "max_workers": _coerce_int(params.get("detail_max_workers"), default=1),
-        "decrypt_masked": _coerce_bool(params.get("detail_decrypt_masked"), default=True),
+        "decrypt_masked": _coerce_bool(params.get("detail_decrypt_masked"), default=enrich_addresses),
         "browser_headless": _coerce_bool(params.get("browser_headless"), default=True),
         "browser_timeout_ms": _coerce_int(params.get("browser_timeout_ms"), default=30_000),
         "browser_batch_size": _coerce_int(params.get("browser_batch_size"), default=10),
         "browser_max_workers": _coerce_int(params.get("browser_max_workers"), default=1),
+        "include_sign_status": True,
     }
     if params.get("detail_session_profile") not in (None, ""):
         request_params["session_profile"] = params["detail_session_profile"]
@@ -325,10 +327,10 @@ def _build_detail_request(bill_codes: list[str], params: dict) -> dict:
     }
 
 
-def _fetch_address_details(rows: list[dict], params: dict) -> tuple[dict[str, str] | None, dict]:
+def _fetch_waybill_details(rows: list[dict], params: dict) -> tuple[dict[str, dict[str, Any]] | None, dict]:
     bill_codes = _unique_bill_codes(rows)
     if not bill_codes:
-        return {}, {"ok": True, "requested": 0, "fetched": 0, "updated": 0}
+        return {}, {"ok": True, "requested": 0, "fetched": 0}
 
     tms_result = call_http_service("/query_waybill_detail", _build_detail_request(bill_codes, params))
     if auth_error := tms_auth_error_result(tms_result):
@@ -352,37 +354,94 @@ def _fetch_address_details(rows: list[dict], params: dict) -> tuple[dict[str, st
             "requested": len(bill_codes),
         }
 
-    addresses: dict[str, str] = {}
+    details: dict[str, dict[str, Any]] = {}
     for row in detail_rows:
         if not isinstance(row, dict):
             continue
         code = _detail_code(row)
-        address = _detail_address(row)
-        if code and address:
-            addresses[code] = address
-    return addresses, {"ok": True, "requested": len(bill_codes), "fetched": len(addresses)}
+        if code:
+            details[code] = row
+    return details, {"ok": True, "requested": len(bill_codes), "fetched": len(details)}
 
 
-def _enrich_rows_with_detail_addresses(rows: list[dict], params: dict) -> tuple[list[dict], dict]:
-    if not _coerce_bool(params.get("enrich_addresses"), default=True):
-        return rows, {"ok": True, "skipped": True, "updated": 0}
+def _verify_and_enrich_unsigned_rows(
+    rows: list[dict],
+    params: dict,
+) -> tuple[list[dict] | None, dict[str, Any], dict[str, Any]]:
+    missing_code_rows = [index for index, row in enumerate(rows) if not _clean_text(row.get("billNumberMain"))]
+    if missing_code_rows:
+        verification = {
+            "error": "每日应签候选记录缺少运单编号，已停止写表",
+            "requested": len(rows),
+            "missing_code_rows": missing_code_rows,
+        }
+        return None, verification, {"ok": True, "skipped": True, "updated": 0}
 
-    detail_addresses, result = _fetch_address_details(rows, params)
-    if detail_addresses is None:
-        return rows, result
+    bill_codes = _unique_bill_codes(rows)
+    details, detail_result = _fetch_waybill_details(rows, params)
+    if details is None:
+        verification = {
+            "error": detail_result["error"],
+            "requested": len(bill_codes),
+            "detail_result": detail_result,
+        }
+        return None, verification, detail_result
 
-    updated_rows: list[dict] = []
+    signed_codes = [
+        code
+        for code in bill_codes
+        if details.get(code, {}).get("sign_status_checked") is True
+        and details.get(code, {}).get("is_signed") is True
+    ]
+    pending_codes = [
+        code
+        for code in bill_codes
+        if details.get(code, {}).get("sign_status_checked") is True
+        and details.get(code, {}).get("is_signed") is False
+    ]
+    classified_codes = set(signed_codes) | set(pending_codes)
+    unknown_codes = [code for code in bill_codes if code not in classified_codes]
+    if unknown_codes:
+        verification = {
+            "error": "TMS 快件跟踪签收扫描结果缺失，已停止写表",
+            "requested": len(bill_codes),
+            "signed": len(signed_codes),
+            "pending": len(pending_codes),
+            "unknown": len(unknown_codes),
+            "unknown_bill_codes": unknown_codes,
+        }
+        return None, verification, {**detail_result, "updated": 0}
+
+    enrich_addresses = _coerce_bool(params.get("enrich_addresses"), default=True)
+    pending_set = set(pending_codes)
+    verified_rows: list[dict] = []
     updated_count = 0
     for row in rows:
         bill_code = _clean_text(row.get("billNumberMain"))
+        if bill_code not in pending_set:
+            continue
         next_row = dict(row)
-        merged_address = _prefer_address(next_row.get("dispAddress"), detail_addresses.get(bill_code))
-        if merged_address != _clean_text(next_row.get("dispAddress")):
-            next_row["dispAddress"] = merged_address
-            updated_count += 1
-        updated_rows.append(next_row)
+        if enrich_addresses:
+            merged_address = _prefer_address(next_row.get("dispAddress"), _detail_address(details[bill_code]))
+            if merged_address != _clean_text(next_row.get("dispAddress")):
+                next_row["dispAddress"] = merged_address
+                updated_count += 1
+        verified_rows.append(next_row)
 
-    return updated_rows, {**result, "updated": updated_count}
+    verification = {
+        "ok": True,
+        "source": "tms_tracking_main_scans",
+        "requested": len(bill_codes),
+        "pending": len(pending_codes),
+        "excluded_signed": len(signed_codes),
+        "unknown": 0,
+    }
+    address_result = {
+        **detail_result,
+        "skipped": not enrich_addresses,
+        "updated": updated_count,
+    }
+    return verified_rows, verification, address_result
 
 
 def _enrich_rows_with_arrival_quantities(rows: list[dict], params: dict) -> tuple[list[dict], dict]:
@@ -510,11 +569,13 @@ def run_daily_sign_sync(params: dict) -> dict:
             "sheet_result": {**skip_result, "rows": 0},
         }
 
-    rows, address_enrichment = _enrich_rows_with_detail_addresses(rows, params)
-    if "error" in address_enrichment:
+    r13_fetched = len(rows)
+    rows, sign_verification, address_enrichment = _verify_and_enrich_unsigned_rows(rows, params)
+    if rows is None:
         return {
-            "error": address_enrichment["error"],
-            "fetched": len(rows),
+            "error": sign_verification["error"],
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
         }
 
@@ -523,6 +584,8 @@ def run_daily_sign_sync(params: dict) -> dict:
         return {
             "error": arrival_enrichment["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
             "arrival_enrichment": arrival_enrichment,
         }
@@ -536,6 +599,8 @@ def run_daily_sign_sync(params: dict) -> dict:
         return {
             "error": bitable_result["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
             "arrival_enrichment": arrival_enrichment,
             "bitable_result": bitable_result,
@@ -550,6 +615,8 @@ def run_daily_sign_sync(params: dict) -> dict:
         return {
             "error": sheet_result["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
             "arrival_enrichment": arrival_enrichment,
             "bitable_result": bitable_result,
@@ -559,6 +626,8 @@ def run_daily_sign_sync(params: dict) -> dict:
     return {
         "ok": True,
         "fetched": len(rows),
+        "r13_fetched": r13_fetched,
+        "sign_verification": sign_verification,
         "address_enrichment": address_enrichment,
         "arrival_enrichment": arrival_enrichment,
         "bitable_result": bitable_result,

@@ -6,7 +6,7 @@
 {% block subtitle %}OCR 工作区 / 模板配置{% endblock %}
 
 {% block page_actions %}
-<a class="ghost-btn" href="/ocr">返回 OCR 工作区</a>
+<a class="ghost-btn" href="/ocr?mode=ocr">返回 OCR 工作区</a>
 {% endblock %}
 
 {% block content %}
@@ -45,7 +45,7 @@
           <input type="checkbox" name="set_active" value="1" {% if is_new or template_name_value == active_template_name %}checked{% endif %}>
           <span>保存后设为当前模板</span>
         </label>
-        <a class="ghost-btn" href="/ocr">取消</a>
+        <a class="ghost-btn" href="/ocr?mode=ocr">取消</a>
         <button type="submit" class="primary-btn">保存模板</button>
       </div>
     </form>

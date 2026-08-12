@@ -1,7 +1,9 @@
 import sys
+import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
@@ -19,10 +21,11 @@ from finance_service import (  # noqa: E402
 
 
 class _FakeFinanceRepository:
-    def __init__(self):
+    def __init__(self, runtime_dir):
         self.calls = []
         self.initialize_error = None
         self.save_error = None
+        self.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
 
     def initialize_schema(self):
         self.calls.append(("initialize_schema",))
@@ -37,6 +40,14 @@ class _FakeFinanceRepository:
             "net_change": "40.00",
             "waybill_cost": "50.00",
             "operating_cost": "30.00",
+            "waybill_net": "-50.00",
+            "operating_net": "-30.00",
+            "classified_net": "-80.00",
+            "unclassified_net": "-2.00",
+            "missing_waybill_net": "-3.00",
+            "classified_rows": 8,
+            "unclassified_rows": 2,
+            "missing_waybill_rows": 1,
             "pending_fee_items": 2,
             "latest_success_at": "2026-07-12 00:01:00",
             "data_through_date": "2026-07-11",
@@ -51,6 +62,8 @@ class _FakeFinanceRepository:
                     "total_expense": "80.00",
                     "waybill_cost": "50.00",
                     "operating_cost": "30.00",
+                    "waybill_net": "-50.00",
+                    "operating_net": "-30.00",
                 },
                 {
                     "platform": "yunda",
@@ -60,6 +73,8 @@ class _FakeFinanceRepository:
                     "total_expense": "20.00",
                     "waybill_cost": None,
                     "operating_cost": None,
+                    "waybill_net": None,
+                    "operating_net": None,
                 },
             ],
         }
@@ -120,10 +135,20 @@ class _FakeFinanceRepository:
         self.calls.append(("list_sync_batches", limit, offset, status))
         return {"items": [{"id": 3, "status": "success"}], "total": 1, "limit": limit, "offset": offset}
 
+    def get_knowledge_snapshot(self):
+        self.calls.append(("get_knowledge_snapshot",))
+        return {"version_no": 1, "items": []}
+
+    def record_knowledge_export(self, **kwargs):
+        self.calls.append(("record_knowledge_export", kwargs))
+        return 5
+
 
 class FinanceServiceTests(unittest.TestCase):
     def setUp(self):
-        self.repository = _FakeFinanceRepository()
+        self.runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
+        self.repository = _FakeFinanceRepository(self.runtime.name)
         self.agent_calls = []
         self.agent_result = {"ok": True, "data": {"ok": True, "batch_id": 12}}
 
@@ -184,10 +209,10 @@ class FinanceServiceTests(unittest.TestCase):
         payload = self.service.get_summary({}, today=date(2026, 7, 12))
 
         self.assertEqual("120.00", payload["total_income"])
-        self.assertEqual("100.00", payload["accounts"][0]["waybill_cost_plot"])
-        self.assertEqual("60.00", payload["accounts"][0]["operating_cost_plot"])
-        self.assertIsNone(payload["accounts"][1]["waybill_cost_plot"])
-        self.assertIsNone(payload["accounts"][1]["operating_cost_plot"])
+        self.assertEqual("100.00", payload["accounts"][0]["waybill_net_plot"])
+        self.assertEqual("60.00", payload["accounts"][0]["operating_net_plot"])
+        self.assertIsNone(payload["accounts"][1]["waybill_net_plot"])
+        self.assertIsNone(payload["accounts"][1]["operating_net_plot"])
         self.assertEqual("100.00", payload["expense_ranking"][0]["expense_plot"])
         self.assertEqual("50.00", payload["expense_ranking"][1]["expense_plot"])
         self.assertEqual({"start_date": "2026-07-01", "end_date": "2026-07-12"}, payload["period"])
@@ -237,6 +262,7 @@ class FinanceServiceTests(unittest.TestCase):
             {
                 "direction": "income",
                 "fee_level": "waybill",
+                "canonical_subject_name": "派送费",
                 "booking_fee_name": "派送费",
                 "effective_start_month": "2026-07",
                 "effective_end_month": "",
@@ -246,8 +272,10 @@ class FinanceServiceTests(unittest.TestCase):
             changed_by="admin",
         )
 
-        self.assertEqual({"mapping_id": 9, "fee_item_id": 4}, payload)
-        call = self.repository.calls[-1][1]
+        self.assertEqual(9, payload["mapping_id"])
+        self.assertEqual(4, payload["fee_item_id"])
+        self.assertEqual(1, payload["knowledge_export"]["version_no"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
         self.assertNotIn("direction", call)
         self.assertEqual("waybill", call["fee_level"])
         self.assertEqual("派送费", call["booking_fee_name"])
@@ -259,6 +287,7 @@ class FinanceServiceTests(unittest.TestCase):
             4,
             {
                 "fee_level": "operating",
+                "canonical_subject_name": "运营固定费",
                 "booking_fee_name": "",
                 "effective_start_month": "2026-07",
                 "include_in_cost": False,
@@ -267,8 +296,10 @@ class FinanceServiceTests(unittest.TestCase):
             changed_by="admin",
         )
 
-        self.assertEqual({"mapping_id": 9, "fee_item_id": 4}, payload)
-        self.assertNotIn("direction", self.repository.calls[-1][1])
+        self.assertEqual(9, payload["mapping_id"])
+        self.assertEqual(4, payload["fee_item_id"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
+        self.assertNotIn("direction", call)
 
     def test_locked_repository_direction_validation_is_preserved(self):
         self.repository.save_error = ValueError("only expense mappings may be included in cost")
@@ -280,6 +311,7 @@ class FinanceServiceTests(unittest.TestCase):
                 4,
                 {
                     "fee_level": "operating",
+                    "canonical_subject_name": "运营固定费",
                     "booking_fee_name": "",
                     "effective_start_month": "2026-07",
                     "include_in_cost": True,
@@ -294,6 +326,7 @@ class FinanceServiceTests(unittest.TestCase):
             {
                 "direction": "expense",
                 "fee_level": "operating",
+                "canonical_subject_name": "运营固定费",
                 "booking_fee_name": "",
                 "effective_start_month": "2026-07",
                 "include_in_cost": True,
@@ -302,22 +335,29 @@ class FinanceServiceTests(unittest.TestCase):
             changed_by="admin",
         )
 
-        self.assertEqual("", self.repository.calls[-1][1]["booking_fee_name"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
+        self.assertEqual("", call["booking_fee_name"])
 
-    def test_waybill_mapping_requires_booking_fee_item(self):
-        with self.assertRaisesRegex(FinanceValidationError, "请填写对应录单项目"):
-            self.service.save_fee_mapping(
-                5,
-                {
-                    "direction": "expense",
-                    "fee_level": "waybill",
-                    "booking_fee_name": "",
-                    "effective_start_month": "2026-07",
-                    "include_in_cost": True,
-                    "reason": "尝试保存未绑定运单级费用",
-                },
-                changed_by="admin",
-            )
+    def test_waybill_mapping_allows_no_booking_field_but_requires_waybill(self):
+        payload = self.service.save_fee_mapping(
+            5,
+            {
+                "direction": "expense",
+                "fee_level": "waybill",
+                "canonical_subject_name": "电子标签服务费",
+                "booking_fee_name": "",
+                "requires_waybill": True,
+                "effective_start_month": "2026-07",
+                "include_in_cost": True,
+                "reason": "不强制绑定开单页面字段",
+            },
+            changed_by="admin",
+        )
+
+        self.assertEqual(9, payload["mapping_id"])
+        call = next(item[1] for item in reversed(self.repository.calls) if item[0] == "save_fee_mapping")
+        self.assertEqual("", call["booking_fee_name"])
+        self.assertTrue(call["requires_waybill"])
 
     def test_sync_uses_agent_tool_without_login_context(self):
         payload = self.service.start_sync(
