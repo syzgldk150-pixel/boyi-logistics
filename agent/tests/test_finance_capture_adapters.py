@@ -13,6 +13,7 @@ from agent.tms_runtime.scripts.finance_capture_common import (
 )
 from agent.tms_runtime.scripts.finance_live_capture import (
     _format_identity_evidence,
+    _ronghui_public_identity,
     _ronghui_schema_evidence,
 )
 from agent.tms_runtime.scripts.ronghui_finance_adapter import capture_ronghui_day
@@ -58,6 +59,30 @@ class _Response:
 
 
 class FinanceCaptureAdapterTests(unittest.TestCase):
+    def test_ronghui_public_identity_requires_exact_account_and_unique_site(self):
+        identity = _ronghui_public_identity(
+            {
+                "data": {
+                    "loginUserAccount": "fixture-account",
+                    "loginSiteCode": "fixture-site",
+                    "loginSiteName": "Fixture Site",
+                }
+            },
+            expected_login="fixture-account",
+        )
+
+        self.assertTrue(identity["accountObserved"])
+        self.assertTrue(identity["accountMatch"])
+        self.assertEqual("fixture-site", identity["siteCode"])
+        self.assertEqual("Fixture Site", identity["siteName"])
+
+        mismatch = _ronghui_public_identity(
+            {"loginUserAccount": "different-account"},
+            expected_login="fixture-account",
+        )
+        self.assertTrue(mismatch["accountObserved"])
+        self.assertFalse(mismatch["accountMatch"])
+
     def test_ronghui_identity_evidence_never_contains_values(self):
         evidence = _format_identity_evidence(
             {
