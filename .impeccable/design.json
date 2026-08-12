@@ -20,12 +20,18 @@
       "families": {
         "cjk": {
           "fontFamily": "Source Han Sans SC",
-          "asset": "console/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2",
+          "asset": "console/static/assets/fonts/SourceHanSansCN-UI.woff2",
+          "fallbackAssets": [
+            "console/static/assets/fonts/SourceHanSansCN-Common.woff2",
+            "console/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2"
+          ],
+          "loadStrategy": "preload UI subset; load common and full glyph coverage on demand",
           "purpose": "中文界面、状态和业务数据"
         },
         "latin": {
           "fontFamily": "Inter",
-          "asset": "console/static/assets/fonts/InterVariable.woff2",
+          "asset": "console/static/assets/fonts/InterVariable-Latin.woff2",
+          "loadStrategy": "preload actual Latin subset",
           "purpose": "英文、数字和拉丁标识"
         }
       }

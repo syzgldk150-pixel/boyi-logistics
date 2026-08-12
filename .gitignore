@@ -83,6 +83,7 @@ data/
 *.jpg
 *.jpeg
 *.webp
+!console/static/assets/boyi-logistics-logo-7e1f2994.webp
 *.tif
 *.tiff
 *.bmp

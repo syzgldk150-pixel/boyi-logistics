@@ -104,14 +104,22 @@ spacing:
 
 ### 4.1 字体资产
 
-- 中文：`Source Han Sans SC`，本地资源 `console/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2`。
-- 英文与数字：`Inter`，本地资源 `console/static/assets/fonts/InterVariable.woff2`。
+- 中文：`Source Han Sans SC`。首屏界面字使用 `SourceHanSansCN-UI.woff2`，动态业务数据优先使用 `SourceHanSansCN-Common.woff2`，稀有字符再回退到完整的 `SourceHanSansCN-VF.ttf.woff2`；三层均来自同一思源黑体可变字体，字形与度量保持一致。
+- 英文与数字：`Inter`，首屏使用实际裁剪后的本地拉丁字符资源 `console/static/assets/fonts/InterVariable-Latin.woff2`。
 - 单号和代码：继承 UI 字体并启用 `tabular-nums`。只有真实代码块才使用 `JetBrains Mono, Consolas, monospace`。
 - 字体必须通过 `@font-face`、`font-display: swap` 和本地静态资源加载，不得依赖 Google Fonts 或其他在线字体服务。
 
-Inter 使用拉丁字符 `unicode-range`，因此中英文混排时英文与数字使用 Inter，中文自动回退到思源黑体。
+Inter 使用拉丁字符 `unicode-range`，因此中英文混排时英文与数字使用 Inter，中文自动回退到思源黑体。页面必须预加载 `InterVariable-Latin.woff2` 与 `SourceHanSansCN-UI.woff2`，不得直接预加载 7 MB 以上的完整中文字体。
 
-### 4.2 字号与行高
+### 4.2 静态资源性能规范
+
+- 品牌 Logo 使用内容哈希命名的 `console/static/assets/boyi-logistics-logo-7e1f2994.webp`，按页面最大显示宽度的两倍导出；禁止重新引用 3000px 级原图作为首屏资源。
+- Feather Icons 固定使用本地锁定版本 `console/static/vendor/feather-4.29.2.min.js`，并放在页面底部、业务脚本之前加载；禁止在 `<head>` 中同步请求第三方 CDN。
+- 未上传头像时使用本地 `console/static/assets/avatar-placeholder.svg`，不得为默认头像发起第三方网络请求。
+- 带版本参数或内容/版本哈希文件名的资源使用一年不可变缓存；其他静态资源使用短缓存与后台重新验证。更新字体二进制时必须同步更新 CSS 与 preload URL 的版本参数。
+- HTML、CSS、JavaScript、JSON、SVG 和 XML 在客户端支持时使用 gzip，并返回 `Vary: Accept-Encoding`；字体、PNG、WebP 等已压缩资源不得重复压缩。
+
+### 4.3 字号与行高
 
 Cal.com 原始显示级字号保留为设计上限，后台产品页面不使用营销式超大标题。
 
