@@ -9,6 +9,7 @@ from typing import Any
 
 _LOCK = threading.RLock()
 _tms_session_alert: Callable[[dict[str, Any]], bool] | None = None
+_finance_alert: Callable[[dict[str, Any]], bool] | None = None
 
 
 def register_tms_session_alert(callback: Callable[[dict[str, Any]], bool] | None) -> None:
@@ -20,6 +21,20 @@ def register_tms_session_alert(callback: Callable[[dict[str, Any]], bool] | None
 def publish_tms_session_alert(payload: dict[str, Any]) -> bool:
     with _LOCK:
         callback = _tms_session_alert
+    if callback is None:
+        return False
+    return bool(callback(dict(payload)))
+
+
+def register_finance_alert(callback: Callable[[dict[str, Any]], bool] | None) -> None:
+    global _finance_alert
+    with _LOCK:
+        _finance_alert = callback
+
+
+def publish_finance_alert(payload: dict[str, Any]) -> bool:
+    with _LOCK:
+        callback = _finance_alert
     if callback is None:
         return False
     return bool(callback(dict(payload)))

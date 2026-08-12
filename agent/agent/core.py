@@ -13,6 +13,10 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
 )
 from agent.llm_client import LLMClient
+from agent.llm_settings import LLMSettingsRepository
+from agent.finance_brain import FinanceBrain
+from shared.finance import FinanceRepository
+from shared.runtime_events import publish_finance_alert
 from agent.tool_registry import ToolRegistry
 from agent.tool_executor import ToolExecutor
 from agent.memory import Memory
@@ -30,6 +34,7 @@ class AgentCore:
         self.registry = ToolRegistry()
         self.executor = ToolExecutor()
         self.memory = Memory()
+        self.finance_brain: FinanceBrain | None = None
         self._feishu_connected = False
         self._system_prompt: str = ""
         self._tool_selection_prompt: str = ""
@@ -41,6 +46,13 @@ class AgentCore:
         self._load_prompts()
         try:
             self.memory.init()
+            await self.llm.bind_repository(
+                LLMSettingsRepository(self.memory.connection_factory)
+            )
+            self.finance_brain = FinanceBrain(
+                FinanceRepository(self.memory.connection_factory),
+                self.llm,
+            )
         except Exception as e:
             logger.error("MySQL 连接失败: %s — 对话记忆将不可用", e)
 
@@ -52,6 +64,11 @@ class AgentCore:
             "prompts": ["system.md", "tool_selection.md", "business_rules.md"],
             "tools": self.registry.list_tools(),
         }
+
+    async def reload_llm_config(self) -> dict:
+        """Reload the active LLM version for future requests."""
+
+        return await self.llm.reload_config()
 
     def _load_prompts(self):
         """从 prompts/ 目录加载"""
@@ -305,6 +322,25 @@ class AgentCore:
         if not tool_config:
             return {"success": False, "error": f"未知工具: {tool_name}"}
         result = await self._execute_tool_config(tool_name, tool_config, params)
+        if tool_name == "sync_finance_bills":
+            if result.get("success") and self.finance_brain is not None:
+                try:
+                    result["finance_evolution"] = await self.finance_brain.process_after_sync()
+                except Exception as exc:
+                    logger.error("finance evolution post-sync failed: %s", redact_text(exc))
+                    result["finance_evolution"] = {
+                        "status": "failed",
+                        "error": redact_text(exc),
+                    }
+            elif not result.get("success"):
+                publish_finance_alert(
+                    {
+                        "anomaly_type": "FINANCE_SYNC_FAILED",
+                        "title": "财务同步或对账失败",
+                        "details": redact_text(result.get("error") or "unknown finance sync failure")[:500],
+                        "admin_url": "/modules/finance#sync",
+                    }
+                )
         try:
             duration_ms = int(result.get("duration_s", 0) * 1000)
             self.memory.save_tool_log(
