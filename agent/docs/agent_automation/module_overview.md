@@ -7,6 +7,7 @@ status: active
 updated: 2026-08-13
 ---
 
+> 2026-08-13: 融辉发件扫描只使用原页 `$Z.user.getUserInfo()` 返回的 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`，不再从页头文字、用户名或硬编码网点补值；字段缺失或 `SCAN_MAN_CODE` 超过数据库 20 字节限制时在写入表格前显式失败。站点必须唯一精确匹配并包含真实编码，录单和上传失败不再切换到第二条操作路径。`sync_scan_codes` 任一批次失败后立即停止、不触发后续流程，并向控制台返回失败而不是“已完成”；`dry_run` 不写扫描索引、不调用 `/scan_next`，显式批次/条数限制会返回未排入数量。
 > 2026-08-13: 后台 `/automations` 的“获取并扫描数据”和 `arrive-list` 卡片新增独立“指定日期”控件。日期留空时不写入日期覆盖参数，继续使用各脚本的执行当日；选择日期时按 `target_date=YYYY-MM-DD` 拉取指定单日。扫描同步会在调用融辉 `/get_scan` 前转换为原页使用的 `YYYY/MM/DD` 日期格式，并拒绝同时设置 `target_date` 与高级请求体中的 `date/start/end`，避免日期来源歧义。
 > 2026-08-11: 后台账号列表新增直接可见的账号级“自动登录”开关，所有现有/新增账号缺省关闭。账号管理只把页面明确保存的完整账号密码认作可用凭据，不展示或使用部署环境变量兜底；未保存凭据时不能开启自动登录或发起登录，历史残留的开启状态也会在访问登录页前自动关闭。“退出登录”和“清空保存凭据”都会关闭自动登录；关闭后不再定时校验、自动重登或发送飞书断线提醒。“停用账号”停止任务选择、任务执行与登录监控，但不等同于退出。自动登录连续失败上限为 3 次，第 3 次失败后持久熔断，避免账号被锁。
 > 2026-08-11: 账号列表中系统名下方的灰色账号备注由账号 `name` 提供；“编辑”面板可通过 `/admin/accounts/{account_id}/name` 单独修改并持久化。备注保存只更新 `name/updated_at`，不改凭据、登录态、启停或自动登录设置，也不触发额外的登录态校验。
@@ -187,7 +188,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 `sync_arrive_list` 的执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` → `tools/arrive_list_sync_tool.py` → `/fetch_dispatch` → MySQL + 飞书表格。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 会再用当天 `/get_scan` 扫描数据反推缺失主单，调用 `/query_waybill_detail` 补齐详情后追加到统计输出。
 
-`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → `tools/scan_sync_tool.py` → `/get_scan` → 刷新扫描索引 → 分批执行 `/scan_next`。后台卡片的 `target_date` 留空时不发送日期覆盖参数，`get_scan` 按执行当天查询；选择日期时工具将 `YYYY-MM-DD` 转换为融辉扫描记录查询使用的 `YYYY/MM/DD` 单日范围。`target_date` 与高级 `request_body.params.date/start/end` 不能同时设置，冲突时显式失败。
+`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → `tools/scan_sync_tool.py` → `/get_scan` → 刷新扫描索引 → 分批执行 `/scan_next`。后台卡片的 `target_date` 留空时不发送日期覆盖参数，`get_scan` 按执行当天查询；选择日期时工具将 `YYYY-MM-DD` 转换为融辉扫描记录查询使用的 `YYYY/MM/DD` 单日范围。`target_date` 与高级 `request_body.params.date/start/end` 不能同时设置，冲突时显式失败。`scan_next` 的扫描员和网点字段严格采用融辉发件扫描原页登录上下文，禁止页头/默认值回退；站点只接受唯一精确匹配。任何批次失败都会立刻终止余下批次并返回顶层 `SCAN_NEXT_BATCH_FAILED`，后续 webhook 不执行；显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
 
 `sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。该自动阶段只刷新数据，不调用融辉差错或问题件上报。
 

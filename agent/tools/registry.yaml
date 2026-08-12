@@ -185,9 +185,6 @@ tools:
     parameters:
       type: object
       properties:
-        target_date:
-          type: string
-          description: "扫描数据日期，YYYY-MM-DD；会转换为 get_scan 的 date 参数"
         request_body:
           type: object
           description: "可选，覆盖默认 get_qianshou 请求体；R13 账号优先通过 r13_account_id 绑定账号管理中的 R13 账号，缺失时兼容读取 workflow_resources 的 phase7.r13_credentials"
