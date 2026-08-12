@@ -35,16 +35,23 @@ class FinanceAlertPolicyTests(unittest.TestCase):
                 "success": False,
                 "error_code": "FINANCE_SYNC_INTERNAL",
                 "error": "safe fixture error",
+                "diagnostic_stage": "schema_validation",
+                "diagnostic_type": "RuntimeError",
             }
         )
-        with patch("agent.core.publish_finance_alert") as publish:
-            asyncio.run(
-                core.execute_tool(
-                    "sync_finance_bills",
-                    {"mode": "sync", "_startup_catchup": True},
+        with self.assertLogs("agent", level="WARNING") as captured:
+            with patch("agent.core.publish_finance_alert") as publish:
+                asyncio.run(
+                    core.execute_tool(
+                        "sync_finance_bills",
+                        {"mode": "sync", "_startup_catchup": True},
+                    )
                 )
-            )
         publish.assert_not_called()
+        self.assertIn(
+            "code=FINANCE_SYNC_INTERNAL stage=schema_validation error_type=RuntimeError",
+            "\n".join(captured.output),
+        )
 
     def test_scheduled_failure_alert_uses_specific_error_code(self):
         core = _core_with_result(
