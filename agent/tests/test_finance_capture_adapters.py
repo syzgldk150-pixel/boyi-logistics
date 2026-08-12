@@ -63,6 +63,10 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
             {
                 "identityEvidence": {
                     "expectedLength": 8,
+                    "rawType": "string",
+                    "rawLength": 120,
+                    "jsonParsed": True,
+                    "infoType": "object",
                     "infoKeys": ["loginAccount", "unsafe key=value"],
                     "candidates": [
                         {
@@ -80,6 +84,8 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         )
 
         self.assertIn("loginAccount", evidence)
+        self.assertIn("raw_type=string", evidence)
+        self.assertIn("json_parsed=True", evidence)
         self.assertIn("casefold=True", evidence)
         self.assertNotIn("secret-account", evidence)
         self.assertNotIn("unsafe key=value", evidence)
