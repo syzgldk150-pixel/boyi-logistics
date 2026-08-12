@@ -559,49 +559,68 @@ class RonghuiLiveFinanceAdapter:
         page = self._page
         if page is None:
             raise FinanceCaptureError("PAGE_CAPTURE_UNAVAILABLE", "融辉财务原页尚未发现", stage="query_capture")
-        tabs = page.get_by_text(tab_text, exact=True)
-        visible_tabs = [tabs.nth(index) for index in range(tabs.count()) if tabs.nth(index).is_visible()]
-        if len(visible_tabs) != 1:
-            evidence = page.evaluate(
-                """() => {
-                    const allowed = (text) => /(?:明细|汇总|统计|查询)/.test(text) && text.length <= 30;
-                    const labels = [...document.querySelectorAll('a,button,span,div')]
-                        .filter((item) => item.offsetParent !== null)
-                        .map((item) => String(item.innerText || item.textContent || '').trim())
-                        .filter(allowed);
-                    const components = [];
-                    if (window.mini && typeof mini.getComponents === 'function') {
-                        for (const item of mini.getComponents()) {
-                            const text = String(item.text || (item.getText && item.getText()) || '').trim();
-                            if (!allowed(text)) continue;
-                            const type = String(item.type || (item.getType && item.getType()) || '').trim();
-                            components.push(`${type || 'unknown'}:${text}`);
+        visible_tabs: list[tuple[Any, Any]] = []
+        frame_evidence: list[str] = []
+        for frame_index, scope in enumerate(page.frames):
+            try:
+                tabs = scope.get_by_text(tab_text, exact=True)
+                visible_tabs.extend(
+                    (scope, tabs.nth(index))
+                    for index in range(tabs.count())
+                    if tabs.nth(index).is_visible()
+                )
+            except Exception:
+                continue
+            try:
+                evidence = scope.evaluate(
+                    """() => {
+                        const allowed = (text) => /(?:明细|汇总|统计|查询)/.test(text) && text.length <= 30;
+                        const labels = [...document.querySelectorAll('a,button,span,div')]
+                            .filter((item) => item.offsetParent !== null)
+                            .map((item) => String(item.innerText || item.textContent || '').trim())
+                            .filter(allowed);
+                        const components = [];
+                        if (window.mini && typeof mini.getComponents === 'function') {
+                            for (const item of mini.getComponents()) {
+                                const text = String(item.text || (item.getText && item.getText()) || '').trim();
+                                if (!allowed(text)) continue;
+                                const type = String(item.type || (item.getType && item.getType()) || '').trim();
+                                components.push(`${type || 'unknown'}:${text}`);
+                            }
                         }
-                    }
-                    return {
-                        labels: [...new Set(labels)].slice(0, 20),
-                        components: [...new Set(components)].slice(0, 20),
-                    };
-                }"""
-            )
-            labels = [clean_text(item) for item in (evidence or {}).get("labels", []) if clean_text(item)]
-            components = [
-                clean_text(item)
-                for item in (evidence or {}).get("components", [])
-                if clean_text(item)
-            ]
+                        return {
+                            labels: [...new Set(labels)].slice(0, 12),
+                            components: [...new Set(components)].slice(0, 12),
+                        };
+                    }"""
+                )
+                labels = [clean_text(item) for item in (evidence or {}).get("labels", []) if clean_text(item)]
+                components = [
+                    clean_text(item)
+                    for item in (evidence or {}).get("components", [])
+                    if clean_text(item)
+                ]
+                if labels or components:
+                    frame_evidence.append(
+                        f"frame{frame_index}:labels={'|'.join(labels) or 'none'}:"
+                        f"components={'|'.join(components) or 'none'}"
+                    )
+            except Exception:
+                continue
+        if len(visible_tabs) != 1:
             raise FinanceCaptureError(
                 "FIELD_DRIFT",
                 (
                     f"融辉财务页签无法唯一定位；target={tab_text}; "
-                    f"matches={len(visible_tabs)}; labels={'|'.join(labels) or 'none'}; "
-                    f"components={'|'.join(components) or 'none'}"
+                    f"matches={len(visible_tabs)}; frames={len(page.frames)}; "
+                    f"evidence={';'.join(frame_evidence) or 'none'}"
                 )[:480],
                 stage="query_capture",
             )
-        visible_tabs[0].click()
+        scope, selected_tab = visible_tabs[0]
+        selected_tab.click()
         page.wait_for_timeout(500)
-        set_result = page.evaluate(
+        set_result = scope.evaluate(
             r"""([targetDay, siteCode, siteName]) => {
                 if (!window.mini || typeof mini.getComponents !== 'function') return {dates: 0, sites: 0};
                 const componentName = (item) => String(item.name || (item.getName && item.getName()) || item.id || '');
@@ -651,7 +670,7 @@ class RonghuiLiveFinanceAdapter:
             raise FinanceCaptureError("FIELD_DRIFT", "融辉原页日期组件无法唯一确认", stage="query_capture")
         if int((set_result or {}).get("sites") or 0) != 1:
             raise FinanceCaptureError("SOURCE_SITE_MISMATCH", "融辉网点下拉未精确唯一匹配登录网点", stage="query_capture")
-        buttons = page.get_by_text("查询", exact=True)
+        buttons = scope.get_by_text("查询", exact=True)
         candidates = [buttons.nth(index) for index in range(buttons.count()) if buttons.nth(index).is_visible()]
         for button in candidates:
             try:
