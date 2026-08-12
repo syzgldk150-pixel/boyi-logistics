@@ -14,7 +14,6 @@ from agent.tms_runtime.scripts.finance_capture_common import (
     decimal_extrema,
     filter_target_date,
     paginate_by_source_key,
-    require_row_keys,
     validate_normalized_summaries,
     validate_page_identity,
     whitelist_record,
@@ -84,7 +83,21 @@ def normalize_ronghui_row(
             stage="field_binding",
         )
     required_source_keys = [RONGHUI_SOURCE_KEY] + [field_bindings[name] for name in RONGHUI_REQUIRED_BINDINGS]
-    require_row_keys(row, required_source_keys, stage="ronghui_normalize")
+    missing_source_keys = sorted(key for key in required_source_keys if key not in row)
+    if missing_source_keys:
+        available_keys = sorted(
+            key
+            for key in row
+            if isinstance(key, str) and key.isascii() and key.replace("_", "").isalnum()
+        )[:40]
+        raise FinanceCaptureError(
+            "FIELD_DRIFT",
+            (
+                f"融辉财务响应缺少字段：{','.join(missing_source_keys)}；"
+                f"响应字段：{','.join(available_keys) or 'none'}"
+            ),
+            stage="ronghui_normalize",
+        )
 
     amount = amount_storage_text(row[field_bindings["amount"]], field="amount")
     amount_decimal = Decimal(amount)

@@ -59,9 +59,13 @@ class FinanceToolLockingTests(unittest.TestCase):
             yield
 
         result = run_sync_finance_bills({}, lock_context=unsafe_failure)
-        self.assertEqual("FINANCE_SYNC_FAILED", result["error_code"])
+        self.assertEqual("FINANCE_SYNC_INTERNAL", result["error_code"])
+        self.assertEqual("lock_setup", result["diagnostic_stage"])
+        self.assertEqual("RuntimeError", result["diagnostic_type"])
+        self.assertIn("unsafe_failure", result["diagnostic_trace"])
         self.assertNotIn("token", result["error"].lower())
         self.assertNotIn("fixture-secret", result["error"])
+        self.assertNotIn("fixture-secret", result["diagnostic_trace"])
 
 
 if __name__ == "__main__":

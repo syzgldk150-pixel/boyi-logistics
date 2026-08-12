@@ -11,6 +11,12 @@ from agent.tms_runtime.scripts.finance_capture_common import (
     response_json,
     validate_page_identity,
 )
+from agent.tms_runtime.scripts.finance_live_capture import (
+    _format_identity_evidence,
+    _ronghui_public_identity,
+    _ronghui_request_template,
+    _ronghui_schema_evidence,
+)
 from agent.tms_runtime.scripts.ronghui_finance_adapter import capture_ronghui_day
 from agent.tms_runtime.scripts.yunda_finance_adapter import capture_yunda_day
 
@@ -54,6 +60,113 @@ class _Response:
 
 
 class FinanceCaptureAdapterTests(unittest.TestCase):
+    def test_ronghui_request_template_requires_observed_page_contract(self):
+        context = {
+            "url": "https://tms.ronghuiwl.com/widget/home?fixture=1",
+            "html": (
+                "/dataQuery/findPageByCallId?id=FIXTURE_CALL "
+                "BALANCE_DATE SITE_NAME_CODE pageSize"
+            ),
+        }
+        template = _ronghui_request_template(
+            context,
+            call_id="FIXTURE_CALL",
+            target_date=dt.date(2026, 7, 11),
+            source_site_code="fixture-site",
+            page_size=100,
+        )
+
+        self.assertEqual("POST", template.method)
+        self.assertTrue(template.url.endswith("/dataQuery/findPageByCallId?id=FIXTURE_CALL"))
+        self.assertIn("SITE_NAME_CODE=fixture-site", template.body)
+        self.assertIn("pageIndex=0", template.body)
+
+        with self.assertRaises(FinanceCaptureError) as caught:
+            _ronghui_request_template(
+                {"url": context["url"], "html": "FIXTURE_CALL"},
+                call_id="FIXTURE_CALL",
+                target_date=dt.date(2026, 7, 11),
+                source_site_code="fixture-site",
+                page_size=100,
+            )
+        self.assertEqual("FIELD_DRIFT", caught.exception.code)
+
+    def test_ronghui_public_identity_requires_exact_account_and_unique_site(self):
+        identity = _ronghui_public_identity(
+            {
+                "data": {
+                    "loginUserAccount": "fixture-account",
+                    "loginSiteCode": "fixture-site",
+                    "loginSiteName": "Fixture Site",
+                }
+            },
+            expected_login="fixture-account",
+        )
+
+        self.assertTrue(identity["accountObserved"])
+        self.assertTrue(identity["accountMatch"])
+        self.assertEqual("fixture-site", identity["siteCode"])
+        self.assertEqual("Fixture Site", identity["siteName"])
+
+        mismatch = _ronghui_public_identity(
+            {"loginUserAccount": "different-account"},
+            expected_login="fixture-account",
+        )
+        self.assertTrue(mismatch["accountObserved"])
+        self.assertFalse(mismatch["accountMatch"])
+
+    def test_ronghui_identity_evidence_never_contains_values(self):
+        evidence = _format_identity_evidence(
+            {
+                "identityEvidence": {
+                    "expectedLength": 8,
+                    "rawType": "string",
+                    "rawLength": 120,
+                    "jsonParsed": True,
+                    "infoType": "object",
+                    "domAccountMatch": True,
+                    "domIdentityFields": ["loginUserAccount"],
+                    "domSiteFields": ["loginSiteCode", "loginSiteName"],
+                    "infoKeys": ["loginAccount", "unsafe key=value"],
+                    "candidates": [
+                        {
+                            "path": "profile.loginAccount",
+                            "length": 8,
+                            "exact": False,
+                            "casefold": True,
+                            "contains": False,
+                            "containedBy": False,
+                            "value": "secret-account",
+                        }
+                    ],
+                }
+            }
+        )
+
+        self.assertIn("loginAccount", evidence)
+        self.assertIn("raw_type=string", evidence)
+        self.assertIn("json_parsed=True", evidence)
+        self.assertIn("dom_match=True", evidence)
+        self.assertIn("dom_site=loginSiteCode,loginSiteName", evidence)
+        self.assertIn("casefold=True", evidence)
+        self.assertNotIn("secret-account", evidence)
+        self.assertNotIn("unsafe key=value", evidence)
+
+    def test_ronghui_schema_evidence_contains_only_structural_tokens(self):
+        evidence = _ronghui_schema_evidence(
+            """
+            callId: 'FIND_BALANCE_QRY_RENAMED'
+            columns: ['BALANCE_DATE', 'SETTLEMENT_FEE', 'AFTER_AMOUNT']
+            account: 'private-sample-account'
+            """,
+            expected_markers={"FIND_BALANCE_QRY_OLD", "BALANCE_DATE", "BEFORE_AMOUNT"},
+        )
+
+        self.assertIn("call_ids=FIND_BALANCE_QRY_RENAMED", evidence)
+        self.assertIn("BALANCE_DATE", evidence)
+        self.assertIn("missing=BEFORE_AMOUNT,FIND_BALANCE_QRY_OLD", evidence)
+        self.assertNotIn("private-sample-account", evidence)
+
     def test_pagination_overlap_deduplicates_by_stable_key(self):
         pages = {
             1: {"total": 3, "rows": [{"GUID": "g1"}, {"GUID": "g2"}]},
@@ -144,6 +257,36 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         self.assertEqual("12.3000", result.transactions[0]["expend"])
         self.assertEqual("fixture-balance-001", result.transactions[0]["source_reference"])
         self.assertNotIn("GUID", result.transactions[0])
+
+    def test_ronghui_field_drift_reports_only_response_keys(self):
+        payload = _fixture("ronghui_detail_page.json")
+        payload["rows"][0]["private_value"] = "do-not-log-this-value"
+        del payload["rows"][0]["SETTLEMENT_AMOUNT"]
+
+        with self.assertRaises(FinanceCaptureError) as caught:
+            capture_ronghui_day(
+                account_id="fixture-ronghui",
+                target_date=dt.date(2026, 7, 11),
+                field_bindings={
+                    "trade_time": "BALANCE_DATE",
+                    "fee_name": "SETTLEMENT_TYPE",
+                    "amount": "SETTLEMENT_AMOUNT",
+                    "old_amount": "BEFORE_AMOUNT",
+                    "new_amount": "AFTER_AMOUNT",
+                    "balance_order": "BALANCE_ORDER",
+                    "bill_code": "BILL_CODE",
+                },
+                source_site_code="fixture-site",
+                source_site_name="Fixture Site",
+                login_site_code="fixture-site",
+                account_match=True,
+                fetch_detail_page=lambda _page, _size: payload,
+            )
+
+        self.assertEqual("FIELD_DRIFT", caught.exception.code)
+        self.assertIn("SETTLEMENT_AMOUNT", str(caught.exception))
+        self.assertIn("private_value", str(caught.exception))
+        self.assertNotIn("do-not-log-this-value", str(caught.exception))
 
     def test_yunda_fixture_filters_cross_midnight_and_preserves_required_fields(self):
         payload = _fixture("yunda_detail_page.json")
