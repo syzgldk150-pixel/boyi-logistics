@@ -5,7 +5,14 @@ import importlib.util
 import unittest
 from pathlib import Path
 
+import yaml
+
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+from shared.finance.sources import (
+    FINANCE_SOURCE_SPECS,
+    enabled_finance_account_ids,
+    enabled_finance_platforms,
+)
 
 HAS_APSCHEDULER = importlib.util.find_spec("apscheduler") is not None
 if HAS_APSCHEDULER:
@@ -71,7 +78,12 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             [
                 (
                     "sync_finance_bills",
-                    {"mode": "sync", "rescan_days": 7, "_startup_catchup": True},
+                    {
+                        "mode": "sync",
+                        "rescan_days": 7,
+                        "_startup_catchup": True,
+                        "platform": "ronghui",
+                    },
                 )
             ],
             core.calls,
@@ -102,10 +114,11 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual([], core.memory.upserts)
         self.assertFalse(core.memory.rows[0]["enabled"])
 
-    def test_registry_exposes_fixed_finance_tool_parameters(self):
-        registry = (
+    def test_registry_exposes_runtime_validated_finance_tool_parameters(self):
+        registry_path = (
             Path(__file__).resolve().parents[1] / "tools" / "registry.yaml"
-        ).read_text(encoding="utf-8")
+        )
+        registry = registry_path.read_text(encoding="utf-8")
         self.assertIn("name: sync_finance_bills", registry)
         for field in (
             "mode:",
@@ -118,6 +131,30 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             "rescan_days:",
         ):
             self.assertIn(field, registry)
+
+        manifest = yaml.safe_load(registry)
+        finance_tool = next(
+            tool for tool in manifest["tools"] if tool["name"] == "sync_finance_bills"
+        )
+        properties = finance_tool["parameters"]["properties"]
+        self.assertNotIn("enum", properties["platform"])
+        self.assertNotIn("enum", properties["account_id"])
+        self.assertIn("共享财务来源注册表", properties["platform"]["description"])
+        self.assertIn("共享财务来源注册表", properties["account_id"]["description"])
+
+    def test_finance_source_contract_keeps_yunda_declared_but_not_enabled(self):
+        self.assertEqual(("ronghui",), enabled_finance_platforms())
+        self.assertEqual(
+            (
+                "price_default",
+                "ronghui_daxiang_s",
+                "ronghui_self_pickup_problem",
+            ),
+            enabled_finance_account_ids(),
+        )
+        yunda = next(spec for spec in FINANCE_SOURCE_SPECS if spec.platform == "yunda")
+        self.assertFalse(yunda.production_ready)
+        self.assertEqual("not_launched", yunda.status)
 
     def test_legacy_excel_finance_pipeline_is_fully_removed(self):
         agent_root = Path(__file__).resolve().parents[1]

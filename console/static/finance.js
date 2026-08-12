@@ -29,7 +29,7 @@
       activeTab: "overview",
       loadedTabs: new Set(),
       accounts: [],
-      bookingFeeItems: { ronghui: [], yunda: [] },
+      bookingFeeItems: {},
       entryPage: 1,
       entryPageSize: 50,
       entryTotal: 0,
@@ -741,16 +741,19 @@
     }
 
     function renderBookingFeeLists(itemsByPlatform) {
-      state.bookingFeeItems = {
-        ronghui: Array.isArray(itemsByPlatform?.ronghui) ? itemsByPlatform.ronghui : [],
-        yunda: Array.isArray(itemsByPlatform?.yunda) ? itemsByPlatform.yunda : [],
-      };
-      ["ronghui", "yunda"].forEach((platform) => {
-        const list = $(`[data-finance-booking-fee-items="${platform}"]`);
-        if (!list) return;
+      state.bookingFeeItems = Object.fromEntries(
+        Object.entries(itemsByPlatform || {}).map(([platform, items]) => [
+          platform,
+          Array.isArray(items) ? items : [],
+        ]),
+      );
+      $$('[data-finance-booking-fee-items]').forEach((list) => {
+        const platform = String(list.dataset.financeBookingFeeItems || "");
         list.innerHTML = state.bookingFeeItems[platform]
-          .map((item) => `<option value="${escapeHtml(item)}"></option>`)
-          .join("");
+          ? state.bookingFeeItems[platform]
+              .map((item) => `<option value="${escapeHtml(item)}"></option>`)
+              .join("")
+          : "";
       });
     }
 
@@ -774,7 +777,7 @@
         const feeLevel = String(row.fee_level || "");
         const operating = feeLevel === "operating";
         const income = direction === "income";
-        const listId = `finance-booking-${row.platform === "ronghui" ? "ronghui" : "yunda"}`;
+        const listId = `finance-booking-${String(row.platform || "")}`;
         return `<tr data-finance-mapping-row data-fee-item-id="${feeItemId}" data-direction="${escapeHtml(direction)}" data-platform="${escapeHtml(row.platform || "")}">
           ${responsiveCell("平台", escapeHtml(platformLabel(row.platform)))}
           ${responsiveCell("原始一级费用", escapeHtml(displayText(row.primary_fee_name)))}

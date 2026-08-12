@@ -248,24 +248,45 @@ class FinanceSyncServiceTests(unittest.TestCase):
         self.assertEqual(1, len(repository.no_data))
         self.assertFalse(repository.commits)
 
-    def test_yunda_zero_day_allows_absent_site_without_fabrication(self):
+    def test_explicit_yunda_account_is_rejected_before_capture(self):
         repository = _Repository()
         service = self._service(
             repository,
             lambda binding: _Adapter(binding, empty=True, empty_site=True),
         )
+
+        with self.assertRaises(FinanceSyncError) as caught:
+            service.run(
+                {
+                    "mode": "sync",
+                    "target_date": "2026-07-11",
+                    "rescan_days": 1,
+                    "account_id": "yunda_default",
+                }
+            )
+
+        self.assertEqual("FINANCE_SOURCE_NOT_ENABLED", caught.exception.code)
+        self.assertIsNone(repository.batch_kwargs)
+        self.assertFalse(repository.runs)
+
+    def test_default_sync_uses_only_three_enabled_ronghui_roles(self):
+        repository = _Repository()
+        service = self._service(repository, lambda binding: _Adapter(binding))
+
         result = service.run(
-            {
-                "mode": "sync",
-                "target_date": "2026-07-11",
-                "rescan_days": 1,
-                "account_id": "yunda_default",
-            }
+            {"mode": "sync", "target_date": "2026-07-11", "rescan_days": 1}
         )
 
-        self.assertEqual(1, result["successful_runs"])
-        self.assertEqual(1, len(repository.no_data))
-        self.assertEqual("", repository.runs[0]["source_site_code"])
+        self.assertEqual(3, result["successful_runs"])
+        self.assertEqual(
+            {
+                "price_default",
+                "ronghui_daxiang_s",
+                "ronghui_self_pickup_problem",
+            },
+            {row["account_id"] for row in result["runs"]},
+        )
+        self.assertNotIn("yunda_default", {row["account_id"] for row in result["runs"]})
 
     def test_partial_account_failure_preserves_successful_snapshots(self):
         repository = _Repository()
@@ -366,6 +387,35 @@ class FinanceSyncServiceTests(unittest.TestCase):
         self.assertEqual(1, result["successful_runs"])
         self.assertEqual(dt.date(2026, 7, 10), repository.runs[0]["target_date"])
 
+    def test_retry_skips_disabled_yunda_targets_and_reports_them(self):
+        repository = _Repository()
+        repository.retry_targets = [
+            {"platform": "ronghui", "account_id": "price_default", "target_date": "2026-07-10"},
+            {"platform": "yunda", "account_id": "yunda_default", "target_date": "2026-07-10"},
+        ]
+        service = self._service(repository, lambda binding: _Adapter(binding))
+
+        result = service.run({"mode": "retry", "batch_id": 8})
+
+        self.assertEqual(1, result["successful_runs"])
+        self.assertEqual(1, result["skipped_disabled_count"])
+        self.assertEqual("yunda_default", result["skipped_disabled"][0]["account_id"])
+        self.assertEqual("not_launched", result["skipped_disabled"][0]["status"])
+        self.assertEqual({"price_default"}, {row["account_id"] for row in result["runs"]})
+
+    def test_retry_with_only_disabled_yunda_targets_is_rejected(self):
+        repository = _Repository()
+        repository.retry_targets = [
+            {"platform": "yunda", "account_id": "yunda_default", "target_date": "2026-07-10"}
+        ]
+        service = self._service(repository, lambda binding: _Adapter(binding))
+
+        with self.assertRaises(FinanceSyncError) as caught:
+            service.run({"mode": "retry", "batch_id": 8})
+
+        self.assertEqual("FINANCE_SOURCE_NOT_ENABLED", caught.exception.code)
+        self.assertIsNone(repository.batch_kwargs)
+
     def test_non_whitelisted_account_is_rejected(self):
         with self.assertRaises(FinanceSyncError) as caught:
             resolve_finance_accounts(
@@ -375,25 +425,25 @@ class FinanceSyncServiceTests(unittest.TestCase):
             )
         self.assertEqual("ACCOUNT_NOT_ALLOWED", caught.exception.code)
 
-    def test_platform_resolution_does_not_read_other_platform_login_metadata(self):
+    def test_disabled_yunda_resolution_does_not_read_login_metadata(self):
         manager = _AccountManager()
-        original = manager.public_credentials
+        credential_calls = []
 
         def public_credentials(account_id):
-            if account_id == "price_default":
-                raise RuntimeError("fixture unrelated account unavailable")
-            return original(account_id)
+            credential_calls.append(account_id)
+            raise AssertionError("disabled source must be rejected before credential access")
 
         manager.public_credentials = public_credentials
-        bindings = resolve_finance_accounts(
-            manager,
-            shared_api=SHARED_API,
-            platform="yunda",
-            account_id="yunda_default",
-        )
+        with self.assertRaises(FinanceSyncError) as caught:
+            resolve_finance_accounts(
+                manager,
+                shared_api=SHARED_API,
+                platform="yunda",
+                account_id="yunda_default",
+            )
 
-        self.assertEqual(1, len(bindings))
-        self.assertEqual("yunda_default", bindings[0].account_id)
+        self.assertEqual("FINANCE_SOURCE_NOT_ENABLED", caught.exception.code)
+        self.assertEqual([], credential_calls)
 
     def test_backfill_plan_is_month_chunked_and_warns_earliest_unconfirmed(self):
         plan = plan_sync_request(
