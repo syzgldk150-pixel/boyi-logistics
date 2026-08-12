@@ -186,6 +186,7 @@ class AdminAuthTests(unittest.TestCase):
             "username": "admin",
             "display_name": "Admin",
             "is_active": 1,
+            "role": "super_admin",
             "expires_at": datetime.now() + timedelta(hours=1),
         }
         repo = _SessionRepo(session=session)
@@ -224,6 +225,10 @@ class AdminAuthTests(unittest.TestCase):
                 "password": "another-strong-password",
             },
         )
+        app._set_current_admin_user(
+            handler,
+            {"id": 1, "username": "owner", "role": "super_admin", "is_legacy_basic_auth": False},
+        )
 
         app._handle_admin_account_create(handler)
 
@@ -239,13 +244,33 @@ class AdminAuthTests(unittest.TestCase):
             path="/settings/accounts/7/toggle",
             form={"target_active": "0"},
         )
-        app._set_current_admin_user(handler, {"id": 7, "username": "admin"})
+        app._set_current_admin_user(
+            handler,
+            {"id": 7, "username": "admin", "role": "super_admin", "is_legacy_basic_auth": False},
+        )
 
         app._handle_admin_account_toggle(handler, "/settings/accounts/7/toggle")
 
         self.assertEqual([], repo.active_updates)
         self.assertEqual(HTTPStatus.SEE_OTHER, handler.status)
         self.assertIn("message=", handler.header("Location"))
+
+    def test_normal_admin_cannot_create_administrator_accounts(self):
+        repo = _AccountRepo()
+        app = self._build_app(repo)
+        handler = _Handler(
+            path="/settings/accounts/create",
+            form={"username": "ops-admin", "display_name": "Ops", "password": "strong-password"},
+        )
+        app._set_current_admin_user(
+            handler,
+            {"id": 7, "username": "admin", "role": "admin", "is_legacy_basic_auth": False},
+        )
+
+        app._handle_admin_account_create(handler)
+
+        self.assertEqual(HTTPStatus.FORBIDDEN, handler.status)
+        self.assertEqual([], repo.created)
 
     def test_avatar_upload_updates_current_admin_avatar(self):
         repo = _AvatarRepo()

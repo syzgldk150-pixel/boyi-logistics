@@ -4,6 +4,20 @@ from _tms_runtime_test_support import *  # noqa: F403
 
 
 class Phase7SyncToolTests(unittest.TestCase):
+    @staticmethod
+    def _pending_status_result(*bill_codes):
+        return {
+            "ok": True,
+            "data": [
+                {
+                    "tracking_number": bill_code,
+                    "sign_status_checked": True,
+                    "is_signed": False,
+                }
+                for bill_code in bill_codes
+            ],
+        }
+
     def setUp(self):
         self.internal_token_patch = patch.dict(
             os.environ,
@@ -1678,13 +1692,16 @@ class Phase7SyncToolTests(unittest.TestCase):
             ),
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "YS1",
-                        "planSignTime": "2026-04-24 10:00:00",
-                        "goodsName": "demo",
-                        "pcs": 1,
-                    }
+                side_effect=[
+                    [
+                        {
+                            "billNumberMain": "YS1",
+                            "planSignTime": "2026-04-24 10:00:00",
+                            "goodsName": "demo",
+                            "pcs": 1,
+                        }
+                    ],
+                    self._pending_status_result("YS1"),
                 ],
             ) as call_tms,
             patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True}),
@@ -1695,7 +1712,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        request_body = call_tms.call_args.args[1]
+        request_body = call_tms.call_args_list[0].args[1]
         self.assertEqual("r13-user", request_body["username"])
         self.assertEqual("r13-pass", request_body["password"])
         self.assertEqual("7390004", request_body["disp_site_code"])
@@ -1724,13 +1741,16 @@ class Phase7SyncToolTests(unittest.TestCase):
             ),
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "YS1",
-                        "planSignTime": "2026-04-24 10:00:00",
-                        "goodsName": "demo",
-                        "pcs": 1,
-                    }
+                side_effect=[
+                    [
+                        {
+                            "billNumberMain": "YS1",
+                            "planSignTime": "2026-04-24 10:00:00",
+                            "goodsName": "demo",
+                            "pcs": 1,
+                        }
+                    ],
+                    self._pending_status_result("YS1"),
                 ],
             ) as call_tms,
             patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True}),
@@ -1749,7 +1769,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("r13_account_id", fake_manager.kwargs["account_field"])
         self.assertEqual("", fake_manager.kwargs["output_account_field"])
         self.assertEqual("", fake_manager.kwargs["output_session_profile_field"])
-        request_body = call_tms.call_args.args[1]
+        request_body = call_tms.call_args_list[0].args[1]
         self.assertEqual("r13-account-user", request_body["username"])
         self.assertEqual("r13-account-pass", request_body["password"])
 
@@ -1860,28 +1880,31 @@ class Phase7SyncToolTests(unittest.TestCase):
         with (
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "LATE",
-                        "planSignTime": "2026-06-21 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "托盘",
-                        "pcs": 2,
-                    },
-                    {
-                        "billNumberMain": "EARLY",
-                        "planSignTime": "2026-06-19 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "纸箱",
-                        "pcs": 1,
-                    },
-                    {
-                        "billNumberMain": "MIDDLE",
-                        "planSignTime": "2026-06-20 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "编织袋",
-                        "pcs": 5,
-                    },
+                side_effect=[
+                    [
+                        {
+                            "billNumberMain": "LATE",
+                            "planSignTime": "2026-06-21 23:59:59",
+                            "goodsName": "配件",
+                            "packTypeDesc": "托盘",
+                            "pcs": 2,
+                        },
+                        {
+                            "billNumberMain": "EARLY",
+                            "planSignTime": "2026-06-19 23:59:59",
+                            "goodsName": "配件",
+                            "packTypeDesc": "纸箱",
+                            "pcs": 1,
+                        },
+                        {
+                            "billNumberMain": "MIDDLE",
+                            "planSignTime": "2026-06-20 23:59:59",
+                            "goodsName": "配件",
+                            "packTypeDesc": "编织袋",
+                            "pcs": 5,
+                        },
+                    ],
+                    self._pending_status_result("LATE", "EARLY", "MIDDLE"),
                 ],
             ),
             patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", side_effect=capture_bitable),
@@ -1910,16 +1933,19 @@ class Phase7SyncToolTests(unittest.TestCase):
         with (
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "R0001",
-                        "planSignTime": "2026-06-04 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "编织袋",
-                        "pcs": 6,
-                        "dispAddress": "湖南省邵阳市大祥区",
-                        "dispatchMode": "送货（不含上楼）",
-                    }
+                side_effect=[
+                    [
+                        {
+                            "billNumberMain": "R0001",
+                            "planSignTime": "2026-06-04 23:59:59",
+                            "goodsName": "配件",
+                            "packTypeDesc": "编织袋",
+                            "pcs": 6,
+                            "dispAddress": "湖南省邵阳市大祥区",
+                            "dispatchMode": "送货（不含上楼）",
+                        }
+                    ],
+                    self._pending_status_result("R0001"),
                 ],
             ),
             patch(
@@ -1977,6 +2003,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                         "data": [
                             {
                                 "tracking_number": "R0001",
+                                "sign_status_checked": True,
+                                "is_signed": False,
                                 "recipient_address": "湖南省邵阳市大祥区雨溪镇",
                             }
                         ],
@@ -1992,11 +2020,79 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(1, result["address_enrichment"]["updated"])
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_records[0]["fields"]["收件人地址"])
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_values[0][5])
+        detail_payload = call_tms.call_args_list[1].args[1]
         self.assertEqual("/query_waybill_detail", call_tms.call_args_list[1].args[0])
         self.assertEqual(
             [{"bill_code": "R0001"}],
-            call_tms.call_args_list[1].args[1]["params"]["items"],
+            detail_payload["params"]["items"],
         )
+        self.assertTrue(detail_payload["params"]["include_sign_status"])
+
+    def test_daily_sign_sync_excludes_tms_signed_rows_before_writing(self):
+        written_values = []
+
+        def capture_sheet(_resource_key, values, _params):
+            written_values.extend(values)
+            return {"ok": True, "rows": len(values)}
+
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                side_effect=[
+                    [
+                        {"billNumberMain": "SIGNED", "planSignTime": "2026-08-09 23:59:59"},
+                        {"billNumberMain": "PENDING", "planSignTime": "2026-08-10 23:59:59"},
+                    ],
+                    {
+                        "ok": True,
+                        "data": [
+                            {"tracking_number": "SIGNED", "sign_status_checked": True, "is_signed": True},
+                            {"tracking_number": "PENDING", "sign_status_checked": True, "is_signed": False},
+                        ],
+                    },
+                ],
+            ) as call_tms,
+            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True, "written": 1}),
+            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
+        ):
+            result = daily_sign_sync_tool.run_daily_sign_sync(
+                {
+                    "enrich_addresses": False,
+                    "enrich_arrival_counts": False,
+                    "detail_account_id": "ronghui_default",
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, result["r13_fetched"])
+        self.assertEqual(1, result["fetched"])
+        self.assertEqual(1, result["sign_verification"]["excluded_signed"])
+        self.assertEqual(["PENDING"], [row[0] for row in written_values])
+        status_request = call_tms.call_args_list[1].args[1]
+        self.assertEqual("/query_waybill_detail", call_tms.call_args_list[1].args[0])
+        self.assertEqual("ronghui_default", status_request["params"]["account_id"])
+        self.assertTrue(status_request["params"]["include_sign_status"])
+
+    def test_daily_sign_sync_stops_before_writing_on_unknown_tms_status(self):
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                side_effect=[
+                    [{"billNumberMain": "UNKNOWN", "planSignTime": "2026-08-10 23:59:59"}],
+                    {"ok": True, "data": [{"tracking_number": "UNKNOWN", "sign_status_checked": False}]},
+                ],
+            ),
+            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot") as bitable_mock,
+            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot") as sheet_mock,
+        ):
+            result = daily_sign_sync_tool.run_daily_sign_sync(
+                {"enrich_addresses": False, "enrich_arrival_counts": False}
+            )
+
+        self.assertIn("签收扫描结果缺失", result["error"])
+        self.assertEqual(["UNKNOWN"], result["sign_verification"]["unknown_bill_codes"])
+        bitable_mock.assert_not_called()
+        sheet_mock.assert_not_called()
 
     def test_sheet_snapshot_can_clear_wider_range_than_write_range(self):
         resource = {

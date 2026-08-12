@@ -184,6 +184,29 @@ def _map_row(row: dict[str, Any], requested_code: str) -> dict[str, Any]:
     return mapped
 
 
+def _sign_status_fields(route_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not route_rows:
+        return {
+            "sign_status_checked": False,
+            "is_signed": None,
+            "actual_sign_time": "",
+            "sign_site_name": "",
+        }
+    signed_rows = [
+        row
+        for row in route_rows
+        if isinstance(row, dict) and str(row.get("SCAN_TYPE") or "").strip() == "签收"
+    ]
+    signed_rows.sort(key=lambda row: str(row.get("SCAN_DATE") or ""))
+    latest = signed_rows[-1] if signed_rows else {}
+    return {
+        "sign_status_checked": True,
+        "is_signed": bool(signed_rows),
+        "actual_sign_time": str(latest.get("SCAN_DATE") or "").strip(),
+        "sign_site_name": str(latest.get("SCAN_SITE") or "").strip(),
+    }
+
+
 def _is_masked(value: Any) -> bool:
     if value is None:
         return False
@@ -367,7 +390,13 @@ def _overlay_with_browser(
     return overlays
 
 
-def _query_one(session, bill_code: str) -> dict[str, Any] | None:
+def _query_one(
+    session,
+    bill_code: str,
+    *,
+    include_sign_status: bool = False,
+    tracking_url: str = "",
+) -> dict[str, Any] | None:
     response = session.post(
         DETAIL_URL,
         data={"billCode": bill_code, "isView": "true"},
@@ -379,7 +408,17 @@ def _query_one(session, bill_code: str) -> dict[str, Any] | None:
     row = _extract_row(response.json())
     if not row:
         return None
-    return _map_row(row, bill_code)
+    mapped = _map_row(row, bill_code)
+    if include_sign_status:
+        from agent.tms_runtime.scripts import ronghui_tms_tracking
+
+        route_rows = ronghui_tms_tracking.fetch_main_route_rows(
+            session,
+            bill_code,
+            tracking_url=tracking_url,
+        )
+        mapped.update(_sign_status_fields(route_rows))
+    return mapped
 
 
 def _unique_codes(codes: Iterable[str]) -> list[str]:
@@ -393,12 +432,22 @@ def _unique_codes(codes: Iterable[str]) -> list[str]:
     return ordered
 
 
-def _run_single_session(codes: list[str]) -> list[dict[str, Any]]:
+def _run_single_session(codes: list[str], *, include_sign_status: bool = False) -> list[dict[str, Any]]:
     auth = TMSAuth()
     session = auth.login_and_get_session()
+    tracking_url = ""
+    if include_sign_status:
+        from agent.tms_runtime.scripts import ronghui_tms_tracking
+
+        tracking_url = ronghui_tms_tracking.resolve_tracking_page_url(session)
     results: list[dict[str, Any]] = []
     for code in codes:
-        row = _query_one(session, code)
+        row = _query_one(
+            session,
+            code,
+            include_sign_status=include_sign_status,
+            tracking_url=tracking_url,
+        )
         if row:
             results.append(row)
     return results
@@ -413,6 +462,7 @@ def query_waybill_details(
     browser_timeout_ms: int = 30_000,
     browser_batch_size: int = 1,
     browser_max_workers: int = 1,
+    include_sign_status: bool = False,
 ) -> list[dict[str, Any]]:
     codes = _unique_codes(_normalize_bill_code(code) for code in bill_codes if _normalize_bill_code(code))
     if not codes:
@@ -421,7 +471,7 @@ def query_waybill_details(
     worker_count = max(1, min(int(max_workers or 1), len(codes)))
     ordered_map: dict[str, dict[str, Any]] = {}
     if worker_count == 1 or len(codes) == 1:
-        for row in _run_single_session(codes):
+        for row in _run_single_session(codes, include_sign_status=include_sign_status):
             tracking = _normalize_bill_code(row.get("tracking_number"))
             if tracking:
                 ordered_map[tracking] = row
@@ -431,7 +481,11 @@ def query_waybill_details(
             chunks[index % worker_count].append(code)
 
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(_run_single_session, chunk) for chunk in chunks if chunk]
+            futures = [
+                executor.submit(_run_single_session, chunk, include_sign_status=include_sign_status)
+                for chunk in chunks
+                if chunk
+            ]
             for future in as_completed(futures):
                 for row in future.result():
                     tracking = _normalize_bill_code(row.get("tracking_number"))
@@ -483,6 +537,7 @@ def run_once(params: Dict[str, Any]) -> Any:
         browser_timeout_ms=int(params.get("browser_timeout_ms", 30_000) or 30_000),
         browser_batch_size=int(params.get("browser_batch_size", 1) or 1),
         browser_max_workers=int(params.get("browser_max_workers", 1) or 1),
+        include_sign_status=_coerce_bool(params.get("include_sign_status"), default=False),
     )
 
 

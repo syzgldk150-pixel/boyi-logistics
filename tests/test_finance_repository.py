@@ -15,6 +15,7 @@ from shared.finance import (
     FinanceRepository,
     Platform,
     RONGHUI_BOOKING_FEE_ITEMS,
+    RONGHUI_CONFIRMED_FEE_RULES,
     YUNDA_BOOKING_FEE_ITEMS,
     mysql_schema_statements,
 )
@@ -73,6 +74,34 @@ class RouterConnection:
 
 
 class FinanceRepositoryTests(unittest.TestCase):
+    def test_user_confirmed_ronghui_baseline_contains_exact_fourteen_subjects(self) -> None:
+        expected = {
+            "收直派服务费": ("direct_delivery_service", "waybill", True),
+            "收包仓费": ("warehouse_contract_fee", "operating", False),
+            "保险费": ("insurance_fee", "waybill", True),
+            "寄到付款": ("cod_freight_income", "waybill", True),
+            "电子标签服务费": ("electronic_label_service", "waybill", True),
+            "收固定中转费": ("fixed_transfer_fee", "operating", False),
+            "短信扣费": ("sms_fee", "waybill", True),
+            "收中转费追加": ("transfer_fee_adjustment", "waybill", True),
+            "收到付款手续费": ("cod_handling_fee", "waybill", True),
+            "电子回单服务费": ("electronic_receipt_service", "waybill", True),
+            "收场地费折让": ("site_fee_discount", "waybill", True),
+            "收派送费折让": ("delivery_fee_discount", "waybill", True),
+            "收末端请车费": ("terminal_vehicle_fee", "waybill", True),
+            "收派送费": ("delivery_fee", "waybill", True),
+        }
+
+        actual = {
+            item.primary_fee_name: (
+                item.subject_code,
+                item.fee_level.value,
+                item.requires_waybill,
+            )
+            for item in RONGHUI_CONFIRMED_FEE_RULES
+        }
+        self.assertEqual(expected, actual)
+
     def test_finance_schema_contract_lists_all_migration_owned_tables(self) -> None:
         for table in {
             "finance_sync_batches",
@@ -82,6 +111,12 @@ class FinanceRepositoryTests(unittest.TestCase):
             "finance_fee_items",
             "finance_fee_mappings",
             "finance_mapping_audit_logs",
+            "finance_fee_subjects",
+            "finance_review_cases",
+            "finance_review_ai_runs",
+            "finance_waybill_facts",
+            "finance_anomalies",
+            "finance_knowledge_exports",
         }:
             self.assertIn(table, FINANCE_REQUIRED_TABLES)
         self.assertEqual((), mysql_schema_statements())
@@ -124,6 +159,10 @@ class FinanceRepositoryTests(unittest.TestCase):
             "list_entries",
             "list_fee_mappings",
             "list_sync_batches",
+            "list_review_cases",
+            "list_waybill_facts",
+            "get_evolution_summary",
+            "get_knowledge_snapshot",
         ):
             self.assertTrue(callable(getattr(FinanceRepository, name)))
 
@@ -160,6 +199,8 @@ class FinanceRepositoryTests(unittest.TestCase):
                         "total_expense": Decimal("3.004"),
                         "waybill_cost": Decimal("2.005"),
                         "operating_cost": Decimal("0.999"),
+                        "waybill_net": Decimal("-2.005"),
+                        "operating_net": Decimal("-0.999"),
                     }
                 ]
             if "MAX(COALESCE(r.login_account, '')) AS login_account" in sql:
@@ -300,12 +341,16 @@ class FinanceRepositoryTests(unittest.TestCase):
         records: list[tuple[str, tuple[Any, ...]]] = []
 
         def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT id FROM finance_fee_items"):
+                return {"id": 9}
             if sql.startswith("SELECT * FROM finance_fee_items"):
                 return {
                     "id": 9,
                     "platform": "yunda",
                     "direction": "expense",
                 }
+            if sql.startswith("SELECT id FROM finance_fee_subjects"):
+                return {"id": 13}
             if sql.startswith("SELECT * FROM finance_fee_mappings"):
                 return {
                     "id": 7,
@@ -327,6 +372,7 @@ class FinanceRepositoryTests(unittest.TestCase):
         mapping_id = repository.save_fee_mapping(
             fee_item_id=9,
             fee_level=FeeLevel.OPERATING,
+            canonical_subject_name="Fictional operating subject",
             booking_fee_name="",
             effective_start_month="2026-07",
             include_in_cost=True,
@@ -359,12 +405,22 @@ class FinanceRepositoryTests(unittest.TestCase):
         )
 
         def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT platform, raw_primary_fee_name"):
+                return {
+                    "platform": "ronghui",
+                    "raw_primary_fee_name": "测试严格项目",
+                    "raw_secondary_fee_name": "",
+                }
+            if sql.startswith("SELECT id FROM finance_fee_subjects"):
+                return {"id": 13}
             if sql.startswith("SELECT id, direction, fee_level"):
                 return {
                     "id": 7,
                     "direction": "expense",
                     "fee_level": "waybill",
+                    "canonical_subject_id": 13,
                     "booking_fee_name": "操作费",
+                    "requires_waybill": 1,
                     "effective_start_month": dt.date(2026, 7, 1),
                     "include_in_cost": 1,
                     "created_by": "system:verified-baseline",
@@ -388,8 +444,8 @@ class FinanceRepositoryTests(unittest.TestCase):
             for sql, params in records
             if sql.startswith("INSERT INTO finance_fee_mappings")
         )
-        self.assertEqual(dt.date(2026, 1, 1), insert_params[4])
-        self.assertEqual(dt.date(2026, 6, 1), insert_params[5])
+        self.assertEqual(dt.date(2026, 1, 1), insert_params[6])
+        self.assertEqual(dt.date(2026, 6, 1), insert_params[7])
 
     def test_validation_context_reads_platform_categories_and_latest_success_content(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []

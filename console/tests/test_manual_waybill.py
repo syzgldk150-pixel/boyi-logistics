@@ -512,6 +512,8 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("font-size: .74rem; font-weight: 800;", html)
         self.assertIn(".printer-trigger { height: 32px; min-height: 32px; padding: 0 10px; border-radius: 8px; font-size: .76rem; font-weight: 800; }", html)
         self.assertIn(".printer-trigger .feather, .mode-switch .feather { width: 15px; height: 15px; }", html)
+        self.assertIn(".ocr-template-btn {", html)
+        self.assertIn(".ocr-template-btn { height: 44px; min-height: 44px; }", html)
 
     def test_address_parser_fill_dispatches_events_for_invalid_state_cleanup(self):
         template = self.env.get_template("document.html")
@@ -618,6 +620,8 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         )
 
         self.assertIn("OCR模式", html)
+        self.assertIn('class="ghost-btn ocr-template-btn" href="/templates/new"', html)
+        self.assertIn("模板配置", html)
         self.assertIn("上传单据图像", html)
         self.assertIn("待复核 OCR 单据", html)
         self.assertIn("sample.png", html)
@@ -629,6 +633,16 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn('data-mode-panel="ocr"', html)
         self.assertIn('action="/waybills/manual"', html)
         self.assertIn('name="auto_print"', html)
+
+    def test_template_editor_returns_to_ocr_mode(self):
+        editor = (CONSOLE_DIR / "templates" / "template_editor.html").read_text(encoding="utf-8")
+        documents_service = (CONSOLE_DIR / "services" / "documents.py").read_text(encoding="utf-8")
+
+        self.assertEqual(2, editor.count('href="/ocr?mode=ocr"'))
+        self.assertIn(
+            'self._redirect_with_message(handler, "/ocr?mode=ocr", message, "success")',
+            documents_service,
+        )
 
     def test_dispatch_template_uses_shared_route_utils(self):
         template = self.env.get_template("dispatch.html")
