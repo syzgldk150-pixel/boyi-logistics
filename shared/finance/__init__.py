@@ -61,6 +61,15 @@ from shared.finance.repository import (
     FinanceSnapshotRejectedError,
 )
 from shared.finance.schema import FINANCE_REQUIRED_TABLES, MYSQL_DDL, mysql_schema_statements
+from shared.finance.sources import (
+    FINANCE_SOURCE_SPECS,
+    FinanceSourceSpec,
+    enabled_finance_account_ids,
+    enabled_finance_platforms,
+    enabled_finance_source_specs,
+    finance_source_spec,
+    is_finance_source_enabled,
+)
 from shared.finance.validation import (
     CaptureEvidence,
     ValidationIssue,
@@ -92,6 +101,8 @@ __all__ = [
     "FinanceRepositoryError",
     "FinanceSnapshotRejectedError",
     "FINANCE_REQUIRED_TABLES",
+    "FINANCE_SOURCE_SPECS",
+    "FinanceSourceSpec",
     "InvalidAmountError",
     "MYSQL_DDL",
     "MappingStatus",
@@ -115,6 +126,10 @@ __all__ = [
     "YUNDA_STRICT_EXACT_ALIASES",
     "YUNDA_VERIFIED_OPERATING_FEES",
     "decimal_to_storage_text",
+    "enabled_finance_account_ids",
+    "enabled_finance_platforms",
+    "enabled_finance_source_specs",
+    "finance_source_spec",
     "format_money",
     "mapping_seed_for_fee_item",
     "month_start",
@@ -123,6 +138,7 @@ __all__ = [
     "quantize_money",
     "quantize_storage",
     "resolve_account_binding",
+    "is_finance_source_enabled",
     "sanitize_source_payload",
     "to_decimal",
     "validate_booking_fee_name",

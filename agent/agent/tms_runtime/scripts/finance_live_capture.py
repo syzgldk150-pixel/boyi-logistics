@@ -44,12 +44,12 @@ from agent.tms_runtime.scripts.yunda_finance_adapter import (
 RONGHUI_MENU_TEXT = "结算明细查询"
 RONGHUI_FIELD_BINDINGS = {
     "trade_time": "BALANCE_DATE",
-    "fee_name": "SETTLEMENT_TYPE",
-    "amount": "SETTLEMENT_AMOUNT",
-    "bill_time": "BILL_DATE",
+    "fee_name": "BALANCE_TYPE",
+    "amount": "BALANCE_CUR_MONEY_TEXT",
+    "bill_time": "FINANCE_DATE",
     "waybill_no": "BILL_CODE",
-    "old_amount": "BEFORE_AMOUNT",
-    "new_amount": "AFTER_AMOUNT",
+    "old_amount": "BALANCE_PRE_CONFIRM_MONEY",
+    "new_amount": "BALANCE_BACK_CONFIRM_MONEY",
     "balance_order": "BALANCE_ORDER",
     "bill_code": "BILL_CODE",
 }
@@ -352,16 +352,54 @@ def _normalize_signed_summary(
 def _discover_ronghui_summary_fields(
     summary_rows: Sequence[Mapping[str, Any]],
     detail_rows: Sequence[Mapping[str, Any]],
+    *,
+    field_bindings: Mapping[str, str],
 ) -> tuple[str, str]:
     if not summary_rows:
         return "", ""
-    detail_fees = {clean_text(row.get("SETTLEMENT_TYPE")) for row in detail_rows}
+    fee_source_key = clean_text(field_bindings.get("fee_name"))
+    amount_source_key = clean_text(field_bindings.get("amount"))
+    if not fee_source_key or not amount_source_key:
+        raise FinanceCaptureError(
+            "FIELD_DRIFT",
+            "融辉明细缺少汇总校验所需字段绑定",
+            stage="summary_discovery",
+        )
+    detail_fees: set[str] = set()
     signed_by_fee: dict[str, Any] = {}
-    from shared.finance.money import ZERO, quantize_storage
+    from shared.finance.money import InvalidAmountError, MissingAmountError, ZERO, quantize_storage
 
     for row in detail_rows:
-        fee = clean_text(row.get("SETTLEMENT_TYPE"))
-        signed_by_fee[fee] = signed_by_fee.get(fee, ZERO) + quantize_storage(row.get("SETTLEMENT_AMOUNT"))
+        missing_keys = [key for key in (fee_source_key, amount_source_key) if key not in row]
+        if missing_keys:
+            raise FinanceCaptureError(
+                "FIELD_DRIFT",
+                f"融辉明细响应缺少汇总校验字段：{','.join(sorted(missing_keys))}",
+                stage="summary_discovery",
+            )
+        fee = clean_text(row.get(fee_source_key))
+        if not fee:
+            raise FinanceCaptureError(
+                "FIELD_DRIFT",
+                f"融辉明细费用字段为空：{fee_source_key}",
+                stage="summary_discovery",
+            )
+        try:
+            amount = quantize_storage(row.get(amount_source_key))
+        except MissingAmountError as exc:
+            raise FinanceCaptureError(
+                "AMOUNT_MISSING",
+                f"融辉明细金额字段为空：{amount_source_key}",
+                stage="summary_discovery",
+            ) from exc
+        except InvalidAmountError as exc:
+            raise FinanceCaptureError(
+                "AMOUNT_INVALID",
+                f"融辉明细金额字段格式异常：{amount_source_key}",
+                stage="summary_discovery",
+            ) from exc
+        detail_fees.add(fee)
+        signed_by_fee[fee] = signed_by_fee.get(fee, ZERO) + amount
     common_keys = set(summary_rows[0])
     for row in summary_rows[1:]:
         common_keys &= set(row)
@@ -805,7 +843,11 @@ class RonghuiLiveFinanceAdapter:
             max_pages=self.max_pages,
         )
         if raw_summaries:
-            fee_key, amount_key = _discover_ronghui_summary_fields(raw_summaries, detail_rows)
+            fee_key, amount_key = _discover_ronghui_summary_fields(
+                raw_summaries,
+                detail_rows,
+                field_bindings=RONGHUI_FIELD_BINDINGS,
+            )
             summaries = _normalize_signed_summary(
                 raw_summaries,
                 platform="ronghui",

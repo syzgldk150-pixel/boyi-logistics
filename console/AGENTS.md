@@ -103,6 +103,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `finance_service.py`
   - `app.py`
   - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 异常审批 / 运单净额 / 同步记录”六个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
+  - 财务生产来源由 `shared/finance/sources.py` 统一声明；当前只展示和同步融辉三个启用账号。韵达通用业务账号不等于韵达财务已上线，财务平台筛选不得展示韵达，当前失败告警不得统计历史韵达失败；“同步记录”继续保留历史运行审计。
   - Console 接口为 `/finance/summary|trend|entries|fee-mappings|review-cases|waybill-facts|knowledge|sync-batches`、`POST /finance/sync|backfill|reviews/analyze`、`POST /finance/fee-mappings/{id}`、`POST /finance/review-cases/{id}/reject`、`POST /finance/sync-batches/{id}/retry`；同步动作只调用 Agent `sync_finance_bills` 工具，不接收或透传账号密码、Cookie、Token、登录态等字段。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。

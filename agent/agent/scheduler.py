@@ -8,12 +8,24 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+from shared.finance.sources import enabled_finance_platforms
 
 logger = logging.getLogger("agent")
 
 _scheduler: AsyncIOScheduler | None = None
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
+
+
+def _enabled_finance_platform_filter() -> dict[str, str]:
+    """Narrow scheduled calls when exactly one production platform is live."""
+
+    platforms = enabled_finance_platforms()
+    if not platforms:
+        raise RuntimeError("没有已上线的财务来源，不能调度财务同步")
+    if len(platforms) == 1:
+        return {"platform": platforms[0]}
+    return {}
 
 
 def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime | None:
@@ -91,6 +103,7 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
                     "mode": "sync",
                     "rescan_days": 7,
                     "_startup_catchup": True,
+                    **_enabled_finance_platform_filter(),
                 },
             )
             if not isinstance(result, dict) or not result.get("success"):
@@ -151,6 +164,8 @@ def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, ag
                 "cron_expression": cron,
             }
             if tn == "sync_finance_bills":
+                for key, value in _enabled_finance_platform_filter().items():
+                    scheduled_params.setdefault(key, value)
                 now = datetime.now(trigger.timezone)
                 scheduled_for = _latest_scheduled_fire_time(trigger, now)
                 if scheduled_for is None:

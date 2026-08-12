@@ -35,8 +35,16 @@ from shared.finance.models import (
 )
 from shared.finance.money import ZERO, format_money
 from shared.finance.schema import validate_finance_schema
+from shared.finance.sources import (
+    enabled_finance_platforms,
+    is_finance_source_enabled,
+)
 from shared.finance.validation import ValidationReport
-from shared.finance.evolution import FinanceEvolutionMixin
+from shared.finance.evolution import (
+    FinanceEvolutionMixin,
+    _enabled_platform_clause,
+    _enabled_source_clause,
+)
 
 
 ConnectionFactory = Callable[[], Any]
@@ -222,6 +230,8 @@ class FinanceRepository(FinanceEvolutionMixin):
     ) -> int:
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value, account):
+            raise ValueError("finance source is not enabled")
         login = _required_text(login_account, "login_account")
         profile = _required_text(session_profile, "session_profile")
         target = _date(target_date, "target_date")
@@ -284,6 +294,8 @@ class FinanceRepository(FinanceEvolutionMixin):
 
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value, account):
+            raise ValueError("finance source is not enabled")
         target = _date(target_date, "target_date")
         code = _required_text(error_code, "error_code")
         message = _required_text(error_message, "error_message")
@@ -553,6 +565,8 @@ class FinanceRepository(FinanceEvolutionMixin):
             run = self._load_run_for_update(cursor, run_id)
             expected_platform = str(run["platform"])
             expected_account = str(run["account_id"])
+            if not is_finance_source_enabled(expected_platform, expected_account):
+                raise FinanceSnapshotRejectedError("finance source is not enabled")
             expected_login = str(run.get("login_account") or "")
             expected_date = _date(run["target_date"], "target_date")
             for record in rows:
@@ -697,7 +711,11 @@ class FinanceRepository(FinanceEvolutionMixin):
             )
         now = _now()
         with self._connection() as connection, _managed_cursor(connection) as cursor:
-            self._load_run_for_update(cursor, run_id)
+            run = self._load_run_for_update(cursor, run_id)
+            if not is_finance_source_enabled(
+                str(run["platform"]), str(run["account_id"])
+            ):
+                raise FinanceSnapshotRejectedError("finance source is not enabled")
             report["metrics"]["written_row_count"] = 0
             cursor.execute(
                 """
@@ -794,6 +812,8 @@ class FinanceRepository(FinanceEvolutionMixin):
     ) -> list[dt.date]:
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value, account):
+            raise ValueError("finance source is not enabled")
         start = _date(start_date, "start_date")
         end = _date(end_date, "end_date")
         if start > end:
@@ -871,6 +891,8 @@ class FinanceRepository(FinanceEvolutionMixin):
 
         platform_value = Platform(platform)
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value.value, account):
+            raise ValueError("finance source is not enabled")
         target = _date(target_date, "target_date")
         keys = sorted(
             {
@@ -1061,6 +1083,8 @@ class FinanceRepository(FinanceEvolutionMixin):
             fee_item = _fetchone(cursor)
             if not fee_item:
                 raise FinanceNotFoundError("fee item does not exist")
+            if str(fee_item["platform"]) not in enabled_finance_platforms():
+                raise ValueError("fee item's finance source is not enabled")
             source_direction = Direction(str(fee_item["direction"]))
             if include_in_cost and source_direction is not Direction.EXPENSE:
                 raise ValueError("only expense mappings may be included in cost")
@@ -1127,7 +1151,11 @@ class FinanceRepository(FinanceEvolutionMixin):
         explicit = tuple(seeds) if seeds is not None else None
         seeded = 0
         with self._connection() as connection, _managed_cursor(connection) as cursor:
-            cursor.execute("SELECT * FROM finance_fee_items ORDER BY id")
+            enabled_clause, enabled_params = _enabled_platform_clause("platform")
+            cursor.execute(
+                f"SELECT * FROM finance_fee_items WHERE {enabled_clause} ORDER BY id",
+                tuple(enabled_params),
+            )
             for row in _fetchall(cursor):
                 key = FeeItemKey(
                     platform=Platform(str(row["platform"])),
@@ -1191,8 +1219,11 @@ class FinanceRepository(FinanceEvolutionMixin):
     """
 
     def _entry_filters(self, query: FinanceQuery) -> tuple[list[str], list[Any]]:
-        clauses = ["t.business_date BETWEEN %s AND %s"]
-        params: list[Any] = [query.start_date, query.end_date]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="t.platform", account_column="t.account_id"
+        )
+        clauses = ["t.business_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [query.start_date, query.end_date, *enabled_params]
         if query.platform:
             clauses.append("t.platform = %s")
             params.append(query.platform.value)
@@ -1236,8 +1267,20 @@ class FinanceRepository(FinanceEvolutionMixin):
         return result
 
     def _failed_sources(self, query: FinanceQuery) -> list[dict[str, Any]]:
-        clauses = ["r.target_date BETWEEN %s AND %s", "r.status = %s"]
-        params: list[Any] = [query.start_date, query.end_date, SyncStatus.FAILED.value]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        clauses = [
+            "r.target_date BETWEEN %s AND %s",
+            "r.status = %s",
+            enabled_clause,
+        ]
+        params: list[Any] = [
+            query.start_date,
+            query.end_date,
+            SyncStatus.FAILED.value,
+            *enabled_params,
+        ]
         if query.platform:
             clauses.append("r.platform = %s")
             params.append(query.platform.value)
@@ -1260,8 +1303,11 @@ class FinanceRepository(FinanceEvolutionMixin):
             return [self._serialize_general_row(row) for row in _fetchall(cursor)]
 
     def _freshness(self, query: FinanceQuery) -> dict[str, Any]:
-        clauses = ["r.target_date BETWEEN %s AND %s"]
-        params: list[Any] = [query.start_date, query.end_date]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        clauses = ["r.target_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [query.start_date, query.end_date, *enabled_params]
         if query.platform:
             clauses.append("r.platform = %s")
             params.append(query.platform.value)
@@ -1332,8 +1378,18 @@ class FinanceRepository(FinanceEvolutionMixin):
             GROUP BY t.platform, t.account_id
             ORDER BY t.platform, t.account_id
         """
-        presence_clauses = ["r.target_date BETWEEN %s AND %s"]
-        presence_params: list[Any] = [query.start_date, query.end_date]
+        presence_enabled_clause, presence_enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        presence_clauses = [
+            "r.target_date BETWEEN %s AND %s",
+            presence_enabled_clause,
+        ]
+        presence_params: list[Any] = [
+            query.start_date,
+            query.end_date,
+            *presence_enabled_params,
+        ]
         if query.platform:
             presence_clauses.append("r.platform = %s")
             presence_params.append(query.platform.value)
@@ -1453,8 +1509,18 @@ class FinanceRepository(FinanceEvolutionMixin):
             GROUP BY t.business_date
             ORDER BY t.business_date
         """
-        presence_clauses = ["r.target_date BETWEEN %s AND %s"]
-        presence_params: list[Any] = [query.start_date, query.end_date]
+        presence_enabled_clause, presence_enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        presence_clauses = [
+            "r.target_date BETWEEN %s AND %s",
+            presence_enabled_clause,
+        ]
+        presence_params: list[Any] = [
+            query.start_date,
+            query.end_date,
+            *presence_enabled_params,
+        ]
         if query.platform:
             presence_clauses.append("r.platform = %s")
             presence_params.append(query.platform.value)
@@ -1634,8 +1700,9 @@ class FinanceRepository(FinanceEvolutionMixin):
             raise ValueError("limit must be between 1 and 2000")
         if safe_offset < 0:
             raise ValueError("offset cannot be negative")
-        clauses = ["1 = 1"]
-        params: list[Any] = []
+        enabled_clause, enabled_params = _enabled_platform_clause("fi.platform")
+        clauses = [enabled_clause]
+        params: list[Any] = list(enabled_params)
         if platform is not None:
             clauses.append("fi.platform = %s")
             params.append(Platform(platform).value)
@@ -1706,15 +1773,18 @@ class FinanceRepository(FinanceEvolutionMixin):
                 if isinstance(value, str) and len(value) >= 7:
                     item[field_name] = value[:7]
             items.append(item)
+        booking_fee_items: dict[str, list[str]] = {}
+        enabled_platforms = enabled_finance_platforms()
+        if Platform.RONGHUI.value in enabled_platforms:
+            booking_fee_items[Platform.RONGHUI.value] = sorted(RONGHUI_BOOKING_FEE_ITEMS)
+        if Platform.YUNDA.value in enabled_platforms:
+            booking_fee_items[Platform.YUNDA.value] = sorted(YUNDA_BOOKING_FEE_ITEMS)
         return {
             "items": items,
             "total": total,
             "limit": safe_limit,
             "offset": safe_offset,
-            "booking_fee_items": {
-                Platform.RONGHUI.value: sorted(RONGHUI_BOOKING_FEE_ITEMS),
-                Platform.YUNDA.value: sorted(YUNDA_BOOKING_FEE_ITEMS),
-            },
+            "booking_fee_items": booking_fee_items,
             "fee_subjects": self.list_fee_subjects(platform=platform),
         }
 

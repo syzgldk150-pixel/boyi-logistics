@@ -225,6 +225,8 @@
 - 查询区/标签：`查询条件`、`财务中心`、`网点名称`、`网点类型`、`所属片区`、`启用状态`、`所属分拨中心`、`只查一级网点`、`只查直营财务中心`、`按运单查询`、`查询时间范围`、`结算日期`
 - 首屏字段：`SUM_CENTER_NAME_CODE$text`、`SUM_SITE_NAME_CODE$text`、`SUM_SITE_TYPE$text`、`AREA_NAME$text`、`BL_OPEN$text`、`SUPERIOR_SITE_CODE$text`
 - MiniUI text/value 对：`SUM_CENTER_NAME_CODE` -> text=`SUM_CENTER_NAME_CODE$text` / value=`SUM_CENTER_NAME_CODE$value` / submit=`CENTER_NAME_CODE`；`SUM_SITE_NAME_CODE` -> text=`SUM_SITE_NAME_CODE$text` / value=`SUM_SITE_NAME_CODE$value` / submit=`SITE_NAME_CODE`；`SUM_SITE_TYPE` -> text=`SUM_SITE_TYPE$text` / value=`SUM_SITE_TYPE$value` / submit=`SITE_TYPE`；`AREA_NAME` -> text=`AREA_NAME$text` / value=`AREA_NAME$value` / submit=`AREA_NAME`；`BL_OPEN` -> text=`BL_OPEN$text` / value=`BL_OPEN$value` / submit=`BL_OPEN`；`SUPERIOR_SITE_CODE` -> text=`SUPERIOR_SITE_CODE$text` / value=`SUPERIOR_SITE_CODE$value` / submit=`SUPERIOR_SITE_CODE`；`SITE_CODE_ONE` -> value=`SITE_CODE_ONE$value` / submit=`SITE_CODE_ONE`；`SUPERIOR_DIRECTLY` -> value=`SUPERIOR_DIRECTLY$value` / submit=`SUPERIOR_DIRECTLY`
+- “明细查询”真实 Grid 列字段：流水号 `BALANCE_ORDER`、运单编号 `BILL_CODE`、结算日期 `BALANCE_DATE`、账单日期 `FINANCE_DATE`、结算类型 `BALANCE_TYPE`、前余额 `BALANCE_PRE_CONFIRM_MONEY`、金额 `BALANCE_CUR_MONEY_TEXT`、后余额 `BALANCE_BACK_CONFIRM_MONEY`。
+- 页面明细中的金额为带符号金额，真实行满足 `BALANCE_PRE_CONFIRM_MONEY + BALANCE_CUR_MONEY_TEXT = BALANCE_BACK_CONFIRM_MONEY`；自动化不得改用旧 `SETTLEMENT_AMOUNT` 或无证据的近似字段。
 - 查询按钮：`预付款余额查询`、`明细查询`、`统计查询`、`查询`、`查询`、`查询`
 - 导出类按钮：`导出`、`导出`、`导出`
 - Grid / 子 Grid：首屏未稳定拿到列头，通常需要切页签、先查询或等待二次渲染。
