@@ -63,7 +63,7 @@ $BlockedFileNames = @(
 )
 $BlockedExtensions = @(
     ".log", ".pyc", ".xlsx", ".xls", ".xlsm", ".csv", ".tsv", ".pdf", ".parquet",
-    ".feather", ".pkl", ".pickle", ".db", ".sqlite", ".sqlite3", ".webp", ".tif",
+    ".feather", ".pkl", ".pickle", ".db", ".sqlite", ".sqlite3", ".tif",
     ".tiff", ".bmp", ".zip", ".7z", ".rar", ".tar", ".gz"
 )
 
@@ -183,7 +183,7 @@ function Test-BlockedPublishPath([string]$RepoRelativePath) {
     if ($BlockedExtensions -contains $extension) {
         return $true
     }
-    if ($extension -in @(".png", ".jpg", ".jpeg")) {
+    if ($extension -in @(".png", ".jpg", ".jpeg", ".webp")) {
         return -not $normalized.StartsWith("console/static/", [StringComparison]::Ordinal)
     }
     return $false
