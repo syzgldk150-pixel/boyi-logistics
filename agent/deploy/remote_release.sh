@@ -12,6 +12,7 @@ BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
 LEGACY_BACKUP_ROOT="/home/boyce/.boyi-backups"
 LEGACY_AGENT_BACKUP_ROOT="/home/boyce/agent_backups"
+LEGACY_FINANCE_ETL_ROOT="/home/boyce/agent/finance_reconciliation"
 VENV_ROOT="/home/boyce/.boyi-venvs"
 PIP_CACHE_ROOT="/home/boyce/.cache/pip"
 PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
@@ -413,6 +414,39 @@ backup_managed_sources() {
   done
 }
 
+retire_legacy_finance_etl() {
+  local target retired_path="${BACKUP_DIR}/retired/finance_reconciliation"
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    [[ "${target}" == "agent" ]] || continue
+    [[ "${LEGACY_FINANCE_ETL_ROOT}" == "/home/boyce/agent/finance_reconciliation" ]] || {
+      echo "Refusing unexpected legacy finance ETL path: ${LEGACY_FINANCE_ETL_ROOT}" >&2
+      return 1
+    }
+    [[ -e "${LEGACY_FINANCE_ETL_ROOT}" ]] || return 0
+    [[ ! -e "${retired_path}" ]] || {
+      echo "Legacy finance ETL rollback path already exists: ${retired_path}" >&2
+      return 1
+    }
+    mkdir -p "$(dirname "${retired_path}")"
+    mv -- "${LEGACY_FINANCE_ETL_ROOT}" "${retired_path}"
+    return 0
+  done
+}
+
+restore_legacy_finance_etl() {
+  local retired_path="${BACKUP_DIR}/retired/finance_reconciliation"
+  [[ -e "${retired_path}" ]] || return 0
+  [[ "${LEGACY_FINANCE_ETL_ROOT}" == "/home/boyce/agent/finance_reconciliation" ]] || {
+    echo "Refusing unexpected legacy finance ETL restore path: ${LEGACY_FINANCE_ETL_ROOT}" >&2
+    return 1
+  }
+  [[ ! -e "${LEGACY_FINANCE_ETL_ROOT}" ]] || {
+    echo "Refusing to overwrite legacy finance ETL during rollback" >&2
+    return 1
+  }
+  mv -- "${retired_path}" "${LEGACY_FINANCE_ETL_ROOT}"
+}
+
 run_static_preflight() {
   local target runtime_python shared_python=""
   for target in "${REQUESTED_TARGETS[@]}"; do
@@ -572,6 +606,7 @@ rollback() {
       done
       restore_virtualenvs
     fi
+    restore_legacy_finance_etl || echo "Failed to restore legacy finance ETL rollback data" >&2
     local scope root new_manifest backup_scope relative
     for scope in "${SCOPES[@]}"; do
       root="${ROOTS[$scope]}"
@@ -619,6 +654,8 @@ RELEASE_STAGE="build_release_virtualenvs"
 build_release_virtualenvs
 
 MUTATION_STARTED=1
+RELEASE_STAGE="retire_legacy_finance_etl"
+retire_legacy_finance_etl
 for scope in "${SCOPES[@]}"; do
   RELEASE_STAGE="sync_scope:${scope}"
   sync_scope "${scope}"
