@@ -335,13 +335,30 @@ class AgentCore:
             elif not result.get("success"):
                 error_code = str(result.get("error_code") or "FINANCE_SYNC_FAILED")[:64]
                 if params.get("_startup_catchup"):
-                    diagnostic_stage = str(result.get("diagnostic_stage") or "unavailable")[:64]
-                    diagnostic_type = str(result.get("diagnostic_type") or "unavailable")[:64]
+                    diagnostic_data = result.get("data")
+                    if not isinstance(diagnostic_data, Mapping):
+                        diagnostic_data = {}
+                    diagnostic_stage = str(
+                        result.get("diagnostic_stage")
+                        or diagnostic_data.get("diagnostic_stage")
+                        or "unavailable"
+                    )[:64]
+                    diagnostic_type = str(
+                        result.get("diagnostic_type")
+                        or diagnostic_data.get("diagnostic_type")
+                        or "unavailable"
+                    )[:64]
+                    diagnostic_trace = redact_text(
+                        result.get("diagnostic_trace")
+                        or diagnostic_data.get("diagnostic_trace")
+                        or "unavailable"
+                    )[:1000]
                     logger.warning(
-                        "finance startup catch-up alert suppressed: code=%s stage=%s error_type=%s",
+                        "finance startup catch-up alert suppressed: code=%s stage=%s error_type=%s trace=%s",
                         error_code,
                         diagnostic_stage,
                         diagnostic_type,
+                        diagnostic_trace,
                     )
                 else:
                     publish_finance_alert(

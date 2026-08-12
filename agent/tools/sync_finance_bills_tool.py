@@ -182,6 +182,7 @@ def run_sync_finance_bills(
             ),
             "diagnostic_stage": diagnostic["stage"],
             "diagnostic_type": diagnostic["error_type"],
+            "diagnostic_trace": diagnostic["trace"],
         }
 
 
