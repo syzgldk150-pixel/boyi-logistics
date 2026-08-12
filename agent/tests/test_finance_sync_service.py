@@ -196,7 +196,11 @@ class _Adapter:
 
     def discover(self):
         if self.discover_error:
-            raise FinanceCaptureError("AUTH_REQUIRED", "fixture authentication unavailable")
+            raise FinanceCaptureError(
+                "AUTH_REQUIRED",
+                "fixture authentication unavailable",
+                stage="page_discovery",
+            )
         if self.empty_site:
             return {"source_site_code": "", "source_site_name": ""}
         return {"source_site_code": "fixture-site", "source_site_name": "Fixture Site"}
@@ -277,6 +281,24 @@ class FinanceSyncServiceTests(unittest.TestCase):
         self.assertEqual(2, result["successful_runs"])
         self.assertEqual(1, result["failed_runs"])
         self.assertEqual(2, len(repository.commits))
+
+    def test_all_failures_surface_safe_first_capture_stage(self):
+        repository = _Repository()
+        service = self._service(repository, lambda binding: _Adapter(binding, discover_error=True))
+
+        with self.assertRaises(FinanceSyncError) as caught:
+            service.run(
+                {
+                    "mode": "sync",
+                    "target_date": "2026-07-11",
+                    "rescan_days": 1,
+                    "account_id": "price_default",
+                }
+            )
+
+        self.assertEqual("AUTH_REQUIRED", caught.exception.code)
+        self.assertIn("fixture authentication unavailable", str(caught.exception))
+        self.assertIn("stage=page_discovery", str(caught.exception))
 
     def test_account_binding_failure_is_recorded_without_blocking_other_roles(self):
         repository = _Repository()
