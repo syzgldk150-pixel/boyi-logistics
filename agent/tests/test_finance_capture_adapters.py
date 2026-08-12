@@ -4,20 +4,32 @@ import datetime as dt
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from agent.tms_runtime.scripts import finance_live_capture as finance_live_capture_module
 
 from agent.tms_runtime.scripts.finance_capture_common import (
     FinanceCaptureError,
+    amount_storage_text,
     paginate_by_source_key,
     response_json,
     validate_page_identity,
 )
 from agent.tms_runtime.scripts.finance_live_capture import (
+    RONGHUI_FIELD_BINDINGS,
+    RonghuiLiveFinanceAdapter,
+    _discover_ronghui_summary_fields,
     _format_identity_evidence,
     _ronghui_public_identity,
     _ronghui_request_template,
     _ronghui_schema_evidence,
 )
-from agent.tms_runtime.scripts.ronghui_finance_adapter import capture_ronghui_day
+from agent.tms_runtime.scripts.ronghui_finance_adapter import (
+    RONGHUI_DETAIL_CALL_ID,
+    RONGHUI_SUMMARY_CALL_ID,
+    capture_ronghui_day,
+)
 from agent.tms_runtime.scripts.yunda_finance_adapter import capture_yunda_day
 
 
@@ -156,15 +168,19 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         evidence = _ronghui_schema_evidence(
             """
             callId: 'FIND_BALANCE_QRY_RENAMED'
-            columns: ['BALANCE_DATE', 'SETTLEMENT_FEE', 'AFTER_AMOUNT']
+            columns: ['BALANCE_DATE', 'BALANCE_TYPE', 'BALANCE_BACK_CONFIRM_MONEY']
             account: 'private-sample-account'
             """,
-            expected_markers={"FIND_BALANCE_QRY_OLD", "BALANCE_DATE", "BEFORE_AMOUNT"},
+            expected_markers={
+                "FIND_BALANCE_QRY_OLD",
+                "BALANCE_DATE",
+                "BALANCE_PRE_CONFIRM_MONEY",
+            },
         )
 
         self.assertIn("call_ids=FIND_BALANCE_QRY_RENAMED", evidence)
         self.assertIn("BALANCE_DATE", evidence)
-        self.assertIn("missing=BEFORE_AMOUNT,FIND_BALANCE_QRY_OLD", evidence)
+        self.assertIn("missing=BALANCE_PRE_CONFIRM_MONEY,FIND_BALANCE_QRY_OLD", evidence)
         self.assertNotIn("private-sample-account", evidence)
 
     def test_pagination_overlap_deduplicates_by_stable_key(self):
@@ -230,22 +246,19 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
             )
         self.assertEqual("UNVERIFIED_TOTAL", list_caught.exception.code)
 
+    def test_missing_amount_uses_explicit_capture_error_code(self):
+        with self.assertRaises(FinanceCaptureError) as caught:
+            amount_storage_text("", field="fixture_amount")
+
+        self.assertEqual("AMOUNT_MISSING", caught.exception.code)
+        self.assertEqual("normalize", caught.exception.stage)
+
     def test_ronghui_fixture_normalizes_whitelisted_fields(self):
         payload = _fixture("ronghui_detail_page.json")
         result = capture_ronghui_day(
             account_id="fixture-ronghui",
             target_date=dt.date(2026, 7, 11),
-            field_bindings={
-                "trade_time": "BALANCE_DATE",
-                "fee_name": "SETTLEMENT_TYPE",
-                "amount": "SETTLEMENT_AMOUNT",
-                "bill_time": "BILL_DATE",
-                "waybill_no": "BILL_CODE",
-                "old_amount": "BEFORE_AMOUNT",
-                "new_amount": "AFTER_AMOUNT",
-                "balance_order": "BALANCE_ORDER",
-                "bill_code": "BILL_CODE",
-            },
+            field_bindings=RONGHUI_FIELD_BINDINGS,
             source_site_code="fixture-site",
             source_site_name="Fixture Site",
             login_site_code="fixture-site",
@@ -261,21 +274,13 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
     def test_ronghui_field_drift_reports_only_response_keys(self):
         payload = _fixture("ronghui_detail_page.json")
         payload["rows"][0]["private_value"] = "do-not-log-this-value"
-        del payload["rows"][0]["SETTLEMENT_AMOUNT"]
+        del payload["rows"][0]["BALANCE_CUR_MONEY_TEXT"]
 
         with self.assertRaises(FinanceCaptureError) as caught:
             capture_ronghui_day(
                 account_id="fixture-ronghui",
                 target_date=dt.date(2026, 7, 11),
-                field_bindings={
-                    "trade_time": "BALANCE_DATE",
-                    "fee_name": "SETTLEMENT_TYPE",
-                    "amount": "SETTLEMENT_AMOUNT",
-                    "old_amount": "BEFORE_AMOUNT",
-                    "new_amount": "AFTER_AMOUNT",
-                    "balance_order": "BALANCE_ORDER",
-                    "bill_code": "BILL_CODE",
-                },
+                field_bindings=RONGHUI_FIELD_BINDINGS,
                 source_site_code="fixture-site",
                 source_site_name="Fixture Site",
                 login_site_code="fixture-site",
@@ -284,9 +289,100 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
             )
 
         self.assertEqual("FIELD_DRIFT", caught.exception.code)
-        self.assertIn("SETTLEMENT_AMOUNT", str(caught.exception))
+        self.assertIn("BALANCE_CUR_MONEY_TEXT", str(caught.exception))
         self.assertIn("private_value", str(caught.exception))
         self.assertNotIn("do-not-log-this-value", str(caught.exception))
+
+    def test_ronghui_rejects_balance_equation_mismatch_before_commit(self):
+        payload = _fixture("ronghui_detail_page.json")
+        payload["rows"][0]["BALANCE_BACK_CONFIRM_MONEY"] = "99.99"
+
+        with self.assertRaises(FinanceCaptureError) as caught:
+            capture_ronghui_day(
+                account_id="fixture-ronghui",
+                target_date=dt.date(2026, 7, 11),
+                field_bindings=RONGHUI_FIELD_BINDINGS,
+                source_site_code="fixture-site",
+                source_site_name="Fixture Site",
+                login_site_code="fixture-site",
+                account_match=True,
+                fetch_detail_page=lambda _page, _size: payload,
+            )
+
+        self.assertEqual("BALANCE_EQUATION_MISMATCH", caught.exception.code)
+        self.assertEqual("ronghui_normalize", caught.exception.stage)
+
+    def test_ronghui_summary_discovery_uses_real_detail_fields(self):
+        detail_rows = _fixture("ronghui_detail_page.json")["rows"]
+        summaries = [
+            {"FEE_LABEL": "收干线费", "SIGNED_TOTAL": "-12.30", "NOT_AMOUNT": "fixture"},
+            {"FEE_LABEL": "收操作费", "SIGNED_TOTAL": "-0.50", "NOT_AMOUNT": "fixture"},
+        ]
+
+        fee_key, amount_key = _discover_ronghui_summary_fields(
+            summaries,
+            detail_rows,
+            field_bindings=RONGHUI_FIELD_BINDINGS,
+        )
+
+        self.assertEqual("FEE_LABEL", fee_key)
+        self.assertEqual("SIGNED_TOTAL", amount_key)
+
+    def test_ronghui_summary_discovery_reports_missing_amount_explicitly(self):
+        detail_rows = _fixture("ronghui_detail_page.json")["rows"]
+        summaries = [{"FEE_LABEL": "收干线费", "SIGNED_TOTAL": "-12.30"}]
+
+        for mutation, expected_code in (
+            (lambda row: row.pop("BALANCE_CUR_MONEY_TEXT"), "FIELD_DRIFT"),
+            (lambda row: row.__setitem__("BALANCE_CUR_MONEY_TEXT", ""), "AMOUNT_MISSING"),
+        ):
+            rows = [dict(row) for row in detail_rows]
+            mutation(rows[0])
+            with self.subTest(expected_code=expected_code), self.assertRaises(FinanceCaptureError) as caught:
+                _discover_ronghui_summary_fields(
+                    summaries,
+                    rows,
+                    field_bindings=RONGHUI_FIELD_BINDINGS,
+                )
+            self.assertEqual(expected_code, caught.exception.code)
+            self.assertEqual("summary_discovery", caught.exception.stage)
+
+    def test_ronghui_live_fetch_day_uses_real_detail_schema_before_normalization(self):
+        detail_payload = _fixture("ronghui_detail_page.json")
+        summary_payload = {
+            "total": 2,
+            "rows": [
+                {"FEE_LABEL": "收干线费", "SIGNED_TOTAL": "-12.30", "NOT_AMOUNT": "fixture"},
+                {"FEE_LABEL": "收操作费", "SIGNED_TOTAL": "-0.50", "NOT_AMOUNT": "fixture"},
+            ],
+        }
+        adapter = RonghuiLiveFinanceAdapter(SimpleNamespace(account_id="fixture-ronghui"))
+        adapter._session = object()
+        adapter._headers = {}
+        adapter._source_site_code = "fixture-site"
+        adapter._source_site_name = "Fixture Site"
+        adapter._page_context = {
+            "url": "https://tms.ronghuiwl.com/widget/home?fixture=1",
+            "html": (
+                f"/dataQuery/findPageByCallId?id={RONGHUI_DETAIL_CALL_ID} "
+                f"/dataQuery/findPageByCallId?id={RONGHUI_SUMMARY_CALL_ID} "
+                "BALANCE_DATE SITE_NAME_CODE pageIndex pageSize"
+            ),
+        }
+
+        def replay(_session, template, **_kwargs):
+            if RONGHUI_DETAIL_CALL_ID in template.url:
+                return detail_payload
+            if RONGHUI_SUMMARY_CALL_ID in template.url:
+                return summary_payload
+            self.fail(f"unexpected call id in {template.url}")
+
+        with patch.object(finance_live_capture_module, "_replay_ronghui_request", side_effect=replay):
+            result = adapter.fetch_day(dt.date(2026, 7, 11))
+
+        self.assertEqual(2, len(result.transactions))
+        self.assertEqual(2, len(result.summaries))
+        self.assertEqual("12.3000", result.transactions[0]["expend"])
 
     def test_yunda_fixture_filters_cross_midnight_and_preserves_required_fields(self):
         payload = _fixture("yunda_detail_page.json")

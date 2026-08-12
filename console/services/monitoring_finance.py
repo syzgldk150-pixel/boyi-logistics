@@ -1,6 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from shared.finance.sources import enabled_finance_source_specs
 
 
 class MonitoringFinanceServiceMixin:
@@ -135,12 +136,19 @@ class MonitoringFinanceServiceMixin:
     def _render_finance(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         today = datetime.now().date()
         template = self.template_env.get_template("finance.html")
+        platform_options = []
+        for source in enabled_finance_source_specs():
+            if not any(item["value"] == source.platform for item in platform_options):
+                platform_options.append(
+                    {"value": source.platform, "label": source.platform_label}
+                )
         body = template.render(
             app_title=self.settings.app_title,
             today=today.isoformat(),
             month_start=today.replace(day=1).isoformat(),
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
+            finance_platforms=platform_options,
         )
         self._send_html(handler, body)
 

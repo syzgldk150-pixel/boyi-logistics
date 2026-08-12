@@ -13,6 +13,34 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from shared.finance.money import ZERO, format_money
+from shared.finance.sources import (
+    enabled_finance_platforms,
+    enabled_finance_source_specs,
+    is_finance_source_enabled,
+)
+
+
+def _enabled_platform_clause(column: str) -> tuple[str, list[Any]]:
+    platforms = enabled_finance_platforms()
+    if not platforms:
+        return "1 = 0", []
+    placeholders = ", ".join(["%s"] * len(platforms))
+    return f"{column} IN ({placeholders})", list(platforms)
+
+
+def _enabled_source_clause(
+    *, platform_column: str, account_column: str
+) -> tuple[str, list[Any]]:
+    specs = enabled_finance_source_specs()
+    if not specs:
+        return "1 = 0", []
+    pairs = " OR ".join(
+        f"({platform_column} = %s AND {account_column} = %s)" for _ in specs
+    )
+    return (
+        f"({pairs})",
+        [value for spec in specs for value in (spec.platform, spec.account_id)],
+    )
 
 
 def _row(cursor: Any, value: Any) -> dict[str, Any] | None:
@@ -162,6 +190,8 @@ class FinanceEvolutionMixin:
         run_id = int(run["id"])
         platform = str(run["platform"])
         account_id = str(run["account_id"])
+        if not is_finance_source_enabled(platform, account_id):
+            raise ValueError("finance source is not enabled")
         business_date = run["target_date"]
         now = _now()
 
@@ -385,11 +415,14 @@ class FinanceEvolutionMixin:
             cursor = connection.cursor()
             try:
                 cursor.execute(
-                    "SELECT id FROM finance_fee_items WHERE id = %s FOR UPDATE",
+                    "SELECT id, platform FROM finance_fee_items WHERE id = %s FOR UPDATE",
                     (int(fee_item_id),),
                 )
-                if not _one(cursor):
+                fee_item = _one(cursor)
+                if not fee_item:
                     raise ValueError("fee item does not exist")
+                if str(fee_item["platform"]) not in enabled_finance_platforms():
+                    raise ValueError("fee item's finance source is not enabled")
                 cursor.execute(
                     """
                     DELETE f FROM finance_waybill_facts f
@@ -513,8 +546,9 @@ class FinanceEvolutionMixin:
         }
 
     def list_fee_subjects(self, *, platform: str | None = None) -> list[dict[str, Any]]:
-        clauses = ["is_active = 1"]
-        params: list[Any] = []
+        enabled_clause, enabled_params = _enabled_platform_clause("platform")
+        clauses = ["is_active = 1", enabled_clause]
+        params: list[Any] = list(enabled_params)
         if platform:
             clauses.append("platform = %s")
             params.append(str(platform))
@@ -543,8 +577,9 @@ class FinanceEvolutionMixin:
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
+        enabled_clause, enabled_params = _enabled_platform_clause("fi.platform")
+        clauses = [enabled_clause]
+        params: list[Any] = list(enabled_params)
         if status:
             clauses.append("rc.status = %s")
             params.append(str(status))
@@ -552,7 +587,15 @@ class FinanceEvolutionMixin:
         with self._connection() as connection:
             cursor = connection.cursor()
             try:
-                cursor.execute(f"SELECT COUNT(*) AS total FROM finance_review_cases rc WHERE {where}", tuple(params))
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) AS total
+                    FROM finance_review_cases rc
+                    INNER JOIN finance_fee_items fi ON fi.id = rc.fee_item_id
+                    WHERE {where}
+                    """,
+                    tuple(params),
+                )
                 total = int((_one(cursor) or {}).get("total") or 0)
                 cursor.execute(
                     f"""
@@ -613,6 +656,21 @@ class FinanceEvolutionMixin:
             try:
                 cursor.execute(
                     """
+                    SELECT rc.id, fi.platform
+                    FROM finance_review_cases rc
+                    INNER JOIN finance_fee_items fi ON fi.id = rc.fee_item_id
+                    WHERE rc.id = %s AND rc.status = 'open'
+                    FOR UPDATE
+                    """,
+                    (int(review_case_id),),
+                )
+                review_case = _one(cursor)
+                if not review_case:
+                    raise ValueError("only an open review case can be rejected")
+                if str(review_case["platform"]) not in enabled_finance_platforms():
+                    raise ValueError("review case's finance source is not enabled")
+                cursor.execute(
+                    """
                     UPDATE finance_review_cases
                     SET status = 'rejected', reviewed_by = %s, reviewed_at = %s,
                         review_reason = %s, updated_at = %s
@@ -626,6 +684,9 @@ class FinanceEvolutionMixin:
                 cursor.close()
 
     def list_unnotified_anomalies(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="a.platform", account_column="a.account_id"
+        )
         with self._connection() as connection:
             cursor = connection.cursor()
             try:
@@ -638,9 +699,10 @@ class FinanceEvolutionMixin:
                     FROM finance_anomalies a
                     LEFT JOIN finance_fee_items fi ON fi.id = a.fee_item_id
                     WHERE a.status = 'open' AND a.notified_at IS NULL
+                      AND {enabled_clause}
                     ORDER BY a.first_seen_at, a.id LIMIT %s
-                    """,
-                    (max(1, min(int(limit), 200)),),
+                    """.format(enabled_clause=enabled_clause),
+                    (*enabled_params, max(1, min(int(limit), 200))),
                 )
                 rows = _all(cursor)
             finally:
@@ -740,8 +802,11 @@ class FinanceEvolutionMixin:
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        clauses = ["f.business_date BETWEEN %s AND %s"]
-        params: list[Any] = [start_date, end_date]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="f.platform", account_column="f.account_id"
+        )
+        clauses = ["f.business_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [start_date, end_date, *enabled_params]
         for column, value in (("f.platform", platform), ("f.account_id", account_id), ("f.waybill_no", waybill_no)):
             if value:
                 clauses.append(f"{column} = %s")
@@ -771,8 +836,11 @@ class FinanceEvolutionMixin:
         return {"items": [_serialize(item) for item in rows], "total": total, "limit": int(limit), "offset": int(offset)}
 
     def get_evolution_summary(self, query: Any) -> dict[str, Any]:
-        clauses = ["t.business_date BETWEEN %s AND %s"]
-        params: list[Any] = [query.start_date, query.end_date]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="t.platform", account_column="t.account_id"
+        )
+        clauses = ["t.business_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [query.start_date, query.end_date, *enabled_params]
         if query.platform:
             clauses.append("t.platform = %s")
             params.append(query.platform.value)
@@ -819,10 +887,19 @@ class FinanceEvolutionMixin:
         }
 
     def get_knowledge_snapshot(self) -> dict[str, Any]:
+        enabled_clause, enabled_params = _enabled_platform_clause("fi.platform")
         with self._connection() as connection:
             cursor = connection.cursor()
             try:
-                cursor.execute("SELECT COALESCE(MAX(id), 0) AS version_no FROM finance_mapping_audit_logs")
+                cursor.execute(
+                    """
+                    SELECT COALESCE(MAX(log.id), 0) AS version_no
+                    FROM finance_mapping_audit_logs log
+                    INNER JOIN finance_fee_items fi ON fi.id = log.fee_item_id
+                    WHERE {enabled_clause}
+                    """.format(enabled_clause=enabled_clause),
+                    tuple(enabled_params),
+                )
                 version_no = int((_one(cursor) or {}).get("version_no") or 0)
                 cursor.execute(
                     """
@@ -836,10 +913,12 @@ class FinanceEvolutionMixin:
                     INNER JOIN finance_fee_items fi ON fi.id = fm.fee_item_id
                     INNER JOIN finance_fee_subjects s ON s.id = fm.canonical_subject_id
                     WHERE fm.superseded_at IS NULL AND fm.mapping_status = 'bound'
+                      AND {enabled_clause}
                     ORDER BY fi.platform, fi.raw_primary_fee_name,
                              fi.raw_secondary_fee_name, fi.direction,
                              fm.effective_start_month, fm.version_no
-                    """
+                    """.format(enabled_clause=enabled_clause),
+                    tuple(enabled_params),
                 )
                 rows = _all(cursor)
             finally:

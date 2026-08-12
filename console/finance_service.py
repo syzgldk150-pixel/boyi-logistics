@@ -22,6 +22,8 @@ try:
         InvalidAmountError as SharedInvalidAmountError,
         MissingAmountError as SharedMissingAmountError,
         Platform as SharedPlatform,
+        enabled_finance_platforms as shared_enabled_finance_platforms,
+        enabled_finance_source_specs as shared_enabled_finance_source_specs,
         to_decimal as shared_to_decimal,
     )
 except ModuleNotFoundError as exc:  # Shared package may be absent in isolated Console tests.
@@ -37,6 +39,8 @@ except ModuleNotFoundError as exc:  # Shared package may be absent in isolated C
     SharedInvalidAmountError = None
     SharedMissingAmountError = None
     SharedPlatform = None
+    shared_enabled_finance_platforms = None
+    shared_enabled_finance_source_specs = None
     shared_to_decimal = None
 
 
@@ -86,6 +90,35 @@ class FinanceUpstreamError(FinanceError):
     http_status = 502
 
 
+class FinancePartialFailureError(FinanceUpstreamError):
+    error_code = "FINANCE_SYNC_PARTIAL_FAILED"
+
+
+def _sync_error_message(payload: Mapping[str, Any], default: str) -> str:
+    error: Any = payload.get("error") or payload.get("message")
+    if isinstance(error, Mapping):
+        error = error.get("message") or error.get("error")
+    message = str(error or "").strip()
+    return message or default
+
+
+def _raise_for_sync_failure(payload: Mapping[str, Any]) -> None:
+    status = str(payload.get("status") or "").strip().lower()
+    error_code = str(payload.get("error_code") or "").strip().upper()
+    if (
+        status == "partial_failed"
+        or payload.get("partial_success") is True
+        or error_code == "FINANCE_SYNC_PARTIAL_FAILED"
+    ):
+        raise FinancePartialFailureError(
+            "财务同步部分失败，请在同步记录中查看失败账号和日期。"
+        )
+    if payload.get("ok") is False or payload.get("success") is False or status == "failed":
+        raise FinanceUpstreamError(
+            _sync_error_message(payload, "财务同步失败，请查看同步记录。")
+        )
+
+
 def _first(query: Mapping[str, Any], name: str) -> str:
     value = query.get(name, "")
     if isinstance(value, (list, tuple)):
@@ -109,6 +142,33 @@ def _optional_filter(value: str, *, field_name: str, max_length: int = 128) -> s
     if len(text) > max_length or any(ord(char) < 32 for char in text):
         raise FinanceValidationError(f"{field_name}格式无效。")
     return text
+
+
+def _validate_enabled_finance_platform(platform: str | None) -> None:
+    if platform is None:
+        return
+    if not callable(shared_enabled_finance_platforms):
+        raise FinanceUnavailableError("共享财务来源注册表不可用。")
+    if platform not in shared_enabled_finance_platforms():
+        raise FinanceValidationError(f"平台 {platform} 的财务来源尚未启用。")
+
+
+def _validate_enabled_finance_account(
+    account_id: str | None, *, platform: str | None = None
+) -> None:
+    if account_id is None:
+        return
+    if not callable(shared_enabled_finance_source_specs):
+        raise FinanceUnavailableError("共享财务来源注册表不可用。")
+    matches = [
+        spec
+        for spec in shared_enabled_finance_source_specs()
+        if spec.account_id == account_id
+    ]
+    if len(matches) != 1:
+        raise FinanceValidationError(f"账号 {account_id} 不是已启用的财务来源。")
+    if platform is not None and matches[0].platform != platform:
+        raise FinanceValidationError("财务账号与平台不匹配。")
 
 
 def _enum_value(enum_class: Any, value: str | None, *, field_name: str) -> Any:
@@ -165,11 +225,15 @@ def parse_finance_filters(query: Mapping[str, Any], *, today: date | None = None
     end_date = _parse_date(end_text, field_name="结束日期")
     if end_date < start_date:
         raise FinanceValidationError("结束日期不能早于开始日期。")
+    platform = _optional_filter(_first(query, "platform"), field_name="平台", max_length=32)
+    account_id = _optional_filter(_first(query, "account_id"), field_name="账号", max_length=96)
+    _validate_enabled_finance_platform(platform)
+    _validate_enabled_finance_account(account_id, platform=platform)
     return FinanceFilters(
         start_date=start_date,
         end_date=end_date,
-        platform=_optional_filter(_first(query, "platform"), field_name="平台", max_length=32),
-        account_id=_optional_filter(_first(query, "account_id"), field_name="账号", max_length=96),
+        platform=platform,
+        account_id=account_id,
         direction=_optional_filter(_first(query, "direction"), field_name="方向", max_length=32),
         fee_level=_optional_filter(_first(query, "fee_level"), field_name="费用级别", max_length=32),
         fee_name=_optional_filter(_first(query, "fee_name"), field_name="费用项目", max_length=160),
@@ -393,6 +457,7 @@ class FinanceService:
     def list_fee_mappings(self, query: Mapping[str, Any]) -> dict[str, Any]:
         repository = self._require_repository()
         platform = _optional_filter(_first(query, "platform"), field_name="平台", max_length=32)
+        _validate_enabled_finance_platform(platform)
         effective_month = _optional_filter(
             _first(query, "effective_month"), field_name="生效月份", max_length=7
         )
@@ -599,9 +664,17 @@ class FinanceService:
         snapshot = repository.get_knowledge_snapshot()
         latest = repository.latest_knowledge_export()
         current_version = int(snapshot.get("version_no") or 0)
+        current_mapping_count = len(
+            self._ensure_rows(snapshot.get("items", []), operation="finance knowledge snapshot")
+        )
         settings = getattr(self.source_repository, "settings", None)
         mirror_valid = False
-        if latest and settings is not None and int(latest.get("version_no") or -1) == current_version:
+        if (
+            latest
+            and settings is not None
+            and int(latest.get("version_no") or -1) == current_version
+            and int(latest.get("mapping_count") or -1) == current_mapping_count
+        ):
             runtime_dir = Path(settings.runtime_dir).resolve()
             mirror = (runtime_dir / str(latest.get("relative_path") or "")).resolve()
             try:
@@ -718,6 +791,8 @@ class FinanceService:
             raise FinanceValidationError("同步请求不能包含登录账号、登录态或凭据字段。")
         platform = _optional_filter(str(body.get("platform") or ""), field_name="平台", max_length=32)
         account_id = _optional_filter(str(body.get("account_id") or ""), field_name="账号", max_length=96)
+        _validate_enabled_finance_platform(platform)
+        _validate_enabled_finance_account(account_id, platform=platform)
         if platform:
             params["platform"] = platform
         if account_id:
@@ -734,24 +809,27 @@ class FinanceService:
         )
         if not isinstance(result, dict):
             raise FinanceContractError("Agent 同步接口返回格式异常。")
-        if result.get("ok") is False or result.get("success") is False:
-            error = result.get("error") or result.get("message") or "Agent 未完成财务同步。"
-            if isinstance(error, dict):
-                error = error.get("message") or error.get("error") or str(error)
-            raise FinanceUpstreamError(str(error))
-        data = result.get("data")
-        if isinstance(data, dict) and data.get("ok") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        if isinstance(data, dict) and data.get("success") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        nested_result = data.get("result") if isinstance(data, dict) else None
-        if isinstance(nested_result, dict) and (
-            nested_result.get("ok") is False or nested_result.get("success") is False
+        _raise_for_sync_failure(result)
+
+        api_data: Any = result.get("data") if result.get("ok") is True else result
+        if not isinstance(api_data, Mapping):
+            raise FinanceContractError("Agent 同步接口未返回执行结果。")
+        _raise_for_sync_failure(api_data)
+
+        tool_data: Any = api_data
+        if (
+            isinstance(api_data.get("data"), Mapping)
+            and ("success" in api_data or "duration_s" in api_data)
         ):
-            raise FinanceUpstreamError(
-                str(nested_result.get("message") or nested_result.get("error") or "财务同步失败。")
-            )
-        return dict(data) if isinstance(data, dict) else dict(result)
+            tool_data = api_data["data"]
+        if not isinstance(tool_data, Mapping):
+            raise FinanceContractError("Agent 同步工具未返回标准结果。")
+        _raise_for_sync_failure(tool_data)
+
+        nested_result = tool_data.get("result")
+        if isinstance(nested_result, Mapping):
+            _raise_for_sync_failure(nested_result)
+        return dict(tool_data)
 
 
 def _required_text(value: Any, *, field_name: str, max_length: int = 160) -> str:

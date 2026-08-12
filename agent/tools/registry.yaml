@@ -701,7 +701,7 @@ tools:
     heavy: true
 
   - name: sync_finance_bills
-    description: "按账号管理中的四个财务角色，从融辉和韵达原始财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试"
+    description: "按当前已上线的融辉三个财务角色，从真实财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试；韵达财务尚未上线"
     parameters:
       type: object
       properties:
@@ -720,12 +720,10 @@ tools:
           description: "sync/backfill 可选结束日期；backfill 必填"
         platform:
           type: string
-          enum: [ronghui, yunda]
-          description: "sync/backfill 可选平台过滤"
+          description: "sync/backfill 可选平台过滤；运行时按共享财务来源注册表校验是否已上线"
         account_id:
           type: string
-          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem, yunda_default]
-          description: "sync/backfill 可选账号管理内部角色 ID"
+          description: "sync/backfill 可选账号管理内部角色 ID；运行时按共享财务来源注册表校验是否已上线"
         batch_id:
           type: integer
           description: "retry 模式必填的原失败批次 ID；retry 不接受其他范围过滤"

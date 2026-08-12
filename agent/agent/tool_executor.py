@@ -343,8 +343,24 @@ class ToolExecutor:
             except json.JSONDecodeError:
                 result = {"output": raw_output}
 
-            if isinstance(result, dict) and result.get("error"):
-                safe_error = redact_text(result["error"])
+            result_reports_failure = isinstance(result, dict) and (
+                result.get("success") is False
+                or result.get("ok") is False
+                or bool(result.get("error"))
+            )
+            if result_reports_failure:
+                error_value = (
+                    result.get("error")
+                    or result.get("message")
+                    or result.get("error_code")
+                    or "工具返回失败状态。"
+                )
+                safe_error_value = redact_sensitive(error_value)
+                if isinstance(safe_error_value, (dict, list)):
+                    safe_error = json.dumps(safe_error_value, ensure_ascii=False)
+                else:
+                    safe_error = redact_text(safe_error_value)
+                safe_result = redact_sensitive(result)
                 error_log_limit = 500 if name == "sync_finance_bills" else 300
                 logger.error(
                     "tool=%s | success=false | error=%s | duration=%ss",
@@ -358,7 +374,12 @@ class ToolExecutor:
                     "success": False,
                     "duration_s": duration,
                 }
-                failure = {"success": False, "error": safe_error, "data": result, "duration_s": duration}
+                failure = {
+                    "success": False,
+                    "error": safe_error,
+                    "data": safe_result,
+                    "duration_s": duration,
+                }
                 if result.get("error_code"):
                     failure["error_code"] = result.get("error_code")
                 return failure

@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, rules_and_definitions.md]
 status: active
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # 物流 Agent 代码定位索引
@@ -24,7 +24,7 @@ updated: 2026-08-12
 | 需求类型 | 优先查看文件 | 说明 |
 |------|------|------|
 | 控制台首页、模块页、导航文案、页面乱码、布局样式 | `console/app.py` `console/templates/base.html` `console/templates/portal.html` `console/static/style.css` | 页面结构和文案在模板，公共状态数据在 `app.py`，样式统一在 `style.css` |
-| 融辉 / 韵达财务模块 | `console/templates/finance.html` `console/static/finance.js` `console/static/finance.css` `console/finance_service.py` `console/app.py` `shared/finance/` `agent/tms_runtime/scripts/finance_live_capture.py` `agent/tms_runtime/scripts/ronghui_finance_adapter.py` `agent/tms_runtime/scripts/yunda_finance_adapter.py` `tools/finance_sync_service.py` `tools/sync_finance_bills_tool.py` `agent/finance_brain.py` `agent/scheduler.py` `docs/finance_module.md` | 财务唯一架构；页面入口 `/modules/finance`，包含 BI 总览、交易明细、费用项目绑定、同步记录；Console 只读取共享 MySQL 账本或调用 `sync_finance_bills`；每日 `00:10` 冻结前一业务日并重扫 7 天，缺失键、账号/网点不唯一、非 JSON 或校验不一致均显式失败；金额使用 Decimal / `DECIMAL(20,4)` |
+| 融辉财务模块（韵达待启用） | `console/templates/finance.html` `console/static/finance.js` `console/static/finance.css` `console/finance_service.py` `console/app.py` `shared/finance/` `shared/finance/sources.py` `agent/tms_runtime/scripts/finance_live_capture.py` `agent/tms_runtime/scripts/ronghui_finance_adapter.py` `agent/tms_runtime/scripts/yunda_finance_adapter.py` `tools/finance_sync_service.py` `tools/sync_finance_bills_tool.py` `agent/finance_brain.py` `agent/scheduler.py` `docs/finance_module.md` | 财务唯一架构；当前生产只启用融辉三个账号，韵达适配器保留但不调度、不展示、不计入当前失败告警；启用状态由共享来源注册表统一控制；页面入口 `/modules/finance`，包含 BI 总览、交易明细、费用项目绑定、同步记录；Console 只读取共享 MySQL 账本或调用 `sync_finance_bills`；每日 `00:10` 冻结前一业务日并重扫 7 天，缺失键、账号/网点不唯一、非 JSON 或校验不一致均显式失败；金额使用 Decimal / `DECIMAL(20,4)` |
 | 客服系统问题件工作台（融辉 / 韵达） | `console/templates/customer_service.html` `console/static/customer_service.js` `console/app.py` `agent/tms_runtime/scripts/customer_service_problem.py` `agent/tms_runtime/dispatch.py` `docs/customer_service/module_overview.md` | 页面入口 `/modules/customer-service`；默认只展示紧凑查询条和账号摘要，账号列表/日期/轮询收在折叠设置面板，问题件页不提供声音提醒；方向只保留“发布给我的”和“我发布的”，前端传 `published_to_me` / `my_published` 后由 Agent 按融辉/韵达原页入口映射；设置接口 `/customer-service/problem-settings` 只保存账号 ID 和轮询间隔；登录账号 `739010002` 只展示发布网点和通知网点都为 `邵阳操作场` 的问题件；问题件查询/详情/标记已读/回复/发布/附件上传走 Console `/customer-service/problems/*` 代理 Agent `/tms/customer_service_problem`；附件图片预览走 Console `/customer-service/problems/attachments/preview` 和 Agent `fetch_attachment`，前端不直连原站图片；账号异常保留并展示 `platform/account_label/error_code/message`；融辉唯一键只用 `GUID`，韵达唯一键只用 `prob_main_id`，缺键显式失败；涉及融辉/韵达原页抓取必须先用 `ronghui-yunda-origin-capture` skill |
 | 实时消息监控大盘（韵达 / 融辉 TMS / 今日应签未签） | `console/services/monitoring_finance.py` `console/templates/portal.html` `agent/tms_runtime/monitoring.py` `agent/tms_runtime/routes.py` | 首页通过 `/monitoring/summary` 和 `/monitoring/stream` 代理 Agent `/internal/v1/admin/monitoring/snapshot`；分类点击走 `/monitoring/detail-link` 获取原系统嵌入链接；“今日应签未签”卡片走 `/monitoring/daily-sign` 代理 `/internal/v1/admin/monitoring/daily-sign`，按表头读取“应签明细”：优先使用“问题件后应签时间”，为空时使用“R13应签收时间”，日期不晚于当天且台账尚未被 TMS 主单签收扫描关闭即计入；接口不返回明细、凭据、表格 token 或第三方请求体 |
 | 自动化页表单、任务配置、图形化配置、保存逻辑 | `console/templates/automation.html` `console/app.py` `console/database.py` `agent/scheduler.py` | 表单渲染和前端交互在模板，保存入口在 `app.py`，调度生效在 `scheduler.py` |
