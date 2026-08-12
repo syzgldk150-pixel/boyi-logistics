@@ -107,7 +107,9 @@ def _format_identity_evidence(identity: Any) -> str:
         )
     expected_length = int(evidence.get("expectedLength") or 0)
     return (
-        f"expected_len={expected_length}; keys={','.join(keys) or 'none'}; "
+        f"expected_len={expected_length}; raw_type={clean_text(evidence.get('rawType')) or 'unknown'}; "
+        f"raw_len={int(evidence.get('rawLength') or 0)}; json_parsed={bool(evidence.get('jsonParsed'))}; "
+        f"info_type={clean_text(evidence.get('infoType')) or 'unknown'}; keys={','.join(keys) or 'none'}; "
         f"candidates={'|'.join(candidates[:20]) or 'none'}"
     )[:480]
 
@@ -340,9 +342,20 @@ class RonghuiLiveFinanceAdapter:
                 raise FinanceCaptureError("AUTH_REQUIRED", "融辉财务原页登录态失效", stage="page_discovery")
             public_identity = self._page.evaluate(
                 """(expectedLogin) => {
-                    const info = window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
+                    const rawInfo = window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
                         ? $Z.user.getUserInfo()
                         : null;
+                    let info = rawInfo;
+                    let jsonParsed = false;
+                    if (typeof rawInfo === 'string') {
+                        try {
+                            const parsed = JSON.parse(rawInfo);
+                            if (parsed && typeof parsed === 'object') {
+                                info = parsed;
+                                jsonParsed = true;
+                            }
+                        } catch (_) {}
+                    }
                     const containsExact = (value) => {
                         if (Array.isArray(value)) return value.some(containsExact);
                         if (value && typeof value === 'object') return Object.values(value).some(containsExact);
@@ -378,6 +391,10 @@ class RonghuiLiveFinanceAdapter:
                         siteName: String(info && info.loginSiteName || '').trim(),
                         identityEvidence: {
                             expectedLength: String(expectedLogin || '').trim().length,
+                            rawType: rawInfo === null ? 'null' : Array.isArray(rawInfo) ? 'array' : typeof rawInfo,
+                            rawLength: typeof rawInfo === 'string' ? rawInfo.length : 0,
+                            jsonParsed,
+                            infoType: info === null ? 'null' : Array.isArray(info) ? 'array' : typeof info,
                             infoKeys: info && typeof info === 'object' ? Object.keys(info) : [],
                             candidates,
                         },
