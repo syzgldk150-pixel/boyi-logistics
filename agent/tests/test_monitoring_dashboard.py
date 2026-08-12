@@ -78,11 +78,11 @@ class MonitoringParsingTests(unittest.TestCase):
 
     def test_daily_sign_snapshot_counts_target_date_rows_from_feishu_sheet(self):
         sheet_values = [
-            ["R1", "2026-05-31 23:59:59", "食品", "纸箱", 1, "addr", "自提", ""],
-            ["R2", "2026-05-31T12:00:00", "配件", "托盘", 1, "addr", "送货", ""],
-            ["R3", "2026-06-01 00:00:00", "家具", "木架", 1, "addr", "送货", ""],
-            ["", "2026-05-31 08:00:00", "空单号", "纸箱", 1, "addr", "送货", ""],
-            ["运单编号", "应签收时间", "货物品名", "包装类型", "货物件数", "收件人地址", "送货方式", "到货件数"],
+            ["运单编号", "R13应签收时间", "问题件后应签时间", "货物品名", "包装类型", "货物件数", "收件人地址", "送货方式", "到货件数"],
+            ["R1", "2026-06-01 23:59:59", "2026-05-30 23:59:59", "食品", "纸箱", 1, "addr", "自提", 1],
+            ["R2", "2026-05-31T12:00:00", "", "配件", "托盘", 1, "addr", "送货", ""],
+            ["R3", "2026-06-01 00:00:00", "", "家具", "木架", 1, "addr", "送货", ""],
+            ["", "2026-05-31 08:00:00", "", "空单号", "纸箱", 1, "addr", "送货", ""],
         ]
 
         with (
@@ -111,7 +111,7 @@ class MonitoringParsingTests(unittest.TestCase):
         self.assertIn("飞书", result["message"])
         self.assertEqual("read_sheet", feishu_op.call_args.args[0])
         self.assertEqual("sheet-token", feishu_op.call_args.args[1]["spreadsheet_token"])
-        self.assertEqual("Sheet1!A2:H200", feishu_op.call_args.args[1]["range"])
+        self.assertEqual("Sheet1!A1:I200", feishu_op.call_args.args[1]["range"])
         self.assertNotIn("sheet-token", str(result))
 
     def test_daily_sign_snapshot_uses_daily_sign_schedule_for_refresh_metadata(self):
@@ -125,7 +125,7 @@ class MonitoringParsingTests(unittest.TestCase):
             ),
             patch(
                 "agent.tms_runtime.monitoring.feishu_operation",
-                return_value={"ok": True, "data": {"valueRange": {"values": [["R1", "2026-05-31 23:59:59"]]}}},
+                return_value={"ok": True, "data": {"valueRange": {"values": [["运单编号", "R13应签收时间", "问题件后应签时间"], ["R1", "2026-05-31 23:59:59", ""]]}}},
                 create=True,
             ),
             patch(
@@ -287,7 +287,7 @@ class MonitoringParsingTests(unittest.TestCase):
             ),
             patch(
                 "agent.tms_runtime.monitoring.feishu_operation",
-                return_value={"ok": True, "data": {"valueRange": {"values": [["R1", "2026-05-31 23:59:59"]]}}},
+                return_value={"ok": True, "data": {"valueRange": {"values": [["运单编号", "R13应签收时间", "问题件后应签时间"], ["R1", "2026-05-31 23:59:59", ""]]}}},
             ) as feishu_op,
             patch("agent.tms_runtime.monitoring.list_scheduled_tasks", return_value=[]),
             patch("agent.tms_runtime.monitoring._schedule_daily_sign_refresh") as schedule_refresh,

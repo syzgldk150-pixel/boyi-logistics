@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import hashlib
+import os
+from pathlib import Path
+import tempfile
 from typing import Any, Callable, Mapping
 
 
@@ -18,6 +22,8 @@ try:
         InvalidAmountError as SharedInvalidAmountError,
         MissingAmountError as SharedMissingAmountError,
         Platform as SharedPlatform,
+        enabled_finance_platforms as shared_enabled_finance_platforms,
+        enabled_finance_source_specs as shared_enabled_finance_source_specs,
         to_decimal as shared_to_decimal,
     )
 except ModuleNotFoundError as exc:  # Shared package may be absent in isolated Console tests.
@@ -33,6 +39,8 @@ except ModuleNotFoundError as exc:  # Shared package may be absent in isolated C
     SharedInvalidAmountError = None
     SharedMissingAmountError = None
     SharedPlatform = None
+    shared_enabled_finance_platforms = None
+    shared_enabled_finance_source_specs = None
     shared_to_decimal = None
 
 
@@ -82,6 +90,35 @@ class FinanceUpstreamError(FinanceError):
     http_status = 502
 
 
+class FinancePartialFailureError(FinanceUpstreamError):
+    error_code = "FINANCE_SYNC_PARTIAL_FAILED"
+
+
+def _sync_error_message(payload: Mapping[str, Any], default: str) -> str:
+    error: Any = payload.get("error") or payload.get("message")
+    if isinstance(error, Mapping):
+        error = error.get("message") or error.get("error")
+    message = str(error or "").strip()
+    return message or default
+
+
+def _raise_for_sync_failure(payload: Mapping[str, Any]) -> None:
+    status = str(payload.get("status") or "").strip().lower()
+    error_code = str(payload.get("error_code") or "").strip().upper()
+    if (
+        status == "partial_failed"
+        or payload.get("partial_success") is True
+        or error_code == "FINANCE_SYNC_PARTIAL_FAILED"
+    ):
+        raise FinancePartialFailureError(
+            "财务同步部分失败，请在同步记录中查看失败账号和日期。"
+        )
+    if payload.get("ok") is False or payload.get("success") is False or status == "failed":
+        raise FinanceUpstreamError(
+            _sync_error_message(payload, "财务同步失败，请查看同步记录。")
+        )
+
+
 def _first(query: Mapping[str, Any], name: str) -> str:
     value = query.get(name, "")
     if isinstance(value, (list, tuple)):
@@ -105,6 +142,33 @@ def _optional_filter(value: str, *, field_name: str, max_length: int = 128) -> s
     if len(text) > max_length or any(ord(char) < 32 for char in text):
         raise FinanceValidationError(f"{field_name}格式无效。")
     return text
+
+
+def _validate_enabled_finance_platform(platform: str | None) -> None:
+    if platform is None:
+        return
+    if not callable(shared_enabled_finance_platforms):
+        raise FinanceUnavailableError("共享财务来源注册表不可用。")
+    if platform not in shared_enabled_finance_platforms():
+        raise FinanceValidationError(f"平台 {platform} 的财务来源尚未启用。")
+
+
+def _validate_enabled_finance_account(
+    account_id: str | None, *, platform: str | None = None
+) -> None:
+    if account_id is None:
+        return
+    if not callable(shared_enabled_finance_source_specs):
+        raise FinanceUnavailableError("共享财务来源注册表不可用。")
+    matches = [
+        spec
+        for spec in shared_enabled_finance_source_specs()
+        if spec.account_id == account_id
+    ]
+    if len(matches) != 1:
+        raise FinanceValidationError(f"账号 {account_id} 不是已启用的财务来源。")
+    if platform is not None and matches[0].platform != platform:
+        raise FinanceValidationError("财务账号与平台不匹配。")
 
 
 def _enum_value(enum_class: Any, value: str | None, *, field_name: str) -> Any:
@@ -161,11 +225,15 @@ def parse_finance_filters(query: Mapping[str, Any], *, today: date | None = None
     end_date = _parse_date(end_text, field_name="结束日期")
     if end_date < start_date:
         raise FinanceValidationError("结束日期不能早于开始日期。")
+    platform = _optional_filter(_first(query, "platform"), field_name="平台", max_length=32)
+    account_id = _optional_filter(_first(query, "account_id"), field_name="账号", max_length=96)
+    _validate_enabled_finance_platform(platform)
+    _validate_enabled_finance_account(account_id, platform=platform)
     return FinanceFilters(
         start_date=start_date,
         end_date=end_date,
-        platform=_optional_filter(_first(query, "platform"), field_name="平台", max_length=32),
-        account_id=_optional_filter(_first(query, "account_id"), field_name="账号", max_length=96),
+        platform=platform,
+        account_id=account_id,
         direction=_optional_filter(_first(query, "direction"), field_name="方向", max_length=32),
         fee_level=_optional_filter(_first(query, "fee_level"), field_name="费用级别", max_length=32),
         fee_name=_optional_filter(_first(query, "fee_name"), field_name="费用项目", max_length=160),
@@ -315,11 +383,16 @@ class FinanceService:
             "net_change",
             "waybill_cost",
             "operating_cost",
+            "waybill_net",
+            "operating_net",
+            "classified_net",
+            "unclassified_net",
+            "missing_waybill_net",
         )
         for key in required_amounts:
             _decimal_for_plot(payload.get(key), field_name=key)
         accounts = self._ensure_rows(payload.get("accounts", []), operation="账号成本对比")
-        payload["accounts"] = _add_plot_ratios(accounts, ("waybill_cost", "operating_cost"))
+        payload["accounts"] = _add_plot_ratios(accounts, ("waybill_net", "operating_net"))
         ranking = self._expense_ranking(filters)
         payload["expense_ranking"] = _add_plot_ratios(ranking, ("expense",))
         payload["period"] = {
@@ -384,6 +457,7 @@ class FinanceService:
     def list_fee_mappings(self, query: Mapping[str, Any]) -> dict[str, Any]:
         repository = self._require_repository()
         platform = _optional_filter(_first(query, "platform"), field_name="平台", max_length=32)
+        _validate_enabled_finance_platform(platform)
         effective_month = _optional_filter(
             _first(query, "effective_month"), field_name="生效月份", max_length=7
         )
@@ -431,8 +505,17 @@ class FinanceService:
         fee_level = _required_text(body.get("fee_level"), field_name="费用级别", max_length=32)
         if fee_level not in {"waybill", "operating"}:
             raise FinanceValidationError("费用级别必须是运单级或运营级。")
+        canonical_subject_name = _required_text(
+            body.get("canonical_subject_name"), field_name="canonical_subject_name", max_length=255
+        )
+        canonical_subject_code = str(body.get("canonical_subject_code") or "").strip()
+        if len(canonical_subject_code) > 96:
+            raise FinanceValidationError("canonical_subject_code is too long")
+        requires_waybill = body.get("requires_waybill", fee_level == "waybill")
+        if not isinstance(requires_waybill, bool):
+            raise FinanceValidationError("requires_waybill must be a boolean")
         booking_fee_name = str(body.get("booking_fee_name") or "").strip()
-        if fee_level == "waybill":
+        if fee_level == "waybill" and booking_fee_name:
             booking_fee_name = _required_text(
                 booking_fee_name, field_name="对应录单项目", max_length=160
             )
@@ -457,7 +540,10 @@ class FinanceService:
             lambda: repository.save_fee_mapping(
                 fee_item_id=fee_item_id,
                 fee_level=fee_level,
+                canonical_subject_name=canonical_subject_name,
+                canonical_subject_code=canonical_subject_code,
                 booking_fee_name=booking_fee_name,
+                requires_waybill=requires_waybill,
                 effective_start_month=start_month,
                 effective_end_month=end_month,
                 include_in_cost=include_in_cost,
@@ -469,7 +555,176 @@ class FinanceService:
             mapping_id = int(mapping_id)
         except (TypeError, ValueError) as exc:
             raise FinanceContractError("保存费用项目绑定后未返回有效映射 ID。") from exc
-        return {"mapping_id": mapping_id, "fee_item_id": fee_item_id}
+        export = self.export_knowledge_mirror(generated_by=actor)
+        return {"mapping_id": mapping_id, "fee_item_id": fee_item_id, "knowledge_export": export}
+
+    def list_review_cases(self, query: Mapping[str, Any]) -> dict[str, Any]:
+        repository = self._require_repository()
+        status = _optional_filter(_first(query, "status"), field_name="review status", max_length=24)
+        page = parse_pagination(query)
+        return self._ensure_mapping(
+            self._repository_call(
+                "finance review query",
+                lambda: repository.list_review_cases(
+                    status=status or None,
+                    limit=page.page_size,
+                    offset=page.offset,
+                ),
+            ),
+            operation="finance review query",
+        )
+
+    def list_waybill_facts(self, query: Mapping[str, Any], *, today: date | None = None) -> dict[str, Any]:
+        filters = parse_finance_filters(query, today=today)
+        page = parse_pagination(query)
+        waybill_no = _optional_filter(_first(query, "waybill_no"), field_name="waybill_no", max_length=191)
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "waybill finance facts query",
+                lambda: repository.list_waybill_facts(
+                    start_date=filters.start_date,
+                    end_date=filters.end_date,
+                    platform=filters.platform,
+                    account_id=filters.account_id,
+                    waybill_no=waybill_no or None,
+                    limit=page.page_size,
+                    offset=page.offset,
+                ),
+            ),
+            operation="waybill finance facts query",
+        )
+
+    def export_knowledge_mirror(self, *, generated_by: str) -> dict[str, Any]:
+        repository = self._require_repository()
+        snapshot = self._ensure_mapping(
+            self._repository_call("finance knowledge snapshot", repository.get_knowledge_snapshot),
+            operation="finance knowledge snapshot",
+        )
+        version = int(snapshot.get("version_no") or 0)
+        rows = self._ensure_rows(snapshot.get("items", []), operation="finance knowledge snapshot")
+        lines = [
+            "# 财务科目知识镜像",
+            "",
+            f"- 版本：{version}",
+            f"- 映射数量：{len(rows)}",
+            "- 权威来源：数据库（本文件仅为运行时镜像）",
+            "",
+            "| 平台 | 原始主类目 | 原始子类目 | 方向 | 标准科目 | 层级 | 要求运单号 | 生效开始 | 生效结束 | 版本 | 决策摘要 |",
+            "|---|---|---|---|---|---|---|---|---|---:|---|",
+        ]
+        for row in rows:
+            values = [
+                row.get("platform"), row.get("primary_fee_name"), row.get("secondary_fee_name"),
+                row.get("direction"), row.get("subject_name"), row.get("fee_level"),
+                "是" if row.get("requires_waybill") else "否", row.get("effective_start_month"),
+                row.get("effective_end_month") or "", row.get("version_no"), row.get("change_reason") or "",
+            ]
+            escaped = [str(value or "").replace("|", "\\|").replace("\n", " ") for value in values]
+            lines.append("| " + " | ".join(escaped) + " |")
+        content = "\n".join(lines) + "\n"
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        settings = getattr(self.source_repository, "settings", None)
+        if settings is None:
+            raise FinanceUnavailableError("finance knowledge runtime directory is unavailable")
+        runtime_dir = Path(settings.runtime_dir)
+        target_dir = runtime_dir / "finance_knowledge"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"finance_rules_v{version}.md"
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target_dir, delete=False) as handle:
+                handle.write(content)
+                temporary = Path(handle.name)
+            os.replace(temporary, target)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+        relative_path = target.relative_to(runtime_dir).as_posix()
+        export_id = self._repository_call(
+            "record finance knowledge export",
+            lambda: repository.record_knowledge_export(
+                version_no=version,
+                content_sha256=digest,
+                relative_path=relative_path,
+                mapping_count=len(rows),
+                generated_by=generated_by,
+            ),
+        )
+        return {
+            "id": int(export_id),
+            "version_no": version,
+            "content_sha256": digest,
+            "relative_path": relative_path,
+            "mapping_count": len(rows),
+        }
+
+    def knowledge_status(self) -> dict[str, Any]:
+        repository = self._require_repository()
+        snapshot = repository.get_knowledge_snapshot()
+        latest = repository.latest_knowledge_export()
+        current_version = int(snapshot.get("version_no") or 0)
+        current_mapping_count = len(
+            self._ensure_rows(snapshot.get("items", []), operation="finance knowledge snapshot")
+        )
+        settings = getattr(self.source_repository, "settings", None)
+        mirror_valid = False
+        if (
+            latest
+            and settings is not None
+            and int(latest.get("version_no") or -1) == current_version
+            and int(latest.get("mapping_count") or -1) == current_mapping_count
+        ):
+            runtime_dir = Path(settings.runtime_dir).resolve()
+            mirror = (runtime_dir / str(latest.get("relative_path") or "")).resolve()
+            try:
+                mirror.relative_to(runtime_dir)
+            except ValueError:
+                mirror_valid = False
+            else:
+                mirror_valid = (
+                    mirror.is_file()
+                    and hashlib.sha256(mirror.read_bytes()).hexdigest()
+                    == str(latest.get("content_sha256") or "")
+                )
+        if not mirror_valid:
+            latest = self.export_knowledge_mirror(generated_by="system:knowledge-sync")
+            mirror_valid = True
+        return {
+            "current_version": current_version,
+            "latest_export": latest,
+            "consistent": mirror_valid,
+        }
+
+    def analyze_review_cases(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        if not callable(self.agent_request):
+            raise FinanceUnavailableError("Agent finance brain is unavailable")
+        try:
+            limit = max(1, min(int(body.get("limit") or 20), 100))
+        except (TypeError, ValueError) as exc:
+            raise FinanceValidationError("limit must be an integer") from exc
+        result = self.agent_request(
+            "POST",
+            "/internal/v1/admin/finance/reviews/analyze",
+            payload={"limit": limit},
+            timeout=180,
+        )
+        if not result.get("ok"):
+            raise FinanceUpstreamError(str(result.get("error") or "finance AI analysis failed"))
+        return self._ensure_mapping(result.get("data"), operation="finance AI analysis")
+
+    def reject_review_case(self, review_case_id: int, body: Mapping[str, Any], *, changed_by: str) -> dict[str, Any]:
+        reason = _required_text(body.get("reason"), field_name="reason", max_length=500)
+        repository = self._require_repository()
+        self._repository_call(
+            "reject finance review",
+            lambda: repository.reject_review_case(
+                review_case_id,
+                reviewed_by=changed_by,
+                reason=reason,
+            ),
+        )
+        return {"review_case_id": int(review_case_id), "status": "rejected"}
 
     def list_sync_batches(self, query: Mapping[str, Any]) -> dict[str, Any]:
         pagination = parse_pagination(query)
@@ -536,6 +791,8 @@ class FinanceService:
             raise FinanceValidationError("同步请求不能包含登录账号、登录态或凭据字段。")
         platform = _optional_filter(str(body.get("platform") or ""), field_name="平台", max_length=32)
         account_id = _optional_filter(str(body.get("account_id") or ""), field_name="账号", max_length=96)
+        _validate_enabled_finance_platform(platform)
+        _validate_enabled_finance_account(account_id, platform=platform)
         if platform:
             params["platform"] = platform
         if account_id:
@@ -552,24 +809,27 @@ class FinanceService:
         )
         if not isinstance(result, dict):
             raise FinanceContractError("Agent 同步接口返回格式异常。")
-        if result.get("ok") is False or result.get("success") is False:
-            error = result.get("error") or result.get("message") or "Agent 未完成财务同步。"
-            if isinstance(error, dict):
-                error = error.get("message") or error.get("error") or str(error)
-            raise FinanceUpstreamError(str(error))
-        data = result.get("data")
-        if isinstance(data, dict) and data.get("ok") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        if isinstance(data, dict) and data.get("success") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        nested_result = data.get("result") if isinstance(data, dict) else None
-        if isinstance(nested_result, dict) and (
-            nested_result.get("ok") is False or nested_result.get("success") is False
+        _raise_for_sync_failure(result)
+
+        api_data: Any = result.get("data") if result.get("ok") is True else result
+        if not isinstance(api_data, Mapping):
+            raise FinanceContractError("Agent 同步接口未返回执行结果。")
+        _raise_for_sync_failure(api_data)
+
+        tool_data: Any = api_data
+        if (
+            isinstance(api_data.get("data"), Mapping)
+            and ("success" in api_data or "duration_s" in api_data)
         ):
-            raise FinanceUpstreamError(
-                str(nested_result.get("message") or nested_result.get("error") or "财务同步失败。")
-            )
-        return dict(data) if isinstance(data, dict) else dict(result)
+            tool_data = api_data["data"]
+        if not isinstance(tool_data, Mapping):
+            raise FinanceContractError("Agent 同步工具未返回标准结果。")
+        _raise_for_sync_failure(tool_data)
+
+        nested_result = tool_data.get("result")
+        if isinstance(nested_result, Mapping):
+            _raise_for_sync_failure(nested_result)
+        return dict(tool_data)
 
 
 def _required_text(value: Any, *, field_name: str, max_length: int = 160) -> str:
