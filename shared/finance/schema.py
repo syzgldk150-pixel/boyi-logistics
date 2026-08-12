@@ -18,6 +18,12 @@ FINANCE_REQUIRED_TABLES = frozenset(
         "finance_summary_snapshots",
         "finance_fee_mappings",
         "finance_mapping_audit_logs",
+        "finance_fee_subjects",
+        "finance_review_cases",
+        "finance_review_ai_runs",
+        "finance_waybill_facts",
+        "finance_anomalies",
+        "finance_knowledge_exports",
     }
 )
 

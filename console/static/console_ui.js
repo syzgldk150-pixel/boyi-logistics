@@ -144,9 +144,6 @@
     if (pathname.startsWith("/settings/accounts")) {
       return "/settings/accounts";
     }
-    if (pathname.startsWith("/templates")) {
-      return "/templates/new";
-    }
     return pathname;
   }
 

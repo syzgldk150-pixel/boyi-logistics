@@ -157,6 +157,9 @@ class MonitoringFinanceServiceMixin:
             "entries": service.list_entries,
             "fee_mappings": service.list_fee_mappings,
             "sync_batches": service.list_sync_batches,
+            "review_cases": service.list_review_cases,
+            "waybill_facts": service.list_waybill_facts,
+            "knowledge": lambda _query: service.knowledge_status(),
         }
         operation = operations.get(resource)
         if operation is None:
@@ -199,6 +202,8 @@ class MonitoringFinanceServiceMixin:
                 data = service.start_sync(body)
             elif action == "backfill":
                 data = service.start_backfill(body)
+            elif action == "analyze_reviews":
+                data = service.analyze_review_cases(body)
             elif action == "save_mapping":
                 match = re.fullmatch(r"/finance/fee-mappings/(\d+)", path)
                 if not match:
@@ -208,6 +213,15 @@ class MonitoringFinanceServiceMixin:
                 if not changed_by:
                     raise FinanceValidationError("无法识别当前操作人，请重新登录后再保存。")
                 data = service.save_fee_mapping(int(match.group(1)), body, changed_by=changed_by)
+            elif action == "reject_review":
+                match = re.fullmatch(r"/finance/review-cases/(\d+)/reject", path)
+                if not match:
+                    raise FinanceValidationError("review case ID is invalid")
+                admin = current_admin_user() or {}
+                changed_by = str(admin.get("username") or admin.get("display_name") or "").strip()
+                if not changed_by:
+                    raise FinanceValidationError("administrator identity is unavailable")
+                data = service.reject_review_case(int(match.group(1)), body, changed_by=changed_by)
             elif action == "retry_batch":
                 match = re.fullmatch(r"/finance/sync-batches/(\d+)/retry", path)
                 if not match:

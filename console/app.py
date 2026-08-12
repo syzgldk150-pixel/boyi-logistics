@@ -3,6 +3,7 @@
 from console.app_support import *  # noqa: F403
 from console.services.auth import AuthServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
+from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.customer_service import CustomerServiceMixin
 from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
 from console.services.tms_proxy import TmsProxyServiceMixin
@@ -15,7 +16,7 @@ from console.navigation import (
 )
 
 
-class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerServiceMixin, WaybillsReceiptsServiceMixin, TmsProxyServiceMixin, AutomationServiceMixin, DocumentServiceMixin):
+class LocalDocFlowApp(AuthServiceMixin, LLMSettingsServiceMixin, MonitoringFinanceServiceMixin, CustomerServiceMixin, WaybillsReceiptsServiceMixin, TmsProxyServiceMixin, AutomationServiceMixin, DocumentServiceMixin):
     def __init__(self) -> None:
         self.settings = load_settings()
         self.template_store = TemplateStore(self.settings)
@@ -71,6 +72,7 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
             display_name="系统管理员",
             password_hash=hash_admin_password(password),
             is_active=True,
+            role="super_admin",
         )
         print("Created the first admin account from DOCFLOW_ADMIN_USERNAME.")
 
