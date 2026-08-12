@@ -585,9 +585,10 @@ class FinanceRepositoryTests(unittest.TestCase):
                     "error_code": None,
                     "error_message": None,
                     "created_at": dt.datetime(2026, 1, 3, 0, 10),
-                    "total_runs": 4,
-                    "success_runs": 3,
-                    "failed_runs": 1,
+                    # MySQL may expose aggregate SUM/COUNT values as DECIMAL.
+                    "total_runs": Decimal("4.0000"),
+                    "success_runs": Decimal("3.0000"),
+                    "failed_runs": Decimal("1.0000"),
                 }
             if sql.startswith("SELECT r.batch_id, r.platform"):
                 return {
@@ -605,10 +606,32 @@ class FinanceRepositoryTests(unittest.TestCase):
         ).list_sync_batches()
 
         self.assertEqual(1, result["total"])
+        self.assertEqual(4, result["items"][0]["total_runs"])
+        self.assertEqual(3, result["items"][0]["success_runs"])
+        self.assertEqual(1, result["items"][0]["failed_runs"])
         self.assertEqual(1, len(result["items"][0]["failed_sources"]))
         failure = result["items"][0]["failed_sources"][0]
         self.assertEqual("fictional-yunda-role", failure["account_id"])
         self.assertEqual("FIELD_DRIFT", failure["error_code"])
+
+    def test_sync_batch_rows_reject_fractional_aggregate_counts(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT COUNT(*) AS total FROM finance_sync_batches"):
+                return {"total": Decimal("1.0000")}
+            if "COUNT(r.id) AS total_runs" in sql:
+                return {
+                    "id": 22,
+                    "total_runs": Decimal("1.5000"),
+                    "success_runs": Decimal("1.0000"),
+                    "failed_runs": Decimal("0.0000"),
+                }
+            return []
+
+        repository = FinanceRepository(lambda: RouterConnection(records, router))
+        with self.assertRaisesRegex(ValueError, "total_runs must be an integer count"):
+            repository.list_sync_batches()
 
 
 if __name__ == "__main__":

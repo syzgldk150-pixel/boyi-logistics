@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from shared.finance.mappings import (
@@ -100,6 +100,18 @@ def _fetchone(cursor: Any) -> dict[str, Any] | None:
 
 def _fetchall(cursor: Any) -> list[dict[str, Any]]:
     return [item for row in (cursor.fetchall() or []) if (item := _row_dict(cursor, row))]
+
+
+def _integer_count(value: Any, field_name: str) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer count") from exc
+    if not number.is_finite() or number != number.to_integral_value():
+        raise ValueError(f"{field_name} must be an integer count")
+    return int(number)
 
 
 @contextmanager
@@ -1576,7 +1588,7 @@ class FinanceRepository(FinanceEvolutionMixin):
         """
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(count_sql, tuple(params))
-            total = int((_fetchone(cursor) or {}).get("total") or 0)
+            total = _integer_count((_fetchone(cursor) or {}).get("total"), "total")
             cursor.execute(
                 data_sql,
                 (
@@ -1665,7 +1677,7 @@ class FinanceRepository(FinanceEvolutionMixin):
         count_sql = f"SELECT COUNT(*) AS total FROM finance_fee_items fi WHERE {where}"
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(count_sql, tuple(params))
-            total = int((_fetchone(cursor) or {}).get("total") or 0)
+            total = _integer_count((_fetchone(cursor) or {}).get("total"), "total")
             cursor.execute(
                 data_sql,
                 (
@@ -1744,7 +1756,7 @@ class FinanceRepository(FinanceEvolutionMixin):
         """
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(count_sql, tuple(params))
-            total = int((_fetchone(cursor) or {}).get("total") or 0)
+            total = _integer_count((_fetchone(cursor) or {}).get("total"), "total")
             cursor.execute(
                 data_sql,
                 (
@@ -1756,7 +1768,11 @@ class FinanceRepository(FinanceEvolutionMixin):
                     safe_offset,
                 ),
             )
-            items = [self._serialize_general_row(row) for row in _fetchall(cursor)]
+            batch_rows = _fetchall(cursor)
+            for row in batch_rows:
+                for key in ("total_runs", "success_runs", "failed_runs"):
+                    row[key] = _integer_count(row.get(key), key)
+            items = [self._serialize_general_row(row) for row in batch_rows]
             failed_rows: list[dict[str, Any]] = []
             if items:
                 batch_ids = [int(item["id"]) for item in items]
@@ -1786,7 +1802,5 @@ class FinanceRepository(FinanceEvolutionMixin):
         for row in failed_rows:
             failed_by_batch.setdefault(int(row.pop("batch_id")), []).append(row)
         for item in items:
-            for key in ("total_runs", "success_runs", "failed_runs"):
-                item[key] = int(item.get(key) or 0)
             item["failed_sources"] = failed_by_batch.get(int(item["id"]), [])
         return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
