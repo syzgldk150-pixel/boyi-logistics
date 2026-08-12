@@ -138,6 +138,28 @@ class FinanceRepositoryTests(unittest.TestCase):
         FinanceRepository(lambda: RouterConnection(records, router)).initialize_schema()
         self.assertEqual(1, len(records))
 
+    def test_initialize_schema_accepts_default_dbapi_tuple_rows(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if "information_schema.TABLES" in sql:
+                return [(table,) for table in FINANCE_REQUIRED_TABLES]
+            return []
+
+        FinanceRepository(lambda: RouterConnection(records, router)).initialize_schema()
+        self.assertEqual(1, len(records))
+
+    def test_initialize_schema_rejects_unknown_row_shapes(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if "information_schema.TABLES" in sql:
+                return [("finance_sync_batches", "unexpected")]
+            return []
+
+        with self.assertRaisesRegex(TypeError, "unsupported row shape"):
+            FinanceRepository(lambda: RouterConnection(records, router)).initialize_schema()
+
     def test_public_signatures_keep_direction_read_only_and_expose_pipeline_methods(self) -> None:
         save_parameters = inspect.signature(FinanceRepository.save_fee_mapping).parameters
         self.assertNotIn("direction", save_parameters)

@@ -6,6 +6,7 @@ Runtime code may only validate that the deployment has applied it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -37,6 +38,19 @@ def mysql_schema_statements() -> tuple[str, ...]:
     return MYSQL_DDL
 
 
+def _table_name(row: Any) -> str:
+    if isinstance(row, Mapping):
+        value = row.get("TABLE_NAME")
+    elif isinstance(row, Sequence) and not isinstance(row, (str, bytes)) and len(row) == 1:
+        value = row[0]
+    else:
+        raise TypeError("finance schema query returned an unsupported row shape")
+    table_name = str(value or "").strip()
+    if not table_name:
+        raise RuntimeError("finance schema query returned an empty table name")
+    return table_name
+
+
 def validate_finance_schema(cursor: Any) -> None:
     cursor.execute(
         """
@@ -44,7 +58,7 @@ def validate_finance_schema(cursor: Any) -> None:
         WHERE TABLE_SCHEMA = DATABASE()
         """
     )
-    tables = {str(row.get("TABLE_NAME") or "") for row in cursor.fetchall() or []}
+    tables = {_table_name(row) for row in cursor.fetchall() or []}
     missing = sorted(FINANCE_REQUIRED_TABLES - tables)
     if missing:
         raise RuntimeError(
