@@ -18,7 +18,7 @@ SIGN_DETAIL_CALL_ID = "FIND_SIGNED_DETAIL_ALL_EXCEL"
 SIGN_SUMMARY_URL = f"{page_support.RONGHUI_ORIGIN}/dataQuery/findPageByCallId?id={SIGN_SUMMARY_CALL_ID}"
 SIGN_DETAIL_URL = f"{page_support.RONGHUI_ORIGIN}/dataQuery/findPageByCallId?id={SIGN_DETAIL_CALL_ID}"
 DATE_TIME_FORMAT = "%Y/%m/%d %H:%M:%S"
-DEFAULT_PAGE_SIZE = 500
+DEFAULT_PAGE_SIZE = 200
 DEFAULT_MAX_PAGES = 500
 
 
@@ -161,8 +161,8 @@ def collect_sign_rows(
     max_pages: int = DEFAULT_MAX_PAGES,
     timeout: float = 30,
 ) -> list[dict[str, Any]]:
-    if page_size <= 0 or page_size > 500:
-        raise ValueError("签收查询 page_size 必须在 1 到 500 之间")
+    if page_size <= 0 or page_size > 200:
+        raise ValueError("签收查询 page_size 必须在 1 到 200 之间")
     if max_pages <= 0:
         raise ValueError("签收查询 max_pages 必须大于 0")
     headers = page_support._ronghui_headers(

@@ -667,6 +667,16 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "BILL_CODE"):
             get_sign_records.normalize_sign_row({"SIGN_DATE": "2026-08-12 10:00:00"})
 
+        with self.assertRaisesRegex(ValueError, "1 到 200"):
+            get_sign_records.collect_sign_rows(
+                object(),
+                {},
+                start=datetime(2026, 8, 12, 0, 0, 0),
+                end=datetime(2026, 8, 12, 23, 59, 59),
+                login_site_code="7390004",
+                page_size=201,
+            )
+
         class Response:
             def __init__(self, payload):
                 self.payload = payload
