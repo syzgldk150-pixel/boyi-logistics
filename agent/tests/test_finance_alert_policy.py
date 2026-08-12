@@ -35,8 +35,11 @@ class FinanceAlertPolicyTests(unittest.TestCase):
                 "success": False,
                 "error_code": "FINANCE_SYNC_INTERNAL",
                 "error": "safe fixture error",
-                "diagnostic_stage": "schema_validation",
-                "diagnostic_type": "RuntimeError",
+                "data": {
+                    "diagnostic_stage": "schema_validation",
+                    "diagnostic_type": "RuntimeError",
+                    "diagnostic_trace": "shared/finance/repository.py:12:initialize_schema",
+                },
             }
         )
         with self.assertLogs("agent", level="WARNING") as captured:
@@ -49,7 +52,10 @@ class FinanceAlertPolicyTests(unittest.TestCase):
                 )
         publish.assert_not_called()
         self.assertIn(
-            "code=FINANCE_SYNC_INTERNAL stage=schema_validation error_type=RuntimeError",
+            (
+                "code=FINANCE_SYNC_INTERNAL stage=schema_validation error_type=RuntimeError "
+                "trace=shared/finance/repository.py:12:initialize_schema"
+            ),
             "\n".join(captured.output),
         )
 
