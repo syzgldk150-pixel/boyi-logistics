@@ -311,6 +311,7 @@ class RonghuiLiveFinanceAdapter:
         try:
             self._session = get_session_broker(self.binding.session_profile).build_requests_session(validate=True)
             from agent.tms_runtime.scripts.customer_service_problem import (
+                RONGHUI_INDEX_URL,
                 _resolve_ronghui_page_context,
                 _ronghui_headers,
             )
@@ -337,9 +338,9 @@ class RonghuiLiveFinanceAdapter:
                 headless=True,
                 profile=self.binding.session_profile,
             )
-            self._page.goto(self._page_context["url"], wait_until="domcontentloaded", timeout=60_000)
+            self._page.goto(RONGHUI_INDEX_URL, wait_until="domcontentloaded", timeout=60_000)
             if "/system/login" in clean_text(self._page.url).lower():
-                raise FinanceCaptureError("AUTH_REQUIRED", "融辉财务原页登录态失效", stage="page_discovery")
+                raise FinanceCaptureError("AUTH_REQUIRED", "融辉主页面登录态失效", stage="page_discovery")
             try:
                 self._page.wait_for_function(
                     """() => Boolean(
@@ -425,6 +426,9 @@ class RonghuiLiveFinanceAdapter:
             self._source_site_name = clean_text(public_identity.get("siteName"))
             if not self._source_site_code or not self._source_site_name:
                 raise FinanceCaptureError("SOURCE_SITE_MISSING", "融辉原页公开用户上下文缺少真实网点", stage="page_discovery")
+            self._page.goto(self._page_context["url"], wait_until="domcontentloaded", timeout=60_000)
+            if "/system/login" in clean_text(self._page.url).lower():
+                raise FinanceCaptureError("AUTH_REQUIRED", "融辉财务原页登录态失效", stage="page_discovery")
         except FinanceCaptureError:
             raise
         except Exception as exc:
