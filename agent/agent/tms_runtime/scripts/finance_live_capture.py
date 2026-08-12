@@ -54,6 +54,27 @@ RONGHUI_FIELD_BINDINGS = {
 }
 
 
+def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
+    """Return field-name-only evidence; never include page values or auth data."""
+
+    missing = sorted(marker for marker in expected_markers if marker not in html)
+    tokens = {
+        token
+        for token in re.findall(r"\b[A-Z][A-Z_]{2,80}\b", html)
+        if any(
+            family in token
+            for family in ("BALANCE", "SETTLEMENT", "AMOUNT", "BILL", "FINANCE", "DATE", "GUID")
+        )
+    }
+    call_ids = sorted(token for token in tokens if "BALANCE" in token and "FIND" in token)[:12]
+    fields = sorted(token for token in tokens if token not in call_ids)[:24]
+    return (
+        f"missing={','.join(missing) or 'none'}; "
+        f"call_ids={','.join(call_ids) or 'none'}; "
+        f"fields={','.join(fields) or 'none'}"
+    )[:420]
+
+
 @dataclass(frozen=True)
 class _CapturedRequest:
     method: str
@@ -264,7 +285,12 @@ class RonghuiLiveFinanceAdapter:
                 *RONGHUI_FIELD_BINDINGS.values(),
             }
             if any(marker not in html for marker in required_markers):
-                raise FinanceCaptureError("FIELD_DRIFT", "融辉财务页配置字段或 callId 发生变化", stage="page_discovery")
+                evidence = _ronghui_schema_evidence(html, expected_markers=required_markers)
+                raise FinanceCaptureError(
+                    "FIELD_DRIFT",
+                    f"融辉财务页配置字段或 callId 发生变化；{evidence}",
+                    stage="page_discovery",
+                )
             self._headers = _ronghui_headers(
                 self._page_context,
                 content_type="application/x-www-form-urlencoded; charset=UTF-8",

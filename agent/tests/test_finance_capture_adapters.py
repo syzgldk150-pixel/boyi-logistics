@@ -11,6 +11,7 @@ from agent.tms_runtime.scripts.finance_capture_common import (
     response_json,
     validate_page_identity,
 )
+from agent.tms_runtime.scripts.finance_live_capture import _ronghui_schema_evidence
 from agent.tms_runtime.scripts.ronghui_finance_adapter import capture_ronghui_day
 from agent.tms_runtime.scripts.yunda_finance_adapter import capture_yunda_day
 
@@ -54,6 +55,21 @@ class _Response:
 
 
 class FinanceCaptureAdapterTests(unittest.TestCase):
+    def test_ronghui_schema_evidence_contains_only_structural_tokens(self):
+        evidence = _ronghui_schema_evidence(
+            """
+            callId: 'FIND_BALANCE_QRY_RENAMED'
+            columns: ['BALANCE_DATE', 'SETTLEMENT_FEE', 'AFTER_AMOUNT']
+            account: 'private-sample-account'
+            """,
+            expected_markers={"FIND_BALANCE_QRY_OLD", "BALANCE_DATE", "BEFORE_AMOUNT"},
+        )
+
+        self.assertIn("missing=BEFORE_AMOUNT,FIND_BALANCE_QRY_OLD", evidence)
+        self.assertIn("call_ids=FIND_BALANCE_QRY_RENAMED", evidence)
+        self.assertIn("BALANCE_DATE", evidence)
+        self.assertNotIn("private-sample-account", evidence)
+
     def test_pagination_overlap_deduplicates_by_stable_key(self):
         pages = {
             1: {"total": 3, "rows": [{"GUID": "g1"}, {"GUID": "g2"}]},
