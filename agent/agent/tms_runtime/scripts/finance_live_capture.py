@@ -287,7 +287,6 @@ class RonghuiLiveFinanceAdapter:
                 RONGHUI_DETAIL_CALL_ID,
                 RONGHUI_SUMMARY_CALL_ID,
                 RONGHUI_DRILLDOWN_CALL_ID,
-                *RONGHUI_FIELD_BINDINGS.values(),
             }
             if any(marker not in html for marker in required_markers):
                 evidence = _ronghui_schema_evidence(html, expected_markers=required_markers)
