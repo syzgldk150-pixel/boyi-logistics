@@ -161,6 +161,36 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         self.assertEqual("fixture-balance-001", result.transactions[0]["source_reference"])
         self.assertNotIn("GUID", result.transactions[0])
 
+    def test_ronghui_field_drift_reports_only_response_keys(self):
+        payload = _fixture("ronghui_detail_page.json")
+        payload["rows"][0]["private_value"] = "do-not-log-this-value"
+        del payload["rows"][0]["SETTLEMENT_AMOUNT"]
+
+        with self.assertRaises(FinanceCaptureError) as caught:
+            capture_ronghui_day(
+                account_id="fixture-ronghui",
+                target_date=dt.date(2026, 7, 11),
+                field_bindings={
+                    "trade_time": "BALANCE_DATE",
+                    "fee_name": "SETTLEMENT_TYPE",
+                    "amount": "SETTLEMENT_AMOUNT",
+                    "old_amount": "BEFORE_AMOUNT",
+                    "new_amount": "AFTER_AMOUNT",
+                    "balance_order": "BALANCE_ORDER",
+                    "bill_code": "BILL_CODE",
+                },
+                source_site_code="fixture-site",
+                source_site_name="Fixture Site",
+                login_site_code="fixture-site",
+                account_match=True,
+                fetch_detail_page=lambda _page, _size: payload,
+            )
+
+        self.assertEqual("FIELD_DRIFT", caught.exception.code)
+        self.assertIn("SETTLEMENT_AMOUNT", str(caught.exception))
+        self.assertIn("private_value", str(caught.exception))
+        self.assertNotIn("do-not-log-this-value", str(caught.exception))
+
     def test_yunda_fixture_filters_cross_midnight_and_preserves_required_fields(self):
         payload = _fixture("yunda_detail_page.json")
         result = capture_yunda_day(
