@@ -330,6 +330,9 @@ class FeeMappingSeed:
     booking_fee_name: str
     include_in_cost: bool
     secondary_fee_name: str = ""
+    canonical_subject_code: str = ""
+    canonical_subject_name: str = ""
+    requires_waybill: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "platform", Platform(self.platform))
@@ -342,11 +345,23 @@ class FeeMappingSeed:
         )
         object.__setattr__(self, "secondary_fee_name", _optional_text(self.secondary_fee_name))
         booking_fee_name = _optional_text(self.booking_fee_name)
-        if self.fee_level is FeeLevel.WAYBILL and not booking_fee_name:
-            raise ValueError("waybill mapping requires booking_fee_name")
         if self.fee_level is FeeLevel.OPERATING and booking_fee_name:
             raise ValueError("operating mapping cannot target a waybill-entry fee item")
         object.__setattr__(self, "booking_fee_name", booking_fee_name)
+        subject_code = _optional_text(self.canonical_subject_code)
+        subject_name = _optional_text(self.canonical_subject_name)
+        if bool(subject_code) != bool(subject_name):
+            raise ValueError("canonical subject code and name must be provided together")
+        object.__setattr__(self, "canonical_subject_code", subject_code)
+        object.__setattr__(self, "canonical_subject_name", subject_name)
+        requires_waybill = (
+            self.fee_level is FeeLevel.WAYBILL
+            if self.requires_waybill is None
+            else bool(self.requires_waybill)
+        )
+        object.__setattr__(self, "requires_waybill", requires_waybill)
+        if self.fee_level is FeeLevel.OPERATING and self.requires_waybill:
+            raise ValueError("operating mapping cannot require a waybill")
         if self.include_in_cost and self.direction is not Direction.EXPENSE:
             raise ValueError("only an expense mapping may be included in cost")
 

@@ -768,6 +768,50 @@ class ArrivalStatsToolTests(unittest.TestCase):
         self.assertEqual("R0001", row["tracking_number"])
         self.assertEqual({"billCode": "R0001", "isView": "true"}, session.data)
 
+    def test_query_waybill_detail_includes_real_tracking_sign_scan(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"result": {"data": [{"BILL_CODE": "R0001"}]}}
+
+        class Session:
+            def post(self, *args, **kwargs):
+                return Response()
+
+        with patch(
+            "agent.tms_runtime.scripts.ronghui_tms_tracking.fetch_main_route_rows",
+            return_value=[
+                {"SCAN_TYPE": "派件", "SCAN_DATE": "2026-08-10 12:30:00", "SCAN_SITE": "邵阳大祥S站"},
+                {"SCAN_TYPE": "签收", "SCAN_DATE": "2026-08-10 12:36:07", "SCAN_SITE": "邵阳大祥S站"},
+            ],
+        ) as fetch_routes:
+            row = tms_query_waybill_detail._query_one(
+                Session(),
+                "R0001",
+                include_sign_status=True,
+                tracking_url="https://tms.ronghuiwl.com/widget/home?authenticationKey=real",
+            )
+
+        self.assertTrue(row["sign_status_checked"])
+        self.assertTrue(row["is_signed"])
+        self.assertEqual("2026-08-10 12:36:07", row["actual_sign_time"])
+        self.assertEqual("邵阳大祥S站", row["sign_site_name"])
+        self.assertEqual("R0001", fetch_routes.call_args.args[1])
+        self.assertEqual(
+            "https://tms.ronghuiwl.com/widget/home?authenticationKey=real",
+            fetch_routes.call_args.kwargs["tracking_url"],
+        )
+
+    def test_query_waybill_detail_marks_nonempty_tracking_without_sign_scan_unsigned(self):
+        status = tms_query_waybill_detail._sign_status_fields(
+            [{"SCAN_TYPE": "派件", "SCAN_DATE": "2026-08-10 12:30:00"}]
+        )
+
+        self.assertTrue(status["sign_status_checked"])
+        self.assertFalse(status["is_signed"])
+
     def test_query_waybill_detail_skips_browser_when_api_row_is_complete(self):
         api_row = {
             "requested_bill_code": "R0001",

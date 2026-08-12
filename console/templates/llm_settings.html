@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}智能模型 · {{ app_title }}{% endblock %}
+{% block breadcrumb %}智能模型{% endblock %}
+{% block subtitle %}系统设置 / 全局模型配置{% endblock %}
+{% block body_class %}llm-settings-page{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/llm_settings.css?v=20260812-1">{% endblock %}
+
+{% block content %}
+<div class="llm-settings" data-llm-settings data-can-edit="{{ 'true' if is_super_admin else 'false' }}">
+  <section class="llm-status-hero" aria-labelledby="llm-status-title">
+    <div>
+      <p class="eyebrow">全系统唯一激活配置</p>
+      <h2 id="llm-status-title" data-active-name>正在读取模型状态…</h2>
+      <p data-active-meta>新请求使用激活版本；运行中的请求保持原配置快照。</p>
+    </div>
+    <span class="llm-health" data-health>读取中</span>
+  </section>
+
+  <div class="llm-feedback" data-feedback role="status" aria-live="polite" hidden></div>
+
+  <section class="llm-section" aria-labelledby="provider-title">
+    <div class="llm-section-heading">
+      <div><p class="eyebrow">受信任供应商</p><h2 id="provider-title">API 与模型</h2></div>
+      <p>API 地址固定为官方地址，不提供自定义 Base URL。</p>
+    </div>
+    <div class="provider-grid" data-provider-grid></div>
+  </section>
+
+  {% if is_super_admin %}
+  <section class="llm-section llm-config-panel" aria-labelledby="candidate-title">
+    <div class="llm-section-heading">
+      <div><p class="eyebrow">候选版本</p><h2 id="candidate-title">保存并验证</h2></div>
+      <p>保存和测试不会改变当前运行配置。</p>
+    </div>
+    <form class="llm-form" data-candidate-form autocomplete="off">
+      <label><span>供应商</span>
+        <select name="provider" required data-provider-select>
+          <option value="deepseek">DeepSeek</option>
+          <option value="glm">GLM</option>
+        </select>
+      </label>
+      <label><span>模型 ID</span><input name="model_id" list="llm-model-options" maxlength="191" required placeholder="例如 deepseek-chat" spellcheck="false" autocomplete="off"><datalist id="llm-model-options" data-model-options></datalist></label>
+      <label class="llm-key-field"><span>API Key</span><input name="api_key" type="password" placeholder="留空表示保留已保存密钥" autocomplete="new-password" spellcheck="false"><small>已保存密钥不会回显；替换时必须输入完整新 Key。</small></label>
+      <button class="primary-btn" type="submit" data-save-candidate>保存候选</button>
+    </form>
+  </section>
+
+  <section class="llm-section" aria-labelledby="versions-title">
+    <div class="llm-section-heading">
+      <div><p class="eyebrow">版本记录</p><h2 id="versions-title">测试、激活与回滚</h2></div>
+      <button class="ghost-btn" type="button" data-refresh-page>刷新状态</button>
+    </div>
+    <div class="llm-table-wrap">
+      <table class="llm-table">
+        <thead><tr><th>版本</th><th>供应商 / 模型</th><th>状态</th><th>最近测试</th><th>操作</th></tr></thead>
+        <tbody data-version-list><tr><td colspan="5">正在读取版本…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="llm-section" aria-labelledby="audit-title">
+    <div class="llm-section-heading">
+      <div><p class="eyebrow">安全审计</p><h2 id="audit-title">配置变更记录</h2></div>
+      <p>仅记录操作者、模型和密钥是否变更，不保存密钥内容。</p>
+    </div>
+    <div class="audit-list" data-audit-list><p>正在读取审计记录…</p></div>
+  </section>
+  {% else %}
+  <section class="llm-readonly" role="note">
+    <h2>只读状态</h2>
+    <p>普通管理员可以查看当前供应商、模型和健康状态；只有超级管理员能保存、测试和激活配置。</p>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/llm_settings.js?v=20260812-1"></script>{% endblock %}

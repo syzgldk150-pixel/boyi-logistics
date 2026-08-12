@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode, urljoin
 
 from agent.tms_runtime.session_broker import (
     YUNDA_CLIENT_SYSTEM_HOME_URL,
@@ -30,6 +30,7 @@ from agent.tms_runtime.scripts.finance_capture_common import (
 from agent.tms_runtime.scripts.ronghui_finance_adapter import (
     RONGHUI_DETAIL_CALL_ID,
     RONGHUI_DRILLDOWN_CALL_ID,
+    RONGHUI_FINANCE_ENDPOINT,
     RONGHUI_SOURCE_KEY,
     RONGHUI_SUMMARY_CALL_ID,
     capture_ronghui_day,
@@ -52,6 +53,141 @@ RONGHUI_FIELD_BINDINGS = {
     "balance_order": "BALANCE_ORDER",
     "bill_code": "BILL_CODE",
 }
+
+
+def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
+    """Return field-name-only evidence; never include page values or auth data."""
+
+    missing = sorted(marker for marker in expected_markers if marker not in html)
+    tokens = {
+        token
+        for token in re.findall(r"\b[A-Z][A-Z_]{2,80}\b", html)
+        if any(
+            family in token
+            for family in ("BALANCE", "SETTLEMENT", "AMOUNT", "BILL", "FINANCE", "DATE", "GUID")
+        )
+    }
+    missing_call_ids = [marker for marker in missing if marker.startswith("FIND_")]
+    call_ids = (
+        sorted(token for token in tokens if "BALANCE" in token and "FIND" in token)[:12]
+        if missing_call_ids
+        else []
+    )
+    fields = sorted(token for token in tokens if token not in call_ids)[:24]
+    return (
+        f"call_ids={','.join(call_ids) or 'expected_present'}; "
+        f"fields={','.join(fields) or 'none'}; "
+        f"missing={','.join(missing) or 'none'}"
+    )[:420]
+
+
+def _format_identity_evidence(identity: Any) -> str:
+    if not isinstance(identity, Mapping):
+        return "identity=unavailable"
+    evidence = identity.get("identityEvidence")
+    if not isinstance(evidence, Mapping):
+        return "identity=unavailable"
+    keys = [
+        clean_text(item)
+        for item in (evidence.get("infoKeys") or [])
+        if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
+    ][:30]
+    dom_identity_fields = [
+        clean_text(item)
+        for item in (evidence.get("domIdentityFields") or [])
+        if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
+    ][:12]
+    dom_site_fields = [
+        clean_text(item)
+        for item in (evidence.get("domSiteFields") or [])
+        if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
+    ][:12]
+    candidates: list[str] = []
+    for item in evidence.get("candidates") or []:
+        if not isinstance(item, Mapping):
+            continue
+        path = clean_text(item.get("path"))
+        if not re.fullmatch(r"[A-Za-z0-9_$.[\]-]{1,120}", path):
+            continue
+        candidates.append(
+            f"{path}:len={int(item.get('length') or 0)}"
+            f":exact={bool(item.get('exact'))}"
+            f":casefold={bool(item.get('casefold'))}"
+            f":contains={bool(item.get('contains'))}"
+            f":contained_by={bool(item.get('containedBy'))}"
+        )
+    expected_length = int(evidence.get("expectedLength") or 0)
+    return (
+        f"expected_len={expected_length}; raw_type={clean_text(evidence.get('rawType')) or 'unknown'}; "
+        f"raw_len={int(evidence.get('rawLength') or 0)}; json_parsed={bool(evidence.get('jsonParsed'))}; "
+        f"info_type={clean_text(evidence.get('infoType')) or 'unknown'}; keys={','.join(keys) or 'none'}; "
+        f"dom_match={bool(evidence.get('domAccountMatch'))}; "
+        f"dom_identity={','.join(dom_identity_fields) or 'none'}; "
+        f"dom_site={','.join(dom_site_fields) or 'none'}; "
+        f"candidates={'|'.join(candidates[:20]) or 'none'}"
+    )[:480]
+
+
+def _ronghui_public_identity(user_info: Any, *, expected_login: str) -> dict[str, Any]:
+    account_keys = {
+        "loginUserAccount",
+        "userAccount",
+        "loginAccount",
+        "loginEmpCode",
+        "userCode",
+        "loginUserId",
+    }
+    site_code_keys = {"loginSiteCode", "siteCode", "loginOwnerSiteCode"}
+    site_name_keys = {"loginSiteName", "siteName", "loginOwnerSiteName"}
+    account_candidates: list[tuple[str, str]] = []
+    site_codes: set[str] = set()
+    site_names: set[str] = set()
+    stack: list[tuple[str, Any]] = [("", user_info)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                key_text = clean_text(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if key_text in account_keys:
+                    account_candidates.append((child_path, clean_text(item)))
+                elif key_text in site_code_keys:
+                    if cleaned := clean_text(item):
+                        site_codes.add(cleaned)
+                elif key_text in site_name_keys:
+                    if cleaned := clean_text(item):
+                        site_names.add(cleaned)
+                if isinstance(item, (Mapping, list, tuple)):
+                    stack.append((child_path, item))
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value[:20]):
+                stack.append((f"{path}[{index}]", item))
+    expected = clean_text(expected_login)
+    return {
+        "accountObserved": bool(account_candidates),
+        "accountMatch": any(candidate == expected for _path, candidate in account_candidates),
+        "siteCode": next(iter(site_codes)) if len(site_codes) == 1 else "",
+        "siteName": next(iter(site_names)) if len(site_names) == 1 else "",
+        "identityEvidence": {
+            "expectedLength": len(expected),
+            "rawType": "public_context",
+            "rawLength": 0,
+            "jsonParsed": True,
+            "infoType": "object",
+            "infoKeys": sorted({path.rsplit(".", 1)[-1] for path, _value in account_candidates}),
+            "candidates": [
+                {
+                    "path": path,
+                    "length": len(candidate),
+                    "exact": candidate == expected,
+                    "casefold": candidate.casefold() == expected.casefold(),
+                    "contains": bool(expected and expected in candidate),
+                    "containedBy": bool(candidate and candidate in expected),
+                }
+                for path, candidate in account_candidates[:20]
+            ],
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -80,6 +216,50 @@ def _request_from_playwright(request: Any) -> _CapturedRequest:
         url=clean_text(getattr(request, "url", "")),
         content_type=clean_text(headers.get("content-type")).lower(),
         body=clean_text(getattr(request, "post_data", "")),
+    )
+
+
+def _ronghui_request_template(
+    page_context: Mapping[str, Any],
+    *,
+    call_id: str,
+    target_date: dt.date,
+    source_site_code: str,
+    page_size: int,
+) -> _CapturedRequest:
+    html = clean_text(page_context.get("html"))
+    relative_url = f"{RONGHUI_FINANCE_ENDPOINT}?id={call_id}"
+    required_markers = {
+        relative_url,
+        "BALANCE_DATE",
+        "SITE_NAME_CODE",
+        "pageSize",
+    }
+    missing = sorted(marker for marker in required_markers if marker not in html)
+    if missing:
+        raise FinanceCaptureError(
+            "FIELD_DRIFT",
+            f"融辉财务页面缺少请求契约字段：{','.join(missing)}",
+            stage="request_discovery",
+        )
+    day = target_date.strftime("%Y/%m/%d")
+    payload = {
+        "BALANCE_DATE": json.dumps(
+            {"start": f"{day} 00:00:00", "end": f"{day} 23:59:59"},
+            ensure_ascii=False,
+        ),
+        "SITE_NAME_CODE": source_site_code,
+        "pageIndex": "0",
+        "pageSize": str(page_size),
+        "sortField": "",
+        "sortOrder": "",
+        "totalColumns": "[]",
+    }
+    return _CapturedRequest(
+        method="POST",
+        url=urljoin(clean_text(page_context.get("url")), relative_url),
+        content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        body=urlencode(payload),
     )
 
 
@@ -251,8 +431,15 @@ class RonghuiLiveFinanceAdapter:
         try:
             self._session = get_session_broker(self.binding.session_profile).build_requests_session(validate=True)
             from agent.tms_runtime.scripts.customer_service_problem import (
+                RONGHUI_INDEX_URL,
+                _read_user_info_cookie,
                 _resolve_ronghui_page_context,
                 _ronghui_headers,
+            )
+
+            session_identity = _ronghui_public_identity(
+                _read_user_info_cookie(self._session),
+                expected_login=self.binding.login_account,
             )
 
             self._page_context = _resolve_ronghui_page_context(self._session, RONGHUI_MENU_TEXT)
@@ -261,10 +448,14 @@ class RonghuiLiveFinanceAdapter:
                 RONGHUI_DETAIL_CALL_ID,
                 RONGHUI_SUMMARY_CALL_ID,
                 RONGHUI_DRILLDOWN_CALL_ID,
-                *RONGHUI_FIELD_BINDINGS.values(),
             }
             if any(marker not in html for marker in required_markers):
-                raise FinanceCaptureError("FIELD_DRIFT", "融辉财务页配置字段或 callId 发生变化", stage="page_discovery")
+                evidence = _ronghui_schema_evidence(html, expected_markers=required_markers)
+                raise FinanceCaptureError(
+                    "FIELD_DRIFT",
+                    f"融辉财务页配置字段或 callId 发生变化；{evidence}",
+                    stage="page_discovery",
+                )
             self._headers = _ronghui_headers(
                 self._page_context,
                 content_type="application/x-www-form-urlencoded; charset=UTF-8",
@@ -273,29 +464,125 @@ class RonghuiLiveFinanceAdapter:
                 headless=True,
                 profile=self.binding.session_profile,
             )
-            self._page.goto(self._page_context["url"], wait_until="domcontentloaded", timeout=60_000)
+            self._page.goto(RONGHUI_INDEX_URL, wait_until="domcontentloaded", timeout=60_000)
             if "/system/login" in clean_text(self._page.url).lower():
-                raise FinanceCaptureError("AUTH_REQUIRED", "融辉财务原页登录态失效", stage="page_discovery")
-            public_identity = self._page.evaluate(
+                raise FinanceCaptureError("AUTH_REQUIRED", "融辉主页面登录态失效", stage="page_discovery")
+            try:
+                self._page.wait_for_function(
+                    """() => Boolean(
+                        window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
+                        && $Z.user.getUserInfo()
+                    )""",
+                    timeout=15_000,
+                )
+            except Exception:
+                # Preserve the explicit identity failure below with structural
+                # evidence; do not fall back to session or configured values.
+                pass
+            page_identity = self._page.evaluate(
                 """(expectedLogin) => {
-                    const info = window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
+                    const rawInfo = window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
                         ? $Z.user.getUserInfo()
                         : null;
+                    let info = rawInfo;
+                    let jsonParsed = false;
+                    if (typeof rawInfo === 'string') {
+                        try {
+                            const parsed = JSON.parse(rawInfo);
+                            if (parsed && typeof parsed === 'object') {
+                                info = parsed;
+                                jsonParsed = true;
+                            }
+                        } catch (_) {}
+                    }
                     const containsExact = (value) => {
                         if (Array.isArray(value)) return value.some(containsExact);
                         if (value && typeof value === 'object') return Object.values(value).some(containsExact);
                         return String(value == null ? '' : value).trim() === expectedLogin;
                     };
+                    const fieldValue = (name) => {
+                        const elements = [
+                            ...document.querySelectorAll(`[name="${name}"], [id="${name}"]`),
+                        ];
+                        const values = elements.map((element) => String(
+                            element.value == null ? element.textContent || '' : element.value
+                        ).trim()).filter(Boolean);
+                        return {name, values};
+                    };
+                    const identityFields = [
+                        'loginUserAccount', 'loginEmpCode', 'loginUserName', 'loginEmpName',
+                    ].map(fieldValue);
+                    const bodyLines = String(document.body && document.body.innerText || '')
+                        .split(String.fromCharCode(10)).map((line) => line.trim()).filter(Boolean);
+                    const domAccountMatch = identityFields.some((field) => field.values.includes(expectedLogin))
+                        || bodyLines.includes(expectedLogin);
+                    const siteCodeField = fieldValue('loginSiteCode');
+                    const siteNameField = fieldValue('loginSiteName');
+                    const candidates = [];
+                    const visit = (value, path, depth) => {
+                        if (depth > 4 || candidates.length >= 30) return;
+                        if (Array.isArray(value)) {
+                            value.slice(0, 10).forEach((item, index) => visit(item, `${path}[${index}]`, depth + 1));
+                            return;
+                        }
+                        if (value && typeof value === 'object') {
+                            Object.entries(value).slice(0, 50).forEach(([key, item]) => visit(item, path ? `${path}.${key}` : key, depth + 1));
+                            return;
+                        }
+                        if (!/(user|account|login|code|name|phone)/i.test(path)) return;
+                        const actual = String(value == null ? '' : value).trim();
+                        const expected = String(expectedLogin || '').trim();
+                        candidates.push({
+                            path,
+                            length: actual.length,
+                            exact: actual === expected,
+                            casefold: actual.toLowerCase() === expected.toLowerCase(),
+                            contains: Boolean(expected && actual.includes(expected)),
+                            containedBy: Boolean(actual && expected.includes(actual)),
+                        });
+                    };
+                    visit(info, '', 0);
                     return {
-                        accountMatch: Boolean(info && containsExact(info)),
-                        siteCode: String(info && info.loginSiteCode || '').trim(),
-                        siteName: String(info && info.loginSiteName || '').trim(),
+                        accountMatch: Boolean(info && containsExact(info)) || domAccountMatch,
+                        siteCode: String(
+                            info && info.loginSiteCode || siteCodeField.values[0] || ''
+                        ).trim(),
+                        siteName: String(
+                            info && info.loginSiteName || siteNameField.values[0] || ''
+                        ).trim(),
+                        identityEvidence: {
+                            expectedLength: String(expectedLogin || '').trim().length,
+                            rawType: rawInfo === null ? 'null' : Array.isArray(rawInfo) ? 'array' : typeof rawInfo,
+                            rawLength: typeof rawInfo === 'string' ? rawInfo.length : 0,
+                            jsonParsed,
+                            infoType: info === null ? 'null' : Array.isArray(info) ? 'array' : typeof info,
+                            infoKeys: info && typeof info === 'object' ? Object.keys(info) : [],
+                            domAccountMatch,
+                            domIdentityFields: identityFields.filter((field) => field.values.length).map((field) => field.name),
+                            domSiteFields: [siteCodeField, siteNameField].filter((field) => field.values.length).map((field) => field.name),
+                            candidates,
+                        },
                     };
                 }""",
                 self.binding.login_account,
             )
+            if session_identity.get("accountObserved"):
+                public_identity = dict(session_identity)
+                public_identity["siteCode"] = clean_text(
+                    public_identity.get("siteCode") or page_identity.get("siteCode")
+                )
+                public_identity["siteName"] = clean_text(
+                    public_identity.get("siteName") or page_identity.get("siteName")
+                )
+            else:
+                public_identity = page_identity
             if not isinstance(public_identity, Mapping) or public_identity.get("accountMatch") is not True:
-                raise FinanceCaptureError("ACCOUNT_PAGE_MISMATCH", "融辉财务页登录账号与账号管理不一致", stage="page_discovery")
+                evidence = _format_identity_evidence(public_identity)
+                raise FinanceCaptureError(
+                    "ACCOUNT_PAGE_MISMATCH",
+                    f"融辉财务页登录账号与账号管理不一致；{evidence}",
+                    stage="page_discovery",
+                )
             self._source_site_code = clean_text(public_identity.get("siteCode"))
             self._source_site_name = clean_text(public_identity.get("siteName"))
             if not self._source_site_code or not self._source_site_name:
@@ -314,13 +601,68 @@ class RonghuiLiveFinanceAdapter:
         page = self._page
         if page is None:
             raise FinanceCaptureError("PAGE_CAPTURE_UNAVAILABLE", "融辉财务原页尚未发现", stage="query_capture")
-        tabs = page.get_by_text(tab_text, exact=True)
-        visible_tabs = [tabs.nth(index) for index in range(tabs.count()) if tabs.nth(index).is_visible()]
+        visible_tabs: list[tuple[Any, Any]] = []
+        frame_evidence: list[str] = []
+        for frame_index, scope in enumerate(page.frames):
+            try:
+                tabs = scope.get_by_text(tab_text, exact=True)
+                visible_tabs.extend(
+                    (scope, tabs.nth(index))
+                    for index in range(tabs.count())
+                    if tabs.nth(index).is_visible()
+                )
+            except Exception:
+                continue
+            try:
+                evidence = scope.evaluate(
+                    """() => {
+                        const allowed = (text) => /(?:明细|汇总|统计|查询)/.test(text) && text.length <= 30;
+                        const labels = [...document.querySelectorAll('a,button,span,div')]
+                            .filter((item) => item.offsetParent !== null)
+                            .map((item) => String(item.innerText || item.textContent || '').trim())
+                            .filter(allowed);
+                        const components = [];
+                        if (window.mini && typeof mini.getComponents === 'function') {
+                            for (const item of mini.getComponents()) {
+                                const text = String(item.text || (item.getText && item.getText()) || '').trim();
+                                if (!allowed(text)) continue;
+                                const type = String(item.type || (item.getType && item.getType()) || '').trim();
+                                components.push(`${type || 'unknown'}:${text}`);
+                            }
+                        }
+                        return {
+                            labels: [...new Set(labels)].slice(0, 12),
+                            components: [...new Set(components)].slice(0, 12),
+                        };
+                    }"""
+                )
+                labels = [clean_text(item) for item in (evidence or {}).get("labels", []) if clean_text(item)]
+                components = [
+                    clean_text(item)
+                    for item in (evidence or {}).get("components", [])
+                    if clean_text(item)
+                ]
+                if labels or components:
+                    frame_evidence.append(
+                        f"frame{frame_index}:labels={'|'.join(labels) or 'none'}:"
+                        f"components={'|'.join(components) or 'none'}"
+                    )
+            except Exception:
+                continue
         if len(visible_tabs) != 1:
-            raise FinanceCaptureError("FIELD_DRIFT", "融辉财务页签无法唯一定位", stage="query_capture")
-        visible_tabs[0].click()
+            raise FinanceCaptureError(
+                "FIELD_DRIFT",
+                (
+                    f"融辉财务页签无法唯一定位；target={tab_text}; "
+                    f"matches={len(visible_tabs)}; frames={len(page.frames)}; "
+                    f"evidence={';'.join(frame_evidence) or 'none'}"
+                )[:480],
+                stage="query_capture",
+            )
+        scope, selected_tab = visible_tabs[0]
+        selected_tab.click()
         page.wait_for_timeout(500)
-        set_result = page.evaluate(
+        set_result = scope.evaluate(
             r"""([targetDay, siteCode, siteName]) => {
                 if (!window.mini || typeof mini.getComponents !== 'function') return {dates: 0, sites: 0};
                 const componentName = (item) => String(item.name || (item.getName && item.getName()) || item.id || '');
@@ -370,7 +712,7 @@ class RonghuiLiveFinanceAdapter:
             raise FinanceCaptureError("FIELD_DRIFT", "融辉原页日期组件无法唯一确认", stage="query_capture")
         if int((set_result or {}).get("sites") or 0) != 1:
             raise FinanceCaptureError("SOURCE_SITE_MISMATCH", "融辉网点下拉未精确唯一匹配登录网点", stage="query_capture")
-        buttons = page.get_by_text("查询", exact=True)
+        buttons = scope.get_by_text("查询", exact=True)
         candidates = [buttons.nth(index) for index in range(buttons.count()) if buttons.nth(index).is_visible()]
         for button in candidates:
             try:
@@ -384,10 +726,21 @@ class RonghuiLiveFinanceAdapter:
         raise FinanceCaptureError("FIELD_DRIFT", "融辉原页未触发目标财务 callId", stage="query_capture")
 
     def fetch_day(self, target_date: dt.date) -> CaptureResult:
-        detail_first, detail_template = self._capture_query(
-            target_date,
+        detail_template = _ronghui_request_template(
+            self._page_context,
             call_id=RONGHUI_DETAIL_CALL_ID,
-            tab_text="明细查询",
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            page_size=self.page_size,
+        )
+        detail_first = _replay_ronghui_request(
+            self._session,
+            detail_template,
+            page=1,
+            page_size=self.page_size,
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            headers=self._headers,
         )
         detail_cache: dict[int, Any] = {1: detail_first}
 
@@ -414,10 +767,21 @@ class RonghuiLiveFinanceAdapter:
             stage="ronghui_detail_discovery",
         ).rows
 
-        summary_first, summary_template = self._capture_query(
-            target_date,
+        summary_template = _ronghui_request_template(
+            self._page_context,
             call_id=RONGHUI_SUMMARY_CALL_ID,
-            tab_text="统计查询",
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            page_size=self.page_size,
+        )
+        summary_first = _replay_ronghui_request(
+            self._session,
+            summary_template,
+            page=1,
+            page_size=self.page_size,
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            headers=self._headers,
         )
 
         def summary_fetch(page: int, page_size: int) -> Any:

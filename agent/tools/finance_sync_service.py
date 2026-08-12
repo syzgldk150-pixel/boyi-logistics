@@ -309,6 +309,12 @@ def _safe_error(exc: BaseException) -> tuple[str, str]:
     return type(exc).__name__[:64], "财务同步内部阶段失败；异常详情已脱敏"
 
 
+def _safe_error_stage(exc: BaseException) -> str:
+    if isinstance(exc, FinanceCaptureError):
+        return clean_text(getattr(exc, "stage", ""))[:64]
+    return ""
+
+
 def _close_adapter(adapter: Any) -> None:
     close = getattr(adapter, "close", None)
     if callable(close):
@@ -333,6 +339,7 @@ class FinanceSyncService:
         self.adapter_factory = adapter_factory
         self.shared_api = shared_api or _shared_finance_api()
         self.now = now or (lambda: dt.datetime.now(TZ))
+        self.current_stage = "initialized"
 
     def _transaction(self, row: Mapping[str, Any], binding: FinanceAccountBinding) -> Any:
         platform = clean_text(row.get("platform"))
@@ -438,9 +445,11 @@ class FinanceSyncService:
         return self.shared_api.validate_finance_capture(evidence)
 
     def run(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self.current_stage = "plan_request"
         plan = plan_sync_request(params, now=self.now())
         platform = clean_text(params.get("platform")).lower()
         account_id = clean_text(params.get("account_id"))
+        self.current_stage = "schema_validation"
         self.repository.initialize_schema()
         retry_targets: list[Mapping[str, Any]] = []
         if plan["mode"] == "retry":
@@ -467,7 +476,9 @@ class FinanceSyncService:
         else:
             target_specs = _requested_account_specs(platform=platform, account_id=account_id)
 
+        self.current_stage = "seed_fee_mappings"
         self.repository.seed_fee_mappings()
+        self.current_stage = "create_batch"
         batch_id = self.repository.create_batch(
             trigger_type="startup" if params.get("_startup_catchup") else plan["mode"],
             start_date=plan["start_date"],
@@ -479,6 +490,7 @@ class FinanceSyncService:
 
         successes: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        self.current_stage = "sync_accounts"
         for target_platform, target_account_id in target_specs:
             dates = list(plan["dates"])
             if retry_targets:
@@ -519,6 +531,7 @@ class FinanceSyncService:
                 binding = resolved_bindings[0]
             except Exception as exc:
                 code, message = _safe_error(exc)
+                error_stage = _safe_error_stage(exc)
                 for target_date in dates:
                     self.repository.start_failed_run(
                         batch_id=batch_id,
@@ -534,6 +547,8 @@ class FinanceSyncService:
                             "account_id": target_account_id,
                             "target_date": target_date.isoformat(),
                             "error_code": code,
+                            "error_message": message,
+                            "error_stage": error_stage,
                         }
                     )
                 continue
@@ -544,6 +559,7 @@ class FinanceSyncService:
                 context = dict(adapter.discover())
             except Exception as exc:
                 code, message = _safe_error(exc)
+                error_stage = _safe_error_stage(exc)
                 for target_date in dates:
                     run_id = self.repository.start_run(
                         batch_id=batch_id,
@@ -554,7 +570,16 @@ class FinanceSyncService:
                         target_date=target_date,
                     )
                     self.repository.fail_run(run_id=run_id, error_code=code, error_message=message)
-                    failures.append({"platform": binding.system, "account_id": binding.account_id, "target_date": target_date.isoformat(), "error_code": code})
+                    failures.append(
+                        {
+                            "platform": binding.system,
+                            "account_id": binding.account_id,
+                            "target_date": target_date.isoformat(),
+                            "error_code": code,
+                            "error_message": message,
+                            "error_stage": error_stage,
+                        }
+                    )
                 if adapter is not None:
                     _close_adapter(adapter)
                 continue
@@ -631,6 +656,7 @@ class FinanceSyncService:
                     )
                 except Exception as exc:
                     code, message = _safe_error(exc)
+                    error_stage = _safe_error_stage(exc)
                     if run_id is None:
                         run_id = self.repository.start_run(
                             batch_id=batch_id,
@@ -649,15 +675,24 @@ class FinanceSyncService:
                             "account_id": binding.account_id,
                             "target_date": target_date.isoformat(),
                             "error_code": code,
+                            "error_message": message,
+                            "error_stage": error_stage,
                         }
                     )
             if adapter is not None:
                 _close_adapter(adapter)
 
+        self.current_stage = "finalize_batch"
         status = self.repository.finalize_batch(batch_id)
         if failures and not successes:
-            first_code = failures[0]["error_code"]
-            raise FinanceSyncError(first_code, "全部财务账号/日期同步失败")
+            first_failure = failures[0]
+            first_code = first_failure["error_code"]
+            first_message = clean_text(first_failure.get("error_message"))
+            first_stage = clean_text(first_failure.get("error_stage"))
+            detail = first_message or "全部财务账号/日期同步失败"
+            if first_stage:
+                detail = f"{detail}（stage={first_stage}）"
+            raise FinanceSyncError(first_code, detail)
         return {
             "ok": True,
             "partial_success": bool(failures),
