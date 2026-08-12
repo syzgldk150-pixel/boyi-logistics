@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+import time
 from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -20,6 +21,8 @@ SIGN_DETAIL_URL = f"{page_support.RONGHUI_ORIGIN}/dataQuery/findPageByCallId?id=
 DATE_TIME_FORMAT = "%Y/%m/%d %H:%M:%S"
 DEFAULT_PAGE_SIZE = 200
 DEFAULT_MAX_PAGES = 500
+DEFAULT_CHUNK_DAYS = 31
+DEFAULT_RETRY_ATTEMPTS = 3
 
 
 def _clean(value: Any) -> str:
@@ -112,21 +115,33 @@ def _collect_complete_pages(
     page_size: int,
     max_pages: int,
     timeout: float,
+    retry_attempts: int,
 ) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
     expected_total: int | None = None
     for page_index in range(max_pages):
-        response = session.post(
-            url,
-            data={
-                **base_payload,
-                "pageIndex": page_index,
-                "pageSize": page_size,
-            },
-            headers=headers,
-            timeout=timeout,
-        )
         page_label = f"{label}第{page_index + 1}页"
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                response = session.post(
+                    url,
+                    data={
+                        **base_payload,
+                        "pageIndex": page_index,
+                        "pageSize": page_size,
+                    },
+                    headers=headers,
+                    timeout=timeout,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < retry_attempts:
+                    time.sleep(min(float(attempt), 2.0))
+        if response is None:
+            raise RuntimeError(f"{page_label}连续{retry_attempts}次请求失败") from last_error
         payload = page_support._response_json(response, label=page_label)
         page_support._raise_if_source_failed(payload, label=page_label)
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
@@ -160,11 +175,14 @@ def collect_sign_rows(
     page_size: int = DEFAULT_PAGE_SIZE,
     max_pages: int = DEFAULT_MAX_PAGES,
     timeout: float = 30,
+    retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
 ) -> list[dict[str, Any]]:
     if page_size <= 0 or page_size > 200:
         raise ValueError("签收查询 page_size 必须在 1 到 200 之间")
     if max_pages <= 0:
         raise ValueError("签收查询 max_pages 必须大于 0")
+    if retry_attempts <= 0 or retry_attempts > 5:
+        raise ValueError("签收查询 retry_attempts 必须在 1 到 5 之间")
     headers = page_support._ronghui_headers(
         page_context,
         content_type="application/x-www-form-urlencoded; charset=UTF-8",
@@ -185,6 +203,7 @@ def collect_sign_rows(
         page_size=page_size,
         max_pages=max_pages,
         timeout=timeout,
+        retry_attempts=retry_attempts,
     )
     result: list[dict[str, Any]] = []
     seen: dict[tuple[str, str], dict[str, Any]] = {}
@@ -212,6 +231,7 @@ def collect_sign_rows(
             page_size=page_size,
             max_pages=max_pages,
             timeout=timeout,
+            retry_attempts=retry_attempts,
         )
         if detail_total != summary_total:
             raise RuntimeError(
@@ -230,6 +250,48 @@ def collect_sign_rows(
     return result
 
 
+def collect_sign_rows_in_chunks(
+    session: Any,
+    page_context: dict[str, str],
+    *,
+    start: dt.datetime,
+    end: dt.datetime,
+    login_site_code: str,
+    chunk_days: int = DEFAULT_CHUNK_DAYS,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    if start > end:
+        raise ValueError("签收查询开始时间不能晚于结束时间")
+    if chunk_days <= 0 or chunk_days > 366:
+        raise ValueError("签收查询 chunk_days 必须在 1 到 366 之间")
+    result: list[dict[str, Any]] = []
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    chunk_start = start
+    while chunk_start <= end:
+        chunk_end = min(
+            end,
+            chunk_start + dt.timedelta(days=chunk_days) - dt.timedelta(seconds=1),
+        )
+        for row in collect_sign_rows(
+            session,
+            page_context,
+            start=chunk_start,
+            end=chunk_end,
+            login_site_code=login_site_code,
+            **kwargs,
+        ):
+            identity = (row["扫描单号"], row["扫描时间"])
+            previous = seen.get(identity)
+            if previous is not None:
+                if previous != row:
+                    raise RuntimeError(f"TMS签收分片重复冲突: {identity[0]} {identity[1]}")
+                continue
+            seen[identity] = row
+            result.append(row)
+        chunk_start = chunk_end + dt.timedelta(seconds=1)
+    return result
+
+
 def run_once(params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     params = params if isinstance(params, dict) else {}
     now = dt.datetime.now()
@@ -238,18 +300,24 @@ def run_once(params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     page_size = int(params.get("page_size") or params.get("pageSize") or DEFAULT_PAGE_SIZE)
     max_pages = int(params.get("max_pages") or params.get("maxPages") or DEFAULT_MAX_PAGES)
     timeout = float(params.get("timeout") or 30)
+    chunk_days = int(params.get("chunk_days") or params.get("chunkDays") or DEFAULT_CHUNK_DAYS)
+    retry_attempts = int(
+        params.get("retry_attempts") or params.get("retryAttempts") or DEFAULT_RETRY_ATTEMPTS
+    )
     session = page_support._build_session("ronghui", params)
     context = page_support._resolve_ronghui_page_context(session, "签收查询")
     login_site_code = page_support._resolve_ronghui_login_site_code(session, params)
-    return collect_sign_rows(
+    return collect_sign_rows_in_chunks(
         session,
         context,
         start=start,
         end=end,
         login_site_code=login_site_code,
+        chunk_days=chunk_days,
         page_size=page_size,
         max_pages=max_pages,
         timeout=timeout,
+        retry_attempts=retry_attempts,
     )
 
 

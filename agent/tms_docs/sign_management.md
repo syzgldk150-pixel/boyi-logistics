@@ -141,6 +141,7 @@
   - `searchBtn -> searchMethod();`
   - `exportBtn -> exportMethod();`
 - 逐票签收证据必须按页面真实链路先查 `FIND_SIGNED_TOTAL`，再按每个汇总行查 `FIND_SIGNED_DETAIL_ALL_EXCEL`，并校验每组 `TOTAL_NUM` 与明细 `total` 相等。
+- 长历史范围按连续、无重叠的 31 天窗口分片查询；每个窗口均独立完成汇总与明细分页并校验，片间按 `BILL_CODE + SIGN_DATE` 去重且冲突显式失败。日常增量窗口不足 31 天时只发起一个分片。
 
 **Automation Notes**
 - 适合先封装接口：页面已经暴露稳定查询请求，可以先复用查询链路，再决定是否走 DOM。
