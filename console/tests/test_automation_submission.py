@@ -163,6 +163,20 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("指定日期", fields["target_date"]["label"])
         self.assertIn("默认拉取当天", fields["target_date"]["hint"])
 
+    def test_scan_and_arrive_list_expose_optional_target_date_fields(self):
+        for task_id in ("scan_codes", "arrive_list"):
+            with self.subTest(task_id=task_id):
+                defaults = build_virtual_task_defaults(task_id)
+                fields = {
+                    item["path"]: item
+                    for item in flatten_automation_fields(defaults["tool_params"])
+                }
+
+                self.assertEqual("", defaults["tool_params"]["target_date"])
+                self.assertEqual("date", fields["target_date"]["kind"])
+                self.assertEqual("指定日期", fields["target_date"]["label"])
+                self.assertIn("默认拉取当天", fields["target_date"]["hint"])
+
     def test_self_pickup_problem_upload_workflow_is_ronghui_manual_preview(self):
         workflow = AUTOMATION_WORKFLOW_BY_ID["self_pickup_problem_upload"]
         defaults = build_virtual_task_defaults("self_pickup_problem_upload")

@@ -312,6 +312,9 @@ tools:
         request_body:
           type: object
           description: "可选，覆盖 get_scan 请求体"
+        target_date:
+          type: string
+          description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
         scan_next_request_body:
           type: object
           description: "可选，覆盖 scan_next 请求体模板"
