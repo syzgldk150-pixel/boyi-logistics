@@ -67,6 +67,9 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
                     "rawLength": 120,
                     "jsonParsed": True,
                     "infoType": "object",
+                    "domAccountMatch": True,
+                    "domIdentityFields": ["loginUserAccount"],
+                    "domSiteFields": ["loginSiteCode", "loginSiteName"],
                     "infoKeys": ["loginAccount", "unsafe key=value"],
                     "candidates": [
                         {
@@ -86,6 +89,8 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         self.assertIn("loginAccount", evidence)
         self.assertIn("raw_type=string", evidence)
         self.assertIn("json_parsed=True", evidence)
+        self.assertIn("dom_match=True", evidence)
+        self.assertIn("dom_site=loginSiteCode,loginSiteName", evidence)
         self.assertIn("casefold=True", evidence)
         self.assertNotIn("secret-account", evidence)
         self.assertNotIn("unsafe key=value", evidence)
