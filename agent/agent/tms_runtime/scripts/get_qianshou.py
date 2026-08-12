@@ -49,6 +49,15 @@ def _has_value(value: Any) -> bool:
     return True
 
 
+def _has_confirmed_sign_signal(row: Dict[str, Any]) -> bool:
+    """Detect the R13-reported sign signal for diagnostics only.
+
+    The daily-sign ledger deliberately does not use this signal to filter or
+    close a waybill; only a TMS main-waybill ``签收`` scan can do that.
+    """
+    return _has_value(row.get("signTime")) or _has_value(row.get("signSiteName"))
+
+
 def _extract_rows(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return payload
