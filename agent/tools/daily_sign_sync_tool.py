@@ -353,7 +353,7 @@ def _sync_sign_events(params: dict[str, Any], known_main_codes: set[str]) -> tup
             "params": {
                 "start": start,
                 "end": end,
-                "page_size": int(params.get("sign_page_size") or 500),
+                "page_size": int(params.get("sign_page_size") or 200),
                 "max_pages": int(params.get("sign_max_pages") or 500),
                 "account_id": params.get("sign_account_id") or "ronghui_daxiang_s",
             },
