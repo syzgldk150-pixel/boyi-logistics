@@ -9,7 +9,11 @@ class Phase7SyncToolTests(unittest.TestCase):
         return {
             "ok": True,
             "data": [
-                {"运单编号": bill_code, "签收状态": "未签收"}
+                {
+                    "tracking_number": bill_code,
+                    "sign_status_checked": True,
+                    "is_signed": False,
+                }
                 for bill_code in bill_codes
             ],
         }
@@ -1994,12 +1998,13 @@ class Phase7SyncToolTests(unittest.TestCase):
                             "dispatchMode": "送货（不含上楼）",
                         }
                     ],
-                    self._pending_status_result("R0001"),
                     {
                         "ok": True,
                         "data": [
                             {
                                 "tracking_number": "R0001",
+                                "sign_status_checked": True,
+                                "is_signed": False,
                                 "recipient_address": "湖南省邵阳市大祥区雨溪镇",
                             }
                         ],
@@ -2015,11 +2020,13 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(1, result["address_enrichment"]["updated"])
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_records[0]["fields"]["收件人地址"])
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_values[0][5])
-        self.assertEqual("/query_waybill_detail", call_tms.call_args_list[2].args[0])
+        detail_payload = call_tms.call_args_list[1].args[1]
+        self.assertEqual("/query_waybill_detail", call_tms.call_args_list[1].args[0])
         self.assertEqual(
             [{"bill_code": "R0001"}],
-            call_tms.call_args_list[2].args[1]["params"]["items"],
+            detail_payload["params"]["items"],
         )
+        self.assertTrue(detail_payload["params"]["include_sign_status"])
 
     def test_daily_sign_sync_excludes_tms_signed_rows_before_writing(self):
         written_values = []
@@ -2039,8 +2046,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                     {
                         "ok": True,
                         "data": [
-                            {"运单编号": "SIGNED", "签收状态": "已签收"},
-                            {"运单编号": "PENDING", "签收状态": "未签收"},
+                            {"tracking_number": "SIGNED", "sign_status_checked": True, "is_signed": True},
+                            {"tracking_number": "PENDING", "sign_status_checked": True, "is_signed": False},
                         ],
                     },
                 ],
@@ -2062,8 +2069,9 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(1, result["sign_verification"]["excluded_signed"])
         self.assertEqual(["PENDING"], [row[0] for row in written_values])
         status_request = call_tms.call_args_list[1].args[1]
-        self.assertEqual("/delivery_status", call_tms.call_args_list[1].args[0])
+        self.assertEqual("/query_waybill_detail", call_tms.call_args_list[1].args[0])
         self.assertEqual("ronghui_default", status_request["params"]["account_id"])
+        self.assertTrue(status_request["params"]["include_sign_status"])
 
     def test_daily_sign_sync_stops_before_writing_on_unknown_tms_status(self):
         with (
@@ -2071,7 +2079,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 "tools.daily_sign_sync_tool.call_http_service",
                 side_effect=[
                     [{"billNumberMain": "UNKNOWN", "planSignTime": "2026-08-10 23:59:59"}],
-                    {"ok": True, "data": [{"运单编号": "UNKNOWN", "签收状态": ""}]},
+                    {"ok": True, "data": [{"tracking_number": "UNKNOWN", "sign_status_checked": False}]},
                 ],
             ),
             patch("tools.daily_sign_sync_tool.sync_bitable_snapshot") as bitable_mock,
@@ -2081,7 +2089,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 {"enrich_addresses": False, "enrich_arrival_counts": False}
             )
 
-        self.assertIn("签收状态缺失或无法识别", result["error"])
+        self.assertIn("签收扫描结果缺失", result["error"])
         self.assertEqual(["UNKNOWN"], result["sign_verification"]["unknown_bill_codes"])
         bitable_mock.assert_not_called()
         sheet_mock.assert_not_called()
