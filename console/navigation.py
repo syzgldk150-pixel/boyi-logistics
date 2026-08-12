@@ -22,7 +22,6 @@ CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = (
     {"route": "/line-haul-contacts", "label": "专线分流", "mobile_label": "专线", "icon": "map", "section": "primary"},
     {"route": "/automations", "label": "自动化", "mobile_label": "自动化", "icon": "sliders", "section": "primary"},
     {"route": "/automation-accounts", "label": "业务账号", "mobile_label": "账号", "icon": "users", "section": "primary"},
-    {"route": "/templates/new", "label": "模板配置", "mobile_label": "模板", "icon": "layout", "section": "primary"},
     {"route": "/settings/accounts", "label": "系统管理", "mobile_label": "设置", "icon": "settings", "section": "system"},
     {"route": "/settings/llm", "label": "智能模型", "mobile_label": "模型", "icon": "cpu", "section": "system"},
 )
