@@ -601,6 +601,19 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
 
             def post(self, url, **kwargs):
                 self.calls.append((url, kwargs))
+                if "FIND_SIGNED_TOTAL" in url:
+                    return Response(
+                        {
+                            "data": [
+                                {
+                                    "AREA_NAME": "虚拟湖南省区",
+                                    "SIGN_SITE_CODE": "7390004",
+                                    "TOTAL_NUM": 2,
+                                }
+                            ],
+                            "total": 1,
+                        }
+                    )
                 page = int(kwargs["data"]["pageIndex"])
                 if page == 0:
                     rows = [
@@ -639,36 +652,58 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
 
         self.assertEqual(["R1", "R2"], [row["扫描单号"] for row in rows])
         self.assertTrue(all(row["扫描类型"] == "签收" for row in rows))
-        self.assertIn("FIND_SIGNED_DETAIL_ALL", session.calls[0][0])
+        self.assertIn("FIND_SIGNED_TOTAL", session.calls[0][0])
+        self.assertIn("FIND_SIGNED_DETAIL_ALL_EXCEL", session.calls[1][0])
         first_payload = session.calls[0][1]["data"]
         self.assertEqual("SIGN_DATE", first_payload["searchDateType"])
         self.assertEqual("7390004", first_payload["LOGIN_SITE_CODE"])
         self.assertEqual(0, first_payload["pageIndex"])
-        self.assertEqual(1, session.calls[1][1]["data"]["pageIndex"])
+        detail_payload = session.calls[1][1]["data"]
+        self.assertEqual("7390004", detail_payload["SIGN_SITE_CODE"])
+        self.assertEqual("虚拟湖南省区", detail_payload["AREA_NAME"])
+        self.assertEqual(1, session.calls[2][1]["data"]["pageIndex"])
 
     def test_tms_sign_query_rejects_missing_real_fields_and_incomplete_paging(self):
         with self.assertRaisesRegex(RuntimeError, "BILL_CODE"):
             get_sign_records.normalize_sign_row({"SIGN_DATE": "2026-08-12 10:00:00"})
 
         class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
             def raise_for_status(self):
                 return None
 
             def json(self):
-                return {
-                    "data": [
-                        {
-                            "BILL_CODE": "R1",
-                            "SIGN_DATE": "2026-08-12 10:00:00",
-                            "SIGN_SITE": "邵阳大祥S站",
-                        }
-                    ],
-                    "total": 2,
-                }
+                return self.payload
 
         class Session:
-            def post(self, *_args, **_kwargs):
-                return Response()
+            def post(self, url, **_kwargs):
+                if "FIND_SIGNED_TOTAL" in url:
+                    return Response(
+                        {
+                            "data": [
+                                {
+                                    "AREA_NAME": "虚拟湖南省区",
+                                    "SIGN_SITE_CODE": "7390004",
+                                    "TOTAL_NUM": 2,
+                                }
+                            ],
+                            "total": 1,
+                        }
+                    )
+                return Response(
+                    {
+                        "data": [
+                            {
+                                "BILL_CODE": "R1",
+                                "SIGN_DATE": "2026-08-12 10:00:00",
+                                "SIGN_SITE": "邵阳大祥S站",
+                            }
+                        ],
+                        "total": 2,
+                    }
+                )
 
         with (
             patch("agent.tms_runtime.scripts.get_sign_records.page_support._ronghui_headers", return_value={}),
