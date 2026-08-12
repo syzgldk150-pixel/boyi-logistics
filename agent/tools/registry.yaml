@@ -181,7 +181,7 @@ tools:
     heavy: false
 
   - name: sync_daily_should_sign
-    description: "Phase 7 第二批：拉取每日应签数据，补齐脱敏收件地址后覆盖飞书多维表格并同步电子表格"
+    description: "共享应签台账：合并R13、实际到货、问题件及TMS主单签收扫描，差异同步飞书九列表格"
     parameters:
       type: object
       properties:
@@ -215,10 +215,44 @@ tools:
         browser_batch_size:
           type: integer
           description: "可选，浏览器补齐详情的批量大小，默认 10"
+        sign_account_id:
+          type: string
+          description: "可选，TMS签收扫描查询账号；默认 ronghui_daxiang_s"
+        sign_site_code:
+          type: string
+          description: "可选，TMS签收扫描网点编码；默认从大祥S站登录态的真实 loginSiteCode 精确取得"
+        problem_account_id:
+          type: string
+          description: "可选，人工问题件增量查询账号；默认 ronghui_daxiang_s"
+        exact_sign_conflict_limit:
+          type: integer
+          description: "可选，R13显示已签但批量扫描无证据时允许逐票精确轨迹核验的最大冲突数，默认50；超过即降级且不按R13关闭"
       required: []
     executor: tools/daily_sign_sync_tool.py
     timeout: 2400
     heavy: false
+
+  - name: backfill_daily_sign_ledger
+    description: "合并到货归档、当前应签表、R13历史、问题件及TMS主单签收扫描；默认只做影子计算，apply=true才写共享历史台账，绝不发布飞书"
+    parameters:
+      type: object
+      properties:
+        apply:
+          type: boolean
+          description: "默认false只读影子计算；true时激活逐日实际到货快照并种入当前应签候选"
+        spreadsheet_token:
+          type: string
+          description: "可选，覆盖 phase7.stats_archive_sheet 的 spreadsheet_token"
+        r13_backfill_days:
+          type: integer
+          description: "可选，R13历史回看天数，默认3650"
+        event_backfill_days:
+          type: integer
+          description: "可选，TMS问题件和签收扫描历史回看天数，默认跟随R13回看天数"
+      required: []
+    executor: tools/daily_sign_backfill_tool.py
+    timeout: 2400
+    heavy: true
 
   - name: sync_site_send_list
     description: "Phase 7 第二批：拉取网点出港清单，覆盖飞书多维表格并同步电子表格"

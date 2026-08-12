@@ -15,6 +15,8 @@ if hasattr(sys.stdout, "reconfigure"):
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from tools.feishu_cli_tool import feishu_operation
+from tools.daily_sign_rules import is_before_problem_cutoff
+from tools.daily_sign_store import upsert_problem_events
 from tools.phase7_mysql_store import (
     list_split_pending_problem_items,
     replace_split_pending_problem_items,
@@ -457,6 +459,51 @@ def run_split_pending_problem_upload(params: dict[str, Any] | None = None) -> di
             "selected_bill_codes": selected_bill_codes,
             **common,
         }
+    event_rows: list[dict[str, Any]] = []
+    for result in results:
+        if not result.get("complete"):
+            continue
+        problem_item = result.get("problem_item") if isinstance(result.get("problem_item"), dict) else {}
+        external_id = _clean_text(problem_item.get("external_id") or problem_item.get("guid"))
+        registered_at = _clean_text(problem_item.get("registered_at"))
+        if not external_id or not registered_at:
+            return {
+                "ok": False,
+                "stage": "event_store_failed",
+                "error": f"{result.get('bill_code')} 已执行，但TMS结果缺少问题件唯一ID或登记时间",
+                "database_result": database_result,
+                "database_upload_result": database_upload_result,
+                "target_sheet_result": target_sheet_result,
+                "selected_bill_codes": selected_bill_codes,
+                **common,
+            }
+        event_rows.append(
+            {
+                "source": "split_pending_script",
+                "external_id": external_id,
+                "tracking_number": _clean_text(result.get("bill_code")),
+                "problem_type": _clean_text(result.get("problem_type")),
+                "registered_at": registered_at,
+                "registered_site": _clean_text(problem_item.get("registered_site")),
+                "upload_complete": True,
+                "before_cutoff": is_before_problem_cutoff(registered_at),
+                "postpones_sign": False,
+                "payload": result,
+            }
+        )
+    try:
+        problem_event_result = upsert_problem_events(event_rows)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "stage": "event_store_failed",
+            "error": f"融辉已执行，但共享问题件事件写入失败: {str(exc)[:500]}",
+            "database_result": database_result,
+            "database_upload_result": database_upload_result,
+            "target_sheet_result": target_sheet_result,
+            "selected_bill_codes": selected_bill_codes,
+            **common,
+        }
     return {
         "ok": not failed_bill_codes,
         "stage": "done" if not failed_bill_codes else "partial_failed",
@@ -466,6 +513,7 @@ def run_split_pending_problem_upload(params: dict[str, Any] | None = None) -> di
         "selected_bill_codes": selected_bill_codes,
         "database_result": database_result,
         "database_upload_result": database_upload_result,
+        "problem_event_result": problem_event_result,
         "target_sheet_result": target_sheet_result,
         "database_rows": int(database_result.get("current") or 0),
         "target_sheet_rows": int(target_sheet_result.get("rows") or 0),

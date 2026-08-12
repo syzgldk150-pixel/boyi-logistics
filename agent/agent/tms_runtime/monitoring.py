@@ -220,6 +220,12 @@ def _daily_sign_sheet_read_params() -> tuple[dict[str, Any], list[str]]:
     sensitive_values = [spreadsheet_token]
     if not spreadsheet_token or not value_range:
         raise ValueError(f"未找到 {DAILY_SIGN_SHEET_RESOURCE_KEY} 的 spreadsheet_token 或 range 配置")
+    range_match = re.fullmatch(
+        r"(?P<sheet>[^!]+)![A-Z]+\d+:[A-Z]+(?P<end_row>\d+)",
+        value_range,
+    )
+    if range_match:
+        value_range = f"{range_match.group('sheet')}!A1:I{range_match.group('end_row')}"
     return {
         "spreadsheet_token": spreadsheet_token,
         "range": value_range,
@@ -240,10 +246,8 @@ def _read_daily_sign_sheet_values() -> list[list[Any]]:
     return values
 
 
-def _sheet_plan_sign_date(row: list[Any]) -> str:
-    if len(row) < 2:
-        return ""
-    raw = _clean_text(row[1]).replace("/", "-")
+def _sheet_sign_date(value: Any) -> str:
+    raw = _clean_text(value).replace("/", "-")
     match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", raw)
     if not match:
         return ""
@@ -255,14 +259,35 @@ def _sheet_plan_sign_date(row: list[Any]) -> str:
 
 
 def _count_unsigned_daily_sign_sheet_rows(values: list[list[Any]], target_date: str) -> int:
+    header_index = -1
+    headers: dict[str, int] = {}
+    required_headers = {"运单编号", "R13应签收时间", "问题件后应签时间"}
+    for index, row in enumerate(values):
+        row_headers = {_clean_text(value): column for column, value in enumerate(row)}
+        if required_headers.issubset(row_headers):
+            header_index = index
+            headers = row_headers
+            break
+    if header_index < 0:
+        raise RuntimeError("应签明细缺少运单编号、R13应签收时间或问题件后应签时间表头")
+
+    try:
+        selected_date = date.fromisoformat(target_date)
+    except ValueError:
+        return 0
     total = 0
-    for row in values:
+    for row in values[header_index + 1 :]:
         if not row:
             continue
-        bill_number = _clean_text(row[0])
-        if not bill_number or bill_number in {"运单编号", "waybill_no", "billNumberMain"}:
+        bill_index = headers["运单编号"]
+        if bill_index >= len(row) or not _clean_text(row[bill_index]):
             continue
-        if _sheet_plan_sign_date(row) == target_date:
+        system_index = headers["问题件后应签时间"]
+        r13_index = headers["R13应签收时间"]
+        system_value = row[system_index] if system_index < len(row) else ""
+        r13_value = row[r13_index] if r13_index < len(row) else ""
+        due_date_text = _sheet_sign_date(system_value) or _sheet_sign_date(r13_value)
+        if due_date_text and date.fromisoformat(due_date_text) <= selected_date:
             total += 1
     return total
 
