@@ -231,6 +231,82 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         bitable.assert_not_called()
         sheet.assert_not_called()
 
+    def test_problem_query_retries_transient_source_failure_without_guessing(self):
+        problem_row = {
+            "external_id": "P1",
+            "registered_at": "2026-08-12 16:00:00",
+            "problem_type": "联系不上收件人",
+            "waybill_no": "R1",
+            "registered_site": "邵阳大祥S站",
+        }
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                side_effect=[
+                    {
+                        "ok": False,
+                        "data": {
+                            "ok": False,
+                            "error_code": "SOURCE_QUERY_FAILED",
+                            "message": "temporary source failure",
+                        },
+                    },
+                    {
+                        "ok": True,
+                        "data": {
+                            "ok": True,
+                            "rows": [problem_row],
+                            "stats": {"total": 1},
+                        },
+                    },
+                ],
+            ) as query,
+            patch("tools.daily_sign_sync_tool.time.sleep") as sleep,
+            patch(
+                "tools.daily_sign_sync_tool.upsert_problem_events",
+                return_value={"ok": True, "upserted": 1},
+            ),
+        ):
+            events, result = daily_sign_sync_tool._sync_manual_problem_events(
+                {
+                    "problem_start_date": "2026-08-12",
+                    "problem_end_date": "2026-08-12",
+                    "problem_page_retries": 2,
+                }
+            )
+
+        self.assertTrue(result["complete"])
+        self.assertEqual("R1", events[0]["tracking_number"])
+        self.assertEqual(2, query.call_count)
+        sleep.assert_called_once_with(1.0)
+
+    def test_problem_query_reports_persistent_source_error_without_raw_rows(self):
+        failure = {
+            "ok": False,
+            "data": {
+                "ok": False,
+                "error_code": "SOURCE_QUERY_FAILED",
+                "message": "source unavailable",
+            },
+        }
+        with (
+            patch("tools.daily_sign_sync_tool.call_http_service", return_value=failure),
+            patch("tools.daily_sign_sync_tool.time.sleep"),
+        ):
+            events, result = daily_sign_sync_tool._sync_manual_problem_events(
+                {
+                    "problem_start_date": "2026-08-12",
+                    "problem_end_date": "2026-08-12",
+                    "problem_page_retries": 2,
+                }
+            )
+
+        self.assertIsNone(events)
+        self.assertFalse(result["complete"])
+        self.assertEqual("SOURCE_QUERY_FAILED", result["error_code"])
+        self.assertEqual("source unavailable", result["error"])
+        self.assertNotIn("raw", result)
+
     def test_r13_signed_conflict_only_closes_on_exact_main_sign_route(self):
         state = {"signs": {}}
         responses = {

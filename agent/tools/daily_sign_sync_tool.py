@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from datetime import datetime, timedelta
@@ -234,34 +235,61 @@ def _sync_manual_problem_events(params: dict[str, Any]) -> tuple[list[dict[str, 
     date_from, date_to = _problem_query_window(params)
     page_size = min(max(int(params.get("problem_page_size") or 200), 1), 200)
     max_pages = max(int(params.get("problem_max_pages") or 500), 1)
+    page_retries = min(max(int(params.get("problem_page_retries") or 3), 1), 5)
+    retry_delay = max(float(params.get("problem_retry_delay_sec") or 1), 0)
     rows: list[dict[str, Any]] = []
     seen: dict[str, dict[str, Any]] = {}
     for page in range(1, max_pages + 1):
-        response = call_http_service(
-            "/customer_service_problem",
-            {
-                "params": {
-                    "action": "query",
-                    "platform": "ronghui",
-                    "direction": "registered",
-                    "account_id": params.get("problem_account_id") or "ronghui_daxiang_s",
-                    "filters": {
+        failure: dict[str, Any] = {}
+        for attempt in range(1, page_retries + 1):
+            response = call_http_service(
+                "/customer_service_problem",
+                {
+                    "params": {
+                        "action": "query",
+                        "platform": "ronghui",
                         "direction": "registered",
-                        "date_from": date_from,
-                        "date_to": date_to,
-                        "page": page,
-                        "page_size": page_size,
+                        "account_id": params.get("problem_account_id") or "ronghui_daxiang_s",
+                        "filters": {
+                            "direction": "registered",
+                            "date_from": date_from,
+                            "date_to": date_to,
+                            "page": page,
+                            "page_size": page_size,
+                        },
                     },
+                    "timeout_sec": int(params.get("problem_timeout_sec") or 600),
                 },
-                "timeout_sec": int(params.get("problem_timeout_sec") or 600),
-            },
-        )
-        if auth_error := tms_auth_error_result(response):
-            return None, {"error": auth_error.get("error"), "complete": False}
-        payload = response.get("data") if isinstance(response, dict) and isinstance(response.get("data"), dict) else response
-        page_rows = payload.get("rows") if isinstance(payload, dict) else None
-        if not isinstance(page_rows, list):
-            return None, {"error": "customer_service_problem 返回格式异常", "complete": False, "raw": response}
+            )
+            if auth_error := tms_auth_error_result(response):
+                return None, {"error": auth_error.get("error"), "complete": False, "page": page}
+            payload = (
+                response.get("data")
+                if isinstance(response, dict) and isinstance(response.get("data"), dict)
+                else response
+            )
+            page_rows = payload.get("rows") if isinstance(payload, dict) else None
+            if isinstance(page_rows, list):
+                break
+            source_error = payload if isinstance(payload, dict) and payload.get("ok") is False else response
+            source_error = source_error if isinstance(source_error, dict) else {}
+            failure = {
+                "error": clean_text(
+                    source_error.get("message")
+                    or source_error.get("error")
+                    or "customer_service_problem 返回格式异常"
+                )[:500],
+                "error_code": clean_text(source_error.get("error_code")),
+                "complete": False,
+                "page": page,
+                "attempts": attempt,
+                "response_keys": sorted(response) if isinstance(response, dict) else [],
+                "payload_keys": sorted(payload) if isinstance(payload, dict) else [],
+            }
+            if attempt < page_retries and retry_delay:
+                time.sleep(retry_delay * attempt)
+        else:
+            return None, failure
         for raw in page_rows:
             if not isinstance(raw, dict):
                 continue
