@@ -44,8 +44,7 @@
       <span>平台</span>
       <select data-finance-platform>
         <option value="all">全部平台</option>
-        <option value="ronghui">融辉</option>
-        <option value="yunda">韵达</option>
+        {% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}
       </select>
     </label>
     <label class="finance-field finance-field--account">
@@ -216,7 +215,7 @@
         <button class="primary-btn" type="submit"><i data-feather="search" aria-hidden="true"></i><span>查询明细</span></button>
       </div>
       <div class="finance-filter-grid">
-        <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+        <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
         <label class="finance-field"><span>账号</span><select name="account_id" data-finance-entry-account><option value="all">全部账号</option></select></label>
         <label class="finance-field"><span>收支方向</span><select name="direction"><option value="all">全部方向</option><option value="income">收入</option><option value="expense">支出</option></select></label>
         <label class="finance-field"><span>费用级别</span><select name="fee_level"><option value="all">全部级别</option><option value="waybill">运单级</option><option value="operating">运营级</option></select></label>
@@ -257,7 +256,7 @@
       <span class="finance-policy-badge">收入方向不可计入成本</span>
     </section>
     <form class="finance-panel finance-mapping-filters" data-finance-mapping-form>
-      <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+      <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
       <label class="finance-field"><span>绑定状态</span><select name="status"><option value="all">全部状态</option><option value="pending">待绑定</option><option value="bound">已绑定</option></select></label>
       <label class="finance-field"><span>生效月份</span><input type="month" name="effective_month"></label>
       <label class="finance-field finance-field--grow"><span>搜索费用项目</span><input type="search" name="search" autocomplete="off" placeholder="一级、二级或录单项目"></label>
@@ -274,8 +273,7 @@
         </table>
       </div>
     </section>
-    <datalist id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"></datalist>
-    <datalist id="finance-booking-yunda" data-finance-booking-fee-items="yunda"></datalist>
+    {% for platform in finance_platforms %}<datalist id="finance-booking-{{ platform.value }}" data-finance-booking-fee-items="{{ platform.value }}"></datalist>{% endfor %}
   </section>
 
   <section id="finance-panel-reviews" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-reviews" tabindex="0" hidden data-finance-panel="reviews">
@@ -311,7 +309,7 @@
       <form class="finance-panel finance-sync-form" data-finance-sync-form>
         <div class="finance-panel-head"><div><h2>手动同步</h2><p>默认重扫最近 7 天，Agent 按账号管理绑定登录。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
           <label class="finance-field"><span>账号</span><select name="account_id" data-finance-sync-account><option value="all">全部账号</option></select></label>
           <label class="finance-field"><span>目标日期（可选）</span><input type="date" name="target_date" max="{{ today }}"></label>
           <label class="finance-field"><span>重扫天数</span><input type="number" name="rescan_days" min="1" max="31" value="7"></label>
@@ -321,7 +319,7 @@
       <form class="finance-panel finance-sync-form" data-finance-backfill-form>
         <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按明确日期范围创建回溯批次，不使用历史成功值补齐。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option><option value="ronghui">融辉</option><option value="yunda">韵达</option></select></label>
+          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
           <label class="finance-field"><span>账号</span><select name="account_id" data-finance-backfill-account><option value="all">全部账号</option></select></label>
           <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" required max="{{ today }}"></label>
           <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" required max="{{ today }}"></label>
@@ -348,5 +346,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=finance-workbench-20260712"></script>
+<script src="/static/finance.js?v=finance-sources-20260813"></script>
 {% endblock %}

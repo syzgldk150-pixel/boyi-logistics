@@ -43,7 +43,7 @@
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 价格获取 | `price_scripts/` | `docs/price_scripts/` | 已完成（持续维护） |
-| 财务模块 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`agent/finance_brain.py`、`agent/llm_settings.py`、`../console/finance_service.py` | `docs/finance_module.md` | 唯一财务架构：融辉/韵达真实页面逐笔采集、共享账本、版本化标准科目、异常审批、运单净额、知识镜像及 DeepSeek/GLM 全局配置；00:10 同步并禁止自动模型回退 |
+| 财务模块 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`agent/finance_brain.py`、`agent/llm_settings.py`、`../console/finance_service.py` | `docs/finance_module.md` | 唯一财务架构：当前仅融辉三个生产来源启用；韵达适配器待真实页面验收，不调度、不展示且不计入当前失败告警；共享启用注册表、逐笔采集、版本化标准科目、异常审批、运单净额、知识镜像及 DeepSeek/GLM 全局配置；00:10 同步并禁止自动模型回退 |
 | OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
 | 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
@@ -58,7 +58,7 @@
 docs/
 ├── code_navigation_index.md             # 修改入口索引：按需求类型定位到具体文件
 ├── project_overview.md               # 项目级架构：模块关系/本地控制台/路由
-├── finance_module.md                 # 融辉/韵达财务同步、账本、绑定、BI 与校验口径
+├── finance_module.md                 # 融辉生产财务同步、韵达待启用边界、账本、绑定、BI 与校验口径
 ├── ai_service/
 │   └── module_overview.md           # 模块文档：AI客服定位与上下游
 ├── agent_automation/

@@ -13,10 +13,12 @@ from shared.finance import (
     FINANCE_REQUIRED_TABLES,
     FinanceQuery,
     FinanceRepository,
+    FinanceSnapshotRejectedError,
     Platform,
     RONGHUI_BOOKING_FEE_ITEMS,
     RONGHUI_CONFIRMED_FEE_RULES,
-    YUNDA_BOOKING_FEE_ITEMS,
+    enabled_finance_platforms,
+    enabled_finance_source_specs,
     mysql_schema_statements,
 )
 
@@ -74,6 +76,24 @@ class RouterConnection:
 
 
 class FinanceRepositoryTests(unittest.TestCase):
+    @staticmethod
+    def _enabled_source_params() -> tuple[str, ...]:
+        return tuple(
+            value
+            for spec in enabled_finance_source_specs()
+            for value in (spec.platform, spec.account_id)
+        )
+
+    def _assert_placeholder_counts(
+        self, records: list[tuple[str, tuple[Any, ...]]]
+    ) -> None:
+        for sql, params in records:
+            self.assertEqual(
+                sql.count("%s"),
+                len(params),
+                msg=f"placeholder mismatch for SQL: {sql}",
+            )
+
     def test_user_confirmed_ronghui_baseline_contains_exact_fourteen_subjects(self) -> None:
         expected = {
             "收直派服务费": ("direct_delivery_service", "waybill", True),
@@ -197,6 +217,177 @@ class FinanceRepositoryTests(unittest.TestCase):
         )
         self.assertNotIn("DATE_FORMAT(t.business_date, '%Y-%m-01')", sql)
 
+    def test_entry_filters_bind_enabled_sources_before_explicit_disabled_scope(self) -> None:
+        repository = FinanceRepository(lambda: RouterConnection([]))
+        query = FinanceQuery(
+            "2026-01-01",
+            "2026-01-31",
+            platform=Platform.YUNDA,
+            account_id="yunda_default",
+        )
+
+        clauses, params = repository._entry_filters(query)
+
+        source_clause = clauses[1]
+        self.assertEqual(
+            len(enabled_finance_source_specs()),
+            source_clause.count("(t.platform = %s AND t.account_id = %s)"),
+        )
+        self.assertEqual(
+            [
+                dt.date(2026, 1, 1),
+                dt.date(2026, 1, 31),
+                *self._enabled_source_params(),
+                Platform.YUNDA.value,
+                "yunda_default",
+            ],
+            params,
+        )
+        self.assertNotIn("yunda_default", self._enabled_source_params())
+
+    def test_failed_source_and_freshness_sql_bind_enabled_sources_in_order(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+        repository = FinanceRepository(lambda: RouterConnection(records))
+        query = FinanceQuery("2026-01-01", "2026-01-31")
+
+        repository._failed_sources(query)
+        repository._freshness(query)
+
+        failed_sql, failed_params = next(
+            (sql, params)
+            for sql, params in records
+            if sql.startswith("SELECT r.platform, r.account_id, r.target_date")
+        )
+        self.assertIn("r.status = %s", failed_sql)
+        self.assertEqual(
+            (
+                dt.date(2026, 1, 1),
+                dt.date(2026, 1, 31),
+                "failed",
+                *self._enabled_source_params(),
+            ),
+            failed_params,
+        )
+
+        freshness_sql, freshness_params = next(
+            (sql, params)
+            for sql, params in records
+            if "AS warning_runs" in sql
+        )
+        self.assertIn("status IN (%s, %s)", freshness_sql)
+        self.assertEqual(
+            (
+                "warning",
+                "success",
+                "no_data",
+                dt.date(2026, 1, 1),
+                dt.date(2026, 1, 31),
+                *self._enabled_source_params(),
+            ),
+            freshness_params,
+        )
+
+    def test_waybill_fact_queries_bind_enabled_sources_before_explicit_scope(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+        repository = FinanceRepository(lambda: RouterConnection(records))
+
+        result = repository.list_waybill_facts(
+            start_date=dt.date(2026, 1, 1),
+            end_date=dt.date(2026, 1, 31),
+            platform="yunda",
+            account_id="yunda_default",
+            waybill_no="fictional-waybill",
+            limit=25,
+            offset=5,
+        )
+
+        self.assertEqual(0, result["total"])
+        count_sql, count_params = records[0]
+        data_sql, data_params = records[1]
+        self.assertEqual(
+            len(enabled_finance_source_specs()),
+            count_sql.count("(f.platform = %s AND f.account_id = %s)"),
+        )
+        expected_scope = (
+            dt.date(2026, 1, 1),
+            dt.date(2026, 1, 31),
+            *self._enabled_source_params(),
+            "yunda",
+            "yunda_default",
+            "fictional-waybill",
+        )
+        self.assertEqual(expected_scope, count_params)
+        self.assertEqual((*expected_scope, 25, 5), data_params)
+        self.assertIn("LIMIT %s OFFSET %s", data_sql)
+        self._assert_placeholder_counts(records)
+
+    def test_review_and_anomaly_queries_bind_enabled_scope_in_order(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+        repository = FinanceRepository(lambda: RouterConnection(records))
+
+        repository.list_review_cases(status="open", limit=7, offset=2)
+        repository.list_unnotified_anomalies(limit=37)
+
+        review_count_sql, review_count_params = records[0]
+        review_data_sql, review_data_params = records[1]
+        self.assertIn("INNER JOIN finance_fee_items fi", review_count_sql)
+        self.assertIn("fi.platform IN", review_count_sql)
+        self.assertEqual((*enabled_finance_platforms(), "open"), review_count_params)
+        self.assertEqual(
+            (*enabled_finance_platforms(), "open", 7, 2),
+            review_data_params,
+        )
+        self.assertIn("fi.platform IN", review_data_sql)
+
+        anomaly_sql, anomaly_params = records[2]
+        self.assertEqual(
+            len(enabled_finance_source_specs()),
+            anomaly_sql.count("(a.platform = %s AND a.account_id = %s)"),
+        )
+        self.assertEqual((*self._enabled_source_params(), 37), anomaly_params)
+        self._assert_placeholder_counts(records)
+
+    def test_knowledge_snapshot_version_and_items_share_enabled_platform_scope(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT COALESCE(MAX(log.id), 0) AS version_no"):
+                return {"version_no": 11}
+            return []
+
+        result = FinanceRepository(
+            lambda: RouterConnection(records, router)
+        ).get_knowledge_snapshot()
+
+        self.assertEqual(11, result["version_no"])
+        self.assertEqual([], result["items"])
+        self.assertEqual(2, len(records))
+        for sql, params in records:
+            self.assertIn("fi.platform IN", sql)
+            self.assertEqual(enabled_finance_platforms(), params)
+        self._assert_placeholder_counts(records)
+
+    def test_disabled_fee_item_rebuild_is_rejected_before_mutation(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT id, platform FROM finance_fee_items"):
+                return {"id": 19, "platform": "yunda"}
+            return []
+
+        repository = FinanceRepository(lambda: RouterConnection(records, router))
+
+        with self.assertRaisesRegex(ValueError, "finance source is not enabled"):
+            repository.rebuild_waybill_facts_for_fee_item(
+                fee_item_id=19,
+                reviewed_by="fictional-reviewer",
+                review_reason="fictional review",
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertEqual((19,), records[0][1])
+        self._assert_placeholder_counts(records)
+
     def test_summary_uses_latest_valid_run_and_no_data_freshness(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
 
@@ -215,7 +406,7 @@ class FinanceRepositoryTests(unittest.TestCase):
                 return [
                     {
                         "platform": "ronghui",
-                        "account_id": "fictional-account",
+                        "account_id": "price_default",
                         "login_account": "fictional-login",
                         "total_income": Decimal("10.005"),
                         "total_expense": Decimal("3.004"),
@@ -229,12 +420,12 @@ class FinanceRepositoryTests(unittest.TestCase):
                 return [
                     {
                         "platform": "ronghui",
-                        "account_id": "fictional-account",
+                        "account_id": "price_default",
                         "login_account": "fictional-login",
                     },
                     {
-                        "platform": "yunda",
-                        "account_id": "fictional-no-data-account",
+                        "platform": "ronghui",
+                        "account_id": "ronghui_daxiang_s",
                         "login_account": "fictional-no-data-login",
                     },
                 ]
@@ -259,13 +450,28 @@ class FinanceRepositoryTests(unittest.TestCase):
         no_data_account = next(
             row
             for row in result["accounts"]
-            if row["account_id"] == "fictional-no-data-account"
+            if row["account_id"] == "ronghui_daxiang_s"
         )
         self.assertEqual("0.00", no_data_account["total_expense"])
         self.assertEqual("0.00", no_data_account["waybill_cost"])
         combined_sql = "\n".join(sql for sql, _ in records)
         self.assertIn("MAX(id) AS latest_run_id", combined_sql)
         self.assertIn("status IN ('success', 'no_data')", combined_sql)
+        presence_params = next(
+            params
+            for sql, params in records
+            if "MAX(COALESCE(r.login_account, '')) AS login_account" in sql
+        )
+        self.assertEqual(
+            (
+                "success",
+                "no_data",
+                dt.date(2026, 1, 1),
+                dt.date(2026, 1, 31),
+                *self._enabled_source_params(),
+            ),
+            presence_params,
+        )
 
     def test_expense_ranking_contract_matches_accessible_table(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
@@ -317,7 +523,7 @@ class FinanceRepositoryTests(unittest.TestCase):
         self.assertEqual("0.00", rows[1]["income"])
         self.assertEqual("0.00", rows[1]["expense"])
 
-    def test_fee_mapping_response_uses_month_values_and_shared_leaf_options(self) -> None:
+    def test_fee_mapping_response_filters_disabled_platform_and_binds_params_in_order(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
 
         def router(sql: str, _params: tuple[Any, ...]):
@@ -327,7 +533,7 @@ class FinanceRepositoryTests(unittest.TestCase):
                 return [
                     {
                         "fee_item_id": 1,
-                        "platform": "yunda",
+                        "platform": "ronghui",
                         "primary_fee_name": "测试项目",
                         "secondary_fee_name": "",
                         "direction": "expense",
@@ -354,21 +560,72 @@ class FinanceRepositoryTests(unittest.TestCase):
             result["booking_fee_items"][Platform.RONGHUI.value],
             sorted(RONGHUI_BOOKING_FEE_ITEMS),
         )
+        self.assertNotIn(Platform.YUNDA.value, result["booking_fee_items"])
         self.assertEqual(
-            result["booking_fee_items"][Platform.YUNDA.value],
-            sorted(YUNDA_BOOKING_FEE_ITEMS),
+            set(enabled_finance_platforms()),
+            set(result["booking_fee_items"]),
         )
+        count_params = next(
+            params
+            for sql, params in records
+            if sql.startswith("SELECT COUNT(*) AS total FROM finance_fee_items")
+        )
+        self.assertEqual(enabled_finance_platforms(), count_params)
+        data_params = next(
+            params for sql, params in records if "SELECT fi.id AS fee_item_id" in sql
+        )
+        self.assertEqual(
+            (
+                "pending",
+                "bound",
+                dt.date(2026, 2, 1),
+                dt.date(2026, 2, 1),
+                *enabled_finance_platforms(),
+                500,
+                0,
+            ),
+            data_params,
+        )
+
+    def test_disabled_platform_fee_mapping_write_is_rejected_before_mutation(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT * FROM finance_fee_items"):
+                return {
+                    "id": 9,
+                    "platform": "yunda",
+                    "direction": "expense",
+                }
+            return []
+
+        repository = FinanceRepository(lambda: RouterConnection(records, router))
+
+        with self.assertRaisesRegex(ValueError, "finance source is not enabled"):
+            repository.save_fee_mapping(
+                fee_item_id=9,
+                fee_level=FeeLevel.OPERATING,
+                canonical_subject_name="Fictional operating subject",
+                booking_fee_name="",
+                effective_start_month="2026-07",
+                include_in_cost=True,
+                changed_by="fictional-admin",
+                reason="fictional rejected mapping",
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertTrue(records[0][0].startswith("SELECT * FROM finance_fee_items"))
 
     def test_same_month_mapping_correction_supersedes_overlapping_active_version(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
 
         def router(sql: str, _params: tuple[Any, ...]):
-            if sql.startswith("SELECT id FROM finance_fee_items"):
-                return {"id": 9}
+            if sql.startswith("SELECT id, platform FROM finance_fee_items"):
+                return {"id": 9, "platform": "ronghui"}
             if sql.startswith("SELECT * FROM finance_fee_items"):
                 return {
                     "id": 9,
-                    "platform": "yunda",
+                    "platform": "ronghui",
                     "direction": "expense",
                 }
             if sql.startswith("SELECT id FROM finance_fee_subjects"):
@@ -414,6 +671,48 @@ class FinanceRepositoryTests(unittest.TestCase):
             if sql.startswith("INSERT INTO finance_fee_mappings")
         )
         self.assertLess(supersede_index, insert_index)
+
+    def test_commit_snapshot_rejects_disabled_source_before_any_business_write(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if sql.startswith("SELECT * FROM finance_sync_runs"):
+                return {
+                    "id": 17,
+                    "platform": "yunda",
+                    "account_id": "yunda_default",
+                    "login_account": "fictional-login",
+                    "target_date": dt.date(2026, 1, 2),
+                    "status": "running",
+                }
+            return []
+
+        repository = FinanceRepository(lambda: RouterConnection(records, router))
+        validation = type("Validation", (), {"passed": True})()
+
+        with self.assertRaisesRegex(FinanceSnapshotRejectedError, "source is not enabled"):
+            repository.commit_run_snapshot(
+                run_id=17,
+                transactions=(object(),),
+                summaries=(),
+                validation=validation,
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertTrue(records[0][0].startswith("SELECT * FROM finance_sync_runs"))
+
+    def test_seed_mapping_scan_is_limited_to_enabled_platforms(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        seeded = FinanceRepository(lambda: RouterConnection(records)).seed_fee_mappings(
+            seeds=()
+        )
+
+        self.assertEqual(0, seeded)
+        seed_sql, seed_params = records[0]
+        self.assertTrue(seed_sql.startswith("SELECT * FROM finance_fee_items WHERE"))
+        self.assertIn("platform IN", seed_sql)
+        self.assertEqual(enabled_finance_platforms(), seed_params)
 
     def test_verified_seed_extends_to_actual_earlier_backfill_month(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
@@ -485,7 +784,7 @@ class FinanceRepositoryTests(unittest.TestCase):
                 return [
                     {
                         "platform": "ronghui",
-                        "account_id": "fictional-account",
+                        "account_id": "price_default",
                         "login_account": "fictional-login",
                         "source_record_key": "fictional-guid",
                         "business_date": dt.date(2026, 1, 2),
@@ -506,7 +805,7 @@ class FinanceRepositoryTests(unittest.TestCase):
 
         context = FinanceRepository(lambda: RouterConnection(records, router)).get_validation_context(
             platform=Platform.RONGHUI,
-            account_id="fictional-account",
+            account_id="price_default",
             target_date="2026-01-02",
             source_record_keys=["fictional-guid"],
         )
@@ -548,7 +847,7 @@ class FinanceRepositoryTests(unittest.TestCase):
         run_id = FinanceRepository(lambda: RouterConnection(records, router)).start_failed_run(
             batch_id=8,
             platform=Platform.RONGHUI,
-            account_id="fictional-role-account",
+            account_id="price_default",
             target_date="2026-01-02",
             error_code="ACCOUNT_BINDING_FAILED",
             error_message="fictional binding failure",
@@ -564,7 +863,7 @@ class FinanceRepositoryTests(unittest.TestCase):
         self.assertIn("failed", insert_params)
         self.assertNotIn("", insert_params)
 
-    def test_sync_batch_rows_include_latest_failed_account_date_details(self) -> None:
+    def test_historical_sync_batch_rows_retain_disabled_failed_source_details(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
 
         def router(sql: str, _params: tuple[Any, ...]):
@@ -613,6 +912,11 @@ class FinanceRepositoryTests(unittest.TestCase):
         failure = result["items"][0]["failed_sources"][0]
         self.assertEqual("fictional-yunda-role", failure["account_id"])
         self.assertEqual("FIELD_DRIFT", failure["error_code"])
+        self.assertEqual((), records[0][1])
+        self.assertEqual(("success", "no_data", "failed", 100, 0), records[1][1])
+        self.assertEqual((21, "failed"), records[2][1])
+        self.assertNotIn("account_id = %s", records[1][0])
+        self._assert_placeholder_counts(records)
 
     def test_sync_batch_rows_reject_fractional_aggregate_counts(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []

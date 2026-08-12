@@ -22,6 +22,8 @@ try:
         InvalidAmountError as SharedInvalidAmountError,
         MissingAmountError as SharedMissingAmountError,
         Platform as SharedPlatform,
+        enabled_finance_platforms as shared_enabled_finance_platforms,
+        enabled_finance_source_specs as shared_enabled_finance_source_specs,
         to_decimal as shared_to_decimal,
     )
 except ModuleNotFoundError as exc:  # Shared package may be absent in isolated Console tests.
@@ -37,6 +39,8 @@ except ModuleNotFoundError as exc:  # Shared package may be absent in isolated C
     SharedInvalidAmountError = None
     SharedMissingAmountError = None
     SharedPlatform = None
+    shared_enabled_finance_platforms = None
+    shared_enabled_finance_source_specs = None
     shared_to_decimal = None
 
 
@@ -140,6 +144,33 @@ def _optional_filter(value: str, *, field_name: str, max_length: int = 128) -> s
     return text
 
 
+def _validate_enabled_finance_platform(platform: str | None) -> None:
+    if platform is None:
+        return
+    if not callable(shared_enabled_finance_platforms):
+        raise FinanceUnavailableError("共享财务来源注册表不可用。")
+    if platform not in shared_enabled_finance_platforms():
+        raise FinanceValidationError(f"平台 {platform} 的财务来源尚未启用。")
+
+
+def _validate_enabled_finance_account(
+    account_id: str | None, *, platform: str | None = None
+) -> None:
+    if account_id is None:
+        return
+    if not callable(shared_enabled_finance_source_specs):
+        raise FinanceUnavailableError("共享财务来源注册表不可用。")
+    matches = [
+        spec
+        for spec in shared_enabled_finance_source_specs()
+        if spec.account_id == account_id
+    ]
+    if len(matches) != 1:
+        raise FinanceValidationError(f"账号 {account_id} 不是已启用的财务来源。")
+    if platform is not None and matches[0].platform != platform:
+        raise FinanceValidationError("财务账号与平台不匹配。")
+
+
 def _enum_value(enum_class: Any, value: str | None, *, field_name: str) -> Any:
     if value is None or enum_class is None:
         return value
@@ -194,11 +225,15 @@ def parse_finance_filters(query: Mapping[str, Any], *, today: date | None = None
     end_date = _parse_date(end_text, field_name="结束日期")
     if end_date < start_date:
         raise FinanceValidationError("结束日期不能早于开始日期。")
+    platform = _optional_filter(_first(query, "platform"), field_name="平台", max_length=32)
+    account_id = _optional_filter(_first(query, "account_id"), field_name="账号", max_length=96)
+    _validate_enabled_finance_platform(platform)
+    _validate_enabled_finance_account(account_id, platform=platform)
     return FinanceFilters(
         start_date=start_date,
         end_date=end_date,
-        platform=_optional_filter(_first(query, "platform"), field_name="平台", max_length=32),
-        account_id=_optional_filter(_first(query, "account_id"), field_name="账号", max_length=96),
+        platform=platform,
+        account_id=account_id,
         direction=_optional_filter(_first(query, "direction"), field_name="方向", max_length=32),
         fee_level=_optional_filter(_first(query, "fee_level"), field_name="费用级别", max_length=32),
         fee_name=_optional_filter(_first(query, "fee_name"), field_name="费用项目", max_length=160),
@@ -422,6 +457,7 @@ class FinanceService:
     def list_fee_mappings(self, query: Mapping[str, Any]) -> dict[str, Any]:
         repository = self._require_repository()
         platform = _optional_filter(_first(query, "platform"), field_name="平台", max_length=32)
+        _validate_enabled_finance_platform(platform)
         effective_month = _optional_filter(
             _first(query, "effective_month"), field_name="生效月份", max_length=7
         )
@@ -628,9 +664,17 @@ class FinanceService:
         snapshot = repository.get_knowledge_snapshot()
         latest = repository.latest_knowledge_export()
         current_version = int(snapshot.get("version_no") or 0)
+        current_mapping_count = len(
+            self._ensure_rows(snapshot.get("items", []), operation="finance knowledge snapshot")
+        )
         settings = getattr(self.source_repository, "settings", None)
         mirror_valid = False
-        if latest and settings is not None and int(latest.get("version_no") or -1) == current_version:
+        if (
+            latest
+            and settings is not None
+            and int(latest.get("version_no") or -1) == current_version
+            and int(latest.get("mapping_count") or -1) == current_mapping_count
+        ):
             runtime_dir = Path(settings.runtime_dir).resolve()
             mirror = (runtime_dir / str(latest.get("relative_path") or "")).resolve()
             try:
@@ -747,6 +791,8 @@ class FinanceService:
             raise FinanceValidationError("同步请求不能包含登录账号、登录态或凭据字段。")
         platform = _optional_filter(str(body.get("platform") or ""), field_name="平台", max_length=32)
         account_id = _optional_filter(str(body.get("account_id") or ""), field_name="账号", max_length=96)
+        _validate_enabled_finance_platform(platform)
+        _validate_enabled_finance_account(account_id, platform=platform)
         if platform:
             params["platform"] = platform
         if account_id:
