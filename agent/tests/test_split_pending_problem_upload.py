@@ -188,7 +188,13 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
             "results": [{
                 "bill_code": "R2",
                 "complaint": None,
-                "problem_item": {"status": "success"},
+                "problem_type": "有发未到",
+                "problem_item": {
+                    "status": "success",
+                    "external_id": "problem-r2",
+                    "registered_at": "2026-08-12 16:00:00",
+                    "registered_site": "邵阳大祥S站",
+                },
                 "complete": True,
             }],
         }
@@ -204,6 +210,8 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
             tool, "_upload_to_tms", return_value=upload_payload
         ) as upload_mock, patch.object(
             tool, "update_split_pending_combined_results", return_value={"updated": 1}
+        ), patch.object(
+            tool, "upsert_problem_events", return_value={"ok": True, "upserted": 1}
         ):
             result = tool.run_split_pending_problem_upload(
                 {

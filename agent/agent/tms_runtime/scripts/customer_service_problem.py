@@ -315,17 +315,25 @@ def normalize_problem_rows(
             external_id = _first_text(row, "GUID")
             waybill_no = _first_text(row, "BILL_CODE", "bill_code")
             status = _first_text(row, "REVERSION_STATUS", "BL_CHECKOK_STR", "BL_RETURN", "IS_REPLY")
+            problem_type = _first_text(row, "TYPE")
             problem_text = _first_text(row, "PROBLEM_CAUSE")
             reply_text = _first_text(row, "REVERSION", "DEAL_RESULT")
             created_at = _first_text(row, "REGISTER_DATE", "REGISTER_SAVE_DATE")
+            registered_at = _first_text(row, "REGISTER_DATE")
+            registration_saved_at = _first_text(row, "REGISTER_SAVE_DATE")
+            registered_site = _first_text(row, "REGISTER_SITE")
             updated_at = _first_text(row, "REVERSION_DATE")
         else:
             external_id = _first_text(row, "prob_main_id")
             waybill_no = _first_text(row, "ship_no", "LogisticsId")
             status = _first_text(row, "prob_status", "check_status", "issue_check_status")
             problem_text = _first_text(row, "prob_text")
+            problem_type = _first_text(row, "prob_type", "issue_type")
             reply_text = _first_text(row, "reply_text")
             created_at = _first_text(row, "created_time")
+            registered_at = created_at
+            registration_saved_at = ""
+            registered_site = _first_text(row, "register_site", "site_name")
             updated_at = _first_text(row, "modified_time", "reply_time")
         if not external_id:
             raise CustomerServiceProblemError(
@@ -341,9 +349,13 @@ def normalize_problem_rows(
                 "external_id": external_id,
                 "waybill_no": waybill_no,
                 "status": _display_problem_status(status, row, reply_text),
+                "problem_type": problem_type,
                 "problem_text": problem_text,
                 "reply_text": reply_text,
                 "created_at": created_at,
+                "registered_at": registered_at,
+                "registration_saved_at": registration_saved_at,
+                "registered_site": registered_site,
                 "updated_at": updated_at,
                 "raw": _safe_json(row),
             }
