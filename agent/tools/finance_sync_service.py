@@ -333,6 +333,7 @@ class FinanceSyncService:
         self.adapter_factory = adapter_factory
         self.shared_api = shared_api or _shared_finance_api()
         self.now = now or (lambda: dt.datetime.now(TZ))
+        self.current_stage = "initialized"
 
     def _transaction(self, row: Mapping[str, Any], binding: FinanceAccountBinding) -> Any:
         platform = clean_text(row.get("platform"))
@@ -438,9 +439,11 @@ class FinanceSyncService:
         return self.shared_api.validate_finance_capture(evidence)
 
     def run(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self.current_stage = "plan_request"
         plan = plan_sync_request(params, now=self.now())
         platform = clean_text(params.get("platform")).lower()
         account_id = clean_text(params.get("account_id"))
+        self.current_stage = "schema_validation"
         self.repository.initialize_schema()
         retry_targets: list[Mapping[str, Any]] = []
         if plan["mode"] == "retry":
@@ -467,7 +470,9 @@ class FinanceSyncService:
         else:
             target_specs = _requested_account_specs(platform=platform, account_id=account_id)
 
+        self.current_stage = "seed_fee_mappings"
         self.repository.seed_fee_mappings()
+        self.current_stage = "create_batch"
         batch_id = self.repository.create_batch(
             trigger_type="startup" if params.get("_startup_catchup") else plan["mode"],
             start_date=plan["start_date"],
@@ -479,6 +484,7 @@ class FinanceSyncService:
 
         successes: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        self.current_stage = "sync_accounts"
         for target_platform, target_account_id in target_specs:
             dates = list(plan["dates"])
             if retry_targets:
@@ -654,6 +660,7 @@ class FinanceSyncService:
             if adapter is not None:
                 _close_adapter(adapter)
 
+        self.current_stage = "finalize_batch"
         status = self.repository.finalize_batch(batch_id)
         if failures and not successes:
             first_code = failures[0]["error_code"]

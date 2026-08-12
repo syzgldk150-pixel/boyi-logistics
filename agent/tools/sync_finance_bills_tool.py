@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import traceback
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -21,6 +24,26 @@ from tools.finance_sync_service import FinanceSyncError, FinanceSyncService
 
 
 LOCK_PATH = os.path.join(PROJECT_ROOT, "logs", ".finance_sync.lock")
+logger = logging.getLogger("finance_sync")
+
+
+def _safe_exception_diagnostic(exc: BaseException, *, stage: str) -> dict[str, str]:
+    """Describe an unexpected failure without recording its message or values."""
+
+    frames = traceback.extract_tb(exc.__traceback__)
+    project_root = Path(PROJECT_ROOT).resolve()
+    locations: list[str] = []
+    for frame in frames[-8:]:
+        try:
+            relative = Path(frame.filename).resolve().relative_to(project_root).as_posix()
+        except ValueError:
+            relative = Path(frame.filename).name
+        locations.append(f"{relative}:{frame.lineno}:{frame.name}")
+    return {
+        "stage": str(stage or "unknown")[:64],
+        "error_type": type(exc).__name__[:64],
+        "trace": " > ".join(locations)[:1000],
+    }
 
 
 def _default_connection_factory() -> Any:
@@ -109,6 +132,8 @@ def run_sync_finance_bills(
     lock_context: Any | None = None,
 ) -> dict[str, Any]:
     request = dict(params or {})
+    stage = "lock_setup"
+    service: FinanceSyncService | None = None
     try:
         effective_connection_factory = connection_factory or _default_connection_factory
         lock_manager = (
@@ -119,6 +144,7 @@ def run_sync_finance_bills(
             else _single_instance_lock(effective_connection_factory)
         )
         with lock_manager:
+            stage = "service_setup"
             service = FinanceSyncService(
                 repository=repository or FinanceRepository(effective_connection_factory),
                 account_manager=account_manager or get_account_manager(),
@@ -126,6 +152,7 @@ def run_sync_finance_bills(
                 shared_api=shared_api,
                 now=now,
             )
+            stage = "service_run"
             result = service.run(request)
             result.setdefault("success", bool(result.get("ok")))
             return result
@@ -136,12 +163,25 @@ def run_sync_finance_bills(
             "error_code": str(getattr(exc, "code", "FINANCE_SYNC_FAILED")),
             "error": str(exc),
         }
-    except Exception:
+    except Exception as exc:
+        effective_stage = str(getattr(service, "current_stage", "") or stage)
+        diagnostic = _safe_exception_diagnostic(exc, stage=effective_stage)
+        logger.error(
+            "finance_sync_unhandled stage=%s error_type=%s trace=%s",
+            diagnostic["stage"],
+            diagnostic["error_type"],
+            diagnostic["trace"],
+        )
         return {
             "success": False,
             "ok": False,
-            "error_code": "FINANCE_SYNC_FAILED",
-            "error": "财务账单同步失败；请查看脱敏后的服务日志",
+            "error_code": "FINANCE_SYNC_INTERNAL",
+            "error": (
+                "财务账单同步内部阶段失败"
+                f"（{diagnostic['stage']}/{diagnostic['error_type']}）"
+            ),
+            "diagnostic_stage": diagnostic["stage"],
+            "diagnostic_type": diagnostic["error_type"],
         }
 
 
