@@ -2,9 +2,9 @@
 module: 财务工作台
 type: 模块文档
 tags: [融辉, 韵达, 财务同步, 费用绑定, BI, Decimal]
-related: [[finance-reconciliation], [finance-data-baseline]]
+related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-07-12
+updated: 2026-08-12
 ---
 
 # 融辉、韵达财务工作台
@@ -13,7 +13,7 @@ updated: 2026-07-12
 
 本模块负责从融辉和韵达真实财务页面同步逐笔交易、平台汇总和费用项目，并为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计和 BI 查询。
 
-旧 `finance_reconciliation/` 与 `tools/finance_tool.py` 仍是离线 Excel ETL。新模块不得导入旧 ETL，也不得在运行失败时回退到旧工作簿、历史导出文件或上一次成功值。
+本模块是项目唯一的财务架构。财务数据只从融辉、韵达真实财务页面进入版本化共享账本；不得新增 Excel/CSV 工作簿 ETL，也不得在运行失败时回退到历史导出文件、手工汇总或上一次成功值。
 
 ## 数据源口径
 

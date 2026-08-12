@@ -119,6 +119,28 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         ):
             self.assertIn(field, registry)
 
+    def test_legacy_excel_finance_pipeline_is_fully_removed(self):
+        agent_root = Path(__file__).resolve().parents[1]
+        repository_root = agent_root.parent
+        registry = (agent_root / "tools" / "registry.yaml").read_text(encoding="utf-8")
+        publish_script = (agent_root / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
+        boundary_check = (agent_root / "scripts" / "check_runtime_import_boundaries.py").read_text(encoding="utf-8")
+        tool_prompt = (agent_root / "prompts" / "tool_selection.md").read_text(encoding="utf-8")
+
+        self.assertFalse(
+            any(path.is_file() for path in (agent_root / "finance_reconciliation").rglob("*"))
+        )
+        self.assertFalse(
+            any(path.is_file() for path in (agent_root / "docs" / "finance_reconciliation").rglob("*"))
+        )
+        self.assertFalse((agent_root / "tools" / "finance_tool.py").exists())
+        self.assertNotIn("name: finance_etl", registry)
+        self.assertNotIn("tools/finance_tool.py", registry)
+        self.assertNotIn('"finance_reconciliation"', publish_script)
+        self.assertNotIn('"finance_tool.py"', boundary_check)
+        self.assertNotIn("finance_etl", tool_prompt)
+        self.assertTrue((repository_root / "shared" / "finance").is_dir())
+
     def test_daily_job_overrides_stale_configured_target_with_frozen_fire_date(self):
         source = (
             Path(__file__).resolve().parents[1] / "agent" / "scheduler.py"

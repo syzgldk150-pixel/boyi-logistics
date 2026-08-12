@@ -43,8 +43,7 @@
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 价格获取 | `price_scripts/` | `docs/price_scripts/` | 已完成（持续维护） |
-| 财务对账 | `finance_reconciliation/` | `docs/finance_reconciliation/` | ETL v5.1 完成 |
-| 财务工作台 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉/韵达逐笔账本、费用绑定、BI、00:10 同步与失败审计；和旧 Excel ETL 隔离 |
+| 财务模块 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`agent/finance_brain.py`、`../console/finance_service.py` | `docs/finance_module.md` | 唯一财务架构：融辉/韵达真实页面逐笔采集、共享账本、费用绑定、BI、00:10 同步、失败审计与智能分类 |
 | OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
 | 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
@@ -72,9 +71,6 @@ docs/
 │   ├── tms-batch-quote-resume.md  # 操作手册：断点续传运行方法
 │   ├── tms_price_structure_analysis.md      # 分析报告：逐公斤扫描验证
 │   └── data_accuracy_audit_report.md   # 审计报告：全链路数据准确性
-├── finance_reconciliation/
-│   ├── module_overview.md             # 模块文档：ETL管道结构与数据源
-│   └── data_structure_analysis.md         # 分析报告：全量字段定义与关联关系
 ├── ocr/
 │   └── module_overview.md             # 模块文档：OCR工作区与本地控制台接入
 ├── dispatch/
