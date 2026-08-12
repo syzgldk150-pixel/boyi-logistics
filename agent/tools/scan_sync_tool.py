@@ -37,7 +37,7 @@ def _extract_rows(tms_result: dict) -> list[dict] | None:
 
 def _chunk(items: list[dict[str, str]], batch_size: int) -> list[list[dict[str, str]]]:
     if batch_size <= 0:
-        return [items]
+        raise ValueError("batch_size 必须大于 0")
     return [items[index : index + batch_size] for index in range(0, len(items), batch_size)]
 
 
@@ -174,6 +174,16 @@ def run_scan_sync(params: dict) -> dict:
     else:
         replace_result = replace_scan_codes(normalized_rows)
     _emit_progress("扫描索引已刷新", replaced=replace_result.get("replaced"))
+    if not replace_result.get("ok"):
+        index_error = _scan_next_error(replace_result)
+        return {
+            "ok": False,
+            "error_code": "SCAN_INDEX_REFRESH_FAILED",
+            "error": f"扫描索引刷新失败：{index_error}",
+            "fetched": len(rows),
+            "normalized": len(normalized_rows),
+            "scan_index_result": replace_result,
+        }
 
     candidate_items = child_items_from_scan_rows(normalized_rows)
     skip_bill_codes = _coerce_code_set(params.get("skip_bill_codes") or params.get("skip_codes"))
@@ -188,16 +198,16 @@ def run_scan_sync(params: dict) -> dict:
     child_items = list(candidate_items)
     if params.get("child_item_limit") not in (None, ""):
         child_item_limit = int(params.get("child_item_limit"))
-        if child_item_limit < 0:
-            raise ValueError("child_item_limit 不能小于 0")
+        if child_item_limit <= 0:
+            raise ValueError("child_item_limit 必须大于 0")
         child_items = child_items[:child_item_limit]
     batch_size = _resolve_batch_size(params)
     batches = _chunk(child_items, batch_size)
     total_batches = len(batches)
     if params.get("max_batches") not in (None, ""):
         max_batches = int(params.get("max_batches"))
-        if max_batches < 0:
-            raise ValueError("max_batches 不能小于 0")
+        if max_batches <= 0:
+            raise ValueError("max_batches 必须大于 0")
         batches = batches[:max_batches]
     scheduled_items = sum(len(batch) for batch in batches)
     omitted_items = len(candidate_items) - scheduled_items
