@@ -134,6 +134,14 @@ class LLMSettingsConsoleTests(unittest.TestCase):
         self.assertNotIn('name="base_url"', template)
         self.assertIn("renderModelOptions", script)
 
+    def test_candidate_form_controls_share_one_alignment_row(self):
+        stylesheet = (CONSOLE_DIR / "static" / "llm_settings.css").read_text(encoding="utf-8")
+
+        self.assertIn("align-items: start", stylesheet)
+        self.assertIn("grid-template-rows: 18px 42px", stylesheet)
+        self.assertIn(".llm-form > .primary-btn", stylesheet)
+        self.assertIn("min-height: 42px; margin-top: 25px", stylesheet)
+
 
 if __name__ == "__main__":
     unittest.main()

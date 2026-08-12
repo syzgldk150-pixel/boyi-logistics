@@ -60,11 +60,13 @@
 .provider-card dt { color: #667085; }
 .provider-card dd { margin: 0; overflow-wrap: anywhere; }
 
-.llm-form { display: grid; grid-template-columns: 180px minmax(240px, 1fr) minmax(260px, 1.4fr) auto; align-items: end; gap: 14px; }
-.llm-form label { display: grid; gap: 7px; color: #344054; font-size: 12px; font-weight: 700; }
+.llm-form { display: grid; grid-template-columns: 180px minmax(240px, 1fr) minmax(260px, 1.4fr) auto; align-items: start; gap: 14px; }
+.llm-form label { display: grid; grid-template-rows: 18px 42px; align-content: start; gap: 7px; color: #344054; font-size: 12px; font-weight: 700; }
+.llm-form label > span { line-height: 18px; }
 .llm-form input, .llm-form select { width: 100%; min-height: 42px; border: 1px solid #cfd7e3; border-radius: 8px; padding: 0 11px; background: #fff; color: #172033; }
 .llm-form input:focus, .llm-form select:focus { outline: 3px solid rgba(49,91,138,.16); border-color: #315b8a; }
 .llm-key-field small { color: #667085; font-weight: 400; line-height: 1.4; }
+.llm-form > .primary-btn { align-self: start; min-height: 42px; margin-top: 25px; }
 
 .llm-table-wrap { overflow-x: auto; }
 .llm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -90,6 +92,7 @@
   .llm-status-hero, .llm-section { padding: 18px; }
   .llm-status-hero, .llm-section-heading { align-items: flex-start; flex-direction: column; }
   .llm-form { grid-template-columns: 1fr; }
+  .llm-form > .primary-btn { width: 100%; margin-top: 0; }
   .audit-row { grid-template-columns: 1fr; gap: 4px; }
 }
 
