@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import unittest
 from unittest.mock import patch
 
@@ -756,6 +756,38 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
                     100,
                     20,
                 )
+
+    def test_tms_sign_query_chunks_long_ranges_without_overlap(self):
+        calls = []
+
+        def fake_collect(_session, _context, **kwargs):
+            calls.append((kwargs["start"], kwargs["end"]))
+            return [
+                {
+                    "扫描单号": f"R{len(calls)}",
+                    "扫描类型": "签收",
+                    "扫描时间": kwargs["start"].strftime("%Y-%m-%d %H:%M:%S"),
+                    "扫描网点": "邵阳大祥S站",
+                }
+            ]
+
+        with patch(
+            "agent.tms_runtime.scripts.get_sign_records.collect_sign_rows",
+            side_effect=fake_collect,
+        ):
+            rows = get_sign_records.collect_sign_rows_in_chunks(
+                object(),
+                {},
+                start=datetime(2026, 1, 1, 0, 0, 0),
+                end=datetime(2026, 3, 5, 12, 0, 0),
+                login_site_code="7390004",
+                chunk_days=31,
+            )
+
+        self.assertEqual(3, len(rows))
+        self.assertEqual(datetime(2026, 1, 31, 23, 59, 59), calls[0][1])
+        self.assertEqual(calls[0][1] + timedelta(seconds=1), calls[1][0])
+        self.assertEqual(datetime(2026, 3, 5, 12, 0, 0), calls[-1][1])
 
     def test_r13_backfill_merge_preserves_sheet_fields_and_refreshes_r13_fields(self):
         seed = daily_sign_backfill_tool._seed_row_from_sheet(
