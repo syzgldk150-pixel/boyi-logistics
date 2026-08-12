@@ -127,6 +127,68 @@ def _format_identity_evidence(identity: Any) -> str:
     )[:480]
 
 
+def _ronghui_public_identity(user_info: Any, *, expected_login: str) -> dict[str, Any]:
+    account_keys = {
+        "loginUserAccount",
+        "userAccount",
+        "loginAccount",
+        "loginEmpCode",
+        "userCode",
+        "loginUserId",
+    }
+    site_code_keys = {"loginSiteCode", "siteCode", "loginOwnerSiteCode"}
+    site_name_keys = {"loginSiteName", "siteName", "loginOwnerSiteName"}
+    account_candidates: list[tuple[str, str]] = []
+    site_codes: set[str] = set()
+    site_names: set[str] = set()
+    stack: list[tuple[str, Any]] = [("", user_info)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                key_text = clean_text(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if key_text in account_keys:
+                    account_candidates.append((child_path, clean_text(item)))
+                elif key_text in site_code_keys:
+                    if cleaned := clean_text(item):
+                        site_codes.add(cleaned)
+                elif key_text in site_name_keys:
+                    if cleaned := clean_text(item):
+                        site_names.add(cleaned)
+                if isinstance(item, (Mapping, list, tuple)):
+                    stack.append((child_path, item))
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value[:20]):
+                stack.append((f"{path}[{index}]", item))
+    expected = clean_text(expected_login)
+    return {
+        "accountObserved": bool(account_candidates),
+        "accountMatch": any(candidate == expected for _path, candidate in account_candidates),
+        "siteCode": next(iter(site_codes)) if len(site_codes) == 1 else "",
+        "siteName": next(iter(site_names)) if len(site_names) == 1 else "",
+        "identityEvidence": {
+            "expectedLength": len(expected),
+            "rawType": "public_context",
+            "rawLength": 0,
+            "jsonParsed": True,
+            "infoType": "object",
+            "infoKeys": sorted({path.rsplit(".", 1)[-1] for path, _value in account_candidates}),
+            "candidates": [
+                {
+                    "path": path,
+                    "length": len(candidate),
+                    "exact": candidate == expected,
+                    "casefold": candidate.casefold() == expected.casefold(),
+                    "contains": bool(expected and expected in candidate),
+                    "containedBy": bool(candidate and candidate in expected),
+                }
+                for path, candidate in account_candidates[:20]
+            ],
+        },
+    }
+
+
 @dataclass(frozen=True)
 class _CapturedRequest:
     method: str
@@ -325,8 +387,14 @@ class RonghuiLiveFinanceAdapter:
             self._session = get_session_broker(self.binding.session_profile).build_requests_session(validate=True)
             from agent.tms_runtime.scripts.customer_service_problem import (
                 RONGHUI_INDEX_URL,
+                _read_user_info_cookie,
                 _resolve_ronghui_page_context,
                 _ronghui_headers,
+            )
+
+            session_identity = _ronghui_public_identity(
+                _read_user_info_cookie(self._session),
+                expected_login=self.binding.login_account,
             )
 
             self._page_context = _resolve_ronghui_page_context(self._session, RONGHUI_MENU_TEXT)
@@ -366,7 +434,7 @@ class RonghuiLiveFinanceAdapter:
                 # Preserve the explicit identity failure below with structural
                 # evidence; do not fall back to session or configured values.
                 pass
-            public_identity = self._page.evaluate(
+            page_identity = self._page.evaluate(
                 """(expectedLogin) => {
                     const rawInfo = window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
                         ? $Z.user.getUserInfo()
@@ -452,6 +520,11 @@ class RonghuiLiveFinanceAdapter:
                     };
                 }""",
                 self.binding.login_account,
+            )
+            public_identity = (
+                session_identity
+                if session_identity.get("accountObserved")
+                else page_identity
             )
             if not isinstance(public_identity, Mapping) or public_identity.get("accountMatch") is not True:
                 evidence = _format_identity_evidence(public_identity)
