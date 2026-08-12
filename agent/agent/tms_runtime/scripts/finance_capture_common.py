@@ -14,6 +14,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from shared.finance.models import SummarySemantics
+
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -44,6 +46,7 @@ class CaptureResult:
     source_site_code: str
     source_site_name: str
     validation: dict[str, Any]
+    summary_semantics: SummarySemantics = SummarySemantics.GROSS_BY_FEE_DIRECTION
 
 
 TRANSACTION_WHITELIST = frozenset(
