@@ -340,6 +340,18 @@ class RonghuiLiveFinanceAdapter:
             self._page.goto(self._page_context["url"], wait_until="domcontentloaded", timeout=60_000)
             if "/system/login" in clean_text(self._page.url).lower():
                 raise FinanceCaptureError("AUTH_REQUIRED", "融辉财务原页登录态失效", stage="page_discovery")
+            try:
+                self._page.wait_for_function(
+                    """() => Boolean(
+                        window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
+                        && $Z.user.getUserInfo()
+                    )""",
+                    timeout=15_000,
+                )
+            except Exception:
+                # Preserve the explicit identity failure below with structural
+                # evidence; do not fall back to session or configured values.
+                pass
             public_identity = self._page.evaluate(
                 """(expectedLogin) => {
                     const rawInfo = window.$Z && $Z.user && typeof $Z.user.getUserInfo === 'function'
