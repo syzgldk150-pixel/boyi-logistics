@@ -11,7 +11,10 @@ from agent.tms_runtime.scripts.finance_capture_common import (
     response_json,
     validate_page_identity,
 )
-from agent.tms_runtime.scripts.finance_live_capture import _ronghui_schema_evidence
+from agent.tms_runtime.scripts.finance_live_capture import (
+    _format_identity_evidence,
+    _ronghui_schema_evidence,
+)
 from agent.tms_runtime.scripts.ronghui_finance_adapter import capture_ronghui_day
 from agent.tms_runtime.scripts.yunda_finance_adapter import capture_yunda_day
 
@@ -55,6 +58,32 @@ class _Response:
 
 
 class FinanceCaptureAdapterTests(unittest.TestCase):
+    def test_ronghui_identity_evidence_never_contains_values(self):
+        evidence = _format_identity_evidence(
+            {
+                "identityEvidence": {
+                    "expectedLength": 8,
+                    "infoKeys": ["loginAccount", "unsafe key=value"],
+                    "candidates": [
+                        {
+                            "path": "profile.loginAccount",
+                            "length": 8,
+                            "exact": False,
+                            "casefold": True,
+                            "contains": False,
+                            "containedBy": False,
+                            "value": "secret-account",
+                        }
+                    ],
+                }
+            }
+        )
+
+        self.assertIn("loginAccount", evidence)
+        self.assertIn("casefold=True", evidence)
+        self.assertNotIn("secret-account", evidence)
+        self.assertNotIn("unsafe key=value", evidence)
+
     def test_ronghui_schema_evidence_contains_only_structural_tokens(self):
         evidence = _ronghui_schema_evidence(
             """

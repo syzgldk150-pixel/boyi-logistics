@@ -80,6 +80,38 @@ def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
     )[:420]
 
 
+def _format_identity_evidence(identity: Any) -> str:
+    if not isinstance(identity, Mapping):
+        return "identity=unavailable"
+    evidence = identity.get("identityEvidence")
+    if not isinstance(evidence, Mapping):
+        return "identity=unavailable"
+    keys = [
+        clean_text(item)
+        for item in (evidence.get("infoKeys") or [])
+        if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
+    ][:30]
+    candidates: list[str] = []
+    for item in evidence.get("candidates") or []:
+        if not isinstance(item, Mapping):
+            continue
+        path = clean_text(item.get("path"))
+        if not re.fullmatch(r"[A-Za-z0-9_$.[\]-]{1,120}", path):
+            continue
+        candidates.append(
+            f"{path}:len={int(item.get('length') or 0)}"
+            f":exact={bool(item.get('exact'))}"
+            f":casefold={bool(item.get('casefold'))}"
+            f":contains={bool(item.get('contains'))}"
+            f":contained_by={bool(item.get('containedBy'))}"
+        )
+    expected_length = int(evidence.get("expectedLength") or 0)
+    return (
+        f"expected_len={expected_length}; keys={','.join(keys) or 'none'}; "
+        f"candidates={'|'.join(candidates[:20]) or 'none'}"
+    )[:480]
+
+
 @dataclass(frozen=True)
 class _CapturedRequest:
     method: str
@@ -316,16 +348,50 @@ class RonghuiLiveFinanceAdapter:
                         if (value && typeof value === 'object') return Object.values(value).some(containsExact);
                         return String(value == null ? '' : value).trim() === expectedLogin;
                     };
+                    const candidates = [];
+                    const visit = (value, path, depth) => {
+                        if (depth > 4 || candidates.length >= 30) return;
+                        if (Array.isArray(value)) {
+                            value.slice(0, 10).forEach((item, index) => visit(item, `${path}[${index}]`, depth + 1));
+                            return;
+                        }
+                        if (value && typeof value === 'object') {
+                            Object.entries(value).slice(0, 50).forEach(([key, item]) => visit(item, path ? `${path}.${key}` : key, depth + 1));
+                            return;
+                        }
+                        if (!/(user|account|login|code|name|phone)/i.test(path)) return;
+                        const actual = String(value == null ? '' : value).trim();
+                        const expected = String(expectedLogin || '').trim();
+                        candidates.push({
+                            path,
+                            length: actual.length,
+                            exact: actual === expected,
+                            casefold: actual.toLowerCase() === expected.toLowerCase(),
+                            contains: Boolean(expected && actual.includes(expected)),
+                            containedBy: Boolean(actual && expected.includes(actual)),
+                        });
+                    };
+                    visit(info, '', 0);
                     return {
                         accountMatch: Boolean(info && containsExact(info)),
                         siteCode: String(info && info.loginSiteCode || '').trim(),
                         siteName: String(info && info.loginSiteName || '').trim(),
+                        identityEvidence: {
+                            expectedLength: String(expectedLogin || '').trim().length,
+                            infoKeys: info && typeof info === 'object' ? Object.keys(info) : [],
+                            candidates,
+                        },
                     };
                 }""",
                 self.binding.login_account,
             )
             if not isinstance(public_identity, Mapping) or public_identity.get("accountMatch") is not True:
-                raise FinanceCaptureError("ACCOUNT_PAGE_MISMATCH", "融辉财务页登录账号与账号管理不一致", stage="page_discovery")
+                evidence = _format_identity_evidence(public_identity)
+                raise FinanceCaptureError(
+                    "ACCOUNT_PAGE_MISMATCH",
+                    f"融辉财务页登录账号与账号管理不一致；{evidence}",
+                    stage="page_discovery",
+                )
             self._source_site_code = clean_text(public_identity.get("siteCode"))
             self._source_site_name = clean_text(public_identity.get("siteName"))
             if not self._source_site_code or not self._source_site_name:
