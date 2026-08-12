@@ -179,6 +179,39 @@ class ArrivalStatsToolTests(unittest.TestCase):
             [row[0] for row in written_values[0][1:]],
         )
 
+    def test_arrival_snapshot_is_not_activated_when_pending_sheet_write_fails(self):
+        record = {
+            "tracking_number": "R00014600001",
+            "goods_name": "货物",
+            "package_type": "纸箱",
+            "delivery_method": "送货",
+            "quantity": 1,
+            "recipient_name": "张三",
+            "recipient_phone": "13800000000",
+            "recipient_address": "湖南省邵阳市大祥区测试路1号",
+            "destination_station": "邵阳大祥S站",
+        }
+
+        def fake_write(resource_key, values, params):
+            if resource_key == "phase7.pending_arrivals_sheet":
+                return {"error": "write failed"}
+            return {"ok": True, "rows": len(values)}
+
+        with (
+            patch("tools.arrival_stats_sync_tool._refresh_scan_index", return_value=([], {"ok": True})),
+            patch("tools.arrival_stats_sync_tool.list_scan_codes", return_value=[]),
+            patch("tools.arrival_stats_sync_tool.list_waybill_records", return_value=[record]),
+            patch("tools.arrival_stats_sync_tool.list_pending_waybills", return_value=[]),
+            patch("tools.arrival_stats_sync_tool._write_stats_sheet", side_effect=fake_write),
+            patch("tools.arrival_stats_sync_tool.save_arrival_stat_snapshot") as save_snapshot,
+        ):
+            result = arrival_stats_sync_tool.run_arrival_stats_sync(
+                {"dry_run": True, "archive_snapshot": False}
+            )
+
+        self.assertEqual("pending_sheet_failed", result["stage"])
+        save_snapshot.assert_not_called()
+
     def test_arrival_stats_does_not_use_total_quantity_for_partial_child_arrivals(self):
         scan_rows = [
             {
