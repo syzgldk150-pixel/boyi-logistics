@@ -49,6 +49,11 @@ def _has_value(value: Any) -> bool:
     return True
 
 
+def _has_confirmed_sign_signal(row: Dict[str, Any]) -> bool:
+    """Treat actual sign time or sign site as authoritative R13 sign evidence."""
+    return _has_value(row.get("signTime")) or _has_value(row.get("signSiteName"))
+
+
 def _extract_rows(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return payload
@@ -181,8 +186,7 @@ def fetch_qianshou(
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            disp_time = row.get("dispTime")
-            if _has_value(disp_time):
+            if _has_confirmed_sign_signal(row):
                 continue
             result.append(
                 {
@@ -193,6 +197,9 @@ def fetch_qianshou(
                     "dispAddress": row.get("dispAddress"),
                     "dispatchMode": row.get("dispatchMode"),
                     "packTypeDesc": row.get("packTypeDesc"),
+                    "isSigns": row.get("isSigns"),
+                    "signSiteName": row.get("signSiteName"),
+                    "signTime": row.get("signTime"),
                 }
             )
 

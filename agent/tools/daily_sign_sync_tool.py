@@ -7,6 +7,11 @@ from typing import Any
 
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.workflow_resource_store import get_workflow_resource
+from tools.delivery_status_common import (
+    is_pending_status,
+    is_signed_status,
+    query_delivery_status,
+)
 from tools.phase7_sync_common import (
     build_range_from_template,
     parse_a1_range,
@@ -288,6 +293,77 @@ def _unique_bill_codes(rows: list[dict]) -> list[str]:
     return bill_codes
 
 
+def _build_status_verification_params(params: dict) -> dict[str, Any]:
+    verification_params: dict[str, Any] = {
+        "query_batch_size": _coerce_int(params.get("status_query_batch_size"), default=100),
+        "timeout_sec": _coerce_int(params.get("status_timeout_sec"), default=600),
+    }
+    session_profile = params.get("status_session_profile") or params.get("detail_session_profile")
+    if session_profile not in (None, ""):
+        verification_params["session_profile"] = session_profile
+    account_id = (
+        params.get("status_account_id")
+        or params.get("statusAccountId")
+        or params.get("detail_account_id")
+        or params.get("detailAccountId")
+    )
+    if account_id not in (None, ""):
+        verification_params["account_id"] = account_id
+    return verification_params
+
+
+def _verify_unsigned_rows(rows: list[dict], params: dict) -> tuple[list[dict] | None, dict[str, Any]]:
+    missing_code_rows = [index for index, row in enumerate(rows) if not _clean_text(row.get("billNumberMain"))]
+    if missing_code_rows:
+        return None, {
+            "error": "每日应签候选记录缺少运单编号，已停止写表",
+            "requested": len(rows),
+            "missing_code_rows": missing_code_rows,
+        }
+    bill_codes = _unique_bill_codes(rows)
+    if not bill_codes:
+        return None, {
+            "error": "每日应签候选记录缺少运单编号，已停止写表",
+            "requested": len(rows),
+            "missing_code_rows": list(range(len(rows))),
+        }
+
+    status_map, query_result = query_delivery_status(
+        bill_codes,
+        _build_status_verification_params(params),
+        service_call=call_http_service,
+    )
+    if status_map is None:
+        return None, {
+            "error": f"delivery_status 签收复核失败: {query_result.get('error') or query_result.get('error_code')}",
+            "requested": len(bill_codes),
+            "query_result": query_result,
+        }
+
+    signed_codes = [code for code in bill_codes if is_signed_status(status_map.get(code))]
+    pending_codes = [code for code in bill_codes if is_pending_status(status_map.get(code))]
+    unknown_codes = [code for code in bill_codes if code not in signed_codes and code not in pending_codes]
+    if unknown_codes:
+        return None, {
+            "error": "TMS 签收状态缺失或无法识别，已停止写表",
+            "requested": len(bill_codes),
+            "signed": len(signed_codes),
+            "pending": len(pending_codes),
+            "unknown": len(unknown_codes),
+            "unknown_bill_codes": unknown_codes,
+        }
+
+    pending_set = set(pending_codes)
+    verified_rows = [row for row in rows if _clean_text(row.get("billNumberMain")) in pending_set]
+    return verified_rows, {
+        "ok": True,
+        "requested": len(bill_codes),
+        "pending": len(pending_codes),
+        "excluded_signed": len(signed_codes),
+        "unknown": 0,
+    }
+
+
 def _detail_code(row: dict[str, Any]) -> str:
     for key in ("tracking_number", "requested_bill_code", "billNumberMain", "bill_code", "billCode", "运单编号"):
         code = _clean_text(row.get(key))
@@ -510,11 +586,22 @@ def run_daily_sign_sync(params: dict) -> dict:
             "sheet_result": {**skip_result, "rows": 0},
         }
 
+    r13_fetched = len(rows)
+    rows, sign_verification = _verify_unsigned_rows(rows, params)
+    if rows is None:
+        return {
+            "error": sign_verification["error"],
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
+        }
+
     rows, address_enrichment = _enrich_rows_with_detail_addresses(rows, params)
     if "error" in address_enrichment:
         return {
             "error": address_enrichment["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
         }
 
@@ -523,6 +610,8 @@ def run_daily_sign_sync(params: dict) -> dict:
         return {
             "error": arrival_enrichment["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
             "arrival_enrichment": arrival_enrichment,
         }
@@ -536,6 +625,8 @@ def run_daily_sign_sync(params: dict) -> dict:
         return {
             "error": bitable_result["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
             "arrival_enrichment": arrival_enrichment,
             "bitable_result": bitable_result,
@@ -550,6 +641,8 @@ def run_daily_sign_sync(params: dict) -> dict:
         return {
             "error": sheet_result["error"],
             "fetched": len(rows),
+            "r13_fetched": r13_fetched,
+            "sign_verification": sign_verification,
             "address_enrichment": address_enrichment,
             "arrival_enrichment": arrival_enrichment,
             "bitable_result": bitable_result,
@@ -559,6 +652,8 @@ def run_daily_sign_sync(params: dict) -> dict:
     return {
         "ok": True,
         "fetched": len(rows),
+        "r13_fetched": r13_fetched,
+        "sign_verification": sign_verification,
         "address_enrichment": address_enrichment,
         "arrival_enrichment": arrival_enrichment,
         "bitable_result": bitable_result,
