@@ -27,8 +27,9 @@
   - `daily_sign_sync_tool.py`（拉 R13 每日应签列表后，默认按运单号调用 `/query_waybill_detail` 补齐脱敏收件地址，并从到货进度缓存读取同单号到达件数写入普通电子表格 H 列，再覆盖写入飞书多维表和电子表格）
   - `site_send_list_sync_tool.py`
   - `arrival_stats_sync_tool.py`（统计到货数据；用当天扫描数据补齐派件预报缺失主单，写主/副统计表 + 未齐货物表 + 归档快照，并以本次统计结果自动刷新分批及有发未到表）
+  - `scan_sync_tool.py`（刷新扫描索引并批量执行 `scan_next`；`target_date` 留空时扫描执行当天，填写 `YYYY-MM-DD` 时扫描指定单日）
   - `split_pending_snapshot.py`（统计与分批工具共享的 A:S 表头校验、未齐分类、MySQL 快照和“分批及有发未到表”覆盖刷新；零候选会清空旧行）
-  - `arrive_list_sync_tool.py`（拉 TMS 派件预报基础清单，过滤 `H...` / `HR...` 回单号；写 waybill_data + 主/副到货清单表）
+  - `arrive_list_sync_tool.py`（拉 TMS 派件预报基础清单，过滤 `H...` / `HR...` 回单号；写 waybill_data + 主/副到货清单表；`target_date` 留空时拉执行当天，填写时拉指定单日）
   - `yunda_dispatch_forecast_sync_tool.py`（拉韵达网点派件量预测主单表；默认次日应派时间，按应派时间覆盖指定飞书多维表格）
   - `yunda_send_waybills_sync_tool.py`（拉韵达寄件运单管理；支持 `target_date` 单日或 `start_date/end_date` 范围；补充快件跟踪详情和小眼睛解密字段，按运单号 upsert 到飞书多维表格，同步 upsert 到控制台 `waybills` 表供 `/waybills` 运单查询，并在单日同步时刷新普通飞书电子表格副本；`sql_only=true` 时只刷新控制台 SQL，不读写飞书或电子表格；默认 SQL `status=in_transit`，明确返回的当前扫描状态写入 `scan_status`）
   - `init_waybills_sql_from_feishu_tool.py`（SQL 初始化回填；从飞书融辉寄件数据和韵达寄件运单表全量读取历史记录，按运单号 upsert 到控制台 `waybills`，不删除历史）

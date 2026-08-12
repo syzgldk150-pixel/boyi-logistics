@@ -4,9 +4,10 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-11
+updated: 2026-08-13
 ---
 
+> 2026-08-13: 后台 `/automations` 的“获取并扫描数据”和 `arrive-list` 卡片新增独立“指定日期”控件。日期留空时不写入日期覆盖参数，继续使用各脚本的执行当日；选择日期时按 `target_date=YYYY-MM-DD` 拉取指定单日。扫描同步会在调用融辉 `/get_scan` 前转换为原页使用的 `YYYY/MM/DD` 日期格式，并拒绝同时设置 `target_date` 与高级请求体中的 `date/start/end`，避免日期来源歧义。
 > 2026-08-11: 后台账号列表新增直接可见的账号级“自动登录”开关，所有现有/新增账号缺省关闭。账号管理只把页面明确保存的完整账号密码认作可用凭据，不展示或使用部署环境变量兜底；未保存凭据时不能开启自动登录或发起登录，历史残留的开启状态也会在访问登录页前自动关闭。“退出登录”和“清空保存凭据”都会关闭自动登录；关闭后不再定时校验、自动重登或发送飞书断线提醒。“停用账号”停止任务选择、任务执行与登录监控，但不等同于退出。自动登录连续失败上限为 3 次，第 3 次失败后持久熔断，避免账号被锁。
 > 2026-08-11: 账号列表中系统名下方的灰色账号备注由账号 `name` 提供；“编辑”面板可通过 `/admin/accounts/{account_id}/name` 单独修改并持久化。备注保存只更新 `name/updated_at`，不改凭据、登录态、启停或自动登录设置，也不触发额外的登录态校验。
 > 2026-07-16: 融辉 TMS 单号查询会从真实 `FIND_SACN_TRACK_BY_CODE` 响应中先取得每个子单的最新扫描，再按完整主单前缀、四位数字子单后缀、当前到达网点和明确的到达类扫描（`到件` / `到达` / `卸车`）去重生成实时 `arrival_progress`。实时子单分布优先于数据库和飞书历史缓存，旧缓存的 `0` 不得覆盖实时统计；缺少明确到达值时飞书显示“无数据”，只有来源明确的零值才显示 `0 件`。
@@ -184,7 +185,9 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 到货统计编排 | `tools/arrival_stats_sync_tool.py` + `tools/split_pending_snapshot.py` |
 | 工具对外注册 | `tools/registry.yaml` |
 
-`sync_arrive_list` 的执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` → `tools/arrive_list_sync_tool.py` → `/fetch_dispatch` → MySQL + 飞书表格。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。`sync_arrival_stats` 会再用当天 `/get_scan` 扫描数据反推缺失主单，调用 `/query_waybill_detail` 补齐详情后追加到统计输出。
+`sync_arrive_list` 的执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` → `tools/arrive_list_sync_tool.py` → `/fetch_dispatch` → MySQL + 飞书表格。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 会再用当天 `/get_scan` 扫描数据反推缺失主单，调用 `/query_waybill_detail` 补齐详情后追加到统计输出。
+
+`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → `tools/scan_sync_tool.py` → `/get_scan` → 刷新扫描索引 → 分批执行 `/scan_next`。后台卡片的 `target_date` 留空时不发送日期覆盖参数，`get_scan` 按执行当天查询；选择日期时工具将 `YYYY-MM-DD` 转换为融辉扫描记录查询使用的 `YYYY/MM/DD` 单日范围。`target_date` 与高级 `request_body.params.date/start/end` 不能同时设置，冲突时显式失败。
 
 `sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。该自动阶段只刷新数据，不调用融辉差错或问题件上报。
 

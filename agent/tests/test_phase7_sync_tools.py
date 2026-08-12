@@ -1659,6 +1659,46 @@ class Phase7SyncToolTests(unittest.TestCase):
             result = scan_sync_tool.run_scan_sync({})
         self.assertIn("get_scan 返回格式异常", result["error"])
 
+    def test_scan_sync_passes_optional_target_date_to_get_scan(self):
+        captured_request = {}
+
+        def fake_call_http_service(endpoint, request_body):
+            self.assertEqual("/get_scan", endpoint)
+            captured_request.update(request_body)
+            return {"data": []}
+
+        with patch("tools.scan_sync_tool.call_http_service", side_effect=fake_call_http_service):
+            result = scan_sync_tool.run_scan_sync(
+                {"target_date": "2026-05-04", "dry_run": True}
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("2026/05/04", captured_request["params"]["date"])
+
+    def test_scan_sync_omits_empty_target_date_for_today_default(self):
+        captured_request = {}
+
+        def fake_call_http_service(endpoint, request_body):
+            self.assertEqual("/get_scan", endpoint)
+            captured_request.update(request_body)
+            return {"data": []}
+
+        with patch("tools.scan_sync_tool.call_http_service", side_effect=fake_call_http_service):
+            result = scan_sync_tool.run_scan_sync({"target_date": "", "dry_run": True})
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("date", captured_request["params"])
+
+    def test_scan_sync_rejects_conflicting_date_sources(self):
+        with self.assertRaisesRegex(ValueError, "不能与 request_body.params"):
+            scan_sync_tool.run_scan_sync(
+                {
+                    "target_date": "2026-05-04",
+                    "request_body": {"params": {"date": "2026/05/03"}},
+                    "dry_run": True,
+                }
+            )
+
     def test_arrival_stats_sync_handles_malformed_fetch_response(self):
         with patch("tools.arrival_stats_sync_tool.call_http_service", return_value={"unexpected": True}):
             with self.assertRaises(ValueError):
