@@ -1,6 +1,33 @@
 """Console application services grouped by business responsibility."""
 
+import gzip
+from email.utils import formatdate
+
 from console.app_support import *  # noqa: F403
+
+
+def _accepts_content_encoding(header_value: str, encoding: str) -> bool:
+    explicit_quality: float | None = None
+    wildcard_quality: float | None = None
+    for item in header_value.lower().split(","):
+        parts = [part.strip() for part in item.split(";") if part.strip()]
+        if not parts:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            name, separator, value = parameter.partition("=")
+            if name.strip() != "q" or not separator:
+                continue
+            try:
+                quality = float(value.strip())
+            except ValueError:
+                quality = 0.0
+        if parts[0] == encoding:
+            explicit_quality = quality
+        elif parts[0] == "*":
+            wildcard_quality = quality
+    selected_quality = explicit_quality if explicit_quality is not None else wildcard_quality
+    return selected_quality is not None and selected_quality > 0
 
 
 class DocumentServiceMixin:
@@ -817,9 +844,29 @@ class DocumentServiceMixin:
         self._serve_file(handler, self.settings.runtime_dir, relpath)
 
     def _serve_static_file(self, handler: BaseHTTPRequestHandler, relpath: str) -> None:
-        self._serve_file(handler, MODULE_DIR / "static", relpath)
+        normalized_path = relpath.replace("\\", "/")
+        request_path = str(getattr(handler, "path", "") or "")
+        versioned_request = "v" in parse_qs(urlparse(request_path).query, keep_blank_values=True)
+        immutable_asset = (
+            versioned_request
+            or normalized_path.startswith("vendor/")
+            or normalized_path == "assets/boyi-logistics-logo-7e1f2994.webp"
+        )
+        cache_control = (
+            "public, max-age=31536000, immutable"
+            if immutable_asset
+            else "public, max-age=3600, stale-while-revalidate=86400"
+        )
+        self._serve_file(handler, MODULE_DIR / "static", relpath, cache_control=cache_control)
 
-    def _serve_file(self, handler: BaseHTTPRequestHandler, root: Path, relpath: str) -> None:
+    def _serve_file(
+        self,
+        handler: BaseHTTPRequestHandler,
+        root: Path,
+        relpath: str,
+        *,
+        cache_control: str | None = None,
+    ) -> None:
         root = root.resolve()
         target = (root / Path(unquote(relpath))).resolve()
         try:
@@ -830,6 +877,22 @@ class DocumentServiceMixin:
         if not target.exists() or not target.is_file():
             self._send_text(handler, HTTPStatus.NOT_FOUND, "File not found.")
             return
+        extra_headers: dict[str, str] = {}
+        if cache_control:
+            stat = target.stat()
+            etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+            extra_headers = {
+                "ETag": etag,
+                "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+            }
+            request_headers = getattr(handler, "headers", {}) or {}
+            if str(request_headers.get("If-None-Match", "") or "").strip() == etag:
+                handler.send_response(HTTPStatus.NOT_MODIFIED)
+                handler.send_header("Cache-Control", cache_control)
+                for name, value in extra_headers.items():
+                    handler.send_header(name, value)
+                handler.end_headers()
+                return
         mime_type, _ = mimetypes.guess_type(str(target))
         with target.open("rb") as handle:
             payload = handle.read()
@@ -838,6 +901,8 @@ class DocumentServiceMixin:
             HTTPStatus.OK,
             payload,
             mime_type or "application/octet-stream",
+            cache_control=cache_control,
+            extra_headers=extra_headers,
         )
 
     def _parse_multipart_form(self, handler: BaseHTTPRequestHandler):
@@ -991,12 +1056,38 @@ class DocumentServiceMixin:
         cache_control: str | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
+        response_payload = payload
+        response_headers = dict(extra_headers or {})
+        content_type_base = content_type.partition(";")[0].strip().lower()
+        compressible = (
+            content_type_base.startswith("text/")
+            or content_type_base in {
+                "application/javascript",
+                "application/json",
+                "application/xml",
+                "image/svg+xml",
+            }
+        )
+        request_headers = getattr(handler, "headers", {}) or {}
+        accept_encoding = str(request_headers.get("Accept-Encoding", "") or "").lower()
+        if len(payload) >= 1024 and compressible and _accepts_content_encoding(accept_encoding, "gzip"):
+            compressed_payload = gzip.compress(payload, compresslevel=6, mtime=0)
+            if len(compressed_payload) < len(payload):
+                response_payload = compressed_payload
+                response_headers["Content-Encoding"] = "gzip"
+                vary_values = {
+                    value.strip()
+                    for value in response_headers.get("Vary", "").split(",")
+                    if value.strip()
+                }
+                vary_values.add("Accept-Encoding")
+                response_headers["Vary"] = ", ".join(sorted(vary_values))
         handler.send_response(status)
         handler.send_header("Content-Type", content_type)
         if cache_control:
             handler.send_header("Cache-Control", cache_control)
-        for name, value in (extra_headers or {}).items():
+        for name, value in response_headers.items():
             handler.send_header(name, value)
-        handler.send_header("Content-Length", str(len(payload)))
+        handler.send_header("Content-Length", str(len(response_payload)))
         handler.end_headers()
-        handler.wfile.write(payload)
+        handler.wfile.write(response_payload)

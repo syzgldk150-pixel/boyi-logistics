@@ -1,10 +1,27 @@
 /*
- * Bundled console fonts. Inter handles Latin text and Source Han Sans CN
- * handles Simplified Chinese. See static/assets/fonts/LICENSES.md.
+ * Bundled console fonts. Small UI and Latin subsets load first, while common
+ * and full Source Han Sans CN files remain available for dynamic user data.
+ * See static/assets/fonts/LICENSES.md.
  */
 @font-face {
+  font-family: "Source Han Sans SC UI";
+  src: url("./assets/fonts/SourceHanSansCN-UI.woff2?v=27533854") format("woff2");
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Han Sans SC Common";
+  src: url("./assets/fonts/SourceHanSansCN-Common.woff2?v=f28a88cd") format("woff2");
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+
+@font-face {
   font-family: "Source Han Sans SC";
-  src: url("./assets/fonts/SourceHanSansCN-VF.ttf.woff2") format("woff2");
+  src: url("./assets/fonts/SourceHanSansCN-VF.ttf.woff2?v=f971e3bf") format("woff2");
   font-style: normal;
   font-weight: 250 900;
   font-display: swap;
@@ -12,7 +29,7 @@
 
 @font-face {
   font-family: "Inter";
-  src: url("./assets/fonts/InterVariable.woff2") format("woff2");
+  src: url("./assets/fonts/InterVariable-Latin.woff2?v=4f95b56c") format("woff2");
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -22,7 +39,7 @@
 }
 
 :root {
-  --font-cjk: "Source Han Sans SC";
+  --font-cjk: "Source Han Sans SC UI", "Source Han Sans SC Common", "Source Han Sans SC";
   --font-latin: "Inter";
   --font-ui: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;
   --font-display: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;

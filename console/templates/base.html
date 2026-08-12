@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <title>{% block title %}{{ app_title | default('物流 Agent 控制台') }}{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <link rel="preload" href="/static/assets/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=cal-console-20260812">
-  <script src="https://unpkg.com/feather-icons"></script>
+  <link rel="preload" href="/static/assets/fonts/InterVariable-Latin.woff2?v=4f95b56c" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/assets/fonts/SourceHanSansCN-UI.woff2?v=27533854" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/style.css?v=cal-console-20260812-perf1">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -24,18 +24,18 @@
   <div class="app-shell console-page-stack{% if not right_sidebar_content|trim %} app-shell--no-aside{% endif %}{% block shell_class %}{% endblock %}" data-console-page-stack>
     <header class="mobile-brand-bar" aria-label="控制台顶部栏">
       <a class="mobile-brand" href="/" aria-label="返回首页" data-shell-home-link>
-        <img src="/static/assets/boyi-logistics-logo.png" width="176" height="48" alt="">
+        <img src="/static/assets/boyi-logistics-logo-7e1f2994.webp" width="176" height="50" alt="">
       </a>
       <span class="mobile-brand-context">{{ page_breadcrumb | striptags | trim }}</span>
     </header>
 
     <aside class="sidebar" data-reveal="sidebar">
       <a class="brand" href="/" aria-label="返回首页" title="返回首页" data-shell-home-link>
-        <img src="/static/assets/boyi-logistics-logo.png" width="186" height="50" alt="">
+        <img src="/static/assets/boyi-logistics-logo-7e1f2994.webp" width="186" height="53" alt="">
       </a>
 
       <div class="user-profile">
-        {% set avatar_src = (admin_user.avatar_url if admin_user and admin_user.avatar_url else 'https://api.dicebear.com/7.x/avataaars/svg?seed=' ~ (admin_user.username if admin_user else 'admin')) %}
+        {% set avatar_src = (admin_user.avatar_url if admin_user and admin_user.avatar_url else '/static/assets/avatar-placeholder.svg') %}
         {% if admin_user and not admin_user.is_legacy_basic_auth %}
         <form class="avatar-upload-form" action="/settings/profile/avatar" method="post" enctype="multipart/form-data" data-avatar-upload-form>
           <label class="avatar avatar--upload" title="点击上传头像" aria-label="点击上传头像">
@@ -185,7 +185,8 @@
   </dialog>
 
   <script id="mobile-navigation-data" type="application/json">{{ {'routes': mobile_nav, 'navigation': mobile_navigation_items, 'isSyncSupported': mobile_nav_sync_supported} | tojson }}</script>
-  <script src="/static/console_ui.js?v=cal-console-20260812"></script>
+  <script src="/static/vendor/feather-4.29.2.min.js"></script>
+  <script src="/static/console_ui.js?v=cal-console-20260812-perf1"></script>
   {% block scripts %}{% endblock %}
   <script>window.ConsoleUI?.initPage?.();</script>
 </body>
