@@ -15,7 +15,8 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - 承载项目总览页和模块导航
 - 承载 OCR 工作区、批量上传、人工复核和导出
 - 承载统一回单管理页（`/receipts`），支持回单列表查询、本地审核弹窗、回单图片旋转预览和后台审核提交
-- 承载财务工作台（`/modules/finance`），提供 BI 总览、交易明细、费用项目绑定和同步记录；数据经 `shared.finance` 仓储读取，同步动作经 Agent `sync_finance_bills` 工具执行
+- 承载财务工作台（`/modules/finance`），提供 BI 总览、交易明细、费用项目绑定、异常审批、运单净额和同步记录；数据经 `shared.finance` 仓储读取，同步动作经 Agent `sync_finance_bills` 工具执行
+- 承载全局智能模型设置（`/settings/llm`），仅 `super_admin` 可管理 DeepSeek/GLM 候选配置、完整兼容测试、激活和人工回滚；禁止自动供应商回退
 - 承载客服系统问题件工作台（`/modules/customer-service`），第一版整合融辉/韵达问题件的实时查询、详情、回复、发布、附件上传和页面提醒；页面默认在外层展示关键词、平台、方向、更新时间日期范围和账号摘要，账号列表和轮询折叠；问题件页不提供声音提醒；差错、调拨件后续再接入
 - 承载货拉拉调度工作区（`/dispatch`），车辆管理、派单和线路规划
 - 承载专线分流公司维护页（`/line-haul-contacts`），维护专线物流公司、站点/城市、地址、联系人和电话
@@ -57,7 +58,9 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - `templates/customer_service.html`
   客服系统专用工作台，入口为 `/modules/customer-service`；第一版只做问题件闭环，账号设置只保存融辉/韵达 `account_id` 和轮询间隔，查询和处理动作通过 Console `/customer-service/problems/*` 代理 Agent `/tms/customer_service_problem`，问题件详情不落库；查询异常必须保留并展示每个账号的 `platform/account_label/error_code/message`；登录账号 `739010002` 只展示发布网点和通知网点都为 `邵阳操作场` 的问题件
 - `templates/finance.html`、`static/finance.css`、`static/finance.js`
-  财务专用四页签工作台及页面级资源；费用项目候选只使用 `/finance/fee-mappings` 返回的分平台 `booking_fee_items`，图表只消费服务端比例，不在浏览器内进行金额运算；同步记录展示最新失败账号/日期/脱敏错误，显式无数据账号和日期显示零值，缺失或失败日期不补零
+  财务专用六页签工作台及页面级资源；费用项目候选只使用 `/finance/fee-mappings` 返回的分平台 `booking_fee_items`，图表只消费服务端比例，不在浏览器内进行金额运算；异常审批和运单事实均读取共享财务仓储，知识镜像不含密钥、完整运单号或原始流水
+- `templates/llm_settings.html`、`static/llm_settings.css`、`static/llm_settings.js`
+  DeepSeek/GLM 全局模型配置页；只有 `super_admin` 可以执行同源写操作，密钥永不回显，普通管理员只读取脱敏运行状态
 - `templates/receipts.html`
   统一回单管理页，入口为 `/receipts`；列表行打开本地审核弹窗，图片预览支持旋转调整但不改原图；审核不通过先填原因并在弹层内提交，再进入最终确认和后台审核链路；隐藏原页兜底审核必须核对到原页审核状态已变更后才回写本地
 - `templates/document.html`

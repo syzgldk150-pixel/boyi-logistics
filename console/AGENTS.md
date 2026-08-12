@@ -102,10 +102,14 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `static/finance.js`
   - `finance_service.py`
   - `app.py`
-  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 同步记录”四个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
-  - Console 接口为 `/finance/summary|trend|entries|fee-mappings|sync-batches`、`POST /finance/sync|backfill`、`POST /finance/fee-mappings/{id}`、`POST /finance/sync-batches/{id}/retry`；同步动作只调用 Agent `sync_finance_bills` 工具，不接收或透传账号密码、Cookie、Token、登录态等字段。
+  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 异常审批 / 运单净额 / 同步记录”六个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
+  - Console 接口为 `/finance/summary|trend|entries|fee-mappings|review-cases|waybill-facts|knowledge|sync-batches`、`POST /finance/sync|backfill|reviews/analyze`、`POST /finance/fee-mappings/{id}`、`POST /finance/review-cases/{id}/reject`、`POST /finance/sync-batches/{id}/retry`；同步动作只调用 Agent `sync_finance_bills` 工具，不接收或透传账号密码、Cookie、Token、登录态等字段。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。
+- 改全局智能模型设置：
+  - `templates/llm_settings.html`、`static/llm_settings.css`、`static/llm_settings.js`、`routes/llm_settings.py`、`services/llm_settings.py`
+  - 页面入口为 `/settings/llm`。只有真实会话中的 `super_admin` 可保存、刷新、测试、激活、回滚或清除 DeepSeek/GLM 配置；所有写请求必须通过同源 CSRF 校验。普通管理员只能看到当前供应商、模型、是否配置和健康状态。
+  - API Key 输入框不得回填，空值或掩码表示保留；Console 不保存或记录密钥，只通过带内部令牌的 Agent 管理接口转发。禁止自定义 Base URL、自动切换供应商、回退环境配置或复用旧 AI 结果。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`

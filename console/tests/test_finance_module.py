@@ -52,6 +52,15 @@ class _FakeFinanceService:
     def list_sync_batches(self, query):
         return self._result("sync_batches", query)
 
+    def list_review_cases(self, query):
+        return self._result("review_cases", query)
+
+    def list_waybill_facts(self, query):
+        return self._result("waybill_facts", query)
+
+    def knowledge_status(self):
+        return self._result("knowledge")
+
     def start_sync(self, body):
         return self._result("sync", body)
 
@@ -63,6 +72,12 @@ class _FakeFinanceService:
 
     def retry_batch(self, batch_id):
         return self._result("retry_batch", batch_id)
+
+    def analyze_review_cases(self, body):
+        return self._result("analyze_reviews", body)
+
+    def reject_review_case(self, review_case_id, body, *, changed_by):
+        return self._result("reject_review", review_case_id, body, changed_by=changed_by)
 
 
 class FinanceModuleWorkbenchTests(unittest.TestCase):
@@ -96,7 +111,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertEqual("dollar-sign", item["icon"])
         self.assertEqual("财务模块", item["label"])
 
-    def test_finance_route_renders_specialized_four_tab_workbench(self):
+    def test_finance_route_renders_specialized_six_tab_workbench(self):
         self.app._render_finance(_Handler(), {})
 
         self.assertEqual(HTTPStatus.OK, self.sent_status)
@@ -105,6 +120,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('data-finance-tab="entries"', self.sent_html)
         self.assertIn('data-finance-tab="mappings"', self.sent_html)
         self.assertIn('data-finance-tab="sync"', self.sent_html)
+        self.assertIn('data-finance-tab="reviews"', self.sent_html)
+        self.assertIn('data-finance-tab="waybill-facts"', self.sent_html)
         self.assertNotIn("module-detail-sections", self.sent_html)
 
     def test_finance_assets_are_page_scoped_and_no_chart_library_is_global(self):
@@ -165,13 +182,13 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
         self.assertIn('row[`${key}_plot`]', script)
-        self.assertIn("waybill_cost_plot", script)
-        self.assertIn("operating_cost_plot", script)
+        self.assertIn("waybill_net_plot", script)
+        self.assertIn("operating_net_plot", script)
         self.assertNotIn("parseFloat(row.income", script)
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
 
-    def test_all_nine_finance_api_routes_are_registered(self):
+    def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
         routes = (
             "/finance/summary",
@@ -183,6 +200,11 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "/finance/backfill",
             "/finance/fee-mappings/\\d+",
             "/finance/sync-batches/\\d+/retry",
+            "/finance/review-cases",
+            "/finance/waybill-facts",
+            "/finance/knowledge",
+            "/finance/reviews/analyze",
+            "/finance/review-cases/\\d+/reject",
         )
 
         for route in routes:
@@ -211,7 +233,10 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         )
         self.assertEqual("backfill", self.sent_payload["data"]["resource"])
 
-        with patch("console.app.current_admin_user", return_value={"username": "admin"}):
+        with patch(
+            "console.services.monitoring_finance.current_admin_user",
+            return_value={"username": "admin"},
+        ):
             self.app._handle_finance_post(
                 _Handler({"fee_level": "operating"}),
                 "save_mapping",
