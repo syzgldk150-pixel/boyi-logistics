@@ -13,8 +13,10 @@ if hasattr(sys.stdout, "reconfigure"):
 from agent.tms_runtime.scripts import customer_service_problem as page_support
 
 
-SIGN_QUERY_CALL_ID = "FIND_SIGNED_DETAIL_ALL"
-SIGN_QUERY_URL = f"{page_support.RONGHUI_ORIGIN}/dataQuery/findPageByCallId?id={SIGN_QUERY_CALL_ID}"
+SIGN_SUMMARY_CALL_ID = "FIND_SIGNED_TOTAL"
+SIGN_DETAIL_CALL_ID = "FIND_SIGNED_DETAIL_ALL_EXCEL"
+SIGN_SUMMARY_URL = f"{page_support.RONGHUI_ORIGIN}/dataQuery/findPageByCallId?id={SIGN_SUMMARY_CALL_ID}"
+SIGN_DETAIL_URL = f"{page_support.RONGHUI_ORIGIN}/dataQuery/findPageByCallId?id={SIGN_DETAIL_CALL_ID}"
 DATE_TIME_FORMAT = "%Y/%m/%d %H:%M:%S"
 DEFAULT_PAGE_SIZE = 500
 DEFAULT_MAX_PAGES = 500
@@ -100,6 +102,54 @@ def normalize_sign_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _collect_complete_pages(
+    session: Any,
+    *,
+    url: str,
+    label: str,
+    headers: dict[str, str],
+    base_payload: dict[str, Any],
+    page_size: int,
+    max_pages: int,
+    timeout: float,
+) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    expected_total: int | None = None
+    for page_index in range(max_pages):
+        response = session.post(
+            url,
+            data={
+                **base_payload,
+                "pageIndex": page_index,
+                "pageSize": page_size,
+            },
+            headers=headers,
+            timeout=timeout,
+        )
+        page_label = f"{label}第{page_index + 1}页"
+        payload = page_support._response_json(response, label=page_label)
+        page_support._raise_if_source_failed(payload, label=page_label)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise RuntimeError(f"{page_label}缺少data列表")
+        page_rows = payload["data"]
+        page_total = _int(payload.get("total"), field=f"{label} total")
+        if expected_total is None:
+            expected_total = page_total
+        elif page_total != expected_total:
+            raise RuntimeError(f"{label}分页过程中total发生变化")
+        for raw in page_rows:
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"{page_label}包含非对象行")
+            rows.append(raw)
+        if len(rows) >= expected_total:
+            if len(rows) != expected_total:
+                raise RuntimeError(f"{label}取得行数超过响应total")
+            return rows, expected_total
+        if not page_rows or len(page_rows) < page_size:
+            raise RuntimeError(f"{label}提前结束: 已取得{len(rows)}行，响应total为{expected_total}")
+    raise RuntimeError(f"{label}达到max_pages={max_pages}仍未完整结束")
+
+
 def collect_sign_rows(
     session: Any,
     page_context: dict[str, str],
@@ -119,35 +169,55 @@ def collect_sign_rows(
         page_context,
         content_type="application/x-www-form-urlencoded; charset=UTF-8",
     )
+    base_payload = build_query_payload(
+        start,
+        end,
+        login_site_code=login_site_code,
+        page_index=0,
+        page_size=page_size,
+    )
+    summary_rows, _ = _collect_complete_pages(
+        session,
+        url=SIGN_SUMMARY_URL,
+        label="融辉签收汇总",
+        headers=headers,
+        base_payload=base_payload,
+        page_size=page_size,
+        max_pages=max_pages,
+        timeout=timeout,
+    )
     result: list[dict[str, Any]] = []
     seen: dict[tuple[str, str], dict[str, Any]] = {}
-    expected_total: int | None = None
-    for page_index in range(max_pages):
-        response = session.post(
-            SIGN_QUERY_URL,
-            data=build_query_payload(
-                start,
-                end,
-                login_site_code=login_site_code,
-                page_index=page_index,
-                page_size=page_size,
-            ),
+    seen_groups: set[tuple[str, str]] = set()
+    for group_index, summary_row in enumerate(summary_rows, start=1):
+        sign_site_code = _clean(summary_row.get("SIGN_SITE_CODE"))
+        area_name = _clean(summary_row.get("AREA_NAME"))
+        if not sign_site_code or not area_name:
+            raise RuntimeError(f"TMS签收汇总第{group_index}行缺SIGN_SITE_CODE或AREA_NAME")
+        group_identity = (sign_site_code, area_name)
+        if group_identity in seen_groups:
+            raise RuntimeError(f"TMS签收汇总分组重复: {sign_site_code} {area_name}")
+        seen_groups.add(group_identity)
+        summary_total = _int(summary_row.get("TOTAL_NUM"), field="签收汇总 TOTAL_NUM")
+        detail_rows, detail_total = _collect_complete_pages(
+            session,
+            url=SIGN_DETAIL_URL,
+            label=f"融辉签收明细分组{group_index}",
             headers=headers,
+            base_payload={
+                **base_payload,
+                "SIGN_SITE_CODE": sign_site_code,
+                "AREA_NAME": area_name,
+            },
+            page_size=page_size,
+            max_pages=max_pages,
             timeout=timeout,
         )
-        payload = page_support._response_json(response, label=f"融辉签收查询第{page_index + 1}页")
-        page_support._raise_if_source_failed(payload, label=f"融辉签收查询第{page_index + 1}页")
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise RuntimeError(f"TMS签收查询第{page_index + 1}页缺少data列表")
-        page_rows = payload["data"]
-        page_total = _int(payload.get("total"), field="total")
-        if expected_total is None:
-            expected_total = page_total
-        elif page_total != expected_total:
-            raise RuntimeError("TMS签收查询分页过程中total发生变化")
-        for raw in page_rows:
-            if not isinstance(raw, dict):
-                raise RuntimeError(f"TMS签收查询第{page_index + 1}页包含非对象行")
+        if detail_total != summary_total:
+            raise RuntimeError(
+                f"TMS签收汇总与明细不一致: 分组{group_index}汇总{summary_total}行，明细{detail_total}行"
+            )
+        for raw in detail_rows:
             row = normalize_sign_row(raw)
             identity = (row["扫描单号"], row["扫描时间"])
             previous = seen.get(identity)
@@ -157,15 +227,7 @@ def collect_sign_rows(
                 continue
             seen[identity] = row
             result.append(row)
-        if len(result) >= expected_total:
-            if len(result) != expected_total:
-                raise RuntimeError("TMS签收查询去重后行数与total不一致")
-            return result
-        if not page_rows or len(page_rows) < page_size:
-            raise RuntimeError(
-                f"TMS签收查询提前结束: 已取得{len(result)}行，响应total为{expected_total}"
-            )
-    raise RuntimeError(f"TMS签收查询达到max_pages={max_pages}仍未完整结束")
+    return result
 
 
 def run_once(params: dict[str, Any] | None = None) -> list[dict[str, Any]]:

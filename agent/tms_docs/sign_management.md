@@ -114,17 +114,19 @@
   - `FIND_AREA_COMBOBOX` -> `https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=FIND_AREA_COMBOBOX&pageSize=100&pageIndex=0&key=&_=%3CTS%3E`
   - `FIND_TAB_EMPLOYEE_COMBOBOX` -> `https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=%3CTOKEN%3E&pageSize=100&pageIndex=0&key=&_=%3CTS%3E`
   - `FIND_SITE_ALL_COMBOBOX` -> `https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=FIND_SITE_ALL_COMBOBOX&pageSize=100&pageIndex=0&key=&_=%3CTS%3E`
-- 主查询接口：`FIND_SIGNED_TOTAL_PARAENT`
+- 本站汇总查询接口：`FIND_SIGNED_TOTAL`
 - 主查询地址：`https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=%3CTOKEN%3E`
 - 请求方法：`POST`
 - 主查询参数键：`searchOrderType`、`searchOrderInput`、`searchDateType`、`SEARCH_DATE_RANGE`、`PAYMENT_TYPE`、`BL_DISP_SIGN`、`AREA_NAME`、`DISPATCH_NAME_CODE`、`RECORD_SITE_CODE`、`BL_REPLACE`、`STATE_NAME`、`EXCEPTION_TYPE`、`SIGN_DATE`、`LOGIN_SITE_CODE`、`pageIndex`、`pageSize`、`sortField`、`sortOrder`、`totalColumns`
-- 点击查询后额外请求：
-  - `FIND_SIGNED_TOTAL_PARAENT` -> `https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=%3CTOKEN%3E`
+- 点击“汇总数据”查询后请求：
+  - `FIND_SIGNED_TOTAL` -> `https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=%3CTOKEN%3E`
   - `FIND_TAB_WORK_ORDER_TYPE_REMIND` -> `https://tms.ronghuiwl.com/dataQuery/findAllByCallId?id=%3CTOKEN%3E`
+- 双击本站汇总行进入逐票明细后请求：
+  - `FIND_SIGNED_DETAIL_ALL_EXCEL` -> `https://tms.ronghuiwl.com/dataQuery/findPageByCallId?id=%3CTOKEN%3E`
+  - 在原查询参数上增加汇总行返回的 `SIGN_SITE_CODE`、`AREA_NAME`
 - `userView/getUserViewByUrl`：
   - `/dataQuery/findPageByCallId?id=FIND_SIGNED_TOTAL`
-- 页面脚本提示接口：
-  - `/dataQuery/findPageByCallId?id=FIND_SIGNED_DETAIL_ALL`
+- `FIND_SIGNED_DETAIL_ALL` 只用于总部账号的特殊明细分支；本站账号不得直接用它替代上述“汇总 → 双击本站行 → 明细”的页面链路，否则日期条件可能不生效。
 
 **Field Mapping**
 - 用户输入参数：`searchOrderType`、`searchOrderInput`、`searchDateType`、`SEARCH_DATE_RANGE`、`PAYMENT_TYPE`、`BL_DISP_SIGN`、`AREA_NAME`、`DISPATCH_NAME_CODE`、`RECORD_SITE_CODE`、`BL_REPLACE`、`STATE_NAME`、`EXCEPTION_TYPE`
@@ -138,7 +140,7 @@
 - 点击绑定（从内联脚本截取）：
   - `searchBtn -> searchMethod();`
   - `exportBtn -> exportMethod();`
-- 前置校验/状态相关 CALL_ID：`FIND_SIGNED_DETAIL_ALL`
+- 逐票签收证据必须按页面真实链路先查 `FIND_SIGNED_TOTAL`，再按每个汇总行查 `FIND_SIGNED_DETAIL_ALL_EXCEL`，并校验每组 `TOTAL_NUM` 与明细 `total` 相等。
 
 **Automation Notes**
 - 适合先封装接口：页面已经暴露稳定查询请求，可以先复用查询链路，再决定是否走 DOM。
