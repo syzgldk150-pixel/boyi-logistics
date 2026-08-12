@@ -345,7 +345,13 @@ class ToolExecutor:
 
             if isinstance(result, dict) and result.get("error"):
                 safe_error = redact_text(result["error"])
-                logger.error("tool=%s | success=false | error=%s | duration=%ss", name, safe_error[:300], duration)
+                error_log_limit = 500 if name == "sync_finance_bills" else 300
+                logger.error(
+                    "tool=%s | success=false | error=%s | duration=%ss",
+                    name,
+                    safe_error[:error_log_limit],
+                    duration,
+                )
                 self._last_run = {
                     "tool": name,
                     "time": time.strftime("%Y-%m-%d %H:%M:%S"),

@@ -65,9 +65,9 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
             expected_markers={"FIND_BALANCE_QRY_OLD", "BALANCE_DATE", "BEFORE_AMOUNT"},
         )
 
-        self.assertIn("missing=BEFORE_AMOUNT,FIND_BALANCE_QRY_OLD", evidence)
         self.assertIn("call_ids=FIND_BALANCE_QRY_RENAMED", evidence)
         self.assertIn("BALANCE_DATE", evidence)
+        self.assertIn("missing=BEFORE_AMOUNT,FIND_BALANCE_QRY_OLD", evidence)
         self.assertNotIn("private-sample-account", evidence)
 
     def test_pagination_overlap_deduplicates_by_stable_key(self):

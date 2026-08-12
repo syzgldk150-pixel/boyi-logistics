@@ -69,9 +69,9 @@ def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
     call_ids = sorted(token for token in tokens if "BALANCE" in token and "FIND" in token)[:12]
     fields = sorted(token for token in tokens if token not in call_ids)[:24]
     return (
-        f"missing={','.join(missing) or 'none'}; "
         f"call_ids={','.join(call_ids) or 'none'}; "
-        f"fields={','.join(fields) or 'none'}"
+        f"fields={','.join(fields) or 'none'}; "
+        f"missing={','.join(missing) or 'none'}"
     )[:420]
 
 
