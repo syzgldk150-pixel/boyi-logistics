@@ -1767,6 +1767,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             "target_station_codes": set(),
             "problems": {},
             "signs": {},
+            "sign_verifications": {},
         }
         with (
             patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
@@ -1774,6 +1775,8 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.daily_sign_sync_tool.finish_sync_run"),
             patch("tools.daily_sign_sync_tool._sync_manual_problem_events", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool._sync_sign_events", return_value=([], {"ok": True, "complete": True})),
+            patch("tools.daily_sign_sync_tool._sync_r13_sign_conflicts", return_value=([], {"ok": True, "complete": True})),
+            patch("tools.daily_sign_sync_tool._sync_historical_sign_verifications", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool.load_daily_sign_state", side_effect=[state, state]),
             patch("tools.daily_sign_sync_tool.upsert_ledger_rows", return_value={"ok": True}),
             patch("tools.daily_sign_sync_tool._sync_bitable", return_value={"ok": True}) as bitable_mock,

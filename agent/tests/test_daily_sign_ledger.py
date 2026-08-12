@@ -158,6 +158,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             "target_station_codes": {"R1"},
             "problems": {},
             "signs": signs or {},
+            "sign_verifications": {},
         }
 
     def test_candidate_union_keeps_r13_only_reroute_and_historical_until_tms_sign(self):
@@ -179,6 +180,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             patch("tools.daily_sign_sync_tool._sync_manual_problem_events", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool._sync_sign_events", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool._sync_r13_sign_conflicts", return_value=([], {"ok": True, "complete": True})),
+            patch("tools.daily_sign_sync_tool._sync_historical_sign_verifications", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool.load_daily_sign_state", side_effect=[before, after]),
             patch("tools.daily_sign_sync_tool.upsert_ledger_rows", return_value={"ok": True}),
             patch("tools.daily_sign_sync_tool._sync_bitable", return_value={"ok": True}),
@@ -205,6 +207,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             patch("tools.daily_sign_sync_tool._sync_manual_problem_events", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool._sync_sign_events", return_value=(None, {"error": "scan unavailable", "complete": False})),
             patch("tools.daily_sign_sync_tool._sync_r13_sign_conflicts", return_value=([], {"ok": True, "complete": True})),
+            patch("tools.daily_sign_sync_tool._sync_historical_sign_verifications", return_value=([], {"ok": True, "complete": True})),
             patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch("tools.daily_sign_sync_tool.upsert_ledger_rows", return_value={"ok": True}),
             patch("tools.daily_sign_sync_tool._sync_bitable", return_value={"ok": True}),
@@ -347,6 +350,180 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertEqual(["R1"], [event["tracking_number"] for event in events])
         self.assertEqual("tms_tracking_exact", events[0]["source"])
         store.assert_called_once()
+
+    def test_candidate_union_excludes_child_codes_and_zero_arrival_ghosts(self):
+        ledger = {
+            "R00018175062": {
+                "tracking_number": "R00018175062",
+                "last_seen_r13_at": "2026-07-20 10:00:00",
+                "arrived_quantity": 6,
+                "tms_signed": False,
+            },
+            "20030301080003": {
+                "tracking_number": "20030301080003",
+                "arrived_quantity": None,
+                "tms_signed": False,
+            },
+            "ZERO_ONLY": {
+                "tracking_number": "ZERO_ONLY",
+                "arrived_quantity": None,
+                "tms_signed": False,
+            },
+        }
+
+        candidates, excluded = daily_sign_sync_tool._daily_sign_candidate_codes(
+            {},
+            ledger,
+            {"20030301080003"},
+        )
+
+        self.assertEqual({"R00018175062"}, candidates)
+        self.assertEqual({"20030301080003"}, excluded)
+        self.assertNotIn("ZERO_ONLY", candidates)
+
+    def test_historical_reroute_sign_is_closed_by_exact_main_route_and_cached(self):
+        observed_at = datetime(2026, 8, 13, 12, 0, 0)
+        state = {
+            "ledger": {
+                "R00018175062": {
+                    "tracking_number": "R00018175062",
+                    "r13_current": False,
+                    "last_seen_r13_at": "2026-07-20 10:00:00",
+                    "arrived_quantity": 6,
+                    "tms_signed": False,
+                },
+                "20030301080003": {
+                    "tracking_number": "20030301080003",
+                    "arrived_quantity": None,
+                    "tms_signed": False,
+                },
+            },
+            "target_station_codes": {"20030301080003"},
+            "signs": {},
+            "sign_verifications": {},
+        }
+        result = {
+            "tracking_number": "R00018175062",
+            "sign_event": {
+                "source": "tms_tracking_exact",
+                "external_id": "sign-1",
+                "tracking_number": "R00018175062",
+                "scan_code": "R00018175062",
+                "scan_type": "签收",
+                "scanned_at": "2026-07-21 15:53:54",
+                "scan_site": "邵阳洞口站",
+                "is_main_waybill": True,
+            },
+        }
+
+        with (
+            patch("tools.daily_sign_sync_tool._query_exact_sign_results", return_value=[result]) as query,
+            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True, "upserted": 1}) as sign_store,
+            patch("tools.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True, "upserted": 1}) as verification_store,
+        ):
+            events, audit = daily_sign_sync_tool._sync_historical_sign_verifications(
+                {},
+                {},
+                state,
+                observed_at=observed_at,
+            )
+
+        query.assert_called_once_with(["R00018175062"], {})
+        self.assertEqual(["R00018175062"], [event["tracking_number"] for event in events])
+        self.assertEqual(1, audit["confirmed"])
+        self.assertEqual(["20030301080003"], audit["excluded_child_codes"])
+        sign_store.assert_called_once()
+        verification = verification_store.call_args.args[0][0]
+        self.assertEqual("signed", verification["last_result"])
+        self.assertIsNone(verification["next_check_at"])
+
+    def test_historical_unsigned_verification_uses_backoff_and_skips_until_due(self):
+        observed_at = datetime(2026, 8, 13, 12, 0, 0)
+        state = {
+            "ledger": {
+                "OLD": {
+                    "tracking_number": "OLD",
+                    "r13_current": False,
+                    "last_seen_r13_at": "2026-07-20 10:00:00",
+                    "tms_signed": False,
+                }
+            },
+            "target_station_codes": set(),
+            "signs": {},
+            "sign_verifications": {
+                "OLD": {
+                    "tracking_number": "OLD",
+                    "last_result": "not_signed",
+                    "next_check_at": "2026-08-14 12:00:00",
+                    "consecutive_not_signed": 1,
+                }
+            },
+        }
+
+        with (
+            patch("tools.daily_sign_sync_tool._query_exact_sign_results") as query,
+            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True}),
+            patch("tools.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True}),
+        ):
+            events, audit = daily_sign_sync_tool._sync_historical_sign_verifications(
+                {},
+                {},
+                state,
+                observed_at=observed_at,
+            )
+
+        query.assert_called_once_with([], {})
+        self.assertEqual([], events)
+        self.assertEqual(0, audit["queried"])
+
+    def test_historical_exact_error_defers_all_confirmed_closures(self):
+        state = {
+            "ledger": {
+                code: {
+                    "tracking_number": code,
+                    "last_seen_r13_at": "2026-08-12 10:00:00",
+                    "tms_signed": False,
+                }
+                for code in ("SIGNED", "ERROR")
+            },
+            "target_station_codes": set(),
+            "signs": {},
+            "sign_verifications": {},
+        }
+        results = [
+            {
+                "tracking_number": "SIGNED",
+                "sign_event": {
+                    "tracking_number": "SIGNED",
+                    "scan_type": "签收",
+                    "scanned_at": "2026-08-13 10:00:00",
+                    "scan_site": "其他网点",
+                },
+            },
+            {"tracking_number": "ERROR", "error": "source unavailable"},
+        ]
+
+        with (
+            patch("tools.daily_sign_sync_tool._query_exact_sign_results", return_value=results),
+            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True}) as sign_store,
+            patch("tools.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True}) as verification_store,
+        ):
+            events, audit = daily_sign_sync_tool._sync_historical_sign_verifications(
+                {},
+                {},
+                state,
+                observed_at=datetime(2026, 8, 13, 12, 0, 0),
+            )
+
+        self.assertEqual([], events)
+        self.assertFalse(audit["complete"])
+        self.assertEqual(1, audit["confirmed_but_deferred_on_error"])
+        self.assertEqual([], sign_store.call_args.args[0])
+        verification_by_code = {
+            row["tracking_number"]: row for row in verification_store.call_args.args[0]
+        }
+        self.assertEqual("error", verification_by_code["SIGNED"]["last_result"])
+        self.assertEqual("batch_deferred_after_peer_query_error", verification_by_code["SIGNED"]["last_error"])
 
     def test_sheet_validates_nine_headers_and_writes_before_clearing_tail(self):
         actions = []

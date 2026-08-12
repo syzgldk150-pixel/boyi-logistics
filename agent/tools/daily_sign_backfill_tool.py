@@ -17,6 +17,7 @@ from tools.daily_sign_rules import TARGET_STATION, build_ledger_row, business_no
 from tools.daily_sign_store import save_arrival_stat_snapshot, snapshot_fingerprint, upsert_ledger_rows
 from tools.daily_sign_sync_tool import (
     _extract_rows,
+    _daily_sign_candidate_codes,
     _r13_by_code,
     _sync_manual_problem_events,
     _sync_r13_sign_conflicts,
@@ -212,7 +213,10 @@ def run_daily_sign_backfill(params: dict[str, Any] | None = None) -> dict[str, A
             item = {**record, "business_date": title}
             code = clean_text(item.get("tracking_number"))
             arrivals_by_code.setdefault(code, []).append(item)
-            if clean_text(item.get("destination_station")) == TARGET_STATION:
+            if (
+                clean_text(item.get("destination_station")) == TARGET_STATION
+                and (_int(item.get("arrived_quantity")) or 0) > 0
+            ):
                 target_station_codes.add(code)
         fingerprint = snapshot_fingerprint(records)
         save_result = save_arrival_stat_snapshot(date.fromisoformat(title), records, dry_run=not apply)
@@ -266,7 +270,11 @@ def run_daily_sign_backfill(params: dict[str, Any] | None = None) -> dict[str, A
             )
 
     r13_by_code = _r13_by_code(r13_rows)
-    candidate_codes = set(seed_by_code) | set(r13_by_code) | target_station_codes
+    candidate_codes, excluded_child_codes = _daily_sign_candidate_codes(
+        r13_by_code,
+        seed_by_code,
+        target_station_codes,
+    )
     now = business_now()
     backfill_days = max(int(params.get("event_backfill_days") or params.get("r13_backfill_days") or 3650), 1)
     event_start = now - timedelta(days=backfill_days)
@@ -347,6 +355,8 @@ def run_daily_sign_backfill(params: dict[str, Any] | None = None) -> dict[str, A
         "sign_history_result": sign_result,
         "exact_sign_result": exact_result,
         "candidate_seed_rows": len(candidate_codes),
+        "excluded_child_candidate_rows": len(excluded_child_codes),
+        "excluded_child_candidate_codes": sorted(excluded_child_codes),
         "seeded_ledger_rows": seeded_ledger_rows,
         "rebuilt_open_rows": len(rebuilt_open_codes),
         "closed_by_tms_rows": sum(1 for row in ledger_rows if row.get("tms_signed")),

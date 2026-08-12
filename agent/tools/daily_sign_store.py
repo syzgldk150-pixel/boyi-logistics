@@ -20,6 +20,7 @@ REQUIRED_TABLES = {
     "waybill_sign_events",
     "daily_sign_ledger",
     "daily_sign_sync_runs",
+    "waybill_sign_verification_state",
 }
 
 
@@ -285,7 +286,10 @@ def load_daily_sign_state() -> dict[str, Any]:
                 if not code:
                     continue
                 arrivals.setdefault(code, []).append(row)
-                if clean_text(row.get("destination_station")) == TARGET_STATION:
+                if (
+                    clean_text(row.get("destination_station")) == TARGET_STATION
+                    and (to_int(row.get("arrived_quantity")) or 0) > 0
+                ):
                     target_station_codes.add(code)
             cur.execute("SELECT * FROM waybill_problem_events ORDER BY registered_at")
             problems: dict[str, list[dict[str, Any]]] = {}
@@ -307,13 +311,67 @@ def load_daily_sign_state() -> dict[str, Any]:
                 """
             )
             signs = {clean_text(row.get("tracking_number")): row for row in cur.fetchall() or []}
+            cur.execute("SELECT * FROM waybill_sign_verification_state")
+            sign_verifications = {
+                clean_text(row.get("tracking_number")): row
+                for row in cur.fetchall() or []
+                if clean_text(row.get("tracking_number"))
+            }
         return {
             "ledger": ledger,
             "arrivals": arrivals,
             "target_station_codes": target_station_codes,
             "problems": problems,
             "signs": signs,
+            "sign_verifications": sign_verifications,
         }
+    finally:
+        conn.close()
+
+
+def upsert_sign_verification_states(
+    rows: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if dry_run:
+        return {"ok": True, "skipped": True, "upserted": len(rows)}
+    ensure_daily_sign_tables()
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            if rows:
+                cur.executemany(
+                    """
+                    INSERT INTO waybill_sign_verification_state (
+                        tracking_number, last_checked_at, last_result, next_check_at,
+                        consecutive_not_signed, last_error
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        last_checked_at = VALUES(last_checked_at),
+                        last_result = VALUES(last_result),
+                        next_check_at = VALUES(next_check_at),
+                        consecutive_not_signed = VALUES(consecutive_not_signed),
+                        last_error = VALUES(last_error)
+                    """,
+                    [
+                        (
+                            clean_text(row.get("tracking_number")),
+                            parse_datetime(row.get("last_checked_at")),
+                            clean_text(row.get("last_result")),
+                            parse_datetime(row.get("next_check_at")),
+                            max(to_int(row.get("consecutive_not_signed")) or 0, 0),
+                            clean_text(row.get("last_error"))[:500] or None,
+                        )
+                        for row in rows
+                    ],
+                )
+        conn.commit()
+        return {"ok": True, "upserted": len(rows)}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
