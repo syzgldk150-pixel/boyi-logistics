@@ -66,10 +66,15 @@ def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
             for family in ("BALANCE", "SETTLEMENT", "AMOUNT", "BILL", "FINANCE", "DATE", "GUID")
         )
     }
-    call_ids = sorted(token for token in tokens if "BALANCE" in token and "FIND" in token)[:12]
+    missing_call_ids = [marker for marker in missing if marker.startswith("FIND_")]
+    call_ids = (
+        sorted(token for token in tokens if "BALANCE" in token and "FIND" in token)[:12]
+        if missing_call_ids
+        else []
+    )
     fields = sorted(token for token in tokens if token not in call_ids)[:24]
     return (
-        f"call_ids={','.join(call_ids) or 'none'}; "
+        f"call_ids={','.join(call_ids) or 'expected_present'}; "
         f"fields={','.join(fields) or 'none'}; "
         f"missing={','.join(missing) or 'none'}"
     )[:420]
