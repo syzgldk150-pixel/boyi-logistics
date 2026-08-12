@@ -65,7 +65,7 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
             "url": "https://tms.ronghuiwl.com/widget/home?fixture=1",
             "html": (
                 "/dataQuery/findPageByCallId?id=FIXTURE_CALL "
-                "BALANCE_DATE SITE_NAME_CODE pageIndex pageSize"
+                "BALANCE_DATE SITE_NAME_CODE pageSize"
             ),
         }
         template = _ronghui_request_template(
