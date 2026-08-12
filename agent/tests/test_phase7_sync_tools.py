@@ -1662,6 +1662,101 @@ class Phase7SyncToolTests(unittest.TestCase):
             result = scan_sync_tool.run_scan_sync({})
         self.assertIn("get_scan 返回格式异常", result["error"])
 
+    def test_scan_sync_passes_target_date_and_dry_run_does_not_write_or_scan(self):
+        rows = [{"source": "get_scan"}]
+        normalized_rows = [{"raw_code": "R00010001", "destination": "测试站", "code_type": "child"}]
+        child_items = [{"bill_code": "R00010001", "station_name": "测试站"}]
+        with (
+            patch("tools.scan_sync_tool.call_http_service", return_value={"data": rows}) as call_http,
+            patch("tools.scan_sync_tool.normalize_scan_rows", return_value=normalized_rows),
+            patch("tools.scan_sync_tool.child_items_from_scan_rows", return_value=child_items),
+            patch("tools.scan_sync_tool.replace_scan_codes") as replace_scan_codes,
+        ):
+            result = scan_sync_tool.run_scan_sync(
+                {"target_date": "2026-08-12", "dry_run": True, "account_id": "ronghui_default"}
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(1, call_http.call_count)
+        self.assertEqual("/get_scan", call_http.call_args.args[0])
+        self.assertEqual("2026/08/12", call_http.call_args.args[1]["params"]["date"])
+        self.assertEqual("ronghui_default", call_http.call_args.args[1]["params"]["account_id"])
+        replace_scan_codes.assert_not_called()
+
+    def test_scan_sync_rejects_conflicting_target_date_params(self):
+        with self.assertRaisesRegex(ValueError, "target_date 不能与"):
+            scan_sync_tool._resolve_get_scan_request_params(
+                {"target_date": "2026-08-12"},
+                {"params": {"date": "2026/08/13"}},
+            )
+
+    def test_scan_sync_stops_after_first_failed_batch_and_preserves_nested_error(self):
+        rows = [{"source": "get_scan"}]
+        normalized_rows = [{"raw_code": "R00010001", "destination": "测试站", "code_type": "child"}]
+        child_items = [
+            {"bill_code": "R00010001", "station_name": "测试站"},
+            {"bill_code": "R00010002", "station_name": "测试站"},
+        ]
+        scan_failure = {
+            "ok": False,
+            "data": {
+                "ok": False,
+                "stage": "upload",
+                "message": 'value too large for column "SCAN_MAN_CODE"',
+            },
+        }
+        with (
+            patch(
+                "tools.scan_sync_tool.call_http_service",
+                side_effect=[{"data": rows}, scan_failure],
+            ) as call_http,
+            patch("tools.scan_sync_tool.normalize_scan_rows", return_value=normalized_rows),
+            patch("tools.scan_sync_tool.child_items_from_scan_rows", return_value=child_items),
+            patch("tools.scan_sync_tool.replace_scan_codes", return_value={"ok": True, "replaced": 1}),
+            patch("tools.scan_sync_tool._trigger_scan_flow") as trigger_flow,
+        ):
+            result = scan_sync_tool.run_scan_sync(
+                {"batch_size": 1, "trigger_flow": True}
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("SCAN_NEXT_BATCH_FAILED", result["error_code"])
+        self.assertEqual(1, result["failed_batch"])
+        self.assertIn("SCAN_MAN_CODE", result["error"])
+        self.assertEqual(2, call_http.call_count)
+        self.assertEqual(1, len(result["batch_results"]))
+        self.assertEqual("batch_failed", result["flow_result"]["reason"])
+        trigger_flow.assert_not_called()
+
+    def test_scan_sync_reports_explicit_batch_limits(self):
+        rows = [{"source": "get_scan"}]
+        normalized_rows = [{"raw_code": "R00010001", "destination": "测试站", "code_type": "child"}]
+        child_items = [
+            {"bill_code": f"R0001000{index}", "station_name": "测试站"}
+            for index in range(1, 4)
+        ]
+        with (
+            patch(
+                "tools.scan_sync_tool.call_http_service",
+                side_effect=[{"data": rows}, {"ok": True, "detail": []}],
+            ),
+            patch("tools.scan_sync_tool.normalize_scan_rows", return_value=normalized_rows),
+            patch("tools.scan_sync_tool.child_items_from_scan_rows", return_value=child_items),
+            patch("tools.scan_sync_tool.replace_scan_codes", return_value={"ok": True, "replaced": 1}),
+        ):
+            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "max_batches": 1})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(3, result["candidate_items"])
+        self.assertEqual(1, result["scheduled_items"])
+        self.assertEqual(2, result["omitted_items"])
+
+    def test_scan_sync_rejects_non_positive_limits(self):
+        with self.assertRaisesRegex(ValueError, "batch_size 必须大于 0"):
+            scan_sync_tool._chunk([], 0)
+
     def test_scan_sync_passes_optional_target_date_to_get_scan(self):
         captured_request = {}
 

@@ -37,7 +37,7 @@ def _extract_rows(tms_result: dict) -> list[dict] | None:
 
 def _chunk(items: list[dict[str, str]], batch_size: int) -> list[list[dict[str, str]]]:
     if batch_size <= 0:
-        return [items]
+        raise ValueError("batch_size 必须大于 0")
     return [items[index : index + batch_size] for index in range(0, len(items), batch_size)]
 
 
@@ -116,11 +116,17 @@ def _scan_next_ok(result: dict[str, Any]) -> bool:
 def _scan_next_error(result: Any) -> str:
     if not isinstance(result, dict):
         return "invalid_result"
-    if result.get("error"):
-        return str(result.get("error"))
-    if result.get("ok"):
-        return ""
-    return str(result.get("message") or "scan_next failed")
+    for key in ("error", "message", "reason"):
+        value = result.get(key)
+        if value:
+            return str(value).strip()
+    for nested_key in ("data", "detail", "raw"):
+        nested = result.get(nested_key)
+        if isinstance(nested, dict):
+            nested_error = _scan_next_error(nested)
+            if nested_error not in ("", "scan_next failed"):
+                return nested_error
+    return "" if result.get("ok") else "scan_next failed"
 
 
 def _scan_next_detail(result: dict[str, Any]) -> Any:
@@ -168,21 +174,70 @@ def run_scan_sync(params: dict) -> dict:
     else:
         replace_result = replace_scan_codes(normalized_rows)
     _emit_progress("扫描索引已刷新", replaced=replace_result.get("replaced"))
+    if not replace_result.get("ok"):
+        index_error = _scan_next_error(replace_result)
+        return {
+            "ok": False,
+            "error_code": "SCAN_INDEX_REFRESH_FAILED",
+            "error": f"扫描索引刷新失败：{index_error}",
+            "fetched": len(rows),
+            "normalized": len(normalized_rows),
+            "scan_index_result": replace_result,
+        }
 
-    child_items = child_items_from_scan_rows(
-        normalized_rows,
-        limit=params.get("child_item_limit"),
-    )
+    candidate_items = child_items_from_scan_rows(normalized_rows)
     skip_bill_codes = _coerce_code_set(params.get("skip_bill_codes") or params.get("skip_codes"))
     if skip_bill_codes:
-        before_skip = len(child_items)
-        child_items = [item for item in child_items if str(item.get("bill_code") or "").strip() not in skip_bill_codes]
-        _emit_progress("已跳过指定扫描单号", skipped=before_skip - len(child_items))
+        before_skip = len(candidate_items)
+        candidate_items = [
+            item
+            for item in candidate_items
+            if str(item.get("bill_code") or "").strip() not in skip_bill_codes
+        ]
+        _emit_progress("已跳过指定扫描单号", skipped=before_skip - len(candidate_items))
+    child_items = list(candidate_items)
+    if params.get("child_item_limit") not in (None, ""):
+        child_item_limit = int(params.get("child_item_limit"))
+        if child_item_limit <= 0:
+            raise ValueError("child_item_limit 必须大于 0")
+        child_items = child_items[:child_item_limit]
     batch_size = _resolve_batch_size(params)
     batches = _chunk(child_items, batch_size)
+    total_batches = len(batches)
     if params.get("max_batches") not in (None, ""):
-        batches = batches[: int(params.get("max_batches"))]
-    _emit_progress("已整理子单批次", batch_size=batch_size, max_batches=len(batches))
+        max_batches = int(params.get("max_batches"))
+        if max_batches <= 0:
+            raise ValueError("max_batches 必须大于 0")
+        batches = batches[:max_batches]
+    scheduled_items = sum(len(batch) for batch in batches)
+    omitted_items = len(candidate_items) - scheduled_items
+    _emit_progress(
+        "已整理子单批次",
+        batch_size=batch_size,
+        scheduled_batches=len(batches),
+        total_batches=total_batches,
+        omitted_items=omitted_items,
+    )
+
+    if bool(params.get("dry_run", False)):
+        _emit_progress("演练模式，不执行 scan_next")
+        return {
+            "ok": True,
+            "dry_run": True,
+            "fetched": len(rows),
+            "normalized": len(normalized_rows),
+            "candidate_items": len(candidate_items),
+            "child_items": len(child_items),
+            "scheduled_items": scheduled_items,
+            "omitted_items": omitted_items,
+            "truncated": omitted_items > 0,
+            "batches": len(batches),
+            "batch_results": [],
+            "scan_index_result": replace_result,
+            "flow_result": {"ok": False, "skipped": True, "reason": "dry_run"},
+            "skipped_signed_count": 0,
+            "skipped_signed_codes": [],
+        }
 
     batch_results = []
     skipped_signed_count = 0
@@ -194,7 +249,8 @@ def run_scan_sync(params: dict) -> dict:
         result = call_http_service("/scan_next", _scan_next_payload(items, params))
         if auth_error := tms_auth_error_result(result):
             return auth_error
-        batch_results.append({"batch": index, "items": len(items), "ok": _scan_next_ok(result), "raw": result})
+        batch_ok = _scan_next_ok(result)
+        batch_results.append({"batch": index, "items": len(items), "ok": batch_ok, "raw": result})
         detail = _scan_next_detail(result)
         if isinstance(detail, list):
             for item in detail:
@@ -203,12 +259,54 @@ def run_scan_sync(params: dict) -> dict:
                     skipped_signed_count += 1
                     if item.get("bill_code"):
                         skipped_signed_codes.append(str(item["bill_code"]))
-        _emit_progress("scan_next 批次完成", batch=index, ok=_scan_next_ok(result))
+        _emit_progress("scan_next 批次完成", batch=index, ok=batch_ok)
+        if not batch_ok:
+            error = _scan_next_error(result)
+            _emit_progress("scan_next 批次失败，停止后续执行", batch=index, error=error)
+            return {
+                "ok": False,
+                "error_code": "SCAN_NEXT_BATCH_FAILED",
+                "error": f"scan_next 第 {index} 批失败：{error}",
+                "failed_batch": index,
+                "fetched": len(rows),
+                "normalized": len(normalized_rows),
+                "candidate_items": len(candidate_items),
+                "child_items": len(child_items),
+                "scheduled_items": scheduled_items,
+                "omitted_items": omitted_items,
+                "truncated": omitted_items > 0,
+                "batches": len(batch_results),
+                "batch_results": batch_results,
+                "scan_index_result": replace_result,
+                "flow_result": {"ok": False, "skipped": True, "reason": "batch_failed"},
+                "skipped_signed_count": skipped_signed_count,
+                "skipped_signed_codes": skipped_signed_codes,
+            }
 
     if params.get("trigger_flow"):
         _emit_progress("触发遗留后续流程")
         flow_result = _trigger_scan_flow(params)
         _emit_progress("遗留后续流程返回", ok=flow_result.get("ok"), skipped=flow_result.get("skipped"))
+        if not flow_result.get("ok"):
+            flow_error = _scan_next_error(flow_result)
+            return {
+                "ok": False,
+                "error_code": "SCAN_FOLLOWUP_FAILED",
+                "error": f"扫描已完成，但后续流程失败：{flow_error}",
+                "fetched": len(rows),
+                "normalized": len(normalized_rows),
+                "candidate_items": len(candidate_items),
+                "child_items": len(child_items),
+                "scheduled_items": scheduled_items,
+                "omitted_items": omitted_items,
+                "truncated": omitted_items > 0,
+                "batches": len(batch_results),
+                "batch_results": batch_results,
+                "scan_index_result": replace_result,
+                "flow_result": flow_result,
+                "skipped_signed_count": skipped_signed_count,
+                "skipped_signed_codes": skipped_signed_codes,
+            }
     else:
         flow_result = {"ok": False, "skipped": True, "reason": "disabled"}
         _emit_progress("跳过遗留后续流程")
@@ -218,7 +316,11 @@ def run_scan_sync(params: dict) -> dict:
         "ok": True,
         "fetched": len(rows),
         "normalized": len(normalized_rows),
+        "candidate_items": len(candidate_items),
         "child_items": len(child_items),
+        "scheduled_items": scheduled_items,
+        "omitted_items": omitted_items,
+        "truncated": omitted_items > 0,
         "batches": len(batch_results),
         "batch_results": batch_results,
         "scan_index_result": replace_result,

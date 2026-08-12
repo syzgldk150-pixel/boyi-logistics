@@ -31,7 +31,7 @@
   - `daily_sign_rules.py` / `daily_sign_store.py`（共享应签计算规则和版本化 MySQL 仓储；多个采集/统计/问题件脚本必须调用这里，禁止复制应签口径）
   - `site_send_list_sync_tool.py`
   - `arrival_stats_sync_tool.py`（统计到货数据；用当天扫描数据补齐派件预报缺失主单，写主/副统计表 + 未齐货物表 + 归档快照，并以本次统计结果自动刷新分批及有发未到表；所有输出步骤完整成功后才激活当日共享到货快照，失败不得覆盖上一成功版）
-  - `scan_sync_tool.py`（刷新扫描索引并批量执行 `scan_next`；`target_date` 留空时扫描执行当天，填写 `YYYY-MM-DD` 时扫描指定单日）
+  - `scan_sync_tool.py`（刷新扫描索引并批量执行 `scan_next`；`target_date` 留空时扫描执行当天，填写 `YYYY-MM-DD` 时扫描指定单日；任一批次失败立即停止并返回顶层错误，不触发后续流程；`dry_run` 不写索引、不执行扫描；显式数量限制返回未排入数量）
   - `split_pending_snapshot.py`（统计与分批工具共享的 A:S 表头校验、未齐分类、MySQL 快照和“分批及有发未到表”覆盖刷新；零候选会清空旧行）
   - `arrive_list_sync_tool.py`（拉 TMS 派件预报基础清单，过滤 `H...` / `HR...` 回单号；写 waybill_data + 主/副到货清单表，并保存完整成功的预计到货快照；预计数据不启动应签计时；`target_date` 留空时拉执行当天，填写时拉指定单日）
   - `yunda_dispatch_forecast_sync_tool.py`（拉韵达网点派件量预测主单表；默认次日应派时间，按应派时间覆盖指定飞书多维表格）
