@@ -91,6 +91,16 @@ def _format_identity_evidence(identity: Any) -> str:
         for item in (evidence.get("infoKeys") or [])
         if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
     ][:30]
+    dom_identity_fields = [
+        clean_text(item)
+        for item in (evidence.get("domIdentityFields") or [])
+        if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
+    ][:12]
+    dom_site_fields = [
+        clean_text(item)
+        for item in (evidence.get("domSiteFields") or [])
+        if re.fullmatch(r"[A-Za-z0-9_$.-]{1,80}", clean_text(item))
+    ][:12]
     candidates: list[str] = []
     for item in evidence.get("candidates") or []:
         if not isinstance(item, Mapping):
@@ -110,6 +120,9 @@ def _format_identity_evidence(identity: Any) -> str:
         f"expected_len={expected_length}; raw_type={clean_text(evidence.get('rawType')) or 'unknown'}; "
         f"raw_len={int(evidence.get('rawLength') or 0)}; json_parsed={bool(evidence.get('jsonParsed'))}; "
         f"info_type={clean_text(evidence.get('infoType')) or 'unknown'}; keys={','.join(keys) or 'none'}; "
+        f"dom_match={bool(evidence.get('domAccountMatch'))}; "
+        f"dom_identity={','.join(dom_identity_fields) or 'none'}; "
+        f"dom_site={','.join(dom_site_fields) or 'none'}; "
         f"candidates={'|'.join(candidates[:20]) or 'none'}"
     )[:480]
 
@@ -374,6 +387,24 @@ class RonghuiLiveFinanceAdapter:
                         if (value && typeof value === 'object') return Object.values(value).some(containsExact);
                         return String(value == null ? '' : value).trim() === expectedLogin;
                     };
+                    const fieldValue = (name) => {
+                        const elements = [
+                            ...document.querySelectorAll(`[name="${name}"], [id="${name}"]`),
+                        ];
+                        const values = elements.map((element) => String(
+                            element.value == null ? element.textContent || '' : element.value
+                        ).trim()).filter(Boolean);
+                        return {name, values};
+                    };
+                    const identityFields = [
+                        'loginUserAccount', 'loginEmpCode', 'loginUserName', 'loginEmpName',
+                    ].map(fieldValue);
+                    const bodyLines = String(document.body && document.body.innerText || '')
+                        .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+                    const domAccountMatch = identityFields.some((field) => field.values.includes(expectedLogin))
+                        || bodyLines.includes(expectedLogin);
+                    const siteCodeField = fieldValue('loginSiteCode');
+                    const siteNameField = fieldValue('loginSiteName');
                     const candidates = [];
                     const visit = (value, path, depth) => {
                         if (depth > 4 || candidates.length >= 30) return;
@@ -399,9 +430,13 @@ class RonghuiLiveFinanceAdapter:
                     };
                     visit(info, '', 0);
                     return {
-                        accountMatch: Boolean(info && containsExact(info)),
-                        siteCode: String(info && info.loginSiteCode || '').trim(),
-                        siteName: String(info && info.loginSiteName || '').trim(),
+                        accountMatch: Boolean(info && containsExact(info)) || domAccountMatch,
+                        siteCode: String(
+                            info && info.loginSiteCode || siteCodeField.values[0] || ''
+                        ).trim(),
+                        siteName: String(
+                            info && info.loginSiteName || siteNameField.values[0] || ''
+                        ).trim(),
                         identityEvidence: {
                             expectedLength: String(expectedLogin || '').trim().length,
                             rawType: rawInfo === null ? 'null' : Array.isArray(rawInfo) ? 'array' : typeof rawInfo,
@@ -409,6 +444,9 @@ class RonghuiLiveFinanceAdapter:
                             jsonParsed,
                             infoType: info === null ? 'null' : Array.isArray(info) ? 'array' : typeof info,
                             infoKeys: info && typeof info === 'object' ? Object.keys(info) : [],
+                            domAccountMatch,
+                            domIdentityFields: identityFields.filter((field) => field.values.length).map((field) => field.name),
+                            domSiteFields: [siteCodeField, siteNameField].filter((field) => field.values.length).map((field) => field.name),
                             candidates,
                         },
                     };
