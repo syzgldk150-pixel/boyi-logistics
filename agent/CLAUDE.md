@@ -44,7 +44,7 @@
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 价格获取 | `price_scripts/` | `docs/price_scripts/` | 已完成（持续维护） |
 | 财务对账 | `finance_reconciliation/` | `docs/finance_reconciliation/` | ETL v5.1 完成 |
-| 财务工作台 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉/韵达逐笔账本、费用绑定、BI、00:10 同步与失败审计；和旧 Excel ETL 隔离 |
+| 财务工作台 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`agent/finance_brain.py`、`agent/llm_settings.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉/韵达逐笔账本、版本化标准科目、异常审批、运单净额、知识镜像及 DeepSeek/GLM 全局配置；00:10 同步并禁止自动模型回退 |
 | OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
 | 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |

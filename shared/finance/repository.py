@@ -36,6 +36,7 @@ from shared.finance.models import (
 from shared.finance.money import ZERO, format_money
 from shared.finance.schema import validate_finance_schema
 from shared.finance.validation import ValidationReport
+from shared.finance.evolution import FinanceEvolutionMixin
 
 
 ConnectionFactory = Callable[[], Any]
@@ -112,7 +113,7 @@ def _managed_cursor(connection: Any) -> Iterator[Any]:
             close()
 
 
-class FinanceRepository:
+class FinanceRepository(FinanceEvolutionMixin):
     """Finance persistence over a caller-supplied DB-API connection factory."""
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
@@ -393,8 +394,35 @@ class FinanceRepository:
     ) -> bool:
         cursor.execute(
             """
-            SELECT id, direction, fee_level, booking_fee_name,
-                   effective_start_month, include_in_cost, created_by
+            SELECT platform, raw_primary_fee_name, raw_secondary_fee_name
+            FROM finance_fee_items WHERE id = %s
+            """,
+            (int(fee_item_id),),
+        )
+        fee_item = _fetchone(cursor)
+        if not fee_item:
+            raise FinanceNotFoundError("fee item does not exist")
+        subject_name = (
+            seed.canonical_subject_name
+            or seed.booking_fee_name
+            or str(fee_item.get("raw_secondary_fee_name") or "")
+            or str(fee_item["raw_primary_fee_name"])
+        )
+        subject_id = self._ensure_fee_subject(
+            cursor,
+            platform=str(fee_item["platform"]),
+            subject_code=seed.canonical_subject_code,
+            subject_name=subject_name,
+            fee_level=seed.fee_level.value,
+            booking_fee_name=seed.booking_fee_name,
+            requires_waybill=seed.requires_waybill,
+            created_by="system:verified-baseline",
+        )
+        cursor.execute(
+            """
+            SELECT id, direction, fee_level, canonical_subject_id,
+                   booking_fee_name, requires_waybill, effective_start_month,
+                   include_in_cost, created_by
             FROM finance_fee_mappings
             WHERE fee_item_id = %s AND superseded_at IS NULL
             ORDER BY effective_start_month ASC, version_no ASC, id ASC
@@ -404,6 +432,47 @@ class FinanceRepository:
         )
         current = _fetchone(cursor)
         if current:
+            legacy_fields_match = (
+                str(current.get("direction") or "") == seed.direction.value
+                and str(current.get("fee_level") or "") == seed.fee_level.value
+                and str(current.get("booking_fee_name") or "") == seed.booking_fee_name
+                and bool(current.get("include_in_cost")) is seed.include_in_cost
+            )
+            if not current.get("canonical_subject_id") and legacy_fields_match:
+                before = dict(current)
+                cursor.execute(
+                    """
+                    UPDATE finance_fee_mappings
+                    SET canonical_subject_id = %s, requires_waybill = %s
+                    WHERE id = %s AND canonical_subject_id IS NULL
+                    """,
+                    (subject_id, 1 if seed.requires_waybill else 0, int(current["id"])),
+                )
+                if int(cursor.rowcount or 0) == 1:
+                    after = {
+                        **before,
+                        "canonical_subject_id": subject_id,
+                        "requires_waybill": seed.requires_waybill,
+                    }
+                    cursor.execute(
+                        """
+                        INSERT INTO finance_mapping_audit_logs (
+                            fee_item_id, mapping_id, action, before_json, after_json,
+                            changed_by, change_reason, created_at
+                        ) VALUES (%s, %s, 'canonical_backfill', %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            int(fee_item_id),
+                            int(current["id"]),
+                            _json_text(before),
+                            _json_text(after),
+                            "system:verified-baseline",
+                            "backfill canonical subject for an exact confirmed legacy mapping",
+                            _now(),
+                        ),
+                    )
+                    current["canonical_subject_id"] = subject_id
+                    current["requires_waybill"] = seed.requires_waybill
             current_start = _date(
                 current["effective_start_month"],
                 "effective_start_month",
@@ -412,7 +481,9 @@ class FinanceRepository:
                 str(current.get("created_by") or "") == "system:verified-baseline"
                 and str(current.get("direction") or "") == seed.direction.value
                 and str(current.get("fee_level") or "") == seed.fee_level.value
+                and int(current.get("canonical_subject_id") or 0) == subject_id
                 and str(current.get("booking_fee_name") or "") == seed.booking_fee_name
+                and bool(current.get("requires_waybill")) is seed.requires_waybill
                 and bool(current.get("include_in_cost")) is seed.include_in_cost
             )
             if not is_same_verified_seed or first_seen_month >= current_start:
@@ -423,7 +494,9 @@ class FinanceRepository:
                 fee_item_id=fee_item_id,
                 direction=seed.direction,
                 fee_level=seed.fee_level,
+                canonical_subject_id=subject_id,
                 booking_fee_name=seed.booking_fee_name,
+                requires_waybill=seed.requires_waybill,
                 effective_start_month=first_seen_month,
                 effective_end_month=prior_end_month,
                 include_in_cost=seed.include_in_cost,
@@ -437,7 +510,9 @@ class FinanceRepository:
             fee_item_id=fee_item_id,
             direction=seed.direction,
             fee_level=seed.fee_level,
+            canonical_subject_id=subject_id,
             booking_fee_name=seed.booking_fee_name,
+            requires_waybill=seed.requires_waybill,
             effective_start_month=first_seen_month,
             effective_end_month=None,
             include_in_cost=seed.include_in_cost,
@@ -586,6 +661,12 @@ class FinanceRepository:
                     int(run_id),
                 ),
             )
+            derivatives = self._refresh_run_derivatives(cursor, run)
+            report["metrics"].update(derivatives)
+            cursor.execute(
+                "UPDATE finance_sync_runs SET validation_report_json = %s WHERE id = %s",
+                (_json_text(report), int(run_id)),
+            )
         return {
             "run_id": int(run_id),
             "status": SyncStatus.SUCCESS.value,
@@ -593,6 +674,7 @@ class FinanceRepository:
             "unique_row_count": unique_count,
             "written_row_count": written,
             "validation_status": validation.status.value,
+            "derivatives": derivatives,
         }
 
     def mark_run_no_data(self, *, run_id: int, validation: ValidationReport) -> None:
@@ -856,7 +938,9 @@ class FinanceRepository:
         fee_item_id: int,
         direction: Direction,
         fee_level: FeeLevel,
+        canonical_subject_id: int,
         booking_fee_name: str,
+        requires_waybill: bool,
         effective_start_month: dt.date,
         effective_end_month: dt.date | None,
         include_in_cost: bool,
@@ -874,16 +958,19 @@ class FinanceRepository:
         cursor.execute(
             """
             INSERT INTO finance_fee_mappings (
-                fee_item_id, direction, fee_level, booking_fee_name,
+                fee_item_id, direction, fee_level, canonical_subject_id,
+                booking_fee_name, requires_waybill,
                 effective_start_month, effective_end_month, include_in_cost,
                 mapping_status, version_no, created_by, change_reason, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 int(fee_item_id),
                 direction.value,
                 fee_level.value,
+                int(canonical_subject_id),
                 booking_fee_name or None,
+                1 if requires_waybill else 0,
                 effective_start_month,
                 effective_end_month,
                 1 if include_in_cost else 0,
@@ -899,7 +986,9 @@ class FinanceRepository:
             "mapping_id": mapping_id,
             "direction": direction.value,
             "fee_level": fee_level.value,
+            "canonical_subject_id": int(canonical_subject_id),
             "booking_fee_name": booking_fee_name,
+            "requires_waybill": bool(requires_waybill),
             "effective_start_month": effective_start_month.isoformat(),
             "effective_end_month": (
                 effective_end_month.isoformat() if effective_end_month else None
@@ -933,7 +1022,10 @@ class FinanceRepository:
         *,
         fee_item_id: int,
         fee_level: FeeLevel | str,
-        booking_fee_name: str,
+        canonical_subject_name: str,
+        booking_fee_name: str = "",
+        canonical_subject_code: str = "",
+        requires_waybill: bool | None = None,
         effective_start_month: dt.date | str,
         effective_end_month: dt.date | str | None = None,
         include_in_cost: bool,
@@ -947,6 +1039,8 @@ class FinanceRepository:
             raise ValueError("effective_end_month must not precede effective_start_month")
         actor = _required_text(changed_by, "changed_by")
         change_reason = _required_text(reason, "reason")
+        subject_name = _required_text(canonical_subject_name, "canonical_subject_name")
+        mapping_id = 0
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(
                 "SELECT * FROM finance_fee_items WHERE id = %s FOR UPDATE",
@@ -963,6 +1057,19 @@ class FinanceRepository:
                 fee_level=level,
                 booking_fee_name=booking_fee_name,
             )
+            require_waybill = level is FeeLevel.WAYBILL if requires_waybill is None else bool(requires_waybill)
+            if level is FeeLevel.OPERATING and require_waybill:
+                raise ValueError("operating mapping cannot require a waybill")
+            subject_id = self._ensure_fee_subject(
+                cursor,
+                platform=str(fee_item["platform"]),
+                subject_code=str(canonical_subject_code or "").strip(),
+                subject_name=subject_name,
+                fee_level=level.value,
+                booking_fee_name=target_name,
+                requires_waybill=require_waybill,
+                created_by=actor,
+            )
             cursor.execute(
                 """
                 SELECT * FROM finance_fee_mappings
@@ -978,12 +1085,14 @@ class FinanceRepository:
                     "UPDATE finance_fee_mappings SET superseded_at = %s WHERE id = %s",
                     (_now(), int(current["id"])),
                 )
-            return self._insert_mapping(
+            mapping_id = self._insert_mapping(
                 cursor,
                 fee_item_id=int(fee_item_id),
                 direction=source_direction,
                 fee_level=level,
+                canonical_subject_id=subject_id,
                 booking_fee_name=target_name,
+                requires_waybill=require_waybill,
                 effective_start_month=start,
                 effective_end_month=end,
                 include_in_cost=bool(include_in_cost),
@@ -992,6 +1101,12 @@ class FinanceRepository:
                 action="update" if current else "create",
                 before=current,
             )
+        self.rebuild_waybill_facts_for_fee_item(
+            fee_item_id=int(fee_item_id),
+            reviewed_by=actor,
+            review_reason=change_reason,
+        )
+        return mapping_id
 
     def seed_fee_mappings(
         self,
@@ -1180,7 +1295,7 @@ class FinanceRepository:
                 COALESCE(SUM(CASE
                     WHEN fm.fee_level = %s AND fm.include_in_cost = 1 THEN t.expense
                     ELSE 0 END), 0) AS operating_cost,
-                COUNT(DISTINCT CASE WHEN fm.id IS NULL THEN t.fee_item_id END) AS pending_fee_items,
+                COUNT(DISTINCT CASE WHEN fm.id IS NULL OR fm.canonical_subject_id IS NULL THEN t.fee_item_id END) AS pending_fee_items,
                 SUM(CASE WHEN visible_run.validation_status = %s THEN 1 ELSE 0 END) AS warning_rows
             {self._VISIBLE_ENTRY_FROM}
             WHERE {where}
@@ -1193,6 +1308,13 @@ class FinanceRepository:
                                 THEN t.expense ELSE 0 END), 0) AS waybill_cost,
                    COALESCE(SUM(CASE WHEN fm.fee_level = %s AND fm.include_in_cost = 1
                                 THEN t.expense ELSE 0 END), 0) AS operating_cost
+                   ,COALESCE(SUM(CASE WHEN fm.canonical_subject_id IS NOT NULL
+                                      AND fm.fee_level = 'waybill'
+                                      AND COALESCE(TRIM(t.waybill_no), '') <> ''
+                                THEN t.income - t.expense ELSE 0 END), 0) AS waybill_net
+                   ,COALESCE(SUM(CASE WHEN fm.canonical_subject_id IS NOT NULL
+                                      AND fm.fee_level = 'operating'
+                                THEN t.income - t.expense ELSE 0 END), 0) AS operating_net
             {self._VISIBLE_ENTRY_FROM}
             WHERE {where}
             GROUP BY t.platform, t.account_id
@@ -1283,9 +1405,11 @@ class FinanceRepository:
                     "total_expense": self._format_aggregate(account_row.get("total_expense")),
                     "waybill_cost": self._format_aggregate(account_row.get("waybill_cost")),
                     "operating_cost": self._format_aggregate(account_row.get("operating_cost")),
+                    "waybill_net": self._format_aggregate(account_row.get("waybill_net")),
+                    "operating_net": self._format_aggregate(account_row.get("operating_net")),
                 }
             )
-        return {
+        result = {
             "total_income": self._format_aggregate(row.get("total_income")),
             "total_expense": self._format_aggregate(row.get("total_expense")),
             "net_change": self._format_aggregate(row.get("net_change")),
@@ -1302,6 +1426,8 @@ class FinanceRepository:
             "failed_sources": failed_sources,
             "accounts": accounts,
         }
+        result.update(self.get_evolution_summary(query))
+        return result
 
     def get_trend(self, query: FinanceQuery) -> list[dict[str, Any]]:
         clauses, params = self._entry_filters(query)
@@ -1521,12 +1647,16 @@ class FinanceRepository:
                    fi.direction, fi.first_seen_month, fi.last_seen_month,
                    fm.id AS mapping_id,
                    CASE WHEN fm.id IS NULL THEN %s ELSE %s END AS mapping_status,
-                   fm.fee_level, fm.booking_fee_name,
+                   fm.fee_level, fm.canonical_subject_id,
+                   s.subject_code AS canonical_subject_code,
+                   s.subject_name AS canonical_subject_name,
+                   fm.booking_fee_name, fm.requires_waybill,
                    fm.effective_start_month, fm.effective_end_month,
                    COALESCE(fm.include_in_cost, 0) AS include_in_cost,
                    fm.version_no
             FROM finance_fee_items fi
             {mapping_join}
+            LEFT JOIN finance_fee_subjects s ON s.id = fm.canonical_subject_id
             WHERE {where}
             ORDER BY (fm.id IS NULL) DESC, fi.platform,
                      fi.raw_primary_fee_name, fi.raw_secondary_fee_name, fi.direction
@@ -1553,6 +1683,7 @@ class FinanceRepository:
         for row in rows:
             item = self._serialize_general_row(row)
             item["include_in_cost"] = bool(row.get("include_in_cost"))
+            item["requires_waybill"] = bool(row.get("requires_waybill"))
             for field_name in (
                 "first_seen_month",
                 "last_seen_month",
@@ -1572,6 +1703,7 @@ class FinanceRepository:
                 Platform.RONGHUI.value: sorted(RONGHUI_BOOKING_FEE_ITEMS),
                 Platform.YUNDA.value: sorted(YUNDA_BOOKING_FEE_ITEMS),
             },
+            "fee_subjects": self.list_fee_subjects(platform=platform),
         }
 
     def list_sync_batches(

@@ -24,6 +24,7 @@ CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = (
     {"route": "/automation-accounts", "label": "业务账号", "mobile_label": "账号", "icon": "users", "section": "primary"},
     {"route": "/templates/new", "label": "模板配置", "mobile_label": "模板", "icon": "layout", "section": "primary"},
     {"route": "/settings/accounts", "label": "系统管理", "mobile_label": "设置", "icon": "settings", "section": "system"},
+    {"route": "/settings/llm", "label": "智能模型", "mobile_label": "模型", "icon": "cpu", "section": "system"},
 )
 
 NAVIGATION_BY_ROUTE = {item["route"]: item for item in CONSOLE_NAVIGATION}

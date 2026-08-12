@@ -16,14 +16,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
-from shared.runtime_events import register_tms_session_alert
+from shared.runtime_events import register_finance_alert, register_tms_session_alert
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -102,6 +102,11 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
+from agent.llm_settings import (
+    LLMCompatibilityService,
+    LLMSettingsError,
+    LLMSettingsRepository,
+)
 from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal_request
 from agent.phase7_resource_import import import_phase7_resources
 from agent.runtime_config import load_agent_environment
@@ -123,13 +128,14 @@ from feishu.bot import (
     websocket_lease_active,
 )
 from feishu.message_handler import queue_bot_menu_payload, queue_im_message_payload
-from feishu.notify import send_tms_session_disconnected_alert
+from feishu.notify import send_finance_anomaly_alert, send_tms_session_disconnected_alert
 from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
 
 
 register_tms_session_alert(send_tms_session_disconnected_alert)
+register_finance_alert(send_finance_anomaly_alert)
 configure_feishu_operation(feishu_operation)
 
 
@@ -464,6 +470,14 @@ async def internal_http_error(request: Request, exc: HTTPException):
     return await http_exception_handler(request, exc)
 
 
+@app.exception_handler(LLMSettingsError)
+async def llm_settings_error(request: Request, exc: LLMSettingsError):
+    return JSONResponse(
+        status_code=422,
+        content=api_failure("llm_settings_invalid", redact_text(exc)),
+    )
+
+
 @app.exception_handler(Exception)
 async def internal_unhandled_error(request: Request, exc: Exception):
     if request.url.path.startswith("/internal/v1/"):
@@ -730,6 +744,32 @@ class KnowledgeRequest(BaseModel):
     source: str | None = None
 
 
+class LLMConfigCandidateRequest(BaseModel):
+    provider: str
+    model_id: str
+    api_key: SecretStr | None = None
+    actor: str
+
+
+class LLMConfigActionRequest(BaseModel):
+    config_id: int
+    actor: str
+
+
+class LLMRollbackRequest(BaseModel):
+    actor: str
+    config_id: int | None = None
+
+
+class LLMClearCredentialRequest(BaseModel):
+    provider: str
+    actor: str
+
+
+class FinanceAnalyzeRequest(BaseModel):
+    limit: int = 20
+
+
 @app.get("/tools", deprecated=True)
 async def list_tools():
     return {"tools": _runtime().registry.list_tools()}
@@ -776,6 +816,93 @@ async def reload_runtime():
 @app.post("/internal/v1/admin/reload")
 async def internal_reload_runtime():
     return api_success(await reload_runtime())
+
+
+def _llm_settings_repository() -> LLMSettingsRepository:
+    return LLMSettingsRepository(_runtime().memory.connection_factory)
+
+
+@app.get("/internal/v1/admin/llm/config")
+async def internal_llm_config_status():
+    repository = _llm_settings_repository()
+    payload = await asyncio.to_thread(repository.public_status)
+    payload["runtime"] = _runtime().llm.public_status()
+    return api_success(payload)
+
+
+@app.get("/internal/v1/admin/llm/audit")
+async def internal_llm_config_audit(limit: int = 200):
+    rows = await asyncio.to_thread(_llm_settings_repository().audit_logs, limit=limit)
+    return api_success({"items": rows})
+
+
+@app.post("/internal/v1/admin/llm/candidates")
+async def internal_save_llm_candidate(req: LLMConfigCandidateRequest):
+    repository = _llm_settings_repository()
+    key = req.api_key.get_secret_value() if req.api_key is not None else None
+    config_id = await asyncio.to_thread(
+        repository.save_candidate,
+        provider=req.provider,
+        model_id=req.model_id,
+        api_key=key,
+        actor=req.actor,
+    )
+    return api_success({"config_id": config_id})
+
+
+@app.post("/internal/v1/admin/llm/models/refresh")
+async def internal_refresh_llm_models(req: LLMConfigActionRequest):
+    service = LLMCompatibilityService(_llm_settings_repository())
+    models = await service.refresh_models(req.config_id)
+    return api_success({"config_id": req.config_id, "models": models})
+
+
+@app.post("/internal/v1/admin/llm/test")
+async def internal_test_llm_candidate(req: LLMConfigActionRequest):
+    service = LLMCompatibilityService(_llm_settings_repository())
+    result = await service.test_candidate(req.config_id)
+    return api_success(result)
+
+
+@app.post("/internal/v1/admin/llm/activate")
+async def internal_activate_llm_config(req: LLMConfigActionRequest):
+    repository = _llm_settings_repository()
+    await asyncio.to_thread(repository.activate, req.config_id, actor=req.actor)
+    runtime_status = await _runtime().reload_llm_config()
+    return api_success({"config_id": req.config_id, "runtime": runtime_status})
+
+
+@app.post("/internal/v1/admin/llm/rollback")
+async def internal_rollback_llm_config(req: LLMRollbackRequest):
+    repository = _llm_settings_repository()
+    config_id = await asyncio.to_thread(
+        repository.rollback,
+        actor=req.actor,
+        config_id=req.config_id,
+    )
+    runtime_status = await _runtime().reload_llm_config()
+    return api_success({"config_id": config_id, "runtime": runtime_status})
+
+
+@app.post("/internal/v1/admin/llm/credentials/clear")
+async def internal_clear_llm_credential(req: LLMClearCredentialRequest):
+    await asyncio.to_thread(
+        _llm_settings_repository().clear_credentials,
+        req.provider,
+        actor=req.actor,
+    )
+    runtime_status = await _runtime().reload_llm_config()
+    return api_success(
+        {"provider": req.provider, "configured": False, "runtime": runtime_status}
+    )
+
+
+@app.post("/internal/v1/admin/finance/reviews/analyze")
+async def internal_analyze_finance_reviews(req: FinanceAnalyzeRequest):
+    brain = _runtime().finance_brain
+    if brain is None:
+        raise HTTPException(status_code=503, detail="finance brain is not initialized")
+    return api_success(await brain.analyze_pending(limit=max(1, min(req.limit, 100))))
 
 
 @app.post("/knowledge", deprecated=True)

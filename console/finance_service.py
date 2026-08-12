@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import hashlib
+import os
+from pathlib import Path
+import tempfile
 from typing import Any, Callable, Mapping
 
 
@@ -315,11 +319,16 @@ class FinanceService:
             "net_change",
             "waybill_cost",
             "operating_cost",
+            "waybill_net",
+            "operating_net",
+            "classified_net",
+            "unclassified_net",
+            "missing_waybill_net",
         )
         for key in required_amounts:
             _decimal_for_plot(payload.get(key), field_name=key)
         accounts = self._ensure_rows(payload.get("accounts", []), operation="账号成本对比")
-        payload["accounts"] = _add_plot_ratios(accounts, ("waybill_cost", "operating_cost"))
+        payload["accounts"] = _add_plot_ratios(accounts, ("waybill_net", "operating_net"))
         ranking = self._expense_ranking(filters)
         payload["expense_ranking"] = _add_plot_ratios(ranking, ("expense",))
         payload["period"] = {
@@ -431,8 +440,17 @@ class FinanceService:
         fee_level = _required_text(body.get("fee_level"), field_name="费用级别", max_length=32)
         if fee_level not in {"waybill", "operating"}:
             raise FinanceValidationError("费用级别必须是运单级或运营级。")
+        canonical_subject_name = _required_text(
+            body.get("canonical_subject_name"), field_name="canonical_subject_name", max_length=255
+        )
+        canonical_subject_code = str(body.get("canonical_subject_code") or "").strip()
+        if len(canonical_subject_code) > 96:
+            raise FinanceValidationError("canonical_subject_code is too long")
+        requires_waybill = body.get("requires_waybill", fee_level == "waybill")
+        if not isinstance(requires_waybill, bool):
+            raise FinanceValidationError("requires_waybill must be a boolean")
         booking_fee_name = str(body.get("booking_fee_name") or "").strip()
-        if fee_level == "waybill":
+        if fee_level == "waybill" and booking_fee_name:
             booking_fee_name = _required_text(
                 booking_fee_name, field_name="对应录单项目", max_length=160
             )
@@ -457,7 +475,10 @@ class FinanceService:
             lambda: repository.save_fee_mapping(
                 fee_item_id=fee_item_id,
                 fee_level=fee_level,
+                canonical_subject_name=canonical_subject_name,
+                canonical_subject_code=canonical_subject_code,
                 booking_fee_name=booking_fee_name,
+                requires_waybill=requires_waybill,
                 effective_start_month=start_month,
                 effective_end_month=end_month,
                 include_in_cost=include_in_cost,
@@ -469,7 +490,168 @@ class FinanceService:
             mapping_id = int(mapping_id)
         except (TypeError, ValueError) as exc:
             raise FinanceContractError("保存费用项目绑定后未返回有效映射 ID。") from exc
-        return {"mapping_id": mapping_id, "fee_item_id": fee_item_id}
+        export = self.export_knowledge_mirror(generated_by=actor)
+        return {"mapping_id": mapping_id, "fee_item_id": fee_item_id, "knowledge_export": export}
+
+    def list_review_cases(self, query: Mapping[str, Any]) -> dict[str, Any]:
+        repository = self._require_repository()
+        status = _optional_filter(_first(query, "status"), field_name="review status", max_length=24)
+        page = parse_pagination(query)
+        return self._ensure_mapping(
+            self._repository_call(
+                "finance review query",
+                lambda: repository.list_review_cases(
+                    status=status or None,
+                    limit=page.page_size,
+                    offset=page.offset,
+                ),
+            ),
+            operation="finance review query",
+        )
+
+    def list_waybill_facts(self, query: Mapping[str, Any], *, today: date | None = None) -> dict[str, Any]:
+        filters = parse_finance_filters(query, today=today)
+        page = parse_pagination(query)
+        waybill_no = _optional_filter(_first(query, "waybill_no"), field_name="waybill_no", max_length=191)
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "waybill finance facts query",
+                lambda: repository.list_waybill_facts(
+                    start_date=filters.start_date,
+                    end_date=filters.end_date,
+                    platform=filters.platform,
+                    account_id=filters.account_id,
+                    waybill_no=waybill_no or None,
+                    limit=page.page_size,
+                    offset=page.offset,
+                ),
+            ),
+            operation="waybill finance facts query",
+        )
+
+    def export_knowledge_mirror(self, *, generated_by: str) -> dict[str, Any]:
+        repository = self._require_repository()
+        snapshot = self._ensure_mapping(
+            self._repository_call("finance knowledge snapshot", repository.get_knowledge_snapshot),
+            operation="finance knowledge snapshot",
+        )
+        version = int(snapshot.get("version_no") or 0)
+        rows = self._ensure_rows(snapshot.get("items", []), operation="finance knowledge snapshot")
+        lines = [
+            "# 财务科目知识镜像",
+            "",
+            f"- 版本：{version}",
+            f"- 映射数量：{len(rows)}",
+            "- 权威来源：数据库（本文件仅为运行时镜像）",
+            "",
+            "| 平台 | 原始主类目 | 原始子类目 | 方向 | 标准科目 | 层级 | 要求运单号 | 生效开始 | 生效结束 | 版本 | 决策摘要 |",
+            "|---|---|---|---|---|---|---|---|---|---:|---|",
+        ]
+        for row in rows:
+            values = [
+                row.get("platform"), row.get("primary_fee_name"), row.get("secondary_fee_name"),
+                row.get("direction"), row.get("subject_name"), row.get("fee_level"),
+                "是" if row.get("requires_waybill") else "否", row.get("effective_start_month"),
+                row.get("effective_end_month") or "", row.get("version_no"), row.get("change_reason") or "",
+            ]
+            escaped = [str(value or "").replace("|", "\\|").replace("\n", " ") for value in values]
+            lines.append("| " + " | ".join(escaped) + " |")
+        content = "\n".join(lines) + "\n"
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        settings = getattr(self.source_repository, "settings", None)
+        if settings is None:
+            raise FinanceUnavailableError("finance knowledge runtime directory is unavailable")
+        runtime_dir = Path(settings.runtime_dir)
+        target_dir = runtime_dir / "finance_knowledge"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"finance_rules_v{version}.md"
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target_dir, delete=False) as handle:
+                handle.write(content)
+                temporary = Path(handle.name)
+            os.replace(temporary, target)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+        relative_path = target.relative_to(runtime_dir).as_posix()
+        export_id = self._repository_call(
+            "record finance knowledge export",
+            lambda: repository.record_knowledge_export(
+                version_no=version,
+                content_sha256=digest,
+                relative_path=relative_path,
+                mapping_count=len(rows),
+                generated_by=generated_by,
+            ),
+        )
+        return {
+            "id": int(export_id),
+            "version_no": version,
+            "content_sha256": digest,
+            "relative_path": relative_path,
+            "mapping_count": len(rows),
+        }
+
+    def knowledge_status(self) -> dict[str, Any]:
+        repository = self._require_repository()
+        snapshot = repository.get_knowledge_snapshot()
+        latest = repository.latest_knowledge_export()
+        current_version = int(snapshot.get("version_no") or 0)
+        settings = getattr(self.source_repository, "settings", None)
+        mirror_valid = False
+        if latest and settings is not None and int(latest.get("version_no") or -1) == current_version:
+            runtime_dir = Path(settings.runtime_dir).resolve()
+            mirror = (runtime_dir / str(latest.get("relative_path") or "")).resolve()
+            try:
+                mirror.relative_to(runtime_dir)
+            except ValueError:
+                mirror_valid = False
+            else:
+                mirror_valid = (
+                    mirror.is_file()
+                    and hashlib.sha256(mirror.read_bytes()).hexdigest()
+                    == str(latest.get("content_sha256") or "")
+                )
+        if not mirror_valid:
+            latest = self.export_knowledge_mirror(generated_by="system:knowledge-sync")
+            mirror_valid = True
+        return {
+            "current_version": current_version,
+            "latest_export": latest,
+            "consistent": mirror_valid,
+        }
+
+    def analyze_review_cases(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        if not callable(self.agent_request):
+            raise FinanceUnavailableError("Agent finance brain is unavailable")
+        try:
+            limit = max(1, min(int(body.get("limit") or 20), 100))
+        except (TypeError, ValueError) as exc:
+            raise FinanceValidationError("limit must be an integer") from exc
+        result = self.agent_request(
+            "POST",
+            "/internal/v1/admin/finance/reviews/analyze",
+            payload={"limit": limit},
+            timeout=180,
+        )
+        if not result.get("ok"):
+            raise FinanceUpstreamError(str(result.get("error") or "finance AI analysis failed"))
+        return self._ensure_mapping(result.get("data"), operation="finance AI analysis")
+
+    def reject_review_case(self, review_case_id: int, body: Mapping[str, Any], *, changed_by: str) -> dict[str, Any]:
+        reason = _required_text(body.get("reason"), field_name="reason", max_length=500)
+        repository = self._require_repository()
+        self._repository_call(
+            "reject finance review",
+            lambda: repository.reject_review_case(
+                review_case_id,
+                reviewed_by=changed_by,
+                reason=reason,
+            ),
+        )
+        return {"review_case_id": int(review_case_id), "status": "rejected"}
 
     def list_sync_batches(self, query: Mapping[str, Any]) -> dict[str, Any]:
         pagination = parse_pagination(query)
