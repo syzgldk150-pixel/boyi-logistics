@@ -400,7 +400,7 @@ class RonghuiLiveFinanceAdapter:
                         'loginUserAccount', 'loginEmpCode', 'loginUserName', 'loginEmpName',
                     ].map(fieldValue);
                     const bodyLines = String(document.body && document.body.innerText || '')
-                        .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+                        .split(String.fromCharCode(10)).map((line) => line.trim()).filter(Boolean);
                     const domAccountMatch = identityFields.some((field) => field.values.includes(expectedLogin))
                         || bodyLines.includes(expectedLogin);
                     const siteCodeField = fieldValue('loginSiteCode');
