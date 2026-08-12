@@ -40,7 +40,7 @@ class ConsoleUiStylesheetLoadingTests(unittest.TestCase):
     def test_shells_reference_the_new_console_ui_cache_key(self):
         base_template = (CONSOLE_DIR / "templates" / "base.html").read_text(encoding="utf-8")
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
-        cache_key = "/static/console_ui.js?v=cal-console-20260812"
+        cache_key = "/static/console_ui.js?v=cal-console-20260812-perf1"
 
         self.assertIn(cache_key, base_template)
         self.assertIn(cache_key, login_template)

@@ -10,7 +10,6 @@
     "meta[name='viewport']",
     "title",
     "link[href^='/static/style.css']",
-    "script[src*='feather-icons']",
   ];
   const headAssetLoadTimeoutMs = 15000;
 

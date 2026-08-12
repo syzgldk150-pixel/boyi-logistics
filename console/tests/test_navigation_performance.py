@@ -40,7 +40,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn("--surface: #f8f9fa", stylesheet)
         self.assertIn("Cal.com design-md", design)
         self.assertIn("Source Han Sans SC", design)
-        self.assertIn("InterVariable.woff2", design)
+        self.assertIn("InterVariable-Latin.woff2", design)
         self.assertIn("新页面交付清单", design)
         self.assertNotIn("border-left: 3px solid transparent", stylesheet)
 
@@ -70,12 +70,20 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=cal-console-20260812", template)
-        self.assertIn("/static/assets/fonts/InterVariable.woff2", template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260812", template)
-        self.assertIn("/static/style.css?v=cal-console-20260812", login_template)
-        self.assertIn("/static/assets/fonts/InterVariable.woff2", login_template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260812", login_template)
+        self.assertIn("/static/style.css?v=cal-console-20260812-perf1", template)
+        self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
+        self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
+        self.assertIn("/static/vendor/feather-4.29.2.min.js", template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260812-perf1", template)
+        self.assertIn("/static/style.css?v=cal-console-20260812-perf1", login_template)
+        self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", login_template)
+        self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", login_template)
+        self.assertIn("/static/vendor/feather-4.29.2.min.js", login_template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260812-perf1", login_template)
+        self.assertNotIn("unpkg.com", template)
+        self.assertNotIn("unpkg.com", login_template)
+        self.assertNotIn("api.dicebear.com", template)
+        self.assertIn("/static/assets/avatar-placeholder.svg", template)
         self.assertNotIn("partial-nav-logo-20260515", login_template)
 
     def test_console_bundles_the_specified_cjk_and_latin_fonts(self):
@@ -83,9 +91,11 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertIn('font-family: "Source Han Sans SC";', stylesheet)
+        self.assertIn('SourceHanSansCN-UI.woff2', stylesheet)
+        self.assertIn('SourceHanSansCN-Common.woff2', stylesheet)
         self.assertIn('SourceHanSansCN-VF.ttf.woff2', stylesheet)
         self.assertIn('font-family: "Inter";', stylesheet)
-        self.assertIn('InterVariable.woff2', stylesheet)
+        self.assertIn('InterVariable-Latin.woff2', stylesheet)
         self.assertIn(
             "--font-ui: var(--font-latin), var(--font-cjk), system-ui, -apple-system, sans-serif;",
             stylesheet,
@@ -96,6 +106,9 @@ class NavigationPerformanceTests(unittest.TestCase):
         )
         self.assertNotIn("fonts.googleapis.com", stylesheet)
         self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "SourceHanSansCN-VF.ttf.woff2").is_file())
+        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "SourceHanSansCN-UI.woff2").is_file())
+        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "SourceHanSansCN-Common.woff2").is_file())
+        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "InterVariable-Latin.woff2").is_file())
         self.assertTrue((CONSOLE_DIR / "static" / "assets" / "fonts" / "InterVariable.woff2").is_file())
         self.assertFalse((CONSOLE_DIR / "static" / "assets" / "fonts" / "Roboto-Latin-Variable.woff2").exists())
         self.assertIn('data-ui-submit', login_template)
@@ -113,14 +126,16 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_brand = login_template[login_brand_start:login_brand_end]
 
         for brand in (sidebar_brand, login_brand):
-            self.assertIn('src="/static/assets/boyi-logistics-logo.png"', brand)
+            self.assertIn('src="/static/assets/boyi-logistics-logo-7e1f2994.webp"', brand)
             self.assertIn('width="', brand)
             self.assertIn('height="', brand)
             self.assertNotIn("M13 2L3 14h9l-1 8 10-12h-9l1-8z", brand)
             self.assertNotIn("<svg", brand)
             self.assertNotIn("SHIPNOW", brand)
 
-        self.assertTrue((CONSOLE_DIR / "static" / "assets" / "boyi-logistics-logo.png").is_file())
+        logo = CONSOLE_DIR / "static" / "assets" / "boyi-logistics-logo-7e1f2994.webp"
+        self.assertTrue(logo.is_file())
+        self.assertLess(logo.stat().st_size, 50_000)
 
     def test_base_template_exposes_keep_alive_tab_shell(self):
         template = (CONSOLE_DIR / "templates" / "base.html").read_text(encoding="utf-8")
