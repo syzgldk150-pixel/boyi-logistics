@@ -545,6 +545,23 @@ class RonghuiLiveFinanceAdapter:
             self._page.goto(self._page_context["url"], wait_until="domcontentloaded", timeout=60_000)
             if "/system/login" in clean_text(self._page.url).lower():
                 raise FinanceCaptureError("AUTH_REQUIRED", "融辉财务原页登录态失效", stage="page_discovery")
+            try:
+                self._page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass
+            try:
+                self._page.wait_for_function(
+                    """() => Boolean(
+                        (window.mini && typeof mini.getComponents === 'function'
+                            && mini.getComponents().length)
+                        || String(document.body && document.body.innerText || '').includes('明细查询')
+                    )""",
+                    timeout=20_000,
+                )
+            except Exception:
+                # The query step emits structural evidence if initialization
+                # did not finish; do not infer a component or tab.
+                pass
         except FinanceCaptureError:
             raise
         except Exception as exc:
