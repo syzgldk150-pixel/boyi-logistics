@@ -21,6 +21,7 @@
 {% endif %}
 <script src="/static/js/waybill_label_html.js"></script>
 <script src="/static/js/waybill_label_lodop.js"></script>
+<script src="/static/js/clodop_loader.js?v=20260812"></script>
 <script src="/static/js/yunda_entry_mode.js"></script>
 {% endif %}
 <style>
@@ -1459,37 +1460,13 @@
     printerInputs.forEach((input) => {
       input.addEventListener("change", persistPrinterSettings);
     });
-    const CLODOP_URLS = [
-      "https://localhost.lodop.net:8443/CLodopfuncs.js?priority=1",
-      "http://localhost.lodop.net:8000/CLodopfuncs.js?priority=2",
-      "http://localhost.lodop.net:18000/CLodopfuncs.js?priority=3",
-      "http://127.0.0.1:8000/CLodopfuncs.js?priority=4",
-      "http://localhost:8000/CLodopfuncs.js?priority=5",
-      "http://127.0.0.1:18000/CLodopfuncs.js?priority=6",
-      "http://localhost:18000/CLodopfuncs.js?priority=7",
-    ];
-    let lastCLODOPLoadError = "";
-    const CLODOP_LOAD_ERRORS = [];
     const describePrintError = (error) => {
       if (error instanceof Error) return error.message || error.name || "";
       return String(error || "");
     };
-    const cleanCLODOPUrl = (src) => String(src || "").split("?")[0];
     const isLocalOriginHost = (host) => ["localhost", "127.0.0.1", "::1", "[::1]"].includes(String(host || "").toLowerCase());
     const isPublicHttpOrigin = () => window.location.protocol === "http:" && !isLocalOriginHost(window.location.hostname);
-    const getCandidateCLODOPUrls = () => {
-      if (window.location.protocol === "https:") {
-        return CLODOP_URLS.filter((url) => url.startsWith("https://"));
-      }
-      return CLODOP_URLS;
-    };
-    const formatCLODOPLoadErrors = () => CLODOP_LOAD_ERRORS.slice(-3).join("；");
-    const recordCLODOPLoadError = (src, error) => {
-      const detail = describePrintError(error) || "加载失败";
-      const message = `${cleanCLODOPUrl(src)}：${detail}`;
-      CLODOP_LOAD_ERRORS.push(message);
-      lastCLODOPLoadError = message;
-    };
+    const formatCLODOPLoadErrors = () => (window.BoyiCLodop?.getLoadErrors() || []).slice(-3).join("；");
     const formatManualPrintError = (error) => {
       const detail = describePrintError(error);
       if (detail.includes("C-Lodop service not found")) {
@@ -1511,108 +1488,20 @@
       }
       return `打印预览失败：${detail || "未知错误"}`;
     };
-    const getCLODOPObject = () => {
-      if (typeof window.getCLodop !== "function") return null;
-      try {
-        return window.getCLodop() || null;
-      } catch {
-        return null;
-      }
-    };
-    const waitForCLODOPReady = (timeoutMs = 8000) => new Promise((resolve, reject) => {
-      const startedAt = Date.now();
-      const tick = () => {
-        const lodop = getCLODOPObject();
-        if (lodop) {
-          resolve(lodop);
-          return;
-        }
-        if (Date.now() - startedAt >= timeoutMs) {
-          reject(new Error("C-Lodop startup timeout"));
-          return;
-        }
-        window.setTimeout(tick, 120);
-      };
-      tick();
-    });
-    const loadCLODOPScript = (src, timeoutMs = 8000) => new Promise((resolve, reject) => {
-      if (document.querySelector(`script[data-clodop-src="${src}"]`)) {
-        resolve();
-        return;
-      }
-      const script = document.createElement("script");
-      const timer = window.setTimeout(() => {
-        script.remove();
-        reject(new Error("C-Lodop load timeout"));
-      }, timeoutMs);
-      script.src = src;
-      script.crossOrigin = "anonymous";
-      script.referrerPolicy = "no-referrer";
-      script.dataset.clodopSrc = src;
-      script.onload = () => {
-        window.clearTimeout(timer);
-        resolve();
-      };
-      script.onerror = () => {
-        window.clearTimeout(timer);
-        script.remove();
-        reject(new Error("C-Lodop unavailable"));
-      };
-      document.head.appendChild(script);
-    });
-    const injectCLODOPScriptText = (src, source) => {
-      const text = String(source || "").trim();
-      if (!text) throw new Error("C-Lodop fetch returned empty script");
-      if (document.querySelector(`script[data-clodop-inline-src="${src}"]`)) return;
-      const script = document.createElement("script");
-      script.dataset.clodopInlineSrc = src;
-      script.dataset.clodopSrc = src;
-      script.text = `${text}\n//# sourceURL=${cleanCLODOPUrl(src)}`;
-      document.head.appendChild(script);
-    };
-    const fetchCLODOPScript = async (src) => {
-      const response = await fetch(src, {
-        method: "GET",
-        mode: "cors",
-        cache: "no-store",
-        credentials: "omit",
-      });
-      if (!response.ok) throw new Error(`C-Lodop fetch failed ${response.status}`);
-      injectCLODOPScriptText(src, await response.text());
-    };
-    const loadCLODOPScriptWithFetch = async (src) => {
-      try {
-        await loadCLODOPScript(src);
-      } catch (scriptError) {
-        try {
-          await fetchCLODOPScript(src);
-        } catch (fetchError) {
-          const scriptDetail = describePrintError(scriptError) || "script load failed";
-          const fetchDetail = describePrintError(fetchError) || "fetch load failed";
-          throw new Error(`${scriptDetail}; fetch load failed: ${fetchDetail}`);
-        }
-      }
-    };
     const getCLODOP = async () => {
-      const existing = getCLODOPObject();
-      if (existing) return existing;
-      CLODOP_LOAD_ERRORS.length = 0;
-      lastCLODOPLoadError = "";
-      for (const src of getCandidateCLODOPUrls()) {
-        try {
-          await loadCLODOPScriptWithFetch(src);
-          return await waitForCLODOPReady();
-        } catch (error) {
-          recordCLODOPLoadError(src, error);
-          // C-Lodop may run on either local port.
-        }
-      }
-      return null;
+      if (!window.BoyiCLodop?.getInstance) throw new Error("C-Lodop loader not available");
+      return window.BoyiCLodop.getInstance();
     };
     const populateCLODOPPrinters = async () => {
       const select = document.getElementById("printer_name");
       if (!select) return;
-      const lodop = await getCLODOP();
+      let lodop;
+      try {
+        lodop = await getCLODOP();
+      } catch {
+        if (printerStatus) printerStatus.textContent = "C-Lodop未连接";
+        return;
+      }
       if (!lodop) {
         if (printerStatus) printerStatus.textContent = "C-Lodop未连接";
         return;

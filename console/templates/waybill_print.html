@@ -39,19 +39,9 @@
 
   <script src="/static/js/waybill_label_html.js"></script>
   <script src="/static/js/waybill_label_lodop.js"></script>
+  <script src="/static/js/clodop_loader.js?v=20260812"></script>
   <script>
     const PRINT_SETTINGS_KEY = "shipnow.manual.printerSettings";
-    const CLODOP_URLS = [
-      "https://localhost.lodop.net:8443/CLodopfuncs.js?priority=1",
-      "http://localhost.lodop.net:8000/CLodopfuncs.js?priority=2",
-      "http://localhost.lodop.net:18000/CLodopfuncs.js?priority=3",
-      "http://127.0.0.1:8000/CLodopfuncs.js?priority=4",
-      "http://localhost:8000/CLodopfuncs.js?priority=5",
-      "http://127.0.0.1:18000/CLodopfuncs.js?priority=6",
-      "http://localhost:18000/CLodopfuncs.js?priority=7",
-    ];
-    let lastCLODOPLoadError = "";
-    const CLODOP_LOAD_ERRORS = [];
 
     function setPrintStatus(message) {
       const target = document.querySelector("[data-print-status]");
@@ -63,10 +53,6 @@
       return String(error || "");
     }
 
-    function cleanCLODOPUrl(src) {
-      return String(src || "").split("?")[0];
-    }
-
     function isLocalOriginHost(host) {
       return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(String(host || "").toLowerCase());
     }
@@ -75,22 +61,8 @@
       return window.location.protocol === "http:" && !isLocalOriginHost(window.location.hostname);
     }
 
-    function getCandidateCLODOPUrls() {
-      if (window.location.protocol === "https:") {
-        return CLODOP_URLS.filter((url) => url.startsWith("https://"));
-      }
-      return CLODOP_URLS;
-    }
-
     function formatCLODOPLoadErrors() {
-      return CLODOP_LOAD_ERRORS.slice(-3).join("；");
-    }
-
-    function recordCLODOPLoadError(src, error) {
-      const detail = describePrintError(error) || "加载失败";
-      const message = `${cleanCLODOPUrl(src)}：${detail}`;
-      CLODOP_LOAD_ERRORS.push(message);
-      lastCLODOPLoadError = message;
+      return (window.BoyiCLodop?.getLoadErrors() || []).slice(-3).join("；");
     }
 
     function formatPrintError(error) {
@@ -123,113 +95,9 @@
       }
     }
 
-    function getCLODOPObject() {
-      if (typeof window.getCLodop !== "function") return null;
-      try {
-        return window.getCLodop() || null;
-      } catch {
-        return null;
-      }
-    }
-
-    function waitForCLODOPReady(timeoutMs = 8000) {
-      return new Promise((resolve, reject) => {
-        const startedAt = Date.now();
-        const tick = () => {
-          const lodop = getCLODOPObject();
-          if (lodop) {
-            resolve(lodop);
-            return;
-          }
-          if (Date.now() - startedAt >= timeoutMs) {
-            reject(new Error("C-Lodop startup timeout"));
-            return;
-          }
-          window.setTimeout(tick, 120);
-        };
-        tick();
-      });
-    }
-
-    function loadScriptOnce(src, timeoutMs = 8000) {
-      return new Promise((resolve, reject) => {
-        if (document.querySelector(`script[data-clodop-src="${src}"]`)) {
-          resolve();
-          return;
-        }
-        const script = document.createElement("script");
-        const timer = window.setTimeout(() => {
-          script.remove();
-          reject(new Error("C-Lodop load timeout"));
-        }, timeoutMs);
-        script.src = src;
-        script.crossOrigin = "anonymous";
-        script.referrerPolicy = "no-referrer";
-        script.dataset.clodopSrc = src;
-        script.onload = () => {
-          window.clearTimeout(timer);
-          resolve();
-        };
-        script.onerror = () => {
-          window.clearTimeout(timer);
-          script.remove();
-          reject(new Error("C-Lodop unavailable"));
-        };
-        document.head.appendChild(script);
-      });
-    }
-
-    function injectCLODOPScriptText(src, source) {
-      const text = String(source || "").trim();
-      if (!text) throw new Error("C-Lodop fetch returned empty script");
-      if (document.querySelector(`script[data-clodop-inline-src="${src}"]`)) return;
-      const script = document.createElement("script");
-      script.dataset.clodopInlineSrc = src;
-      script.dataset.clodopSrc = src;
-      script.text = `${text}\n//# sourceURL=${cleanCLODOPUrl(src)}`;
-      document.head.appendChild(script);
-    }
-
-    async function fetchCLODOPScript(src) {
-      const response = await fetch(src, {
-        method: "GET",
-        mode: "cors",
-        cache: "no-store",
-        credentials: "omit",
-      });
-      if (!response.ok) throw new Error(`C-Lodop fetch failed ${response.status}`);
-      injectCLODOPScriptText(src, await response.text());
-    }
-
-    async function loadCLODOPScriptWithFetch(src) {
-      try {
-        await loadScriptOnce(src);
-      } catch (scriptError) {
-        try {
-          await fetchCLODOPScript(src);
-        } catch (fetchError) {
-          const scriptDetail = describePrintError(scriptError) || "script load failed";
-          const fetchDetail = describePrintError(fetchError) || "fetch load failed";
-          throw new Error(`${scriptDetail}; fetch load failed: ${fetchDetail}`);
-        }
-      }
-    }
-
     async function getCLodopInstance() {
-      const existing = getCLODOPObject();
-      if (existing) return existing;
-      CLODOP_LOAD_ERRORS.length = 0;
-      lastCLODOPLoadError = "";
-      for (const src of getCandidateCLODOPUrls()) {
-        try {
-          await loadCLODOPScriptWithFetch(src);
-          return await waitForCLODOPReady();
-        } catch (error) {
-          recordCLODOPLoadError(src, error);
-          // C-Lodop may run on either local port.
-        }
-      }
-      return null;
+      if (!window.BoyiCLodop?.getInstance) throw new Error("C-Lodop loader not available");
+      return window.BoyiCLodop.getInstance();
     }
 
     function findPrinterIndex(lodop, printerName) {

@@ -365,7 +365,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn('data-mode-panel="ocr"', html)
         self.assertIn("打印机设置", html)
         self.assertIn("C-Lodop优先", html)
-        self.assertIn("CLodopfuncs.js", html)
+        self.assertIn("/static/js/clodop_loader.js?v=20260812", html)
         self.assertIn('data-printer-panel hidden', html)
         self.assertNotIn('data-printer-card', html)
         self.assertNotIn("是否弹出地图", html)
@@ -701,7 +701,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         )
 
         self.assertIn("00000001", html)
-        self.assertIn("CLodopfuncs.js", html)
+        self.assertIn("/static/js/clodop_loader.js?v=20260812", html)
         self.assertIn("打印预览", html)
         self.assertIn("previewWaybill()", html)
         self.assertIn("printWaybill()", html)
