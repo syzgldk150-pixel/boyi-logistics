@@ -83,7 +83,7 @@ updated: 2026-08-12
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
-- `sync_daily_should_sign` 使用 R13 独立 SSO，账号资源通过 `workflow_resources.phase7.r13_credentials` 维护，不复用顶部共享 TMS 登录态。R13 的 `signTime`、`signSiteName` 和签收状态只作参考，不删除候选；批量签收证据来自 TMS“签收管理 → 签收查询”的 `BILL_CODE/SIGN_DATE/SIGN_SITE`，扫描记录查询不支持签收类型。只有主单号匹配的真实 TMS 签收记录可以关闭，来源缺失时保守保留。
+- `sync_daily_should_sign` 使用 R13 独立 SSO，账号资源通过 `workflow_resources.phase7.r13_credentials` 维护，不复用顶部共享 TMS 登录态。R13 的 `signTime`、`signSiteName` 和签收状态只作参考，不删除候选；批量签收证据来自 TMS“签收管理 → 签收查询”的 `BILL_CODE/SIGN_DATE/SIGN_SITE`。已离开当前 R13 的历史候选进入持久化低频精确轨迹队列，主单在其他网点出现真实“签收”扫描也可关闭；未签结果按 1/3/7 天退避。零到货归档行和融辉子单号不得进入应签输出。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
 - `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由 `agent/tools/` 和 `agent/tms_runtime/` 统一承载；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。

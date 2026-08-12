@@ -120,7 +120,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
         migrations = module.discover_migrations(project_root / "agent" / "migrations")
 
         self.assertEqual(
-            ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010"],
+            ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "013"],
             [version for version, _ in migrations],
         )
         self.assertNotIn("load_dotenv", script_path.read_text(encoding="utf-8").split("def _connect", 1)[0])

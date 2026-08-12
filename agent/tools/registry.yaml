@@ -227,6 +227,9 @@ tools:
         exact_sign_conflict_limit:
           type: integer
           description: "可选，R13显示已签但批量扫描无证据时允许逐票精确轨迹核验的最大冲突数，默认50；超过即降级且不按R13关闭"
+        exact_historical_sign_limit:
+          type: integer
+          description: "可选，每次核验已离开当前R13历史候选主单真实签收轨迹的最大数量，默认8；未签结果按1/3/7天退避"
       required: []
     executor: tools/daily_sign_sync_tool.py
     timeout: 2400

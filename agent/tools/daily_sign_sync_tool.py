@@ -34,9 +34,10 @@ from tools.daily_sign_store import (
     upsert_ledger_rows,
     upsert_problem_events,
     upsert_sign_events,
+    upsert_sign_verification_states,
 )
 from tools.feishu_cli_tool import feishu_operation
-from tools.phase7_mysql_store import main_tracking_from_scan_code
+from tools.phase7_mysql_store import is_child_like_tracking, main_tracking_from_scan_code
 from tools.phase7_sync_common import (
     build_range_from_template,
     parse_a1_range,
@@ -471,6 +472,22 @@ def _query_exact_main_sign(code: str, params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _query_exact_sign_results(codes: list[str], params: dict[str, Any]) -> list[dict[str, Any]]:
+    if not codes:
+        return []
+    workers = min(max(int(params.get("exact_sign_workers") or 4), 1), 8, len(codes))
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_query_exact_main_sign, code, params): code for code in codes}
+        for future in as_completed(futures):
+            code = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append({"tracking_number": code, "error": str(exc)[:300]})
+    return results
+
+
 def _sync_r13_sign_conflicts(
     params: dict[str, Any],
     r13_by_code: dict[str, dict[str, Any]],
@@ -499,22 +516,14 @@ def _sync_r13_sign_conflicts(
                 }
             ],
         }
-    workers = min(max(int(params.get("exact_sign_workers") or 4), 1), 8, len(conflicts))
-    results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_query_exact_main_sign, code, params): code for code in conflicts}
-        for future in as_completed(futures):
-            code = futures[future]
-            try:
-                results.append(future.result())
-            except Exception as exc:
-                results.append({"tracking_number": code, "error": str(exc)[:300]})
-    events = [result["sign_event"] for result in results if result.get("sign_event")]
+    results = _query_exact_sign_results(conflicts, params)
+    confirmed_events = [result["sign_event"] for result in results if result.get("sign_event")]
     errors = [
         {"tracking_number": result.get("tracking_number"), "error": result.get("error")}
         for result in results
         if result.get("error")
     ]
+    events = [] if errors else confirmed_events
     store_result = upsert_sign_events(events, dry_run=bool(params.get("dry_run", False)))
     return events, {
         **store_result,
@@ -522,6 +531,162 @@ def _sync_r13_sign_conflicts(
         "queried": len(conflicts),
         "confirmed": len(events),
         "errors": errors,
+    }
+
+
+def _has_historical_candidate_evidence(row: dict[str, Any]) -> bool:
+    flags = {clean_text(flag) for flag in (row.get("data_quality_flags") or [])}
+    return bool(
+        parse_datetime(row.get("first_seen_r13_at"))
+        or parse_datetime(row.get("last_seen_r13_at"))
+        or parse_datetime(row.get("r13_plan_sign_at"))
+        or clean_text(row.get("r13_sign_status"))
+        or parse_datetime(row.get("first_arrival_date"))
+        or parse_datetime(row.get("completion_date"))
+        or (_to_int(row.get("arrived_quantity")) or 0) > 0
+        or "backfilled_current_sign_sheet" in flags
+    )
+
+
+def _daily_sign_candidate_codes(
+    r13_by_code: dict[str, dict[str, Any]],
+    ledger_by_code: dict[str, dict[str, Any]],
+    target_station_codes: set[str],
+) -> tuple[set[str], set[str]]:
+    raw_codes = (
+        set(r13_by_code)
+        | {
+            code
+            for code, row in ledger_by_code.items()
+            if not bool(row.get("tms_signed")) and _has_historical_candidate_evidence(row)
+        }
+        | set(target_station_codes)
+    )
+    excluded_child_codes = {code for code in raw_codes if is_child_like_tracking(code)}
+    return raw_codes - excluded_child_codes, excluded_child_codes
+
+
+def _verification_backoff_days(consecutive_not_signed: int) -> int:
+    if consecutive_not_signed <= 1:
+        return 1
+    if consecutive_not_signed == 2:
+        return 3
+    return 7
+
+
+def _sync_historical_sign_verifications(
+    params: dict[str, Any],
+    r13_by_code: dict[str, dict[str, Any]],
+    state: dict[str, Any],
+    *,
+    observed_at: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    candidate_codes, excluded_child_codes = _daily_sign_candidate_codes(
+        r13_by_code,
+        state["ledger"],
+        set(state["target_station_codes"]),
+    )
+    verification_by_code = state.get("sign_verifications") or {}
+    due: list[tuple[bool, datetime, str]] = []
+    for code in candidate_codes:
+        if code in r13_by_code or code in state["signs"]:
+            continue
+        previous = state["ledger"].get(code) or {}
+        verification = verification_by_code.get(code) or {}
+        transitioned_out = bool(previous.get("r13_current"))
+        next_check_at = parse_datetime(verification.get("next_check_at"))
+        if transitioned_out or not verification or next_check_at is None or next_check_at <= observed_at:
+            oldest_evidence = (
+                parse_datetime(previous.get("first_seen_r13_at"))
+                or parse_datetime(previous.get("first_arrival_date"))
+                or datetime.min
+            )
+            due.append((transitioned_out, oldest_evidence, code))
+
+    verification_limit = min(
+        max(int(params.get("exact_historical_sign_limit") or 8), 1),
+        500,
+    )
+    due.sort(key=lambda item: (not item[0], item[1], item[2]))
+    selected = [code for _transitioned, _evidence, code in due[:verification_limit]]
+    results = _query_exact_sign_results(selected, params)
+    confirmed_events = [result["sign_event"] for result in results if result.get("sign_event")]
+    errors = [
+        {"tracking_number": result.get("tracking_number"), "error": result.get("error")}
+        for result in results
+        if result.get("error")
+    ]
+    verification_rows: list[dict[str, Any]] = []
+    for result in results:
+        code = clean_text(result.get("tracking_number"))
+        previous = verification_by_code.get(code) or {}
+        if result.get("error"):
+            verification_rows.append(
+                {
+                    "tracking_number": code,
+                    "last_checked_at": observed_at,
+                    "last_result": "error",
+                    "next_check_at": observed_at + timedelta(hours=6),
+                    "consecutive_not_signed": _to_int(previous.get("consecutive_not_signed")) or 0,
+                    "last_error": clean_text(result.get("error")),
+                }
+            )
+            continue
+        if result.get("sign_event"):
+            verification_rows.append(
+                {
+                    "tracking_number": code,
+                    "last_checked_at": observed_at,
+                    "last_result": "signed",
+                    "next_check_at": None,
+                    "consecutive_not_signed": 0,
+                    "last_error": None,
+                }
+            )
+            continue
+        consecutive = (_to_int(previous.get("consecutive_not_signed")) or 0) + 1
+        verification_rows.append(
+            {
+                "tracking_number": code,
+                "last_checked_at": observed_at,
+                "last_result": "not_signed",
+                "next_check_at": observed_at + timedelta(days=_verification_backoff_days(consecutive)),
+                "consecutive_not_signed": consecutive,
+                "last_error": None,
+            }
+        )
+
+    # Deletion protection is batch-atomic: any exact-tracking error means no newly
+    # confirmed event from this batch may close an existing published row.
+    if errors:
+        for row in verification_rows:
+            if row["last_result"] == "signed":
+                row.update(
+                    {
+                        "last_result": "error",
+                        "next_check_at": observed_at + timedelta(hours=6),
+                        "last_error": "batch_deferred_after_peer_query_error",
+                    }
+                )
+    events = [] if errors else confirmed_events
+    event_store = upsert_sign_events(events, dry_run=bool(params.get("dry_run", False)))
+    verification_store = upsert_sign_verification_states(
+        verification_rows,
+        dry_run=bool(params.get("dry_run", False)),
+    )
+    return events, {
+        "ok": not errors,
+        "complete": not errors,
+        "eligible": len(due),
+        "queried": len(selected),
+        "deferred_by_limit": max(len(due) - len(selected), 0),
+        "confirmed": len(events),
+        "confirmed_but_deferred_on_error": len(confirmed_events) if errors else 0,
+        "not_signed": sum(1 for row in verification_rows if row["last_result"] == "not_signed"),
+        "excluded_child_codes": sorted(excluded_child_codes),
+        "errors": errors,
+        "event_store": event_store,
+        "verification_store": verification_store,
     }
 
 
@@ -823,19 +988,39 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         exact_sign_events, exact_sign_result = _sync_r13_sign_conflicts(params, r13_by_code, state)
         sign_degraded = sign_degraded or not bool(exact_sign_result.get("complete"))
         if exact_sign_events:
-            state = load_daily_sign_state()
+            if dry_run:
+                state["signs"].update(
+                    {clean_text(event.get("tracking_number")): event for event in exact_sign_events}
+                )
+            else:
+                state = load_daily_sign_state()
+        historical_sign_events, historical_sign_result = _sync_historical_sign_verifications(
+            params,
+            r13_by_code,
+            state,
+            observed_at=started_at,
+        )
+        sign_degraded = sign_degraded or not bool(historical_sign_result.get("complete"))
+        if historical_sign_events:
+            if dry_run:
+                state["signs"].update(
+                    {clean_text(event.get("tracking_number")): event for event in historical_sign_events}
+                )
+            else:
+                state = load_daily_sign_state()
         sign_result = {
             "ok": not sign_degraded,
             "complete": not sign_degraded,
             "bulk": bulk_sign_result,
             "exact_conflicts": exact_sign_result,
+            "historical_exact": historical_sign_result,
         }
         diagnostics["signs_complete"] = not sign_degraded
 
-        candidate_codes = (
-            set(r13_by_code)
-            | {code for code, row in state["ledger"].items() if not bool(row.get("tms_signed"))}
-            | set(state["target_station_codes"])
+        candidate_codes, excluded_child_codes = _daily_sign_candidate_codes(
+            r13_by_code,
+            state["ledger"],
+            set(state["target_station_codes"]),
         )
         ledger_rows = [
             build_ledger_row(
@@ -881,6 +1066,8 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "problem_rows": sum(len(items) for items in state["problems"].values()),
                 "sign_rows": len(state["signs"]),
                 "candidate_rows": len(candidate_codes),
+                "excluded_child_candidate_rows": len(excluded_child_codes),
+                "excluded_child_candidate_codes": sorted(excluded_child_codes),
                 "published_rows": len(open_rows),
                 "unmatched_rows": sum(1 for row in open_rows if "r13_without_arrival_history" in row.get("data_quality_flags", [])),
                 "closed_by_tms_rows": sum(1 for row in ledger_rows if row.get("tms_signed")),
