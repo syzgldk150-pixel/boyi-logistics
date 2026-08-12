@@ -521,11 +521,16 @@ class RonghuiLiveFinanceAdapter:
                 }""",
                 self.binding.login_account,
             )
-            public_identity = (
-                session_identity
-                if session_identity.get("accountObserved")
-                else page_identity
-            )
+            if session_identity.get("accountObserved"):
+                public_identity = dict(session_identity)
+                public_identity["siteCode"] = clean_text(
+                    public_identity.get("siteCode") or page_identity.get("siteCode")
+                )
+                public_identity["siteName"] = clean_text(
+                    public_identity.get("siteName") or page_identity.get("siteName")
+                )
+            else:
+                public_identity = page_identity
             if not isinstance(public_identity, Mapping) or public_identity.get("accountMatch") is not True:
                 evidence = _format_identity_evidence(public_identity)
                 raise FinanceCaptureError(
