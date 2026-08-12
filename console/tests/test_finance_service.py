@@ -11,6 +11,7 @@ if str(CONSOLE_DIR) not in sys.path:
     sys.path.insert(0, str(CONSOLE_DIR))
 
 from finance_service import (  # noqa: E402
+    FinancePartialFailureError,
     FinanceService,
     FinanceUpstreamError,
     FinanceUnprocessableError,
@@ -376,6 +377,28 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertNotIn("login_account", call["payload"]["params"])
         self.assertNotIn("session_profile", call["payload"]["params"])
 
+    def test_sync_unwraps_internal_api_executor_and_tool_result(self):
+        self.agent_result = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "success": True,
+                "duration_s": 1.25,
+                "data": {
+                    "ok": True,
+                    "success": True,
+                    "status": "success",
+                    "batch_id": 31,
+                },
+            },
+        }
+
+        payload = self.service.start_sync({})
+
+        self.assertEqual(31, payload["batch_id"])
+        self.assertEqual("success", payload["status"])
+        self.assertNotIn("data", payload)
+
     def test_backfill_requires_real_date_range(self):
         with self.assertRaisesRegex(FinanceValidationError, "请填写回溯开始日期"):
             self.service.start_backfill({"end_date": "2026-07-11"})
@@ -408,6 +431,74 @@ class FinanceServiceTests(unittest.TestCase):
                 self.agent_result = response
                 with self.assertRaises(FinanceUpstreamError):
                     self.service.start_sync({})
+
+    def test_sync_rejects_final_failed_and_partial_failed_statuses(self):
+        failures = (
+            (
+                {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "success": True,
+                        "data": {
+                            "ok": True,
+                            "success": True,
+                            "status": "failed",
+                            "batch_id": 41,
+                        },
+                    },
+                },
+                "财务同步失败",
+            ),
+            (
+                {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "success": True,
+                        "data": {
+                            "ok": True,
+                            "success": True,
+                            "partial_success": True,
+                            "status": "partial_failed",
+                            "batch_id": 42,
+                        },
+                    },
+                },
+                "财务同步部分失败",
+            ),
+        )
+
+        for response, message in failures:
+            with self.subTest(response=response):
+                self.agent_result = response
+                with self.assertRaisesRegex(FinanceUpstreamError, message):
+                    self.service.start_sync({})
+
+        self.agent_result = failures[1][0]
+        with self.assertRaises(FinancePartialFailureError) as raised:
+            self.service.start_sync({})
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", raised.exception.error_code)
+
+        self.agent_result = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "success": False,
+                "error_code": "FINANCE_SYNC_PARTIAL_FAILED",
+                "error": "部分财务账号或日期同步失败",
+                "data": {
+                    "ok": False,
+                    "success": False,
+                    "partial_success": True,
+                    "status": "partial_failed",
+                    "batch_id": 43,
+                },
+            },
+        }
+        with self.assertRaises(FinancePartialFailureError) as executor_raised:
+            self.service.start_sync({})
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", executor_raised.exception.error_code)
 
     def test_missing_shared_repository_is_explicitly_unavailable(self):
         service = FinanceService(object())

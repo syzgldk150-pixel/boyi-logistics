@@ -693,9 +693,11 @@ class FinanceSyncService:
             if first_stage:
                 detail = f"{detail}（stage={first_stage}）"
             raise FinanceSyncError(first_code, detail)
-        return {
-            "ok": True,
-            "partial_success": bool(failures),
+        partial_failure = bool(failures)
+        result = {
+            "ok": not partial_failure,
+            "success": not partial_failure,
+            "partial_success": partial_failure,
             "batch_id": batch_id,
             "mode": plan["mode"],
             "start_date": plan["start_date"].isoformat(),
@@ -706,3 +708,11 @@ class FinanceSyncService:
             "status": clean_text(getattr(status, "value", status)),
             "earliest_date_status": plan.get("earliest_date_status"),
         }
+        if partial_failure:
+            result.update(
+                {
+                    "error_code": "FINANCE_SYNC_PARTIAL_FAILED",
+                    "error": "部分财务账号或日期同步失败；成功快照已保留，可在同步记录中重试失败项",
+                }
+            )
+        return result

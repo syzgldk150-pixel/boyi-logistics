@@ -23,6 +23,8 @@ updated: 2026-08-12
 - 明细调用：`FIND_BALANCE_QRY_WST_WITH_SITE`。
 - 汇总调用：`FIND_BALANCE_QRY_TJ_WST`。
 - 汇总下钻：`FIND_BALANCE_QRY_TJ_DETAIL`。
+- 明细页真实 MiniUI 列绑定为：结算日期 `BALANCE_DATE`、账单日期 `FINANCE_DATE`、结算类型 `BALANCE_TYPE`、带符号金额 `BALANCE_CUR_MONEY_TEXT`、前余额 `BALANCE_PRE_CONFIRM_MONEY`、后余额 `BALANCE_BACK_CONFIRM_MONEY`、流水号 `BALANCE_ORDER`、运单编号 `BILL_CODE`。采集器只使用这组经真实页面验证的字段，不回退到旧 `SETTLEMENT_*` 字段或相似名称。
+- 每条明细必须通过 `BALANCE_PRE_CONFIRM_MONEY + BALANCE_CUR_MONEY_TEXT = BALANCE_BACK_CONFIRM_MONEY` 的 Decimal 反算；金额字段缺失、空值或格式异常分别显式返回 `FIELD_DRIFT`、`AMOUNT_MISSING` 或 `AMOUNT_INVALID`，不得补零。
 - 稳定源键：响应中的 `GUID`。缺失时本账号、本日期同步失败。
 - 网点编码和名称必须来自当前账号的真实登录上下文，并在财务页网点下拉中精确唯一匹配；禁止根据登录号截取或使用列表第一项。
 - 账号和网点身份先在融辉主壳页面的公开用户上下文中严格核对，再进入财务子页；财务子页未初始化用户上下文时不得误判或绕过校验。

@@ -278,6 +278,10 @@ class FinanceSyncServiceTests(unittest.TestCase):
             {"mode": "sync", "target_date": "2026-07-11", "rescan_days": 1, "platform": "ronghui"}
         )
         self.assertTrue(result["partial_success"])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["success"])
+        self.assertEqual("partial_failed", result["status"])
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", result["error_code"])
         self.assertEqual(2, result["successful_runs"])
         self.assertEqual(1, result["failed_runs"])
         self.assertEqual(2, len(repository.commits))
@@ -324,6 +328,10 @@ class FinanceSyncServiceTests(unittest.TestCase):
         )
 
         self.assertTrue(result["partial_success"])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["success"])
+        self.assertEqual("partial_failed", result["status"])
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", result["error_code"])
         self.assertEqual(2, result["successful_runs"])
         self.assertEqual(1, result["failed_runs"])
         self.assertEqual(2, len(repository.commits))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import unittest
+from unittest.mock import patch
 
 from tools.finance_sync_service import FinanceSyncError
 from tools.sync_finance_bills_tool import _database_lock, run_sync_finance_bills
@@ -66,6 +67,39 @@ class FinanceToolLockingTests(unittest.TestCase):
         self.assertNotIn("token", result["error"].lower())
         self.assertNotIn("fixture-secret", result["error"])
         self.assertNotIn("fixture-secret", result["diagnostic_trace"])
+
+    def test_partial_failure_remains_external_failure(self):
+        class _PartialService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self, _request):
+                return {
+                    "ok": False,
+                    "success": False,
+                    "partial_success": True,
+                    "status": "partial_failed",
+                    "batch_id": 42,
+                    "successful_runs": 1,
+                    "failed_runs": 1,
+                    "error_code": "FINANCE_SYNC_PARTIAL_FAILED",
+                    "error": "部分财务账号或日期同步失败",
+                }
+
+        with patch("tools.sync_finance_bills_tool.FinanceSyncService", _PartialService):
+            result = run_sync_finance_bills(
+                {},
+                repository=object(),
+                account_manager=object(),
+                adapter_factory=object(),
+                lock_context=contextlib.nullcontext,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["success"])
+        self.assertTrue(result["partial_success"])
+        self.assertEqual("partial_failed", result["status"])
+        self.assertEqual("FINANCE_SYNC_PARTIAL_FAILED", result["error_code"])
 
 
 if __name__ == "__main__":

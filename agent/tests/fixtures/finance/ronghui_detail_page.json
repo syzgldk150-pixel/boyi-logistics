@@ -4,24 +4,24 @@
     {
       "GUID": "fixture-rh-001",
       "BALANCE_DATE": "2026-07-11 00:05:00",
-      "SETTLEMENT_TYPE": "收干线费",
-      "SETTLEMENT_AMOUNT": "-12.30",
-      "BILL_DATE": "2026-07-11 00:04:59",
+      "BALANCE_TYPE": "收干线费",
+      "BALANCE_CUR_MONEY_TEXT": "-12.30",
+      "FINANCE_DATE": "2026-07-11 00:04:59",
       "BILL_CODE": "fixture-waybill-001",
       "BALANCE_ORDER": "fixture-balance-001",
-      "BEFORE_AMOUNT": "100.00",
-      "AFTER_AMOUNT": "87.70"
+      "BALANCE_PRE_CONFIRM_MONEY": "100.00",
+      "BALANCE_BACK_CONFIRM_MONEY": "87.70"
     },
     {
       "GUID": "fixture-rh-002",
       "BALANCE_DATE": "2026-07-11 23:59:59",
-      "SETTLEMENT_TYPE": "收操作费",
-      "SETTLEMENT_AMOUNT": "-0.50",
-      "BILL_DATE": "2026-07-11 23:59:58",
+      "BALANCE_TYPE": "收操作费",
+      "BALANCE_CUR_MONEY_TEXT": "-0.50",
+      "FINANCE_DATE": "2026-07-11 23:59:58",
       "BILL_CODE": "fixture-waybill-002",
       "BALANCE_ORDER": "fixture-balance-002",
-      "BEFORE_AMOUNT": "87.70",
-      "AFTER_AMOUNT": "87.20"
+      "BALANCE_PRE_CONFIRM_MONEY": "87.70",
+      "BALANCE_BACK_CONFIRM_MONEY": "87.20"
     }
   ]
 }

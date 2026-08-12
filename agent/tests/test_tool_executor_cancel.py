@@ -4,6 +4,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.tool_executor import CANCEL_MESSAGE, PROJECT_ROOT, ToolExecutor
 
@@ -12,6 +13,14 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.executor = ToolExecutor()
         self.script_paths: list[Path] = []
+        self.lock_dir = tempfile.TemporaryDirectory(prefix="tool-lock-", dir=PROJECT_ROOT)
+        self.addCleanup(self.lock_dir.cleanup)
+        self.lock_patch = patch(
+            "agent.tool_executor.LOCK_FILE",
+            os.path.join(self.lock_dir.name, ".heavy_task.lock"),
+        )
+        self.lock_patch.start()
+        self.addCleanup(self.lock_patch.stop)
         self.script_path = self._write_temp_script(
             "tool-cancel-",
             """
@@ -133,6 +142,59 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(slow_result["success"])
         self.assertTrue(fast_result["success"])
         self.assertEqual(fast_result["data"], {"tool": "fast"})
+
+    async def test_explicit_false_result_is_failure_without_error_text(self):
+        failure_script = self._write_temp_script(
+            "tool-explicit-failure-",
+            """
+            import json
+
+            print(json.dumps({"success": False, "status": "failed"}))
+            """,
+        )
+
+        result = await self.executor.execute(
+            {
+                "name": "explicit_failure_tool",
+                "executor": os.path.relpath(failure_script, PROJECT_ROOT),
+                "timeout": 5,
+            },
+            {},
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual("工具返回失败状态。", result["error"])
+        self.assertFalse(result["data"]["success"])
+        self.assertFalse(self.executor.last_tool_info()["success"])
+
+    async def test_explicit_ok_false_result_is_failure_and_is_redacted(self):
+        failure_script = self._write_temp_script(
+            "tool-redacted-failure-",
+            """
+            import json
+
+            print(json.dumps({
+                "ok": False,
+                "message": "password=dummy-value",
+                "details": {"token": "dummy-token"},
+            }))
+            """,
+        )
+
+        result = await self.executor.execute(
+            {
+                "name": "redacted_failure_tool",
+                "executor": os.path.relpath(failure_script, PROJECT_ROOT),
+                "timeout": 5,
+            },
+            {},
+        )
+
+        serialized = str(result)
+        self.assertFalse(result["success"])
+        self.assertNotIn("dummy-value", serialized)
+        self.assertNotIn("dummy-token", serialized)
+        self.assertEqual("[REDACTED]", result["data"]["details"]["token"])
 
 
 if __name__ == "__main__":
