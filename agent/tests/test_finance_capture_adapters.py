@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from shared.finance.models import SummarySemantics
+
 from agent.tms_runtime.scripts import finance_live_capture as finance_live_capture_module
 
 from agent.tms_runtime.scripts.finance_capture_common import (
@@ -270,6 +272,7 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         self.assertEqual("12.3000", result.transactions[0]["expend"])
         self.assertEqual("fixture-balance-001", result.transactions[0]["source_reference"])
         self.assertNotIn("GUID", result.transactions[0])
+        self.assertIs(result.summary_semantics, SummarySemantics.SIGNED_NET_BY_FEE)
 
     def test_ronghui_field_drift_reports_only_response_keys(self):
         payload = _fixture("ronghui_detail_page.json")
@@ -314,10 +317,7 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
 
     def test_ronghui_summary_discovery_uses_real_detail_fields(self):
         detail_rows = _fixture("ronghui_detail_page.json")["rows"]
-        summaries = [
-            {"FEE_LABEL": "收干线费", "SIGNED_TOTAL": "-12.30", "NOT_AMOUNT": "fixture"},
-            {"FEE_LABEL": "收操作费", "SIGNED_TOTAL": "-0.50", "NOT_AMOUNT": "fixture"},
-        ]
+        summaries = _fixture("ronghui_summary_page.json")["rows"]
 
         fee_key, amount_key = _discover_ronghui_summary_fields(
             summaries,
@@ -325,12 +325,12 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
             field_bindings=RONGHUI_FIELD_BINDINGS,
         )
 
-        self.assertEqual("FEE_LABEL", fee_key)
-        self.assertEqual("SIGNED_TOTAL", amount_key)
+        self.assertEqual("BALANCE_TYPE", fee_key)
+        self.assertEqual("BALANCE_CUR_MONEY", amount_key)
 
     def test_ronghui_summary_discovery_reports_missing_amount_explicitly(self):
         detail_rows = _fixture("ronghui_detail_page.json")["rows"]
-        summaries = [{"FEE_LABEL": "收干线费", "SIGNED_TOTAL": "-12.30"}]
+        summaries = _fixture("ronghui_summary_page.json")["rows"][:1]
 
         for mutation, expected_code in (
             (lambda row: row.pop("BALANCE_CUR_MONEY_TEXT"), "FIELD_DRIFT"),
@@ -349,13 +349,7 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
 
     def test_ronghui_live_fetch_day_uses_real_detail_schema_before_normalization(self):
         detail_payload = _fixture("ronghui_detail_page.json")
-        summary_payload = {
-            "total": 2,
-            "rows": [
-                {"FEE_LABEL": "收干线费", "SIGNED_TOTAL": "-12.30", "NOT_AMOUNT": "fixture"},
-                {"FEE_LABEL": "收操作费", "SIGNED_TOTAL": "-0.50", "NOT_AMOUNT": "fixture"},
-            ],
-        }
+        summary_payload = _fixture("ronghui_summary_page.json")
         adapter = RonghuiLiveFinanceAdapter(SimpleNamespace(account_id="fixture-ronghui"))
         adapter._session = object()
         adapter._headers = {}
@@ -383,6 +377,7 @@ class FinanceCaptureAdapterTests(unittest.TestCase):
         self.assertEqual(2, len(result.transactions))
         self.assertEqual(2, len(result.summaries))
         self.assertEqual("12.3000", result.transactions[0]["expend"])
+        self.assertIs(result.summary_semantics, SummarySemantics.SIGNED_NET_BY_FEE)
 
     def test_yunda_fixture_filters_cross_midnight_and_preserves_required_fields(self):
         payload = _fixture("yunda_detail_page.json")
