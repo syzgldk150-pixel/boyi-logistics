@@ -562,7 +562,43 @@ class RonghuiLiveFinanceAdapter:
         tabs = page.get_by_text(tab_text, exact=True)
         visible_tabs = [tabs.nth(index) for index in range(tabs.count()) if tabs.nth(index).is_visible()]
         if len(visible_tabs) != 1:
-            raise FinanceCaptureError("FIELD_DRIFT", "融辉财务页签无法唯一定位", stage="query_capture")
+            evidence = page.evaluate(
+                """() => {
+                    const allowed = (text) => /(?:明细|汇总|统计|查询)/.test(text) && text.length <= 30;
+                    const labels = [...document.querySelectorAll('a,button,span,div')]
+                        .filter((item) => item.offsetParent !== null)
+                        .map((item) => String(item.innerText || item.textContent || '').trim())
+                        .filter(allowed);
+                    const components = [];
+                    if (window.mini && typeof mini.getComponents === 'function') {
+                        for (const item of mini.getComponents()) {
+                            const text = String(item.text || (item.getText && item.getText()) || '').trim();
+                            if (!allowed(text)) continue;
+                            const type = String(item.type || (item.getType && item.getType()) || '').trim();
+                            components.push(`${type || 'unknown'}:${text}`);
+                        }
+                    }
+                    return {
+                        labels: [...new Set(labels)].slice(0, 20),
+                        components: [...new Set(components)].slice(0, 20),
+                    };
+                }"""
+            )
+            labels = [clean_text(item) for item in (evidence or {}).get("labels", []) if clean_text(item)]
+            components = [
+                clean_text(item)
+                for item in (evidence or {}).get("components", [])
+                if clean_text(item)
+            ]
+            raise FinanceCaptureError(
+                "FIELD_DRIFT",
+                (
+                    f"融辉财务页签无法唯一定位；target={tab_text}; "
+                    f"matches={len(visible_tabs)}; labels={'|'.join(labels) or 'none'}; "
+                    f"components={'|'.join(components) or 'none'}"
+                )[:480],
+                stage="query_capture",
+            )
         visible_tabs[0].click()
         page.wait_for_timeout(500)
         set_result = page.evaluate(
