@@ -80,6 +80,8 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
   74mm × 92mm 热敏面单的浏览器内视觉预览模板，使用 HTML/CSS 还原版式，不作为生产打印来源
 - `static/js/waybill_label_lodop.js`
   74mm × 92mm 博益物流热敏主单的生产打印模板，先用 `static/assets/waybill_label_background.png` 固定底版通过 C-Lodop `ADD_PRINT_IMAGE` 打印主单版式，再用 `ADD_PRINT_TEXT` 覆盖动态字段；底版保持 203dpi 黑白 PNG，动态字号按 592 × 736 点阵像素换算到打印物理尺寸，禁止拆 SVG 切片、`ADD_PRINT_HTM`、浏览器打印兜底或手写旧版近似坐标模板作为生产打印方案
+- `static/js/clodop_loader.js`
+  `templates/document.html` 与 `templates/waybill_print.html` 共用的唯一 C-Lodop 加载器；优先按 C-Lodop 6.644 官方方案从本机 `8000/18000` 端口通过 WebSocket 接收主脚本，仅在 WebSocket 不可用时按当前页面协议尝试 HTTP/HTTPS 脚本地址，避免 HTTPS 后台继续依赖会周期性过期的 `8443` SSL 证书；两个模板不得复制加载逻辑
 - `static/js/amap_route_utils.js`
   高德地图路线共享工具，封装坐标归一、距离/时长格式化、驾车服务创建和路线查询；当前由货拉拉调度页使用，手工录单页不加载该路线工具
 - `templates/dispatch.html`

@@ -28,21 +28,22 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
         self.assertIn('field.setAttribute("aria-invalid", "true")', template)
         self.assertIn("clearManualFieldInvalid", template)
 
-    def test_clodop_loader_tries_ipv4_loopback_and_waits_for_startup(self):
+    def test_clodop_loader_uses_shared_websocket_loader(self):
         document_template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
         print_template = (CONSOLE_DIR / "templates" / "waybill_print.html").read_text(encoding="utf-8")
+        loader = (CONSOLE_DIR / "static" / "js" / "clodop_loader.js").read_text(encoding="utf-8")
 
         for template in (document_template, print_template):
-            https_url = "https://localhost.lodop.net:8443/CLodopfuncs.js"
-            http_url = "http://127.0.0.1:8000/CLodopfuncs.js"
-            self.assertIn(https_url, template)
-            self.assertLess(template.index(https_url), template.index(http_url))
-            self.assertIn("http://localhost.lodop.net:8000/CLodopfuncs.js", template)
-            self.assertIn("http://127.0.0.1:8000/CLodopfuncs.js", template)
-            self.assertIn("http://127.0.0.1:18000/CLodopfuncs.js", template)
-            self.assertIn("waitForCLODOPReady", template)
-            self.assertIn("timeoutMs = 8000", template)
-            self.assertIn('script.crossOrigin = "anonymous"', template)
+            self.assertIn('/static/js/clodop_loader.js?v=20260812', template)
+            self.assertIn("window.BoyiCLodop.getInstance()", template)
+            self.assertNotIn("CLodopfuncs.js?priority=", template)
+
+        self.assertIn("ws://localhost:8000/CLodopfuncs.js", loader)
+        self.assertIn("ws://localhost:18000/CLodopfuncs.js", loader)
+        self.assertIn("https://localhost.lodop.net:8443/CLodopfuncs.js", loader)
+        self.assertIn("loadViaWebSocket", loader)
+        self.assertIn("waitForObject", loader)
+        self.assertIn("DEFAULT_TIMEOUT_MS = 8000", loader)
 
     def test_print_preview_reports_distinct_failure_stage(self):
         document_template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
@@ -51,38 +52,29 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
         self.assertIn("formatManualPrintError", document_template)
         self.assertIn("面单底版加载失败", document_template)
         self.assertIn("面单打印模板未加载", document_template)
-        self.assertIn("lastCLODOPLoadError", document_template)
+        self.assertIn("window.BoyiCLodop?.getLoadErrors()", document_template)
         self.assertIn("formatManualPrintError(error)", document_template)
 
         self.assertIn("formatPrintError", print_template)
         self.assertIn("面单底版加载失败", print_template)
         self.assertIn("面单打印模板未加载", print_template)
-        self.assertIn("lastCLODOPLoadError", print_template)
+        self.assertIn("window.BoyiCLodop?.getLoadErrors()", print_template)
         self.assertIn("formatPrintError(error)", print_template)
 
-    def test_clodop_loader_has_fetch_injection_fallback(self):
-        document_template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
-        print_template = (CONSOLE_DIR / "templates" / "waybill_print.html").read_text(encoding="utf-8")
+    def test_clodop_loader_injects_websocket_payload_and_can_retry(self):
+        loader = (CONSOLE_DIR / "static" / "js" / "clodop_loader.js").read_text(encoding="utf-8")
 
-        for template in (document_template, print_template):
-            self.assertIn("fetchCLODOPScript", template)
-            self.assertIn("injectCLODOPScriptText", template)
-            self.assertIn('mode: "cors"', template)
-            self.assertIn('credentials: "omit"', template)
-            self.assertIn("response.text()", template)
+        self.assertIn("injectServiceScript(url, event.data)", loader)
+        self.assertIn("loadPromise = null", loader)
+        self.assertIn("C-Lodop WebSocket load timeout", loader)
+        self.assertIn("getLoadErrors: () => loadErrors.slice()", loader)
 
-    def test_https_pages_only_try_secure_clodop_urls_and_keep_error_history(self):
-        document_template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
-        print_template = (CONSOLE_DIR / "templates" / "waybill_print.html").read_text(encoding="utf-8")
+    def test_https_pages_try_websocket_before_https_fallback(self):
+        loader = (CONSOLE_DIR / "static" / "js" / "clodop_loader.js").read_text(encoding="utf-8")
 
-        for template in (document_template, print_template):
-            self.assertIn("CLODOP_LOAD_ERRORS", template)
-            self.assertIn("getCandidateCLODOPUrls", template)
-            self.assertIn('window.location.protocol === "https:"', template)
-            self.assertIn('url.startsWith("https://")', template)
-            self.assertIn("formatCLODOPLoadErrors", template)
-            self.assertIn("公网 HTTP 地址打开后台", template)
-            self.assertNotIn('throw new Error("C-Lodop blocked by public HTTP origin")', template)
+        self.assertLess(loader.index("for (const url of WEBSOCKET_URLS)"), loader.index("const scriptUrls"))
+        self.assertIn('global.location.protocol === "https:" ? HTTPS_URLS : HTTP_URLS', loader)
+        self.assertIn("recordLoadError", loader)
 
 
 if __name__ == "__main__":
