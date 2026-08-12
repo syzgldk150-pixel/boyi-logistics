@@ -230,7 +230,10 @@ def _run_ws_client(app_id: str, app_secret: str):
             .register_p2_im_message_receive_v1(handle_im_message)
             .register_p2_application_bot_menu_v6(handle_bot_menu)
             .build(),
-            log_level=lark.LogLevel.INFO,
+            # SDK connection logs can include an access_key query value before
+            # our logging filters can redact it. Only allow CRITICAL SDK output;
+            # application lifecycle logs remain available through our logger.
+            log_level=lark.LogLevel.CRITICAL,
         )
 
         logger.info("飞书 WebSocket 连接已建立")

@@ -333,14 +333,21 @@ class AgentCore:
                         "error": redact_text(exc),
                     }
             elif not result.get("success"):
-                publish_finance_alert(
-                    {
-                        "anomaly_type": "FINANCE_SYNC_FAILED",
-                        "title": "财务同步或对账失败",
-                        "details": redact_text(result.get("error") or "unknown finance sync failure")[:500],
-                        "admin_url": "/modules/finance#sync",
-                    }
-                )
+                error_code = str(result.get("error_code") or "FINANCE_SYNC_FAILED")[:64]
+                if params.get("_startup_catchup"):
+                    logger.warning(
+                        "finance startup catch-up alert suppressed: code=%s",
+                        error_code,
+                    )
+                else:
+                    publish_finance_alert(
+                        {
+                            "anomaly_type": error_code,
+                            "title": "财务同步或对账失败",
+                            "details": redact_text(result.get("error") or "unknown finance sync failure")[:500],
+                            "admin_url": "/modules/finance#sync",
+                        }
+                    )
         try:
             duration_ms = int(result.get("duration_s", 0) * 1000)
             self.memory.save_tool_log(
