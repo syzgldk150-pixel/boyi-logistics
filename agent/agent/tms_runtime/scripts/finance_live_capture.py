@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode, urljoin
 
 from agent.tms_runtime.session_broker import (
     YUNDA_CLIENT_SYSTEM_HOME_URL,
@@ -30,6 +30,7 @@ from agent.tms_runtime.scripts.finance_capture_common import (
 from agent.tms_runtime.scripts.ronghui_finance_adapter import (
     RONGHUI_DETAIL_CALL_ID,
     RONGHUI_DRILLDOWN_CALL_ID,
+    RONGHUI_FINANCE_ENDPOINT,
     RONGHUI_SOURCE_KEY,
     RONGHUI_SUMMARY_CALL_ID,
     capture_ronghui_day,
@@ -215,6 +216,51 @@ def _request_from_playwright(request: Any) -> _CapturedRequest:
         url=clean_text(getattr(request, "url", "")),
         content_type=clean_text(headers.get("content-type")).lower(),
         body=clean_text(getattr(request, "post_data", "")),
+    )
+
+
+def _ronghui_request_template(
+    page_context: Mapping[str, Any],
+    *,
+    call_id: str,
+    target_date: dt.date,
+    source_site_code: str,
+    page_size: int,
+) -> _CapturedRequest:
+    html = clean_text(page_context.get("html"))
+    relative_url = f"{RONGHUI_FINANCE_ENDPOINT}?id={call_id}"
+    required_markers = {
+        relative_url,
+        "BALANCE_DATE",
+        "SITE_NAME_CODE",
+        "pageIndex",
+        "pageSize",
+    }
+    missing = sorted(marker for marker in required_markers if marker not in html)
+    if missing:
+        raise FinanceCaptureError(
+            "FIELD_DRIFT",
+            f"融辉财务页面缺少请求契约字段：{','.join(missing)}",
+            stage="request_discovery",
+        )
+    day = target_date.strftime("%Y/%m/%d")
+    payload = {
+        "BALANCE_DATE": json.dumps(
+            {"start": f"{day} 00:00:00", "end": f"{day} 23:59:59"},
+            ensure_ascii=False,
+        ),
+        "SITE_NAME_CODE": source_site_code,
+        "pageIndex": "0",
+        "pageSize": str(page_size),
+        "sortField": "",
+        "sortOrder": "",
+        "totalColumns": "[]",
+    }
+    return _CapturedRequest(
+        method="POST",
+        url=urljoin(clean_text(page_context.get("url")), relative_url),
+        content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        body=urlencode(payload),
     )
 
 
@@ -701,10 +747,21 @@ class RonghuiLiveFinanceAdapter:
         raise FinanceCaptureError("FIELD_DRIFT", "融辉原页未触发目标财务 callId", stage="query_capture")
 
     def fetch_day(self, target_date: dt.date) -> CaptureResult:
-        detail_first, detail_template = self._capture_query(
-            target_date,
+        detail_template = _ronghui_request_template(
+            self._page_context,
             call_id=RONGHUI_DETAIL_CALL_ID,
-            tab_text="明细查询",
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            page_size=self.page_size,
+        )
+        detail_first = _replay_ronghui_request(
+            self._session,
+            detail_template,
+            page=1,
+            page_size=self.page_size,
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            headers=self._headers,
         )
         detail_cache: dict[int, Any] = {1: detail_first}
 
@@ -731,10 +788,21 @@ class RonghuiLiveFinanceAdapter:
             stage="ronghui_detail_discovery",
         ).rows
 
-        summary_first, summary_template = self._capture_query(
-            target_date,
+        summary_template = _ronghui_request_template(
+            self._page_context,
             call_id=RONGHUI_SUMMARY_CALL_ID,
-            tab_text="统计查询",
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            page_size=self.page_size,
+        )
+        summary_first = _replay_ronghui_request(
+            self._session,
+            summary_template,
+            page=1,
+            page_size=self.page_size,
+            target_date=target_date,
+            source_site_code=self._source_site_code,
+            headers=self._headers,
         )
 
         def summary_fetch(page: int, page_size: int) -> Any:

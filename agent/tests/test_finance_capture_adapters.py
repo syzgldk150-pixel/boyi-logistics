@@ -14,6 +14,7 @@ from agent.tms_runtime.scripts.finance_capture_common import (
 from agent.tms_runtime.scripts.finance_live_capture import (
     _format_identity_evidence,
     _ronghui_public_identity,
+    _ronghui_request_template,
     _ronghui_schema_evidence,
 )
 from agent.tms_runtime.scripts.ronghui_finance_adapter import capture_ronghui_day
@@ -59,6 +60,37 @@ class _Response:
 
 
 class FinanceCaptureAdapterTests(unittest.TestCase):
+    def test_ronghui_request_template_requires_observed_page_contract(self):
+        context = {
+            "url": "https://tms.ronghuiwl.com/widget/home?fixture=1",
+            "html": (
+                "/dataQuery/findPageByCallId?id=FIXTURE_CALL "
+                "BALANCE_DATE SITE_NAME_CODE pageIndex pageSize"
+            ),
+        }
+        template = _ronghui_request_template(
+            context,
+            call_id="FIXTURE_CALL",
+            target_date=dt.date(2026, 7, 11),
+            source_site_code="fixture-site",
+            page_size=100,
+        )
+
+        self.assertEqual("POST", template.method)
+        self.assertTrue(template.url.endswith("/dataQuery/findPageByCallId?id=FIXTURE_CALL"))
+        self.assertIn("SITE_NAME_CODE=fixture-site", template.body)
+        self.assertIn("pageIndex=0", template.body)
+
+        with self.assertRaises(FinanceCaptureError) as caught:
+            _ronghui_request_template(
+                {"url": context["url"], "html": "FIXTURE_CALL"},
+                call_id="FIXTURE_CALL",
+                target_date=dt.date(2026, 7, 11),
+                source_site_code="fixture-site",
+                page_size=100,
+            )
+        self.assertEqual("FIELD_DRIFT", caught.exception.code)
+
     def test_ronghui_public_identity_requires_exact_account_and_unique_site(self):
         identity = _ronghui_public_identity(
             {
