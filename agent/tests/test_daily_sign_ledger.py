@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from tools.daily_sign_rules import build_ledger_row, calculate_system_sign_due
 from tools import daily_sign_backfill_tool, daily_sign_sync_tool
-from agent.tms_runtime.scripts import get_qianshou, get_scan
+from agent.tms_runtime.scripts import get_qianshou, get_scan, get_sign_records
 
 
 def arrival(day: str, expected: int, arrived: int, destination: str = "邵阳大祥S站") -> dict:
@@ -582,6 +582,107 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
                     "签收",
                     100,
                     20,
+                )
+
+    def test_tms_sign_query_uses_real_page_contract_and_paginates_completely(self):
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        class Session:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                page = int(kwargs["data"]["pageIndex"])
+                if page == 0:
+                    rows = [
+                        {
+                            "BILL_CODE": "R1",
+                            "SIGN_DATE": "2026-08-12 10:00:00",
+                            "SIGN_SITE": "邵阳大祥S站",
+                            "RECORD_DATE": "2026-08-12 10:00:01",
+                            "RECORD_SITE": "邵阳大祥S站",
+                        }
+                    ]
+                else:
+                    rows = [
+                        {
+                            "BILL_CODE": "R2",
+                            "SIGN_DATE": "2026-08-12 11:00:00",
+                            "SIGN_SITE": "邵阳大祥S站",
+                        }
+                    ]
+                return Response({"data": rows, "total": 2})
+
+        session = Session()
+        with (
+            patch("agent.tms_runtime.scripts.get_sign_records.page_support._ronghui_headers", return_value={}),
+            patch("agent.tms_runtime.scripts.get_sign_records.page_support._raise_if_source_failed"),
+        ):
+            rows = get_sign_records.collect_sign_rows(
+                session,
+                {},
+                start=datetime(2026, 8, 12, 0, 0, 0),
+                end=datetime(2026, 8, 12, 23, 59, 59),
+                login_site_code="7390004",
+                page_size=1,
+                max_pages=2,
+            )
+
+        self.assertEqual(["R1", "R2"], [row["扫描单号"] for row in rows])
+        self.assertTrue(all(row["扫描类型"] == "签收" for row in rows))
+        self.assertIn("FIND_SIGNED_DETAIL_ALL", session.calls[0][0])
+        first_payload = session.calls[0][1]["data"]
+        self.assertEqual("SIGN_DATE", first_payload["searchDateType"])
+        self.assertEqual("7390004", first_payload["LOGIN_SITE_CODE"])
+        self.assertEqual(0, first_payload["pageIndex"])
+        self.assertEqual(1, session.calls[1][1]["data"]["pageIndex"])
+
+    def test_tms_sign_query_rejects_missing_real_fields_and_incomplete_paging(self):
+        with self.assertRaisesRegex(RuntimeError, "BILL_CODE"):
+            get_sign_records.normalize_sign_row({"SIGN_DATE": "2026-08-12 10:00:00"})
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "data": [
+                        {
+                            "BILL_CODE": "R1",
+                            "SIGN_DATE": "2026-08-12 10:00:00",
+                            "SIGN_SITE": "邵阳大祥S站",
+                        }
+                    ],
+                    "total": 2,
+                }
+
+        class Session:
+            def post(self, *_args, **_kwargs):
+                return Response()
+
+        with (
+            patch("agent.tms_runtime.scripts.get_sign_records.page_support._ronghui_headers", return_value={}),
+            patch("agent.tms_runtime.scripts.get_sign_records.page_support._raise_if_source_failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "提前结束"):
+                get_sign_records.collect_sign_rows(
+                    Session(),
+                    {},
+                    start=datetime(2026, 8, 12, 0, 0, 0),
+                    end=datetime(2026, 8, 12, 23, 59, 59),
+                    login_site_code="7390004",
+                    page_size=2,
+                    max_pages=2,
                 )
 
         conflicting = {
