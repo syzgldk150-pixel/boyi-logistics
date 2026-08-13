@@ -72,13 +72,23 @@ Worker 通过 MySQL 8 `FOR UPDATE SKIP LOCKED` 和租约领取。执行中续租
 
 调度免审同样遵循显式账号边界。寄件、签收、网点出港、到货清单、到货统计和两项韵达
 同步的顶层 `account_id` 都是必填项；嵌套请求中重复出现的账号只能与顶层值完全一致。
-代码批准的定时参数固定为：融辉单账号任务使用 `ronghui_default`；韵达任务使用
-`yunda_default`，派件预测另锁定 `dest_brch=56739382`，寄件运单另锁定
-`ensure_fields=true`；到货统计另锁定 `trigger_flow=false`；每日应签锁定 R13 与三个
-融辉账号角色及 `days=7`；财务锁定 `mode=sync/platform=ronghui/rescan_days=7`。
-`014` 只迁移这些 Console 标准 `*_HHMM` 任务族，不覆盖管理员已有冲突值；冲突、额外参数
-或未知账号全部保留原行并停用。旧 arrive-list 的 `login_site_code` 会被移除，真实站点码
-仍由页面/账号上下文解析，迁移不猜测任何站点编码。
+代码批准的自动免审任务固定为 51 条：3 条到货清单、17 条每日应签、20 条派送状态、
+9 条网点出港清单，以及 `send_order_2359`、`yunda_send_waybills_2355`。寄件使用
+`price_default`，普通融辉单账号任务使用 `ronghui_default`；韵达寄件使用
+`yunda_default/ensure_fields=false`；每日应签锁定 `r13_default`、问题件/签收
+`ronghui_daxiang_s`、详情 `ronghui_default` 及 `days=7`。任务模板直接从同一份受管契约
+生成，避免 ID、cron 和参数形成第二份可漂移清单。
+
+发布前只读预检只比较上述代码审阅 ID、cron、工具及闭合参数，并用代码持有的 SHA-256 指纹核对
+到货任务遗留登录站点字段；它不得打开 `.env`、Cookie、凭据或会话状态文件。迁移 `014` 在任何永久 DDL/
+数据修改前执行同一组关闭校验：真空库可初始化，出现任一受管候选后必须完整命中 51 条；任一已启用
+第三方打卡任务会以 `EXTERNAL_WRITE_SCHEDULE_POLICY_BLOCKED` 阻断发布，既不会静默停用，也不会绕过审批。
+
+Agent 启动和 seed API 的空库补种都只插入缺失行，所有新行默认停用；已有行的管理员
+`enabled`、cron 和参数保持原样。
+财务、韵达派件预测和客服问题件影子采集只保留为默认停用的配置占位。打卡和 R7 等第三方
+写操作不在模板中，也不会被自动补种或纳入调度免审。财务启动补拉仅在持久化财务任务明确
+启用时注册，缺失、停用或读取失败均不执行。
 Console `/automations` 是修改运行账号、核对参数并重新启用任务的唯一配置路径。只有当前
 工具版本、闭合参数、权威账号、任务 ID 与 cron 全部通过校验的已启用持久化行才能建立
 免审白名单，未知任务和缺少账号的任务保持停用/待审批，不使用隐式默认账号。

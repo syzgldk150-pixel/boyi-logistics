@@ -183,6 +183,36 @@ print("service_identity_preflight=ok")
 PY
 }
 
+preflight_control_plane_task_cutover() {
+  [[ -d "${STAGE_ROOT}/agent/migrations" ]] || return 0
+  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
+  local migration_python="${PYTHON_BINS[agent]}"
+  local output
+  [[ -f "${runner}" && -x "${migration_python}" ]] || {
+    echo "control_plane_task_cutover_preflight=blocked reason=PREFLIGHT_RUNNER_MISSING count=1" >&2
+    return 1
+  }
+
+  if output="$({
+    MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
+      --preflight-control-plane-task-cutover
+  } 2>&1)"; then
+    if [[ "${output}" =~ ^control_plane_task_cutover_preflight=ok\ reviewed_rows=[0-9]+\ canonical_rows=[0-9]+\ legacy_rows=[0-9]+$ ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "control_plane_task_cutover_preflight=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+
+  if [[ "${output}" =~ ^control_plane_task_cutover_preflight=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
+    echo "${output}" >&2
+  else
+    echo "control_plane_task_cutover_preflight=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+  fi
+  return 1
+}
+
 build_release_virtualenvs() {
   local bootstrap_python release_venv verifier agent_lock console_lock
   local agent_hash console_hash lock_hash active_agent active_console active_hash metadata_file
@@ -902,6 +932,8 @@ run_release() {
   validate_environment
   RELEASE_STAGE="preflight_service_identity_configuration"
   preflight_service_identity_configuration
+  RELEASE_STAGE="preflight_control_plane_task_cutover"
+  preflight_control_plane_task_cutover
   RELEASE_STAGE="backup_managed_sources"
   mkdir -p "${BACKUP_DIR}"
   backup_managed_sources

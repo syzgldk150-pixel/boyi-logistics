@@ -345,8 +345,7 @@ def test_phase7_templates_do_not_hide_writes_behind_tms_query() -> None:
         for template in PHASE7_SCHEDULED_TASK_TEMPLATES
         if str(template.get("id") or "").startswith("clockin_")
     }
-    assert clock_templates
-    assert all(item.get("tool_name") == "clock_in_dual" for item in clock_templates.values())
+    assert clock_templates == {}
 
 
 def test_clock_in_compatibility_params_are_closed_and_flat() -> None:

@@ -314,7 +314,9 @@
         {% set has_resources = task.resource_bindings %}
         {% set has_account_roles = task.account_role_bindings %}
         {% set is_webhook = task.task_mode == 'webhook' %}
-        {% set has_expandable_settings = has_webhook or task.is_schedulable or has_params or has_resources or has_account_options %}
+        {% set can_save = task.can_save | default(true) %}
+        {% set can_run_now = task.can_run_now | default(true) %}
+        {% set has_expandable_settings = can_save and (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles) %}
 
         {# ── 卡片主行 ── #}
         <div class="auto-card-row">
@@ -354,17 +356,24 @@
           </div>
 
           <div class="auto-card-actions">
-            {% if task.is_schedulable %}
+            {% if task.is_schedulable and can_save %}
             <label class="auto-toggle-wrap" title="启用/禁用定时">
               <input type="checkbox" name="enabled" {% if task.enabled_value %}checked{% endif %} data-automation-toggle>
               <span class="auto-toggle-track"><span class="auto-toggle-thumb"></span></span>
             </label>
             {% endif %}
 
+            {% if can_run_now %}
             <button class="primary-btn auto-run-btn" type="submit" formaction="/automations/tasks/run-now" formmethod="post" data-run-now data-run-mode="start">
               <i data-feather="play" data-run-icon></i>
               <span data-run-label>执行</span>
             </button>
+            {% else %}
+            <button class="primary-btn auto-run-btn" type="button" disabled title="第三方写入需在事项中心完成独立审批">
+              <i data-feather="shield"></i>
+              <span>需审批</span>
+            </button>
+            {% endif %}
 
             <button class="ghost-btn auto-terminal-btn" type="button" data-terminal-toggle title="查看运行输出" aria-expanded="false">
               <i data-feather="terminal"></i>
@@ -381,6 +390,13 @@
             {% endif %}
           </div>
         </div>
+
+        {% if task.control_plane_only %}
+        <div class="auto-resource-alert">
+          <i data-feather="shield"></i>
+          <span>{{ task.control_plane_notice }} 当前任务：{{ '已启用' if task.enabled_value else '已停用' }}。</span>
+        </div>
+        {% endif %}
 
         {% if task.resource_blocked %}
         <div class="auto-resource-alert">
@@ -417,7 +433,7 @@
         </div>
 
         {# ── 图形化设置面板（chevron 控制） ── #}
-        {% if has_webhook or task.is_schedulable or has_params or has_resources or has_account_options %}
+        {% if has_expandable_settings %}
         <div id="task-settings-{{ task.task_id }}" class="auto-settings{% if task.is_open %} is-open{% endif %}" {% if not task.is_open %}hidden{% endif %}>
 
           {% if has_webhook %}

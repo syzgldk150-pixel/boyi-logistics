@@ -21,10 +21,6 @@ logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
-CUSTOMER_PROBLEM_SHADOW_TASK_ID = "customer_problems_shadow"
-LOCKED_CONTROL_PLANE_TASK_IDS = frozenset(
-    {FINANCE_SCHEDULE_TASK_ID, CUSTOMER_PROBLEM_SHADOW_TASK_ID}
-)
 
 
 def _enabled_finance_platform_filter() -> dict[str, str]:
@@ -65,7 +61,10 @@ def init_scheduler(agent_core) -> AsyncIOScheduler:
         _load_tasks_from_db(agent_core)
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
-    _add_finance_startup_catchup_job(agent_core)
+    try:
+        _add_finance_startup_catchup_job(agent_core)
+    except Exception as exc:
+        logger.warning("Finance startup catch-up initialization failed: %s", exc)
     return _scheduler
 
 
@@ -79,9 +78,30 @@ def ensure_finance_schedule_task(agent_core) -> bool:
 
 
 def ensure_control_plane_schedule_tasks(agent_core) -> tuple[str, ...]:
-    """Idempotently seed new locked tasks without overwriting admin choices."""
+    """Seed every safe template disabled when absent; preserve existing rows."""
 
-    return _seed_locked_schedule_tasks(agent_core, LOCKED_CONTROL_PLANE_TASK_IDS)
+    return seed_phase7_schedule_tasks(agent_core)
+
+
+def seed_phase7_schedule_tasks(agent_core) -> tuple[str, ...]:
+    """Insert all missing safe templates while preserving every existing row."""
+
+    return _seed_locked_schedule_tasks(
+        agent_core,
+        frozenset(_task_templates_by_id()),
+    )
+
+
+def _task_templates_by_id() -> dict[str, dict[str, Any]]:
+    templates: dict[str, dict[str, Any]] = {}
+    for task in PHASE7_SCHEDULED_TASK_TEMPLATES:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            raise RuntimeError("A schedule template has no id")
+        if task_id in templates:
+            raise RuntimeError(f"Duplicate schedule template id: {task_id}")
+        templates[task_id] = task
+    return templates
 
 
 def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[str, ...]:
@@ -93,9 +113,9 @@ def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[s
         if isinstance(row, dict)
     }
     templates = {
-        str(task.get("id") or ""): task
-        for task in PHASE7_SCHEDULED_TASK_TEMPLATES
-        if str(task.get("id") or "") in task_ids
+        task_id: task
+        for task_id, task in _task_templates_by_id().items()
+        if task_id in task_ids
     }
     if set(templates) != set(task_ids):
         raise RuntimeError("A locked control-plane schedule template is missing or duplicated")
@@ -110,6 +130,10 @@ def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[s
 
 def _add_finance_startup_catchup_job(agent_core) -> None:
     """Perform the bounded startup gap scan through the same control plane."""
+
+    if not _finance_schedule_enabled(agent_core):
+        logger.info("Finance startup catch-up skipped because its persisted task is disabled")
+        return
 
     async def startup_catchup() -> None:
         # Use one stable logical occurrence per business day.  Repeated service
@@ -154,6 +178,19 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
         max_instances=1,
         misfire_grace_time=300,
     )
+
+
+def _finance_schedule_enabled(agent_core) -> bool:
+    """Honor the persisted administrator switch; missing or unknown is disabled."""
+
+    for row in agent_core.memory.list_scheduled_tasks():
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or "").strip() != FINANCE_SCHEDULE_TASK_ID:
+            continue
+        enabled = row.get("enabled")
+        return enabled is True or type(enabled) is int and enabled == 1
+    return False
 
 
 def _load_tasks_from_db(agent_core) -> None:
@@ -305,7 +342,10 @@ def reload_scheduler(agent_core) -> dict[str, Any]:
     for job in list(_scheduler.get_jobs()):
         _scheduler.remove_job(job.id)
     _load_tasks_from_db(agent_core)
-    _add_finance_startup_catchup_job(agent_core)
+    try:
+        _add_finance_startup_catchup_job(agent_core)
+    except Exception as exc:
+        logger.warning("Finance startup catch-up initialization failed: %s", exc)
     jobs = _scheduler.get_jobs()
     return {
         "initialized": True,

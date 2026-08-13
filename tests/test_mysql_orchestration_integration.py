@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+import hashlib
 import importlib.util
 import json
 import os
@@ -42,7 +43,13 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             raise RuntimeError("real MySQL tests require an explicitly test-scoped database name")
         cls.upgrade_database = f"{cls.database[:-5]}_upgrade_test"
         cls.partial_database = f"{cls.database[:-5]}_partial_test"
-        cls.databases = (cls.database, cls.upgrade_database, cls.partial_database)
+        cls.rollback_database = f"{cls.database[:-5]}_rollback_test"
+        cls.databases = (
+            cls.database,
+            cls.upgrade_database,
+            cls.partial_database,
+            cls.rollback_database,
+        )
         cls.runner = _load_migration_runner()
 
         with cls._server_connection() as connection, connection.cursor() as cursor:
@@ -73,6 +80,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 for statement in first_statements:
                     cursor.execute(statement)
         cls._run_migrations(cls.partial_database)
+        cls._run_migrations(cls.rollback_database)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -291,6 +299,105 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     ),
                 )
 
+    def test_empty_cutover_seed_rollback_is_reentrant_and_preserves_prior_rows(self):
+        database = self.rollback_database
+        seed_task_ids = self.runner._load_control_plane_seed_task_ids()
+        self.assertEqual(54, len(seed_task_ids))
+
+        def applied_at() -> datetime:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT applied_at FROM schema_migrations WHERE version='014'"
+                )
+                row = cursor.fetchone()
+            self.assertIsNotNone(row)
+            return row["applied_at"]
+
+        def seed_rows(*, created_at: datetime, excluded: set[str] | None = None) -> None:
+            excluded_ids = excluded or set()
+            with self._connection(
+                database,
+                autocommit=True,
+            ) as connection, connection.cursor() as cursor:
+                for task_id in seed_task_ids:
+                    if task_id in excluded_ids:
+                        continue
+                    cursor.execute(
+                        "INSERT INTO scheduled_tasks "
+                        "(id, name, tool_name, tool_params, cron_expression, enabled, created_at) "
+                        "VALUES (%s, 'release seed probe', 'seed_probe', JSON_OBJECT(), "
+                        "'0 0 * * *', FALSE, %s)",
+                        (task_id, created_at),
+                    )
+
+        first_applied_at = applied_at()
+        seed_rows(created_at=first_applied_at + timedelta(seconds=1))
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_control_plane_task_cutover())
+
+        with self._connection(database) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) AS count FROM scheduled_tasks")
+            self.assertEqual(0, cursor.fetchone()["count"])
+            cursor.execute("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='014'")
+            self.assertEqual(0, cursor.fetchone()["count"])
+            cursor.execute(
+                "SELECT COUNT(*) AS count "
+                "FROM control_plane_task_cutover_backup_014"
+            )
+            self.assertEqual(0, cursor.fetchone()["count"])
+
+        # The emptied database must accept 014 again after rollback.
+        self._run_migrations(database)
+        second_applied_at = applied_at()
+
+        # A code-owned ID that predates this 014 application, and an unrelated
+        # row created afterwards, are both outside rollback deletion authority.
+        preserved_seed_id = "finance_bills_0010"
+        unrelated_id = "integration_unmanaged_release_probe"
+        with self._connection(
+            database,
+            autocommit=True,
+        ) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled, created_at) "
+                "VALUES (%s, 'preexisting seed', 'sync_finance_bills', JSON_OBJECT(), "
+                "'10 0 * * *', FALSE, %s)",
+                (preserved_seed_id, second_applied_at - timedelta(seconds=1)),
+            )
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled, created_at) "
+                "VALUES (%s, 'unmanaged row', 'unmanaged_probe', JSON_OBJECT(), "
+                "'0 0 * * *', FALSE, %s)",
+                (unrelated_id, second_applied_at + timedelta(seconds=1)),
+            )
+        seed_rows(
+            created_at=second_applied_at + timedelta(seconds=1),
+            excluded={preserved_seed_id},
+        )
+
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_control_plane_task_cutover())
+
+        with self._connection(
+            database,
+            autocommit=True,
+        ) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM scheduled_tasks ORDER BY id")
+            self.assertEqual(
+                [preserved_seed_id, unrelated_id],
+                [row["id"] for row in cursor.fetchall()],
+            )
+            cursor.execute(
+                "DELETE FROM scheduled_tasks WHERE id IN (%s, %s)",
+                (preserved_seed_id, unrelated_id),
+            )
+
+        # Leave the dedicated database fully migrated for order-independent
+        # integration execution and prove a second rollback remains reentrant.
+        self._run_migrations(database)
+
     def test_two_workers_skip_locked_without_duplicate_claim(self):
         repository = self._repository()
         for label in ("claim-a", "claim-b"):
@@ -317,8 +424,10 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
     def test_two_outbox_workers_skip_locked_without_duplicate_claim(self):
         repository = self._repository()
+        consumer_name = f"pending-claim-{uuid4()}"
         for label in ("outbox-claim-a", "outbox-claim-b"):
             rows = self._aggregate_rows(label)
+            rows[4][0]["consumer_name"] = consumer_name
             with repository.unit_of_work() as uow:
                 uow.command_gateway_create(*rows)
                 uow.commit()
@@ -327,15 +436,19 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         second = repository.unit_of_work()
         try:
             first.__enter__()
+            with first.connection.cursor() as cursor:
+                cursor.execute("SET SESSION innodb_lock_wait_timeout=2")
             first_claim = first.outbox.claim(
                 "outbox-worker-a",
-                consumer_name="integration-consumer",
+                consumer_name=consumer_name,
                 limit=1,
             )
             second.__enter__()
+            with second.connection.cursor() as cursor:
+                cursor.execute("SET SESSION innodb_lock_wait_timeout=2")
             second_claim = second.outbox.claim(
                 "outbox-worker-b",
-                consumer_name="integration-consumer",
+                consumer_name=consumer_name,
                 limit=1,
             )
             self.assertEqual(1, len(first_claim))
@@ -535,170 +648,249 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(1, cursor.fetchone()["count"])
 
-    def test_task_cutover_migrates_closed_scheduler_families_fail_closed(self):
+    def test_task_cutover_exact_production_set_is_reentrant_and_fail_closed(self):
         migration = next(
             path
             for version, path in self.runner.discover_migrations()
             if version == "014"
         )
         statements = self.runner.split_sql_statements(migration.read_text(encoding="utf-8"))
-        rows = [
-            (
-                "arrive_list_0830",
-                "arrival no account",
-                "sync_arrive_list",
-                '{"target_date":"","login_site_code":"legacy-site"}',
-            ),
-            (
-                "arrive_list_0930",
-                "arrival explicit account",
-                "sync_arrive_list",
-                '{"account_id":"configured-account","keep_me":true}',
-            ),
-            (
-                "arrival_stats_1000",
-                "arrival conflicting account",
-                "sync_arrival_stats",
-                '{"account_id":"configured-account",'
-                '"arrive_list_request_body":{"params":{"accountId":"other-account"}}}',
-            ),
-            (
-                "daily_sign_1100",
-                "daily sign custom time",
-                "sync_daily_should_sign",
-                '{"days":3,"keep_me":true}',
-            ),
-            (
-                "delivery_status_1030",
-                "delivery status custom time",
-                "sync_delivery_status",
-                '{}',
-            ),
-            (
-                "send_order_2150",
-                "send order custom time",
-                "sync_daily_send_orders",
-                '{}',
-            ),
-            (
-                "site_send_1900",
-                "site send custom time",
-                "sync_site_send_list",
-                '{}',
-            ),
-            (
-                "yunda_dispatch_forecast_1700",
-                "yunda forecast legacy profile",
-                "sync_yunda_dispatch_forecast",
-                '{"session_profile":"yunda","dest_brch":"56739382"}',
-            ),
-            (
-                "yunda_send_waybills_2100",
-                "yunda send legacy defaults",
-                "sync_yunda_send_waybills",
-                '{"session_profile":"yunda","target_date":"","ensure_fields":true}',
-            ),
-            (
-                "finance_bills_0010",
-                "finance canonical",
-                "sync_finance_bills",
-                '{"mode":"sync","rescan_days":7}',
-            ),
-            (
-                "clockin_daxiang_s_1830",
-                "Daxiang S clock",
-                "tms_query",
-                '{"endpoint":"/clock_in_dual","params":{"timeout_sec":600,'
-                '"params":{"sitecode":"configured-site","sitefbcode":"configured-fb",'
-                '"site_name":"configured name","site_fb_name":"configured fb name",'
-                '"first_type":"交件到港","second_type":"接件离港",'
-                '"delay_seconds":4,"administrator_note":"keep"}}}',
-            ),
-        ]
-        with self._connection(autocommit=True) as connection, connection.cursor() as cursor:
-            cursor.execute("DELETE FROM control_plane_task_cutover_backup_014")
-            for task_id, name, tool_name, tool_params in rows:
+        contracts = self.runner._load_control_plane_reviewed_task_contracts()
+        self.assertEqual(51, len(contracts))
+
+        reviewed_login_site_sha256 = (
+            self.runner.CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256
+        )
+        reviewed_login_site_code = None
+        for number in range(100_000):
+            candidate = f"{number:05d}"
+            if (
+                hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+                == reviewed_login_site_sha256
+            ):
+                reviewed_login_site_code = candidate
+                break
+        self.assertIsNotNone(reviewed_login_site_code)
+        legacy_arguments = {
+            "arrive_list": {
+                "account_id": "ronghui_default",
+                "login_site_code": reviewed_login_site_code,
+                "site_code": "reviewed-unconsumed-legacy-filter",
+                "target_date": "",
+            },
+            "daily_sign": {
+                "account_id": "r13_default",
+                "detail_account_id": "ronghui_default",
+                "r13_account_id": "r13_default",
+            },
+            "delivery_status": {},
+            "send_order": {"account_id": "price_default", "target_date": ""},
+            "yunda_send_waybills": {
+                "account_id": "yunda_default",
+                "ensure_fields": False,
+                "session_profile": "yunda",
+                "target_date": "",
+            },
+        }
+
+        def execute_migration(cursor):
+            for statement in statements:
+                cursor.execute(statement)
+
+        def seed_reviewed_tasks(cursor, task_ids=None):
+            for task_id in sorted(task_ids or contracts):
+                contract = contracts[task_id]
+                group_id = contract["group_id"]
+                arguments = legacy_arguments.get(
+                    group_id,
+                    dict(contract["canonical_arguments"]),
+                )
                 cursor.execute(
                     "INSERT INTO scheduled_tasks "
                     "(id, name, tool_name, tool_params, cron_expression, enabled) "
-                    "VALUES (%s, %s, %s, CAST(%s AS JSON), '0 1 * * *', TRUE) "
+                    "VALUES (%s, %s, %s, CAST(%s AS JSON), %s, TRUE) "
                     "ON DUPLICATE KEY UPDATE name=VALUES(name), tool_name=VALUES(tool_name), "
-                    "tool_params=VALUES(tool_params), cron_expression=VALUES(cron_expression), enabled=TRUE, "
-                    "last_status=NULL, last_message=NULL",
-                    (task_id, name, tool_name, tool_params),
+                    "tool_params=VALUES(tool_params), cron_expression=VALUES(cron_expression), "
+                    "enabled=TRUE, last_status=NULL, last_message=NULL",
+                    (
+                        task_id,
+                        f"reviewed {group_id}",
+                        contract["tool_name"],
+                        json.dumps(arguments, separators=(",", ":")),
+                        contract["cron_expression"],
+                    ),
                 )
-            for statement in statements:
-                cursor.execute(statement)
-            for statement in statements:
-                cursor.execute(statement)
 
+        managed_ids = tuple(sorted(contracts))
+        managed_placeholders = ",".join("%s" for _ in managed_ids)
+        with self._connection(autocommit=True) as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, tool_name, tool_params, enabled, last_message "
-                "FROM scheduled_tasks WHERE id IN "
-                "('arrive_list_0830', 'arrive_list_0930', 'arrival_stats_1000', "
-                "'daily_sign_1100', 'delivery_status_1030', 'send_order_2150', "
-                "'site_send_1900', 'yunda_dispatch_forecast_1700', "
-                "'yunda_send_waybills_2100', 'finance_bills_0010', "
-                "'clockin_daxiang_s_1830')"
+                f"DELETE FROM scheduled_tasks WHERE id IN ({managed_placeholders})",
+                managed_ids,
+            )
+            cursor.execute(
+                "DELETE FROM scheduled_tasks WHERE id IN "
+                "('send_order_1200', 'clockin_unknown_1200', "
+                "'clockin_daxiang_1830', 'clockin_daxiang_s_1833', "
+                "'integration_unrelated_tms')"
+            )
+            cursor.execute("DELETE FROM control_plane_task_cutover_backup_014")
+
+            # Empty bootstrap state remains valid and reentrant.
+            execute_migration(cursor)
+            execute_migration(cursor)
+
+            # One candidate turns the full reviewed set into a requirement.
+            seed_reviewed_tasks(cursor, {managed_ids[0]})
+            with self.assertRaises(self.pymysql.MySQLError):
+                execute_migration(cursor)
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM control_plane_task_cutover_backup_014"
+            )
+            self.assertEqual(0, cursor.fetchone()["count"])
+
+            # Exact production IDs and reviewed legacy semantics become the
+            # same code-owned canonical arguments. The reviewed login identity
+            # is recovered only in-memory from its code-owned fingerprint and
+            # is never embedded in test source or output.
+            seed_reviewed_tasks(cursor)
+            execute_migration(cursor)
+            execute_migration(cursor)
+            cursor.execute(
+                f"SELECT id, tool_name, tool_params, cron_expression, enabled "
+                f"FROM scheduled_tasks WHERE id IN ({managed_placeholders})",
+                managed_ids,
             )
             migrated = {row["id"]: row for row in cursor.fetchall()}
-            for row in migrated.values():
-                if isinstance(row["tool_params"], str):
-                    row["tool_params"] = json.loads(row["tool_params"])
-
-            self.assertEqual("ronghui_default", migrated["arrive_list_0830"]["tool_params"]["account_id"])
-            self.assertNotIn("target_date", migrated["arrive_list_0830"]["tool_params"])
-            self.assertNotIn("login_site_code", migrated["arrive_list_0830"]["tool_params"])
-            self.assertTrue(migrated["arrive_list_0830"]["enabled"])
-            self.assertEqual("configured-account", migrated["arrive_list_0930"]["tool_params"]["account_id"])
-            self.assertTrue(migrated["arrive_list_0930"]["tool_params"]["keep_me"])
-            self.assertFalse(migrated["arrive_list_0930"]["enabled"])
-            self.assertFalse(migrated["arrival_stats_1000"]["enabled"])
-            self.assertIn("参数不符合", migrated["arrival_stats_1000"]["last_message"])
-
-            daily = migrated["daily_sign_1100"]["tool_params"]
-            self.assertEqual(3, daily["days"])
-            self.assertTrue(daily["keep_me"])
-            self.assertEqual("r13_default", daily["r13_account_id"])
-            self.assertFalse(migrated["daily_sign_1100"]["enabled"])
-
-            for task_id in ("delivery_status_1030", "send_order_2150", "site_send_1900"):
-                self.assertEqual(
-                    {"account_id": "ronghui_default"},
-                    migrated[task_id]["tool_params"],
-                )
-                self.assertTrue(migrated[task_id]["enabled"])
-
-            self.assertEqual(
-                {"account_id": "yunda_default", "dest_brch": "56739382"},
-                migrated["yunda_dispatch_forecast_1700"]["tool_params"],
-            )
-            self.assertTrue(migrated["yunda_dispatch_forecast_1700"]["enabled"])
-            self.assertEqual(
-                {"account_id": "yunda_default", "ensure_fields": True},
-                migrated["yunda_send_waybills_2100"]["tool_params"],
-            )
-            self.assertTrue(migrated["yunda_send_waybills_2100"]["enabled"])
-            self.assertEqual(
-                {"mode": "sync", "platform": "ronghui", "rescan_days": 7},
-                migrated["finance_bills_0010"]["tool_params"],
-            )
-            self.assertTrue(migrated["finance_bills_0010"]["enabled"])
-
-            clock = migrated["clockin_daxiang_s_1830"]
-            self.assertEqual("clock_in_dual", clock["tool_name"])
-            self.assertEqual("configured-site", clock["tool_params"]["sitecode"])
-            self.assertEqual("configured name", clock["tool_params"]["sitename"])
-            self.assertEqual("keep", clock["tool_params"]["administrator_note"])
-            self.assertEqual(600, clock["tool_params"]["timeout_sec"])
-            self.assertTrue(clock["enabled"])
+            self.assertEqual(set(contracts), set(migrated))
+            for task_id, contract in contracts.items():
+                row = migrated[task_id]
+                arguments = row["tool_params"]
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                self.assertEqual(dict(contract["canonical_arguments"]), arguments)
+                self.assertEqual(contract["tool_name"], row["tool_name"])
+                self.assertEqual(contract["cron_expression"], row["cron_expression"])
+                self.assertTrue(row["enabled"])
 
             cursor.execute(
-                "SELECT COUNT(*) AS count FROM control_plane_task_cutover_backup_014 "
-                "WHERE id IN ('arrive_list_0830', 'arrive_list_0930', 'arrival_stats_1000', "
-                "'daily_sign_1100', 'delivery_status_1030', 'send_order_2150', "
-                "'site_send_1900', 'yunda_dispatch_forecast_1700', "
-                "'yunda_send_waybills_2100', 'finance_bills_0010', "
-                "'clockin_daxiang_s_1830')"
+                f"SELECT COUNT(*) AS count FROM control_plane_task_cutover_backup_014 "
+                f"WHERE id IN ({managed_placeholders})",
+                managed_ids,
             )
-            self.assertEqual(11, cursor.fetchone()["count"])
+            self.assertEqual(51, cursor.fetchone()["count"])
+            cursor.execute(
+                "SELECT tool_params FROM control_plane_task_cutover_backup_014 "
+                "WHERE id='daily_sign_0500'"
+            )
+            backup_arguments = cursor.fetchone()["tool_params"]
+            if isinstance(backup_arguments, str):
+                backup_arguments = json.loads(backup_arguments)
+            self.assertEqual(legacy_arguments["daily_sign"], backup_arguments)
+
+            # Extra fields fail before mutation.
+            changed_task_id = "daily_sign_0500"
+            changed_arguments = dict(contracts[changed_task_id]["canonical_arguments"])
+            changed_arguments["unexpected"] = True
+            cursor.execute(
+                "UPDATE scheduled_tasks SET tool_params=CAST(%s AS JSON) WHERE id=%s",
+                (json.dumps(changed_arguments), changed_task_id),
+            )
+            with self.assertRaises(self.pymysql.MySQLError):
+                execute_migration(cursor)
+            cursor.execute(
+                "SELECT tool_params, enabled FROM scheduled_tasks WHERE id=%s",
+                (changed_task_id,),
+            )
+            unchanged = cursor.fetchone()
+            unchanged_arguments = unchanged["tool_params"]
+            if isinstance(unchanged_arguments, str):
+                unchanged_arguments = json.loads(unchanged_arguments)
+            self.assertTrue(unchanged_arguments["unexpected"])
+            self.assertTrue(unchanged["enabled"])
+            cursor.execute(
+                "UPDATE scheduled_tasks SET tool_params=CAST(%s AS JSON) WHERE id=%s",
+                (
+                    json.dumps(contracts[changed_task_id]["canonical_arguments"]),
+                    changed_task_id,
+                ),
+            )
+
+            # An unreviewed ID is rejected even when disabled.
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES ('send_order_1200', 'unreviewed', 'sync_daily_send_orders', "
+                "CAST(%s AS JSON), '0 12 * * *', FALSE)",
+                (json.dumps({"account_id": "price_default"}),),
+            )
+            with self.assertRaises(self.pymysql.MySQLError):
+                execute_migration(cursor)
+            cursor.execute("DELETE FROM scheduled_tasks WHERE id='send_order_1200'")
+
+            # Scheduled third-party clock writes block before backup or any
+            # normalization; an exact legacy daily row remains unchanged.
+            seed_reviewed_tasks(cursor)
+            cursor.execute("DELETE FROM control_plane_task_cutover_backup_014")
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES ('clockin_daxiang_1830', 'external clock', 'tms_query', "
+                "CAST(%s AS JSON), '30 18 * * *', TRUE)",
+                (json.dumps({"endpoint": "/clock_in_dual", "params": {}}),),
+            )
+            with self.assertRaises(self.pymysql.MySQLError):
+                execute_migration(cursor)
+            cursor.execute(
+                "SELECT tool_name, enabled FROM scheduled_tasks "
+                "WHERE id='clockin_daxiang_1830'"
+            )
+            clock = cursor.fetchone()
+            self.assertEqual("tms_query", clock["tool_name"])
+            self.assertTrue(clock["enabled"])
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM control_plane_task_cutover_backup_014"
+            )
+            self.assertEqual(0, cursor.fetchone()["count"])
+            cursor.execute(
+                "SELECT tool_params, enabled FROM scheduled_tasks "
+                "WHERE id='daily_sign_0500'"
+            )
+            blocked_daily = cursor.fetchone()
+            blocked_daily_arguments = blocked_daily["tool_params"]
+            if isinstance(blocked_daily_arguments, str):
+                blocked_daily_arguments = json.loads(blocked_daily_arguments)
+            self.assertEqual(legacy_arguments["daily_sign"], blocked_daily_arguments)
+            self.assertTrue(blocked_daily["enabled"])
+
+            # A reviewed clock is tolerated only after explicit disable; an
+            # unknown clock ID still fails, while unrelated TMS reads do not.
+            cursor.execute(
+                "UPDATE scheduled_tasks SET enabled=FALSE "
+                "WHERE id='clockin_daxiang_1830'"
+            )
+            execute_migration(cursor)
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES ('clockin_unknown_1200', 'unknown clock', 'tms_query', "
+                "CAST(%s AS JSON), '0 12 * * *', FALSE)",
+                (json.dumps({"endpoint": "/clock_in_dual", "params": {}}),),
+            )
+            with self.assertRaises(self.pymysql.MySQLError):
+                execute_migration(cursor)
+            cursor.execute(
+                "DELETE FROM scheduled_tasks WHERE id IN "
+                "('clockin_unknown_1200', 'clockin_daxiang_1830')"
+            )
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES ('integration_unrelated_tms', 'unrelated read', 'tms_query', "
+                "CAST(%s AS JSON), '0 4 * * *', TRUE)",
+                (json.dumps({"endpoint": "/query", "params": {}}),),
+            )
+            execute_migration(cursor)
+            cursor.execute(
+                "DELETE FROM scheduled_tasks WHERE id='integration_unrelated_tms'"
+            )

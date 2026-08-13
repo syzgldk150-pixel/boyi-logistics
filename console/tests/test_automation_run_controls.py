@@ -120,6 +120,51 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn('data-schedule-stack', html)
         self.assertNotIn('data-code-toggle', html)
 
+    def test_control_plane_only_clock_is_read_only(self):
+        html = self._render(
+            {
+                "task_id": "clockin_daxiang_s",
+                "task_mode": "scheduled",
+                "name_value": "网点打卡-大祥S站",
+                "tool_name_value": "clock_in_dual",
+                "cron_expression_value": "33 18 * * *",
+                "schedule_time_values": ["18:33"],
+                "tool_params_json": "{}",
+                "tool_param_fields": [],
+                "search_text": "网点打卡 大祥S站 clock_in_dual",
+                "last_activity_value": "",
+                "sort_order": 1,
+                "is_schedulable": True,
+                "schedule_supported": True,
+                "schedule_editable": False,
+                "has_webhook": False,
+                "enabled_value": True,
+                "is_open": False,
+                "feedback": None,
+                "last_error_summary": "",
+                "last_run_value": "",
+                "webhook_masked_url": "",
+                "webhook_full_url": "",
+                "webhook_path": "",
+                "webhook_token_enabled": False,
+                "webhook_header_name": "X-Agent-Webhook-Token",
+                "webhook_body_json": "{}",
+                "can_save": False,
+                "can_run_now": False,
+                "control_plane_only": True,
+                "control_plane_notice": "第三方高风险写入只允许通过控制平面审批。",
+            }
+        )
+        task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
+
+        self.assertNotIn("data-automation-toggle", task_html)
+        self.assertNotIn("data-run-now", task_html)
+        self.assertNotIn("data-settings-toggle", task_html)
+        self.assertNotIn("data-schedule-stack", task_html)
+        self.assertIn("第三方高风险写入只允许通过控制平面审批", task_html)
+        self.assertIn("当前任务：已启用", task_html)
+        self.assertIn("需审批", task_html)
+
     def test_missing_required_resources_render_resource_editor(self):
         html = self._render(
             {

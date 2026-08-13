@@ -481,7 +481,10 @@ class WorkflowRunner:
                         raise blocked_error
                     raise
             else:
-                step_status = outcome.run_status.value
+                failure_status = outcome.run_status
+                failure_code = outcome.code
+                failure_message = outcome.message
+                step_status = failure_status.value
                 if step_status not in {
                     "BLOCKED_LOGIN",
                     "BLOCKED_DATA",
@@ -491,14 +494,32 @@ class WorkflowRunner:
                 }:
                     step_status = "FAILED_TERMINAL"
                 with self._repository.unit_of_work() as uow:
+                    current_run = uow.runs.get(
+                        str(run["run_id"]),
+                        for_update=True,
+                    )
+                    if current_run is None:
+                        raise OrchestrationError(
+                            "RUN_NOT_FOUND",
+                            "Run was not found while persisting the step result",
+                        )
+                    if current_run.get("cancel_requested_at"):
+                        failure_status = RunStatus.CANCELLED
+                        step_status = RunStatus.CANCELLED.value
+                        if outcome.run_status is not RunStatus.CANCELLED:
+                            failure_code = "CANCELLED_BY_ACTOR"
+                            failure_message = str(
+                                current_run.get("cancel_reason")
+                                or "Run cancellation was requested"
+                            )
                     failed_step = uow.steps.transition(
                         str(step_row["step_id"]),
                         expected_version=int(started_step["version"]),
                         expected_statuses=("RUNNING",),
                         status=step_status,
                         result_summary=dict(raw_result),
-                        error_code=outcome.code,
-                        error_summary=outcome.message,
+                        error_code=failure_code,
+                        error_summary=failure_message,
                         finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     )
                     self._pilot_projection.record_incomplete_attempt(
@@ -507,7 +528,7 @@ class WorkflowRunner:
                         step_row=failed_step,
                         step=step,
                         command=command,
-                        failure_code=outcome.code,
+                        failure_code=failure_code,
                         result=outcome.result,
                         raw_result=raw_result,
                     )
@@ -516,7 +537,7 @@ class WorkflowRunner:
                         event_type="agent.step.failed",
                         run=run,
                         step_id=str(step_row["step_id"]),
-                        payload={"step_key": step.step_key, "code": outcome.code, "status": step_status},
+                        payload={"step_key": step.step_key, "code": failure_code, "status": step_status},
                     )
                     if step_status == RunStatus.BLOCKED_LOGIN.value:
                         failure_meta = (
@@ -538,14 +559,14 @@ class WorkflowRunner:
                                     "source_system": str(
                                         failure_meta.get("source_system") or ""
                                     ),
-                                    "reason_code": outcome.code,
+                                    "reason_code": failure_code,
                                 },
                             )
                     uow.commit()
                 raise OrchestrationError(
-                    outcome.code,
-                    outcome.message,
-                    details={"status": outcome.run_status.value},
+                    failure_code,
+                    failure_message,
+                    details={"status": failure_status.value},
                 )
         return self._transition(run, RunStatus.VERIFYING)
 
@@ -963,11 +984,24 @@ class WorkflowRunner:
         error_code: str | None = None,
         error_summary: str | None = None,
         finished: bool = False,
+        honor_cancel_request: bool = False,
     ) -> None:
         with self._repository.unit_of_work() as uow:
             current = uow.runs.get(run_id, for_update=True)
             if current is None:
                 raise OrchestrationError("RUN_NOT_FOUND", "Run was not found while releasing its lease")
+            if (
+                honor_cancel_request
+                and current.get("cancel_requested_at")
+                and status != RunStatus.CANCELLED.value
+            ):
+                status = RunStatus.CANCELLED.value
+                error_code = "CANCELLED_BY_ACTOR"
+                error_summary = str(
+                    current.get("cancel_reason")
+                    or "Run cancellation was requested"
+                )
+                finished = True
             updated = uow.runs.release_or_schedule(
                 run_id,
                 worker_id=self._worker_id,
@@ -1102,6 +1136,7 @@ class WorkflowRunner:
                 RunStatus.FAILED_TERMINAL.value,
                 RunStatus.CANCELLED.value,
             },
+            honor_cancel_request=True,
         )
 
     def _can_retry_run(self, run_id: str) -> bool:

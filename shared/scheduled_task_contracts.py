@@ -14,7 +14,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 _DAILY_CRON_RE = re.compile(r"^(?P<minute>\d{1,2}) (?P<hour>\d{1,2}) \* \* \*$")
 _TIME_SUFFIX_RE = re.compile(r"^(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)$")
-_SLOT_SUFFIX_RE = re.compile(r"^\d+$")
 
 
 @dataclass(frozen=True)
@@ -23,6 +22,7 @@ class ScheduledTaskProfile:
     tool_version: str
     approved_arguments: Mapping[str, Any]
     dynamic_argument_rules: Mapping[str, str]
+    approved_task_ids: frozenset[str] = frozenset()
     operation_type: str = "internal_projection_write"
 
 
@@ -47,66 +47,135 @@ class ScheduledTaskContractError(ValueError):
 # Changing a governed tool version deliberately requires a matching code
 # review here.  Merely editing a database row or registry entry cannot expand
 # the scheduler's approval exemption.
+_ARRIVE_LIST_TASK_IDS = frozenset(
+    {"arrive_list_0830", "arrive_list_0900", "arrive_list_0930"}
+)
+_DAILY_SIGN_TASK_IDS = frozenset(
+    {
+        "daily_sign_0500",
+        "daily_sign_0700",
+        "daily_sign_0800",
+        "daily_sign_0900",
+        "daily_sign_1000",
+        "daily_sign_1100",
+        "daily_sign_1200",
+        "daily_sign_1300",
+        "daily_sign_1400",
+        "daily_sign_1430",
+        "daily_sign_1500",
+        "daily_sign_1530",
+        "daily_sign_1600",
+        "daily_sign_1630",
+        "daily_sign_1700",
+        "daily_sign_1730",
+        "daily_sign_1800",
+    }
+)
+_DELIVERY_STATUS_TASK_IDS = frozenset(
+    {
+        "delivery_status_0900",
+        "delivery_status_1000",
+        "delivery_status_1100",
+        "delivery_status_1200",
+        "delivery_status_1300",
+        "delivery_status_1400",
+        "delivery_status_1430",
+        "delivery_status_1500",
+        "delivery_status_1530",
+        "delivery_status_1600",
+        "delivery_status_1630",
+        "delivery_status_1700",
+        "delivery_status_1730",
+        "delivery_status_1800",
+        "delivery_status_1830",
+        "delivery_status_1900",
+        "delivery_status_1930",
+        "delivery_status_2000",
+        "delivery_status_2030",
+        "delivery_status_2100",
+    }
+)
+_SITE_SEND_TASK_IDS = frozenset(
+    {
+        "site_send_0500",
+        "site_send_0530",
+        "site_send_1800",
+        "site_send_1830",
+        "site_send_1900",
+        "site_send_1930",
+        "site_send_2000",
+        "site_send_2030",
+        "site_send_2100",
+    }
+)
+
+
 APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
     "send_order": ScheduledTaskProfile(
-        "sync_daily_send_orders",
-        "1.0.0",
-        {"account_id": "ronghui_default"},
-        {},
+        tool_name="sync_daily_send_orders",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "price_default"},
+        dynamic_argument_rules={},
+        approved_task_ids=frozenset({"send_order_2359"}),
     ),
     "delivery_status": ScheduledTaskProfile(
-        "sync_delivery_status",
-        "1.0.0",
-        {"account_id": "ronghui_default"},
-        {},
+        tool_name="sync_delivery_status",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "ronghui_default"},
+        dynamic_argument_rules={},
+        approved_task_ids=_DELIVERY_STATUS_TASK_IDS,
     ),
     "daily_sign": ScheduledTaskProfile(
-        "sync_daily_should_sign",
-        "2.0.0",
-        {
+        tool_name="sync_daily_should_sign",
+        tool_version="2.0.0",
+        approved_arguments={
             "r13_account_id": "r13_default",
             "problem_account_id": "ronghui_daxiang_s",
             "sign_account_id": "ronghui_daxiang_s",
-            "detail_account_id": "ronghui_daxiang_s",
+            "detail_account_id": "ronghui_default",
             "days": 7,
         },
-        {},
+        dynamic_argument_rules={},
+        approved_task_ids=_DAILY_SIGN_TASK_IDS,
     ),
     "site_send": ScheduledTaskProfile(
-        "sync_site_send_list",
-        "1.0.0",
-        {"account_id": "ronghui_default"},
-        {},
+        tool_name="sync_site_send_list",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "ronghui_default"},
+        dynamic_argument_rules={},
+        approved_task_ids=_SITE_SEND_TASK_IDS,
     ),
     "arrive_list": ScheduledTaskProfile(
-        "sync_arrive_list",
-        "1.0.0",
-        {"account_id": "ronghui_default"},
-        {},
+        tool_name="sync_arrive_list",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "ronghui_default"},
+        dynamic_argument_rules={},
+        approved_task_ids=_ARRIVE_LIST_TASK_IDS,
     ),
     "arrival_stats": ScheduledTaskProfile(
-        "sync_arrival_stats",
-        "1.0.0",
-        {"account_id": "ronghui_default", "trigger_flow": False},
-        {},
+        tool_name="sync_arrival_stats",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "ronghui_default", "trigger_flow": False},
+        dynamic_argument_rules={},
     ),
     "yunda_dispatch_forecast": ScheduledTaskProfile(
-        "sync_yunda_dispatch_forecast",
-        "1.0.0",
-        {"account_id": "yunda_default", "dest_brch": "56739382"},
-        {},
+        tool_name="sync_yunda_dispatch_forecast",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "yunda_default", "dest_brch": "56739382"},
+        dynamic_argument_rules={},
     ),
     "yunda_send_waybills": ScheduledTaskProfile(
-        "sync_yunda_send_waybills",
-        "1.0.0",
-        {"account_id": "yunda_default", "ensure_fields": True},
-        {},
+        tool_name="sync_yunda_send_waybills",
+        tool_version="1.0.0",
+        approved_arguments={"account_id": "yunda_default", "ensure_fields": False},
+        dynamic_argument_rules={},
+        approved_task_ids=frozenset({"yunda_send_waybills_2355"}),
     ),
     "finance_bills": ScheduledTaskProfile(
-        "sync_finance_bills",
-        "1.0.0",
-        {"mode": "sync", "platform": "ronghui", "rescan_days": 7},
-        {"target_date": "scheduled_previous_day"},
+        tool_name="sync_finance_bills",
+        tool_version="1.0.0",
+        approved_arguments={"mode": "sync", "platform": "ronghui", "rescan_days": 7},
+        dynamic_argument_rules={"target_date": "scheduled_previous_day"},
     ),
 }
 
@@ -184,18 +253,12 @@ def validate_persisted_scheduled_task(
 
 
 def _resolve_task_group(task_id: str) -> tuple[str | None, tuple[int, int] | None]:
-    for group_id in APPROVED_SCHEDULED_TASK_PROFILES:
-        if task_id == group_id:
-            return group_id, None
-        prefix = f"{group_id}_"
-        if task_id.startswith(prefix):
-            suffix = task_id[len(prefix) :]
-            time_match = _TIME_SUFFIX_RE.fullmatch(suffix)
-            if time_match:
-                return group_id, (int(time_match.group("hour")), int(time_match.group("minute")))
-        slot_prefix = f"{group_id}__slot_"
-        if task_id.startswith(slot_prefix) and _SLOT_SUFFIX_RE.fullmatch(task_id[len(slot_prefix) :]):
-            return group_id, None
+    for group_id, profile in APPROVED_SCHEDULED_TASK_PROFILES.items():
+        if task_id not in profile.approved_task_ids:
+            continue
+        time_match = _TIME_SUFFIX_RE.fullmatch(task_id.rsplit("_", 1)[-1])
+        if time_match:
+            return group_id, (int(time_match.group("hour")), int(time_match.group("minute")))
     return None, None
 
 

@@ -67,6 +67,7 @@ STEP_STATUSES = frozenset(
 )
 APPROVAL_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "EXPIRED", "INVALIDATED"})
 OUTBOX_STATUSES = frozenset({"PENDING", "PROCESSING", "PUBLISHED", "DEAD_LETTER"})
+OUTBOX_CANDIDATE_SCAN_LIMIT = 500
 TERMINAL_RUN_STATUSES = frozenset(
     {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
 )
@@ -2424,13 +2425,15 @@ class OutboxRepository(_RepositoryBase):
         limit: int,
         consumer_name: str | None = None,
     ) -> list[int]:
+        """Lock revalidated primary-key rows without secondary-index gap locks."""
+
         if limit <= 0:
             return []
         consumer_clause = " AND consumer_name=%s" if consumer_name else ""
         due_clause = f" AND {due_column} <= NOW(6)" if due_required else ""
         order_prefix = "consumer_name, " if consumer_name else ""
         params: list[Any] = [consumer_name] if consumer_name else []
-        params.append(min(2000, max(limit * 4, 64)))
+        params.append(OUTBOX_CANDIDATE_SCAN_LIMIT)
         cursor.execute(
             f"""
             SELECT outbox_id FROM outbox_events FORCE INDEX ({index_name})

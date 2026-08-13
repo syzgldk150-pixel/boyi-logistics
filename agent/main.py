@@ -153,8 +153,7 @@ from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import import_phase7_resources
 from agent.runtime_config import load_agent_environment
-from agent.scheduler import init_scheduler, reload_scheduler
-from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+from agent.scheduler import init_scheduler, reload_scheduler, seed_phase7_schedule_tasks
 from agent.tms_runtime import router as tms_router
 from agent.api_contracts import validation_failure
 from agent.tms_runtime.account_manager import get_account_manager
@@ -2290,10 +2289,7 @@ async def internal_scheduled_tasks():
 @app.post("/admin/seed-phase7-tasks", deprecated=True)
 async def seed_phase7_tasks():
     runtime = _runtime()
-    seeded = []
-    for task in PHASE7_SCHEDULED_TASK_TEMPLATES:
-        runtime.memory.upsert_scheduled_task(task)
-        seeded.append(task["id"])
+    seeded = list(seed_phase7_schedule_tasks(runtime))
     logger.info("Seeded Phase 7 schedule templates: %s", ", ".join(seeded))
     scheduler = reload_scheduler(runtime)
     return {"status": "ok", "seeded": seeded, "scheduler": scheduler}
