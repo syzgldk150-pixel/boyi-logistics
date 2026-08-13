@@ -402,6 +402,11 @@ class OrchestrationRepositoryTests(unittest.TestCase):
 
         select_sql = next(sql for sql, _ in cursor.calls if "SELECT * FROM agent_runs" in sql)
         self.assertIn("FOR UPDATE SKIP LOCKED", select_sql)
+        self.assertIn("FORCE INDEX (idx_agent_runs_claim)", select_sql)
+        self.assertIn(
+            "ORDER BY status, next_attempt_at, lease_expires_at, run_id",
+            select_sql,
+        )
         self.assertIn("lease_expires_at <=", select_sql)
         self.assertEqual("worker-1", rows[0]["worker_id"])
         self.assertEqual(0, rows[0]["execution_attempt_count"])

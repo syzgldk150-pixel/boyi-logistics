@@ -1073,14 +1073,17 @@ class AgentRunRepository(_RepositoryBase):
         batch_size = max(1, min(int(limit), 500))
         lease = max(1, min(int(lease_seconds), 3600))
         with self.cursor() as cursor:
+            # A locking read must follow the claim index order.  A filesort can
+            # scan and lock more rows than LIMIT returns, leaving a concurrent
+            # SKIP LOCKED worker with no row even when other work is available.
             cursor.execute(
                 f"""
-                SELECT * FROM agent_runs
+                SELECT * FROM agent_runs FORCE INDEX (idx_agent_runs_claim)
                 WHERE status IN ({placeholders})
                   AND next_attempt_at <= %s
                   AND (worker_id IS NULL OR lease_expires_at <= %s)
                   AND cancel_requested_at IS NULL
-                ORDER BY next_attempt_at, created_at, run_id
+                ORDER BY status, next_attempt_at, lease_expires_at, run_id
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
                 """,
