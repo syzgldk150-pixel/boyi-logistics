@@ -10,7 +10,6 @@ if str(CONSOLE_DIR) not in sys.path:
 
 from finance_service import (  # noqa: E402
     FinanceService,
-    FinanceUpstreamError,
     FinanceUnprocessableError,
     FinanceUnavailableError,
     FinanceValidationError,
@@ -124,14 +123,7 @@ class _FakeFinanceRepository:
 class FinanceServiceTests(unittest.TestCase):
     def setUp(self):
         self.repository = _FakeFinanceRepository()
-        self.agent_calls = []
-        self.agent_result = {"ok": True, "data": {"ok": True, "batch_id": 12}}
-
-        def agent_request(method, path, *, payload, timeout):
-            self.agent_calls.append({"method": method, "path": path, "payload": payload, "timeout": timeout})
-            return self.agent_result
-
-        self.service = FinanceService(self.repository, agent_request=agent_request)
+        self.service = FinanceService(self.repository)
 
     def test_default_period_is_current_month_and_filters_are_explicit(self):
         filters = parse_finance_filters(
@@ -319,55 +311,31 @@ class FinanceServiceTests(unittest.TestCase):
                 changed_by="admin",
             )
 
-    def test_sync_uses_agent_tool_without_login_context(self):
-        payload = self.service.start_sync(
+    def test_sync_builds_governed_arguments_without_login_context(self):
+        payload = self.service.build_sync_arguments(
             {"platform": "yunda", "account_id": "account-a", "rescan_days": 7}
         )
 
-        self.assertEqual(12, payload["batch_id"])
-        call = self.agent_calls[-1]
-        self.assertEqual("/internal/v1/tools/run", call["path"])
-        self.assertEqual(21600, call["timeout"])
-        self.assertEqual("sync_finance_bills", call["payload"]["tool_name"])
         self.assertEqual(
             {"mode": "sync", "rescan_days": 7, "platform": "yunda", "account_id": "account-a"},
-            call["payload"]["params"],
+            payload,
         )
-        self.assertNotIn("login_account", call["payload"]["params"])
-        self.assertNotIn("session_profile", call["payload"]["params"])
+        self.assertNotIn("login_account", payload)
+        self.assertNotIn("session_profile", payload)
 
     def test_backfill_requires_real_date_range(self):
         with self.assertRaisesRegex(FinanceValidationError, "请填写回溯开始日期"):
-            self.service.start_backfill({"end_date": "2026-07-11"})
+            self.service.build_backfill_arguments({"end_date": "2026-07-11"})
 
     def test_sync_rejects_credential_fields(self):
         with self.assertRaisesRegex(FinanceValidationError, "不能包含登录账号"):
-            self.service.start_sync({"login_account": "not-allowed"})
+            self.service.build_sync_arguments({"login_account": "not-allowed"})
 
     def test_retry_sends_only_batch_id(self):
-        self.service.retry_batch(8)
-
         self.assertEqual(
             {"mode": "retry", "batch_id": 8},
-            self.agent_calls[-1]["payload"]["params"],
+            self.service.build_retry_arguments(8),
         )
-
-    def test_sync_rejects_nested_agent_failure_envelopes(self):
-        failures = (
-            {"success": False, "error": "顶层工具执行失败"},
-            {"ok": True, "data": {"ok": False, "message": "数据层同步失败"}},
-            {"ok": True, "data": {"success": False, "message": "工具执行失败"}},
-            {
-                "ok": True,
-                "data": {"result": {"success": False, "message": "平台拉取失败"}},
-            },
-        )
-
-        for response in failures:
-            with self.subTest(response=response):
-                self.agent_result = response
-                with self.assertRaises(FinanceUpstreamError):
-                    self.service.start_sync({})
 
     def test_missing_shared_repository_is_explicitly_unavailable(self):
         service = FinanceService(object())

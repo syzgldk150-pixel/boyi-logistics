@@ -419,7 +419,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertIn('name="date_from" value="2026-06-22"', html)
         self.assertIn('name="date_to" value="2026-06-22"', html)
 
-    def test_date_range_refreshes_ronghui_and_yunda_before_local_query(self):
+    def test_date_range_get_is_read_only_and_queries_persisted_snapshot(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
         handler = _RenderHandler()
@@ -427,7 +427,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
             agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
-            return {"ok": True, "data": {"success": True, "result": {"ok": True, "sql_upserted": 2}}}
+            self.fail("waybill GET must not call Agent execution")
 
         app._agent_request = fake_agent_request
 
@@ -441,47 +441,18 @@ class WaybillQueryRenderTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(["sync_daily_send_orders", "sync_yunda_send_waybills"], [call["payload"]["tool_name"] for call in agent_calls])
-        self.assertEqual(
-            {"start_date": "2026-05-12", "end_date": "2026-05-13", "sql_only": True, "sync_sql": True},
-            agent_calls[0]["payload"]["params"],
-        )
-        self.assertEqual(
-            {
-                "start_date": "2026-05-12",
-                "end_date": "2026-05-13",
-                "sql_only": True,
-                "sync_sql": True,
-                "sync_sheet": False,
-                "session_profile": "yunda",
-            },
-            agent_calls[1]["payload"]["params"],
-        )
+        self.assertEqual([], agent_calls)
         self.assertEqual(1, len(repository.calls))
         self.assertEqual("2026/05/12", repository.calls[0]["filters"]["date_from"])
         self.assertEqual("2026/05/13", repository.calls[0]["filters"]["date_to"])
+        self.assertIn("GET 查询不会刷新外部来源", handler.wfile.getvalue().decode("utf-8"))
 
-    def test_date_refresh_success_message_is_not_rendered(self):
+    def test_date_filter_renders_read_only_snapshot_notice(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
         handler = _RenderHandler()
 
-        def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
-            return {
-                "ok": True,
-                "data": {
-                    "success": True,
-                    "data": {
-                        "ok": True,
-                        "fetched": 7,
-                        "sql_upserted": 7,
-                        "sql_deleted_stale": 0,
-                    },
-                    "duration_s": 1.2,
-                },
-            }
-
-        app._agent_request = fake_agent_request
+        app._agent_request = lambda *args, **kwargs: self.fail("GET must remain read-only")
 
         app._render_waybills(
             handler,
@@ -493,9 +464,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         )
 
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertNotIn("waybill-sync-notice", html)
-        self.assertNotIn("拉取 7", html)
-        self.assertNotIn("入库 7", html)
+        self.assertIn("GET 查询不会刷新外部来源", html)
 
     def test_keyword_filter_queries_waybills(self):
         repository = _WaybillRepo()
@@ -556,15 +525,15 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertEqual(1, len(repository.calls))
         self.assertEqual("signed", repository.calls[0]["filters"]["status"])
 
-    def test_source_filter_limits_external_refresh_to_selected_provider(self):
+    def test_source_filter_does_not_refresh_selected_provider_from_get(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
         handler = _RenderHandler()
         agent_calls = []
 
         def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
-            agent_calls.append(payload["tool_name"])
-            return {"ok": True, "data": {"success": True, "result": {"ok": True, "sql_upserted": 1}}}
+            agent_calls.append(endpoint)
+            self.fail("GET must remain read-only")
 
         app._agent_request = fake_agent_request
 
@@ -577,7 +546,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(["sync_yunda_send_waybills"], agent_calls)
+        self.assertEqual([], agent_calls)
 
     def test_manual_source_does_not_call_external_refresh(self):
         repository = _WaybillRepo()
@@ -612,15 +581,15 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         self.assertEqual(1, len(repository.calls))
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("31", html)
+        self.assertIn("GET 查询不会刷新外部来源", html)
 
-    def test_external_refresh_failure_is_rendered_without_blocking_local_query(self):
+    def test_agent_unavailability_is_irrelevant_to_read_only_waybill_get(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
         handler = _RenderHandler()
 
         def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
-            return {"ok": False, "error": "agent unavailable"}
+            self.fail("GET must not call Agent")
 
         app._agent_request = fake_agent_request
 
@@ -635,7 +604,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         self.assertEqual(1, len(repository.calls))
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("agent unavailable", html)
+        self.assertIn("GET 查询不会刷新外部来源", html)
 
     def test_keyword_where_only_searches_allowed_identity_fields(self):
         repository = DocumentRepository.__new__(DocumentRepository)

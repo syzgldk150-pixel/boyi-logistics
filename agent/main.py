@@ -8,22 +8,26 @@ import socket
 import sys
 import time
 import uuid
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from contextlib import asynccontextmanager, suppress
 from logging.handlers import TimedRotatingFileHandler
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import psutil
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
-from shared.runtime_events import register_tms_session_alert
+from shared.runtime_events import register_account_session_restored, register_tms_session_alert
+from shared.service_identity import ConsoleIdentityError, ConsoleIdentityVerifier
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -102,7 +106,28 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
+from agent.orchestration.approval_service import ApprovalService
+from agent.orchestration.command_gateway import CommandGateway
+from agent.orchestration.context_builder import ContextBuilder
+from agent.orchestration.control_plane_service import ControlPlaneService
+from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    EntityRef,
+    OrchestrationError,
+    RunStatus,
+    new_id,
+)
+from agent.orchestration.outbox_dispatcher import OutboxDispatcher
+from agent.orchestration.plan_validator import PlanValidator
+from agent.orchestration.planner import DeterministicPlanner
+from agent.orchestration.policy_engine import PolicyEngine, ScheduledAllowlistEntry
+from agent.orchestration.result_verifier import ResultVerifier
+from agent.orchestration.workflow_runner import WorkflowRunner
 from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal_request
+from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import import_phase7_resources
 from agent.runtime_config import load_agent_environment
 from agent.scheduler import init_scheduler, reload_scheduler
@@ -110,10 +135,13 @@ from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from agent.tms_runtime import router as tms_router
 from agent.api_contracts import validation_failure
 from agent.tms_runtime.account_manager import get_account_manager
+from agent.tms_runtime.account_contracts import FINANCE_ACCOUNT_ROLES
 from agent.tms_runtime.monitoring import configure_feishu_operation
 from agent.tms_runtime.routes import update_account_list_cache_status
+from agent.tms_runtime.routes import bind_agent_command_runtime
 from agent.tms_runtime.session_broker import get_session_broker
 from agent.workflow_resource_store import get_workflow_resource, list_workflow_resources
+from agent.tool_executor import ToolExecutor
 from feishu.bot import (
     bind_agent_runtime,
     feishu_event_mode,
@@ -127,6 +155,10 @@ from feishu.notify import send_tms_session_disconnected_alert
 from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
+from shared.orchestration_repository import (
+    OrchestrationPersistenceError,
+    OrchestrationRepository,
+)
 
 
 register_tms_session_alert(send_tms_session_disconnected_alert)
@@ -134,9 +166,14 @@ configure_feishu_operation(feishu_operation)
 
 
 agent_core: AgentCore | None = None
+orchestration_repository: OrchestrationRepository | None = None
+workflow_runner: WorkflowRunner | None = None
+outbox_dispatcher: OutboxDispatcher | None = None
+control_plane_service: ControlPlaneService | None = None
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 AGENT_INTERNAL_API_TOKEN = ""
+CONSOLE_IDENTITY_VERIFIER: ConsoleIdentityVerifier | None = None
 TMS_SESSION_ALERT_STATUSES = {"pending_code", "expired", "logged_out", "error"}
 TMS_SESSION_TRANSITION_ALERT_STATUSES = {"expired", "logged_out", "error"}
 TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
@@ -160,6 +197,175 @@ def _runtime() -> AgentCore:
     if agent_core is None:
         raise RuntimeError("Agent runtime is not initialized")
     return agent_core
+
+
+def _control_plane() -> ControlPlaneService:
+    if control_plane_service is None:
+        raise RuntimeError("Agent control plane is not initialized")
+    return control_plane_service
+
+
+def _orchestration_repo() -> OrchestrationRepository:
+    if orchestration_repository is None:
+        raise RuntimeError("Agent orchestration repository is not initialized")
+    return orchestration_repository
+
+
+def _orchestration_connection():
+    """Return a transaction-scoped MySQL connection; runtime never runs DDL."""
+
+    import pymysql
+
+    return pymysql.connect(
+        host=os.getenv("AGENT_DB_HOST", "127.0.0.1"),
+        port=int(os.getenv("AGENT_DB_PORT", "3306")),
+        user=os.getenv("AGENT_DB_USER", "agent"),
+        password=os.getenv("AGENT_DB_PASS", ""),
+        database=os.getenv("AGENT_DB_NAME", "agent_db"),
+        charset="utf8mb4",
+        autocommit=False,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+def _resolve_command_accounts(command: Command) -> list[dict]:
+    """Resolve public account identities without exposing credential material."""
+
+    rows = get_account_manager().list_accounts(include_status=False, validate=False)
+    active = [row for row in rows if bool(row.get("is_active", True))]
+    arguments = command.parameters.get("arguments")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    requested: list[str] = []
+    explicit = command.parameters.get("account_id") or arguments.get("account_id")
+    if explicit:
+        requested.append(str(explicit))
+    account_ids = arguments.get("account_ids")
+    if isinstance(account_ids, list):
+        requested.extend(str(value) for value in account_ids if str(value or "").strip())
+    tool_name = str(command.parameters.get("tool_name") or "")
+    if tool_name == "sync_customer_service_problems" and not requested:
+        active = [row for row in active if str(row.get("system") or "") in {"ronghui", "yunda"}]
+    elif tool_name == "sync_finance_bills" and not requested:
+        finance_roles = set(FINANCE_ACCOUNT_ROLES)
+        platform = str(arguments.get("platform") or "").strip().lower()
+        active = [
+            row
+            for row in active
+            if (str(row.get("system") or "").strip().lower(), str(row.get("account_id") or ""))
+            in finance_roles
+            and (not platform or str(row.get("system") or "").strip().lower() == platform)
+        ]
+    elif requested:
+        requested_set = set(requested)
+        active = [row for row in active if str(row.get("account_id") or "") in requested_set]
+    return [
+        {
+            "account_id": str(row.get("account_id") or ""),
+            "system": str(row.get("system") or ""),
+            "account_purpose": str(row.get("account_purpose") or ""),
+            "session_profile": str(row.get("session_profile") or ""),
+            "is_active": bool(row.get("is_active", True)),
+        }
+        for row in active
+    ]
+
+
+def _resolve_command_entities(command: Command) -> list[dict]:
+    return [reference.to_dict() for reference in command.entity_refs]
+
+
+def _resolve_source_integrity(command: Command) -> dict:
+    # Source integrity must come from an authoritative server-side resolver.
+    # Caller-provided execution context is deliberately excluded from plan
+    # fingerprints and approval decisions.
+    del command
+    return {}
+
+
+def _resolve_command_resources(command: Command) -> dict:
+    service = control_plane_service
+    return service.resolve_command_context(command) if service is not None else {}
+
+
+def _scheduler_allowlist(catalog) -> tuple[ScheduledAllowlistEntry, ...]:
+    entries: list[ScheduledAllowlistEntry] = []
+    for template in PHASE7_SCHEDULED_TASK_TEMPLATES:
+        tool_name = str(template.get("tool_name") or "")
+        capability = catalog.get_capability(tool_name)
+        if not capability:
+            continue
+        if str(capability.get("operation_type") or "") not in {
+            "internal_projection_write",
+            "financial_write",
+        }:
+            continue
+        approval = capability.get("approval") if isinstance(capability.get("approval"), dict) else {}
+        if approval.get("mode") != "schedule_allowlist":
+            continue
+        arguments = dict(template.get("tool_params") or {})
+        dynamic_rules: dict[str, str] = {}
+        if tool_name == "sync_finance_bills":
+            dynamic_rules["target_date"] = "scheduled_previous_day"
+        entries.append(
+            ScheduledAllowlistEntry.from_arguments(
+                task_id=str(template["id"]),
+                tool_name=tool_name,
+                tool_version=str(capability["version"]),
+                arguments=arguments,
+                dynamic_argument_rules=dynamic_rules,
+                cron_expression=str(template.get("cron_expression") or ""),
+            )
+        )
+    finance = catalog.get_capability("sync_finance_bills")
+    if finance:
+        entries.append(
+            ScheduledAllowlistEntry.from_arguments(
+                task_id="finance_startup_catchup",
+                tool_name="sync_finance_bills",
+                tool_version=str(finance["version"]),
+                arguments={"mode": "sync", "rescan_days": 7},
+                cron_expression="@startup",
+            )
+        )
+    return tuple(entries)
+
+
+def _noop_outbox_handler(delivery, _uow):
+    return {"event_id": delivery.get("event_id"), "acknowledged": True}
+
+
+def _actor_from_payload(
+    payload: dict | None,
+    actor_roles: list[str] | None,
+    source: str,
+    *,
+    fallback_id: str = "legacy-api",
+) -> Actor:
+    values = payload if isinstance(payload, dict) else {}
+    source_value = str(source or "legacy_api").strip()
+    default_types = {
+        "console": ActorType.CONSOLE_ADMIN,
+        "feishu": ActorType.FEISHU_USER,
+        "scheduler": ActorType.SCHEDULER,
+        "webhook": ActorType.WEBHOOK,
+        "system": ActorType.SYSTEM,
+    }
+    raw_type = str(values.get("actor_type") or default_types.get(source_value, ActorType.LEGACY_API).value)
+    try:
+        actor_type = ActorType(raw_type)
+    except ValueError as exc:
+        raise OrchestrationError("INVALID_ACTOR", "Unknown actor_type") from exc
+    expected_type = default_types.get(source_value)
+    if expected_type is not None and actor_type is not expected_type:
+        raise OrchestrationError("ACTOR_SOURCE_MISMATCH", "Actor type does not match command source")
+    roles_value = values.get("roles") if isinstance(values.get("roles"), list) else actor_roles or []
+    return Actor(
+        actor_type=actor_type,
+        actor_id=str(values.get("actor_id") or fallback_id),
+        roles=tuple(str(role) for role in roles_value),
+        display_name=str(values.get("display_name") or ""),
+        authenticated_by=str(values.get("authenticated_by") or ""),
+    )
 
 
 def _tms_session_monitor_interval_sec() -> int:
@@ -391,12 +597,16 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global AGENT_INTERNAL_API_TOKEN, agent_core
+    global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
+    global orchestration_repository, workflow_runner, outbox_dispatcher, control_plane_service
     load_agent_environment()
     setup_logging()
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
     if not AGENT_INTERNAL_API_TOKEN:
         raise RuntimeError("AGENT_INTERNAL_API_TOKEN is required")
+    CONSOLE_IDENTITY_VERIFIER = ConsoleIdentityVerifier(
+        str(os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or "").strip()
+    )
     agent_core = AgentCore(
         direct_tool_runners={
             "track_waybill": run_track_waybill,
@@ -407,7 +617,93 @@ async def lifespan(app: FastAPI):
     logger.info("Agent service starting instance_id=%s pid=%s", INSTANCE_ID, os.getpid())
 
     await runtime.init()
-    bind_agent_runtime(runtime, asyncio.get_running_loop())
+    repository = OrchestrationRepository(_orchestration_connection)
+    mysql_version = await asyncio.to_thread(repository.validate_mysql8)
+    await asyncio.to_thread(repository.validate_schema)
+    logger.info("Orchestration persistence ready mysql=%s", mysql_version)
+
+    tool_executor = ToolExecutor()
+    catalog = runtime.registry
+    execution_port = RegisteredToolExecutionAdapter(
+        catalog=catalog,
+        executor=tool_executor,
+        direct_runners={
+            "track_waybill": run_track_waybill,
+            "get_price": run_price_tool,
+        },
+    )
+    context_builder = ContextBuilder(
+        account_resolver=_resolve_command_accounts,
+        resource_resolver=_resolve_command_resources,
+        entity_resolver=_resolve_command_entities,
+        integrity_resolver=_resolve_source_integrity,
+    )
+    planner = DeterministicPlanner(catalog)
+    validator = PlanValidator(catalog)
+    policy = PolicyEngine(catalog, scheduler_allowlist=_scheduler_allowlist(catalog))
+    runner_holder: dict[str, WorkflowRunner] = {}
+    approval_service = ApprovalService(
+        repository,
+        policy,
+        wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
+    )
+    runner = WorkflowRunner(
+        repository=repository,
+        catalog=catalog,
+        execution_port=execution_port,
+        context_builder=context_builder,
+        planner=planner,
+        validator=validator,
+        policy=policy,
+        approval_service=approval_service,
+        verifier=ResultVerifier(),
+        worker_id=f"{INSTANCE_ID}:runs",
+    )
+    runner_holder["runner"] = runner
+    dispatcher = OutboxDispatcher(
+        repository,
+        worker_id=f"{INSTANCE_ID}:outbox",
+        handlers={
+            "orchestration.run_worker": _noop_outbox_handler,
+            "orchestration.audit": _noop_outbox_handler,
+        },
+    )
+    gateway = CommandGateway(repository, wake_runner=runner.wake)
+    service = ControlPlaneService(
+        repository,
+        approval_service,
+        wake_runner=runner.wake,
+        cancel_active=runner.cancel_active,
+        wake_outbox=dispatcher.wake,
+    )
+    orchestration_repository = repository
+    workflow_runner = runner
+    outbox_dispatcher = dispatcher
+    control_plane_service = service
+    runtime.configure_orchestration(
+        command_gateway=gateway,
+        repository=repository,
+        workflow_runner=runner,
+        execution_runtime=tool_executor,
+        control_plane_service=service,
+    )
+    await runner.start()
+    await dispatcher.start()
+    loop = asyncio.get_running_loop()
+    bind_agent_runtime(runtime, loop)
+    bind_agent_command_runtime(runtime)
+
+    def on_session_restored(payload: dict) -> bool:
+        account_id = str((payload or {}).get("account_id") or "").strip()
+        if not account_id:
+            return False
+        loop.call_soon_threadsafe(
+            asyncio.create_task,
+            service.publish_session_restored(account_id),
+        )
+        return True
+
+    register_account_session_restored(on_session_restored)
 
     scheduler = init_scheduler(runtime)
     scheduler.start()
@@ -435,9 +731,18 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await tms_session_alert_task
     scheduler.shutdown(wait=False)
+    register_account_session_restored(None)
+    bind_agent_command_runtime(None)
     await stop_feishu_ws()
+    await runner.stop()
+    await dispatcher.stop()
     await runtime.close()
+    control_plane_service = None
+    outbox_dispatcher = None
+    workflow_runner = None
+    orchestration_repository = None
     agent_core = None
+    CONSOLE_IDENTITY_VERIFIER = None
     logger.info("Agent service stopped")
 
 
@@ -464,6 +769,48 @@ async def internal_http_error(request: Request, exc: HTTPException):
     return await http_exception_handler(request, exc)
 
 
+@app.exception_handler(OrchestrationError)
+async def orchestration_error_handler(request: Request, exc: OrchestrationError):
+    if not request.url.path.startswith("/internal/v1/"):
+        raise exc
+    status_by_code = {
+        "RUN_NOT_FOUND": 404,
+        "WORK_ITEM_NOT_FOUND": 404,
+        "APPROVAL_NOT_FOUND": 404,
+        "APPROVAL_FORBIDDEN": 403,
+        "ACTION_FORBIDDEN": 403,
+        "TOOL_PERMISSION_DENIED": 403,
+        "OPERATION_DISABLED": 403,
+        "APPROVAL_EXPIRED": 409,
+        "APPROVAL_REJECTED": 409,
+        "APPROVAL_NOT_PENDING": 409,
+        "PLAN_STALE": 409,
+        "IDEMPOTENCY_CONFLICT": 409,
+        "ILLEGAL_RUN_TRANSITION": 409,
+    }
+    status_code = status_by_code.get(exc.code, 422)
+    return JSONResponse(
+        status_code=status_code,
+        content=api_failure(exc.code, exc.message, data=exc.details or None),
+    )
+
+
+@app.exception_handler(OrchestrationPersistenceError)
+async def orchestration_state_conflict_handler(
+    request: Request,
+    exc: OrchestrationPersistenceError,
+):
+    if not request.url.path.startswith("/internal/v1/"):
+        raise exc
+    return JSONResponse(
+        status_code=409,
+        content=api_failure(
+            "STATE_CONFLICT",
+            redact_text(exc)[:500] or "Control-plane state changed concurrently",
+        ),
+    )
+
+
 @app.exception_handler(Exception)
 async def internal_unhandled_error(request: Request, exc: Exception):
     if request.url.path.startswith("/internal/v1/"):
@@ -477,6 +824,16 @@ async def internal_unhandled_error(request: Request, exc: Exception):
 
 @app.middleware("http")
 async def require_internal_api_token(request: Request, call_next):
+    request.state.console_principal = None
+    execution_capability = str(
+        request.headers.get(EXECUTION_CAPABILITY_HEADER) or ""
+    ).strip()
+    if execution_capability and await _execution_capability_authorizes_request(
+        request,
+        execution_capability,
+    ):
+        return await call_next(request)
+
     failure = authenticate_internal_request(
         path=request.url.path,
         expected_token=AGENT_INTERNAL_API_TOKEN,
@@ -491,7 +848,91 @@ async def require_internal_api_token(request: Request, call_next):
                 "error": {"code": "internal_auth_failed", "message": failure.message},
             },
         )
+    verifier = CONSOLE_IDENTITY_VERIFIER
+    if verifier is not None:
+        try:
+            request.state.console_principal = verifier.verify(
+                headers=request.headers,
+                method=request.method,
+                request_target=_request_target(request),
+                body=await request.body(),
+            )
+        except ConsoleIdentityError as exc:
+            status_code = 401
+            if exc.code == "CONSOLE_SIGNING_SECRET_NOT_CONFIGURED":
+                status_code = 503
+            elif exc.code == "CONSOLE_SIGNATURE_REPLAYED":
+                status_code = 409
+            return JSONResponse(
+                status_code=status_code,
+                content=api_failure(exc.code, str(exc)),
+            )
+    if _admin_request_requires_console_principal(request.url.path):
+        principal = getattr(request.state, "console_principal", None)
+        roles = {
+            str(role or "").strip().lower()
+            for role in (
+                principal.get("roles", [])
+                if isinstance(principal, dict)
+                else []
+            )
+        }
+        if (
+            not isinstance(principal, dict)
+            or principal.get("actor_type") != "console_admin"
+            or principal.get("authenticated_by") != "mysql_admin_session"
+            or not {"admin", "super_admin"}.intersection(roles)
+        ):
+            return JSONResponse(
+                status_code=403,
+                content=api_failure(
+                    "ACTION_FORBIDDEN",
+                    "This Agent administration request requires an authenticated Console administrator",
+                ),
+            )
     return await call_next(request)
+
+
+def _admin_request_requires_console_principal(path: str) -> bool:
+    """Keep service authentication separate from administrator authority."""
+
+    normalized = "/" + str(path or "").lstrip("/")
+    return normalized in {"/admin", "/internal/v1/admin"} or normalized.startswith(
+        ("/admin/", "/internal/v1/admin/")
+    )
+
+
+def _request_target(request: Request) -> str:
+    target = request.url.path or "/"
+    if request.url.query:
+        target += f"?{request.url.query}"
+    return target
+
+
+async def _execution_capability_authorizes_request(
+    request: Request,
+    capability: str,
+) -> bool:
+    """Allow a capability to reach only its exact legacy ``/tms/<target>``."""
+
+    path = str(request.url.path or "")
+    if request.method.upper() != "POST" or not path.startswith("/tms/"):
+        return False
+    target_name = path.removeprefix("/tms/")
+    if not target_name or "/" in target_name:
+        return False
+    try:
+        payload = await request.json()
+    except Exception:
+        return False
+    params = payload.get("params") if isinstance(payload, dict) else None
+    if not isinstance(params, dict):
+        return False
+    return authorize_tms_target(
+        capability,
+        target_name,
+        request_params=params,
+    )
 
 
 def _webhook_token() -> str:
@@ -519,15 +960,58 @@ async def _verify_webhook_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid webhook token")
 
 
-async def _webhook_payload(request: Request) -> dict:
-    payload: dict = {"query": dict(request.query_params)}
+async def _webhook_envelope(request: Request) -> dict[str, dict]:
+    """Read transport metadata without merging it into governed arguments."""
+
+    body: dict = {}
+    raw_body = await request.body()
+    if raw_body.strip():
+        try:
+            parsed = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON webhook payload") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="Webhook JSON payload must be an object")
+        body = dict(parsed)
+    return {"body": body, "query": dict(request.query_params)}
+
+
+def _phase7_webhook_arguments(tool_name: str, envelope: dict[str, dict]) -> dict:
+    """Select only fields declared by the target tool input schema.
+
+    Event identifiers and arbitrary transport metadata are deliberately kept
+    outside tool arguments.  Conflicting body/query values fail closed instead
+    of relying on an implicit precedence rule.
+    """
+
+    capability = _runtime().registry.get_capability(tool_name)
+    if not isinstance(capability, dict):
+        raise HTTPException(status_code=500, detail="Webhook target tool is not registered")
+    schema = capability.get("input_schema")
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict):
+        raise HTTPException(status_code=500, detail="Webhook target tool has no input schema")
+
+    body = envelope.get("body") if isinstance(envelope.get("body"), dict) else {}
+    query = envelope.get("query") if isinstance(envelope.get("query"), dict) else {}
+    arguments: dict = {}
+    for field in properties:
+        body_has = field in body
+        query_has = field in query
+        if body_has and query_has and body[field] != query[field]:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Conflicting webhook argument in body and query: {field}",
+            )
+        if body_has:
+            arguments[field] = body[field]
+        elif query_has:
+            arguments[field] = query[field]
     try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if isinstance(body, dict):
-        payload.update(body)
-    return payload
+        _runtime().registry.validate_arguments(tool_name, arguments)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return arguments
 
 
 def _phase7_webhook_tool(path: str) -> str | None:
@@ -540,6 +1024,8 @@ def _phase7_webhook_tool(path: str) -> str | None:
     for resource_key, tool_name in mapping.items():
         resource = get_workflow_resource(resource_key)
         resource_path = str((resource or {}).get("path") or "").strip("/")
+        if resource_path.startswith("webhook/"):
+            resource_path = resource_path[len("webhook/") :]
         if resource_path and resource_path == normalized_path:
             return tool_name
     return None
@@ -603,10 +1089,12 @@ async def feishu_event_webhook(request: Request):
         logger.info("Ignored Feishu webhook payload without event body: type=%s", event_type or "unknown")
         return {"code": 0, "msg": "ignored"}
 
+    header = payload.get("header") if isinstance(payload.get("header"), dict) else {}
+    event_id = str(header.get("event_id") or "").strip()
     if event_type == "im.message.receive_v1":
-        accepted = queue_im_message_payload(event_body)
+        accepted = queue_im_message_payload(event_body, event_id=event_id)
     elif event_type == "application.bot.menu_v6":
-        accepted = queue_bot_menu_payload(event_body)
+        accepted = queue_bot_menu_payload(event_body, event_id=event_id)
     else:
         logger.info("Ignored unsupported Feishu webhook event: %s", event_type or "unknown")
         return {"code": 0, "msg": "ignored"}
@@ -617,7 +1105,21 @@ async def feishu_event_webhook(request: Request):
 @app.post("/webhook/sign-status")
 async def webhook_sign_status(request: Request):
     await _verify_webhook_token(request)
-    return await _runtime().execute_tool("sync_delivery_status", await _webhook_payload(request))
+    envelope = await _webhook_envelope(request)
+    source_event_id = _stable_webhook_event_id(envelope)
+    arguments = _phase7_webhook_arguments("sync_delivery_status", envelope)
+    return await _runtime().execute_tool(
+        "sync_delivery_status",
+        arguments,
+        actor=Actor(ActorType.WEBHOOK, "sign-status"),
+        source="webhook",
+        idempotency_key=f"webhook:sign-status:{source_event_id}",
+        execution_context={
+            "webhook_path": "sign-status",
+            "source_event_id": source_event_id,
+            "argument_fields": sorted(arguments),
+        },
+    )
 
 
 @app.post("/webhook/{path:path}")
@@ -626,9 +1128,40 @@ async def webhook_handler(path: str, request: Request):
     tool_name = _phase7_webhook_tool(path)
     if tool_name:
         logger.info("Webhook migrated route hit: /%s -> %s", path, tool_name)
-        return await _runtime().execute_tool(tool_name, await _webhook_payload(request))
+        envelope = await _webhook_envelope(request)
+        source_event_id = _stable_webhook_event_id(envelope)
+        arguments = _phase7_webhook_arguments(tool_name, envelope)
+        return await _runtime().execute_tool(
+            tool_name,
+            arguments,
+            actor=Actor(ActorType.WEBHOOK, path),
+            source="webhook",
+            idempotency_key=f"webhook:{path}:{source_event_id}",
+            execution_context={
+                "webhook_path": path,
+                "source_event_id": source_event_id,
+                "argument_fields": sorted(arguments),
+            },
+        )
     logger.info("Webhook request received: /%s", path)
     return {"status": "ok", "message": "webhook endpoint placeholder"}
+
+
+def _stable_webhook_event_id(envelope: dict) -> str:
+    body = envelope.get("body") if isinstance(envelope.get("body"), dict) else {}
+    query = envelope.get("query") if isinstance(envelope.get("query"), dict) else {}
+    for field in ("source_event_id", "event_id", "id"):
+        body_value = str(body.get(field) or "").strip()
+        query_value = str(query.get(field) or "").strip()
+        if body_value and query_value and body_value != query_value:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Conflicting webhook event identifier: {field}",
+            )
+        value = body_value or query_value
+        if str(value or "").strip():
+            return str(value).strip()
+    raise HTTPException(status_code=422, detail="Webhook command requires a stable source event ID")
 
 
 @app.get("/health")
@@ -676,6 +1209,7 @@ async def internal_health():
                 "deepseek": runtime.llm_status("deepseek"),
                 "glm": runtime.llm_status("glm"),
                 "mysql": runtime.db_status(),
+                "outbox": _orchestration_repo().outbox_health(),
                 "tms_session": get_session_broker().describe_status(validate=False),
             },
             "last_tool_run": runtime.last_tool_info(),
@@ -684,34 +1218,408 @@ async def internal_health():
     )
 
 
+class ActorPayload(BaseModel):
+    actor_type: str
+    actor_id: str
+    roles: list[str] = Field(default_factory=list)
+    display_name: str = ""
+    authenticated_by: str = ""
+
+
+class EntityRefPayload(BaseModel):
+    entity_type: str
+    entity_id: str
+    source_system: str = ""
+    relation_type: str = "subject"
+    metadata: dict = Field(default_factory=dict)
+
+
+class CommandRequest(BaseModel):
+    command_type: str
+    parameters: dict = Field(default_factory=dict)
+    idempotency_key: str
+    entity_refs: list[EntityRefPayload] = Field(default_factory=list)
+    correlation_id: str | None = None
+    actor: ActorPayload | None = None
+    actor_roles: list[str] = Field(default_factory=list)
+    source: str
+
+
+class TrustedActionRequest(BaseModel):
+    actor: ActorPayload | None = None
+    actor_roles: list[str] = Field(default_factory=list)
+    source: str
+
+
+class CancelRunRequest(TrustedActionRequest):
+    comment: str = ""
+
+
+class RetryRunRequest(TrustedActionRequest):
+    reason: str = ""
+
+
+class ClarificationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = ""
+    account_id: str | None = None
+    argument_updates: dict[str, Any] | None = None
+
+
+class ClarifyRunRequest(TrustedActionRequest):
+    clarification: str | ClarificationPayload
+
+
+class AssignWorkItemRequest(TrustedActionRequest):
+    owner_id: str
+    expected_version: int | None = None
+
+
+class ApprovalDecisionRequest(TrustedActionRequest):
+    approval_id: str | None = None
+    plan_hash: str
+    comment: str = ""
+
+
+def _http_request_actor(
+    request: Request,
+    *,
+    requested_source: str,
+) -> tuple[Actor, str]:
+    """Derive an HTTP actor from verified caller scope, never from JSON fields."""
+
+    principal = getattr(request.state, "console_principal", None)
+    if isinstance(principal, dict):
+        if requested_source != "console":
+            raise OrchestrationError(
+                "ACTOR_SOURCE_MISMATCH",
+                "Signed Console principals may only submit Console requests",
+            )
+        return (
+            _actor_from_payload(
+                principal,
+                list(principal.get("roles") or []),
+                "console",
+            ),
+            "console",
+        )
+    if requested_source == "console":
+        raise OrchestrationError(
+            "TRUSTED_CONSOLE_ACTOR_REQUIRED",
+            "A signed Console administrator principal is required",
+        )
+    return (
+        Actor(
+            ActorType.LEGACY_API,
+            "internal-api",
+            roles=(),
+            authenticated_by="internal_api_token",
+        ),
+        "legacy_api",
+    )
+
+
+def _command_from_request(req: CommandRequest, request: Request) -> Command:
+    actor, source = _http_request_actor(request, requested_source=req.source)
+    parameters = dict(req.parameters)
+    if req.command_type == "tool.execute" and "arguments" not in parameters:
+        raise OrchestrationError("INVALID_TOOL_ARGUMENTS", "tool.execute parameters require arguments")
+    return Command(
+        command_type=req.command_type,
+        source=source,
+        actor=actor,
+        parameters=parameters,
+        idempotency_key=req.idempotency_key,
+        entity_refs=tuple(
+            EntityRef(**reference.model_dump()) for reference in req.entity_refs
+        ),
+        correlation_id=req.correlation_id or new_id(),
+    )
+
+
+def _action_actor(req: TrustedActionRequest, request: Request) -> Actor:
+    actor, _source = _http_request_actor(request, requested_source=req.source)
+    return actor
+
+
+def _require_console_admin_action(req: TrustedActionRequest, request: Request) -> Actor:
+    actor = _action_actor(req, request)
+    if (
+        req.source != "console"
+        or actor.actor_type is not ActorType.CONSOLE_ADMIN
+        or not {"admin", "super_admin"}.intersection(actor.roles)
+    ):
+        raise OrchestrationError(
+            "ACTION_FORBIDDEN",
+            "This control-plane action requires an authenticated Console administrator",
+        )
+    return actor
+
+
+def _require_console_admin_request(request: Request) -> Actor:
+    """Require a verified Console principal for control-plane reads."""
+
+    actor, _source = _http_request_actor(request, requested_source="console")
+    if (
+        actor.actor_type is not ActorType.CONSOLE_ADMIN
+        or not {"admin", "super_admin"}.intersection(actor.roles)
+    ):
+        raise OrchestrationError(
+            "ACTION_FORBIDDEN",
+            "This control-plane request requires an authenticated Console administrator",
+        )
+    return actor
+
+
+@app.post("/internal/v1/commands", status_code=202)
+async def submit_command(req: CommandRequest, request: Request):
+    receipt = _runtime().submit_command(_command_from_request(req, request))
+    return JSONResponse(
+        status_code=202,
+        content=api_success(receipt.to_dict()),
+        headers={"Location": f"/internal/v1/runs/{receipt.run_id}"},
+    )
+
+
+@app.get("/internal/v1/runs/{run_id}")
+async def get_control_plane_run(run_id: str, request: Request):
+    _require_console_admin_request(request)
+    return api_success(_control_plane().get_run(run_id))
+
+
+@app.post("/internal/v1/runs/{run_id}/cancel")
+async def cancel_control_plane_run(run_id: str, req: CancelRunRequest, request: Request):
+    return api_success(
+        await _control_plane().cancel_run(
+            run_id,
+            actor=_require_console_admin_action(req, request),
+            comment=req.comment,
+        )
+    )
+
+
+@app.post("/internal/v1/runs/{run_id}/retry")
+async def retry_control_plane_run(run_id: str, req: RetryRunRequest, request: Request):
+    return api_success(
+        _control_plane().retry_run(
+            run_id,
+            actor=_require_console_admin_action(req, request),
+            reason=req.reason,
+        )
+    )
+
+
+@app.post("/internal/v1/runs/{run_id}/clarify")
+async def clarify_control_plane_run(run_id: str, req: ClarifyRunRequest, request: Request):
+    clarification = req.clarification
+    if isinstance(clarification, ClarificationPayload):
+        clarification = clarification.model_dump(exclude_none=True)
+    return api_success(
+        _control_plane().clarify_run(
+            run_id,
+            actor=_require_console_admin_action(req, request),
+            clarification=clarification,
+        )
+    )
+
+
+@app.get("/internal/v1/work-items")
+async def list_control_plane_work_items(
+    request: Request,
+    q: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
+    item_type: str | None = Query(default=None, alias="type"),
+    source: str | None = None,
+    owner: str | None = None,
+    sla: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    _require_console_admin_request(request)
+    normalized_page = max(1, int(page))
+    normalized_page_size = max(1, min(int(page_size), 500))
+    offset = (normalized_page - 1) * normalized_page_size
+    sla_from, sla_before, sla_missing = _work_item_sla_filter(sla)
+    data = _control_plane().list_work_items(
+        status=status,
+        item_type=item_type,
+        priority=priority,
+        source=source,
+        query=q,
+        owner_id=owner,
+        sla_from=sla_from,
+        sla_before=sla_before,
+        sla_missing=sla_missing,
+        limit=normalized_page_size,
+        offset=offset,
+    )
+    data.update(
+        {
+            "page": normalized_page,
+            "page_size": normalized_page_size,
+            "has_previous": normalized_page > 1,
+        }
+    )
+    return api_success(data)
+
+
+def _work_item_sla_filter(
+    value: str | None,
+) -> tuple[datetime | None, datetime | None, bool | None]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None, None, None
+    now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    today_start = datetime.combine(now.date(), datetime_time.min)
+    tomorrow_start = today_start + timedelta(days=1)
+    if normalized == "overdue":
+        return None, now, False
+    if normalized == "today":
+        return today_start, tomorrow_start, False
+    if normalized == "upcoming":
+        return tomorrow_start, None, False
+    if normalized == "missing":
+        return None, None, True
+    raise OrchestrationError("INVALID_SLA_FILTER", "Unsupported SLA filter")
+
+
+@app.get("/internal/v1/work-items/{work_item_id}")
+async def get_control_plane_work_item(work_item_id: str, request: Request):
+    _require_console_admin_request(request)
+    return api_success(_control_plane().get_work_item(work_item_id))
+
+
+@app.get("/internal/v1/work-items/{work_item_id}/timeline")
+async def get_control_plane_timeline(
+    work_item_id: str,
+    request: Request,
+    limit: int = 500,
+):
+    _require_console_admin_request(request)
+    return api_success(_control_plane().get_timeline(work_item_id, limit=limit))
+
+
+@app.get("/internal/v1/work-items/{work_item_id}/evidence")
+async def get_control_plane_evidence(
+    work_item_id: str,
+    request: Request,
+    run_id: str | None = None,
+    limit: int = 200,
+):
+    _require_console_admin_request(request)
+    return api_success(_control_plane().list_evidence(work_item_id, run_id=run_id, limit=limit))
+
+
+@app.post("/internal/v1/work-items/{work_item_id}/assign")
+async def assign_control_plane_work_item(
+    work_item_id: str,
+    req: AssignWorkItemRequest,
+    request: Request,
+):
+    actor = _require_console_admin_action(req, request)
+    current = _orchestration_repo().get_work_item(work_item_id)
+    if current is None:
+        raise OrchestrationError("WORK_ITEM_NOT_FOUND", "Work item was not found")
+    expected_version = req.expected_version if req.expected_version is not None else int(current["version"])
+    return api_success(
+        _control_plane().assign_work_item(
+            work_item_id,
+            expected_version=expected_version,
+            owner_type=actor.actor_type.value,
+            owner_id=req.owner_id,
+        )
+    )
+
+
+@app.post("/internal/v1/approvals/{approval_id}/approve")
+async def approve_control_plane_plan(
+    approval_id: str,
+    req: ApprovalDecisionRequest,
+    request: Request,
+):
+    if req.approval_id and req.approval_id != approval_id:
+        raise OrchestrationError("APPROVAL_ID_MISMATCH", "Path and body approval IDs do not match")
+    return api_success(
+        _control_plane().approve(
+            approval_id,
+            plan_hash=req.plan_hash,
+            actor=_require_console_admin_action(req, request),
+            source="console",
+            comment=req.comment,
+        )
+    )
+
+
+@app.post("/internal/v1/approvals/{approval_id}/reject")
+async def reject_control_plane_plan(
+    approval_id: str,
+    req: ApprovalDecisionRequest,
+    request: Request,
+):
+    if req.approval_id and req.approval_id != approval_id:
+        raise OrchestrationError("APPROVAL_ID_MISMATCH", "Path and body approval IDs do not match")
+    return api_success(
+        _control_plane().reject(
+            approval_id,
+            plan_hash=req.plan_hash,
+            actor=_require_console_admin_action(req, request),
+            source="console",
+            comment=req.comment,
+        )
+    )
+
+
 class ChatRequest(BaseModel):
     message: str
     user_id: str = "console"
     conversation_id: str | None = None
+    request_id: str | None = None
+    actor: dict | None = None
+    actor_roles: list[str] = Field(default_factory=list)
+    source: str = "console"
 
 
 @app.post("/chat", deprecated=True)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
+    actor, source = _http_request_actor(request, requested_source=req.source)
     return await _runtime().handle_message(
         message=req.message,
         user_id=req.user_id,
         conversation_id=req.conversation_id,
+        actor=actor,
+        source=source,
+        request_id=req.request_id,
     )
 
 
 @app.post("/internal/v1/chat")
-async def internal_chat(req: ChatRequest):
-    return api_success(await chat(req))
+async def internal_chat(req: ChatRequest, request: Request):
+    return api_success(await chat(req, request))
 
 
 class ToolRequest(BaseModel):
     tool_name: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
+    idempotency_key: str | None = None
+    actor: dict | None = None
+    actor_roles: list[str] = Field(default_factory=list)
+    source: str = "legacy_api"
+    correlation_id: str | None = None
 
 
 @app.post("/run-tool", deprecated=True)
-async def run_tool(req: ToolRequest):
-    return await _runtime().execute_tool(req.tool_name, req.params)
+async def run_tool(req: ToolRequest, request: Request):
+    actor, source = _http_request_actor(request, requested_source=req.source)
+    return await _runtime().execute_tool(
+        req.tool_name,
+        req.params,
+        actor=actor,
+        source=source,
+        idempotency_key=req.idempotency_key,
+        correlation_id=req.correlation_id,
+    )
 
 
 class CancelToolRequest(BaseModel):
@@ -721,7 +1629,15 @@ class CancelToolRequest(BaseModel):
 
 @app.post("/cancel-tool", deprecated=True)
 async def cancel_tool(req: CancelToolRequest):
-    return await _runtime().cancel_tool(req.tool_name, req.started_at)
+    del req
+    return JSONResponse(
+        status_code=410,
+        content={
+            "ok": False,
+            "error_code": "RUN_ID_REQUIRED",
+            "error": "tool-name cancellation is disabled; cancel the durable Run by run_id",
+        },
+    )
 
 
 class KnowledgeRequest(BaseModel):
@@ -741,8 +1657,8 @@ async def internal_list_tools():
 
 
 @app.post("/internal/v1/tools/run")
-async def internal_run_tool(req: ToolRequest):
-    result = await _runtime().execute_tool(req.tool_name, req.params)
+async def internal_run_tool(req: ToolRequest, request: Request):
+    result = await run_tool(req, request)
     if isinstance(result, dict) and result.get("success") is False:
         return api_failure(
             str(result.get("error_code") or "tool_execution_failed"),
@@ -754,14 +1670,14 @@ async def internal_run_tool(req: ToolRequest):
 
 @app.post("/internal/v1/tools/cancel")
 async def internal_cancel_tool(req: CancelToolRequest):
-    result = await _runtime().cancel_tool(req.tool_name, req.started_at)
-    if isinstance(result, dict) and result.get("ok") is False:
-        return api_failure(
-            str(result.get("code") or "tool_cancel_failed"),
-            str(result.get("message") or "Tool cancellation failed"),
-            data=result,
-        )
-    return api_success(result)
+    del req
+    return JSONResponse(
+        status_code=410,
+        content=api_failure(
+            "RUN_ID_REQUIRED",
+            "tool-name cancellation is disabled; use POST /internal/v1/runs/{run_id}/cancel",
+        ),
+    )
 
 
 @app.post("/admin/reload", deprecated=True)
@@ -805,9 +1721,18 @@ async def internal_search_knowledge(q: str, limit: int = 5):
 
 
 @app.get("/tool-output/{tool_name}", deprecated=True)
-async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
+async def get_tool_output(
+    tool_name: str,
+    request: Request,
+    offset: int = 0,
+    started_at: str = "",
+):
     """获取工具的实时 shell 输出"""
-    return _runtime().executor.get_running_output(
+    _require_console_admin_request(request)
+    execution_runtime = _runtime()._execution_runtime
+    if execution_runtime is None:
+        raise HTTPException(status_code=503, detail="Execution runtime is unavailable")
+    return execution_runtime.get_running_output(
         tool_name,
         offset=max(0, offset),
         started_at=started_at,
@@ -815,12 +1740,33 @@ async def get_tool_output(tool_name: str, offset: int = 0, started_at: str = "")
 
 
 @app.get("/internal/v1/tool-output/{tool_name}")
-async def internal_get_tool_output(tool_name: str, offset: int = 0, started_at: str = ""):
-    return api_success(await get_tool_output(tool_name, offset, started_at))
+async def internal_get_tool_output(
+    tool_name: str,
+    request: Request,
+    offset: int = 0,
+    started_at: str = "",
+):
+    _require_console_admin_request(request)
+    execution_runtime = _runtime()._execution_runtime
+    if execution_runtime is None:
+        raise HTTPException(status_code=503, detail="Execution runtime is unavailable")
+    return api_success(
+        execution_runtime.get_running_output(
+            tool_name,
+            offset=max(0, offset),
+            started_at=started_at,
+        )
+    )
 
 
 @app.get("/tool-logs", deprecated=True)
-async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
+async def get_tool_logs(
+    request: Request,
+    limit: int = 20,
+    tool_name: str | None = None,
+    success: bool | None = None,
+):
+    _require_console_admin_request(request)
     rows = _runtime().memory.get_tool_logs(
         limit=max(1, min(limit, 100)),
         tool_name=tool_name,
@@ -835,8 +1781,26 @@ async def get_tool_logs(limit: int = 20, tool_name: str | None = None, success: 
 
 
 @app.get("/internal/v1/tool-logs")
-async def internal_get_tool_logs(limit: int = 20, tool_name: str | None = None, success: bool | None = None):
-    return api_success(await get_tool_logs(limit, tool_name, success))
+async def internal_get_tool_logs(
+    request: Request,
+    limit: int = 20,
+    tool_name: str | None = None,
+    success: bool | None = None,
+):
+    _require_console_admin_request(request)
+    rows = _runtime().memory.get_tool_logs(
+        limit=max(1, min(limit, 100)),
+        tool_name=tool_name,
+        success=success,
+    )
+    return api_success(
+        {
+            "limit": max(1, min(limit, 100)),
+            "tool_name": tool_name,
+            "success": success,
+            "rows": rows,
+        }
+    )
 
 
 @app.get("/scheduled-tasks", deprecated=True)

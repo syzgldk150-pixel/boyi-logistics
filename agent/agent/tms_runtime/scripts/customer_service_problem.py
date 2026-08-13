@@ -196,17 +196,25 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _extract_total(payload: Any, rows: list[dict[str, Any]]) -> int:
+def _extract_declared_total(payload: Any) -> int | None:
     if isinstance(payload, dict):
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         for value in (payload.get("total"), data.get("total"), payload.get("count"), data.get("count")):
             if value in (None, ""):
                 continue
             try:
-                return int(float(value))
+                parsed = int(str(value).strip())
             except (TypeError, ValueError):
                 continue
-    return len(rows)
+            if parsed < 0:
+                continue
+            return parsed
+    return None
+
+
+def _extract_total(payload: Any, rows: list[dict[str, Any]]) -> int:
+    declared = _extract_declared_total(payload)
+    return declared if declared is not None else len(rows)
 
 
 def _js_unescape(value: str) -> str:
@@ -319,6 +327,10 @@ def normalize_problem_rows(
             reply_text = _first_text(row, "REVERSION", "DEAL_RESULT")
             created_at = _first_text(row, "REGISTER_DATE", "REGISTER_SAVE_DATE")
             updated_at = _first_text(row, "REVERSION_DATE")
+            problem_type = _first_text(row, "TYPE")
+            registered_at = _first_text(row, "REGISTER_DATE")
+            registration_saved_at = _first_text(row, "REGISTER_SAVE_DATE")
+            registered_site = _first_text(row, "REGISTER_SITE")
         else:
             external_id = _first_text(row, "prob_main_id")
             waybill_no = _first_text(row, "ship_no", "LogisticsId")
@@ -327,6 +339,10 @@ def normalize_problem_rows(
             reply_text = _first_text(row, "reply_text")
             created_at = _first_text(row, "created_time")
             updated_at = _first_text(row, "modified_time", "reply_time")
+            problem_type = _first_text(row, "problem_type", "prob_type")
+            registered_at = created_at
+            registration_saved_at = created_at
+            registered_site = _first_text(row, "register_site", "site_name")
         if not external_id:
             raise CustomerServiceProblemError(
                 "MISSING_EXTERNAL_ID",
@@ -345,6 +361,10 @@ def normalize_problem_rows(
                 "reply_text": reply_text,
                 "created_at": created_at,
                 "updated_at": updated_at,
+                "problem_type": problem_type,
+                "registered_at": registered_at,
+                "registration_saved_at": registration_saved_at,
+                "registered_site": registered_site,
                 "raw": _safe_json(row),
             }
         )
@@ -690,7 +710,16 @@ def _ronghui_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
         account_label=_clean_text(params.get("account_label")),
         source_direction=RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction),
     )
-    return {"ok": True, "rows": rows, "stats": {"total": _extract_total(payload, raw_rows), "returned": len(rows)}}
+    declared_total = _extract_declared_total(payload)
+    return {
+        "ok": True,
+        "rows": rows,
+        "stats": {
+            "total": declared_total if declared_total is not None else len(raw_rows),
+            "returned": len(rows),
+            "total_authoritative": declared_total is not None,
+        },
+    }
 
 
 def _save_ronghui_tables(session: Any, page_context: dict[str, str], envelope: list[dict[str, Any]]) -> dict[str, Any]:
@@ -704,7 +733,7 @@ def _save_ronghui_tables(session: Any, page_context: dict[str, str], envelope: l
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
     if not getattr(response, "content", b""):
-        return {"success": True, "message": ""}
+        return {"success": False, "message": "原系统保存接口返回空响应。"}
     try:
         return response.json()
     except Exception:
@@ -1194,26 +1223,11 @@ def _sniff_image_content_type(payload: bytes) -> str:
         return "image/bmp"
     if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
         return "image/webp"
-    if payload[:32].lstrip().startswith((b"<svg", b"<?xml")):
-        return "image/svg+xml"
     return ""
 
 
 def _looks_like_image(payload: bytes) -> bool:
     return bool(_sniff_image_content_type(payload))
-
-
-def _guess_attachment_content_type(source_url: str, payload: bytes) -> str:
-    sniffed = _sniff_image_content_type(payload)
-    if sniffed:
-        return sniffed
-    parsed = urlparse(source_url)
-    query_url = _clean_text((parse_qs(parsed.query).get("url") or [""])[0])
-    for candidate in (unquote(query_url), parsed.path):
-        guessed = mimetypes.guess_type(candidate)[0]
-        if guessed and guessed.startswith("image/"):
-            return guessed
-    return "image/jpeg"
 
 
 def _normalize_attachment_source_url(platform: str, source_url: Any) -> str:
@@ -1264,8 +1278,9 @@ def _fetch_problem_attachment(session: Any, params: dict[str, Any]) -> dict[str,
         raise CustomerServiceProblemError("ATTACHMENT_TOO_LARGE", "附件图片超过 10MB，已停止预览。")
     if not _looks_like_image(payload_bytes):
         raise CustomerServiceProblemError("INVALID_ATTACHMENT_CONTENT", "原站附件返回的不是图片内容。")
-    if not content_type or not content_type.startswith("image/"):
-        content_type = _guess_attachment_content_type(source_url, payload_bytes)
+    # Ignore upstream MIME: only a raster type derived from magic bytes is
+    # safe to return to Console.  SVG/XML is deliberately not supported.
+    content_type = _sniff_image_content_type(payload_bytes)
     filename = Path(urlparse(source_url).path).name or "problem-attachment"
     return {
         "ok": True,

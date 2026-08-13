@@ -102,7 +102,7 @@ class YundaEntryTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         )
 
-    def test_document_template_renders_yunda_initial_entry_tab(self):
+    def test_document_template_does_not_render_yunda_active_original_page(self):
         template = self.env.get_template("document.html")
         html = template.render(
             app_title="Test Console",
@@ -116,6 +116,7 @@ class YundaEntryTemplateTests(unittest.TestCase):
             yunda_mode=True,
             ronghui_mode=False,
             boyi_frame_mode=False,
+            active_original_page_disabled=True,
             message="",
             message_kind="info",
             original_url="",
@@ -138,24 +139,22 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('data-entry-tabs-root', html)
         self.assertIn('class="ocr-page no-scroll entry-tabs-page"', html)
         self.assertIn("/static/js/yunda_entry_mode.js", html)
-        self.assertIn('data-entry-initial-provider="yunda"', html)
+        self.assertIn('data-entry-initial-provider="boyi"', html)
         self.assertIn('data-entry-id="entry-1"', html)
-        self.assertIn('data-entry-provider="yunda"', html)
-        self.assertIn('data-yunda-root', html)
+        self.assertIn('data-entry-provider="boyi"', html)
         self.assertNotIn('data-yunda-side-root', html)
-        self.assertIn('韵达录单', html)
-        self.assertIn('韵达 1', html)
-        self.assertIn('data-yunda-live-frame', html)
+        self.assertIn('博益 1', html)
         self.assertIn('min-width: 1280px', html)
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
-        self.assertIn('/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil', html)
+        self.assertIn('src="/ocr/boyi/frame"', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
-        self.assertIn('data-entry-add-provider="ronghui"', html)
-        self.assertIn('data-entry-src-ronghui="/ocr/ronghui/live"', html)
+        self.assertNotIn('data-entry-add-provider="ronghui"', html)
+        self.assertNotIn('/ocr/ronghui/live', html)
+        self.assertIn('第三方活动原页暂时停用', html)
         self.assertNotIn('data-mode-panel="yunda"', html)
         self.assertNotIn(' src="/ocr/ronghui/live"', html)
 
-    def test_document_template_renders_multi_entry_tab_shell_for_yunda(self):
+    def test_document_template_keeps_local_multi_entry_tab_shell(self):
         template = self.env.get_template("document.html")
         html = template.render(
             app_title="Test Console",
@@ -194,14 +193,15 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('data-entry-max-tabs="6"', html)
         self.assertIn('data-entry-single="true"', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
-        self.assertIn('data-entry-add-provider="yunda"', html)
-        self.assertIn('data-entry-add-provider="ronghui"', html)
+        self.assertNotIn('data-entry-add-provider="yunda"', html)
+        self.assertNotIn('data-entry-add-provider="ronghui"', html)
         self.assertIn('data-entry-ocr-link href="/ocr?mode=ocr"', html)
-        self.assertIn('data-entry-initial-provider="yunda"', html)
-        self.assertIn('/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil', html)
+        self.assertIn('data-entry-initial-provider="boyi"', html)
+        self.assertIn('src="/ocr/boyi/frame"', html)
+        self.assertNotIn('/ocr/yunda/live', html)
         self.assertNotIn('data-mode-panel="yunda"', html)
 
-    def test_document_template_renders_ronghui_initial_entry_tab(self):
+    def test_document_template_does_not_render_ronghui_active_original_page(self):
         template = self.env.get_template("document.html")
         html = template.render(
             app_title="Test Console",
@@ -215,6 +215,7 @@ class YundaEntryTemplateTests(unittest.TestCase):
             yunda_mode=False,
             ronghui_mode=True,
             boyi_frame_mode=False,
+            active_original_page_disabled=True,
             message="",
             message_kind="info",
             original_url="",
@@ -236,19 +237,15 @@ class YundaEntryTemplateTests(unittest.TestCase):
 
         self.assertIn('data-entry-tabs-root', html)
         self.assertIn('class="ocr-page no-scroll entry-tabs-page"', html)
-        self.assertIn('data-entry-initial-provider="ronghui"', html)
+        self.assertIn('data-entry-initial-provider="boyi"', html)
         self.assertIn('data-entry-id="entry-1"', html)
-        self.assertIn('data-entry-provider="ronghui"', html)
-        self.assertIn('data-ronghui-root', html)
-        self.assertIn('data-ronghui-live-frame', html)
-        self.assertIn('src="/ocr/ronghui/live"', html)
+        self.assertIn('data-entry-provider="boyi"', html)
+        self.assertNotIn('/ocr/ronghui/live', html)
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
-        self.assertIn('data-entry-add-provider="yunda"', html)
-        self.assertIn(
-            'data-entry-src-yunda="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"',
-            html,
-        )
+        self.assertNotIn('data-entry-add-provider="yunda"', html)
+        self.assertIn('src="/ocr/boyi/frame"', html)
+        self.assertIn('第三方活动原页暂时停用', html)
         self.assertNotIn('data-mode-panel="ronghui"', html)
         self.assertNotIn(' src="/ocr/yunda/live', html)
 
@@ -262,26 +259,18 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('entryTabsRoot.dataset.entrySingle = tabCount === 1 ? "true" : "false"', template)
         self.assertIn("function addEntryTab", template)
         self.assertIn("entryTabsRoot.dataset.entryInitialProvider", template)
-        self.assertIn("provider === \"boyi\" ? \"/ocr/boyi/frame\"", template)
-        self.assertIn("provider === \"ronghui\" ? \"/ocr/ronghui/live\"", template)
-        self.assertIn("provider === \"yunda\" ? \"/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil\"", template)
+        self.assertIn('const entryFrameSrc = () => "/ocr/boyi/frame"', template)
+        self.assertNotIn('"/ocr/ronghui/live"', template)
+        self.assertNotIn('"/ocr/yunda/live', template)
+        self.assertIn('第三方活动原页已安全停用', template)
 
-    def test_document_template_mode_switch_supports_ronghui_mode(self):
+    def test_document_template_mode_switch_rejects_third_party_modes(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
 
-        self.assertIn('["manual", "ocr", "yunda", "ronghui"].includes(mode)', template)
-        self.assertIn('params.get("mode") === "ronghui" ? "ronghui"', template)
-        self.assertIn("const loadModeLiveFrame", template)
-        self.assertIn("loadModeLiveFrame(nextMode)", template)
-        self.assertIn("scheduleStoredPrefillToFrame(nextMode)", template)
-        self.assertIn('const PREFILL_STORAGE_KEY = "shipnow.manualQuote.prefill"', template)
-        self.assertIn("const prefillReadyModes = new Set()", template)
-        self.assertIn('const requiresPrefillReady = (mode) => mode === "ronghui" || mode === "yunda"', template)
-        self.assertIn("prefillReadyModes.add(data.provider)", template)
-        self.assertIn("resetPrefillReady(mode)", template)
-        self.assertIn("if (requiresPrefillReady(mode) && !prefillReadyModes.has(mode)) return false;", template)
-        self.assertIn('key: "destination_site"', template)
-        self.assertIn('"目的地"', template)
+        self.assertIn('const nextMode = ["manual", "ocr"].includes(mode) ? mode : "manual"', template)
+        self.assertIn('if (["yunda", "ronghui"].includes(provider))', template)
+        self.assertIn('原页预填已停用', template)
+        self.assertIn('data-quote-provider="${escapeHtml(provider)}" disabled', template)
 
     def test_live_frontend_binds_all_ronghui_and_yunda_instances(self):
         script = (CONSOLE_DIR / "static" / "js" / "yunda_entry_mode.js").read_text(encoding="utf-8")
@@ -302,15 +291,13 @@ class YundaEntryTemplateTests(unittest.TestCase):
             flags=re.S,
         )
 
-        self.assertEqual(4, len(switches))
+        self.assertEqual(2, len(switches))
         for switch in switches:
             labels = re.findall(r'<a [^>]*data-mode-link="([^"]+)"[^>]*>(.*?)</a>', switch, flags=re.S)
             compact_labels = [(mode, re.sub(r"<[^>]+>", "", label).strip()) for mode, label in labels]
             self.assertEqual(
                 [
                     ("manual", "\u535a\u76ca"),
-                    ("yunda", "\u97f5\u8fbe"),
-                    ("ronghui", "\u878d\u8f89"),
                     ("ocr", "OCR"),
                 ],
                 compact_labels,
@@ -490,6 +477,21 @@ class YundaEntryBackendTests(unittest.TestCase):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app.settings = SimpleNamespace(agent_base_url="http://agent.test", agent_timeout_seconds=30)
         app.repository = repository or _Repository()
+        trusted_actor = {
+            "actor_type": "console_admin",
+            "actor_id": "7",
+            "roles": ["super_admin"],
+            "display_name": "tester",
+            "authenticated_by": "mysql_admin_session",
+        }
+        trusted_context = {
+            "actor": trusted_actor,
+            "actor_roles": ["super_admin"],
+            "source": "console",
+            "_console_principal": trusted_actor,
+        }
+        app._control_plane_read_context = lambda handler: dict(trusted_context)
+        app._control_plane_write_context = lambda handler: dict(trusted_context)
 
         def capture_json(self, handler, status, payload):
             self.sent_status = status
@@ -497,6 +499,39 @@ class YundaEntryBackendTests(unittest.TestCase):
 
         app._send_json = types.MethodType(capture_json, app)
         return app
+
+    def test_active_original_page_prefixes_return_gone_before_auth_or_agent(self):
+        prefixes = (
+            "/ocr/yunda/save",
+            "/ocr/yunda/live",
+            "/ocr/ronghui/live",
+            "/receipts/yunda/live",
+            "/receipts/ronghui/live",
+        )
+        methods = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+        for prefix in prefixes:
+            for method in methods:
+                for request_path in (prefix, f"{prefix}/probe?source=test"):
+                    with self.subTest(prefix=prefix, method=method, request_path=request_path):
+                        app = self._app()
+
+                        def must_not_run(*args, **kwargs):
+                            raise AssertionError("disabled original-page route must not authenticate or call Agent")
+
+                        app._ensure_authorized = must_not_run
+                        app._agent_request = must_not_run
+                        handler = _LiveHandler()
+                        handler.path = request_path
+                        if method == "GET":
+                            app.handle_get(handler)
+                        elif method == "POST":
+                            app.handle_post(handler)
+                        else:
+                            app.handle_proxy_write(handler, method)
+
+                        self.assertEqual(HTTPStatus.GONE, app.sent_status)
+                        self.assertEqual("ACTIVE_ORIGINAL_PAGE_DISABLED", app.sent_payload["error_code"])
 
     def test_call_yunda_entry_runtime_translates_auth_required(self):
         app = self._app()
@@ -597,12 +632,21 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_yunda_entry_reads_client_meta_and_returns_json(self):
         app = self._app()
 
-        def call_runtime(self, action, *, form=None, context=None, timeout_sec=180):
+        def call_runtime(
+            self,
+            action,
+            *,
+            form=None,
+            context=None,
+            trusted_context=None,
+            timeout_sec=180,
+        ):
             self.runtime_call = {
                 "action": action,
                 "form": form,
                 "context": context,
                 "timeout_sec": timeout_sec,
+                "trusted_context": trusted_context,
             }
             return HTTPStatus.OK, {
                 "ok": True,
@@ -976,7 +1020,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual("/commonOption/queryDispInfoByAddress", app.last_call["payload"]["params"]["path"])
         self.assertEqual("address=shaoyang", app.last_call["payload"]["params"]["query"])
 
-    def test_handle_ronghui_live_proxy_preserves_multipart_upload_body(self):
+    def test_handle_ronghui_live_proxy_rejects_unverified_file_upload_write(self):
         repository = _Repository()
         app = self._app(repository)
         boundary = "----WebKitFormBoundaryCodex"
@@ -1016,11 +1060,9 @@ class YundaEntryBackendTests(unittest.TestCase):
             query={},
         )
 
-        params = app.last_call["payload"]["params"]
-        self.assertEqual(HTTPStatus.OK, handler.status)
-        self.assertEqual("/file/upload", params["path"])
-        self.assertEqual(content_type, params["content_type"])
-        self.assertEqual(body, base64.b64decode(params["body_base64"]))
+        self.assertEqual(HTTPStatus.METHOD_NOT_ALLOWED, app.sent_status)
+        self.assertEqual("MANUAL_PROXY_WRITE_DISABLED", app.sent_payload["error_code"])
+        self.assertFalse(hasattr(app, "last_call"))
         self.assertEqual([], repository.snapshots)
 
     def test_handle_ronghui_live_proxy_snapshots_successful_save_without_changing_response(self):

@@ -44,6 +44,9 @@ class DocumentServiceMixin:
         if document is not None:
             pending_docs = self._pin_document_to_top(pending_docs, document["id"])
         mode_value = query.get("mode", [""])[0].strip().lower()
+        active_original_page_disabled = mode_value in {"yunda", "ronghui"}
+        if active_original_page_disabled:
+            mode_value = ""
         boyi_frame_mode = document is None and str(query.get("boyi_frame", [""])[0]).strip().lower() in {"1", "true", "yes"}
         ocr_mode = document is None and mode_value == "ocr"
         yunda_mode = document is None and mode_value == "yunda"
@@ -104,6 +107,7 @@ class DocumentServiceMixin:
             ocr_mode=ocr_mode,
             yunda_mode=yunda_mode,
             ronghui_mode=ronghui_mode,
+            active_original_page_disabled=active_original_page_disabled,
             boyi_frame_mode=boyi_frame_mode,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
@@ -1084,6 +1088,8 @@ class DocumentServiceMixin:
                 response_headers["Vary"] = ", ".join(sorted(vary_values))
         handler.send_response(status)
         handler.send_header("Content-Type", content_type)
+        if "X-Content-Type-Options" not in response_headers:
+            handler.send_header("X-Content-Type-Options", "nosniff")
         if cache_control:
             handler.send_header("Cache-Control", cache_control)
         for name, value in response_headers.items():

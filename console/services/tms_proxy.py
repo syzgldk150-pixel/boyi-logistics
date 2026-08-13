@@ -1,9 +1,41 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from shared.manual_entry_contracts import canonical_manual_proxy_path
 
 
 class TmsProxyServiceMixin:
+    def _active_original_page_proxy_disabled(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+    ) -> bool:
+        raw_path = str(path or "")
+        prefixes = (
+            "/ocr/yunda",
+            RONGHUI_RECEIPT_LIVE_PROXY_PREFIX,
+            YUNDA_RECEIPT_LIVE_PROXY_PREFIX,
+            RONGHUI_LIVE_PROXY_PREFIX,
+            YUNDA_LIVE_PROXY_PREFIX,
+        )
+        if not any(
+            raw_path == prefix or raw_path.startswith(prefix + "/")
+            for prefix in prefixes
+        ):
+            return False
+        self._send_json(
+            handler,
+            HTTPStatus.GONE,
+            {
+                "ok": False,
+                "error_code": "ACTIVE_ORIGINAL_PAGE_DISABLED",
+                "message": (
+                    "第三方活动原页已安全停用；其脚本不能在 Console 管理员同源上下文执行。"
+                ),
+            },
+        )
+        return True
+
     def _parse_json_body(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         content_length = int(handler.headers.get("Content-Length", 0))
         raw = handler.rfile.read(content_length) if content_length else b""
@@ -25,7 +57,9 @@ class TmsProxyServiceMixin:
             return YUNDA_LIVE_ENTRY_PATH
         if not raw_path.startswith(YUNDA_LIVE_PROXY_PREFIX + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(YUNDA_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(YUNDA_LIVE_PROXY_PREFIX) :].lstrip("/")
+        )
         return remote_path if remote_path.startswith("/ky_inms/public/") else ""
 
     def _yunda_receipt_live_remote_path(self, path: str) -> str:
@@ -34,7 +68,9 @@ class TmsProxyServiceMixin:
             return YUNDA_RECEIPT_LIVE_ENTRY_PATH
         if not raw_path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(YUNDA_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(YUNDA_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/")
+        )
         return remote_path if remote_path.startswith("/ky_inms/public/") else ""
 
     def _ronghui_live_remote_path(self, path: str) -> str:
@@ -43,7 +79,9 @@ class TmsProxyServiceMixin:
             return ""
         if not raw_path.startswith(RONGHUI_LIVE_PROXY_PREFIX + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(RONGHUI_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(RONGHUI_LIVE_PROXY_PREFIX) :].lstrip("/")
+        )
         return remote_path if any(remote_path.startswith(prefix) for prefix in RONGHUI_LIVE_ALLOWED_PREFIXES) else ""
 
     def _ronghui_receipt_live_remote_path(self, path: str) -> str:
@@ -52,7 +90,9 @@ class TmsProxyServiceMixin:
             return ""
         if not raw_path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/")
+        )
         return remote_path if any(remote_path.startswith(prefix) for prefix in RONGHUI_LIVE_ALLOWED_PREFIXES) else ""
 
     def _flatten_query(self, query: dict[str, list[str]]) -> str:
@@ -265,6 +305,20 @@ class TmsProxyServiceMixin:
         method: str,
         query: dict[str, list[str]],
     ) -> None:
+        if method.upper() != "GET":
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "RECEIPT_PROXY_WRITE_DISABLED",
+                    "message": "回单原页代理仅供只读查看；审核请通过事项中心提交。",
+                },
+            )
+            return
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         remote_path = self._yunda_receipt_live_remote_path(path)
         if not remote_path:
             self._send_json(
@@ -288,7 +342,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={"params": params, "timeout_sec": 180, **trusted_context},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -330,6 +384,20 @@ class TmsProxyServiceMixin:
         method: str,
         query: dict[str, list[str]],
     ) -> None:
+        if method.upper() != "GET":
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "RECEIPT_PROXY_WRITE_DISABLED",
+                    "message": "回单原页代理仅供只读查看；审核请通过事项中心提交。",
+                },
+            )
+            return
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         remote_path = self._ronghui_receipt_live_remote_path(path)
         is_entry_root = str(path or "").strip().rstrip("/") == RONGHUI_RECEIPT_LIVE_PROXY_PREFIX
         if not remote_path and not is_entry_root:
@@ -357,7 +425,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={"params": params, "timeout_sec": 180, **trusted_context},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -418,12 +486,32 @@ class TmsProxyServiceMixin:
         method: str,
         query: dict[str, list[str]],
     ) -> None:
+        trusted_context = (
+            self._control_plane_read_context(handler)
+            if method.upper() == "GET"
+            else self._control_plane_write_context(handler)
+        )
+        if trusted_context is None:
+            return
         remote_path = self._yunda_live_remote_path(path)
         if not remote_path:
             self._send_json(
                 handler,
                 HTTPStatus.NOT_FOUND,
                 {"ok": False, "message": "韵达原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        if method.upper() != "GET" and not (
+            method.upper() == "POST" and remote_path == YUNDA_LIVE_SAVE_PATH
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
+                    "message": "Only the verified waybill save endpoint may write through this proxy.",
+                },
             )
             return
         request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
@@ -441,7 +529,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={"params": params, "timeout_sec": 180, **trusted_context},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -490,6 +578,13 @@ class TmsProxyServiceMixin:
         method: str,
         query: dict[str, list[str]],
     ) -> None:
+        trusted_context = (
+            self._control_plane_read_context(handler)
+            if method.upper() == "GET"
+            else self._control_plane_write_context(handler)
+        )
+        if trusted_context is None:
+            return
         remote_path = self._ronghui_live_remote_path(path)
         is_entry_root = str(path or "").strip().rstrip("/") == RONGHUI_LIVE_PROXY_PREFIX
         if not remote_path and not is_entry_root:
@@ -497,6 +592,19 @@ class TmsProxyServiceMixin:
                 handler,
                 HTTPStatus.NOT_FOUND,
                 {"ok": False, "message": "融辉原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        if method.upper() != "GET" and not (
+            method.upper() == "POST" and remote_path == RONGHUI_LIVE_SAVE_PATH
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
+                    "message": "Only the verified waybill save endpoint may write through this proxy.",
+                },
             )
             return
         request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
@@ -514,7 +622,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={"params": params, "timeout_sec": 180, **trusted_context},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -593,6 +701,7 @@ class TmsProxyServiceMixin:
         *,
         form: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        trusted_context: dict[str, Any] | None = None,
         timeout_sec: int = 180,
     ) -> tuple[HTTPStatus, dict[str, Any]]:
         result = self._agent_request(
@@ -605,6 +714,7 @@ class TmsProxyServiceMixin:
                     "context": context or {},
                 },
                 "timeout_sec": timeout_sec,
+                **(trusted_context or {}),
             },
             timeout=max(timeout_sec + 15, self.settings.agent_timeout_seconds),
         )
@@ -746,6 +856,9 @@ class TmsProxyServiceMixin:
                 {"ok": False, "message": "韵达动作不存在。", "data": {}, "field_errors": {}, "auth_state": None},
             )
             return
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         body = self._parse_json_body(handler)
         form = body.get("form") if isinstance(body.get("form"), dict) else {}
         context = body.get("context") if isinstance(body.get("context"), dict) else {}
@@ -753,7 +866,12 @@ class TmsProxyServiceMixin:
         runtime_context = dict(context)
         if client_meta:
             runtime_context["client_meta"] = client_meta
-        status, payload = self._call_yunda_entry_runtime(action, form=form, context=runtime_context)
+        status, payload = self._call_yunda_entry_runtime(
+            action,
+            form=form,
+            context=runtime_context,
+            trusted_context=trusted_context,
+        )
         if status == HTTPStatus.OK:
             payload = self._persist_yunda_runtime_result(action=action, request_body=body, payload=payload)
         self._send_json(handler, status, payload)

@@ -15,6 +15,7 @@ from agent.tms_runtime.scripts.yunda_waybill_entry import (
     YUNDA_INMS_ORIGIN,
     _auth_if_login_response,
 )
+from shared.manual_entry_contracts import canonical_manual_proxy_path
 
 
 ALLOWED_PATH_PREFIXES = ("/ky_inms/public/",)
@@ -435,7 +436,8 @@ def _clean_text(value: Any) -> str:
 
 
 def _is_allowed_path(path: str) -> bool:
-    return any(path.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
+    canonical = canonical_manual_proxy_path(path)
+    return bool(canonical) and any(canonical.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
 
 
 def _query_text(value: Any) -> str:
@@ -452,10 +454,12 @@ def _target_from_params(path_value: Any, query_value: Any = "") -> tuple[str, st
     if parsed.scheme or parsed.netloc:
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != urlparse(YUNDA_INMS_ORIGIN).netloc:
             raise ValueError("Only Yunda INMS URLs can be proxied.")
-        path = parsed.path
+        path = canonical_manual_proxy_path(parsed.path)
         query_parts = parse_qsl(parsed.query, keep_blank_values=True)
     else:
-        path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
+        path = canonical_manual_proxy_path(
+            raw_path if raw_path.startswith("/") else f"/{raw_path}"
+        )
         query_parts = []
 
     if raw_query:

@@ -9,6 +9,39 @@ from console.navigation import (
 
 
 class AuthServiceMixin:
+    def _require_same_origin_write(self, handler: BaseHTTPRequestHandler) -> bool:
+        """Require browser writes to originate from this Console host."""
+
+        host = str(handler.headers.get("Host") or "").strip().lower()
+        source = str(
+            handler.headers.get("Origin") or handler.headers.get("Referer") or ""
+        ).strip()
+        parsed = urlparse(source)
+        if (
+            host
+            and parsed.scheme.lower() in {"http", "https"}
+            and parsed.netloc.lower() == host
+        ):
+            return True
+
+        message = "请求来源校验失败，请从当前 Console 页面重试。"
+        self._send_json(
+            handler,
+            HTTPStatus.FORBIDDEN,
+            {
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "CSRF_ORIGIN_REJECTED",
+                    "message": message,
+                },
+                # Keep the established Console error fields for older callers.
+                "error_code": "CSRF_ORIGIN_REJECTED",
+                "message": message,
+            },
+        )
+        return False
+
     def _ensure_authorized(self, handler: BaseHTTPRequestHandler) -> bool:
         user = self._authenticated_user_from_request(handler)
         if user:
@@ -55,6 +88,7 @@ class AuthServiceMixin:
             "avatar_path": str(session.get("avatar_path") or ""),
             "avatar_url": self._admin_avatar_url(str(session.get("avatar_path") or "")),
             "ui_preferences_json": str(session.get("ui_preferences_json") or "{}"),
+            "control_plane_role": str(session.get("control_plane_role") or "admin"),
             "is_legacy_basic_auth": False,
         }
         self._set_current_admin_user(handler, user)

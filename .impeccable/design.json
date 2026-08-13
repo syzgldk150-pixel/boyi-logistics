@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-12T00:00:00+08:00",
+  "generatedAt": "2026-08-13T00:00:00+08:00",
   "title": "Design System: 博益物流控制台",
   "extensions": {
     "reference": {
@@ -75,6 +75,22 @@
       "description": "固定在安全区上方，保留首页、三个用户同步入口和更多。",
       "html": "<nav class=\"mobile-bottom-nav\"><a>首页</a><a>运单</a><a>跟踪</a><a>服务</a><button>更多</button></nav>",
       "css": ".mobile-bottom-nav { min-height: 68px; background: #FFFFFF; border-top: 1px solid #E5E7EB; }"
+    },
+    {
+      "name": "事项时间线",
+      "kind": "timeline",
+      "refersTo": "work-item-timeline",
+      "description": "按真实事件时间展示运行、审批、阻塞与验证；使用文字和细边界，不模拟完成百分比。",
+      "html": "<ol class=\"work-item-timeline\"><li><time>10:20</time><strong>等待审批</strong><span>计划已锁定</span></li></ol>",
+      "css": ".work-item-timeline { border-left: 1px solid #E5E7EB; }"
+    },
+    {
+      "name": "证据摘要",
+      "kind": "data-list",
+      "refersTo": "evidence-summary",
+      "description": "只展示来源、账号、观测时间、记录数和分页完整性，敏感值与可执行内容不得渲染。",
+      "html": "<dl class=\"evidence-summary\"><dt>来源</dt><dd>融辉</dd><dt>分页</dt><dd>完整</dd></dl>",
+      "css": ".evidence-summary { display: grid; grid-template-columns: minmax(96px, 0.35fr) 1fr; gap: 8px 16px; }"
     }
   ],
   "narrative": {

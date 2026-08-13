@@ -154,6 +154,30 @@
       return payload.data ?? payload;
     }
 
+    function newBrowserRequestUuid() {
+      if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
+        throw new Error("当前浏览器无法生成安全的请求标识，财务计划未提交。");
+      }
+      return window.crypto.randomUUID();
+    }
+
+    function financeCommandOptions(body) {
+      return {
+        method: "POST",
+        headers: {"X-Browser-Request-UUID": newBrowserRequestUuid()},
+        body: JSON.stringify(body || {}),
+      };
+    }
+
+    function financeReceiptText(receipt, prefix) {
+      const runId = String(receipt?.run_id || "").trim();
+      const workItemId = String(receipt?.work_item_id || "").trim();
+      const ids = [runId ? `Run ${runId}` : "", workItemId ? `事项 ${workItemId}` : ""]
+        .filter(Boolean)
+        .join(" / ");
+      return `${prefix}已提交${ids ? `（${ids}）` : ""}，请在事项中心完成审批并查看结果。`;
+    }
+
     function toQuery(params) {
       const query = new URLSearchParams();
       Object.entries(params || {}).forEach(([key, value]) => {
@@ -846,13 +870,10 @@
       const body = formValues(form);
       setButtonBusy(button, true, busyLabel);
       try {
-        const payload = await fetchJson(endpoint, { method: "POST", body: JSON.stringify(body) });
-        const batchId = payload.batch_id || payload.id;
-        setStatus(batchId ? `同步任务已创建，批次 #${batchId}。` : "同步任务已创建。", "success");
-        await loadBatches();
-        await loadOverview();
+        const receipt = await fetchJson(endpoint, financeCommandOptions(body));
+        setStatus(financeReceiptText(receipt, "财务同步计划"), "warning");
       } catch (error) {
-        setStatus(`同步任务未创建：${error.message}`, "error");
+        setStatus(`财务同步计划未提交：${error.message}`, "error");
       } finally {
         setButtonBusy(button, false, busyLabel);
       }
@@ -862,9 +883,11 @@
       const batchId = Number(row.dataset.batchId || 0);
       setButtonBusy(button, true, "重试中");
       try {
-        await fetchJson(`${ENDPOINTS.batches}/${batchId}/retry`, { method: "POST", body: "{}" });
-        setStatus(`批次 #${batchId} 已提交重试。`, "success");
-        await loadBatches();
+        const receipt = await fetchJson(
+          `${ENDPOINTS.batches}/${batchId}/retry`,
+          financeCommandOptions({}),
+        );
+        setStatus(financeReceiptText(receipt, `批次 #${batchId} 重试计划`), "warning");
       } catch (error) {
         setStatus(`批次重试失败：${error.message}`, "error");
       } finally {

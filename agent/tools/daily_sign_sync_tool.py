@@ -10,17 +10,13 @@ from agent.workflow_resource_store import get_workflow_resource
 from tools.phase7_sync_common import (
     build_range_from_template,
     parse_a1_range,
-    sync_bitable_snapshot,
-    sync_sheet_snapshot,
     tms_auth_error_result,
 )
 from tools.phase7_mysql_store import get_waybill_tracking_cache
 from tools.tms_tool import call_http_service
 
-R13_CREDENTIAL_RESOURCE_KEY = "phase7.r13_credentials"
 DAILY_SIGN_SHEET_RESOURCE_KEY = "phase7.daily_sign_sheet"
 DAILY_SIGN_SHEET_COL_COUNT = 8
-NO_FETCHED_ROWS_REASON = "no_fetched_rows"
 ARRIVED_QUANTITY_KEYS = (
     "arrived_quantity",
     "arrivedQuantity",
@@ -38,10 +34,6 @@ ARRIVED_QUANTITY_KEYS = (
     "累计到货件数",
 )
 R13_REQUEST_KEYS = (
-    "username",
-    "password",
-    "user",
-    "pass",
     "disp_site_code",
     "dispSiteCode",
     "start",
@@ -54,11 +46,21 @@ R13_REQUEST_KEYS = (
     "fetchAll",
     "max_pages",
     "maxPages",
-    "config_path",
-    "account_id",
-    "accountId",
-    "account_key",
-    "accountKey",
+)
+FORBIDDEN_R13_REQUEST_KEYS = frozenset(
+    {
+        "username",
+        "password",
+        "user",
+        "pass",
+        "config_path",
+        "account_id",
+        "accountId",
+        "account_key",
+        "accountKey",
+        "r13_account_id",
+        "r13AccountId",
+    }
 )
 
 
@@ -70,34 +72,16 @@ def _has_value(value: Any) -> bool:
     return True
 
 
-def _extract_r13_request_defaults(params: dict) -> dict:
-    resource = params.get("r13_credentials")
-    if not isinstance(resource, dict):
-        try:
-            resource = get_workflow_resource(R13_CREDENTIAL_RESOURCE_KEY) or {}
-        except Exception:
-            resource = {}
-    if not isinstance(resource, dict):
-        return {}
-
-    defaults: dict[str, Any] = {}
-    nested_request_body = resource.get("request_body")
-    if isinstance(nested_request_body, dict):
-        for key, value in nested_request_body.items():
-            if _has_value(value):
-                defaults[str(key)] = value
-
-    for key in R13_REQUEST_KEYS:
-        value = resource.get(key)
-        if _has_value(value):
-            defaults[key] = value
-    return defaults
-
-
 def _resolve_qianshou_request_body(params: dict) -> dict:
-    request_body = _extract_r13_request_defaults(params)
+    request_body: dict[str, Any] = {}
     explicit_request_body = params.get("request_body")
     if isinstance(explicit_request_body, dict):
+        forbidden = sorted(FORBIDDEN_R13_REQUEST_KEYS.intersection(explicit_request_body))
+        if forbidden:
+            raise ValueError(
+                "request_body must not contain credentials or account selectors: "
+                + ", ".join(forbidden)
+            )
         request_body.update(explicit_request_body)
 
     for key in R13_REQUEST_KEYS:
@@ -489,81 +473,11 @@ def _sort_rows_by_plan_sign_time(rows: list[dict]) -> list[dict]:
 
 
 def run_daily_sign_sync(params: dict) -> dict:
-    request_body = build_daily_sign_request_body(params)
-    tms_result = call_http_service("/get_qianshou", request_body)
-    if auth_error := tms_auth_error_result(tms_result):
-        return auth_error
-    rows = _extract_rows(tms_result)
-    if rows is None and isinstance(tms_result, dict) and tms_result.get("error"):
-        return {"error": f"get_qianshou 执行失败: {tms_result.get('error')}", "raw": tms_result}
-    if rows is None:
-        return {"error": "get_qianshou 返回格式异常", "raw": tms_result}
+    """Run the governed, authoritative daily-sign pipeline."""
 
-    if not rows:
-        skip_result = {"ok": True, "skipped": True, "reason": NO_FETCHED_ROWS_REASON}
-        return {
-            "ok": True,
-            "fetched": 0,
-            "skip_reason": NO_FETCHED_ROWS_REASON,
-            "address_enrichment": {**skip_result, "updated": 0},
-            "bitable_result": {**skip_result, "written": 0, "deleted": 0},
-            "sheet_result": {**skip_result, "rows": 0},
-        }
+    from tools.daily_sign_pipeline import run_authoritative_daily_sign_sync
 
-    rows, address_enrichment = _enrich_rows_with_detail_addresses(rows, params)
-    if "error" in address_enrichment:
-        return {
-            "error": address_enrichment["error"],
-            "fetched": len(rows),
-            "address_enrichment": address_enrichment,
-        }
-
-    rows, arrival_enrichment = _enrich_rows_with_arrival_quantities(rows, params)
-    if "error" in arrival_enrichment:
-        return {
-            "error": arrival_enrichment["error"],
-            "fetched": len(rows),
-            "address_enrichment": address_enrichment,
-            "arrival_enrichment": arrival_enrichment,
-        }
-
-    rows = _sort_rows_by_plan_sign_time(rows)
-    records = _build_records(rows)
-    sheet_values = _build_sheet_values(rows)
-
-    bitable_result = sync_bitable_snapshot("phase7.daily_sign_bitable", records, params)
-    if "error" in bitable_result:
-        return {
-            "error": bitable_result["error"],
-            "fetched": len(rows),
-            "address_enrichment": address_enrichment,
-            "arrival_enrichment": arrival_enrichment,
-            "bitable_result": bitable_result,
-        }
-
-    sheet_result = sync_sheet_snapshot(
-        DAILY_SIGN_SHEET_RESOURCE_KEY,
-        sheet_values,
-        _sheet_params_for_values(params, sheet_values),
-    )
-    if "error" in sheet_result:
-        return {
-            "error": sheet_result["error"],
-            "fetched": len(rows),
-            "address_enrichment": address_enrichment,
-            "arrival_enrichment": arrival_enrichment,
-            "bitable_result": bitable_result,
-            "sheet_result": sheet_result,
-        }
-
-    return {
-        "ok": True,
-        "fetched": len(rows),
-        "address_enrichment": address_enrichment,
-        "arrival_enrichment": arrival_enrichment,
-        "bitable_result": bitable_result,
-        "sheet_result": sheet_result,
-    }
+    return run_authoritative_daily_sign_sync(params)
 
 
 def main() -> None:

@@ -15,12 +15,13 @@
 - 价格查询与 TMS 对接：
   - `price_tool.py`
   - `tms_tool.py`
-  - `internal_http.py`（本机 Agent HTTP 请求头；缺少 `AGENT_INTERNAL_API_TOKEN` 时显式失败）
+  - `internal_http.py`（WorkflowRunner 工具访问底层 TMS target 的能力请求头；缺少当前工具短期执行能力时显式失败，不读取或回退到 `AGENT_INTERNAL_API_TOKEN`）
   - 地址报价会同时调用融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
 - 财务 ETL：
   - `finance_tool.py`
 - 飞书 CLI：
   - `feishu_cli_tool.py`
+  - `receipt_feishu_detail_query_tool.py`（回单页缺失韵达明细时使用的精确只读能力；只接受 `waybill_no`，服务端固定飞书资源和字段，必须证明分页完整且只命中一条，歧义、缺字段或分页未知均显式失败；不得改用宽泛 `feishu_operation`）
 - Phase 7 同步链路：
   - `send_order_sync_tool.py`（拉融辉寄件数据；支持 `target_date` 单日或 `start_date/end_date` 范围；按 `发件日期 + 运单编号` 安全替换同日飞书快照，并同步 upsert 到控制台 `waybills` 表供 `/waybills` 运单查询；`sql_only=true` 时只刷新控制台 SQL，不写飞书；签收状态映射到 SQL `status=signed/in_transit`，明确返回的当前扫描状态写入 `scan_status`）
   - `delivery_status_sync_tool.py`（查询并更新签收状态；无入参时定时扫描融辉寄件数据表的 `未签收明细` 视图，已签收才写回，并同步更新控制台 `waybills.status=signed`；仍兼容旧 webhook 单号 + record_id 模式）
@@ -56,7 +57,7 @@
 
 - `tms_tool.py`
   - 默认走 `http://127.0.0.1:9000/tms/*` 兼容层
-  - 所有本机 Agent HTTP 调用必须使用 `internal_http.internal_api_headers()` 发送 `X-Agent-Internal-Token`
+  - 所有 WorkflowRunner 工具对本机 `/tms/*` 的调用必须使用 `internal_http.internal_api_headers()` 发送按工具/target 绑定的短期执行能力；该兼容函数名不代表共享 Token，工具子进程不得继承或发送 `X-Agent-Internal-Token`
   - 当前线上权威执行源已切换为 `agent/tms_runtime/`
   - 图片/短信验证码共享登录态由 `agent` 的 `/admin/tms/session/*` 管理
 

@@ -220,8 +220,8 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
 
     def test_router_accepts_only_exact_new_trigger(self):
         request = direct_tool_request_from_text("分批")
-        self.assertEqual("split_pending_problem_upload", request["tool_name"])
-        self.assertTrue(request["params"]["dry_run"])
+        self.assertEqual("preview_split_pending_problems", request["tool_name"])
+        self.assertEqual({"account_id": "ronghui_default"}, request["params"])
         self.assertIn("selection_intent", request)
         for old_text in ("分批问题件", "上报分批差错", "分批差错", "上传分批/未到问题件"):
             self.assertTrue(is_deprecated_split_command(old_text))

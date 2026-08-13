@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
-from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
+from agent.tms_runtime.account_contracts import FINANCE_ACCOUNT_ROLES
 from agent.tms_runtime.scripts.finance_capture_common import CaptureResult, FinanceCaptureError, clean_text
 
 
@@ -16,12 +16,7 @@ TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_RESCAN_DAYS = 7
 EARLIEST_DATE_UNCONFIRMED = "EARLIEST_DATE_UNCONFIRMED"
 
-DEFAULT_FINANCE_ACCOUNT_ROLES: tuple[tuple[str, str], ...] = (
-    ("ronghui", PRICE_ACCOUNT_ID),
-    ("ronghui", "ronghui_daxiang_s"),
-    ("ronghui", "ronghui_self_pickup_problem"),
-    ("yunda", "yunda_default"),
-)
+DEFAULT_FINANCE_ACCOUNT_ROLES = FINANCE_ACCOUNT_ROLES
 
 
 def _requested_account_specs(*, platform: str = "", account_id: str = "") -> list[tuple[str, str]]:

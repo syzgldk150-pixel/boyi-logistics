@@ -7,6 +7,7 @@ runtime state files and are never returned by GET-style payloads.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
@@ -17,6 +18,10 @@ from typing import Any
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID, PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import SAVED_PASSWORD_MASK, get_session_broker
+from shared.runtime_events import publish_account_session_degraded, publish_account_session_restored
+
+
+logger = logging.getLogger(__name__)
 
 
 STATE_DIR = Path(__file__).resolve().parent / "state"
@@ -278,6 +283,53 @@ class AutomationAccountManager:
     def _auto_login_lock(self, account_id: str) -> threading.Lock:
         with self._auto_login_locks_guard:
             return self._auto_login_locks.setdefault(account_id, threading.Lock())
+
+    @staticmethod
+    def _publish_account_session_transition(
+        row: dict[str, Any],
+        previous: dict[str, Any],
+        current: dict[str, Any],
+    ) -> None:
+        previous_status = str(previous.get("status") or "").strip().lower()
+        current_status = str(current.get("status") or "").strip().lower()
+        if not current_status or current_status == previous_status:
+            return
+        payload = {
+            "account_id": str(row.get("account_id") or "").strip(),
+            "session_profile": str(row.get("session_profile") or "").strip(),
+            "source_system": str(row.get("system") or "").strip(),
+            "previous_status": previous_status,
+            "status": current_status,
+            "observed_at": _now_label(),
+        }
+        if not payload["account_id"]:
+            return
+        try:
+            if current_status == "authenticated":
+                publish_account_session_restored(payload)
+            elif current_status in {
+                "expired",
+                "logged_out",
+                "error",
+            }:
+                publish_account_session_degraded(payload)
+        except Exception:
+            logger.warning(
+                "Failed to publish account session transition account_id=%s status=%s",
+                payload["account_id"],
+                current_status,
+                exc_info=True,
+            )
+
+    def _with_session_transition(
+        self,
+        row: dict[str, Any],
+        previous: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        current = self._with_account_context(row, result)
+        self._publish_account_session_transition(row, previous, current)
+        return current
 
     def _load_accounts(self) -> list[dict[str, Any]]:
         raw = _read_json(ACCOUNTS_PATH, [])
@@ -997,7 +1049,7 @@ class AutomationAccountManager:
                 elif result_status == "error":
                     row = self._record_auto_login_failure(safe_id)
                 else:
-                    return self._with_account_context(row, result)
+                    return self._with_session_transition(row, status, result)
                 if row.get("auto_login_blocked", False):
                     last_error = str(result.get("last_error_summary") or "").strip()
                     blocked_summary = (
@@ -1011,10 +1063,12 @@ class AutomationAccountManager:
                         "status_tone": "warning",
                         "last_error_summary": blocked_summary,
                     }
-                return self._with_account_context(row, result)
+                return self._with_session_transition(row, status, result)
             except Exception as exc:
                 row = self._record_auto_login_failure(safe_id)
-                return self._login_error_status(row, exc, status)
+                current = self._login_error_status(row, exc, status)
+                self._publish_account_session_transition(row, status, current)
+                return current
 
     def login(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
@@ -1029,12 +1083,12 @@ class AutomationAccountManager:
                 row = self._record_auto_login_failure(row["account_id"], exhausted=True)
             elif str(result.get("status") or "").strip() != "error":
                 row = self._reset_auto_login_failures(row["account_id"])
-            return self._with_account_context(row, result)
+            return self._with_session_transition(row, {"status": "logged_out"}, result)
         credentials = self.private_credentials(row["account_id"])
         if not credentials.get("username") or not credentials.get("password"):
             raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码。")
         result = self._login_sso(row, allow_cached=True)
-        return self._with_account_context(row, result)
+        return self._with_session_transition(row, {"status": "logged_out"}, result)
 
     def submit_code(self, account_id: str, code: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
@@ -1045,7 +1099,7 @@ class AutomationAccountManager:
         result = self._broker(row).submit_code(code)
         if str(result.get("status") or "").strip() != "error":
             row = self._reset_auto_login_failures(row["account_id"])
-        return self._with_account_context(row, result)
+        return self._with_session_transition(row, {"status": "pending_code"}, result)
 
     def clear_session(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
@@ -1056,7 +1110,11 @@ class AutomationAccountManager:
                 failure_count=0,
                 blocked=False,
             )
-            return self._with_account_context(row, self._broker(row).clear())
+            return self._with_session_transition(
+                row,
+                {"status": "authenticated"},
+                self._broker(row).clear(),
+            )
         if self._uses_sso_session(row):
             row = self._set_auto_login_state(
                 row["account_id"],
@@ -1065,7 +1123,11 @@ class AutomationAccountManager:
                 blocked=False,
             )
             self._sso_auth(row).clear_persisted_session()
-            return self._with_account_context(row, self._describe_sso_status(row, validate=False))
+            return self._with_session_transition(
+                row,
+                {"status": "authenticated"},
+                self._describe_sso_status(row, validate=False),
+            )
         return self.describe_status(account_id, validate=False)
 
     def default_account_for_system(self, system: str, purpose: str = "") -> dict[str, Any] | None:

@@ -1,5 +1,14 @@
 """Phase 7 迁移模板：先把可安全准备的任务定义固化下来。"""
 
+
+DAILY_SIGN_TOOL_PARAMS = {
+    "r13_account_id": "r13_default",
+    "problem_account_id": "ronghui_daxiang_s",
+    "sign_account_id": "ronghui_daxiang_s",
+    "detail_account_id": "ronghui_daxiang_s",
+    "days": 7,
+}
+
 PHASE7_SCHEDULED_TASK_TEMPLATES = [
     {
         "id": "send_order_2150",
@@ -13,20 +22,16 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
     {
         "id": "clockin_daxiang_1830",
         "name": "网点打卡-大祥",
-        "tool_name": "tms_query",
+        "tool_name": "clock_in_dual",
         "tool_params": {
-            "endpoint": "/clock_in_dual",
-            "params": {
-                "timeout_sec": 600,
-                "params": {
-                    "mode": "api",
-                    "site_name": "邵阳大祥站",
-                    "site_fb_name": "邵阳操作场",
-                    "first_type": "交件到港",
-                    "second_type": "接件离港",
-                    "delay_seconds": 2,
-                },
-            },
+            # Historical configuration did not persist the two authoritative
+            # site codes.  This disabled template therefore fails validation
+            # until an administrator supplies them; names are never guessed.
+            "sitename": "邵阳大祥站",
+            "sitefbname": "邵阳操作场",
+            "first_type": "交件到港",
+            "second_type": "接件离港",
+            "delay_seconds": 2,
         },
         "cron_expression": "30 18 * * *",
         "enabled": False,
@@ -35,22 +40,15 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
     {
         "id": "clockin_daxiang_s_1830",
         "name": "网点打卡-大祥S站",
-        "tool_name": "tms_query",
+        "tool_name": "clock_in_dual",
         "tool_params": {
-            "endpoint": "/clock_in_dual",
-            "params": {
-                "timeout_sec": 600,
-                "params": {
-                    "mode": "api",
-                    "sitecode": "7390017",
-                    "sitefbcode": "73901",
-                    "site_name": "邵阳大祥S站",
-                    "site_fb_name": "邵阳操作场",
-                    "first_type": "交件到港",
-                    "second_type": "接件离港",
-                    "delay_seconds": 2,
-                },
-            },
+            "sitecode": "7390017",
+            "sitefbcode": "73901",
+            "sitename": "邵阳大祥S站",
+            "sitefbname": "邵阳操作场",
+            "first_type": "交件到港",
+            "second_type": "接件离港",
+            "delay_seconds": 2,
         },
         "cron_expression": "33 18 * * *",
         "enabled": False,
@@ -100,7 +98,7 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "id": "daily_sign_0500",
         "name": "每日应签-05:00",
         "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
+        "tool_params": dict(DAILY_SIGN_TOOL_PARAMS),
         "cron_expression": "0 5 * * *",
         "enabled": False,
         "source": "phase7-second-batch",
@@ -109,7 +107,7 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "id": "daily_sign_0700",
         "name": "每日应签-07:00",
         "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
+        "tool_params": dict(DAILY_SIGN_TOOL_PARAMS),
         "cron_expression": "0 7 * * *",
         "enabled": False,
         "source": "phase7-second-batch",
@@ -118,7 +116,7 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "id": "daily_sign_0900",
         "name": "每日应签-09:00",
         "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
+        "tool_params": dict(DAILY_SIGN_TOOL_PARAMS),
         "cron_expression": "0 9 * * *",
         "enabled": False,
         "source": "phase7-second-batch",
@@ -127,7 +125,7 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "id": "daily_sign_1400",
         "name": "每日应签-14:00",
         "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
+        "tool_params": dict(DAILY_SIGN_TOOL_PARAMS),
         "cron_expression": "0 14 * * *",
         "enabled": False,
         "source": "phase7-second-batch",
@@ -136,7 +134,7 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "id": "daily_sign_1530",
         "name": "每日应签-15:30",
         "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
+        "tool_params": dict(DAILY_SIGN_TOOL_PARAMS),
         "cron_expression": "30 15 * * *",
         "enabled": False,
         "source": "phase7-second-batch",
@@ -145,10 +143,19 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "id": "daily_sign_1800",
         "name": "每日应签-18:00",
         "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
+        "tool_params": dict(DAILY_SIGN_TOOL_PARAMS),
         "cron_expression": "0 18 * * *",
         "enabled": False,
         "source": "phase7-second-batch",
+    },
+    {
+        "id": "customer_problems_shadow",
+        "name": "客服问题件事项影子采集",
+        "tool_name": "sync_customer_service_problems",
+        "tool_params": {"direction": "both"},
+        "cron_expression": "*/15 * * * *",
+        "enabled": True,
+        "source": "control-plane-pilot",
     },
     {
         "id": "site_send_0500",

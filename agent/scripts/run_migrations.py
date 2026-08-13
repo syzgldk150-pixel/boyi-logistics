@@ -22,6 +22,28 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 
+def _require_mysql8(cursor) -> str:
+    """Fail before migration bookkeeping unless the server is MySQL 8."""
+
+    cursor.execute("SELECT VERSION() AS version")
+    row = cursor.fetchone()
+    if isinstance(row, dict):
+        raw_version = row.get("version") or row.get("VERSION()")
+    elif isinstance(row, (list, tuple)) and row:
+        raw_version = row[0]
+    else:
+        raw_version = None
+
+    version = str(raw_version or "").strip()
+    if "mariadb" in version.lower():
+        raise RuntimeError(f"Migration runner requires MySQL 8; MariaDB is unsupported ({version})")
+
+    match = re.match(r"^(\d+)(?:\.|$)", version)
+    if match is None or int(match.group(1)) != 8:
+        raise RuntimeError(f"Migration runner requires MySQL 8; found {version or 'unknown'}")
+    return version
+
+
 def discover_migrations(migrations_dir: Path = MIGRATIONS_DIR) -> list[tuple[str, Path]]:
     migrations: list[tuple[str, Path]] = []
     for path in migrations_dir.glob("*.sql"):
@@ -112,6 +134,7 @@ def run(*, check_only: bool) -> int:
     connection = _connect()
     try:
         with connection.cursor() as cursor:
+            _require_mysql8(cursor)
             if check_only:
                 pending = _verify_history(cursor, migrations) if _migration_table_exists(cursor) else migrations
                 print(f"migration_check=ok pending={len(pending)}")

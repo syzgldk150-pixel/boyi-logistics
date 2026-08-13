@@ -100,6 +100,7 @@ class MobileNavigationTests(unittest.TestCase):
         routes = [item["route"] for item in CONSOLE_NAVIGATION]
 
         self.assertEqual(len(routes), len(set(routes)))
+        self.assertIn("/work-items", routes)
         self.assertEqual(("/tracking", "/receipts", "/automations"), DEFAULT_MOBILE_BOTTOM_NAV)
         self.assertTrue(all(route != "/" for route in DEFAULT_MOBILE_BOTTOM_NAV))
         self.assertTrue(all(item["route"] != "/" for item in MOBILE_NAVIGATION_CANDIDATES))

@@ -1618,6 +1618,10 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.arrive_list_sync_tool.call_http_service", side_effect=fake_call_http_service),
             patch("tools.arrive_list_sync_tool.replace_waybill_records", return_value={"ok": True, "replaced": 1}) as replace_records,
             patch("tools.arrive_list_sync_tool._write_sheet_resource", return_value={"ok": True, "rows": 1}) as write_sheet,
+            patch(
+                "tools.arrive_list_sync_tool.save_forecast_snapshot",
+                return_value={"ok": True, "run_id": "forecast-run", "rows": 1},
+            ),
         ):
             result = arrive_list_sync_tool.run_arrive_list_sync({})
 
@@ -1664,43 +1668,14 @@ class Phase7SyncToolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 arrival_stats_sync_tool.run_arrival_stats_sync({})
 
-    def test_daily_sign_sync_merges_r13_resource_into_qianshou_request(self):
-        with (
-            patch(
-                "tools.daily_sign_sync_tool.get_workflow_resource",
-                return_value={
-                    "username": "r13-user",
-                    "password": "r13-pass",
-                    "disp_site_code": "7390004",
-                    "days": 7,
-                    "_meta": {"source": "backend_console"},
-                },
-            ),
-            patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "YS1",
-                        "planSignTime": "2026-04-24 10:00:00",
-                        "goodsName": "demo",
-                        "pcs": 1,
-                    }
-                ],
-            ) as call_tms,
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", return_value={"ok": True}),
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(
-                {"request_body": {"days": 1}, "enrich_addresses": False, "enrich_arrival_counts": False}
+    def test_daily_sign_request_does_not_load_legacy_r13_resource(self):
+        with patch("tools.daily_sign_sync_tool.get_workflow_resource") as resource_mock:
+            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
+                {"request_body": {"days": 1}}
             )
 
-        self.assertTrue(result["ok"])
-        request_body = call_tms.call_args.args[1]
-        self.assertEqual("r13-user", request_body["username"])
-        self.assertEqual("r13-pass", request_body["password"])
-        self.assertEqual("7390004", request_body["disp_site_code"])
-        self.assertEqual(1, request_body["days"])
-        self.assertNotIn("_meta", request_body)
+        self.assertEqual({"days": 1}, request_body)
+        resource_mock.assert_not_called()
 
     def test_daily_sign_sync_prefers_r13_account_manager_credentials(self):
         class FakeAccountManager:
@@ -1714,93 +1689,90 @@ class Phase7SyncToolTests(unittest.TestCase):
         fake_manager = FakeAccountManager()
         with (
             patch("tools.daily_sign_sync_tool.get_account_manager", return_value=fake_manager),
+            patch("tools.daily_sign_sync_tool.get_workflow_resource") as resource_mock,
+        ):
+            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
+                {
+                    "r13_account_id": "r13_default",
+                    "request_body": {"days": 1},
+                }
+            )
+
+        self.assertEqual("r13_account_id", fake_manager.kwargs["account_field"])
+        self.assertEqual("", fake_manager.kwargs["output_account_field"])
+        self.assertEqual("", fake_manager.kwargs["output_session_profile_field"])
+        self.assertEqual("r13-account-user", request_body["username"])
+        self.assertEqual("r13-account-pass", request_body["password"])
+        resource_mock.assert_not_called()
+
+    def test_daily_sign_request_rejects_inline_credentials_and_account_selectors(self):
+        for forbidden in ("username", "password", "account_id", "r13_account_id"):
+            with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
+                daily_sign_sync_tool.build_daily_sign_request_body(
+                    {"request_body": {"days": 1, forbidden: "caller-controlled"}}
+                )
+
+    def test_daily_sign_sync_surfaces_get_qianshou_error(self):
+        from datetime import datetime
+
+        state = {
+            "ledger": {},
+            "arrivals": {},
+            "target_station_codes": set(),
+            "problems": {},
+            "signs": {},
+            "source_refs": [],
+            "arrival_source_proof": {
+                "complete": True,
+                "active_stat_runs": 1,
+                "latest_forecast_runs": 0,
+                "run_ids": ["arrival-run"],
+            },
+        }
+        with (
             patch(
-                "tools.daily_sign_sync_tool.get_workflow_resource",
-                return_value={
-                    "username": "legacy-resource-user",
-                    "password": "legacy-resource-pass",
-                    "disp_site_code": "7390004",
-                },
+                "tools.daily_sign_pipeline.start_sync_run",
+                return_value=("source-run", datetime(2026, 8, 13, 9, 0, 0)),
+            ),
+            patch("tools.daily_sign_pipeline.load_daily_sign_state", return_value=state),
+            patch("tools.daily_sign_pipeline.finish_sync_run"),
+            patch(
+                "tools.daily_sign_pipeline._resolve_r13_request",
+                return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "YS1",
-                        "planSignTime": "2026-04-24 10:00:00",
-                        "goodsName": "demo",
-                        "pcs": 1,
-                    }
-                ],
-            ) as call_tms,
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", return_value={"ok": True}),
+                "tools.daily_sign_pipeline.call_http_service",
+                return_value={
+                    "ok": False,
+                    "error_code": "AUTH_REQUIRED",
+                    "error": "R13 SSO login failed",
+                },
+            ),
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
                     "r13_account_id": "r13_default",
-                    "request_body": {"days": 1},
-                    "enrich_addresses": False,
-                    "enrich_arrival_counts": False,
+                    "problem_account_id": "ronghui_daxiang_s",
+                    "sign_account_id": "ronghui_daxiang_s",
+                    "detail_account_id": "ronghui_daxiang_s",
+                    "days": 1,
                 }
             )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual("r13_account_id", fake_manager.kwargs["account_field"])
-        self.assertEqual("", fake_manager.kwargs["output_account_field"])
-        self.assertEqual("", fake_manager.kwargs["output_session_profile_field"])
-        request_body = call_tms.call_args.args[1]
-        self.assertEqual("r13-account-user", request_body["username"])
-        self.assertEqual("r13-account-pass", request_body["password"])
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("AUTH_REQUIRED", result["error"]["code"])
 
-    def test_daily_sign_request_body_helper_merges_r13_resource_without_meta(self):
-        with patch(
-            "tools.daily_sign_sync_tool.get_workflow_resource",
-            return_value={
-                "username": "r13-user",
-                "password": "r13-pass",
-                "disp_site_code": "7390004",
-                "days": 7,
-                "_meta": {"source": "backend_console"},
-            },
-        ):
-            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
-                {"request_body": {"start": "2026-05-31 00:00:00", "end": "2026-05-31 23:59:59", "days": 1}}
-            )
-
-        self.assertEqual("r13-user", request_body["username"])
-        self.assertEqual("r13-pass", request_body["password"])
-        self.assertEqual("7390004", request_body["disp_site_code"])
-        self.assertEqual("2026-05-31 00:00:00", request_body["start"])
-        self.assertEqual("2026-05-31 23:59:59", request_body["end"])
-        self.assertEqual(1, request_body["days"])
-        self.assertNotIn("_meta", request_body)
-
-    def test_daily_sign_sync_surfaces_get_qianshou_error(self):
-        with patch(
-            "tools.daily_sign_sync_tool.call_http_service",
-            return_value={"ok": False, "error": "R13 SSO login failed", "http_status": 500},
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync({})
-
-        self.assertIn("get_qianshou 执行失败", result["error"])
-        self.assertNotIn("返回格式异常", result["error"])
-
-    def test_daily_sign_sync_zero_rows_preserves_targets(self):
+    def test_daily_sign_sync_rejects_implicit_accounts_before_source_calls(self):
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot") as bitable_mock,
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot") as sheet_mock,
+            patch("tools.daily_sign_pipeline.call_http_service") as source_mock,
+            patch("tools.daily_sign_pipeline.start_sync_run") as run_mock,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync({})
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(0, result["fetched"])
-        self.assertEqual("no_fetched_rows", result["skip_reason"])
-        self.assertTrue(result["bitable_result"]["skipped"])
-        self.assertTrue(result["sheet_result"]["skipped"])
-        bitable_mock.assert_not_called()
-        sheet_mock.assert_not_called()
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("ACCOUNT_AMBIGUOUS", result["error"]["code"])
+        source_mock.assert_not_called()
+        run_mock.assert_not_called()
 
     def test_site_send_list_sync_zero_rows_clears_targets(self):
         bitable_result = {"ok": True, "deleted": 3, "written": 0}
@@ -1846,52 +1818,15 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("", values[0][7])
 
     def test_daily_sign_sync_sorts_feishu_output_by_plan_sign_time(self):
-        written_records = []
-        written_values = []
-
-        def capture_bitable(_resource_key, records, _params):
-            written_records.extend(records)
-            return {"ok": True, "written": len(records)}
-
-        def capture_sheet(_resource_key, values, _params):
-            written_values.extend(values)
-            return {"ok": True, "rows": len(values)}
-
-        with (
-            patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "LATE",
-                        "planSignTime": "2026-06-21 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "托盘",
-                        "pcs": 2,
-                    },
-                    {
-                        "billNumberMain": "EARLY",
-                        "planSignTime": "2026-06-19 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "纸箱",
-                        "pcs": 1,
-                    },
-                    {
-                        "billNumberMain": "MIDDLE",
-                        "planSignTime": "2026-06-20 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "编织袋",
-                        "pcs": 5,
-                    },
-                ],
-            ),
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", side_effect=capture_bitable),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(
-                {"enrich_addresses": False, "enrich_arrival_counts": False}
-            )
-
-        self.assertTrue(result["ok"])
+        rows = daily_sign_sync_tool._sort_rows_by_plan_sign_time(
+            [
+                {"billNumberMain": "LATE", "planSignTime": "2026-06-21 23:59:59"},
+                {"billNumberMain": "EARLY", "planSignTime": "2026-06-19 23:59:59"},
+                {"billNumberMain": "MIDDLE", "planSignTime": "2026-06-20 23:59:59"},
+            ]
+        )
+        written_values = daily_sign_sync_tool._build_sheet_values(rows)
+        written_records = daily_sign_sync_tool._build_records(rows)
         self.assertEqual(["EARLY", "MIDDLE", "LATE"], [row[0] for row in written_values])
         self.assertEqual(
             ["EARLY", "MIDDLE", "LATE"],
@@ -1899,103 +1834,82 @@ class Phase7SyncToolTests(unittest.TestCase):
         )
 
     def test_daily_sign_sync_writes_arrived_quantity_to_sheet_column_h(self):
-        written_values = []
-        captured_sheet_params = {}
-
-        def capture_sheet(_resource_key, values, _params):
-            written_values.extend(values)
-            captured_sheet_params.update(_params)
-            return {"ok": True, "rows": len(values)}
-
+        rows = [
+            {
+                "billNumberMain": "R0001",
+                "planSignTime": "2026-06-04 23:59:59",
+                "goodsName": "配件",
+                "packTypeDesc": "编织袋",
+                "pcs": 6,
+                "dispAddress": "湖南省邵阳市大祥区",
+                "dispatchMode": "送货（不含上楼）",
+            }
+        ]
         with (
-            patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "R0001",
-                        "planSignTime": "2026-06-04 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "编织袋",
-                        "pcs": 6,
-                        "dispAddress": "湖南省邵阳市大祥区",
-                        "dispatchMode": "送货（不含上楼）",
-                    }
-                ],
-            ),
             patch(
                 "tools.daily_sign_sync_tool.get_waybill_tracking_cache",
                 create=True,
                 return_value={"arrived_quantity": 4},
             ),
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True, "written": 1}),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
         ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(
-                {
-                    "enrich_addresses": False,
-                    "spreadsheet_token": "sheet-token",
-                    "range": "Sheet1!A2:G100",
-                    "clear_range": "Sheet1!A2:G100",
-                }
-            )
+            rows, result = daily_sign_sync_tool._enrich_rows_with_arrival_quantities(rows, {})
 
         self.assertTrue(result["ok"])
+        written_values = daily_sign_sync_tool._build_sheet_values(rows)
+        captured_sheet_params = daily_sign_sync_tool._sheet_params_for_values(
+            {
+                "spreadsheet_token": "sheet-token",
+                "range": "Sheet1!A2:G100",
+                "clear_range": "Sheet1!A2:G100",
+            },
+            written_values,
+        )
         self.assertEqual(8, len(written_values[0]))
         self.assertEqual(4, written_values[0][7])
         self.assertEqual("Sheet1!A2:H2", captured_sheet_params["range"])
         self.assertEqual("Sheet1!A2:H100", captured_sheet_params["clear_range"])
 
     def test_daily_sign_sync_enriches_masked_addresses_before_writing(self):
-        written_records = []
-        written_values = []
-
-        def capture_bitable(_resource_key, records, _params):
-            written_records.extend(records)
-            return {"ok": True, "written": len(records)}
-
-        def capture_sheet(_resource_key, values, _params):
-            written_values.extend(values)
-            return {"ok": True, "rows": len(values)}
-
+        rows = [
+            {
+                "billNumberMain": "R0001",
+                "planSignTime": "2026-05-20 23:59:59",
+                "goodsName": "瓦",
+                "packTypeDesc": "托盘袋",
+                "pcs": 2,
+                "dispAddress": "湖南省******",
+                "dispatchMode": "送货（不含上楼）",
+            }
+        ]
         with (
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                side_effect=[
-                    [
+                return_value={
+                    "ok": True,
+                    "data": [
                         {
-                            "billNumberMain": "R0001",
-                            "planSignTime": "2026-05-20 23:59:59",
-                            "goodsName": "瓦",
-                            "packTypeDesc": "托盘袋",
-                            "pcs": 2,
-                            "dispAddress": "湖南省******",
-                            "dispatchMode": "送货（不含上楼）",
+                            "tracking_number": "R0001",
+                            "recipient_address": "湖南省邵阳市大祥区雨溪镇",
                         }
                     ],
-                    {
-                        "ok": True,
-                        "data": [
-                            {
-                                "tracking_number": "R0001",
-                                "recipient_address": "湖南省邵阳市大祥区雨溪镇",
-                            }
-                        ],
-                    },
-                ],
+                },
             ) as call_tms,
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", side_effect=capture_bitable),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
         ):
-            result = daily_sign_sync_tool.run_daily_sign_sync({"enrich_arrival_counts": False})
+            rows, result = daily_sign_sync_tool._enrich_rows_with_detail_addresses(
+                rows,
+                {"detail_account_id": "ronghui_daxiang_s"},
+            )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(1, result["address_enrichment"]["updated"])
+        self.assertEqual(1, result["updated"])
+        written_records = daily_sign_sync_tool._build_records(rows)
+        written_values = daily_sign_sync_tool._build_sheet_values(rows)
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_records[0]["fields"]["收件人地址"])
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_values[0][5])
-        self.assertEqual("/query_waybill_detail", call_tms.call_args_list[1].args[0])
+        self.assertEqual("/query_waybill_detail", call_tms.call_args.args[0])
         self.assertEqual(
             [{"bill_code": "R0001"}],
-            call_tms.call_args_list[1].args[1]["params"]["items"],
+            call_tms.call_args.args[1]["params"]["items"],
         )
 
     def test_sheet_snapshot_can_clear_wider_range_than_write_range(self):

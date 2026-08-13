@@ -128,7 +128,7 @@ class MonitoringFinanceServiceMixin:
     def _get_finance_service(self) -> FinanceService:
         service = getattr(self, "finance_service", None)
         if service is None:
-            service = FinanceService(self.repository, agent_request=self._agent_request)
+            service = FinanceService(self.repository)
             self.finance_service = service
         return service
 
@@ -193,12 +193,22 @@ class MonitoringFinanceServiceMixin:
         path: str = "",
     ) -> None:
         service = self._get_finance_service()
-        body = self._parse_json_body(handler)
+        command_actions = {"sync", "backfill", "retry_batch"}
+        trusted_context = None
+        if action in command_actions:
+            trusted_context = self._control_plane_write_context(handler)
+            if trusted_context is None:
+                return
+            body = self._read_control_plane_json(handler)
+            if body is None:
+                return
+        else:
+            body = self._parse_json_body(handler)
         try:
             if action == "sync":
-                data = service.start_sync(body)
+                arguments = service.build_sync_arguments(body)
             elif action == "backfill":
-                data = service.start_backfill(body)
+                arguments = service.build_backfill_arguments(body)
             elif action == "save_mapping":
                 match = re.fullmatch(r"/finance/fee-mappings/(\d+)", path)
                 if not match:
@@ -212,7 +222,7 @@ class MonitoringFinanceServiceMixin:
                 match = re.fullmatch(r"/finance/sync-batches/(\d+)/retry", path)
                 if not match:
                     raise FinanceValidationError("同步批次 ID 无效。")
-                data = service.retry_batch(int(match.group(1)))
+                arguments = service.build_retry_arguments(int(match.group(1)))
             else:
                 self._send_json(
                     handler,
@@ -235,7 +245,48 @@ class MonitoringFinanceServiceMixin:
                 },
             )
             return
-        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
+        if action not in command_actions:
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
+            return
+
+        entity_refs = []
+        account_id = str(arguments.get("account_id") or "").strip()
+        if account_id:
+            entity_refs.append(
+                {
+                    "entity_type": "account",
+                    "entity_id": account_id,
+                    "source_system": str(arguments.get("platform") or "finance"),
+                    "relation_type": "scope",
+                    "metadata": {},
+                }
+            )
+        batch_id = arguments.get("batch_id")
+        if batch_id not in (None, ""):
+            entity_refs.append(
+                {
+                    "entity_type": "finance_sync_batch",
+                    "entity_id": str(batch_id),
+                    "source_system": "finance",
+                    "relation_type": "subject",
+                    "metadata": {},
+                }
+            )
+        command_result = self._submit_console_tool_command(
+            trusted_context=trusted_context,
+            browser_request_uuid=str(
+                handler.headers.get("X-Browser-Request-UUID") or ""
+            ),
+            tool_name="sync_finance_bills",
+            arguments=arguments,
+            entity_refs=entity_refs,
+            console_entry=path or f"/finance/{action}",
+        )
+        self._send_console_command_receipt(
+            handler,
+            command_result,
+            message="财务同步计划已提交，请在事项中心审批并查看运行结果。",
+        )
 
     def _send_finance_error(self, handler: BaseHTTPRequestHandler, error: FinanceError) -> None:
         try:

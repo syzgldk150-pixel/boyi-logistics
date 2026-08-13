@@ -321,8 +321,8 @@ def submit_dual_clockin(
     logger.info("打卡时间: %s", localdatetimestr(t1))
     first_resp = submit_clockin([first_record], session, page_context)
 
-    if isinstance(first_resp, dict) and first_resp.get("success") is False:
-        logger.warning("交件到港打卡失败: %s", first_resp.get("message"))
+    if not isinstance(first_resp, dict) or first_resp.get("success") is not True:
+        logger.warning("交件到港打卡失败: %s", _extract_submit_error(first_resp))
         results["first_success"] = False
     else:
         logger.info("交件到港打卡成功")
@@ -354,8 +354,8 @@ def submit_dual_clockin(
     logger.info("打卡时间: %s", localdatetimestr(t2))
     second_resp = submit_clockin([second_record], session, page_context)
 
-    if isinstance(second_resp, dict) and second_resp.get("success") is False:
-        logger.warning("接件离港打卡失败: %s", second_resp.get("message"))
+    if not isinstance(second_resp, dict) or second_resp.get("success") is not True:
+        logger.warning("接件离港打卡失败: %s", _extract_submit_error(second_resp))
         results["second_success"] = False
     else:
         logger.info("接件离港打卡成功")

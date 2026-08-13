@@ -1,7 +1,9 @@
 """Console composition root and HTTP lifecycle."""
 
 from console.app_support import *  # noqa: F403
+from console.services.agent_api import AgentApiServiceMixin
 from console.services.auth import AuthServiceMixin
+from console.services.control_plane import ControlPlaneServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
 from console.services.customer_service import CustomerServiceMixin
 from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
@@ -15,7 +17,17 @@ from console.navigation import (
 )
 
 
-class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerServiceMixin, WaybillsReceiptsServiceMixin, TmsProxyServiceMixin, AutomationServiceMixin, DocumentServiceMixin):
+class LocalDocFlowApp(
+    AuthServiceMixin,
+    AgentApiServiceMixin,
+    ControlPlaneServiceMixin,
+    MonitoringFinanceServiceMixin,
+    CustomerServiceMixin,
+    WaybillsReceiptsServiceMixin,
+    TmsProxyServiceMixin,
+    AutomationServiceMixin,
+    DocumentServiceMixin,
+):
     def __init__(self) -> None:
         self.settings = load_settings()
         self.template_store = TemplateStore(self.settings)
@@ -50,7 +62,7 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         self.template_env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
         self.template_env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
         self.project_modules = self._build_project_modules()
-        self.finance_service = FinanceService(self.repository, agent_request=self._agent_request)
+        self.finance_service = FinanceService(self.repository)
         self.finance_service.initialize_schema()
         self.automation_virtual_task_state: dict[str, dict[str, Any]] = {}
         self.routes = ConsoleRouteDispatcher()
@@ -113,20 +125,9 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
         query = parse_qs(parsed.query)
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
+            return
         if not self._ensure_authorized(handler):
-            return
-
-        if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method=method.upper(), query=query)
-            return
-        if parsed.path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_yunda_receipt_live_proxy(handler, parsed.path, method=method.upper(), query=query)
-            return
-        if parsed.path.startswith(RONGHUI_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_live_proxy(handler, parsed.path, method=method.upper(), query=query)
-            return
-        if parsed.path.startswith(YUNDA_LIVE_PROXY_PREFIX):
-            self._handle_yunda_live_proxy(handler, parsed.path, method=method.upper(), query=query)
             return
         self._send_json(
             handler,
@@ -147,6 +148,8 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
             return
         if path == "/login":
             self._render_login(handler, query)
+            return
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
             return
@@ -215,20 +218,10 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         if path.startswith("/receipts/attachments/"):
             self._handle_receipt_attachment(handler, path, query)
             return
-        if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method="GET", query=query)
-            return
-        if parsed.path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_yunda_receipt_live_proxy(handler, parsed.path, method="GET", query=query)
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if path.startswith("/receipts/"):
             self._handle_receipt_detail(handler, path)
-            return
-        if parsed.path.startswith(RONGHUI_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_live_proxy(handler, parsed.path, method="GET", query=query)
-            return
-        if parsed.path.startswith(YUNDA_LIVE_PROXY_PREFIX):
-            self._handle_yunda_live_proxy(handler, parsed.path, method="GET", query=query)
             return
         if path == "/dispatch":
             self._render_dispatch(handler, query)
@@ -322,6 +315,8 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         if path == "/login":
             self._handle_login(handler)
             return
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
+            return
         if not self._ensure_authorized(handler):
             return
         query = parse_qs(parsed.query)
@@ -389,20 +384,18 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         if path.startswith("/receipts/") and path.endswith("/audit"):
             self._handle_receipt_audit(handler, path)
             return
-        if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
-            return
-        if parsed.path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_yunda_receipt_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
-            return
-        if parsed.path.startswith(RONGHUI_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
-            return
-        if parsed.path.startswith(YUNDA_LIVE_PROXY_PREFIX):
-            self._handle_yunda_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if path.startswith("/ocr/yunda/"):
-            self._handle_yunda_entry(handler, path)
+            self._send_json(
+                handler,
+                HTTPStatus.GONE,
+                {
+                    "ok": False,
+                    "error_code": "ACTIVE_ORIGINAL_PAGE_DISABLED",
+                    "message": "韵达活动原页与写动作已停用；请使用本地 OCR、手工运单或控制平面命令。",
+                },
+            )
             return
         if path in {"/upload", "/ocr/upload"}:
             self._handle_upload(handler)

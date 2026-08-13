@@ -6,6 +6,12 @@
 
 ## 修改入口
 
+- 改 Command Gateway、状态机、计划/策略/审批、Worker、Evidence、Outbox 与恢复：
+  - `orchestration/`；完整边界见 `../docs/control_plane_v1.md`
+  - 只有 `orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`；`core.py`、HTTP/飞书/调度入口、TMS 路由和兼容 API 只能提交 Command。
+  - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
+  - 第三方/财务写步骤崩溃恢复时，没有精确 reconciliation 就进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得盲目重试。
+  - 澄清事件只允许闭合 v1 字段 `note/account_id/argument_updates` 并绑定原 `command_id`；纯文本只作审计 note。Planner 合并显式覆盖后仍要通过 input_schema、权威账号、策略和 plan hash 校验。
 - 改 HTTP API、健康检查、Webhook 入口：
   - `../main.py`
   - `runtime_config.py`（只在 Agent 服务入口显式加载环境；模块导入不得读取 `.env`）
@@ -46,10 +52,10 @@
 - 改飞书文本指令直达路由（不走 LLM 的确定性命令）：
   - `direct_tool_router.py`
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）
-  - `core.py`（`track_waybill` 由 `AgentCore` 进程内调用 `tools.track_waybill_tool.run_track_waybill`，不走通用子进程执行器的同名运行锁，便于多票单号连续查询快速反馈）
+  - `core.py`（单号查询也先提交 Command；`track_waybill` 的进程内函数由 `main.py` 通过 `ToolExecutionPort` adapter 注入，仍只有 WorkflowRunner 调用）
   - `automation_profile.py`
   - 当前已注册：登录验证码（`登录/登陆/发验证码/重新登录` 先选择大祥账号、操作场账号或韵达账号；带 `大祥/报价/价格/price` 时走大祥账号，带 `操作场/后台` 时走操作场账号，带 `韵达/yunda` 时走韵达账号）、单号查询（裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>` 先做本地格式预检，通过后走 `track_waybill`）、报价（`报价/价格 ...` 或 `地址，重量`，同一地址请求会返回融辉和韵达两段报价；融辉段使用真实运单录入页详细地址 blur 解析得到目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做 `areaName`/区县/城市拆词兜底；韵达段先按页面 `getInsuredAmount.html` 规则用重量同步最低申明价值，再调用运单录入页 `price.html`，最终口径为页面的 `Number(CostTotal)+Number(短信费)` 后 `getFloatStr_1()` 截两位，并使用运单录入地址解析/网点匹配明细，飞书不传申明价值）、到货清单同步（`arrivelist/到货清单/预到达清单`）、扫描（`扫描/获取并扫描数据/...`）、R7 到达打卡（`到达打卡`）、R7 发车打卡（`发车/R7发车/发车打卡`）、上报分批差错（`上报分批差错` 等）、自提到货问题件（`自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等）、统计到货数据（`统计/到货统计/...`）
-  - `get_price` 由 `AgentCore` 进程内调用 `tools.price_tool.run_price_tool`，不走通用子进程执行器的重任务锁；`tools/price_tool.py` 内部并发请求融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，但仍分别按 `price` 与 `yunda` 登录态处理登录恢复。
+  - `get_price` 同样先提交 Command；进程内价格函数由组合根作为 adapter 注入 WorkflowRunner。`tools/price_tool.py` 内部并发请求融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，分别按精确账号登录态处理登录恢复。
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机
   - TMS 工具返回登录态错误时必须顶层包含 `error_code=AUTH_REQUIRED` / `AUTH_PENDING_CODE`，不能只返回“格式异常”；共享解析在 `../tools/phase7_sync_common.py`
@@ -67,6 +73,7 @@
 
 - `../docs/code_navigation_index.md`
 - `../docs/project_overview.md`
+- `../docs/control_plane_v1.md`
 
 - `split_pending_problem_upload` 仅由精确文本“分批”触发，使用 `ronghui_default`；dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
 - 少货/分批复用不可独立调度的 `agent.tms_runtime.scripts.ronghui_split_complaint` 真实投诉页面能力，差错成功/重复后才登记问题件；有发未到只登记问题件。旧投诉 target、裸导入和 CLI 不得恢复。

@@ -1,23 +1,32 @@
-"""定时任务调度器：APScheduler，替代 N8N cron"""
+"""APScheduler entry adapter; every occurrence is submitted as a Command."""
+
+from __future__ import annotations
 
 import copy
 import logging
 from datetime import datetime, timedelta
+from typing import Any
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
+from agent.orchestration.models import Actor, ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 
-logger = logging.getLogger("agent")
 
+logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
+CUSTOMER_PROBLEM_SHADOW_TASK_ID = "customer_problems_shadow"
+LOCKED_CONTROL_PLANE_TASK_IDS = frozenset(
+    {FINANCE_SCHEDULE_TASK_ID, CUSTOMER_PROBLEM_SHADOW_TASK_ID}
+)
 
 
 def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime | None:
-    """Return the latest CronTrigger fire time still inside the misfire window."""
+    """Return the latest fire time still inside the configured misfire window."""
 
     cursor = now - timedelta(seconds=FINANCE_MISFIRE_GRACE_SECONDS + 1)
     candidate = trigger.get_next_fire_time(None, cursor)
@@ -31,76 +40,82 @@ def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime
 
 
 def init_scheduler(agent_core) -> AsyncIOScheduler:
-    """初始化调度器，从 MySQL 加载任务定义"""
     global _scheduler
     _scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
-
     try:
-        if ensure_finance_schedule_task(agent_core):
-            logger.info("已补种财务定时任务: %s", FINANCE_SCHEDULE_TASK_ID)
-    except Exception as e:
-        logger.warning("财务定时任务初始化失败: %s", e)
-
-    # 从 MySQL 加载已保存的定时任务
+        seeded = ensure_control_plane_schedule_tasks(agent_core)
+        if seeded:
+            logger.info("Seeded control-plane schedule tasks: %s", ", ".join(seeded))
+    except Exception as exc:
+        logger.warning("Control-plane schedule initialization failed: %s", exc)
     try:
         _load_tasks_from_db(agent_core)
-    except Exception as e:
-        logger.warning("加载定时任务失败（数据库可能还没有任务）: %s", e)
-
+    except Exception as exc:
+        logger.warning("Scheduled task loading failed: %s", exc)
     _add_finance_startup_catchup_job(agent_core)
-
     return _scheduler
 
 
 def ensure_finance_schedule_task(agent_core) -> bool:
-    """Insert the required finance schedule only when it is absent.
+    """Seed the locked finance template only when the row is absent."""
 
-    Existing rows are preserved verbatim so an administrator can temporarily
-    disable the job without the next service restart silently overwriting that
-    operational choice.
-    """
+    return FINANCE_SCHEDULE_TASK_ID in _seed_locked_schedule_tasks(
+        agent_core,
+        frozenset({FINANCE_SCHEDULE_TASK_ID}),
+    )
+
+
+def ensure_control_plane_schedule_tasks(agent_core) -> tuple[str, ...]:
+    """Idempotently seed new locked tasks without overwriting admin choices."""
+
+    return _seed_locked_schedule_tasks(agent_core, LOCKED_CONTROL_PLANE_TASK_IDS)
+
+
+def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[str, ...]:
+    """Seed exactly ``task_ids`` while preserving any persisted override."""
 
     existing_ids = {
         str(row.get("id") or "").strip()
         for row in agent_core.memory.list_scheduled_tasks()
         if isinstance(row, dict)
     }
-    if FINANCE_SCHEDULE_TASK_ID in existing_ids:
-        return False
-
-    templates = [
-        task
+    templates = {
+        str(task.get("id") or ""): task
         for task in PHASE7_SCHEDULED_TASK_TEMPLATES
-        if str(task.get("id") or "") == FINANCE_SCHEDULE_TASK_ID
-    ]
-    if len(templates) != 1:
-        raise RuntimeError("财务定时任务模板缺失或重复")
-    agent_core.memory.upsert_scheduled_task(copy.deepcopy(templates[0]))
-    return True
+        if str(task.get("id") or "") in task_ids
+    }
+    if set(templates) != set(task_ids):
+        raise RuntimeError("A locked control-plane schedule template is missing or duplicated")
+    seeded: list[str] = []
+    for task_id in sorted(task_ids):
+        if task_id in existing_ids:
+            continue
+        agent_core.memory.upsert_scheduled_task(copy.deepcopy(templates[task_id]))
+        seeded.append(task_id)
+    return tuple(seeded)
 
 
 def _add_finance_startup_catchup_job(agent_core) -> None:
-    """Run one gap-only finance catch-up shortly after every service start."""
+    """Perform the bounded startup gap scan through the same control plane."""
 
     async def startup_catchup() -> None:
-        logger.info("服务启动财务缺口扫描触发")
+        scheduled_for = datetime.now().astimezone()
         try:
-            result = await agent_core.execute_tool(
-                "sync_finance_bills",
-                {
-                    "mode": "sync",
-                    "rescan_days": 7,
-                    "_startup_catchup": True,
-                },
+            result = await _execute_scheduled_tool(
+                agent_core,
+                task_id="finance_startup_catchup",
+                tool_name="sync_finance_bills",
+                arguments={"mode": "sync", "rescan_days": 7},
+                scheduled_for=scheduled_for,
+                cron_expression="@startup",
             )
             if not isinstance(result, dict) or not result.get("success"):
-                logger.error(
-                    "服务启动财务缺口扫描失败: %s",
-                    str((result or {}).get("error") if isinstance(result, dict) else result)[:200],
-                )
+                logger.error("Startup finance catch-up did not complete: %s", _result_error(result))
         except Exception as exc:
-            logger.error("服务启动财务缺口扫描异常: %s", str(exc)[:200])
+            logger.error("Startup finance catch-up failed: %s", str(exc)[:200])
 
+    if _scheduler is None:
+        raise RuntimeError("scheduler is not initialized")
     trigger = DateTrigger(
         run_date=datetime.now().astimezone() + timedelta(seconds=15),
         timezone="Asia/Shanghai",
@@ -115,8 +130,7 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
     )
 
 
-def _load_tasks_from_db(agent_core):
-    """从 scheduled_tasks 表加载任务"""
+def _load_tasks_from_db(agent_core) -> None:
     for task in agent_core.memory.list_enabled_scheduled_tasks():
         _add_job(
             task_id=task["id"],
@@ -125,72 +139,102 @@ def _load_tasks_from_db(agent_core):
             tool_params=task.get("tool_params") or {},
             agent_core=agent_core,
         )
-        logger.info("加载定时任务: %s (%s) → %s", task["name"], task["cron_expression"], task["tool_name"])
+        logger.info(
+            "Loaded scheduled task: %s (%s) -> %s",
+            task["name"],
+            task["cron_expression"],
+            task["tool_name"],
+        )
 
 
-def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, agent_core):
-    """添加定时任务"""
-    parts = cron_expr.split()
-    if len(parts) == 5:
-        minute, hour, day, month, day_of_week = parts
-    else:
-        logger.error("无效的 cron 表达式: %s", cron_expr)
+def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, agent_core) -> None:
+    parts = str(cron_expr or "").split()
+    if len(parts) != 5:
+        logger.error("Invalid cron expression for task %s: %s", task_id, cron_expr)
         return
-
+    minute, hour, day, month, day_of_week = parts
     trigger = CronTrigger(
-        minute=minute, hour=hour, day=day, month=month, day_of_week=day_of_week,
+        minute=minute,
+        hour=hour,
+        day=day,
+        month=month,
+        day_of_week=day_of_week,
         timezone="Asia/Shanghai",
     )
 
-    async def job_func(tn=tool_name, tp=tool_params, tid=task_id, cron=cron_expr):
-        logger.info("定时任务触发: %s → %s", tid, tn)
+    async def job_func(
+        tn: str = tool_name,
+        tp: dict = tool_params,
+        tid: str = task_id,
+        cron: str = cron_expr,
+    ) -> None:
+        logger.info("Scheduled task fired: %s -> %s", tid, tn)
         try:
-            scheduled_params = copy.deepcopy(tp or {})
-            scheduled_metadata = {
-                "id": tid,
-                "cron_expression": cron,
-            }
+            scheduled_for = _latest_scheduled_fire_time(trigger, datetime.now(trigger.timezone))
+            if scheduled_for is None:
+                raise RuntimeError("Unable to determine a stable scheduled fire time")
+            arguments = copy.deepcopy(tp or {})
             if tn == "sync_finance_bills":
-                now = datetime.now(trigger.timezone)
-                scheduled_for = _latest_scheduled_fire_time(trigger, now)
-                if scheduled_for is None:
-                    raise RuntimeError("无法从财务任务 CronTrigger 确定本次计划触发时间")
-                target_date = (scheduled_for.date() - timedelta(days=1)).isoformat()
-                scheduled_metadata.update(
-                    {
-                        "scheduled_for": scheduled_for.isoformat(),
-                        "target_date": target_date,
-                    }
-                )
-                scheduled_params["target_date"] = target_date
-            scheduled_params["_scheduled_task"] = scheduled_metadata
-            result = await agent_core.execute_tool(tn, scheduled_params)
+                arguments["target_date"] = (
+                    scheduled_for.date() - timedelta(days=1)
+                ).isoformat()
+            result = await _execute_scheduled_tool(
+                agent_core,
+                task_id=tid,
+                tool_name=tn,
+                arguments=arguments,
+                scheduled_for=scheduled_for,
+                cron_expression=cron,
+            )
             status = "success" if isinstance(result, dict) and result.get("success") else "error"
             if status != "success":
-                logger.error("定时任务失败: %s → %s", tid, str((result or {}).get("error") or result)[:200])
+                logger.error("Scheduled task did not complete: %s -> %s", tid, _result_error(result))
             _update_task_status(agent_core, tid, status, result)
-        except Exception as e:
-            logger.error("定时任务失败: %s → %s", tid, str(e)[:200])
-            _update_task_status(agent_core, tid, "error", {"error": str(e)})
+        except Exception as exc:
+            logger.error("Scheduled task failed: %s -> %s", tid, str(exc)[:200])
+            _update_task_status(agent_core, tid, "error", {"error": str(exc)})
 
-    job_options = {}
+    options: dict[str, Any] = {}
     if tool_name == "sync_finance_bills":
-        job_options = {
+        options = {
             "max_instances": 1,
             "coalesce": True,
             "misfire_grace_time": FINANCE_MISFIRE_GRACE_SECONDS,
         }
-    _scheduler.add_job(
-        job_func,
-        trigger,
-        id=task_id,
-        replace_existing=True,
-        **job_options,
+    if _scheduler is None:
+        raise RuntimeError("scheduler is not initialized")
+    _scheduler.add_job(job_func, trigger, id=task_id, replace_existing=True, **options)
+
+
+async def _execute_scheduled_tool(
+    agent_core,
+    *,
+    task_id: str,
+    tool_name: str,
+    arguments: dict,
+    scheduled_for: datetime,
+    cron_expression: str,
+):
+    """Submit one deterministic scheduler occurrence."""
+
+    if scheduled_for.tzinfo is None:
+        raise ValueError("scheduled_for must be timezone-aware")
+    scheduled_iso = scheduled_for.isoformat()
+    return await agent_core.execute_tool(
+        tool_name,
+        arguments,
+        actor=Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
+        source="scheduler",
+        idempotency_key=f"scheduler:{task_id}:{scheduled_iso}",
+        execution_context={
+            "task_id": task_id,
+            "scheduled_for": scheduled_iso,
+            "cron_expression": cron_expression,
+        },
     )
 
 
-def _update_task_status(agent_core, task_id: str, status: str, result):
-    """更新任务执行状态"""
+def _update_task_status(agent_core, task_id: str, status: str, result: Any) -> None:
     try:
         duration_ms = None
         last_message = None
@@ -201,42 +245,37 @@ def _update_task_status(agent_core, task_id: str, status: str, result):
                     duration_ms = int(float(duration_s) * 1000)
                 except (TypeError, ValueError):
                     duration_ms = None
-
             if not result.get("success"):
-                message_parts: list[str] = []
-                error_text = str(result.get("error") or "").strip()
-                if error_text:
-                    message_parts.append(error_text)
-                data = result.get("data")
-                if isinstance(data, dict):
-                    data_error = str(data.get("error") or "").strip()
-                    if data_error and data_error not in message_parts:
-                        message_parts.append(data_error)
-                if message_parts:
-                    last_message = " | ".join(message_parts)[:1000]
-
+                last_message = _result_error(result) or None
         agent_core.memory.update_scheduled_task_runtime(
             task_id,
             last_status=status,
             last_duration_ms=duration_ms,
             last_message=last_message,
         )
-    except Exception as e:
-        logger.error("更新任务状态失败: %s", e)
+    except Exception as exc:
+        logger.error("Failed to update scheduled task status: %s", exc)
+
+
+def _result_error(result: Any) -> str:
+    if not isinstance(result, dict):
+        return str(result)[:1000]
+    parts = [str(result.get("error") or "").strip()]
+    data = result.get("data")
+    if isinstance(data, dict):
+        parts.append(str(data.get("error") or "").strip())
+    return " | ".join(dict.fromkeys(part for part in parts if part))[:1000]
 
 
 def get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
 
 
-def reload_scheduler(agent_core) -> dict:
-    """热重载调度器中的任务定义。"""
+def reload_scheduler(agent_core) -> dict[str, Any]:
     if _scheduler is None:
         return {"initialized": False, "jobs": 0, "job_ids": []}
-
     for job in list(_scheduler.get_jobs()):
         _scheduler.remove_job(job.id)
-
     _load_tasks_from_db(agent_core)
     _add_finance_startup_catchup_job(agent_core)
     jobs = _scheduler.get_jobs()

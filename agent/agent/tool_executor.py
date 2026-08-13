@@ -12,6 +12,11 @@ import sys
 import time
 from datetime import datetime
 
+from agent.execution_boundary import (
+    EXECUTION_CAPABILITY_ENV,
+    issue_execution_capability,
+    revoke_execution_capability,
+)
 from shared.redaction import redact_sensitive, redact_text
 
 logger = logging.getLogger("tools")
@@ -22,6 +27,48 @@ LOCK_FILE = os.path.join(PROJECT_ROOT, "logs", ".heavy_task.lock")
 CANCEL_MESSAGE = "任务已取消"
 HEAVY_LOCK_RETRY_SECONDS = 0.5
 DEFAULT_HEAVY_QUEUE_TIMEOUT = 900.0
+SUBPROCESS_STRIPPED_MANAGEMENT_ENV = frozenset(
+    {
+        "AGENT_INTERNAL_API_TOKEN",
+        "CONSOLE_AGENT_SIGNING_SECRET",
+        "DOCFLOW_SESSION_SECRET",
+        "DOCFLOW_AGENT_WEBHOOK_TOKEN",
+        "AGENT_WEBHOOK_TOKEN",
+        "FEISHU_EVENT_VERIFICATION_TOKEN",
+        "FEISHU_VERIFICATION_TOKEN",
+        "DOCFLOW_BASIC_AUTH_PASS",
+        "DOCFLOW_BASIC_AUTH_USER",
+        "DOCFLOW_ADMIN_PASSWORD",
+        "DOCFLOW_ADMIN_USERNAME",
+    }
+)
+
+
+def _redact_execution_capability(value: object, capability: str) -> str:
+    """Redact the current bearer even when a tool prints it without a key."""
+
+    text = redact_text(value)
+    token = str(capability or "")
+    return text.replace(token, "[REDACTED]") if token else text
+
+
+def build_tool_subprocess_environment(execution_capability: str) -> dict[str, str]:
+    """Preserve business runtime settings but remove service-management secrets."""
+
+    environment = dict(os.environ)
+    for name in SUBPROCESS_STRIPPED_MANAGEMENT_ENV:
+        environment.pop(name, None)
+    environment.pop(EXECUTION_CAPABILITY_ENV, None)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (WORKSPACE_ROOT, environment.get("PYTHONPATH", "")))
+    )
+    # Some isolated legacy helpers still call python-dotenv at import time.
+    # The parent service has already loaded the approved runtime environment;
+    # prevent a tool subprocess from re-reading the project .env and restoring
+    # management credentials that were deliberately removed above.
+    environment["PYTHON_DOTENV_DISABLED"] = "1"
+    environment[EXECUTION_CAPABILITY_ENV] = str(execution_capability)
+    return environment
 
 
 def _resolve_python() -> str:
@@ -218,6 +265,7 @@ class ToolExecutor:
         )
 
         lock_fd = None
+        execution_capability = ""
         try:
             if heavy:
                 lock_fd = await self._acquire_heavy_lock(queue_timeout=queue_timeout)
@@ -235,6 +283,10 @@ class ToolExecutor:
             }
             entry = self._running_outputs[name]
             buf = entry["lines"]
+            execution_capability = issue_execution_capability(
+                name,
+                ttl_seconds=float(timeout) + 60.0,
+            )
 
             proc = await asyncio.create_subprocess_exec(
                 python_executable,
@@ -243,12 +295,7 @@ class ToolExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=PROJECT_ROOT,
-                env={
-                    **os.environ,
-                    "PYTHONPATH": os.pathsep.join(
-                        filter(None, (WORKSPACE_ROOT, os.environ.get("PYTHONPATH", "")))
-                    ),
-                },
+                env=build_tool_subprocess_environment(execution_capability),
                 start_new_session=True,
             )
             entry["proc"] = proc
@@ -261,7 +308,7 @@ class ToolExecutor:
             stderr_chunks: list[bytes] = []
 
             def append_output_line(text: str, *, is_stderr: bool) -> None:
-                text = redact_text(text)
+                text = _redact_execution_capability(text, execution_capability)
                 if is_stderr:
                     if text.startswith("[progress] "):
                         buf.append(text[len("[progress] "):])
@@ -331,17 +378,50 @@ class ToolExecutor:
                     }
                     return {"success": False, "canceled": True, "error": CANCEL_MESSAGE, "duration_s": duration}
 
-                err_msg = redact_text(stderr.decode("utf-8", errors="replace").strip())[-500:]
+                err_msg = _redact_execution_capability(
+                    stderr.decode("utf-8", errors="replace").strip(),
+                    execution_capability,
+                )[-500:]
                 logger.error("tool=%s | error=exit_code_%d | stderr=%s | duration=%ss", name, exit_code, err_msg, duration)
                 if exit_code == 137:
                     return {"success": False, "error": "工具被 OOM Kill，内存不足"}
                 return {"success": False, "error": f"工具执行失败(exit {exit_code}): {err_msg}"}
 
-            raw_output = stdout.decode("utf-8", errors="replace").strip()
+            raw_output = _redact_execution_capability(
+                stdout.decode("utf-8", errors="replace").strip(),
+                execution_capability,
+            )
             try:
                 result = json.loads(raw_output)
             except json.JSONDecodeError:
                 result = {"output": raw_output}
+
+            if (
+                isinstance(result, dict)
+                and str(result.get("status") or "").upper() not in {"", "SUCCESS"}
+                and isinstance(result.get("error"), dict)
+            ):
+                error = result["error"]
+                safe_error = redact_text(error.get("message") or error.get("code"))
+                logger.error(
+                    "tool=%s | success=false | error=%s | duration=%ss",
+                    name,
+                    safe_error[:300],
+                    duration,
+                )
+                self._last_run = {
+                    "tool": name,
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "success": False,
+                    "duration_s": duration,
+                }
+                return {
+                    "success": False,
+                    "error": safe_error,
+                    "error_code": error.get("code") or "TOOL_REPORTED_FAILURE",
+                    "data": result,
+                    "duration_s": duration,
+                }
 
             if isinstance(result, dict) and result.get("error"):
                 safe_error = redact_text(result["error"])
@@ -368,11 +448,13 @@ class ToolExecutor:
 
         except Exception as exc:
             duration = round(time.time() - start, 2)
-            safe_error = redact_text(exc)
+            safe_error = _redact_execution_capability(exc, execution_capability)
             logger.error("tool=%s | error=%s | duration=%ss", name, safe_error[:200], duration)
             return {"success": False, "error": safe_error}
 
         finally:
+            if execution_capability:
+                revoke_execution_capability(execution_capability)
             if lock_fd is not None:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 os.close(lock_fd)

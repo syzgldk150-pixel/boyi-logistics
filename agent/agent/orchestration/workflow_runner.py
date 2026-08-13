@@ -1,0 +1,1172 @@
+"""Durable run worker. This is the only production caller of ToolExecutionPort."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Mapping
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from agent.orchestration.approval_service import ApprovalService
+from agent.orchestration.context_builder import ContextBuilder
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    EntityRef,
+    OperationType,
+    OrchestrationError,
+    Plan,
+    PlanStep,
+    RiskLevel,
+    RunStatus,
+    WorkItemStatus,
+    assert_run_transition,
+    assert_work_item_transition,
+    new_id,
+    sha256_json,
+)
+from agent.orchestration.plan_validator import PlanValidator
+from agent.orchestration.planner import DeterministicPlanner
+from agent.orchestration.pilot_projection import PilotProjectionService
+from agent.orchestration.policy_engine import PolicyEngine
+from agent.orchestration.result_verifier import ResultVerifier
+from shared.redaction import redact_text
+
+
+logger = logging.getLogger("agent")
+RUNNABLE_STATUSES = (
+    RunStatus.RECEIVED.value,
+    RunStatus.CONTEXT_READY.value,
+    RunStatus.PLANNED.value,
+    RunStatus.VALIDATED.value,
+    RunStatus.WAITING_APPROVAL.value,
+    RunStatus.RUNNING.value,
+    RunStatus.VERIFYING.value,
+    RunStatus.FAILED_RETRYABLE.value,
+)
+TERMINAL_STATUSES = {
+    RunStatus.COMPLETED.value,
+    RunStatus.PARTIAL.value,
+    RunStatus.FAILED_TERMINAL.value,
+    RunStatus.CANCELLED.value,
+}
+
+
+class WorkflowRunner:
+    def __init__(
+        self,
+        *,
+        repository: Any,
+        catalog: Any,
+        execution_port: Any,
+        context_builder: ContextBuilder,
+        planner: DeterministicPlanner,
+        validator: PlanValidator,
+        policy: PolicyEngine,
+        approval_service: ApprovalService,
+        verifier: ResultVerifier,
+        worker_id: str,
+        pilot_projection: PilotProjectionService | None = None,
+        poll_interval_seconds: float = 0.5,
+        lease_seconds: int = 120,
+    ) -> None:
+        self._repository = repository
+        self._catalog = catalog
+        self._execution_port = execution_port
+        self._context_builder = context_builder
+        self._planner = planner
+        self._validator = validator
+        self._policy = policy
+        self._approval_service = approval_service
+        self._verifier = verifier
+        self._pilot_projection = pilot_projection or PilotProjectionService()
+        self._worker_id = worker_id
+        self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
+        self._lease_seconds = max(10, int(lease_seconds))
+        self._wake = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task | None = None
+        self._active: dict[str, tuple[str, asyncio.Task]] = {}
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._stop.clear()
+        self._task = asyncio.create_task(self._run_loop(), name=f"run-worker:{self._worker_id}")
+
+    async def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        task = self._task
+        self._task = None
+        if task is not None:
+            await task
+
+    def wake(self, _run_id: str | None = None) -> None:
+        self._wake.set()
+
+    async def cancel_active(self, run_id: str) -> None:
+        active = self._active.get(run_id)
+        if active is not None:
+            step_id, _task = active
+            await self._execution_port.cancel_step(run_id=run_id, step_id=step_id)
+        self.wake(run_id)
+
+    async def _run_loop(self) -> None:
+        while not self._stop.is_set():
+            claimed_any = False
+            try:
+                cancellations = await asyncio.to_thread(
+                    self._repository.claim_cancel_requested_runs,
+                    self._worker_id,
+                    limit=1,
+                    lease_seconds=self._lease_seconds,
+                )
+                for run in cancellations:
+                    claimed_any = True
+                    await self._cancel_claimed(run)
+                claimed = await asyncio.to_thread(
+                    self._repository.claim_runs,
+                    self._worker_id,
+                    RUNNABLE_STATUSES,
+                    limit=1,
+                    lease_seconds=self._lease_seconds,
+                )
+                for run in claimed:
+                    claimed_any = True
+                    await self._process_claimed(run)
+            except Exception:
+                logger.exception("Run worker iteration failed")
+            if claimed_any:
+                continue
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=self._poll_interval_seconds)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _cancel_claimed(self, run: Mapping[str, Any]) -> None:
+        run_id = str(run["run_id"])
+        active = self._active.get(run_id)
+        if active is not None:
+            await self._execution_port.cancel_step(run_id=run_id, step_id=active[0])
+        await asyncio.to_thread(
+            self._release,
+            run_id,
+            status=RunStatus.CANCELLED.value,
+            error_code="CANCELLED_BY_ACTOR",
+            error_summary=str(run.get("cancel_reason") or "Run cancellation was requested"),
+            finished=True,
+        )
+
+    async def _process_claimed(self, claimed: Mapping[str, Any]) -> None:
+        run_id = str(claimed["run_id"])
+        try:
+            run = self._repository.get_run(run_id)
+            if run is None:
+                raise OrchestrationError("RUN_NOT_FOUND", "Claimed run was not found")
+            if run.get("cancel_requested_at"):
+                await self._cancel_claimed(run)
+                return
+            command = self._load_command(str(run["command_id"]))
+            status = RunStatus(str(run["status"]))
+
+            if status in {RunStatus.RECEIVED, RunStatus.FAILED_RETRYABLE}:
+                context = self._context_builder.build(command)
+                run = self._transition(
+                    run,
+                    RunStatus.CONTEXT_READY,
+                    context_fingerprint_sha256=context.fingerprint,
+                )
+                status = RunStatus.CONTEXT_READY
+            else:
+                context = self._context_builder.build(command)
+
+            if status is RunStatus.CONTEXT_READY:
+                plan = self._planner.plan(command, context, llm_selected=bool(command.parameters.get("llm_selected")))
+                run = self._transition(
+                    run,
+                    RunStatus.PLANNED,
+                    plan=plan.to_dict(),
+                    plan_hash=plan.plan_hash,
+                    plan_schema_version=plan.schema_version,
+                    tool_catalog_sha256=plan.tool_catalog_hash,
+                    context_fingerprint_sha256=plan.context_fingerprint,
+                )
+                status = RunStatus.PLANNED
+            else:
+                plan = self._plan_from_run(run)
+
+            if status is RunStatus.PLANNED:
+                self._validator.validate(plan, context, llm_selected=bool(command.parameters.get("llm_selected")))
+                decision = self._policy.evaluate(
+                    plan,
+                    command.actor,
+                    source=command.source,
+                    execution_context=dict(command.parameters.get("execution_context") or {}),
+                )
+                if not decision.allowed:
+                    raise OrchestrationError(decision.code, decision.reason)
+                plan = _annotate_approval(plan, decision.requires_approval)
+                run = self._transition(run, RunStatus.VALIDATED, plan=plan.to_dict())
+                status = RunStatus.VALIDATED
+            else:
+                decision = self._policy.evaluate(
+                    plan,
+                    command.actor,
+                    source=command.source,
+                    execution_context=dict(command.parameters.get("execution_context") or {}),
+                )
+            if not decision.allowed:
+                raise OrchestrationError(decision.code, decision.reason)
+            if status is RunStatus.VALIDATED and decision.requires_approval:
+                self._approval_service.request(
+                    run=run,
+                    plan=plan,
+                    policy_decision=decision,
+                    requested_by=command.actor,
+                )
+                run = self._transition(run, RunStatus.WAITING_APPROVAL)
+                await asyncio.to_thread(
+                    self._release,
+                    run_id,
+                    status=RunStatus.WAITING_APPROVAL.value,
+                )
+                return
+            if status is RunStatus.WAITING_APPROVAL:
+                fresh_context = self._context_builder.build(command)
+                fresh_plan = self._planner.plan(
+                    command,
+                    fresh_context,
+                    llm_selected=bool(command.parameters.get("llm_selected")),
+                )
+                self._validator.validate(fresh_plan, fresh_context, llm_selected=bool(command.parameters.get("llm_selected")))
+                if fresh_plan.plan_hash != plan.plan_hash:
+                    fresh_decision = self._policy.evaluate(
+                        fresh_plan,
+                        command.actor,
+                        source=command.source,
+                        execution_context=dict(command.parameters.get("execution_context") or {}),
+                    )
+                    if not fresh_decision.allowed:
+                        raise OrchestrationError(fresh_decision.code, fresh_decision.reason)
+                    fresh_plan = _annotate_approval(fresh_plan, fresh_decision.requires_approval)
+                    self._approval_service.invalidate_for_stale_plan(run_id)
+                    with self._repository.unit_of_work() as uow:
+                        refreshed = uow.runs.refresh_waiting_plan(
+                            run_id,
+                            expected_version=int(run["version"]),
+                            plan=fresh_plan.to_dict(),
+                            plan_hash=fresh_plan.plan_hash,
+                            catalog_hash=fresh_plan.tool_catalog_hash,
+                            context_hash=fresh_plan.context_fingerprint,
+                        )
+                        uow.commit()
+                    self._approval_service.request(
+                        run=refreshed,
+                        plan=fresh_plan,
+                        policy_decision=fresh_decision,
+                        requested_by=command.actor,
+                    )
+                    await asyncio.to_thread(
+                        self._release,
+                        run_id,
+                        status=RunStatus.WAITING_APPROVAL.value,
+                        error_code="PLAN_STALE",
+                        error_summary="Plan changed and requires a new approval",
+                    )
+                    return
+                run, approval_outcome = self._consume_approved_plan(run_id, plan.plan_hash)
+                if run is None:
+                    if approval_outcome == "REJECTED":
+                        raise OrchestrationError("APPROVAL_REJECTED", "The plan was rejected by an administrator")
+                    if approval_outcome == "PLAN_STALE":
+                        raise OrchestrationError("PLAN_STALE", "The persisted plan changed before approval consumption")
+                    if approval_outcome in {"EXPIRED", "INVALIDATED", "MISSING"}:
+                        self._approval_service.request(
+                            run=self._repository.get_run(run_id) or claimed,
+                            plan=plan,
+                            policy_decision=decision,
+                            requested_by=command.actor,
+                        )
+                    await asyncio.to_thread(
+                        self._release,
+                        run_id,
+                        status=RunStatus.WAITING_APPROVAL.value,
+                    )
+                    return
+                status = RunStatus.RUNNING
+            elif status is RunStatus.VALIDATED:
+                run = self._transition(
+                    run,
+                    RunStatus.RUNNING,
+                    started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    increment_execution_attempt=True,
+                )
+                status = RunStatus.RUNNING
+
+            if status is RunStatus.RUNNING:
+                run = await self._execute_plan(run, plan, command)
+                status = RunStatus(str(run["status"]))
+            if status is RunStatus.VERIFYING:
+                run = self._transition(
+                    run,
+                    RunStatus.COMPLETED,
+                    finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+            await asyncio.to_thread(
+                self._release,
+                run_id,
+                status=str(run["status"]),
+                finished=str(run["status"]) in TERMINAL_STATUSES,
+            )
+        except OrchestrationError as exc:
+            await asyncio.to_thread(self._fail_claimed, run_id, exc)
+        except Exception as exc:
+            logger.exception("Run processing failed run_id=%s", run_id)
+            await asyncio.to_thread(
+                self._fail_claimed,
+                run_id,
+                OrchestrationError(type(exc).__name__.upper(), redact_text(exc)[:500]),
+            )
+
+    def _consume_approved_plan(
+        self,
+        run_id: str,
+        plan_hash: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Atomically consume a live approval and start its locked Run."""
+
+        with self._repository.unit_of_work() as uow:
+            prepared = uow.approvals.prepare_approved_execution(
+                run_id,
+                expected_plan_hash=plan_hash,
+            )
+            outcome = str(prepared["outcome"])
+            if outcome != "APPROVED":
+                uow.commit()
+                return None, outcome
+            locked_run = prepared["run"]
+            approval = prepared["approval"] or {}
+            assert_run_transition(str(locked_run["status"]), RunStatus.RUNNING)
+            updated = uow.runs.transition(
+                run_id,
+                expected_version=int(locked_run["version"]),
+                expected_statuses=(RunStatus.WAITING_APPROVAL.value,),
+                status=RunStatus.RUNNING.value,
+                started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                increment_execution_attempt=True,
+            )
+            self._sync_work_item_status(uow, updated, RunStatus.RUNNING)
+            self._append_event(
+                uow,
+                event_type="agent.run.status_changed",
+                run=updated,
+                payload={
+                    "from": RunStatus.WAITING_APPROVAL.value,
+                    "to": RunStatus.RUNNING.value,
+                    "approval_id": approval.get("approval_id"),
+                    "approval_round": approval.get("approval_round"),
+                    "plan_hash": plan_hash,
+                },
+            )
+            uow.commit()
+        return updated, "APPROVED"
+
+    async def _execute_plan(self, run: dict[str, Any], plan: Plan, command: Command) -> dict[str, Any]:
+        for order, step in enumerate(plan.steps, start=1):
+            step_row = self._get_or_create_step(run, step, order)
+            if step_row.get("status") == "COMPLETED":
+                continue
+            if step_row.get("status") == "RUNNING":
+                step_row = await self._recover_interrupted_step(run, step, step_row, command)
+                if step_row.get("status") == "COMPLETED":
+                    continue
+            if step_row.get("status") not in {"PENDING", "FAILED_RETRYABLE"}:
+                raise OrchestrationError(
+                    "STEP_STATE_CONFLICT",
+                    f"Step {step.step_key} cannot resume from {step_row.get('status')}",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+            with self._repository.unit_of_work() as uow:
+                started_step = uow.steps.transition(
+                    str(step_row["step_id"]),
+                    expected_version=int(step_row["version"]),
+                    expected_statuses=("PENDING", "FAILED_RETRYABLE"),
+                    status="RUNNING",
+                    increment_attempt=True,
+                    started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+                uow.commit()
+            execution_task = asyncio.create_task(
+                self._execution_port.execute_step(
+                    step,
+                    run_id=str(run["run_id"]),
+                    step_id=str(step_row["step_id"]),
+                    execution_context={
+                        "source": command.source,
+                        "actor": command.actor.to_dict(),
+                        **dict(command.parameters.get("execution_context") or {}),
+                    },
+                )
+            )
+            self._active[str(run["run_id"])] = (str(step_row["step_id"]), execution_task)
+            try:
+                raw_result = await self._await_with_lease_heartbeat(
+                    execution_task,
+                    run_id=str(run["run_id"]),
+                    step_id=str(step_row["step_id"]),
+                )
+            finally:
+                self._active.pop(str(run["run_id"]), None)
+            capability = self._catalog.get_capability(step.tool_name) or {}
+            outcome = self._verifier.verify(step, raw_result, capability)
+            if outcome.accepted:
+                projection_error: OrchestrationError | None = None
+                try:
+                    with self._repository.unit_of_work() as uow:
+                        completed_step = uow.steps.transition(
+                            str(step_row["step_id"]),
+                            expected_version=int(started_step["version"]),
+                            expected_statuses=("RUNNING",),
+                            status="COMPLETED",
+                            result_summary=outcome.result.to_dict() if outcome.result else {},
+                            postcondition_status="VERIFIED",
+                            finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        )
+                        self._persist_evidence(uow, run, completed_step, step, outcome.result)
+                        if outcome.result is not None:
+                            try:
+                                self._pilot_projection.project_successful_step(
+                                    uow=uow,
+                                    run=run,
+                                    step_row=completed_step,
+                                    step=step,
+                                    command=command,
+                                    result=outcome.result,
+                                )
+                            except OrchestrationError as exc:
+                                projection_error = exc
+                                raise
+                        self._append_event(
+                            uow,
+                            event_type="agent.step.completed",
+                            run=run,
+                            step_id=str(step_row["step_id"]),
+                            payload={"step_key": step.step_key, "status": "COMPLETED"},
+                        )
+                        uow.commit()
+                except OrchestrationError:
+                    if projection_error is not None:
+                        blocked_error = OrchestrationError(
+                            projection_error.code,
+                            projection_error.message,
+                            details={
+                                **projection_error.details,
+                                "status": RunStatus.BLOCKED_DATA.value,
+                            },
+                        )
+                        self._persist_blocked_pilot_projection(
+                            run=run,
+                            started_step=started_step,
+                            step=step,
+                            command=command,
+                            raw_result=raw_result,
+                            result=outcome.result,
+                            error=blocked_error,
+                        )
+                        raise blocked_error
+                    raise
+            else:
+                step_status = outcome.run_status.value
+                if step_status not in {
+                    "BLOCKED_LOGIN",
+                    "BLOCKED_DATA",
+                    "FAILED_RETRYABLE",
+                    "FAILED_TERMINAL",
+                    "CANCELLED",
+                }:
+                    step_status = "FAILED_TERMINAL"
+                with self._repository.unit_of_work() as uow:
+                    failed_step = uow.steps.transition(
+                        str(step_row["step_id"]),
+                        expected_version=int(started_step["version"]),
+                        expected_statuses=("RUNNING",),
+                        status=step_status,
+                        result_summary=dict(raw_result),
+                        error_code=outcome.code,
+                        error_summary=outcome.message,
+                        finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    )
+                    self._pilot_projection.record_incomplete_attempt(
+                        uow=uow,
+                        run=run,
+                        step_row=failed_step,
+                        step=step,
+                        command=command,
+                        failure_code=outcome.code,
+                        result=outcome.result,
+                        raw_result=raw_result,
+                    )
+                    self._append_event(
+                        uow,
+                        event_type="agent.step.failed",
+                        run=run,
+                        step_id=str(step_row["step_id"]),
+                        payload={"step_key": step.step_key, "code": outcome.code, "status": step_status},
+                    )
+                    if step_status == RunStatus.BLOCKED_LOGIN.value:
+                        failure_meta = (
+                            raw_result.get("meta")
+                            if isinstance(raw_result.get("meta"), Mapping)
+                            else {}
+                        )
+                        degraded_account_id = str(
+                            failure_meta.get("account_id") or step.account_id or ""
+                        ).strip()
+                        if degraded_account_id:
+                            self._append_event(
+                                uow,
+                                event_type="account.session_degraded",
+                                run=run,
+                                step_id=str(step_row["step_id"]),
+                                payload={
+                                    "account_id": degraded_account_id,
+                                    "source_system": str(
+                                        failure_meta.get("source_system") or ""
+                                    ),
+                                    "reason_code": outcome.code,
+                                },
+                            )
+                    uow.commit()
+                raise OrchestrationError(
+                    outcome.code,
+                    outcome.message,
+                    details={"status": outcome.run_status.value},
+                )
+        return self._transition(run, RunStatus.VERIFYING)
+
+    def _persist_blocked_pilot_projection(
+        self,
+        *,
+        run: Mapping[str, Any],
+        started_step: Mapping[str, Any],
+        step: PlanStep,
+        command: Command,
+        raw_result: Mapping[str, Any],
+        result: Any,
+        error: OrchestrationError,
+    ) -> None:
+        """Commit projection-failure evidence after the projection UoW rolled back."""
+
+        with self._repository.unit_of_work() as uow:
+            blocked_step = uow.steps.transition(
+                str(started_step["step_id"]),
+                expected_version=int(started_step["version"]),
+                expected_statuses=("RUNNING",),
+                status=RunStatus.BLOCKED_DATA.value,
+                result_summary=result.to_dict() if result is not None else dict(raw_result),
+                postcondition_status="PROJECTION_INCOMPLETE",
+                error_code=error.code,
+                error_summary=error.message,
+                finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            self._pilot_projection.record_incomplete_attempt(
+                uow=uow,
+                run=run,
+                step_row=blocked_step,
+                step=step,
+                command=command,
+                failure_code=error.code,
+                result=result,
+                raw_result=raw_result,
+            )
+            self._append_event(
+                uow,
+                event_type="agent.step.failed",
+                run=run,
+                step_id=str(started_step["step_id"]),
+                payload={
+                    "step_key": step.step_key,
+                    "code": error.code,
+                    "status": RunStatus.BLOCKED_DATA.value,
+                },
+            )
+            uow.commit()
+
+    async def _await_with_lease_heartbeat(
+        self,
+        task: asyncio.Task,
+        *,
+        run_id: str,
+        step_id: str,
+    ) -> Any:
+        heartbeat_seconds = max(1.0, min(30.0, self._lease_seconds / 3))
+        while True:
+            done, _pending = await asyncio.wait({task}, timeout=heartbeat_seconds)
+            if done:
+                return await task
+            try:
+                await asyncio.to_thread(
+                    self._repository.renew_run_lease,
+                    run_id,
+                    worker_id=self._worker_id,
+                    lease_seconds=self._lease_seconds,
+                )
+            except Exception as exc:
+                try:
+                    await self._execution_port.cancel_step(run_id=run_id, step_id=step_id)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                raise OrchestrationError(
+                    "RUN_LEASE_LOST",
+                    "Run lease was lost while a tool step was executing",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                ) from exc
+
+    async def _recover_interrupted_step(
+        self,
+        run: Mapping[str, Any],
+        step: PlanStep,
+        step_row: Mapping[str, Any],
+        command: Command,
+    ) -> dict[str, Any]:
+        """Resolve a stale RUNNING step without blindly repeating an external write."""
+
+        capability = self._catalog.get_capability(step.tool_name) or {}
+        operation = step.operation_type
+        if operation in {OperationType.READ, OperationType.COMPUTE}:
+            return self._mark_interrupted_step_retryable(
+                step_row,
+                code="INTERRUPTED_READ_RETRY",
+                summary="Interrupted read/compute step is safe to execute again",
+            )
+        if operation is OperationType.INTERNAL_PROJECTION_WRITE and _is_contractually_replay_safe(capability):
+            return self._mark_interrupted_step_retryable(
+                step_row,
+                code="INTERRUPTED_IDEMPOTENT_PROJECTION_RETRY",
+                summary="Interrupted projection has an explicit idempotency and retry contract",
+            )
+
+        reconcile = getattr(self._execution_port, "reconcile_step", None)
+        if not callable(reconcile):
+            self._block_interrupted_write(
+                run,
+                step,
+                step_row,
+                code="WRITE_OUTCOME_UNKNOWN",
+                summary="No read-after-write reconciler is configured for the interrupted write",
+                reconciliation={"resolution": "UNSUPPORTED"},
+            )
+        reconciliation_task = asyncio.create_task(
+            reconcile(
+                step,
+                run_id=str(run["run_id"]),
+                step_id=str(step_row["step_id"]),
+                persisted_step=dict(step_row),
+                execution_context={
+                    "source": command.source,
+                    "actor": command.actor.to_dict(),
+                    **dict(command.parameters.get("execution_context") or {}),
+                },
+            )
+        )
+        reconciliation = await self._await_with_lease_heartbeat(
+            reconciliation_task,
+            run_id=str(run["run_id"]),
+            step_id=str(step_row["step_id"]),
+        )
+        resolution = str(reconciliation.get("resolution") or "UNKNOWN").upper()
+        if resolution == "APPLIED":
+            raw_result = reconciliation.get("result")
+            if isinstance(raw_result, Mapping):
+                outcome = self._verifier.verify(step, raw_result, capability)
+                if outcome.accepted:
+                    with self._repository.unit_of_work() as uow:
+                        completed = uow.steps.transition(
+                            str(step_row["step_id"]),
+                            expected_version=int(step_row["version"]),
+                            expected_statuses=("RUNNING",),
+                            status="COMPLETED",
+                            result_summary=outcome.result.to_dict() if outcome.result else {},
+                            postcondition_status="VERIFIED_AFTER_RECOVERY",
+                            postcondition={"reconciliation": "APPLIED"},
+                            finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        )
+                        self._persist_evidence(uow, run, completed, step, outcome.result)
+                        if outcome.result is not None:
+                            self._pilot_projection.project_successful_step(
+                                uow=uow,
+                                run=run,
+                                step_row=completed,
+                                step=step,
+                                command=command,
+                                result=outcome.result,
+                            )
+                        self._append_event(
+                            uow,
+                            event_type="agent.step.reconciled",
+                            run=run,
+                            step_id=str(step_row["step_id"]),
+                            payload={"step_key": step.step_key, "resolution": "APPLIED"},
+                        )
+                        uow.commit()
+                    return completed
+            self._block_interrupted_write(
+                run,
+                step,
+                step_row,
+                code="RECONCILIATION_EVIDENCE_INVALID",
+                summary="Read-after-write evidence did not satisfy the persisted plan",
+                reconciliation=reconciliation,
+            )
+        if resolution == "NOT_APPLIED" and _is_contractually_replay_safe(capability):
+            return self._mark_interrupted_step_retryable(
+                step_row,
+                code="RECONCILED_NOT_APPLIED",
+                summary="Read-after-write verification proved the idempotent operation was not applied",
+                result_summary=reconciliation,
+            )
+        self._block_interrupted_write(
+            run,
+            step,
+            step_row,
+            code="WRITE_OUTCOME_UNKNOWN" if resolution != "NOT_APPLIED" else "UNSAFE_WRITE_RETRY_BLOCKED",
+            summary=(
+                "Read-after-write verification could not determine the external write outcome"
+                if resolution != "NOT_APPLIED"
+                else "The write was not applied but has no explicit safe idempotent retry contract"
+            ),
+            reconciliation=reconciliation,
+        )
+        raise AssertionError("unreachable")
+
+    def _mark_interrupted_step_retryable(
+        self,
+        step_row: Mapping[str, Any],
+        *,
+        code: str,
+        summary: str,
+        result_summary: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._repository.unit_of_work() as uow:
+            updated = uow.steps.transition(
+                str(step_row["step_id"]),
+                expected_version=int(step_row["version"]),
+                expected_statuses=("RUNNING",),
+                status="FAILED_RETRYABLE",
+                result_summary=dict(result_summary or {}),
+                postcondition_status="RETRY_ALLOWED",
+                error_code=code,
+                error_summary=summary,
+                finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            uow.commit()
+        return updated
+
+    def _block_interrupted_write(
+        self,
+        run: Mapping[str, Any],
+        step: PlanStep,
+        step_row: Mapping[str, Any],
+        *,
+        code: str,
+        summary: str,
+        reconciliation: Mapping[str, Any],
+    ) -> None:
+        with self._repository.unit_of_work() as uow:
+            uow.steps.transition(
+                str(step_row["step_id"]),
+                expected_version=int(step_row["version"]),
+                expected_statuses=("RUNNING",),
+                status="BLOCKED_DATA",
+                result_summary=dict(reconciliation),
+                postcondition_status="UNKNOWN",
+                postcondition={"reconciliation": str(reconciliation.get("resolution") or "UNKNOWN")},
+                error_code=code,
+                error_summary=summary,
+                finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            self._append_event(
+                uow,
+                event_type="agent.step.reconciliation_blocked",
+                run=run,
+                step_id=str(step_row["step_id"]),
+                payload={"step_key": step.step_key, "code": code},
+            )
+            uow.commit()
+        raise OrchestrationError(code, summary, details={"status": RunStatus.BLOCKED_DATA.value})
+
+    def _get_or_create_step(self, run: Mapping[str, Any], step: PlanStep, order: int) -> dict[str, Any]:
+        with self._repository.unit_of_work() as uow:
+            persisted = uow.steps.create_or_get(
+                {
+                    "step_id": new_id(),
+                    "run_id": run["run_id"],
+                    "step_key": step.step_key,
+                    "step_order": order,
+                    "tool_name": step.tool_name,
+                    "tool_version": step.tool_version,
+                    "operation_type": step.operation_type.value.upper(),
+                    "risk_level": step.risk_level.value.upper(),
+                    "status": "PENDING",
+                    "requires_approval": step.requires_approval,
+                    "retry_safe": bool((self._catalog.get_capability(step.tool_name) or {}).get("retry", {}).get("safe")),
+                    "idempotency_key": step.idempotency_key,
+                    "account_id": step.account_id,
+                    "input_summary_json": {"arguments": dict(step.arguments)},
+                    "input_sha256": sha256_json(step.arguments),
+                }
+            )
+            uow.commit()
+        return persisted
+
+    @staticmethod
+    def _persist_evidence(uow: Any, run: Mapping[str, Any], step_row: Mapping[str, Any], step: PlanStep, result) -> None:
+        if result is None:
+            return
+        meta = result.meta
+        observed_at = _parse_datetime(meta.get("observed_at"))
+        refs = meta.get("evidence_refs") if isinstance(meta.get("evidence_refs"), list) else []
+        for index, reference in enumerate(refs):
+            storage_ref = str(reference or "").strip()
+            if not storage_ref:
+                continue
+            uow.evidence.add(
+                {
+                    "evidence_id": new_id(),
+                    "work_item_id": run["work_item_id"],
+                    "run_id": run["run_id"],
+                    "step_id": step_row["step_id"],
+                    "source_system": str(meta.get("source_system") or "unknown"),
+                    "account_id": str(meta.get("account_id") or "") or None,
+                    "source_record_type": "tool_evidence",
+                    "source_record_id": f"{step.step_key}:{index}",
+                    "entity_type": "agent_run",
+                    "entity_id": run["run_id"],
+                    "observed_at": observed_at,
+                    "completeness_status": "COMPLETE" if meta.get("pagination_complete") is True else "UNKNOWN",
+                    "pagination_complete": meta.get("pagination_complete"),
+                    "record_count": meta.get("record_count"),
+                    "content_sha256": sha256_json({"storage_ref": storage_ref, "meta": meta}),
+                    "summary_json": {
+                        "tool_name": step.tool_name,
+                        "account_id": meta.get("account_id"),
+                        "pagination_complete": meta.get("pagination_complete"),
+                        "record_count": meta.get("record_count"),
+                    },
+                    "storage_ref": storage_ref,
+                }
+            )
+
+    def _load_command(self, command_id: str) -> Command:
+        with self._repository.unit_of_work() as uow:
+            row = uow.commands.get(command_id)
+        if row is None:
+            raise OrchestrationError("COMMAND_NOT_FOUND", "Run command was not found")
+        try:
+            actor = Actor(
+                actor_type=ActorType(str(row["actor_type"])),
+                actor_id=str(row["actor_id"]),
+                roles=tuple(row.get("actor_roles_json") or ()),
+            )
+            refs = tuple(
+                EntityRef(
+                    entity_type=str(item["entity_type"]),
+                    entity_id=str(item["entity_id"]),
+                    source_system=str(item.get("source_system") or ""),
+                    relation_type=str(item.get("relation_type") or "subject"),
+                    metadata=dict(item.get("metadata") or {}),
+                )
+                for item in (row.get("entity_refs_json") or [])
+            )
+            return Command(
+                command_id=str(row["command_id"]),
+                command_type=str(row["command_type"]),
+                source=str(row["source"]),
+                actor=actor,
+                parameters=dict(row.get("parameters_json") or {}),
+                idempotency_key=str(row["idempotency_key"]),
+                entity_refs=refs,
+                correlation_id=str(row["correlation_id"]),
+                requested_at=_parse_datetime(row["requested_at"]).replace(tzinfo=timezone.utc),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OrchestrationError("INVALID_PERSISTED_COMMAND", "Persisted command is invalid") from exc
+
+    @staticmethod
+    def _plan_from_run(run: Mapping[str, Any]) -> Plan:
+        raw = run.get("plan_json")
+        if not isinstance(raw, Mapping):
+            raise OrchestrationError("PLAN_MISSING", "Run has no persisted plan")
+        try:
+            steps = tuple(
+                PlanStep(
+                    step_key=str(item["step_key"]),
+                    tool_name=str(item["tool_name"]),
+                    tool_version=str(item["tool_version"]),
+                    operation_type=OperationType(str(item["operation_type"])),
+                    arguments=dict(item["arguments"]),
+                    account_id=str(item["account_id"]) if item.get("account_id") not in (None, "") else None,
+                    depends_on=tuple(item.get("depends_on") or ()),
+                    idempotency_key=str(item["idempotency_key"]),
+                    expected_evidence=tuple(item.get("expected_evidence") or ()),
+                    postconditions=tuple(item.get("postconditions") or ()),
+                    risk_level=RiskLevel(str(item["risk_level"])),
+                    requires_approval=bool(item.get("requires_approval")),
+                )
+                for item in raw["steps"]
+            )
+            plan = Plan(
+                command_type=str(raw["command_type"]),
+                context_fingerprint=str(raw["context_fingerprint"]),
+                tool_catalog_hash=str(raw["tool_catalog_hash"]),
+                steps=steps,
+                impact=dict(raw.get("impact") or {}),
+                schema_version=int(raw.get("schema_version") or 1),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OrchestrationError("INVALID_PERSISTED_PLAN", "Persisted plan is invalid") from exc
+        if plan.plan_hash != str(run.get("plan_hash") or ""):
+            raise OrchestrationError("PLAN_HASH_MISMATCH", "Persisted plan hash does not match its content")
+        return plan
+
+    def _transition(self, run: Mapping[str, Any], target: RunStatus, **values: Any) -> dict[str, Any]:
+        assert_run_transition(str(run["status"]), target)
+        with self._repository.unit_of_work() as uow:
+            updated = uow.runs.transition(
+                str(run["run_id"]),
+                expected_version=int(run["version"]),
+                expected_statuses=(str(run["status"]),),
+                status=target.value,
+                **values,
+            )
+            self._sync_work_item_status(uow, updated, target)
+            self._append_event(
+                uow,
+                event_type="agent.run.status_changed",
+                run=updated,
+                payload={"from": str(run["status"]), "to": target.value},
+            )
+            uow.commit()
+        return updated
+
+    def _release(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        error_code: str | None = None,
+        error_summary: str | None = None,
+        finished: bool = False,
+    ) -> None:
+        with self._repository.unit_of_work() as uow:
+            current = uow.runs.get(run_id, for_update=True)
+            if current is None:
+                raise OrchestrationError("RUN_NOT_FOUND", "Run was not found while releasing its lease")
+            updated = uow.runs.release_or_schedule(
+                run_id,
+                worker_id=self._worker_id,
+                status=status,
+                error_code=error_code,
+                error_summary=error_summary,
+                retryable=status == RunStatus.FAILED_RETRYABLE.value,
+                next_attempt_at=(
+                    datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=5)
+                    if status in {RunStatus.WAITING_APPROVAL.value, RunStatus.FAILED_RETRYABLE.value}
+                    else None
+                ),
+                finished_at=datetime.now(timezone.utc).replace(tzinfo=None) if finished else None,
+            )
+            target = RunStatus(status)
+            if str(current.get("status")) != status:
+                assert_run_transition(str(current["status"]), target)
+                self._sync_work_item_status(uow, updated, target, error_code=error_code, error_summary=error_summary)
+                self._append_event(
+                    uow,
+                    event_type="agent.run.status_changed",
+                    run=updated,
+                    payload={
+                        "from": str(current["status"]),
+                        "to": status,
+                        "error_code": error_code,
+                        "error_summary": error_summary,
+                    },
+                )
+            uow.commit()
+
+    @staticmethod
+    def _sync_work_item_status(
+        uow: Any,
+        run: Mapping[str, Any],
+        run_status: RunStatus,
+        *,
+        error_code: str | None = None,
+        error_summary: str | None = None,
+    ) -> None:
+        desired = _work_item_status_for_run(run_status)
+        item = uow.work_items.get(str(run["work_item_id"]), for_update=True)
+        if item is None:
+            raise OrchestrationError("WORK_ITEM_NOT_FOUND", "Run work item was not found")
+        current = WorkItemStatus(str(item["status"]))
+        if current is desired:
+            return
+        assert_work_item_transition(current, desired)
+        uow.work_items.transition(
+            str(item["work_item_id"]),
+            expected_version=int(item["version"]),
+            expected_statuses=(current.value,),
+            status=desired.value,
+            reason_code=error_code,
+            reason_summary=error_summary,
+            resolution={"run_id": run["run_id"]} if desired is WorkItemStatus.RESOLVED else None,
+            closed_at=(
+                datetime.now(timezone.utc).replace(tzinfo=None)
+                if desired in {WorkItemStatus.RESOLVED, WorkItemStatus.CANCELLED}
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _append_event(
+        uow: Any,
+        *,
+        event_type: str,
+        run: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        step_id: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        uow.events.append_with_outbox(
+            {
+                "event_id": new_id(),
+                "event_type": event_type,
+                "schema_version": 1,
+                "source_system": "agent",
+                "source_event_id": None,
+                "entity_type": "agent_run",
+                "entity_id": run["run_id"],
+                "work_item_id": run["work_item_id"],
+                "run_id": run["run_id"],
+                "step_id": step_id,
+                "occurred_at": now,
+                "observed_at": now,
+                "correlation_id": run["correlation_id"],
+                "causation_id": run.get("causation_id"),
+                "payload": dict(payload),
+            },
+            (
+                {
+                    "consumer_name": "orchestration.audit",
+                    "topic": event_type,
+                    "partition_key": str(run["work_item_id"]),
+                    "max_attempts": 10,
+                },
+            ),
+        )
+
+    def _fail_claimed(self, run_id: str, exc: OrchestrationError) -> None:
+        desired = str(exc.details.get("status") or "")
+        if desired not in {
+            RunStatus.NEEDS_CLARIFICATION.value,
+            RunStatus.BLOCKED_LOGIN.value,
+            RunStatus.BLOCKED_DATA.value,
+            RunStatus.FAILED_RETRYABLE.value,
+            RunStatus.FAILED_TERMINAL.value,
+        }:
+            if exc.code in {"ACCOUNT_REQUIRED", "ACCOUNT_AMBIGUOUS", "TOOL_NAME_REQUIRED"}:
+                desired = RunStatus.NEEDS_CLARIFICATION.value
+            elif exc.code in {"LOGIN_REQUIRED", "AUTH_REQUIRED", "SESSION_EXPIRED"}:
+                desired = RunStatus.BLOCKED_LOGIN.value
+            elif exc.code in {"SOURCE_INCOMPLETE", "PAGINATION_INCOMPLETE", "EVIDENCE_MISSING"}:
+                desired = RunStatus.BLOCKED_DATA.value
+            else:
+                desired = RunStatus.FAILED_TERMINAL.value
+        if desired == RunStatus.FAILED_RETRYABLE.value and not self._can_retry_run(run_id):
+            desired = RunStatus.FAILED_TERMINAL.value
+            exc = OrchestrationError(
+                "UNSAFE_RETRY_BLOCKED",
+                "The failed operation is not explicitly safe and idempotent to retry",
+            )
+        self._release(
+            run_id,
+            status=desired,
+            error_code=exc.code,
+            error_summary=exc.message,
+            finished=desired == RunStatus.FAILED_TERMINAL.value,
+        )
+
+    def _can_retry_run(self, run_id: str) -> bool:
+        run = self._repository.get_run(run_id) or {}
+        if int(run.get("execution_attempt_count") or 0) >= 3:
+            return False
+        raw_plan = run.get("plan_json")
+        if not isinstance(raw_plan, Mapping):
+            return True
+        for step in raw_plan.get("steps") or []:
+            if not isinstance(step, Mapping):
+                return False
+            capability = self._catalog.get_capability(str(step.get("tool_name") or "")) or {}
+            retry = capability.get("retry") if isinstance(capability.get("retry"), Mapping) else {}
+            idempotency = (
+                capability.get("idempotency")
+                if isinstance(capability.get("idempotency"), Mapping)
+                else {}
+            )
+            operation = str(capability.get("operation_type") or "")
+            if operation not in {"read", "compute"} and (
+                not bool(retry.get("safe")) or str(idempotency.get("mode") or "") != "key"
+            ):
+                return False
+        return True
+
+
+def _parse_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    raise OrchestrationError("INVALID_TIMESTAMP", "Persisted timestamp is invalid")
+
+
+def _annotate_approval(plan: Plan, requires_approval: bool) -> Plan:
+    return replace(
+        plan,
+        steps=tuple(replace(step, requires_approval=requires_approval) for step in plan.steps),
+    )
+
+
+def _is_contractually_replay_safe(capability: Mapping[str, Any]) -> bool:
+    retry = capability.get("retry") if isinstance(capability.get("retry"), Mapping) else {}
+    idempotency = (
+        capability.get("idempotency")
+        if isinstance(capability.get("idempotency"), Mapping)
+        else {}
+    )
+    return bool(retry.get("safe")) and str(idempotency.get("mode") or "") == "key"
+
+
+def _work_item_status_for_run(status: RunStatus) -> WorkItemStatus:
+    mapping = {
+        RunStatus.RECEIVED: WorkItemStatus.OPEN,
+        RunStatus.CONTEXT_READY: WorkItemStatus.IN_PROGRESS,
+        RunStatus.PLANNED: WorkItemStatus.IN_PROGRESS,
+        RunStatus.VALIDATED: WorkItemStatus.IN_PROGRESS,
+        RunStatus.RUNNING: WorkItemStatus.IN_PROGRESS,
+        RunStatus.VERIFYING: WorkItemStatus.IN_PROGRESS,
+        RunStatus.WAITING_APPROVAL: WorkItemStatus.WAITING_APPROVAL,
+        RunStatus.NEEDS_CLARIFICATION: WorkItemStatus.NEEDS_CLARIFICATION,
+        RunStatus.BLOCKED_LOGIN: WorkItemStatus.BLOCKED_LOGIN,
+        RunStatus.BLOCKED_DATA: WorkItemStatus.BLOCKED_DATA,
+        RunStatus.COMPLETED: WorkItemStatus.RESOLVED,
+        RunStatus.CANCELLED: WorkItemStatus.CANCELLED,
+        RunStatus.PARTIAL: WorkItemStatus.OPEN,
+        RunStatus.FAILED_RETRYABLE: WorkItemStatus.OPEN,
+        RunStatus.FAILED_TERMINAL: WorkItemStatus.OPEN,
+    }
+    return mapping[status]

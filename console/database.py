@@ -364,10 +364,13 @@ class DocumentRepository:
                 """
             )
             admin_user_columns = {str(row.get("COLUMN_NAME") or "") for row in cursor.fetchall() or []}
-        if "ui_preferences_json" not in admin_user_columns:
+        missing_admin_columns = sorted(
+            {"ui_preferences_json", "control_plane_role"} - admin_user_columns
+        )
+        if missing_admin_columns:
             raise RuntimeError(
                 "Console schema is not migrated; run deployment migrations first: "
-                "admin_users.ui_preferences_json"
+                + ", ".join(f"admin_users.{name}" for name in missing_admin_columns)
             )
         self._waybills.ensure_schema()
 
@@ -383,7 +386,8 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, ui_preferences_json, is_active, last_login_at, created_at, updated_at
+                SELECT id, username, display_name, avatar_path, ui_preferences_json,
+                       control_plane_role, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 ORDER BY id ASC
                 """
@@ -395,7 +399,8 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, ui_preferences_json, password_hash, is_active, last_login_at, created_at, updated_at
+                SELECT id, username, display_name, avatar_path, ui_preferences_json,
+                       control_plane_role, password_hash, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 WHERE id = %s
                 """,
@@ -408,7 +413,8 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, ui_preferences_json, password_hash, is_active, last_login_at, created_at, updated_at
+                SELECT id, username, display_name, avatar_path, ui_preferences_json,
+                       control_plane_role, password_hash, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 WHERE username = %s
                 """,
@@ -550,6 +556,7 @@ class DocumentRepository:
                     u.display_name,
                     u.avatar_path,
                     u.ui_preferences_json,
+                    u.control_plane_role,
                     u.is_active
                 FROM admin_sessions s
                 JOIN admin_users u ON u.id = s.user_id
