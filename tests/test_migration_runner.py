@@ -162,7 +162,14 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         )
 
     def test_unsupported_servers_fail_before_any_history_access_or_ddl(self):
-        for version in ("5.7.44-log", "9.0.1", "10.11.8-MariaDB-0ubuntu0.24.04.1"):
+        for version in (
+            "5.7.44-log",
+            "8.0.15",
+            "8.0.0",
+            "8",
+            "9.0.1",
+            "10.11.8-MariaDB-0ubuntu0.24.04.1",
+        ):
             for check_only in (False, True):
                 with self.subTest(version=version, check_only=check_only):
                     cursor = _MigrationCursor(version)

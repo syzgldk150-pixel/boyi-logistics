@@ -12,7 +12,7 @@ updated: 2026-08-13
 `agent/migrations/` 保存顺序 SQL 迁移，文件名固定为
 `NNN_小写描述.sql`。部署入口运行 `agent/scripts/run_migrations.py`：
 
-- 所有模式都先通过 `SELECT VERSION()` 验证服务端是 MySQL 8；MariaDB 或其他主版本会在任何 DDL、迁移历史访问前终止；
+- 所有模式都先通过 `SELECT VERSION()` 验证服务端不低于 MySQL 8.0.16；MariaDB、未执行 `CHECK` 约束的旧 8.0 版本或其他主版本会在任何 DDL、迁移历史访问前终止；
 - `--check` 在版本门禁通过后只校验已执行版本、文件名和 SHA-256，不改业务表；
 - 不带参数才执行尚未记录在 `schema_migrations` 的迁移；
 - 已执行迁移不得修改内容；需要调整结构时新增下一个版本文件；
@@ -62,7 +62,7 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 生产迁移序列固定连续递增且不得改写已执行文件；线上已存在 `009`、`010`、`013` 时，
 发布器按版本顺序补执行待处理的 `011`、`012`、`014`。MySQL DDL 不参与源码回滚，发布前必须完成可恢复数据库备份。
 
-控制平面要求 MySQL 8。部署预检必须验证服务端版本、必需表列和
+控制平面要求 MySQL 8.0.16 或更高版本。部署预检必须验证服务端版本、必需表列和
 `SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
