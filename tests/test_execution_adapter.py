@@ -123,6 +123,32 @@ def test_cancelled_process_is_not_normalized_as_a_terminal_tool_failure():
     assert result["error"]["retryable"] is False
 
 
+def test_british_spelling_cancelled_process_is_normalized_to_cancelled():
+    adapter = RegisteredToolExecutionAdapter(
+        catalog=_Catalog(_capability()),
+        executor=_Executor(
+            {
+                "success": False,
+                "cancelled": True,
+                "error": "Tool execution cancelled",
+            }
+        ),
+    )
+
+    result = asyncio.run(
+        adapter.execute_step(
+            _step(),
+            run_id="run-1",
+            step_id="step-1",
+            execution_context={"source": "console"},
+        )
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["error"]["code"] == "CANCELLED"
+    assert result["error"]["retryable"] is False
+
+
 def test_nested_unified_retryable_failure_is_preserved():
     nested_result = {
         "status": "FAILED",

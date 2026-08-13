@@ -431,10 +431,10 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "trigger_label": "定时任务",
         "schedule_summary": "",
         "default_tool_params": {
-            "account_id": "ronghui_default",
+            "account_id": "price_default",
         },
         "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
+            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "price_default"},
         ],
         "order": 10,
     },
@@ -471,14 +471,14 @@ AUTOMATION_WORKFLOW_CATALOG = [
             "r13_account_id": "r13_default",
             "problem_account_id": "ronghui_daxiang_s",
             "sign_account_id": "ronghui_daxiang_s",
-            "detail_account_id": "ronghui_daxiang_s",
+            "detail_account_id": "ronghui_default",
             "days": 7,
         },
         "account_roles": [
             {"label": "R13应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
             {"label": "问题件账号", "field": "problem_account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
             {"label": "主单签收账号", "field": "sign_account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
-            {"label": "补地址账号", "field": "detail_account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
+            {"label": "补地址账号", "field": "detail_account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
         ],
         "order": 40,
     },
@@ -511,11 +511,12 @@ AUTOMATION_WORKFLOW_CATALOG = [
     {
         "task_id": "clockin_daxiang",
         "display_name": "网点打卡-大祥",
-        "tool_name": "tms_query",
-        "note": "大祥站双打卡自动化任务。",
+        "tool_name": "clock_in_dual",
+        "note": "大祥站双打卡属于第三方高风险写入；此卡片只展示既有任务，不能保存或立即执行。",
         "task_mode": "scheduled",
-        "trigger_label": "定时任务",
+        "trigger_label": "控制平面审批",
         "schedule_summary": "",
+        "control_plane_only": True,
         "default_tool_params": {},
         "account_roles": [
             {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
@@ -525,11 +526,12 @@ AUTOMATION_WORKFLOW_CATALOG = [
     {
         "task_id": "clockin_daxiang_s",
         "display_name": "网点打卡-大祥S站",
-        "tool_name": "tms_query",
-        "note": "大祥 S 站双打卡自动化任务。",
+        "tool_name": "clock_in_dual",
+        "note": "大祥 S 站双打卡属于第三方高风险写入；此卡片只展示既有任务，不能保存或立即执行。",
         "task_mode": "scheduled",
-        "trigger_label": "定时任务",
+        "trigger_label": "控制平面审批",
         "schedule_summary": "",
+        "control_plane_only": True,
         "default_tool_params": {},
         "account_roles": [
             {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
@@ -636,7 +638,7 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "schedule_summary": "",
         "default_tool_params": {
             "account_id": "yunda_default",
-            "ensure_fields": True,
+            "ensure_fields": False,
         },
         "account_roles": [
             {"label": "运行账号", "field": "account_id", "system": "yunda", "default_account_id": "yunda_default"},
@@ -728,6 +730,16 @@ AUTOMATION_WORKFLOW_BY_ID = {
     str(item.get("task_id", "") or ""): item
     for item in AUTOMATION_WORKFLOW_CATALOG
 }
+
+CONTROL_PLANE_ONLY_AUTOMATION_TASK_IDS = frozenset(
+    task_id
+    for task_id, workflow in AUTOMATION_WORKFLOW_BY_ID.items()
+    if workflow.get("control_plane_only") is True
+)
+CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE = (
+    "第三方高风险写入只允许通过控制平面提交独立计划并审批；"
+    "此处仅展示既有任务，不能保存、创建定时任务或立即执行。"
+)
 
 AUTOMATION_PROVIDER_LABELS = {
     "ronghui": "TMS融辉",
@@ -1106,6 +1118,10 @@ def automation_task_note(task_id: str) -> str:
 
 def automation_workflow_definition(task_id: str) -> dict[str, Any]:
     return AUTOMATION_WORKFLOW_BY_ID.get(normalize_task_group_id(task_id), {})
+
+
+def automation_task_control_plane_only(task_id: str) -> bool:
+    return normalize_task_group_id(task_id) in CONTROL_PLANE_ONLY_AUTOMATION_TASK_IDS
 
 
 def automation_task_provider(

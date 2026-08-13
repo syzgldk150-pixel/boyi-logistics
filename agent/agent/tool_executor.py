@@ -224,6 +224,33 @@ class ToolExecutor:
         except asyncio.TimeoutError:
             logger.warning("tool pid=%s did not exit after forced kill", getattr(proc, "pid", "?"))
 
+    def _cancelled_result(self, *, name: str, entry: dict, duration: float) -> dict:
+        """Return the process-layer cancellation contract for either exit code."""
+
+        entry["running"] = False
+        entry["proc"] = None
+        entry["lines"].append("[control] 任务已取消。")
+        logger.info("tool=%s | cancelled=true | duration=%ss", name, duration)
+        self._last_run = {
+            "tool": name,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "success": False,
+            "duration_s": duration,
+            # Keep the historical spelling for compatibility while exposing
+            # the canonical spelling to new orchestration adapters.
+            "canceled": True,
+            "cancelled": True,
+        }
+        return {
+            "success": False,
+            "canceled": True,
+            "cancelled": True,
+            "error": CANCEL_MESSAGE,
+            "error_code": "CANCELLED",
+            "retryable": False,
+            "duration_s": duration,
+        }
+
     async def execute(self, tool_config: dict, params: dict) -> dict:
         name = tool_config["name"]
         heavy = tool_config.get("heavy", False)
@@ -374,6 +401,12 @@ class ToolExecutor:
                 entry["running"] = False
                 entry["proc"] = None
                 duration = round(time.time() - start, 2)
+                if entry.get("cancel_requested"):
+                    return self._cancelled_result(
+                        name=name,
+                        entry=entry,
+                        duration=duration,
+                    )
                 logger.error("tool=%s | error=timeout(%ds) | duration=%ss", name, timeout, duration)
                 return {"success": False, "error": f"工具执行超时（{timeout}秒）"}
 
@@ -386,19 +419,17 @@ class ToolExecutor:
             exit_code = proc.returncode
             cancel_requested = bool(entry.get("cancel_requested"))
 
-            if exit_code != 0:
-                if cancel_requested:
-                    entry["lines"].append("[control] 任务已取消。")
-                    logger.info("tool=%s | cancelled=true | duration=%ss", name, duration)
-                    self._last_run = {
-                        "tool": name,
-                        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "success": False,
-                        "duration_s": duration,
-                        "canceled": True,
-                    }
-                    return {"success": False, "canceled": True, "error": CANCEL_MESSAGE, "duration_s": duration}
+            # A SIGTERM handler may flush a final result and exit zero.  Once
+            # cancellation was accepted, that process exit must never be
+            # reclassified as business success (or a generic tool failure).
+            if cancel_requested:
+                return self._cancelled_result(
+                    name=name,
+                    entry=entry,
+                    duration=duration,
+                )
 
+            if exit_code != 0:
                 err_msg = _redact_execution_capability(
                     stderr.decode("utf-8", errors="replace").strip(),
                     execution_capability,

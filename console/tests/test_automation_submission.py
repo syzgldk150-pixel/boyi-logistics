@@ -129,7 +129,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("scheduled", defaults["task_mode"])
         self.assertEqual(False, defaults["enabled"])
         self.assertEqual(
-            {"account_id": "yunda_default", "ensure_fields": True},
+            {"account_id": "yunda_default", "ensure_fields": False},
             defaults["tool_params"],
         )
         self.assertNotIn("session_profile", defaults["tool_params"])
@@ -141,6 +141,87 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
         self.assertEqual(False, bindings[0]["required"])
         self.assertEqual(False, bindings[1]["required"])
+
+    def test_catalog_defaults_match_production_scheduler_contract(self):
+        send_order = AUTOMATION_WORKFLOW_BY_ID["send_order"]
+        daily_sign = AUTOMATION_WORKFLOW_BY_ID["daily_sign"]
+
+        self.assertEqual(
+            {"account_id": "price_default"},
+            send_order["default_tool_params"],
+        )
+        self.assertEqual(
+            "price_default",
+            send_order["account_roles"][0]["default_account_id"],
+        )
+        self.assertEqual(
+            {
+                "r13_account_id": "r13_default",
+                "problem_account_id": "ronghui_daxiang_s",
+                "sign_account_id": "ronghui_daxiang_s",
+                "detail_account_id": "ronghui_default",
+                "days": 7,
+            },
+            daily_sign["default_tool_params"],
+        )
+        detail_role = next(
+            role
+            for role in daily_sign["account_roles"]
+            if role["field"] == "detail_account_id"
+        )
+        self.assertEqual("ronghui_default", detail_role["default_account_id"])
+
+    def test_clock_catalog_is_read_only_and_not_tms_query(self):
+        for task_id in ("clockin_daxiang", "clockin_daxiang_s"):
+            workflow = AUTOMATION_WORKFLOW_BY_ID[task_id]
+            self.assertEqual("clock_in_dual", workflow["tool_name"])
+            self.assertTrue(workflow["control_plane_only"])
+            self.assertEqual("控制平面审批", workflow["trigger_label"])
+
+    def test_clock_submission_is_rejected_before_save_or_run(self):
+        for task_id in ("clockin_daxiang", "clockin_daxiang_s_1833"):
+            with self.subTest(task_id=task_id):
+                app = self._make_app(
+                    {
+                        "task_id": task_id,
+                        "task_mode": "scheduled",
+                        "name": "legacy clock",
+                        "tool_name": "tms_query",
+                        "cron_expression": "33 18 * * *",
+                        "schedule_times_json": "[\"18:33\"]",
+                        "tool_params_json": "{}",
+                        "enabled": "on",
+                    }
+                )
+
+                payload, _override, error_message = (
+                    app._collect_automation_task_submission(
+                        None,
+                        allow_missing_schedule=True,
+                    )
+                )
+
+                self.assertIsNone(payload)
+                self.assertIn("第三方高风险写入", error_message)
+                self.assertIn("不能保存", error_message)
+
+    def test_direct_clock_persist_is_fail_closed_without_repository_write(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app.repository = SimpleNamespace(
+            replace_scheduled_task_group=lambda **kwargs: self.fail(
+                "control-plane-only task reached persistence"
+            )
+        )
+
+        result = app._persist_automation_task(
+            {
+                "task_id": "clockin_daxiang",
+                "task_mode": "scheduled",
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("第三方高风险写入", result["error"])
 
     def test_delivery_status_workflow_is_scheduled_scan(self):
         workflow = AUTOMATION_WORKFLOW_BY_ID["delivery_status"]
@@ -159,7 +240,7 @@ class AutomationSubmissionTests(unittest.TestCase):
 
     def test_send_order_uses_closed_default_account_contract(self):
         defaults = build_virtual_task_defaults("send_order")
-        self.assertEqual({"account_id": "ronghui_default"}, defaults["tool_params"])
+        self.assertEqual({"account_id": "price_default"}, defaults["tool_params"])
 
     def test_arrive_list_uses_closed_default_account_contract(self):
         defaults = build_virtual_task_defaults("arrive_list")

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
+import json
 import os
 import re
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = PROJECT_ROOT / "migrations"
@@ -22,6 +26,53 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 CONTROL_PLANE_TASK_CUTOVER_VERSION = "014"
 CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE = "control_plane_task_cutover_backup_014"
+CONTROL_PLANE_REVIEWED_PROFILE_GROUPS = frozenset(
+    {
+        "arrive_list",
+        "daily_sign",
+        "delivery_status",
+        "send_order",
+        "site_send",
+        "yunda_send_waybills",
+    }
+)
+CONTROL_PLANE_REVIEWED_TASK_COUNT = 51
+CONTROL_PLANE_REVIEWED_CLOCK_IDS = frozenset(
+    {"clockin_daxiang_1830", "clockin_daxiang_s_1833"}
+)
+CONTROL_PLANE_STATIC_SEED_TASK_IDS = frozenset(
+    {
+        "customer_problems_shadow",
+        "finance_bills_0010",
+        "yunda_dispatch_forecast_1700",
+    }
+)
+CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256 = (
+    "c33492072957c7cc41ad8769d0c790b50d3b5314427e3912609432ea9d320912"
+)
+CONTROL_PLANE_CLOCK_TOOL_NAMES = frozenset({"tms_query", "clock_in_dual"})
+CONTROL_PLANE_TASK_CANDIDATE_SQL = """
+SELECT id, tool_name, tool_params, cron_expression, enabled
+FROM scheduled_tasks
+WHERE id REGEXP '^(arrive_list_|daily_sign_|delivery_status_|send_order_|site_send_|yunda_send_waybills_|clockin_)'
+   OR tool_name IN (
+       'sync_arrive_list',
+       'sync_daily_should_sign',
+       'sync_delivery_status',
+       'sync_daily_send_orders',
+       'sync_site_send_list',
+       'sync_yunda_send_waybills',
+       'clock_in_dual'
+   )
+"""
+_TIME_SUFFIX_RE = re.compile(r"^(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)$")
+class ControlPlaneTaskCutoverPreflightError(RuntimeError):
+    """A safe, value-free reason why scheduler cutover must not proceed."""
+
+    def __init__(self, code: str, *, count: int = 1) -> None:
+        super().__init__(code)
+        self.code = str(code)
+        self.count = max(int(count), 1)
 
 
 def _require_mysql8(cursor) -> str:
@@ -161,6 +212,359 @@ def run(*, check_only: bool) -> int:
     return 0
 
 
+def _load_control_plane_reviewed_task_contracts() -> dict[str, dict[str, Any]]:
+    """Load the staged code-owned scheduler contract without changing sys.path.
+
+    Migration preflight must consume the same reviewed task IDs and canonical
+    arguments as runtime policy.  It deliberately does not infer either from
+    current database rows.
+    """
+
+    contract_path = PROJECT_ROOT.parent / "shared" / "scheduled_task_contracts.py"
+    if not contract_path.is_file():
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_MODULE_MISSING")
+
+    module_name = "_boyi_control_plane_scheduled_task_contracts"
+    spec = importlib.util.spec_from_file_location(module_name, contract_path)
+    if spec is None or spec.loader is None:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_MODULE_INVALID")
+    module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_MODULE_INVALID") from exc
+    finally:
+        if previous_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
+
+    profiles = getattr(module, "APPROVED_SCHEDULED_TASK_PROFILES", None)
+    if not isinstance(profiles, Mapping):
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+
+    populated_groups = {
+        str(group_id)
+        for group_id, profile in profiles.items()
+        if getattr(profile, "approved_task_ids", frozenset())
+    }
+    if populated_groups != CONTROL_PLANE_REVIEWED_PROFILE_GROUPS:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+
+    contracts: dict[str, dict[str, Any]] = {}
+    for group_id in sorted(CONTROL_PLANE_REVIEWED_PROFILE_GROUPS):
+        profile = profiles.get(group_id)
+        task_ids = getattr(profile, "approved_task_ids", None)
+        arguments = getattr(profile, "approved_arguments", None)
+        tool_name = getattr(profile, "tool_name", None)
+        operation_type = getattr(profile, "operation_type", None)
+        if (
+            not isinstance(task_ids, (set, frozenset))
+            or not isinstance(arguments, Mapping)
+            or type(tool_name) is not str
+            or operation_type != "internal_projection_write"
+        ):
+            raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+        for task_id in task_ids:
+            if type(task_id) is not str or task_id in contracts:
+                raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+            suffix = task_id.rsplit("_", 1)[-1]
+            match = _TIME_SUFFIX_RE.fullmatch(suffix)
+            if match is None:
+                raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+            contracts[task_id] = {
+                "group_id": group_id,
+                "tool_name": tool_name,
+                "canonical_arguments": dict(arguments),
+                "cron_expression": f"{minute} {hour} * * *",
+            }
+
+    if len(contracts) != CONTROL_PLANE_REVIEWED_TASK_COUNT:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+    return contracts
+
+
+def _load_control_plane_seed_task_ids() -> tuple[str, ...]:
+    """Return the exact code-owned rows a fresh Agent may seed.
+
+    Rollback must never infer deletion authority from database contents.  The
+    governed IDs come from the same reviewed runtime contract as preflight;
+    the remaining IDs are disabled configuration placeholders declared by the
+    Agent seed templates.
+    """
+
+    task_ids = set(_load_control_plane_reviewed_task_contracts())
+    task_ids.update(CONTROL_PLANE_STATIC_SEED_TASK_IDS)
+    expected_count = CONTROL_PLANE_REVIEWED_TASK_COUNT + len(
+        CONTROL_PLANE_STATIC_SEED_TASK_IDS
+    )
+    if len(task_ids) != expected_count:
+        raise ControlPlaneTaskCutoverPreflightError("SEED_TASK_SET_INVALID")
+    return tuple(sorted(task_ids))
+
+
+def _strict_json_equal(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        if set(left) != set(right):
+            return False
+        return all(_strict_json_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _strict_json_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    return bool(left == right)
+
+
+def _decode_task_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_INVALID") from exc
+    if type(value) is str:
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_INVALID") from exc
+        if isinstance(payload, dict):
+            return payload
+    raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_INVALID")
+
+
+def _is_legacy_task_arguments(group_id: str, arguments: dict[str, Any]) -> bool:
+    if group_id == "arrive_list":
+        return (
+            set(arguments) == {"account_id", "login_site_code", "site_code", "target_date"}
+            and arguments.get("account_id") == "ronghui_default"
+            and type(arguments.get("login_site_code")) is str
+            and bool(arguments["login_site_code"].strip())
+            # ``site_code`` was audited as unconsumed by the legacy
+            # sync_arrive_list wrapper.  It is accepted only in this exact
+            # legacy shape, is never treated as authority, and is never logged.
+            and type(arguments.get("site_code")) is str
+            and bool(arguments["site_code"].strip())
+            and arguments.get("target_date") == ""
+        )
+    if group_id == "daily_sign":
+        return _strict_json_equal(
+            arguments,
+            {
+                "account_id": "r13_default",
+                "detail_account_id": "ronghui_default",
+                "r13_account_id": "r13_default",
+            },
+        )
+    if group_id == "delivery_status":
+        return arguments == {}
+    if group_id == "send_order":
+        return _strict_json_equal(
+            arguments,
+            {"account_id": "price_default", "target_date": ""},
+        )
+    if group_id == "site_send":
+        return _strict_json_equal(arguments, {"account_id": "ronghui_default"})
+    if group_id == "yunda_send_waybills":
+        return _strict_json_equal(
+            arguments,
+            {
+                "account_id": "yunda_default",
+                "ensure_fields": False,
+                "session_profile": "yunda",
+                "target_date": "",
+            },
+        )
+    return False
+
+
+def _validate_clock_policy(rows: Sequence[Mapping[str, Any]]) -> None:
+    clock_rows = []
+    for row in rows:
+        task_id = row.get("id")
+        if type(task_id) is str and task_id.startswith("clockin_"):
+            clock_rows.append(row)
+    unknown = [row for row in clock_rows if row.get("id") not in CONTROL_PLANE_REVIEWED_CLOCK_IDS]
+    if unknown:
+        raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ID_NOT_REVIEWED", count=len(unknown))
+
+    invalid = [
+        row
+        for row in clock_rows
+        if type(row.get("tool_name")) is not str
+        or row.get("tool_name") not in CONTROL_PLANE_CLOCK_TOOL_NAMES
+        or type(row.get("enabled")) not in {bool, int}
+        or row.get("enabled") not in {False, True, 0, 1}
+    ]
+    if invalid:
+        raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_SHAPE_NOT_REVIEWED", count=len(invalid))
+
+    enabled = [row for row in clock_rows if bool(row.get("enabled"))]
+    if enabled:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "EXTERNAL_WRITE_SCHEDULE_POLICY_BLOCKED",
+            count=len(enabled),
+        )
+
+
+def validate_control_plane_task_cutover(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    contracts: Mapping[str, Mapping[str, Any]],
+    reviewed_login_site_sha256: str = CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256,
+) -> dict[str, int]:
+    """Validate scheduler rows without returning any persisted values."""
+
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
+        raise ControlPlaneTaskCutoverPreflightError("TASK_ROWS_INVALID")
+    _validate_clock_policy(rows)
+    # A truly empty database has no scheduler state to cut over.  Once any
+    # governed-family or external-write candidate exists, the complete 51-row
+    # reviewed set becomes mandatory below; partial bootstrap state fails.
+    if not rows:
+        return {"reviewed_rows": 0, "canonical_rows": 0, "legacy_rows": 0}
+
+    canonical_count = 0
+    legacy_count = 0
+    reviewed_count = 0
+    seen_task_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ROW_INVALID")
+        task_id = row.get("id")
+        if type(task_id) is not str:
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ID_INVALID")
+        if task_id.startswith("clockin_"):
+            continue
+        contract = contracts.get(task_id)
+        if not isinstance(contract, Mapping):
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ID_NOT_REVIEWED")
+        if task_id in seen_task_ids:
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ID_DUPLICATE")
+        seen_task_ids.add(task_id)
+
+        tool_name = row.get("tool_name")
+        cron_expression = row.get("cron_expression")
+        enabled = row.get("enabled")
+        if type(tool_name) is not str or tool_name != contract.get("tool_name"):
+            raise ControlPlaneTaskCutoverPreflightError("TASK_TOOL_NOT_REVIEWED")
+        if type(cron_expression) is not str or cron_expression != contract.get("cron_expression"):
+            raise ControlPlaneTaskCutoverPreflightError("TASK_CRON_NOT_REVIEWED")
+        if type(enabled) not in {bool, int} or enabled not in {False, True, 0, 1}:
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ENABLED_TYPE_INVALID")
+        if not bool(enabled):
+            raise ControlPlaneTaskCutoverPreflightError("PROTECTED_TASK_DISABLED")
+
+        arguments = _decode_task_arguments(row.get("tool_params"))
+        canonical_arguments = contract.get("canonical_arguments")
+        if not isinstance(canonical_arguments, Mapping):
+            raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+        if _strict_json_equal(arguments, dict(canonical_arguments)):
+            canonical_count += 1
+        elif _is_legacy_task_arguments(str(contract.get("group_id") or ""), arguments):
+            if contract.get("group_id") == "arrive_list":
+                login_site_sha256 = hashlib.sha256(
+                    arguments["login_site_code"].strip().encode("utf-8")
+                ).hexdigest()
+                if login_site_sha256 != reviewed_login_site_sha256:
+                    raise ControlPlaneTaskCutoverPreflightError(
+                        "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
+                    )
+            legacy_count += 1
+        else:
+            raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_NOT_REVIEWED")
+        reviewed_count += 1
+
+    missing_count = len(set(contracts) - seen_task_ids)
+    if missing_count:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "REVIEWED_TASK_SET_INCOMPLETE",
+            count=missing_count,
+        )
+
+    return {
+        "reviewed_rows": reviewed_count,
+        "canonical_rows": canonical_count,
+        "legacy_rows": legacy_count,
+    }
+
+
+def preflight_control_plane_task_cutover() -> int:
+    """Run a read-only, value-redacted scheduler cutover check.
+
+    The reviewed login-site binding is compared by a code-owned SHA-256
+    fingerprint.  Deployment never opens persisted cookies or credential
+    files merely to validate scheduler configuration.
+    """
+
+    connection = None
+    try:
+        contracts = _load_control_plane_reviewed_task_contracts()
+        connection = _connect()
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            history_exists = _migration_table_exists(cursor)
+            already_applied = False
+            history_has_rows = False
+            if history_exists:
+                cursor.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version=%s",
+                    (CONTROL_PLANE_TASK_CUTOVER_VERSION,),
+                )
+                already_applied = cursor.fetchone() is not None
+                if not already_applied:
+                    cursor.execute("SELECT 1 FROM schema_migrations LIMIT 1")
+                    history_has_rows = cursor.fetchone() is not None
+
+            if already_applied:
+                summary = {"reviewed_rows": 0, "canonical_rows": 0, "legacy_rows": 0}
+            elif not _table_exists(cursor, "scheduled_tasks"):
+                if history_has_rows:
+                    raise ControlPlaneTaskCutoverPreflightError(
+                        "SCHEDULED_TASKS_TABLE_MISSING"
+                    )
+                summary = {"reviewed_rows": 0, "canonical_rows": 0, "legacy_rows": 0}
+            else:
+                cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
+                rows = cursor.fetchall()
+                summary = validate_control_plane_task_cutover(
+                    rows,
+                    contracts=contracts,
+                )
+    except ControlPlaneTaskCutoverPreflightError as exc:
+        print(
+            "control_plane_task_cutover_preflight=blocked "
+            f"reason={exc.code} count={exc.count}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception:
+        print(
+            "control_plane_task_cutover_preflight=blocked "
+            "reason=PREFLIGHT_RUNTIME_ERROR count=1",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+    print(
+        "control_plane_task_cutover_preflight=ok "
+        f"reviewed_rows={summary['reviewed_rows']} "
+        f"canonical_rows={summary['canonical_rows']} "
+        f"legacy_rows={summary['legacy_rows']}"
+    )
+    return 0
+
+
 def restore_control_plane_task_cutover() -> int:
     """Restore scheduler rows when this release attempted migration 014.
 
@@ -171,6 +575,7 @@ def restore_control_plane_task_cutover() -> int:
     indication that task rows may need restoration.
     """
 
+    seed_task_ids = _load_control_plane_seed_task_ids()
     connection = _connect()
     transaction_started = False
     try:
@@ -211,6 +616,21 @@ def restore_control_plane_task_cutover() -> int:
                     last_message = VALUES(last_message),
                     created_at = VALUES(created_at)
                 """
+            )
+            seed_placeholders = ", ".join("%s" for _ in seed_task_ids)
+            cursor.execute(
+                f"""
+                DELETE seeded
+                FROM scheduled_tasks AS seeded
+                INNER JOIN schema_migrations AS migration
+                    ON migration.version=%s
+                LEFT JOIN {CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE} AS backup
+                    ON backup.id=seeded.id
+                WHERE seeded.id IN ({seed_placeholders})
+                  AND seeded.created_at >= migration.applied_at
+                  AND backup.id IS NULL
+                """,
+                (CONTROL_PLANE_TASK_CUTOVER_VERSION, *seed_task_ids),
             )
             cursor.execute(
                 "DELETE FROM schema_migrations WHERE version=%s",
@@ -272,11 +692,18 @@ def main() -> int:
         action="store_true",
         help="Report whether migration 014 is pending without returning row data",
     )
+    modes.add_argument(
+        "--preflight-control-plane-task-cutover",
+        action="store_true",
+        help="Read-only validation of reviewed scheduler rows before release mutation",
+    )
     args = parser.parse_args()
     if args.restore_control_plane_task_cutover:
         return restore_control_plane_task_cutover()
     if args.control_plane_task_cutover_status:
         return report_control_plane_task_cutover_status()
+    if args.preflight_control_plane_task_cutover:
+        return preflight_control_plane_task_cutover()
     return run(check_only=args.check)
 
 

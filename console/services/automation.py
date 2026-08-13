@@ -70,6 +70,7 @@ class AutomationServiceMixin:
         last_message_value = str(runtime_state.get("last_message") or "")
         task_mode_value = str(workflow.get("task_mode") or baseline.get("task_mode") or "manual")
         is_schedulable = task_mode_value == "scheduled"
+        control_plane_only = automation_task_control_plane_only(task_id)
         trigger_label = str(workflow.get("trigger_label") or "手动执行")
         override_schedule_times_raw = str(override.get("schedule_times_json", "") or "").strip()
         override_schedule_times: list[str] = []
@@ -131,13 +132,19 @@ class AutomationServiceMixin:
             "tool_params_json": raw_json,
             "tool_param_fields": flatten_automation_fields(tool_params),
             "schedule_supported": schedule_supported if is_schedulable else False,
-            "schedule_editable": is_schedulable,
+            "schedule_editable": is_schedulable and not control_plane_only,
             "schedule_time_values": list(schedule_info.get("time_values") or []) if is_schedulable else [],
             "schedule_summary": schedule_summary,
             "schedule_icon": "clock" if is_schedulable else "zap",
             "schedule_warning": schedule_warning if is_schedulable else f"此流程不写入 scheduled_tasks，默认通过{trigger_label}触发。",
             "trigger_label": trigger_label,
             "is_schedulable": is_schedulable,
+            "can_save": not control_plane_only,
+            "can_run_now": not control_plane_only,
+            "control_plane_only": control_plane_only,
+            "control_plane_notice": (
+                CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE if control_plane_only else ""
+            ),
             "has_webhook": bool(webhook_info.get("path")),
             "webhook_path": str(webhook_info.get("path") or ""),
             "webhook_full_url": str(webhook_info.get("full_url") or ""),
@@ -380,6 +387,7 @@ class AutomationServiceMixin:
             )
             primary_row = next((item for item in rows if str(item.get("id", "") or "") == base_task_id), rows[0])
             workflow = automation_workflow_definition(base_task_id)
+            control_plane_only = automation_task_control_plane_only(base_task_id)
             override = task_overrides.get(base_task_id, {})
             tool_params = primary_row.get("tool_params", {})
             default_tool_params = workflow.get("default_tool_params")
@@ -447,6 +455,8 @@ class AutomationServiceMixin:
                 or normalize_task_display_name(str(primary_row.get("name", "") or ""))
             )
             tool_name_value = str(override.get("tool_name") or primary_row.get("tool_name", "") or "")
+            if control_plane_only:
+                tool_name_value = str(workflow.get("tool_name") or tool_name_value)
             provider_value = automation_task_provider(base_task_id, workflow, tool_name_value)
             resource_bindings = build_automation_resource_bindings(
                 base_task_id,
@@ -480,13 +490,21 @@ class AutomationServiceMixin:
                 "tool_params_json": raw_json,
                 "tool_param_fields": flatten_automation_fields(tool_params),
                 "schedule_supported": bool(schedule_info["supported"] or not schedule_info["raw_value"]),
-                "schedule_editable": True,
+                "schedule_editable": not control_plane_only,
                 "schedule_time_values": schedule_info["time_values"],
                 "schedule_summary": schedule_info["summary"],
                 "schedule_icon": "clock",
                 "schedule_warning": schedule_info["warning"],
                 "trigger_label": str(workflow.get("trigger_label") or "定时任务"),
                 "is_schedulable": True,
+                "can_save": not control_plane_only,
+                "can_run_now": not control_plane_only,
+                "control_plane_only": control_plane_only,
+                "control_plane_notice": (
+                    CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE
+                    if control_plane_only
+                    else ""
+                ),
                 "has_webhook": False,
                 "webhook_path": "",
                 "webhook_full_url": "",
@@ -1177,6 +1195,9 @@ class AutomationServiceMixin:
         if not task_id or not name or not tool_name:
             return None, override, "任务 ID、任务名称和工具名称不能为空。"
 
+        if automation_task_control_plane_only(task_id):
+            return None, override, CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE
+
         try:
             tool_params = json.loads(tool_params_json or "{}")
         except json.JSONDecodeError as exc:
@@ -1276,6 +1297,11 @@ class AutomationServiceMixin:
         )
 
     def _persist_automation_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if automation_task_control_plane_only(str(payload.get("task_id") or "")):
+            return {
+                "ok": False,
+                "error": CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE,
+            }
         if str(payload.get("task_mode") or "scheduled") != "scheduled":
             self._record_virtual_task_runtime(payload["task_id"], payload=payload)
             return {"ok": True, "status": None, "data": {"mode": "virtual"}}

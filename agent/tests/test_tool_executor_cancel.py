@@ -6,7 +6,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
+from agent.orchestration.models import OperationType, PlanStep, RiskLevel, RunStatus
+from agent.orchestration.result_verifier import ResultVerifier
 from agent.tool_executor import CANCEL_MESSAGE, PROJECT_ROOT, ToolExecutor
+
+
+class _Catalog:
+    def __init__(self, capability):
+        self.capability = capability
+
+    def get_capability(self, tool_name):
+        return self.capability if tool_name == self.capability["name"] else None
 
 
 class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
@@ -84,11 +95,62 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(task, timeout=5)
         self.assertFalse(result["success"])
         self.assertTrue(result["canceled"])
+        self.assertTrue(result["cancelled"])
+        self.assertEqual("CANCELLED", result["error_code"])
         self.assertEqual(result["error"], CANCEL_MESSAGE)
 
         output = self.executor.get_running_output("cancel_demo_tool", started_at=started_at)
         self.assertFalse(output["running"])
         self.assertIn("已请求取消执行", "\n".join(output["lines"]))
+
+    async def test_cancel_request_wins_when_sigterm_handler_exits_zero(self):
+        graceful_script = self._write_temp_script(
+            "tool-cancel-zero-",
+            """
+            import json
+            import signal
+            import sys
+            import time
+
+            def stop(_signum, _frame):
+                print(json.dumps({"status": "SUCCESS", "data": {"finished": True}}), flush=True)
+                raise SystemExit(0)
+
+            signal.signal(signal.SIGTERM, stop)
+            print("[progress] started", flush=True)
+            while True:
+                time.sleep(0.2)
+            """,
+        )
+        tool_name = "cancel_zero_exit_tool"
+        task = asyncio.create_task(
+            self.executor.execute(
+                {
+                    "name": tool_name,
+                    "executor": os.path.relpath(graceful_script, PROJECT_ROOT),
+                    "timeout": 30,
+                },
+                {},
+            )
+        )
+
+        started_at = ""
+        for _ in range(50):
+            output = self.executor.get_running_output(tool_name)
+            if output.get("running"):
+                started_at = str(output.get("started_at") or "")
+                break
+            await asyncio.sleep(0.1)
+        self.assertTrue(started_at)
+
+        cancel_result = await self.executor.cancel_tool(tool_name, started_at=started_at)
+        self.assertTrue(cancel_result["ok"])
+        result = await asyncio.wait_for(task, timeout=5)
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["canceled"])
+        self.assertTrue(result["cancelled"])
+        self.assertEqual("CANCELLED", result["error_code"])
 
     async def test_heavy_tools_wait_for_existing_heavy_task(self):
         slow_script = self._write_temp_script(
@@ -176,6 +238,67 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("AUTH_REQUIRED", result["error_code"])
         self.assertTrue(result["retryable"])
         self.assertEqual("FAILED", result["data"]["status"])
+
+    async def test_unified_retryable_failure_survives_executor_adapter_and_verifier(self):
+        failure_script = self._write_temp_script(
+            "tool-retryable-failure-",
+            """
+            import json
+
+            print(json.dumps({
+                "status": "FAILED",
+                "data": {"attempted": True},
+                "meta": {},
+                "warnings": [],
+                "error": {
+                    "code": "TRANSIENT_SOURCE_FAILURE",
+                    "message": "source is temporarily unavailable",
+                    "retryable": True,
+                },
+            }))
+            """,
+        )
+        capability = {
+            "name": "retryable_failure_tool",
+            "version": "1.0.0",
+            "executor": os.path.relpath(failure_script, PROJECT_ROOT),
+            "timeout": 5,
+            "operation_type": "read",
+            "evidence": [],
+            "postconditions": [],
+        }
+        step = PlanStep(
+            step_key="retryable",
+            tool_name=capability["name"],
+            tool_version=capability["version"],
+            operation_type=OperationType.READ,
+            arguments={},
+            account_id=None,
+            depends_on=(),
+            idempotency_key="retryable-step",
+            expected_evidence=(),
+            postconditions=(),
+            risk_level=RiskLevel.LOW,
+        )
+        adapter = RegisteredToolExecutionAdapter(
+            catalog=_Catalog(capability),
+            executor=self.executor,
+        )
+
+        normalized = await adapter.execute_step(
+            step,
+            run_id="run-retryable",
+            step_id="step-retryable",
+            execution_context={"source": "scheduler"},
+        )
+        outcome = ResultVerifier().verify(step, normalized, capability)
+
+        self.assertEqual("FAILED", normalized["status"])
+        self.assertEqual("TRANSIENT_SOURCE_FAILURE", normalized["error"]["code"])
+        self.assertTrue(normalized["error"]["retryable"])
+        self.assertFalse(outcome.accepted)
+        self.assertIs(outcome.run_status, RunStatus.FAILED_RETRYABLE)
+        self.assertEqual("TRANSIENT_SOURCE_FAILURE", outcome.code)
 
     async def test_explicit_false_result_is_failure_without_error_text(self):
         failure_script = self._write_temp_script(

@@ -11,7 +11,11 @@ from unittest.mock import patch
 import yaml
 
 from agent.orchestration.models import ActorType
-from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+from agent.task_templates import (
+    GOVERNED_SCHEDULED_TASK_IDS,
+    GOVERNED_SCHEDULED_TASK_TEMPLATES,
+    PHASE7_SCHEDULED_TASK_TEMPLATES,
+)
 from shared.finance.sources import (
     FINANCE_SOURCE_SPECS,
     enabled_finance_account_ids,
@@ -24,11 +28,13 @@ if HAS_APSCHEDULER:
         ensure_control_plane_schedule_tasks,
         ensure_finance_schedule_task,
         init_scheduler,
+        seed_phase7_schedule_tasks,
     )
 else:
     ensure_control_plane_schedule_tasks = None
     ensure_finance_schedule_task = None
     init_scheduler = None
+    seed_phase7_schedule_tasks = None
 
 
 class _Memory:
@@ -65,12 +71,12 @@ class _SeedCore:
 
 
 class FinanceSchedulerRegistrationTests(unittest.TestCase):
-    def test_enabled_daily_template_runs_at_0010(self):
+    def test_new_finance_template_is_disabled_at_0010(self):
         templates = {
             item["id"]: item for item in PHASE7_SCHEDULED_TASK_TEMPLATES
         }
         task = templates["finance_bills_0010"]
-        self.assertTrue(task["enabled"])
+        self.assertFalse(task["enabled"])
         self.assertEqual("sync_finance_bills", task["tool_name"])
         self.assertEqual("10 0 * * *", task["cron_expression"])
         self.assertEqual(
@@ -82,7 +88,8 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         core = _AgentCore()
-        scheduler = init_scheduler(core)
+        with patch("agent.scheduler._finance_schedule_enabled", return_value=True):
+            scheduler = init_scheduler(core)
         job = scheduler.get_job("finance_startup_catchup")
         self.assertIsNotNone(job)
         asyncio.run(job.func())
@@ -174,7 +181,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual(1, len(core.memory.upserts))
         self.assertEqual("finance_bills_0010", core.memory.upserts[0]["id"])
         self.assertEqual("10 0 * * *", core.memory.upserts[0]["cron_expression"])
-        self.assertTrue(core.memory.upserts[0]["enabled"])
+        self.assertFalse(core.memory.upserts[0]["enabled"])
 
     def test_startup_preserves_existing_finance_schedule_override(self):
         if not HAS_APSCHEDULER:
@@ -201,7 +208,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         customer = next(
             row for row in empty.memory.rows if row["id"] == "customer_problems_shadow"
         )
-        self.assertTrue(customer["enabled"])
+        self.assertFalse(customer["enabled"])
         self.assertEqual("sync_customer_service_problems", customer["tool_name"])
         self.assertEqual({"direction": "both"}, customer["tool_params"])
 
@@ -219,9 +226,113 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 },
             ]
         )
-        self.assertEqual((), ensure_control_plane_schedule_tasks(disabled))
-        self.assertEqual([], disabled.memory.upserts)
+        seeded = ensure_control_plane_schedule_tasks(disabled)
+        self.assertNotIn("customer_problems_shadow", seeded)
+        self.assertNotIn("finance_bills_0010", seeded)
+        self.assertEqual(
+            len(PHASE7_SCHEDULED_TASK_TEMPLATES) - 2,
+            len(disabled.memory.upserts),
+        )
         self.assertFalse(disabled.memory.rows[0]["enabled"])
+        self.assertFalse(disabled.memory.rows[1]["enabled"])
+        self.assertTrue(
+            all(row["enabled"] is False for row in disabled.memory.upserts)
+        )
+
+    def test_governed_seed_templates_exactly_match_policy_ids_and_arguments(self):
+        from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
+
+        approved_ids = frozenset(
+            task_id
+            for profile in APPROVED_SCHEDULED_TASK_PROFILES.values()
+            for task_id in profile.approved_task_ids
+        )
+        self.assertEqual(51, len(approved_ids))
+        self.assertEqual(approved_ids, GOVERNED_SCHEDULED_TASK_IDS)
+        self.assertEqual(51, len(GOVERNED_SCHEDULED_TASK_TEMPLATES))
+
+        templates = {
+            task["id"]: task for task in GOVERNED_SCHEDULED_TASK_TEMPLATES
+        }
+        self.assertEqual(
+            {"account_id": "price_default"},
+            templates["send_order_2359"]["tool_params"],
+        )
+        self.assertEqual(
+            "59 23 * * *", templates["send_order_2359"]["cron_expression"]
+        )
+        self.assertEqual(
+            {
+                "r13_account_id": "r13_default",
+                "problem_account_id": "ronghui_daxiang_s",
+                "sign_account_id": "ronghui_daxiang_s",
+                "detail_account_id": "ronghui_default",
+                "days": 7,
+            },
+            templates["daily_sign_0500"]["tool_params"],
+        )
+        self.assertNotIn("send_order_2150", templates)
+        self.assertNotIn("clockin_daxiang_1830", templates)
+        self.assertNotIn("clockin_daxiang_s_1833", templates)
+
+    def test_every_new_seed_row_is_disabled_and_external_writes_are_absent(self):
+        templates = {
+            task["id"]: task for task in PHASE7_SCHEDULED_TASK_TEMPLATES
+        }
+        self.assertEqual(len(templates), len(PHASE7_SCHEDULED_TASK_TEMPLATES))
+        self.assertTrue(all(task["enabled"] is False for task in templates.values()))
+        self.assertFalse(any(task_id.startswith("clockin_") for task_id in templates))
+        self.assertNotIn("r7_arrival_checkin", templates)
+        self.assertNotIn("r7_departure_checkin", templates)
+        self.assertFalse(templates["finance_bills_0010"]["enabled"])
+        self.assertFalse(templates["yunda_dispatch_forecast_1700"]["enabled"])
+
+    def test_manual_seed_inserts_only_missing_rows_and_preserves_admin_switch(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        existing = {
+            "id": "send_order_2359",
+            "cron_expression": "59 23 * * *",
+            "enabled": True,
+            "tool_params": {"administrator_owned": True},
+        }
+        core = _SeedCore([existing])
+
+        seeded = seed_phase7_schedule_tasks(core)
+
+        self.assertNotIn("send_order_2359", seeded)
+        self.assertEqual(len(PHASE7_SCHEDULED_TASK_TEMPLATES) - 1, len(seeded))
+        self.assertTrue(core.memory.rows[0]["enabled"])
+        self.assertEqual(
+            {"administrator_owned": True},
+            core.memory.rows[0]["tool_params"],
+        )
+        self.assertEqual((), seed_phase7_schedule_tasks(core))
+
+    def test_disabled_finance_switch_suppresses_startup_catchup(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _SeedCore(
+            [
+                {
+                    "id": "finance_bills_0010",
+                    "enabled": False,
+                }
+            ]
+        )
+        previous_scheduler = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )
+        try:
+            scheduler_module._add_finance_startup_catchup_job(core)
+            self.assertIsNone(
+                scheduler_module._scheduler.get_job("finance_startup_catchup")
+            )
+        finally:
+            scheduler_module._scheduler = previous_scheduler
 
     def test_registry_exposes_runtime_validated_finance_tool_parameters(self):
         registry_path = (

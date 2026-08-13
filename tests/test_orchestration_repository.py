@@ -262,6 +262,25 @@ class _OutboxClaimCursor(_Cursor):
             self.rowcount = 1
 
 
+class _OutboxTwoStageCursor(_Cursor):
+    def __init__(self, *, status: str, attempts_operator: str, outbox_id: int):
+        super().__init__()
+        self.status = status
+        self.attempts_operator = attempts_operator
+        self.outbox_id = outbox_id
+
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        if "SELECT outbox_id" in sql:
+            matches = (
+                f"status='{self.status}'" in sql
+                and f"attempt_count {self.attempts_operator} max_attempts" in sql
+            )
+            self.rows = [{"outbox_id": self.outbox_id}] if matches else []
+        elif "UPDATE outbox_events" in sql:
+            self.rowcount = 1
+
+
 class _AssignCursor(_Cursor):
     def execute(self, sql, params=None):
         super().execute(sql, params)
@@ -590,6 +609,12 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertTrue(candidate_reads)
         self.assertTrue(locking_reads)
         self.assertTrue(all("FOR UPDATE" not in sql for sql in candidate_reads))
+        candidate_params = [
+            params
+            for sql, params in cursor.calls
+            if "SELECT outbox_id" in sql and "FORCE INDEX (PRIMARY)" not in sql
+        ]
+        self.assertTrue(all(params[-1] == 500 for params in candidate_params))
         self.assertTrue(all("FOR UPDATE SKIP LOCKED" in sql for sql in locking_reads))
         self.assertTrue(all("JOIN domain_events" not in sql for sql in locking_reads))
         self.assertTrue(any("FORCE INDEX (idx_outbox_claim)" in sql for sql in candidate_reads))
@@ -610,6 +635,71 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertIn("status='PROCESSING' AND locked_until <= NOW(6)", claim_update)
         self.assertEqual({"ok": True}, rows[0]["payload_json"])
         self.assertEqual("PROCESSING", rows[0]["status"])
+
+    def test_outbox_expired_lease_lock_rechecks_every_predicate_on_primary_key(self):
+        cursor = _OutboxTwoStageCursor(
+            status="PROCESSING",
+            attempts_operator="<",
+            outbox_id=13,
+        )
+
+        ids = OutboxRepository._lock_outbox_ids(
+            cursor,
+            status="PROCESSING",
+            index_name="idx_outbox_lease",
+            due_column="locked_until",
+            due_required=True,
+            attempts_operator="<",
+            limit=1,
+            consumer_name="consumer-1",
+        )
+
+        self.assertEqual([13], ids)
+        candidate_sql, candidate_params = cursor.calls[0]
+        lock_sql, lock_params = cursor.calls[1]
+        self.assertIn("FORCE INDEX (idx_outbox_lease)", candidate_sql)
+        self.assertNotIn("FOR UPDATE", candidate_sql)
+        self.assertEqual(["consumer-1", 500], candidate_params)
+        self.assertIn("FORCE INDEX (PRIMARY)", lock_sql)
+        self.assertIn("outbox_id IN (%s)", lock_sql)
+        self.assertIn("status='PROCESSING'", lock_sql)
+        self.assertIn("attempt_count < max_attempts", lock_sql)
+        self.assertIn("locked_until <= NOW(6)", lock_sql)
+        self.assertIn("consumer_name=%s", lock_sql)
+        self.assertIn("ORDER BY outbox_id LIMIT %s FOR UPDATE SKIP LOCKED", lock_sql)
+        self.assertEqual([13, "consumer-1", 1], lock_params)
+
+    def test_outbox_dead_letter_cleanup_uses_exact_primary_key_locks(self):
+        cursor = _OutboxTwoStageCursor(
+            status="PENDING",
+            attempts_operator=">=",
+            outbox_id=17,
+        )
+        repository = OutboxRepository(_Connection(cursor))
+
+        repository._dead_letter_exhausted(cursor)
+
+        candidate_sql = next(
+            sql
+            for sql, _ in cursor.calls
+            if "status='PENDING'" in sql
+            and "attempt_count >= max_attempts" in sql
+            and "FORCE INDEX (PRIMARY)" not in sql
+        )
+        lock_sql = next(
+            sql
+            for sql, _ in cursor.calls
+            if "status='PENDING'" in sql
+            and "attempt_count >= max_attempts" in sql
+            and "FORCE INDEX (PRIMARY)" in sql
+        )
+        self.assertNotIn("FOR UPDATE", candidate_sql)
+        self.assertIn("outbox_id IN (%s)", lock_sql)
+        self.assertIn("FOR UPDATE SKIP LOCKED", lock_sql)
+        cleanup_sql = next(
+            sql for sql, _ in cursor.calls if "SET status='DEAD_LETTER'" in sql
+        )
+        self.assertIn("WHERE outbox_id IN (%s)", cleanup_sql)
 
     def test_work_item_assignment_rejects_empty_owner(self):
         cursor = _Cursor()

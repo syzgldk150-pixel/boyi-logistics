@@ -197,10 +197,63 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIsNone(restore_calls[0][1])
         self.assertIn("FROM control_plane_task_cutover_backup_014", restore_calls[0][0])
         self.assertIn("ON DUPLICATE KEY UPDATE", restore_calls[0][0])
+        seed_cleanup_calls = [
+            (sql, params)
+            for sql, params in cursor.calls
+            if sql.startswith("DELETE seeded FROM scheduled_tasks AS seeded")
+        ]
+        self.assertEqual(1, len(seed_cleanup_calls))
+        cleanup_sql, cleanup_params = seed_cleanup_calls[0]
+        self.assertIn(
+            "INNER JOIN schema_migrations AS migration ON migration.version=%s",
+            cleanup_sql,
+        )
+        self.assertIn(
+            "LEFT JOIN control_plane_task_cutover_backup_014 AS backup "
+            "ON backup.id=seeded.id",
+            cleanup_sql,
+        )
+        self.assertIn("seeded.created_at >= migration.applied_at", cleanup_sql)
+        self.assertIn("backup.id IS NULL", cleanup_sql)
+        self.assertEqual("014", cleanup_params[0])
+        self.assertEqual(
+            set(self.runner._load_control_plane_seed_task_ids()),
+            set(cleanup_params[1:]),
+        )
+        self.assertEqual(54, len(cleanup_params[1:]))
         self.assertIn(
             ("DELETE FROM schema_migrations WHERE version=%s", ("014",)),
             cursor.calls,
         )
+
+    def test_control_plane_seed_cleanup_set_is_exact_and_code_owned(self):
+        from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+
+        seed_ids = set(self.runner._load_control_plane_seed_task_ids())
+        reviewed_ids = set(
+            self.runner._load_control_plane_reviewed_task_contracts()
+        )
+
+        self.assertEqual(51, len(reviewed_ids))
+        self.assertEqual(
+            {
+                "customer_problems_shadow",
+                "finance_bills_0010",
+                "yunda_dispatch_forecast_1700",
+            },
+            self.runner.CONTROL_PLANE_STATIC_SEED_TASK_IDS,
+        )
+        self.assertEqual(
+            reviewed_ids | self.runner.CONTROL_PLANE_STATIC_SEED_TASK_IDS,
+            seed_ids,
+        )
+        self.assertEqual(54, len(seed_ids))
+        self.assertEqual(
+            {str(task["id"]) for task in PHASE7_SCHEDULED_TASK_TEMPLATES},
+            seed_ids,
+        )
+        self.assertNotIn("clockin_daxiang_1830", seed_ids)
+        self.assertNotIn("clockin_daxiang_s_1833", seed_ids)
 
     def test_control_plane_task_restore_rolls_back_without_hiding_failure(self):
         cursor = _RestoreCursor(fail_restore=True)

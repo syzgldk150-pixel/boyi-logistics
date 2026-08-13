@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
+
+import pytest
 
 from agent.tool_registry import ToolRegistry
 from shared.scheduled_task_contracts import (
@@ -9,6 +10,69 @@ from shared.scheduled_task_contracts import (
     ScheduledTaskContractError,
     validate_persisted_scheduled_task,
 )
+
+
+EXPECTED_APPROVED_TASK_IDS = {
+    "arrive_list": {
+        "arrive_list_0830",
+        "arrive_list_0900",
+        "arrive_list_0930",
+    },
+    "daily_sign": {
+        "daily_sign_0500",
+        "daily_sign_0700",
+        "daily_sign_0800",
+        "daily_sign_0900",
+        "daily_sign_1000",
+        "daily_sign_1100",
+        "daily_sign_1200",
+        "daily_sign_1300",
+        "daily_sign_1400",
+        "daily_sign_1430",
+        "daily_sign_1500",
+        "daily_sign_1530",
+        "daily_sign_1600",
+        "daily_sign_1630",
+        "daily_sign_1700",
+        "daily_sign_1730",
+        "daily_sign_1800",
+    },
+    "delivery_status": {
+        "delivery_status_0900",
+        "delivery_status_1000",
+        "delivery_status_1100",
+        "delivery_status_1200",
+        "delivery_status_1300",
+        "delivery_status_1400",
+        "delivery_status_1430",
+        "delivery_status_1500",
+        "delivery_status_1530",
+        "delivery_status_1600",
+        "delivery_status_1630",
+        "delivery_status_1700",
+        "delivery_status_1730",
+        "delivery_status_1800",
+        "delivery_status_1830",
+        "delivery_status_1900",
+        "delivery_status_1930",
+        "delivery_status_2000",
+        "delivery_status_2030",
+        "delivery_status_2100",
+    },
+    "send_order": {"send_order_2359"},
+    "site_send": {
+        "site_send_0500",
+        "site_send_0530",
+        "site_send_1800",
+        "site_send_1830",
+        "site_send_1900",
+        "site_send_1930",
+        "site_send_2000",
+        "site_send_2030",
+        "site_send_2100",
+    },
+    "yunda_send_waybills": {"yunda_send_waybills_2355"},
+}
 
 
 def _row(
@@ -38,6 +102,11 @@ def _validate(row: dict):
     )
 
 
+def _cron_for_task_id(task_id: str) -> str:
+    hhmm = task_id.rsplit("_", 1)[-1]
+    return f"{int(hhmm[2:])} {int(hhmm[:2])} * * *"
+
+
 def test_every_approved_profile_matches_the_real_governed_catalog() -> None:
     catalog = ToolRegistry()
 
@@ -49,24 +118,30 @@ def test_every_approved_profile_matches_the_real_governed_catalog() -> None:
         assert capability["approval"]["mode"] == "schedule_allowlist"
 
 
+def test_only_reviewed_production_task_ids_are_code_approved() -> None:
+    actual = {
+        group_id: set(profile.approved_task_ids)
+        for group_id, profile in APPROVED_SCHEDULED_TASK_PROFILES.items()
+        if profile.approved_task_ids
+    }
+
+    assert actual == EXPECTED_APPROVED_TASK_IDS
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["arrival_stats"].approved_task_ids
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["yunda_dispatch_forecast"].approved_task_ids
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"].approved_task_ids
+
+
 @pytest.mark.parametrize(
-    ("group_id", "task_id", "cron_expression"),
-    (
-        ("send_order", "send_order_2150", "50 21 * * *"),
-        ("delivery_status", "delivery_status_0900", "0 9 * * *"),
-        ("daily_sign", "daily_sign_1100", "0 11 * * *"),
-        ("site_send", "site_send_1930", "30 19 * * *"),
-        ("arrive_list", "arrive_list_0830", "30 8 * * *"),
-        ("arrival_stats", "arrival_stats_0900", "0 9 * * *"),
-        ("yunda_dispatch_forecast", "yunda_dispatch_forecast_1700", "0 17 * * *"),
-        ("yunda_send_waybills", "yunda_send_waybills_2355", "55 23 * * *"),
-        ("finance_bills", "finance_bills_0010", "10 0 * * *"),
+    ("group_id", "task_id"),
+    tuple(
+        (group_id, task_id)
+        for group_id, task_ids in EXPECTED_APPROVED_TASK_IDS.items()
+        for task_id in sorted(task_ids)
     ),
 )
-def test_each_task_family_accepts_only_its_code_owned_static_arguments(
+def test_each_reviewed_task_id_accepts_only_its_code_owned_contract(
     group_id: str,
     task_id: str,
-    cron_expression: str,
 ) -> None:
     profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
     contract = _validate(
@@ -74,53 +149,67 @@ def test_each_task_family_accepts_only_its_code_owned_static_arguments(
             task_id=task_id,
             tool_name=profile.tool_name,
             tool_params=dict(profile.approved_arguments),
-            cron_expression=cron_expression,
+            cron_expression=_cron_for_task_id(task_id),
         )
     )
 
+    assert contract.task_id == task_id
     assert contract.arguments == profile.approved_arguments
     assert contract.dynamic_argument_rules == profile.dynamic_argument_rules
 
 
 @pytest.mark.parametrize(
-    ("group_id", "changed_arguments"),
+    ("group_id", "task_id", "changed_arguments"),
     (
-        ("send_order", {"account_id": "ronghui_default", "target_date": "2026-08-12"}),
-        ("delivery_status", {"account_id": "ronghui_default", "bill_codes": []}),
+        (
+            "send_order",
+            "send_order_2359",
+            {"account_id": "price_default", "target_date": "2026-08-12"},
+        ),
+        (
+            "delivery_status",
+            "delivery_status_0900",
+            {"account_id": "ronghui_default", "bill_codes": []},
+        ),
         (
             "daily_sign",
+            "daily_sign_1100",
             {
                 "r13_account_id": "r13_default",
                 "problem_account_id": "ronghui_daxiang_s",
                 "sign_account_id": "ronghui_daxiang_s",
-                "detail_account_id": "ronghui_daxiang_s",
+                "detail_account_id": "ronghui_default",
                 "days": 6,
             },
         ),
-        ("site_send", {"account_id": "ronghui_default", "range": "Sheet1!A1:Z999"}),
-        ("arrive_list", {"account_id": "ronghui_default", "target_date": "2026-08-12"}),
-        ("arrival_stats", {"account_id": "ronghui_default", "trigger_flow": True}),
         (
-            "yunda_dispatch_forecast",
-            {"account_id": "yunda_default", "dest_brch": "56739383"},
+            "site_send",
+            "site_send_1930",
+            {"account_id": "ronghui_default", "range": "Sheet1!A1:Z999"},
         ),
-        ("yunda_send_waybills", {"account_id": "yunda_default", "ensure_fields": False}),
         (
-            "finance_bills",
-            {"mode": "sync", "platform": "ronghui", "rescan_days": 7, "target_date": "2026-08-12"},
+            "arrive_list",
+            "arrive_list_0830",
+            {"account_id": "ronghui_default", "target_date": "2026-08-12"},
+        ),
+        (
+            "yunda_send_waybills",
+            "yunda_send_waybills_2355",
+            {"account_id": "yunda_default", "ensure_fields": True},
         ),
     ),
 )
 def test_schema_valid_argument_change_never_becomes_its_own_allowlist_baseline(
     group_id: str,
+    task_id: str,
     changed_arguments: dict,
 ) -> None:
     profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
     row = _row(
-        task_id=f"{group_id}__slot_1",
+        task_id=task_id,
         tool_name=profile.tool_name,
         tool_params=changed_arguments,
-        cron_expression="0 9 * * *",
+        cron_expression=_cron_for_task_id(task_id),
     )
 
     with pytest.raises(ScheduledTaskContractError) as error:
@@ -130,32 +219,27 @@ def test_schema_valid_argument_change_never_becomes_its_own_allowlist_baseline(
 
 
 @pytest.mark.parametrize(
-    ("task_id", "cron_expression"),
+    ("task_id", "tool_name"),
     (
-        ("arrive_list", "30 8 * * *"),
-        ("arrive_list_0830", "30 8 * * *"),
-        ("arrive_list__slot_2", "0 9 * * *"),
-        ("arrival_stats_0930", "30 9 * * *"),
+        ("arrive_list", "sync_arrive_list"),
+        ("arrive_list_0831", "sync_arrive_list"),
+        ("arrive_list__slot_2", "sync_arrive_list"),
+        ("arrival_stats_0900", "sync_arrival_stats"),
+        ("finance_bills_0010", "sync_finance_bills"),
+        ("yunda_dispatch_forecast_1700", "sync_yunda_dispatch_forecast"),
+        ("clockin_daxiang_1830", "tms_query"),
+        ("clockin_daxiang_s_1833", "tms_query"),
+        ("r7_arrival_checkin", "r7_arrival_checkin"),
     ),
 )
-def test_approved_persisted_task_ids_bind_real_registry_contract(task_id: str, cron_expression: str) -> None:
-    tool_name = "sync_arrival_stats" if task_id.startswith("arrival_stats") else "sync_arrive_list"
-    tool_params = {"account_id": "ronghui_default"}
-    if tool_name == "sync_arrival_stats":
-        tool_params["trigger_flow"] = False
+def test_unreviewed_or_external_write_task_id_is_never_eligible(
+    task_id: str,
+    tool_name: str,
+) -> None:
+    with pytest.raises(ScheduledTaskContractError) as error:
+        _validate(_row(task_id=task_id, tool_name=tool_name))
 
-    contract = _validate(
-        _row(
-            task_id=task_id,
-            tool_name=tool_name,
-            tool_params=tool_params,
-            cron_expression=cron_expression,
-        )
-    )
-
-    assert contract.task_id == task_id
-    assert contract.tool_name == tool_name
-    assert contract.arguments == tool_params
+    assert error.value.code == "TASK_GROUP_NOT_APPROVED"
 
 
 @pytest.mark.parametrize(
@@ -163,9 +247,6 @@ def test_approved_persisted_task_ids_bind_real_registry_contract(task_id: str, c
     (
         (_row(task_id="arrive_list_0830", cron_expression="0 8 * * *"), "TASK_ID_CRON_MISMATCH"),
         (_row(task_id="arrive_list_0830", cron_expression="*/30 8 * * *"), "CRON_NOT_EXACT_DAILY_TIME"),
-        (_row(task_id="arrive_list_weekly", cron_expression="30 8 * * *"), "TASK_GROUP_NOT_APPROVED"),
-        (_row(task_id="r7_arrival_checkin", tool_name="r7_arrival_checkin"), "TASK_GROUP_NOT_APPROVED"),
-        (_row(task_id="clockin_daxiang_1830", tool_name="clock_in_dual"), "TASK_GROUP_NOT_APPROVED"),
         (_row(enabled=False), "TASK_DISABLED"),
     ),
 )
@@ -213,58 +294,12 @@ def test_registry_version_change_requires_code_profile_update() -> None:
     assert error.value.code == "TOOL_VERSION_NOT_APPROVED"
 
 
-def test_finance_schedule_is_limited_to_daily_ronghui_sync() -> None:
-    row = _row(
-        task_id="finance_bills_0010",
-        tool_name="sync_finance_bills",
-        tool_params={"mode": "sync", "platform": "ronghui", "rescan_days": 7},
-        cron_expression="10 0 * * *",
-    )
+def test_finance_profile_remains_available_only_for_static_startup_contract() -> None:
+    profile = APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"]
 
-    contract = _validate(row)
-
-    assert contract.dynamic_argument_rules == {"target_date": "scheduled_previous_day"}
-    assert contract.arguments == {"mode": "sync", "platform": "ronghui", "rescan_days": 7}
-
-
-@pytest.mark.parametrize(
-    "tool_params",
-    (
-        {"mode": "backfill", "platform": "ronghui", "rescan_days": 7},
-        {"mode": "sync", "platform": "ronghui", "rescan_days": 7, "target_date": "2026-08-12"},
-        {"mode": "sync", "platform": "ronghui", "rescan_days": 6},
-    ),
-)
-def test_finance_backfill_or_fixed_range_never_receives_scheduler_exemption(tool_params: dict) -> None:
-    row = _row(
-        task_id="finance_bills_0010",
-        tool_name="sync_finance_bills",
-        tool_params=tool_params,
-        cron_expression="10 0 * * *",
-    )
-
-    with pytest.raises(ScheduledTaskContractError):
-        _validate(row)
-
-
-def test_finance_schedule_fails_closed_when_production_platform_set_changes() -> None:
-    catalog = ToolRegistry()
-    row = _row(
-        task_id="finance_bills_0010",
-        tool_name="sync_finance_bills",
-        tool_params={"mode": "sync", "platform": "ronghui", "rescan_days": 7},
-        cron_expression="10 0 * * *",
-    )
-
-    with pytest.raises(ScheduledTaskContractError) as error:
-        validate_persisted_scheduled_task(
-            row,
-            capability=catalog.get_capability("sync_finance_bills"),
-            validate_arguments=catalog.validate_arguments,
-            enabled_finance_platforms=("ronghui", "yunda"),
-        )
-
-    assert error.value.code == "FINANCE_PLATFORM_NOT_PRODUCTION_READY"
+    assert not profile.approved_task_ids
+    assert profile.approved_arguments == {"mode": "sync", "platform": "ronghui", "rescan_days": 7}
+    assert profile.dynamic_argument_rules == {"target_date": "scheduled_previous_day"}
 
 
 def test_main_provider_reads_enabled_memory_rows_and_omits_invalid_rows() -> None:
@@ -272,7 +307,7 @@ def test_main_provider_reads_enabled_memory_rows_and_omits_invalid_rows() -> Non
 
     rows = [
         _row(),
-        _row(task_id="r7_arrival_checkin", tool_name="r7_arrival_checkin"),
+        _row(task_id="clockin_daxiang_1830", tool_name="tms_query"),
     ]
     runtime = SimpleNamespace(
         memory=SimpleNamespace(list_enabled_scheduled_tasks=lambda: rows),
