@@ -5,7 +5,7 @@ import types
 import unittest
 
 from shared.finance.accounts import resolve_account_binding
-from shared.finance.models import SummarySnapshot, TransactionRecord
+from shared.finance.models import SummarySemantics, SummarySnapshot, TransactionRecord
 from shared.finance.money import quantize_storage
 from shared.finance.validation import CaptureEvidence, validate_finance_capture
 
@@ -169,6 +169,11 @@ def _capture(target_date: dt.date, *, platform: str = "ronghui") -> CaptureResul
             "page_row_count": 1,
             "unique_count": 1,
         },
+        summary_semantics=(
+            SummarySemantics.SIGNED_NET_BY_FEE
+            if platform == "ronghui"
+            else SummarySemantics.GROSS_BY_FEE_DIRECTION
+        ),
     )
 
 
@@ -237,6 +242,11 @@ class FinanceSyncServiceTests(unittest.TestCase):
         self.assertEqual("expense", record.direction.value)
         self.assertEqual("fixture-waybill", record.waybill_no)
         self.assertEqual("000001", record.source_reference)
+        validation = repository.commits[0]["validation"]
+        self.assertEqual(
+            "signed_net_by_fee",
+            validation.metrics["summary_semantics"],
+        )
 
     def test_explicit_total_zero_marks_no_data(self):
         repository = _Repository()

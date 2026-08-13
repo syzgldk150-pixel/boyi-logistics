@@ -46,6 +46,13 @@ class ValidationStatus(str, Enum):
     FAILED = "failed"
 
 
+class SummarySemantics(str, Enum):
+    """How a source platform's summary rows reconcile to detail rows."""
+
+    GROSS_BY_FEE_DIRECTION = "gross_by_fee_direction"
+    SIGNED_NET_BY_FEE = "signed_net_by_fee"
+
+
 class EarliestDateStatus(str, Enum):
     CONFIRMED = "confirmed"
     EARLIEST_DATE_UNCONFIRMED = "EARLIEST_DATE_UNCONFIRMED"
