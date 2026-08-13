@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
+CONTROL_PLANE_TASK_CUTOVER_VERSION = "014"
+CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE = "control_plane_task_cutover_backup_014"
 
 
 def _require_mysql8(cursor) -> str:
@@ -100,15 +102,20 @@ def _applied_migrations(cursor) -> dict[str, dict[str, str]]:
     return {str(row["version"]): row for row in cursor.fetchall()}
 
 
-def _migration_table_exists(cursor) -> bool:
+def _table_exists(cursor, table_name: str) -> bool:
     cursor.execute(
         """
         SELECT 1
         FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schema_migrations'
-        """
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+        """,
+        (table_name,),
     )
     return cursor.fetchone() is not None
+
+
+def _migration_table_exists(cursor) -> bool:
+    return _table_exists(cursor, "schema_migrations")
 
 
 def _verify_history(cursor, migrations: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
@@ -154,10 +161,122 @@ def run(*, check_only: bool) -> int:
     return 0
 
 
+def restore_control_plane_task_cutover() -> int:
+    """Restore scheduler rows when this release attempted migration 014.
+
+    MySQL DDL commits implicitly, so migration 014 can fail after creating and
+    filling its backup table but before recording schema history. The release
+    script calls this command only when 014 was pending before the release.
+    Therefore the backup table, rather than the history row, is the reliable
+    indication that task rows may need restoration.
+    """
+
+    connection = _connect()
+    transaction_started = False
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            if not _migration_table_exists(cursor):
+                print("control_plane_task_cutover_restore=skipped reason=history_missing")
+                return 0
+
+            connection.begin()
+            transaction_started = True
+            if not _table_exists(cursor, CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE):
+                connection.rollback()
+                transaction_started = False
+                print("control_plane_task_cutover_restore=skipped reason=backup_not_created")
+                return 0
+
+            cursor.execute(
+                """
+                INSERT INTO scheduled_tasks (
+                    id, name, tool_name, tool_params, cron_expression, enabled,
+                    last_run, last_status, last_duration_ms, last_message, created_at
+                )
+                SELECT
+                    id, name, tool_name, tool_params, cron_expression, enabled,
+                    last_run, last_status, last_duration_ms, last_message, created_at
+                FROM control_plane_task_cutover_backup_014
+                WHERE TRUE
+                ON DUPLICATE KEY UPDATE
+                    name = VALUES(name),
+                    tool_name = VALUES(tool_name),
+                    tool_params = VALUES(tool_params),
+                    cron_expression = VALUES(cron_expression),
+                    enabled = VALUES(enabled),
+                    last_run = VALUES(last_run),
+                    last_status = VALUES(last_status),
+                    last_duration_ms = VALUES(last_duration_ms),
+                    last_message = VALUES(last_message),
+                    created_at = VALUES(created_at)
+                """
+            )
+            cursor.execute(
+                "DELETE FROM schema_migrations WHERE version=%s",
+                (CONTROL_PLANE_TASK_CUTOVER_VERSION,),
+            )
+            cursor.execute(f"DELETE FROM {CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE}")
+            connection.commit()
+            transaction_started = False
+            print("control_plane_task_cutover_restore=ok")
+    except Exception:
+        if transaction_started:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return 0
+
+
+def report_control_plane_task_cutover_status() -> int:
+    """Report whether migration 014 is safe to apply, without exposing row data."""
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            applied = False
+            if _migration_table_exists(cursor):
+                cursor.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version=%s",
+                    (CONTROL_PLANE_TASK_CUTOVER_VERSION,),
+                )
+                applied = cursor.fetchone() is not None
+            if applied:
+                status = "applied"
+            elif _table_exists(cursor, CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE):
+                cursor.execute(
+                    f"SELECT 1 FROM {CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE} LIMIT 1"
+                )
+                status = "pending_dirty" if cursor.fetchone() is not None else "pending_clean"
+            else:
+                status = "pending_clean"
+            print(f"control_plane_task_cutover_status={status}")
+    finally:
+        connection.close()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true", help="Validate migration history without applying changes")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check", action="store_true", help="Validate migration history without applying changes")
+    modes.add_argument(
+        "--restore-control-plane-task-cutover",
+        action="store_true",
+        help="Restore the fixed scheduler rows backed up by migration 014",
+    )
+    modes.add_argument(
+        "--control-plane-task-cutover-status",
+        action="store_true",
+        help="Report whether migration 014 is pending without returning row data",
+    )
     args = parser.parse_args()
+    if args.restore_control_plane_task_cutover:
+        return restore_control_plane_task_cutover()
+    if args.control_plane_task_cutover_status:
+        return report_control_plane_task_cutover_status()
     return run(check_only=args.check)
 
 

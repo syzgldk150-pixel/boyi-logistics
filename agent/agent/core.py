@@ -21,6 +21,9 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
 )
 from agent.llm_client import LLMClient
+from agent.finance_brain import FinanceBrain
+from agent.llm_settings import LLMSettingsRepository
+from shared.finance import FinanceRepository
 from agent.memory import Memory
 from agent.orchestration.models import (
     Actor,
@@ -57,6 +60,7 @@ class AgentCore:
         self.llm = LLMClient()
         self.registry = ToolRegistry()
         self.memory = Memory()
+        self.finance_brain: FinanceBrain | None = None
         self._feishu_connected = False
         self._system_prompt = ""
         self._tool_selection_prompt = ""
@@ -91,6 +95,13 @@ class AgentCore:
         self._load_prompts()
         try:
             self.memory.init()
+            await self.llm.bind_repository(
+                LLMSettingsRepository(self.memory.connection_factory)
+            )
+            self.finance_brain = FinanceBrain(
+                FinanceRepository(self.memory.connection_factory),
+                self.llm,
+            )
         except Exception as exc:
             logger.error("MySQL connection failed; conversation memory is unavailable: %s", exc)
 
@@ -101,6 +112,11 @@ class AgentCore:
             "prompts": ["system.md", "tool_selection.md", "business_rules.md"],
             "tools": self.registry.list_tools(),
         }
+
+    async def reload_llm_config(self) -> dict:
+        """Reload the active LLM version for future requests."""
+
+        return await self.llm.reload_config()
 
     def _load_prompts(self) -> None:
         base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")

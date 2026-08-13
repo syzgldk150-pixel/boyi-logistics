@@ -26,7 +26,12 @@ class _Catalog:
         return self.capability if tool_name == "governed_tool" else None
 
 
-def _plan(operation_type: OperationType, risk_level: RiskLevel = RiskLevel.LOW) -> Plan:
+def _plan(
+    operation_type: OperationType,
+    risk_level: RiskLevel = RiskLevel.LOW,
+    *,
+    arguments: dict | None = None,
+) -> Plan:
     return Plan(
         command_type="tool.execute",
         context_fingerprint="context-hash",
@@ -37,7 +42,7 @@ def _plan(operation_type: OperationType, risk_level: RiskLevel = RiskLevel.LOW) 
                 tool_name="governed_tool",
                 tool_version="1.0.0",
                 operation_type=operation_type,
-                arguments={},
+                arguments={} if arguments is None else arguments,
                 account_id=None,
                 depends_on=(),
                 idempotency_key="step-key",
@@ -183,3 +188,121 @@ def test_finance_scheduler_fanout_validates_against_real_catalog_and_allowlist()
     assert plan.steps[0].account_id is None
     assert decision.allowed is True
     assert decision.requires_approval is False
+
+
+def test_scheduler_allowlist_provider_is_reloaded_for_each_policy_evaluation() -> None:
+    calls = 0
+    entry = ScheduledAllowlistEntry.from_arguments(
+        task_id="persisted_task_0900",
+        tool_name="governed_tool",
+        tool_version="1.0.0",
+        arguments={},
+        cron_expression="0 9 * * *",
+    )
+
+    def provider():
+        nonlocal calls
+        calls += 1
+        return (entry,) if calls == 1 else ()
+
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.INTERNAL_PROJECTION_WRITE,
+                roles=["admin"],
+                approval={"mode": "schedule_allowlist", "required_role": "admin"},
+            )
+        ),
+        scheduler_allowlist_provider=provider,
+    )
+    context = {
+        "task_id": "persisted_task_0900",
+        "scheduled_for": "2026-08-13T09:00:00+08:00",
+        "cron_expression": "0 9 * * *",
+    }
+    actor = Actor(ActorType.SCHEDULER, "persisted_task_0900", roles=("system",))
+
+    first = engine.evaluate(
+        _plan(OperationType.INTERNAL_PROJECTION_WRITE, RiskLevel.MEDIUM),
+        actor,
+        source="scheduler",
+        execution_context=context,
+    )
+    second = engine.evaluate(
+        _plan(OperationType.INTERNAL_PROJECTION_WRITE, RiskLevel.MEDIUM),
+        actor,
+        source="scheduler",
+        execution_context=context,
+    )
+
+    assert calls == 2
+    assert first.requires_approval is False
+    assert second.requires_approval is True
+
+
+def test_scheduler_allowlist_provider_failure_requires_approval() -> None:
+    def unavailable():
+        raise RuntimeError("repository unavailable")
+
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.INTERNAL_PROJECTION_WRITE,
+                roles=["admin"],
+                approval={"mode": "schedule_allowlist", "required_role": "admin"},
+            )
+        ),
+        scheduler_allowlist_provider=unavailable,
+    )
+
+    decision = engine.evaluate(
+        _plan(OperationType.INTERNAL_PROJECTION_WRITE, RiskLevel.MEDIUM),
+        Actor(ActorType.SCHEDULER, "persisted_task_0900", roles=("system",)),
+        source="scheduler",
+        execution_context={
+            "task_id": "persisted_task_0900",
+            "scheduled_for": "2026-08-13T09:00:00+08:00",
+            "cron_expression": "0 9 * * *",
+        },
+    )
+
+    assert decision.allowed is True
+    assert decision.requires_approval is True
+    assert decision.code == "APPROVAL_REQUIRED"
+
+
+def test_scheduler_allowlist_requires_exact_persisted_arguments_hash() -> None:
+    entry = ScheduledAllowlistEntry.from_arguments(
+        task_id="persisted_task_0900",
+        tool_name="governed_tool",
+        tool_version="1.0.0",
+        arguments={"account_id": "account-a"},
+        cron_expression="0 9 * * *",
+    )
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.INTERNAL_PROJECTION_WRITE,
+                roles=["admin"],
+                approval={"mode": "schedule_allowlist", "required_role": "admin"},
+            )
+        ),
+        scheduler_allowlist_provider=lambda: (entry,),
+    )
+
+    decision = engine.evaluate(
+        _plan(
+            OperationType.INTERNAL_PROJECTION_WRITE,
+            RiskLevel.MEDIUM,
+            arguments={"account_id": "account-b"},
+        ),
+        Actor(ActorType.SCHEDULER, "persisted_task_0900", roles=("system",)),
+        source="scheduler",
+        execution_context={
+            "task_id": "persisted_task_0900",
+            "scheduled_for": "2026-08-13T09:00:00+08:00",
+            "cron_expression": "0 9 * * *",
+        },
+    )
+
+    assert decision.requires_approval is True

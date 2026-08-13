@@ -242,7 +242,12 @@ class _CancelCursor(_Cursor):
 class _OutboxClaimCursor(_Cursor):
     def execute(self, sql, params=None):
         super().execute(sql, params)
-        if "SELECT o.*" in sql:
+        if "SELECT outbox_id" in sql:
+            if "status='PENDING'" in sql and "attempt_count < max_attempts" in sql:
+                self.rows = [{"outbox_id": 7}]
+            else:
+                self.rows = []
+        elif "SELECT o.*" in sql:
             self.rows = [
                 {
                     "outbox_id": 7,
@@ -421,6 +426,20 @@ class OrchestrationRepositoryTests(unittest.TestCase):
 
         select_sql = next(sql for sql, _ in cursor.calls if "SELECT * FROM agent_runs" in sql)
         self.assertIn("'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'", select_sql)
+        self.assertIn("FORCE INDEX (idx_agent_runs_cancel_requested)", select_sql)
+        self.assertIn(
+            "ORDER BY status, cancel_requested_at, lease_expires_at, run_id",
+            select_sql,
+        )
+
+    def test_run_claim_rejects_terminal_status_before_sql(self):
+        cursor = _Cursor()
+        repository = AgentRunRepository(_Connection(cursor))
+
+        with self.assertRaisesRegex(Exception, "terminal run statuses are not claimable"):
+            repository.claim("worker-1", ["COMPLETED"])
+
+        self.assertEqual([], cursor.calls)
 
     def test_partial_run_rejects_a_new_cancellation_request(self):
         cursor = _CancelCursor()
@@ -558,8 +577,25 @@ class OrchestrationRepositoryTests(unittest.TestCase):
 
         rows = repository.claim("dispatcher-1", limit=2, lease_seconds=20)
 
-        select_sql = next(sql for sql, _ in cursor.calls if "SELECT o.*" in sql)
-        self.assertIn("FOR UPDATE SKIP LOCKED", select_sql)
+        locking_reads = [sql for sql, _ in cursor.calls if "SELECT outbox_id" in sql]
+        self.assertTrue(locking_reads)
+        self.assertTrue(all("FOR UPDATE SKIP LOCKED" in sql for sql in locking_reads))
+        self.assertTrue(all("JOIN domain_events" not in sql for sql in locking_reads))
+        self.assertTrue(any("FORCE INDEX (idx_outbox_claim)" in sql for sql in locking_reads))
+        self.assertTrue(any("FORCE INDEX (idx_outbox_lease)" in sql for sql in locking_reads))
+        claim_update_index = next(
+            index
+            for index, (sql, _) in enumerate(cursor.calls)
+            if "SET status='PROCESSING', locked_by=" in sql
+        )
+        payload_select_index = next(
+            index for index, (sql, _) in enumerate(cursor.calls) if "SELECT o.*" in sql
+        )
+        self.assertLess(claim_update_index, payload_select_index)
+        claim_update = cursor.calls[claim_update_index][0]
+        self.assertIn("attempt_count < max_attempts", claim_update)
+        self.assertIn("status='PENDING'", claim_update)
+        self.assertIn("status='PROCESSING' AND locked_until <= NOW(6)", claim_update)
         self.assertEqual({"ok": True}, rows[0]["payload_json"])
         self.assertEqual("PROCESSING", rows[0]["status"])
 

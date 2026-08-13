@@ -57,6 +57,63 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual(["R0001", "R0002"], [row[0] for row in rows])
         self.assertEqual([("73901", 0, 1), ("73901", 1, 1), ("73901", 2, 1)], calls)
 
+    def test_fetch_dispatch_uses_selected_profile_and_session_user_context(self):
+        class Cookie:
+            name = "userInfo"
+            value = json.dumps(
+                {
+                    "loginUserName": "operator",
+                    "loginUserAccount": "account",
+                    "loginSiteName": "site",
+                    "loginSiteCode": "real-site-code",
+                }
+            )
+
+        session = Mock(cookies=[Cookie()])
+        auth = Mock()
+        auth.login_and_get_session.return_value = session
+        with (
+            patch("fetch_dispatch.TMSAuth", return_value=auth) as auth_type,
+            patch("fetch_dispatch.collect_dispatch_records", return_value=[]) as collect,
+        ):
+            result = fetch_dispatch.run_once({"session_profile": "selected-profile"})
+
+        self.assertEqual([], result)
+        auth_type.assert_called_once_with(profile="selected-profile")
+        self.assertEqual("real-site-code", collect.call_args.kwargs["login_site_code"])
+
+    def test_fetch_dispatch_rejects_missing_or_conflicting_session_identity(self):
+        with self.assertRaisesRegex(
+            fetch_dispatch.TMSAuthStateError,
+            "explicit account session profile",
+        ):
+            fetch_dispatch.run_once({})
+
+        class Cookie:
+            name = "userInfo"
+            value = json.dumps(
+                {
+                    "loginUserName": "operator",
+                    "loginUserAccount": "account",
+                    "loginSiteName": "site",
+                    "loginSiteCode": "real-site-code",
+                }
+            )
+
+        session = Mock(cookies=[Cookie()])
+        auth = Mock()
+        auth.login_and_get_session.return_value = session
+        with (
+            patch("fetch_dispatch.TMSAuth", return_value=auth),
+            self.assertRaisesRegex(fetch_dispatch.TMSAuthStateError, "does not match"),
+        ):
+            fetch_dispatch.run_once(
+                {
+                    "session_profile": "selected-profile",
+                    "login_site_code": "wrong-site-code",
+                }
+            )
+
     def test_default_http_service_urls_point_to_agent_tms(self):
         self.assertEqual(tms_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
         self.assertEqual(query_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
@@ -1127,6 +1184,15 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertEqual([], result)
         self.assertEqual("r13", captured["account_key"])
+
+    def test_get_qianshou_uses_actual_sign_time_or_sign_site_as_sign_evidence(self):
+        self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signTime": "2026-08-11 16:54:54"}))
+        self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signSiteName": "长垣魏庄站"}))
+        self.assertFalse(
+            get_qianshou._has_confirmed_sign_signal(
+                {"dispTime": "2026-08-11 16:54:54", "signTime": "", "signSiteName": ""}
+            )
+        )
 
     def test_registry_removed_trigger_n8n_and_contains_sync_tools(self):
         registry_path = Path(__file__).resolve().parents[1] / "tools" / "registry.yaml"

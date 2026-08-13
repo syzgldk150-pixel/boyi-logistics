@@ -36,213 +36,99 @@ class ProviderSessionAdapterBase:
             return False
 
     def _capture_ronghui_captcha_image(self, page: Any) -> tuple[str, str]:
+        _payload, image, mime = self._capture_ronghui_captcha_payload(page)
+        return image, mime
+
+    def _capture_ronghui_captcha_payload(self, page: Any) -> tuple[bytes, str, str]:
         for selector in (CAPTCHA_IMAGE, 'img[alt="验证码"]', 'img[src*="validateCode"]'):
             try:
                 image = page.locator(selector).first
                 image.wait_for(state="visible", timeout=3_000)
                 payload = image.screenshot(timeout=5_000)
                 if payload:
-                    return "data:image/png;base64," + base64.b64encode(payload).decode("ascii"), "image/png"
+                    return (
+                        payload,
+                        "data:image/png;base64," + base64.b64encode(payload).decode("ascii"),
+                        "image/png",
+                    )
             except Exception:
                 continue
-        return "", ""
-
-    def _requests_session_from_storage_state_payload(
-        self,
-        storage_state: dict[str, Any],
-        config: LoginConfig,
-    ) -> requests.Session:
-        session = requests.Session()
-        session.mount("https://", _RonghuiTLSAdapter())
-        session.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                ),
-                "Referer": config.login_url,
-                "Origin": config.base_origin,
-            }
-        )
-        for cookie in storage_state.get("cookies", []):
-            if not isinstance(cookie, dict):
-                continue
-            name = str(cookie.get("name") or "").strip()
-            if not name:
-                continue
-            session.cookies.set(
-                name,
-                str(cookie.get("value") or ""),
-                domain=cookie.get("domain"),
-                path=cookie.get("path") or "/",
-            )
-        return session
+        return b"", "", ""
 
     @staticmethod
-    def _js_escape_cookie_value(text: str) -> str:
-        safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./"
-        out = []
-        for char in str(text or ""):
-            if char in safe:
-                out.append(char)
-                continue
-            code = ord(char)
-            out.append(f"%{code:02X}" if code < 256 else f"%u{code:04X}")
-        return "".join(out)
+    def _ronghui_page_user_context_ready(page: Any) -> bool:
+        try:
+            return bool(
+                page.evaluate(
+                    """
+                    () => {
+                      try {
+                        const info = window.$Z && $Z.user && typeof $Z.user.getUserInfo === "function"
+                          ? $Z.user.getUserInfo()
+                          : null;
+                        return Boolean(
+                          info
+                          && ["loginUserName", "loginUserAccount", "loginSiteName", "loginSiteCode"]
+                            .every((field) => String(info[field] == null ? "" : info[field]).trim())
+                        );
+                      } catch (_) {
+                        return false;
+                      }
+                    }
+                    """
+                )
+            )
+        except Exception:
+            return False
 
-    def _set_ronghui_user_info_cookie(
-        self,
-        session: requests.Session,
-        config: LoginConfig,
-        user_info: dict[str, Any],
-    ) -> None:
-        if not isinstance(user_info, dict) or not user_info:
-            return
-        domain = urlparse(config.base_origin).hostname or None
-        cookie_value = self._js_escape_cookie_value(
-            json.dumps(user_info, ensure_ascii=False, separators=(",", ":"))
-        )
-        session.cookies.set("userInfo", cookie_value, domain=domain, path="/")
-
-    def _read_ronghui_response_error(self, response: requests.Response) -> str:
-        content_type = str(response.headers.get("Content-Type") or response.headers.get("content-type") or "")
-        if "application/json" in content_type:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            if isinstance(payload, dict):
-                for key in ("message", "msg", "error", "errorMsg", "resultMsg"):
-                    value = str(payload.get(key) or "").strip()
-                    if value:
-                        return value
-        body = response.text or ""
-        for pattern in (
-            r'id=["\']errorSpan["\'][^>]*>(.*?)</',
-            r'class=["\'][^"\']*(?:error|msg)[^"\']*["\'][^>]*>(.*?)</',
-        ):
-            match = re.search(pattern, body, flags=re.I | re.S)
-            if not match:
-                continue
-            text = re.sub(r"<[^>]+>", "", match.group(1))
-            text = re.sub(r"\s+", " ", text).strip()
-            if text:
-                return text
-        return ""
-
-    def _ronghui_login_success(
-        self,
-        session: requests.Session,
-        config: LoginConfig,
-        response: requests.Response,
-    ) -> bool:
-        if response.status_code in (301, 302):
-            location = str(response.headers.get("Location") or "")
-            return bool(location and "/system/login" not in location)
-
-        content_type = str(response.headers.get("Content-Type") or response.headers.get("content-type") or "")
-        if "application/json" in content_type:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            if isinstance(payload, dict):
-                result = payload.get("result")
-                if isinstance(result, dict):
-                    self._set_ronghui_user_info_cookie(session, config, result)
-                if payload.get("success") is True or payload.get("code") in (0, "0"):
-                    return True
-                status_value = str(payload.get("status") or "").strip().lower()
-                if status_value in {"ok", "success", "200"}:
-                    return True
-
-        if response.status_code == 200:
-            body = response.text or ""
-            if "validateCode" not in body and "system/login" not in body:
+    def _wait_ronghui_page_user_context(self, page: Any, *, timeout_ms: int = 15_000) -> bool:
+        deadline = time.monotonic() + max(0, int(timeout_ms)) / 1000
+        while True:
+            if self._ronghui_page_user_context_ready(page):
                 return True
-        return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
 
-    def _post_ronghui_login_request(
+    def _submit_ronghui_browser_login_attempt(
         self,
-        session: requests.Session,
+        page: Any,
         config: LoginConfig,
         *,
         captcha_code: str,
-    ) -> requests.Response:
-        return session.post(
-            _join_origin_path(config.base_origin, LOGIN_PATH),
-            data={
-                "username": config.username,
-                "password": config.password,
-                "validateCode": captcha_code,
-            },
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": config.base_origin,
-                "Referer": config.login_url,
-            },
-            allow_redirects=False,
-            timeout=30,
-        )
-
-    def _fetch_ronghui_captcha_challenge(
-        self,
-        session: requests.Session,
-        config: LoginConfig,
-    ) -> tuple[bytes, str, str]:
+    ) -> tuple[bool, str, bool]:
+        page.locator(USERNAME_INPUT).wait_for(state="visible", timeout=15_000)
+        page.locator(USERNAME_INPUT).fill(config.username)
+        page.locator(PASSWORD_INPUT).fill(config.password)
+        page.locator(CODE_INPUT).fill(captcha_code)
+        page.locator(LOGIN_BUTTON).click()
         try:
-            response = session.get(
-                _join_origin_path(config.base_origin, "/validateCode/code"),
-                params={"_t": int(time.time() * 1000)},
-                headers={
-                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                    "Referer": config.login_url,
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
-            content_type = str(response.headers.get("content-type") or "image/png").split(";")[0]
-            if "image" not in content_type:
-                return b"", "", ""
-            payload = bytes(response.content or b"")
-            if not payload:
-                return b"", "", ""
-            return (
-                payload,
-                f"data:{content_type};base64," + base64.b64encode(payload).decode("ascii"),
-                content_type,
-            )
+            page.wait_for_load_state("domcontentloaded", timeout=15_000)
         except Exception:
-            return b"", "", ""
+            page.wait_for_timeout(800)
 
-    def _ronghui_auto_login_fallback_message(self) -> str:
-        return f"自动识别失败 {MAX_AUTO_CAPTCHA_ATTEMPTS} 次，请人工输入或刷新验证码后重试。"
+        login_error = self._read_login_error(page)
+        current_url = str(getattr(page, "url", "") or "").strip()
+        if "/system/login" in current_url and login_error:
+            return False, login_error, False
+        if self._wait_ronghui_page_user_context(page):
+            return True, "", False
 
-    def _fetch_ronghui_captcha_image(
+        current_url = str(getattr(page, "url", "") or "").strip()
+        if "/system/login" in current_url:
+            return False, login_error or "验证码不正确或登录未完成。", False
+        return False, "登录完成但页面用户上下文不完整，请重新登录。", True
+
+    def _auto_login_ronghui_image_captcha_browser(
         self,
-        session: requests.Session,
+        context: Any,
+        page: Any,
         config: LoginConfig,
-    ) -> tuple[str, str]:
-        _payload, captcha_image, captcha_image_mime = self._fetch_ronghui_captcha_challenge(session, config)
-        return captcha_image, captcha_image_mime
-
-    def _auto_login_ronghui_image_captcha(
-        self,
-        session: requests.Session,
-        config: LoginConfig,
-        *,
-        initial_captcha_image: str = "",
-        initial_captcha_image_mime: str = "image/png",
     ) -> dict[str, Any]:
-        last_captcha_image = str(initial_captcha_image or "")
-        last_captcha_image_mime = str(initial_captcha_image_mime or "image/png")
-
         for attempt in range(1, MAX_AUTO_CAPTCHA_ATTEMPTS + 1):
-            image_bytes, captcha_image, captcha_image_mime = self._fetch_ronghui_captcha_challenge(session, config)
-            if captcha_image:
-                last_captcha_image = captcha_image
-                last_captcha_image_mime = captcha_image_mime or "image/png"
+            if attempt > 1:
+                page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
+            image_bytes, _captcha_image, _captcha_image_mime = self._capture_ronghui_captcha_payload(page)
             if not image_bytes:
                 logger.warning(
                     "Ronghui captcha fetch returned no image for profile=%s attempt=%s/%s",
@@ -266,78 +152,79 @@ class ProviderSessionAdapterBase:
                 )
                 continue
             if not captcha_code:
-                logger.info(
-                    "Ronghui captcha OCR returned empty text for profile=%s attempt=%s/%s",
-                    self.profile_name,
-                    attempt,
-                    MAX_AUTO_CAPTCHA_ATTEMPTS,
-                )
                 continue
-            try:
-                response = self._post_ronghui_login_request(session, config, captcha_code=captcha_code)
-            except Exception as exc:
-                logger.warning(
-                    "Ronghui captcha submit failed for profile=%s attempt=%s/%s: %s",
-                    self.profile_name,
-                    attempt,
-                    MAX_AUTO_CAPTCHA_ATTEMPTS,
-                    exc,
-                )
-                continue
-            if self._ronghui_login_success(session, config, response):
-                logger.info(
-                    "Ronghui captcha auto login succeeded for profile=%s attempt=%s/%s",
-                    self.profile_name,
-                    attempt,
-                    MAX_AUTO_CAPTCHA_ATTEMPTS,
-                )
-                return self._persist_requests_session_locked(session, config)
 
-            login_error = self._read_ronghui_response_error(response) or "验证码不正确或登录未完成。"
+            success, login_error, incomplete_context = self._submit_ronghui_browser_login_attempt(
+                page,
+                config,
+                captcha_code=captcha_code,
+            )
+            if success:
+                logger.info(
+                    "Ronghui captcha browser login succeeded for profile=%s attempt=%s/%s",
+                    self.profile_name,
+                    attempt,
+                    MAX_AUTO_CAPTCHA_ATTEMPTS,
+                )
+                return self._persist_storage_state_locked(context, page)
+            if incomplete_context:
+                self._invalidate_ronghui_context_locked(login_error)
+                raise TMSAuthStateError("AUTH_REQUIRED", login_error)
             logger.info(
-                "Ronghui captcha auto login rejected for profile=%s attempt=%s/%s: %s",
+                "Ronghui captcha browser login rejected for profile=%s attempt=%s/%s: %s",
                 self.profile_name,
                 attempt,
                 MAX_AUTO_CAPTCHA_ATTEMPTS,
                 login_error,
             )
 
-        if not last_captcha_image:
-            _payload, captcha_image, captcha_image_mime = self._fetch_ronghui_captcha_challenge(session, config)
-            if captcha_image:
-                last_captcha_image = captcha_image
-                last_captcha_image_mime = captcha_image_mime or "image/png"
-
-        result = self._write_ronghui_image_pending_state_locked(
-            session,
-            config,
-            captcha_image=last_captcha_image,
-            captcha_image_mime=last_captcha_image_mime,
+        page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
+        result = self._save_ronghui_image_pending_state_locked(
+            context,
+            page,
+            config=config,
             message=self._ronghui_auto_login_fallback_message(),
         )
         result["auto_login_attempts_exhausted"] = True
         return result
 
+    def _requests_session_from_storage_state_payload(
+        self,
+        storage_state: dict[str, Any],
+        config: LoginConfig,
+    ) -> requests.Session:
+        session = requests.Session()
+        session.mount("https://", _RonghuiTLSAdapter())
+        session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Referer": config.login_url,
+                "Origin": config.base_origin,
+            }
+        )
+        for cookie in storage_state.get("cookies", []):
+            if not isinstance(cookie, dict):
+                continue
+            _set_requests_cookie_from_storage(session, cookie)
+        return session
+
+    def _ronghui_auto_login_fallback_message(self) -> str:
+        return f"自动识别失败 {MAX_AUTO_CAPTCHA_ATTEMPTS} 次，请人工输入或刷新验证码后重试。"
+
     def _write_ronghui_image_pending_state_locked(
         self,
-        session: requests.Session,
-        config: LoginConfig,
+        storage_state: dict[str, Any],
         *,
+        config: LoginConfig,
         captcha_image: str,
         captcha_image_mime: str,
         message: str,
         pending_since: str = "",
     ) -> dict[str, Any]:
-        fallback_domain = urlparse(config.base_origin).hostname or "tms.ronghuiwl.com"
-        cookies = [
-            self._requests_cookie_to_storage_cookie(cookie, fallback_domain)
-            for cookie in session.cookies
-            if str(getattr(cookie, "name", "") or "").strip()
-        ]
-        self._pending_storage_state_path.write_text(
-            json.dumps({"cookies": cookies, "origins": []}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._state_store.write_dict(self._pending_storage_state_path, storage_state)
         captured_at = _format_ts(_now_ts())
         self._pending_login_state_path.write_text(
             json.dumps(
@@ -380,14 +267,13 @@ class ProviderSessionAdapterBase:
         message: str = "",
         pending_since: str = "",
     ) -> dict[str, Any]:
-        storage_state = context.storage_state(path=str(self._pending_storage_state_path))
-        if not isinstance(storage_state, dict):
-            storage_state = self._load_storage_state()
-        session = self._requests_session_from_storage_state_payload(storage_state, config)
         captcha_image, captcha_image_mime = self._capture_ronghui_captcha_image(page)
+        storage_state = context.storage_state()
+        if not isinstance(storage_state, dict):
+            raise TMSAuthStateError("AUTH_REQUIRED", "融辉图片验证码会话未能保存，请重新登录。")
         return self._write_ronghui_image_pending_state_locked(
-            session,
-            config,
+            storage_state,
+            config=config,
             captcha_image=captcha_image,
             captcha_image_mime=captcha_image_mime,
             message=message or "融辉登录页需要图片验证码，请输入图片验证码。",
@@ -414,33 +300,77 @@ class ProviderSessionAdapterBase:
     ) -> dict[str, Any]:
         if not self._pending_storage_state_path.exists() or not self._pending_login_state_path.exists():
             raise TMSAuthStateError("AUTH_REQUIRED", "当前没有待提交的融辉图片验证码会话，请先点击登录。")
+
+        pending_state = self._state_store.read_dict(self._pending_storage_state_path)
+        pending_login = self._state_store.read_dict(self._pending_login_state_path)
+        if pending_state is None or pending_login is None:
+            raise TMSAuthStateError("AUTH_REQUIRED", "融辉图片验证码会话已损坏，请重新登录。")
+        captcha_data_url = str(pending_login.get("captcha_image") or "").strip()
         try:
-            storage_state = json.loads(self._pending_storage_state_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise TMSAuthStateError("AUTH_REQUIRED", f"融辉图片验证码 cookie 会话已损坏，请重新登录: {exc}") from exc
-        if not isinstance(storage_state, dict):
-            raise TMSAuthStateError("AUTH_REQUIRED", "融辉图片验证码会话无效，请重新登录。")
-
-        session = self._requests_session_from_storage_state_payload(storage_state, config)
+            captcha_payload = base64.b64decode(captcha_data_url.split(",", 1)[1], validate=True)
+        except (IndexError, ValueError, TypeError) as exc:
+            raise TMSAuthStateError("AUTH_REQUIRED", "融辉图片验证码会话已损坏，请重新登录。") from exc
         try:
-            response = self._post_ronghui_login_request(session, config, captcha_code=captcha_code)
+            from playwright.sync_api import sync_playwright
+        except ModuleNotFoundError as exc:
+            raise self._dependency_error("Playwright Python 依赖未安装，无法提交融辉图片验证码。") from exc
         except Exception as exc:
-            raise TMSAuthStateError("AUTH_PENDING_CODE", f"融辉验证码提交失败，请重试: {exc}") from exc
+            raise self._dependency_error(f"Playwright 依赖加载失败: {exc}") from exc
 
-        if self._ronghui_login_success(session, config, response):
-            return self._persist_requests_session_locked(session, config)
-
-        captcha_image, captcha_image_mime = self._fetch_ronghui_captcha_image(session, config)
-        login_error = self._read_ronghui_response_error(response) or "融辉图片验证码不正确或登录未完成。"
-        self._write_ronghui_image_pending_state_locked(
-            session,
-            config,
-            captcha_image=captcha_image,
-            captcha_image_mime=captcha_image_mime,
-            message=login_error,
-            pending_since=pending_since,
-        )
-        raise TMSAuthStateError("AUTH_PENDING_CODE", login_error)
+        playwright = sync_playwright().start()
+        browser = None
+        context = None
+        try:
+            browser = playwright.chromium.launch(**_chromium_launch_kwargs())
+            context = browser.new_context(
+                viewport={"width": 1440, "height": 960},
+                storage_state=pending_state,
+            )
+            page = context.new_page()
+            page.route(
+                "**/validateCode/code*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type=str(pending_login.get("captcha_image_mime") or "image/png"),
+                    body=captcha_payload,
+                ),
+            )
+            page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
+            page.unroute("**/validateCode/code*")
+            success, login_error, incomplete_context = self._submit_ronghui_browser_login_attempt(
+                page,
+                config,
+                captcha_code=captcha_code,
+            )
+            if success:
+                return self._persist_storage_state_locked(context, page)
+            if incomplete_context:
+                self._invalidate_ronghui_context_locked(login_error)
+                raise TMSAuthStateError("AUTH_REQUIRED", login_error)
+            page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
+            self._save_ronghui_image_pending_state_locked(
+                context,
+                page,
+                config=config,
+                message=login_error,
+                pending_since=pending_since,
+            )
+            raise TMSAuthStateError("AUTH_PENDING_CODE", login_error)
+        finally:
+            try:
+                if context is not None:
+                    context.close()
+            except Exception:
+                pass
+            try:
+                if browser is not None:
+                    browser.close()
+            except Exception:
+                pass
+            try:
+                playwright.stop()
+            except Exception:
+                pass
 
     def _yunda_report_headers(self, referer: str = "") -> dict[str, str]:
         return {
@@ -1092,15 +1022,7 @@ class ProviderSessionAdapterBase:
         for cookie in storage_state.get("cookies", []):
             if not isinstance(cookie, dict):
                 continue
-            name = str(cookie.get("name") or "").strip()
-            if not name:
-                continue
-            session.cookies.set(
-                name,
-                str(cookie.get("value") or ""),
-                domain=cookie.get("domain"),
-                path=cookie.get("path") or "/",
-            )
+            _set_requests_cookie_from_storage(session, cookie)
         return session
 
     def _requests_cookie_to_storage_cookie(self, cookie: Any, fallback_domain: str) -> dict[str, Any]:
@@ -1108,13 +1030,22 @@ class ProviderSessionAdapterBase:
         rest = getattr(cookie, "_rest", {}) or {}
         same_site_raw = str(rest.get("SameSite") or rest.get("samesite") or "").strip().lower()
         same_site = "None" if same_site_raw == "none" else "Strict" if same_site_raw == "strict" else "Lax"
+        http_only_value = rest.get("HttpOnly", rest.get("httponly"))
+        http_only_present = "HttpOnly" in rest or "httponly" in rest
+        http_only = http_only_present and (http_only_value is None or bool(http_only_value))
+        cookie_name = str(getattr(cookie, "name", "") or "")
+        normalized_domain = domain.lower().lstrip(".")
+        if cookie_name == RONGHUI_USER_INFO_COOKIE and (
+            normalized_domain == "ronghuiwl.com" or normalized_domain.endswith(".ronghuiwl.com")
+        ):
+            http_only = False
         return {
-            "name": str(getattr(cookie, "name", "") or ""),
+            "name": cookie_name,
             "value": str(getattr(cookie, "value", "") or ""),
             "domain": domain,
             "path": str(getattr(cookie, "path", "") or "/"),
             "expires": float(getattr(cookie, "expires", None) or -1),
-            "httpOnly": bool("HttpOnly" in rest or "httponly" in rest),
+            "httpOnly": http_only,
             "secure": bool(getattr(cookie, "secure", False)),
             "sameSite": same_site,
         }
@@ -1902,17 +1833,7 @@ class ProviderSessionAdapterBase:
                         "challenge_label": "短信验证码",
                     }
                 if self._locator_visible(page, CODE_INPUT) and self._locator_visible(page, CAPTCHA_IMAGE):
-                    initial_captcha_image, initial_captcha_image_mime = self._capture_ronghui_captcha_image(page)
-                    storage_state = context.storage_state(path=str(self._pending_storage_state_path))
-                    if not isinstance(storage_state, dict):
-                        storage_state = self._load_storage_state()
-                    session = self._requests_session_from_storage_state_payload(storage_state, config)
-                    return self._auto_login_ronghui_image_captcha(
-                        session,
-                        config,
-                        initial_captcha_image=initial_captcha_image,
-                        initial_captcha_image_mime=initial_captcha_image_mime,
-                    )
+                    return self._auto_login_ronghui_image_captcha_browser(context, page, config)
                 raise TMSAuthStateError("AUTH_REQUIRED", "融辉登录页未找到手机号或图片验证码输入框，可能页面结构已变化。")
             except TMSAuthStateError:
                 raise
@@ -1957,111 +1878,6 @@ class ProviderSessionAdapterBase:
                     "challenge_label": "短信验证码",
                 }
             )
-
-        with self._lock:
-            self._close_pending_locked()
-            config = self.resolve_login_config()
-            self._ensure_login_prerequisites(config)
-            try:
-                from playwright.sync_api import sync_playwright
-            except ModuleNotFoundError as exc:
-                raise self._dependency_error("Playwright Python 依赖未安装，无法发起短信登录。") from exc
-            except Exception as exc:
-                raise self._dependency_error(f"Playwright 依赖加载失败: {exc}") from exc
-                raise RuntimeError("Playwright 未安装，无法发起短信登录。") from exc
-
-            playwright = sync_playwright().start()
-            browser = None
-            context = None
-            try:
-                browser = playwright.chromium.launch(**_chromium_launch_kwargs())
-                context = browser.new_context(viewport={"width": 1440, "height": 960})
-                page = context.new_page()
-            except Exception as exc:
-                try:
-                    playwright.stop()
-                except Exception:
-                    pass
-                raise self._dependency_error(f"Chromium 登录浏览器启动失败: {exc}") from exc
-            try:
-                page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
-                page.locator(USERNAME_INPUT).fill(config.username)
-                page.locator(PASSWORD_INPUT).fill(config.password)
-                page.locator(PHONE_INPUT).fill(config.phone)
-                page.locator(SEND_CODE_BUTTON).click()
-                page.wait_for_timeout(1200)
-                error_text = self._read_login_error(page)
-                if error_text:
-                    raise TMSAuthStateError("AUTH_REQUIRED", error_text)
-                context.storage_state(path=str(self._pending_storage_state_path))
-                return self._save_meta(
-                    {
-                        "status": "pending_code",
-                        "last_validation_at": "",
-                        "last_error_summary": "",
-                        "authenticated_at": "",
-                        "pending_since": _format_ts(_now_ts()),
-                        "expires_at": "",
-                    }
-                )
-            except Exception:
-                try:
-                    if context is not None:
-                        context.close()
-                except Exception:
-                    pass
-                try:
-                    if browser is not None:
-                        browser.close()
-                except Exception:
-                    pass
-                try:
-                    playwright.stop()
-                except Exception:
-                    pass
-                raise
-
-    def _submit_code_legacy(self, code: str) -> dict[str, Any]:
-        sms_code = str(code or "").strip()
-        if not sms_code:
-            raise TMSAuthStateError("AUTH_PENDING_CODE", "验证码不能为空")
-        with self._lock:
-            if not self._pending_storage_state_path.exists():
-                raise TMSAuthStateError("AUTH_REQUIRED", "当前没有待提交的验证码会话，请先发送验证码")
-            pending_since = self._load_meta().get("pending_since") or _format_ts(_now_ts())
-            config = self.resolve_login_config()
-            return self.submit_ronghui_code(sms_code)
-        if not sms_code:
-            raise TMSAuthStateError("AUTH_PENDING_CODE", "验证码不能为空")
-        with self._lock:
-            if self._pending is None:
-                raise TMSAuthStateError("AUTH_REQUIRED", "当前没有待提交的验证码会话，请先发送验证码")
-            page = self._pending.page
-            page.locator(CODE_INPUT).fill(sms_code)
-            page.locator(LOGIN_BUTTON).click()
-            try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
-            except Exception:
-                page.wait_for_timeout(1_200)
-
-            login_error = self._read_login_error(page)
-            current_url = str(page.url or "").strip()
-            if login_error or "/system/login" in current_url:
-                meta = self._save_meta(
-                    {
-                        "status": "pending_code",
-                        "last_validation_at": "",
-                        "last_error_summary": login_error or "登录未完成，仍停留在登录页",
-                        "authenticated_at": "",
-                        "pending_since": _format_ts(self._pending.created_at),
-                        "expires_at": "",
-                    }
-                )
-                raise TMSAuthStateError("AUTH_PENDING_CODE", meta["last_error_summary"])
-
-            meta = self._persist_storage_state_locked(self._pending.context, page)
-            self._close_pending_locked()
-            return meta
 
     def submit_ronghui_code(self, code: str) -> dict[str, Any]:
 
@@ -2139,78 +1955,11 @@ class ProviderSessionAdapterBase:
             pending_since = self._load_meta().get("pending_since") or _format_ts(_now_ts())
             config = self.resolve_login_config()
             if self._pending_challenge_type_locked() == "image":
-                return self._submit_ronghui_captcha_login(
-                    config,
-                    captcha_code=sms_code,
-                    pending_since=pending_since,
+                return self._run_in_isolated_thread(
+                    lambda: self._submit_ronghui_captcha_login(
+                        config,
+                        captcha_code=sms_code,
+                        pending_since=pending_since,
+                    )
                 )
             return self._run_in_isolated_thread(lambda: run_submit(config, sms_code, pending_since))
-            try:
-                from playwright.sync_api import sync_playwright
-            except ModuleNotFoundError as exc:
-                raise self._dependency_error("Playwright Python 依赖未安装，无法提交短信验证码。") from exc
-            except Exception as exc:
-                raise self._dependency_error(f"Playwright 依赖加载失败: {exc}") from exc
-
-            playwright = sync_playwright().start()
-            browser = None
-            context = None
-            try:
-                browser = playwright.chromium.launch(**_chromium_launch_kwargs())
-                context = browser.new_context(
-                    viewport={"width": 1440, "height": 960},
-                    storage_state=str(self._pending_storage_state_path),
-                )
-                page = context.new_page()
-                page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
-                page.locator(USERNAME_INPUT).wait_for(state="visible", timeout=15_000)
-                page.locator(USERNAME_INPUT).fill(config.username)
-                page.locator(PASSWORD_INPUT).fill(config.password)
-                page.locator(PHONE_INPUT).fill(config.phone)
-                page.locator(CODE_INPUT).fill(sms_code)
-                page.locator(LOGIN_BUTTON).click()
-                try:
-                    page.wait_for_load_state("networkidle", timeout=15_000)
-                except Exception:
-                    page.wait_for_timeout(1_200)
-
-                login_error = self._read_login_error(page)
-                current_url = str(page.url or "").strip()
-                if login_error or "/system/login" in current_url:
-                    context.storage_state(path=str(self._pending_storage_state_path))
-                    meta = self._save_meta(
-                        {
-                            "status": "pending_code",
-                            "last_validation_at": "",
-                            "last_error_summary": login_error or "登录未完成，仍停留在登录页",
-                            "authenticated_at": "",
-                            "pending_since": pending_since,
-                            "expires_at": "",
-                        }
-                    )
-                    raise TMSAuthStateError("AUTH_PENDING_CODE", meta["last_error_summary"])
-
-                self._pending_storage_state_path.unlink(missing_ok=True)
-                meta = self._persist_storage_state_locked(context, page)
-                self._close_pending_locked()
-                return meta
-            except TMSAuthStateError:
-                raise
-            except Exception as exc:
-                challenge_label = "图片验证码" if self._login_mode in {"image", "password"} else "短信验证码"
-                raise TMSAuthStateError("AUTH_PENDING_CODE", f"融辉{challenge_label}提交失败，请重试: {exc}") from exc
-            finally:
-                try:
-                    if context is not None:
-                        context.close()
-                except Exception:
-                    pass
-                try:
-                    if browser is not None:
-                        browser.close()
-                except Exception:
-                    pass
-                try:
-                    playwright.stop()
-                except Exception:
-                    pass

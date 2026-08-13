@@ -16,6 +16,7 @@ from shared.service_identity import (
     ConsoleIdentityError,
     ConsoleIdentityVerifier,
     build_console_identity_headers,
+    validate_service_identity_secrets,
 )
 
 
@@ -26,6 +27,51 @@ PRINCIPAL = {
     "display_name": "Operator",
     "authenticated_by": "mysql_admin_session",
 }
+
+
+def test_service_identity_secrets_must_exist_and_be_distinct() -> None:
+    validate_service_identity_secrets(
+        internal_api_token="service-token",
+        console_signing_secret="separate-signing-secret",
+    )
+    with pytest.raises(RuntimeError, match="AGENT_INTERNAL_API_TOKEN"):
+        validate_service_identity_secrets(
+            internal_api_token="",
+            console_signing_secret="signing-secret",
+        )
+    with pytest.raises(RuntimeError, match="CONSOLE_AGENT_SIGNING_SECRET is required"):
+        validate_service_identity_secrets(
+            internal_api_token="service-token",
+            console_signing_secret="",
+        )
+    with pytest.raises(RuntimeError, match="must be different"):
+        validate_service_identity_secrets(
+            internal_api_token="same-secret",
+            console_signing_secret="same-secret",
+        )
+
+
+def test_console_entrypoint_preflight_uses_distinct_runtime_secrets() -> None:
+    from console.app import _validate_console_service_identity
+
+    with patch.dict(
+        "os.environ",
+        {
+            "AGENT_INTERNAL_API_TOKEN": "service-token",
+            "CONSOLE_AGENT_SIGNING_SECRET": "signing-secret",
+        },
+        clear=True,
+    ):
+        _validate_console_service_identity()
+    with patch.dict(
+        "os.environ",
+        {
+            "AGENT_INTERNAL_API_TOKEN": "same-secret",
+            "CONSOLE_AGENT_SIGNING_SECRET": "same-secret",
+        },
+        clear=True,
+    ), pytest.raises(RuntimeError, match="must be different"):
+        _validate_console_service_identity()
 
 
 def _headers(*, timestamp: int = 1_800_000_000, nonce: str = "nonce_abcdefghijklmnopqrstuvwxyz"):

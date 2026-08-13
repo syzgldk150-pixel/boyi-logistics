@@ -115,6 +115,11 @@
     border-radius: 6px; color: var(--text); font-size: .74rem; font-weight: 800; text-decoration: none; cursor: pointer;
   }
   .mode-switch [aria-pressed="true"] { background: var(--primary); color: #fff; }
+  .ocr-template-btn {
+    display: inline-flex; align-items: center; gap: 5px; height: 32px; min-height: 32px; padding: 0 10px;
+    border-radius: 6px; font-size: .74rem; font-weight: 800; white-space: nowrap;
+  }
+  .ocr-template-btn .feather { width: 14px; height: 14px; }
   [data-mode-panel][hidden] { display: none !important; }
   .mode-panel { animation: modeFade .16s ease-out; }
   @keyframes modeFade {
@@ -455,6 +460,9 @@
     .entry-frame-panel[data-entry-provider="yunda"],
     .entry-frame-panel[data-entry-provider="ronghui"],
     .yunda-live-scroll { overflow: auto; overscroll-behavior: contain; }
+    .ocr-mode-figure .manual-head { align-items: stretch; flex-direction: column; }
+    .ocr-mode-figure .manual-head-tools { justify-content: flex-start; }
+    .ocr-template-btn { height: 44px; min-height: 44px; }
   }
 </style>
 {% endblock %}
@@ -812,10 +820,15 @@
         <h3>OCR模式</h3>
         <span class="manual-chip">图文复核</span>
       </div>
-      <div class="mode-switch" aria-label="Entry Mode">
+      <div class="manual-head-tools">
+        <a class="ghost-btn ocr-template-btn" href="/templates/new">
+          <i data-feather="settings"></i>模板配置
+        </a>
+        <div class="mode-switch" aria-label="Entry Mode">
           <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
           <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
         </div>
+      </div>
     </div>
     <div class="ocr-mode-upload-area">
       <i data-feather="image"></i>

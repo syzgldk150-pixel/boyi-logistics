@@ -12,7 +12,6 @@ SCRIPT_ROOT = PROJECT_ROOT / "agent" / "tms_runtime" / "scripts"
 RUNTIME_ROOTS = (PROJECT_ROOT / "agent", PROJECT_ROOT / "tools", PROJECT_ROOT.parent / "console", PROJECT_ROOT.parent / "shared")
 ALLOWED_LEGACY_ISOLATION = {
     PROJECT_ROOT / "tools" / "price_tool.py",
-    PROJECT_ROOT / "tools" / "finance_tool.py",
 }
 WORKFLOW_RUNNER = PROJECT_ROOT / "agent" / "orchestration" / "workflow_runner.py"
 

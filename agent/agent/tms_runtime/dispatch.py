@@ -54,6 +54,7 @@ TARGETS: dict[str, Target] = {
     "yunda_waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.yunda_waybill_tracking", func="run_once"),
     "tracking_query": Target(module=f"{SCRIPTS_PACKAGE}.tracking_query", func="run_once"),
     "get_scan": Target(module=f"{SCRIPTS_PACKAGE}.get_scan", func="run_once"),
+    "get_sign_records": Target(module=f"{SCRIPTS_PACKAGE}.get_sign_records", func="run_once"),
     "get_qianshou": Target(module=f"{SCRIPTS_PACKAGE}.get_qianshou", func="run_once"),
     "get_sign_records": Target(
         module="agent.tms_runtime.scripts.get_sign_records",
@@ -93,6 +94,7 @@ TARGET_ACCOUNT_SYSTEMS: dict[str, str] = {
     "delivery_status": "ronghui",
     "clock_in_dual": "ronghui",
     "get_scan": "ronghui",
+    "get_sign_records": "ronghui",
     "get_qianshou": "r13",
     "get_sign_records": "ronghui",
     "get_wangdiansendlist": "ronghui",

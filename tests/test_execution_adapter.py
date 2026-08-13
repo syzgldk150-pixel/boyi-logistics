@@ -95,3 +95,66 @@ def test_explicit_nested_success_is_bound_to_the_actual_result_hash():
     assert proof["evidence_ref"] == f"tool-result:write_tool:{digest}"
     assert proof["evidence_ref"] in result["meta"]["evidence_refs"]
     assert proof["observed_at"] == result["meta"]["observed_at"]
+
+
+def test_cancelled_process_is_not_normalized_as_a_terminal_tool_failure():
+    adapter = RegisteredToolExecutionAdapter(
+        catalog=_Catalog(_capability()),
+        executor=_Executor(
+            {
+                "success": False,
+                "canceled": True,
+                "error": "Tool execution cancelled",
+            }
+        ),
+    )
+
+    result = asyncio.run(
+        adapter.execute_step(
+            _step(),
+            run_id="run-1",
+            step_id="step-1",
+            execution_context={"source": "console"},
+        )
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["error"]["code"] == "CANCELLED"
+    assert result["error"]["retryable"] is False
+
+
+def test_nested_unified_retryable_failure_is_preserved():
+    nested_result = {
+        "status": "FAILED",
+        "data": {},
+        "meta": {},
+        "warnings": [],
+        "error": {
+            "code": "TRANSIENT_SOURCE_FAILURE",
+            "message": "source is temporarily unavailable",
+            "retryable": True,
+        },
+    }
+    adapter = RegisteredToolExecutionAdapter(
+        catalog=_Catalog(_capability()),
+        executor=_Executor(
+            {
+                "success": False,
+                "error": "source is temporarily unavailable",
+                "error_code": "TRANSIENT_SOURCE_FAILURE",
+                "retryable": True,
+                "data": nested_result,
+            }
+        ),
+    )
+
+    result = asyncio.run(
+        adapter.execute_step(
+            _step(),
+            run_id="run-1",
+            step_id="step-1",
+            execution_context={"source": "scheduler"},
+        )
+    )
+
+    assert result == nested_result

@@ -342,70 +342,6 @@ tools:
     timeout: 60
     heavy: true
 
-  - name: finance_etl
-    version: "1.0.0"
-    operation_type: compute
-    risk_level: high
-    llm_exposed: false
-    approval:
-      mode: required
-      required_role: super_admin
-    permissions:
-      required_roles:
-        - super_admin
-    account_scope:
-      required: false
-      allow_implicit_default: false
-    idempotency:
-      mode: parameters
-      key_fields: []
-    retry:
-      safe: false
-      max_attempts: 1
-    evidence:
-      required: false
-      required_fields: []
-    postconditions:
-      - computed_result_returned
-    description: "运行财务对账 ETL 管道，生成报表并返回指定月份或全量摘要"
-    input_schema:
-      type: object
-      additionalProperties: false
-      properties:
-        month:
-          type: string
-          description: "可选，月份摘要范围，格式 YYYY-MM，如 2026-03"
-        input_path:
-          type: string
-          description: "可选，元数据目录路径，或包含 metadata/ 的项目目录路径"
-      required: []
-    output_schema:
-      type: object
-      additionalProperties: false
-      properties:
-        status:
-          type: string
-          enum: [SUCCESS, FAILED]
-        data:
-          type: object
-          additionalProperties: true
-        meta:
-          type: object
-          additionalProperties: true
-        warnings:
-          type: array
-          items:
-            type: string
-        error:
-          oneOf:
-            - type: object
-              additionalProperties: true
-            - type: "null"
-      required: [status, data, meta, warnings, error]
-    executor: tools/finance_tool.py
-    timeout: 600
-    heavy: true
-
   - name: sync_daily_send_orders
     version: "1.0.0"
     operation_type: internal_projection_write
@@ -418,7 +354,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -439,6 +375,11 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的融辉账号；request_body 中若带账号必须完全一致"
         target_date:
           type: string
           description: "可选，单个发件日期，格式 YYYY-MM-DD；默认当天"
@@ -472,7 +413,7 @@ tools:
         sync_sql:
           type: boolean
           description: "是否同步控制台 waybills SQL 表，默认 true"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -512,7 +453,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -533,6 +474,11 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的融辉账号；禁止隐式默认账号"
         bill_codes:
           type: array
           items:
@@ -570,7 +516,7 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写回飞书记录"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -719,6 +665,18 @@ tools:
         browser_batch_size:
           type: integer
           description: "可选，浏览器补齐详情的批量大小，默认 10"
+        sign_site_code:
+          type: string
+          minLength: 1
+          description: "可选，TMS 签收扫描网点编码；未提供时必须从绑定账号的真实登录态精确取得"
+        exact_sign_conflict_limit:
+          type: integer
+          minimum: 0
+          description: "R13 与主单签收证据冲突时允许逐票精确核验的最大数量"
+        exact_historical_sign_limit:
+          type: integer
+          minimum: 0
+          description: "每轮按 1/3/7 天退避策略精确复核历史候选的最大数量"
       required: [r13_account_id, problem_account_id, sign_account_id, detail_account_id]
     output_schema:
       type: object
@@ -747,6 +705,92 @@ tools:
     timeout: 2400
     heavy: false
 
+  - name: backfill_daily_sign_ledger
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
+    description: "历史应签账本影子重算或经 super_admin 单独批准后写入；不发布飞书，不允许隐式账号"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        apply:
+          type: boolean
+          description: "false 只做影子计算；true 写共享历史账本并要求单独审批"
+        r13_account_id:
+          type: string
+          minLength: 1
+        problem_account_id:
+          type: string
+          minLength: 1
+        sign_account_id:
+          type: string
+          minLength: 1
+        request_body:
+          type: object
+          description: "可选 R13 非凭据查询参数；账号与凭据字段显式拒绝"
+        spreadsheet_token:
+          type: string
+        r13_backfill_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        event_backfill_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+      required: [r13_account_id, problem_account_id, sign_account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/daily_sign_backfill_tool.py
+    timeout: 2400
+    heavy: true
+
   - name: sync_site_send_list
     version: "1.0.0"
     operation_type: internal_projection_write
@@ -759,7 +803,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -780,6 +824,11 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的融辉账号；request_body 中若带账号必须完全一致"
         request_body:
           type: object
           description: "可选，覆盖默认 get_wangdiansendlist 请求体"
@@ -795,7 +844,7 @@ tools:
         range:
           type: string
           description: "可选，覆盖 phase7.site_send_sheet 的写入范围"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -835,7 +884,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -856,9 +905,14 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面从已配置的融辉账号中显式选择；禁止隐式默认账号"
         request_body:
           type: object
-          description: "可选，覆盖 fetch_dispatch 请求体"
+          description: "可选，覆盖 fetch_dispatch 请求体；嵌套账号若存在必须与顶层 account_id 完全一致"
         target_date:
           type: string
           description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
@@ -871,7 +925,7 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/飞书"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -998,7 +1052,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -1019,15 +1073,25 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面从已配置的融辉账号中显式选择；禁止隐式默认账号"
         refresh_disabled:
           type: boolean
-          description: "是否跳过刷新扫描索引"
+          enum: [false]
+          description: "兼容参数，仅允许 false；到货统计必须刷新目标日扫描集合"
         target_date:
           type: string
           description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
         scan_window_days:
           type: integer
-          description: "可选，/get_scan 拉取窗口天数（默认 1=当日；首跑回填可传 30）"
+          enum: [1]
+          description: "兼容参数，仅允许 1；历史扫描回填必须使用独立扫描同步工具"
+        arrive_list_request_body:
+          type: object
+          description: "可选，单独覆盖目标日 arrive-list 请求体；不会复用 get_scan 请求体，嵌套账号若存在必须与顶层 account_id 完全一致"
         scan_codes_retention_days:
           type: integer
           description: "scan_codes 累积表的保留天数（默认 30；0 或负数=不清理）"
@@ -1052,7 +1116,7 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/飞书"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1092,7 +1156,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -1113,6 +1177,11 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的韵达账号；request_body 中若带账号必须完全一致"
         target_date:
           type: string
           description: "可选，应派日期，格式 YYYY-MM-DD；默认明天"
@@ -1135,7 +1204,7 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不删除或写入飞书记录"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1175,7 +1244,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -1196,6 +1265,11 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的韵达账号；request_body 中若带账号必须完全一致"
         target_date:
           type: string
           description: "可选，单个寄件日期，格式 YYYY-MM-DD；默认当天。传 start_date/end_date 时忽略"
@@ -1245,7 +1319,7 @@ tools:
         sync_sql:
           type: boolean
           description: "是否同步控制台 waybills SQL 表，默认 true"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1875,7 +1949,7 @@ tools:
         - execution_result
     postconditions:
       - executor_reported_success
-    description: "按账号管理中的四个财务角色，从融辉和韵达原始财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试"
+    description: "同步当前已上线的融辉三个财务角色并核对逐笔交易、平台汇总和 signed-net；韵达财务源保持禁用"
     input_schema:
       type: object
       additionalProperties: false
@@ -1895,18 +1969,21 @@ tools:
           description: "sync/backfill 可选结束日期；backfill 必填"
         platform:
           type: string
-          enum: [ronghui, yunda]
-          description: "sync/backfill 可选平台过滤"
+          enum: [ronghui]
+          description: "sync/backfill 可选平台过滤；首期仅允许已上线的融辉来源"
         account_id:
           type: string
-          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem, yunda_default]
-          description: "sync/backfill 可选账号管理内部角色 ID"
+          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem]
+          description: "sync/backfill 可选的已上线融辉财务角色 ID"
         batch_id:
           type: integer
           description: "retry 模式必填的原失败批次 ID；retry 不接受其他范围过滤"
         rescan_days:
           type: integer
           description: "sync 默认回扫 7 个完整业务日"
+        _startup_catchup:
+          type: boolean
+          description: "仅由启动缺口扫描注入；普通调用不得设置"
       required: []
     output_schema:
       type: object

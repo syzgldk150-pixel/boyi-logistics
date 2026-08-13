@@ -634,7 +634,9 @@ class AgentExecutionToolTests(unittest.TestCase):
 
     def test_arrive_list_sync_handles_malformed_fetch_response(self):
         with patch("tools.arrive_list_sync_tool.call_http_service", return_value={"unexpected": True}):
-            result = arrive_list_sync_tool.run_arrive_list_sync({})
+            result = arrive_list_sync_tool.run_arrive_list_sync(
+                {"account_id": "ronghui-test"}
+            )
         self.assertIn("fetch_dispatch 返回格式异常", result["error"])
 
     def test_yunda_dispatch_forecast_fetch_maps_required_fields(self):

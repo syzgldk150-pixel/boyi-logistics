@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime
 
 from agent.execution_boundary import (
@@ -50,6 +51,26 @@ def _redact_execution_capability(value: object, capability: str) -> str:
     text = redact_text(value)
     token = str(capability or "")
     return text.replace(token, "[REDACTED]") if token else text
+
+
+def _redact_structured_execution_capability(value: object, capability: str) -> object:
+    """Redact a parsed result without first corrupting its JSON representation."""
+
+    if isinstance(value, Mapping):
+        sanitized = {
+            str(key): _redact_structured_execution_capability(item, capability)
+            for key, item in value.items()
+        }
+        return redact_sensitive(sanitized)
+    if isinstance(value, list):
+        return [_redact_structured_execution_capability(item, capability) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_structured_execution_capability(item, capability) for item in value)
+    if isinstance(value, str):
+        token = str(capability or "")
+        without_capability = value.replace(token, "[REDACTED]") if token else value
+        return redact_text(without_capability)
+    return redact_sensitive(value)
 
 
 def build_tool_subprocess_environment(execution_capability: str) -> dict[str, str]:
@@ -387,26 +408,49 @@ class ToolExecutor:
                     return {"success": False, "error": "工具被 OOM Kill，内存不足"}
                 return {"success": False, "error": f"工具执行失败(exit {exit_code}): {err_msg}"}
 
-            raw_output = _redact_execution_capability(
-                stdout.decode("utf-8", errors="replace").strip(),
-                execution_capability,
-            )
+            raw_output = stdout.decode("utf-8", errors="replace").strip()
             try:
-                result = json.loads(raw_output)
+                parsed_result = json.loads(raw_output)
             except json.JSONDecodeError:
-                result = {"output": raw_output}
+                result = {
+                    "output": _redact_execution_capability(raw_output, execution_capability)
+                }
+            else:
+                result = _redact_structured_execution_capability(
+                    parsed_result,
+                    execution_capability,
+                )
 
-            if (
-                isinstance(result, dict)
-                and str(result.get("status") or "").upper() not in {"", "SUCCESS"}
-                and isinstance(result.get("error"), dict)
-            ):
-                error = result["error"]
-                safe_error = redact_text(error.get("message") or error.get("code"))
+            result_reports_failure = isinstance(result, dict) and (
+                str(result.get("status") or "").upper() not in {"", "SUCCESS"}
+                or
+                result.get("success") is False
+                or result.get("ok") is False
+                or bool(result.get("error"))
+            )
+            if result_reports_failure:
+                structured_error = result.get("error")
+                error_value = (
+                    (
+                        structured_error.get("message") or structured_error.get("code")
+                        if isinstance(structured_error, dict)
+                        else structured_error
+                    )
+                    or result.get("message")
+                    or result.get("error_code")
+                    or "工具返回失败状态。"
+                )
+                safe_error_value = redact_sensitive(error_value)
+                if isinstance(safe_error_value, (dict, list)):
+                    safe_error = json.dumps(safe_error_value, ensure_ascii=False)
+                else:
+                    safe_error = redact_text(safe_error_value)
+                safe_result = redact_sensitive(result)
+                error_log_limit = 500 if name == "sync_finance_bills" else 300
                 logger.error(
                     "tool=%s | success=false | error=%s | duration=%ss",
                     name,
-                    safe_error[:300],
+                    safe_error[:error_log_limit],
                     duration,
                 )
                 self._last_run = {
@@ -415,26 +459,26 @@ class ToolExecutor:
                     "success": False,
                     "duration_s": duration,
                 }
-                return {
+                failure = {
                     "success": False,
                     "error": safe_error,
-                    "error_code": error.get("code") or "TOOL_REPORTED_FAILURE",
-                    "data": result,
+                    "data": safe_result,
                     "duration_s": duration,
                 }
-
-            if isinstance(result, dict) and result.get("error"):
-                safe_error = redact_text(result["error"])
-                logger.error("tool=%s | success=false | error=%s | duration=%ss", name, safe_error[:300], duration)
-                self._last_run = {
-                    "tool": name,
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "success": False,
-                    "duration_s": duration,
-                }
-                failure = {"success": False, "error": safe_error, "data": result, "duration_s": duration}
-                if result.get("error_code"):
-                    failure["error_code"] = result.get("error_code")
+                error_code = (
+                    structured_error.get("code")
+                    if isinstance(structured_error, dict)
+                    else result.get("error_code")
+                )
+                failure["error_code"] = error_code or "TOOL_REPORTED_FAILURE"
+                nested_retryable = (
+                    structured_error.get("retryable")
+                    if isinstance(structured_error, dict)
+                    else None
+                )
+                failure["retryable"] = bool(
+                    result.get("retryable") or nested_retryable
+                )
                 return failure
 
             logger.info("tool=%s | success=true | duration=%ss", name, duration)

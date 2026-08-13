@@ -6,7 +6,7 @@ from typing import Any, Iterator
 
 import pymysql
 
-from config import Settings
+from console.config import Settings
 from shared.redaction import redact_sensitive, redact_text
 from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
 from shared.runtime_repositories import WaybillRepository
@@ -365,7 +365,7 @@ class DocumentRepository:
             )
             admin_user_columns = {str(row.get("COLUMN_NAME") or "") for row in cursor.fetchall() or []}
         missing_admin_columns = sorted(
-            {"ui_preferences_json", "control_plane_role"} - admin_user_columns
+            {"ui_preferences_json", "role", "control_plane_role"} - admin_user_columns
         )
         if missing_admin_columns:
             raise RuntimeError(
@@ -387,7 +387,7 @@ class DocumentRepository:
             cursor.execute(
                 """
                 SELECT id, username, display_name, avatar_path, ui_preferences_json,
-                       control_plane_role, is_active, last_login_at, created_at, updated_at
+                       role, control_plane_role, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 ORDER BY id ASC
                 """
@@ -400,7 +400,8 @@ class DocumentRepository:
             cursor.execute(
                 """
                 SELECT id, username, display_name, avatar_path, ui_preferences_json,
-                       control_plane_role, password_hash, is_active, last_login_at, created_at, updated_at
+                       role, control_plane_role, password_hash, is_active,
+                       last_login_at, created_at, updated_at
                 FROM admin_users
                 WHERE id = %s
                 """,
@@ -414,7 +415,8 @@ class DocumentRepository:
             cursor.execute(
                 """
                 SELECT id, username, display_name, avatar_path, ui_preferences_json,
-                       control_plane_role, password_hash, is_active, last_login_at, created_at, updated_at
+                       role, control_plane_role, password_hash, is_active,
+                       last_login_at, created_at, updated_at
                 FROM admin_users
                 WHERE username = %s
                 """,
@@ -429,6 +431,7 @@ class DocumentRepository:
         display_name: str,
         password_hash: str,
         is_active: bool = True,
+        role: str = "admin",
     ) -> int:
         now = _now_iso()
         with self.connect() as connection:
@@ -436,15 +439,18 @@ class DocumentRepository:
             cursor.execute(
                 """
                 INSERT INTO admin_users (
-                    username, display_name, password_hash, is_active, created_at, updated_at
+                    username, display_name, password_hash, role, control_plane_role,
+                    is_active, created_at, updated_at
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
                     str(username or "").strip(),
                     str(display_name or "").strip(),
                     str(password_hash or ""),
+                    "super_admin" if role == "super_admin" else "admin",
+                    "super_admin" if role == "super_admin" else "admin",
                     1 if is_active else 0,
                     now,
                     now,
@@ -452,9 +458,45 @@ class DocumentRepository:
             )
             return int(cursor.lastrowid)
 
+    def set_admin_user_role(self, user_id: int, role: str) -> None:
+        normalized = str(role or "").strip()
+        if normalized not in {"admin", "super_admin"}:
+            raise ValueError("invalid administrator role")
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            if normalized == "admin":
+                cursor.execute(
+                    "SELECT COUNT(*) AS total FROM admin_users WHERE role = 'super_admin' AND is_active = 1 AND id <> %s",
+                    (int(user_id),),
+                )
+                if int((cursor.fetchone() or {}).get("total") or 0) < 1:
+                    raise ValueError("the final active super administrator cannot be demoted")
+            cursor.execute(
+                """
+                UPDATE admin_users
+                SET role = %s, control_plane_role = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (normalized, normalized, _now_iso(), int(user_id)),
+            )
+            cursor.execute("DELETE FROM admin_sessions WHERE user_id = %s", (int(user_id),))
+
     def set_admin_user_active(self, user_id: int, is_active: bool) -> None:
         with self.connect() as connection:
             cursor = connection.cursor()
+            if not is_active:
+                cursor.execute(
+                    "SELECT role FROM admin_users WHERE id = %s FOR UPDATE",
+                    (int(user_id),),
+                )
+                target = cursor.fetchone() or {}
+                if str(target.get("role") or "") == "super_admin":
+                    cursor.execute(
+                        "SELECT COUNT(*) AS total FROM admin_users WHERE role = 'super_admin' AND is_active = 1 AND id <> %s",
+                        (int(user_id),),
+                    )
+                    if int((cursor.fetchone() or {}).get("total") or 0) < 1:
+                        raise ValueError("the final active super administrator cannot be disabled")
             cursor.execute(
                 """
                 UPDATE admin_users
@@ -556,6 +598,7 @@ class DocumentRepository:
                     u.display_name,
                     u.avatar_path,
                     u.ui_preferences_json,
+                    u.role,
                     u.control_plane_role,
                     u.is_active
                 FROM admin_sessions s

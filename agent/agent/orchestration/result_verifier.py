@@ -200,7 +200,9 @@ class ResultVerifier:
         code = str(result.get("error_code") or error.get("code") or "TOOL_RESULT_FAILED").upper()
         message = str(error.get("message") or error_value or result.get("message") or "Tool result reported failure")
         governed_blocked_status = str(meta.get("blocked_status") or "").upper()
-        if governed_blocked_status == RunStatus.BLOCKED_LOGIN.value or code in {
+        if code in {"CANCELLED", "CANCELED"}:
+            status = RunStatus.CANCELLED
+        elif governed_blocked_status == RunStatus.BLOCKED_LOGIN.value or code in {
             "LOGIN_REQUIRED",
             "AUTH_REQUIRED",
             "AUTH_PENDING_CODE",

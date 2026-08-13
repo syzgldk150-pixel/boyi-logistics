@@ -157,12 +157,20 @@ class _FakePage:
         self.after_login_url = after_login_url
         self.filled = {}
         self.clicked = []
+        self.routes = []
+        self.unroutes = []
 
     def goto(self, url, wait_until=None, timeout=None):
         self.url = url
 
     def locator(self, selector):
         return _FakeLocator(self, selector)
+
+    def route(self, pattern, handler):
+        self.routes.append(pattern)
+
+    def unroute(self, pattern):
+        self.unroutes.append(pattern)
 
     def wait_for_timeout(self, ms):
         return None
@@ -171,6 +179,8 @@ class _FakePage:
         return None
 
     def evaluate(self, js_code):
+        if "$Z.user.getUserInfo" in str(js_code) and "loginUserAccount" in str(js_code):
+            return self.url == self.after_login_url
         return ""
 
 
@@ -212,7 +222,27 @@ class _FakeContext:
         return self.page
 
     def storage_state(self, path=None):
-        payload = {"cookies": [{"name": "sid", "value": "cookie", "domain": "tms.ronghuiwl.com", "path": "/"}], "origins": []}
+        payload = {
+            "cookies": [
+                {"name": "sid", "value": "cookie", "domain": "tms.ronghuiwl.com", "path": "/"},
+                {
+                    "name": "userInfo",
+                    "value": json.dumps(
+                        {
+                            "loginUserName": "fixture-user",
+                            "loginUserAccount": "fixture-account",
+                            "loginSiteName": "fixture-site",
+                            "loginSiteCode": "fixture-site-code",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "domain": "tms.ronghuiwl.com",
+                    "path": "/",
+                    "httpOnly": False,
+                },
+            ],
+            "origins": [],
+        }
         if path:
             Path(path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return payload
@@ -293,47 +323,6 @@ class _DummySession:
             }
         )
         return self.post_response
-
-
-class _SimpleCookie:
-    def __init__(
-        self,
-        name="sid",
-        value="cookie",
-        domain="tms.ronghuiwl.com",
-        path="/",
-        secure=False,
-        expires=None,
-        rest=None,
-    ):
-        self.name = name
-        self.value = value
-        self.domain = domain
-        self.path = path
-        self.secure = secure
-        self.expires = expires
-        self._rest = rest or {}
-
-
-class _CaptchaPostSession:
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.post_calls = []
-        self.cookies = [_SimpleCookie()]
-
-    def post(self, url, data=None, headers=None, allow_redirects=None, timeout=None):
-        self.post_calls.append(
-            {
-                "url": url,
-                "data": data,
-                "headers": headers,
-                "allow_redirects": allow_redirects,
-                "timeout": timeout,
-            }
-        )
-        if not self._responses:
-            raise AssertionError("unexpected captcha login post")
-        return self._responses.pop(0)
 
 
 class _FakeLoginLocator:

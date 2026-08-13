@@ -12,8 +12,6 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
-from tools.daily_sign_rules import business_now
-from tools.daily_sign_store import save_forecast_snapshot
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import (
     is_receipt_like_tracking,
@@ -21,13 +19,22 @@ from tools.phase7_mysql_store import (
     render_arrive_sheet_rows,
     replace_waybill_records,
 )
+from tools.daily_sign_store import save_forecast_snapshot
+from tools.daily_sign_rules import business_now
 from tools.phase7_sync_common import (
+    TMSAuthSyncError,
+    bind_explicit_account_id,
     build_range_from_template,
     parse_a1_range,
+    raise_tms_auth_error_if_present,
+    require_explicit_account_id,
     resolve_sheet_target,
-    tms_auth_error_result,
 )
 from tools.tms_tool import call_http_service
+
+
+def _required_account_id(params: dict[str, Any]) -> str:
+    return require_explicit_account_id(params, label="到货清单同步")
 
 
 def _emit_progress(message: str, **extra: Any) -> None:
@@ -54,6 +61,8 @@ def _is_valid_main_waybill(code: str) -> bool:
 def _build_dispatch_request(params: dict) -> dict:
     request_body = params.get("request_body", {"params": {}, "timeout_sec": 600})
     request_params = dict(request_body.get("params") or {})
+    account_id = _required_account_id(params)
+    request_params = bind_explicit_account_id(request_params, account_id, label="到货清单 request_body")
     if params.get("target_date") and "target_date" not in request_params:
         request_params["target_date"] = params["target_date"]
     for key in (
@@ -65,8 +74,6 @@ def _build_dispatch_request(params: dict) -> dict:
         "max_pages",
         "maxPages",
         "session_profile",
-        "account_id",
-        "accountId",
     ):
         if params.get(key) not in (None, "") and key not in request_params:
             request_params[key] = params[key]
@@ -103,6 +110,40 @@ def _normalize_dispatch_records(rows: list[Any]) -> tuple[list[dict[str, Any]], 
             raise ValueError(f"派件预报存在重复冲突运单号: {tracking_number}")
         records_by_tracking[tracking_number] = record
     return list(records_by_tracking.values()), sorted(skipped_receipt_codes), invalid_rows
+
+
+def fetch_arrive_list_records(
+    params: dict,
+    *,
+    http_call: Any | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch and normalize the target day's authoritative arrive-list rows."""
+    _emit_progress("开始拉取派件预报")
+    dispatch_result = (http_call or call_http_service)("/fetch_dispatch", _build_dispatch_request(params))
+    raise_tms_auth_error_if_present(dispatch_result)
+    rows = _extract_rows(dispatch_result)
+    if rows is None:
+        raise ValueError("fetch_dispatch 返回格式异常")
+    _emit_progress("派件预报拉取完成", rows=len(rows))
+
+    records, skipped_receipt_codes, invalid_rows = _normalize_dispatch_records(rows)
+    if invalid_rows:
+        raise ValueError(f"派件预报存在 {invalid_rows} 条缺少主单号或结构异常的记录，停止提交")
+    result = {
+        "ok": True,
+        "source": "fetch_dispatch",
+        "fetched": len(rows),
+        "bill_codes": len(records),
+        "skipped_receipt_like": len(skipped_receipt_codes),
+        "invalid_rows": invalid_rows,
+    }
+    _emit_progress(
+        "派件预报整理完成",
+        tracking_number=len(records),
+        skipped_receipt_like=len(skipped_receipt_codes),
+        invalid_rows=invalid_rows,
+    )
+    return records, result
 
 
 def _load_sheet_resource(resource_key: str) -> dict:
@@ -238,31 +279,12 @@ def _write_sheet_resource(resource_key: str, rows: list[list[Any]], params: dict
 
 
 def run_arrive_list_sync(params: dict) -> dict:
-    _emit_progress("开始拉取派件预报")
-    dispatch_result = call_http_service("/fetch_dispatch", _build_dispatch_request(params))
-    if auth_error := tms_auth_error_result(dispatch_result):
-        return auth_error
-    rows = _extract_rows(dispatch_result)
-    if rows is None:
-        return {"error": "fetch_dispatch 返回格式异常", "raw": dispatch_result}
-    _emit_progress("派件预报拉取完成", rows=len(rows))
-
     try:
-        records, skipped_receipt_codes, invalid_rows = _normalize_dispatch_records(rows)
+        records, source_result = fetch_arrive_list_records(params)
+    except TMSAuthSyncError as exc:
+        return exc.result
     except ValueError as exc:
         return {"error": str(exc), "stage": "forecast_validation_failed"}
-    if invalid_rows:
-        return {
-            "error": f"派件预报存在 {invalid_rows} 条缺少主单号或结构异常的记录，停止提交",
-            "stage": "forecast_validation_failed",
-            "invalid_rows": invalid_rows,
-        }
-    _emit_progress(
-        "派件预报整理完成",
-        tracking_number=len(records),
-        skipped_receipt_like=len(skipped_receipt_codes),
-        invalid_rows=invalid_rows,
-    )
 
     sheet_rows = render_arrive_sheet_rows(records)
     _emit_progress("派件预报表格整理完成", rows=len(sheet_rows))
@@ -298,7 +320,6 @@ def run_arrive_list_sync(params: dict) -> dict:
     except Exception as exc:
         return {
             "error": f"预计到货共享快照写入失败: {str(exc)[:500]}",
-            "stage": "forecast_snapshot_failed",
             "mysql_result": mysql_result,
             "primary_result": primary_result,
             "secondary_result": secondary_result,
@@ -308,11 +329,7 @@ def run_arrive_list_sync(params: dict) -> dict:
 
     return {
         "ok": True,
-        "source": "fetch_dispatch",
-        "fetched": len(rows),
-        "bill_codes": len(records),
-        "skipped_receipt_like": len(skipped_receipt_codes),
-        "invalid_rows": invalid_rows,
+        **source_result,
         "detail_records": len(records),
         "mysql_result": mysql_result,
         "primary_result": primary_result,

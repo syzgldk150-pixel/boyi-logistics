@@ -12,9 +12,18 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
+from tools.delivery_status_common import (
+    PENDING_STATUS,
+    STATUS_FIELD_NAME,
+    WAYBILL_FIELD_NAME,
+    is_signed_status as _is_signed_status,
+    normalize_status as _normalize_status,
+    normalize_waybill as _normalize_waybill,
+    query_delivery_status as _query_delivery_status_common,
+)
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import update_console_waybill_statuses
-from tools.phase7_sync_common import tms_auth_error_result
+from tools.phase7_sync_common import normalize_explicit_account_params
 from tools.tms_tool import call_http_service
 
 
@@ -23,16 +32,14 @@ DEFAULT_BASE_TOKEN = "Fcm8b2H7wayK1UsYLjlcFmWhnMh"
 DEFAULT_TABLE_ID = "tblX96gGAuBfJrtW"
 DEFAULT_VIEW_ID = "veweDmbdIS"
 DEFAULT_VIEW_NAME = "未签收明细"
-WAYBILL_FIELD_NAME = "运单编号"
-STATUS_FIELD_NAME = "签收状态"
-PENDING_STATUS = "未签收"
-SIGNED_STATUSES = {"签收", "已签收"}
-
-
 def _split_csv(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
     return [part.strip() for part in str(value or "").replace(";", ",").split(",") if part.strip()]
+
+
+def _query_delivery_status(codes: list[str], params: dict[str, Any]) -> tuple[dict[str, str] | None, dict[str, Any]]:
+    return _query_delivery_status_common(codes, params, service_call=call_http_service)
 
 
 def _query_value(params: dict[str, Any], key: str) -> Any:
@@ -40,39 +47,6 @@ def _query_value(params: dict[str, Any], key: str) -> Any:
     if isinstance(query, dict):
         return query.get(key)
     return None
-
-
-def _text_from_field_value(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, (str, int, float)):
-        return str(value).strip()
-    if isinstance(value, list):
-        return "".join(_text_from_field_value(item) for item in value).strip()
-    if isinstance(value, dict):
-        for key in ("text", "value", "name", "link"):
-            text = _text_from_field_value(value.get(key))
-            if text:
-                return text
-        return "".join(_text_from_field_value(item) for item in value.values()).strip()
-    return str(value).strip()
-
-
-def _normalize_waybill(value: Any) -> str:
-    text = _text_from_field_value(value)
-    if text.startswith("="):
-        text = text[1:].strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        text = text[1:-1].strip()
-    return re.sub(r"\s+", "", text)
-
-
-def _normalize_status(value: Any) -> str:
-    return _text_from_field_value(value).replace(" ", "")
-
-
-def _is_signed_status(value: Any) -> bool:
-    return _normalize_status(value) in SIGNED_STATUSES
 
 
 def _config_value(params: dict[str, Any], resource: dict[str, Any], *keys: str) -> Any:
@@ -253,48 +227,6 @@ def _unique_codes(records: list[dict[str, str]]) -> list[str]:
             seen.add(code)
             codes.append(code)
     return codes
-
-
-def _status_by_code(rows: list[dict[str, Any]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for row in rows:
-        code = _normalize_waybill(row.get(WAYBILL_FIELD_NAME))
-        if not code:
-            continue
-        result[code] = _normalize_status(row.get(STATUS_FIELD_NAME))
-    return result
-
-
-def _query_delivery_status(codes: list[str], params: dict[str, Any]) -> tuple[dict[str, str] | None, dict[str, Any]]:
-    batch_size = int(params.get("query_batch_size") or 100)
-    timeout_sec = int(params.get("timeout_sec") or 600)
-    status_map: dict[str, str] = {}
-    raw_batches: list[dict[str, Any]] = []
-
-    for start in range(0, len(codes), batch_size):
-        batch = codes[start : start + batch_size]
-        request_params = {
-            "bill_codes": ",".join(batch),
-        }
-        for key in ("session_profile", "account_id", "accountId"):
-            if params.get(key) not in (None, ""):
-                request_params[key] = params[key]
-        tms_result = call_http_service(
-            "/delivery_status",
-            {
-                "params": request_params,
-                "timeout_sec": timeout_sec,
-            },
-        )
-        raw_batches.append(tms_result if isinstance(tms_result, dict) else {"raw": tms_result})
-        if auth_error := tms_auth_error_result(tms_result):
-            return None, auth_error
-        rows = tms_result.get("data") if isinstance(tms_result, dict) else None
-        if not isinstance(rows, list):
-            return None, {"error": "delivery_status 返回格式异常", "raw": tms_result}
-        status_map.update(_status_by_code(rows))
-
-    return status_map, {"batches": raw_batches, "batch_count": len(raw_batches)}
 
 
 def _write_status_records(records: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
@@ -498,7 +430,7 @@ def _run_bitable_scan_delivery_status_sync(params: dict[str, Any]) -> dict[str, 
 
 
 def run_delivery_status_sync(params: dict[str, Any]) -> dict[str, Any]:
-    params = params or {}
+    params = normalize_explicit_account_params(params or {}, label="签收状态同步")
     bill_codes = _split_csv(
         params.get("bill_codes")
         or params.get("BILL_CODE")

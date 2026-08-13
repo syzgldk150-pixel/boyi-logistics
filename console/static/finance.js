@@ -8,6 +8,11 @@
     batches: "/finance/sync-batches",
     sync: "/finance/sync",
     backfill: "/finance/backfill",
+    reviews: "/finance/review-cases",
+    analyzeReviews: "/finance/reviews/analyze",
+    waybillFacts: "/finance/waybill-facts",
+    knowledge: "/finance/knowledge",
+    llmStatus: "/settings/llm/status",
   };
 
   function initFinanceWorkbenches() {
@@ -24,13 +29,15 @@
       activeTab: "overview",
       loadedTabs: new Set(),
       accounts: [],
-      bookingFeeItems: { ronghui: [], yunda: [] },
+      bookingFeeItems: {},
       entryPage: 1,
       entryPageSize: 50,
       entryTotal: 0,
       loadingEntries: false,
       loadingMappings: false,
       loadingBatches: false,
+      loadingReviews: false,
+      loadingWaybillFacts: false,
     };
 
     const statusNode = $("[data-finance-status]");
@@ -45,6 +52,8 @@
     const mappingForm = $("[data-finance-mapping-form]");
     const syncForm = $("[data-finance-sync-form]");
     const backfillForm = $("[data-finance-backfill-form]");
+    const reviewForm = $("[data-finance-review-form]");
+    const waybillForm = $("[data-finance-waybill-form]");
 
     function isRootActive() {
       if (!root.isConnected || root.closest("[hidden]")) return false;
@@ -308,6 +317,8 @@
         state.loadedTabs.add(name);
         if (name === "entries") loadEntries();
         if (name === "mappings") loadMappings();
+        if (name === "reviews") loadReviews();
+        if (name === "waybill-facts") loadWaybillFacts();
         if (name === "sync") loadBatches();
       }
     }
@@ -337,9 +348,15 @@
     }
 
     function renderMetrics(summary) {
-      const moneyKeys = new Set(["total_income", "total_expense", "net_change", "waybill_cost", "operating_cost"]);
+      const moneyKeys = new Set(["total_income", "total_expense", "net_change", "waybill_net", "operating_net", "unclassified_net"]);
+      const labels = {
+        waybill_net: "运单财务净额",
+        operating_net: "运营级净额",
+        unclassified_net: "未分类净额",
+      };
       $$('[data-finance-metric]').forEach((button) => {
         const key = button.dataset.financeMetric;
+        if (labels[key]) button.querySelector("span").textContent = labels[key];
         const value = button.querySelector("strong");
         if (!value) return;
         value.classList.remove("finance-skeleton-line");
@@ -354,6 +371,21 @@
       const latest = displayText(summary.latest_success_at);
       const validation = validationStatusLabel(summary.validation_status);
       freshnessNode.textContent = `数据截止日期：${through} · 最近成功：${latest} · 校验：${validation}`;
+      const classified = $("[data-finance-classified]");
+      const unclassified = $("[data-finance-unclassified]");
+      const missing = $("[data-finance-missing-waybill]");
+      if (classified) classified.textContent = `已分类：${displayText(summary.classified_rows, "0")} 笔 / ${moneyText(summary.classified_net)}`;
+      if (unclassified) unclassified.textContent = `未分类：${displayText(summary.unclassified_rows, "0")} 笔 / ${moneyText(summary.unclassified_net)}`;
+      if (missing) missing.textContent = `缺失运单号：${displayText(summary.missing_waybill_rows, "0")} 笔 / ${moneyText(summary.missing_waybill_net)}`;
+    }
+
+    function renderModelHealth(payload) {
+      const node = $("[data-finance-llm-health]");
+      if (!node) return;
+      const runtime = payload?.runtime || {};
+      node.textContent = runtime.configured
+        ? `智能模型：${displayText(runtime.provider)} / ${displayText(runtime.model)} / ${displayText(runtime.health)}`
+        : "智能模型：未配置（确定性财务任务继续运行）";
     }
 
     function safePlotRatio(value) {
@@ -403,17 +435,25 @@
         button.className = "finance-bar-button";
         button.dataset.financeDrillAccount = String(row.account_id || "");
         button.dataset.financeDrillPlatform = String(row.platform || "");
-        button.setAttribute("aria-label", `查看${optionLabel(row)}的交易明细，运单级成本${moneyText(row.waybill_cost)}，运营级成本${moneyText(row.operating_cost)}`);
+        button.setAttribute("aria-label", `查看${optionLabel(row)}的交易明细，运单财务净额${moneyText(row.waybill_net)}，运营级净额${moneyText(row.operating_net)}`);
         button.innerHTML = `
           <span class="finance-bar-label">${escapeHtml(optionLabel(row))}</span>
-          <span class="finance-account-values">运单级 ${escapeHtml(moneyText(row.waybill_cost))} / 运营级 ${escapeHtml(moneyText(row.operating_cost))}</span>
+          <span class="finance-account-values">运单净额 ${escapeHtml(moneyText(row.waybill_net))} / 运营净额 ${escapeHtml(moneyText(row.operating_net))}</span>
           <span class="finance-account-cost-pair" aria-hidden="true">
-            <span class="finance-account-cost-row"><small>运单级</small><span class="finance-bar-track"><span class="finance-bar-fill finance-bar-fill--waybill" style="--finance-bar:${safePlotRatio(row.waybill_cost_plot)}%"></span></span></span>
-            <span class="finance-account-cost-row"><small>运营级</small><span class="finance-bar-track"><span class="finance-bar-fill finance-bar-fill--operating" style="--finance-bar:${safePlotRatio(row.operating_cost_plot)}%"></span></span></span>
+            <span class="finance-account-cost-row"><small>运单净额</small><span class="finance-bar-track"><span class="finance-bar-fill finance-bar-fill--waybill" style="--finance-bar:${safePlotRatio(row.waybill_net_plot)}%"></span></span></span>
+            <span class="finance-account-cost-row"><small>运营净额</small><span class="finance-bar-track"><span class="finance-bar-fill finance-bar-fill--operating" style="--finance-bar:${safePlotRatio(row.operating_net_plot)}%"></span></span></span>
           </span>`;
         list.appendChild(button);
-        table.insertAdjacentHTML("beforeend", `<tr><td>${escapeHtml(platformLabel(row.platform))}</td><td>${escapeHtml(displayText(row.login_account, row.account_id))}</td><td data-money>${escapeHtml(moneyText(row.total_expense))}</td><td data-money>${escapeHtml(moneyText(row.waybill_cost))}</td><td data-money>${escapeHtml(moneyText(row.operating_cost))}</td></tr>`);
+        table.insertAdjacentHTML("beforeend", `<tr><td>${escapeHtml(platformLabel(row.platform))}</td><td>${escapeHtml(displayText(row.login_account, row.account_id))}</td><td data-money>${escapeHtml(moneyText(row.total_expense))}</td><td data-money>${escapeHtml(moneyText(row.waybill_net))}</td><td data-money>${escapeHtml(moneyText(row.operating_net))}</td></tr>`);
       });
+    }
+
+    function renderOperatingTrend(rows) {
+      const body = $("[data-finance-operating-trend-table]");
+      if (!body) return;
+      body.innerHTML = rows.length
+        ? rows.map((row) => `<tr><td>${escapeHtml(displayText(row.date))}</td><td data-money>${escapeHtml(moneyText(row.income))}</td><td data-money>${escapeHtml(moneyText(row.expense))}</td><td data-money>${escapeHtml(moneyText(row.net_change))}</td></tr>`).join("")
+        : '<tr><td colspan="4" class="finance-empty-cell">当前范围没有已确认的运营级费用。</td></tr>';
     }
 
     function svgNode(name, attributes = {}) {
@@ -536,9 +576,11 @@
       setButtonBusy(refreshButton, true, "刷新中");
       setStatus("正在查询汇总和趋势数据。", "");
       const query = toQuery(globalFilters());
-      const [summaryResult, trendResult] = await Promise.allSettled([
+      const [summaryResult, trendResult, operatingTrendResult, llmResult] = await Promise.allSettled([
         fetchJson(`${ENDPOINTS.summary}?${query}`),
         fetchJson(`${ENDPOINTS.trend}?${query}`),
+        fetchJson(`${ENDPOINTS.trend}?${toQuery({ ...globalFilters(), fee_level: "operating" })}`),
+        fetchJson(ENDPOINTS.llmStatus),
       ]);
       const failures = [];
       if (summaryResult.status === "fulfilled") {
@@ -560,8 +602,20 @@
         failures.push(`趋势：${trendResult.reason.message}`);
         renderTrend([]);
       }
+      if (operatingTrendResult.status === "fulfilled") {
+        renderOperatingTrend(Array.isArray(operatingTrendResult.value.items) ? operatingTrendResult.value.items : []);
+      } else {
+        failures.push(`运营级趋势：${operatingTrendResult.reason.message}`);
+        renderOperatingTrend([]);
+      }
+      if (llmResult.status === "fulfilled") renderModelHealth(llmResult.value);
+      else {
+        const node = $("[data-finance-llm-health]");
+        if (node) node.textContent = "智能模型：状态不可达";
+      }
       setButtonBusy(refreshButton, false, "刷新中");
-      if (failures.length === 2) {
+      const coreFailures = [summaryResult, trendResult].filter((item) => item.status === "rejected").length;
+      if (coreFailures === 2) {
         showError(`财务总览未能加载。${failures.join("；")}`);
         setStatus("财务总览加载失败，请修复服务状态后重试。", "error");
       } else if (failures.length) {
@@ -679,16 +733,19 @@
     }
 
     function renderBookingFeeLists(itemsByPlatform) {
-      state.bookingFeeItems = {
-        ronghui: Array.isArray(itemsByPlatform?.ronghui) ? itemsByPlatform.ronghui : [],
-        yunda: Array.isArray(itemsByPlatform?.yunda) ? itemsByPlatform.yunda : [],
-      };
-      ["ronghui", "yunda"].forEach((platform) => {
-        const list = $(`[data-finance-booking-fee-items="${platform}"]`);
-        if (!list) return;
+      state.bookingFeeItems = Object.fromEntries(
+        Object.entries(itemsByPlatform || {}).map(([platform, items]) => [
+          platform,
+          Array.isArray(items) ? items : [],
+        ]),
+      );
+      $$('[data-finance-booking-fee-items]').forEach((list) => {
+        const platform = String(list.dataset.financeBookingFeeItems || "");
         list.innerHTML = state.bookingFeeItems[platform]
-          .map((item) => `<option value="${escapeHtml(item)}"></option>`)
-          .join("");
+          ? state.bookingFeeItems[platform]
+              .map((item) => `<option value="${escapeHtml(item)}"></option>`)
+              .join("")
+          : "";
       });
     }
 
@@ -712,7 +769,7 @@
         const feeLevel = String(row.fee_level || "");
         const operating = feeLevel === "operating";
         const income = direction === "income";
-        const listId = `finance-booking-${row.platform === "ronghui" ? "ronghui" : "yunda"}`;
+        const listId = `finance-booking-${String(row.platform || "")}`;
         return `<tr data-finance-mapping-row data-fee-item-id="${feeItemId}" data-direction="${escapeHtml(direction)}" data-platform="${escapeHtml(row.platform || "")}">
           ${responsiveCell("平台", escapeHtml(platformLabel(row.platform)))}
           ${responsiveCell("原始一级费用", escapeHtml(displayText(row.primary_fee_name)))}
@@ -726,6 +783,19 @@
           ${responsiveCell("操作", `<div class="finance-row-actions"><button class="ghost-btn finance-row-action" type="button" data-finance-mapping-save><span>保存绑定</span></button><span class="visually-hidden" role="status" aria-live="polite" data-finance-mapping-row-status></span></div>`)}
         </tr>`;
       }).join("");
+      Array.from(body.querySelectorAll("[data-finance-mapping-row]")).forEach((mappingRow, index) => {
+        const booking = mappingRow.querySelector("[data-finance-mapping-booking]");
+        const container = booking?.closest("td");
+        if (!container) return;
+        const subject = document.createElement("input");
+        subject.type = "text";
+        subject.className = "finance-mapping-name";
+        subject.dataset.financeMappingSubject = "";
+        subject.placeholder = "标准财务科目（必填）";
+        subject.setAttribute("aria-label", "标准财务科目");
+        subject.value = items[index]?.canonical_subject_name || items[index]?.secondary_fee_name || items[index]?.primary_fee_name || "";
+        container.prepend(subject);
+      });
     }
 
     async function loadMappings() {
@@ -768,7 +838,9 @@
       const body = {
         direction: row.dataset.direction || "",
         fee_level: row.querySelector("[data-finance-mapping-level]")?.value || "",
+        canonical_subject_name: row.querySelector("[data-finance-mapping-subject]")?.value.trim() || "",
         booking_fee_name: row.querySelector("[data-finance-mapping-booking]")?.value.trim() || "",
+        requires_waybill: (row.querySelector("[data-finance-mapping-level]")?.value || "") === "waybill",
         effective_start_month: row.querySelector("[data-finance-mapping-start]")?.value || "",
         effective_end_month: row.querySelector("[data-finance-mapping-end]")?.value || "",
         include_in_cost: Boolean(row.querySelector("[data-finance-mapping-cost]")?.checked),
@@ -779,8 +851,8 @@
         status.classList.remove("visually-hidden");
         return;
       }
-      if (body.fee_level === "waybill" && !body.booking_fee_name) {
-        status.textContent = "运单级费用必须选择真实录单项目。";
+      if (!body.canonical_subject_name) {
+        status.textContent = "请填写标准财务科目。";
         status.classList.remove("visually-hidden");
         return;
       }
@@ -803,6 +875,159 @@
       } finally {
         setButtonBusy(button, false, "保存中");
       }
+    }
+
+    function renderReviews(payload) {
+      const body = $("[data-finance-review-body]");
+      const count = $("[data-finance-review-count]");
+      const panelState = $("[data-finance-review-state]");
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (count) count.textContent = `共 ${displayText(payload.total)} 个审批项目。`;
+      if (!body) return;
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="finance-empty-cell">当前没有符合条件的审批项目。</td></tr>';
+        setPanelState(panelState, "当前没有待处理异常。", "empty");
+        return;
+      }
+      setPanelState(panelState);
+      body.innerHTML = items.map((item) => {
+        const suggestion = item.suggestion || {};
+        const open = item.status === "open";
+        const coverage = Number(item.transaction_count || 0) > 0
+          ? `${((Number(item.waybill_present_count || 0) / Number(item.transaction_count)) * 100).toFixed(1)}%`
+          : "无数据";
+        const subject = suggestion.canonical_subject || item.secondary_fee_name || item.primary_fee_name || "";
+        const level = suggestion.fee_level === "operating" ? "operating" : suggestion.fee_level === "waybill" ? "waybill" : "";
+        const reason = suggestion.reason || "人工依据：";
+        const controls = open ? `<div class="finance-review-controls">
+          <select data-review-level aria-label="费用层级"><option value="">选择层级</option><option value="waybill" ${level === "waybill" ? "selected" : ""}>运单级</option><option value="operating" ${level === "operating" ? "selected" : ""}>运营级</option></select>
+          <input data-review-subject value="${escapeHtml(subject)}" placeholder="标准科目" aria-label="标准科目">
+          <input data-review-reason value="${escapeHtml(reason)}" placeholder="确认或驳回理由" aria-label="处理理由">
+          <div class="finance-row-actions"><button class="ghost-btn finance-row-action" type="button" data-finance-review-approve>确认并回算</button><button class="ghost-btn finance-row-action" type="button" data-finance-review-reject>驳回建议</button></div>
+        </div>` : `<span class="finance-pill">${escapeHtml(item.status)}</span>`;
+        const suggestionText = suggestion.reason
+          ? `${escapeHtml(suggestion.canonical_subject)} · ${escapeHtml(levelLabel(suggestion.fee_level))}<br><small>${escapeHtml(suggestion.reason)} · 置信度 ${escapeHtml(suggestion.confidence)}</small>`
+          : item.ai_status === "failed" ? `分析失败：${escapeHtml(item.ai_error_message || "未知错误")}` : "等待 AI 分析";
+        return `<tr data-finance-review-row data-review-id="${Number(item.id)}" data-fee-item-id="${Number(item.fee_item_id)}" data-direction="${escapeHtml(item.direction)}" data-first-seen="${escapeHtml(item.first_seen_date)}">
+          ${responsiveCell("项目", `<strong>${escapeHtml(item.secondary_fee_name || item.primary_fee_name)}</strong><br><small>${escapeHtml(platformLabel(item.platform))}</small>`)}
+          ${responsiveCell("方向", escapeHtml(directionLabel(item.direction)))}
+          ${responsiveCell("日期 / 笔数", `${escapeHtml(item.first_seen_date)} 至 ${escapeHtml(item.last_seen_date)}<br>${Number(item.transaction_count || 0)} 笔`)}
+          ${responsiveCell("净额", escapeHtml(moneyText(item.net_change)))}
+          ${responsiveCell("运单覆盖", coverage)}
+          ${responsiveCell("AI 建议", suggestionText)}
+          ${responsiveCell("操作", controls)}
+        </tr>`;
+      }).join("");
+    }
+
+    async function loadReviews() {
+      if (state.loadingReviews || !reviewForm) return;
+      state.loadingReviews = true;
+      const panelState = $("[data-finance-review-state]");
+      setPanelState(panelState, "正在读取异常审批单…", "loading");
+      try {
+        const values = formValues(reviewForm);
+        const payload = await fetchJson(`${ENDPOINTS.reviews}?${toQuery(values)}`);
+        renderReviews(payload);
+      } catch (error) {
+        setPanelState(panelState, `审批单读取失败：${error.message}`, "error");
+      } finally { state.loadingReviews = false; }
+    }
+
+    async function approveReview(row, button) {
+      const status = row.querySelector("[data-review-reason]");
+      const feeLevel = row.querySelector("[data-review-level]")?.value || "";
+      const subject = row.querySelector("[data-review-subject]")?.value.trim() || "";
+      const reason = status?.value.trim() || "";
+      if (!feeLevel || !subject || !reason) {
+        setStatus("确认前必须填写层级、标准科目和理由。", "error");
+        return;
+      }
+      setButtonBusy(button, true, "确认中");
+      try {
+        await fetchJson(`${ENDPOINTS.mappings}/${Number(row.dataset.feeItemId)}`, {
+          method: "POST",
+          body: JSON.stringify({
+            fee_level: feeLevel,
+            canonical_subject_name: subject,
+            booking_fee_name: "",
+            requires_waybill: feeLevel === "waybill",
+            effective_start_month: String(row.dataset.firstSeen || "").slice(0, 7),
+            effective_end_month: "",
+            include_in_cost: row.dataset.direction === "expense",
+            reason,
+          }),
+        });
+        setStatus("规则已确认，并从首次出现月份回算受影响数据。", "success");
+        await Promise.all([loadReviews(), loadOverview()]);
+      } catch (error) { setStatus(`确认失败：${error.message}`, "error"); }
+      finally { setButtonBusy(button, false, "确认并回算"); }
+    }
+
+    async function rejectReview(row, button) {
+      const reason = row.querySelector("[data-review-reason]")?.value.trim() || "";
+      if (!reason) { setStatus("驳回时必须填写理由。", "error"); return; }
+      setButtonBusy(button, true, "驳回中");
+      try {
+        await fetchJson(`${ENDPOINTS.reviews}/${Number(row.dataset.reviewId)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+        setStatus("审批单已驳回；未创建正式财务映射。", "success");
+        await loadReviews();
+      } catch (error) { setStatus(`驳回失败：${error.message}`, "error"); }
+      finally { setButtonBusy(button, false, "驳回建议"); }
+    }
+
+    async function analyzeReviews(button) {
+      setButtonBusy(button, true, "分析中");
+      try {
+        const result = await fetchJson(ENDPOINTS.analyzeReviews, { method: "POST", body: JSON.stringify({ limit: 20 }) });
+        setStatus(result.status === "pending" ? "当前没有激活模型，审批单继续保持待分析。" : `AI 分析完成：成功 ${result.completed || 0}，失败 ${result.failed || 0}。`, result.failed ? "warning" : "success");
+        await loadReviews();
+      } catch (error) { setStatus(`AI 分析失败：${error.message}`, "error"); }
+      finally { setButtonBusy(button, false, "分析待处理项目"); }
+    }
+
+    function renderWaybillFacts(payload) {
+      const body = $("[data-finance-waybill-body]");
+      const count = $("[data-finance-waybill-count]");
+      const panelState = $("[data-finance-waybill-state]");
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (count) count.textContent = `共 ${displayText(payload.total)} 条科目事实。`;
+      if (!body) return;
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="8" class="finance-empty-cell">当前范围没有已分类的运单财务事实。</td></tr>';
+        setPanelState(panelState, "无数据", "empty");
+        return;
+      }
+      setPanelState(panelState);
+      body.innerHTML = items.map((item) => `<tr>
+        ${responsiveCell("日期", escapeHtml(item.business_date))}
+        ${responsiveCell("平台 / 账号", `${escapeHtml(platformLabel(item.platform))}<br>${escapeHtml(item.account_id)}`)}
+        ${responsiveCell("运单号", `<strong>${escapeHtml(item.waybill_no)}</strong>`)}
+        ${responsiveCell("标准科目", escapeHtml(item.subject_name))}
+        ${responsiveCell("收入", escapeHtml(moneyText(item.income)))}
+        ${responsiveCell("支出", escapeHtml(moneyText(item.expense)))}
+        ${responsiveCell("净额", escapeHtml(moneyText(item.net_change)))}
+        ${responsiveCell("映射版本", `v${Number(item.mapping_version || 0)}`)}
+      </tr>`).join("");
+    }
+
+    async function loadWaybillFacts() {
+      if (state.loadingWaybillFacts || !waybillForm) return;
+      state.loadingWaybillFacts = true;
+      const panelState = $("[data-finance-waybill-state]");
+      setPanelState(panelState, "正在读取运单财务事实…", "loading");
+      try {
+        const query = { ...globalFilters(), ...formValues(waybillForm) };
+        const payload = await fetchJson(`${ENDPOINTS.waybillFacts}?${toQuery(query)}`);
+        renderWaybillFacts(payload);
+        const knowledge = await fetchJson(ENDPOINTS.knowledge);
+        const link = $("[data-finance-knowledge-link]");
+        if (link && knowledge.consistent && knowledge.latest_export?.relative_path) {
+          link.href = `/runtime/${encodeURI(knowledge.latest_export.relative_path)}`;
+          link.hidden = false;
+        }
+      } catch (error) { setPanelState(panelState, `运单财务读取失败：${error.message}`, "error"); }
+      finally { state.loadingWaybillFacts = false; }
     }
 
     function renderBatches(payload) {
@@ -889,7 +1114,7 @@
         );
         setStatus(financeReceiptText(receipt, `批次 #${batchId} 重试计划`), "warning");
       } catch (error) {
-        setStatus(`批次重试失败：${error.message}`, "error");
+        setStatus(`批次重试计划未提交：${error.message}`, "error");
       } finally {
         setButtonBusy(button, false, "重试中");
       }
@@ -908,6 +1133,8 @@
     backfillForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
     entryForm?.addEventListener("submit", (event) => { event.preventDefault(); state.entryPage = 1; loadEntries(); });
     mappingForm?.addEventListener("submit", (event) => { event.preventDefault(); loadMappings(); });
+    reviewForm?.addEventListener("submit", (event) => { event.preventDefault(); loadReviews(); });
+    waybillForm?.addEventListener("submit", (event) => { event.preventDefault(); loadWaybillFacts(); });
     syncForm?.addEventListener("submit", (event) => { event.preventDefault(); submitSyncAction(syncForm, ENDPOINTS.sync, "提交中"); });
     backfillForm?.addEventListener("submit", (event) => { event.preventDefault(); submitSyncAction(backfillForm, ENDPOINTS.backfill, "创建中"); });
     $("[data-finance-sync-status]")?.addEventListener("change", loadBatches);
@@ -947,7 +1174,22 @@
       if (retry) {
         const row = retry.closest("[data-finance-batch-row]");
         if (row) retryBatch(row, retry);
+        return;
       }
+      const approve = event.target.closest("[data-finance-review-approve]");
+      if (approve) {
+        const row = approve.closest("[data-finance-review-row]");
+        if (row) approveReview(row, approve);
+        return;
+      }
+      const reject = event.target.closest("[data-finance-review-reject]");
+      if (reject) {
+        const row = reject.closest("[data-finance-review-row]");
+        if (row) rejectReview(row, reject);
+        return;
+      }
+      const analyze = event.target.closest("[data-finance-analyze-reviews]");
+      if (analyze) analyzeReviews(analyze);
     });
 
     root.addEventListener("change", (event) => {
@@ -958,7 +1200,7 @@
       }
     });
 
-    $$('table.finance-entry-table, table.finance-mapping-table, table.finance-sync-table').forEach((table) => table.classList.add("finance-table--responsive"));
+    $$('table.finance-entry-table, table.finance-mapping-table, table.finance-review-table, table.finance-waybill-table, table.finance-sync-table').forEach((table) => table.classList.add("finance-table--responsive"));
     setOverviewLoading();
     syncEntryDates();
     activateTab("overview");

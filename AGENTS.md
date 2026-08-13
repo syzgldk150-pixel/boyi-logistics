@@ -36,7 +36,7 @@
 - Console 保持现有 HTTP 框架；`console/app.py` 只负责组合、生命周期和请求分发，业务实现必须进入 `console/services/`，路由识别进入 `console/routes/`。
 - TMS SessionBroker 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别位于 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 和 `session_validation_service.py`，调度器只依赖公开接口。
 - `agent/agent/` 不得依赖 `tools` 或 `feishu`；跨包回调和事件必须由 `agent/main.py` 组合注入，或通过 `shared/runtime_events.py` 的中立契约发布。
-- 生产与 CI 固定使用 Python 3.10；服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 精确固定。Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境；只有任一锁文件内容变化或环境校验失败时才构建新环境并在健康检查前原子切换。失败时从当次暂存目录恢复旧环境和源码；成功后立即删除临时回滚材料、持久发布备份和所有非当前虚拟环境，ECS 最终只保留一个运行环境。
+- 生产与 CI 固定使用 Python 3.10；服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 精确固定。Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境；只有任一锁文件内容变化或环境校验失败时才构建新环境并在健康检查前原子切换。失败时从当次暂存目录恢复旧环境和源码；成功后也必须保留当次远端精确回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。
 - 提交前运行 Ruff、工具清单、仓库卫生、内部 API 契约与导入边界检查，GitHub Actions 也必须覆盖这些检查。跟踪文本统一 UTF-8 无 BOM，单个 Python 文件不得超过 3,000 行。
 - `.env` 只允许由服务或脚本入口通过显式 bootstrap 加载一次；库模块、测试导入和共享模块不得读取 `.env`、创建运行目录或连接数据库。
 
