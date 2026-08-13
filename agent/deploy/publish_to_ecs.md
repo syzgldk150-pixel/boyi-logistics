@@ -23,6 +23,8 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 4. Windows `known_hosts` 必须已有经过人工核验的 ECS 主机密钥。
 5. SSH 只允许固定私钥、公钥认证、`BatchMode=yes`、`IdentitiesOnly=yes` 和 `StrictHostKeyChecking=yes`；不允许 root、密码回退或跳过主机校验。
 6. 远端执行用户必须是 `boyce`，systemd `WorkingDirectory` 必须与上述固定目录一致。
+7. 数据库必须是官方 MySQL 8.x（不接受 MySQL 5.7、MariaDB 或未知版本）；迁移预检会在读取迁移历史或执行任何 DDL 前查询并校验服务端版本。
+8. Agent 与 Console 的运行环境必须注入同一份非空 `CONSOLE_AGENT_SIGNING_SECRET`，且与 `AGENT_INTERNAL_API_TOKEN` 分离。发布脚本不会生成、读取或打印这两个值；缺少签名密钥时管理员命令、事项审批和账号管理会显式返回 503/403。
 
 ## 源码白名单
 
@@ -46,10 +48,10 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 3. 校验 SSH 主机密钥、远端用户和 systemd 工作目录。
 4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`。
 5. 在本次 `/home/boyce/.boyi-deploy/release-*/_rollback/` 内临时备份当前受管源码和发布清单，只供本次失败回滚使用。
-6. 对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口。
+6. 对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口，并在任何 DDL 前验证官方 MySQL 8.x。
 7. 分别计算 Agent、Console `requirements.lock` 的 SHA-256，再生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；若当前共享环境的哈希一致且分别通过两份锁文件校验，直接复用。只有任一锁变化或校验失败时，才创建新的共享环境并一次性安装两份锁文件的并集。
 8. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-9. 将当前同名 systemd unit 写入当次临时回滚目录，再安装新 unit、按需原子切换虚拟环境、执行 `daemon-reload`，写入 `runtime/release_sha` 后重启原服务。
+9. 先执行全部版本化迁移，再将当前同名 systemd unit 写入当次临时回滚目录、安装新 unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后按 Agent、Console 顺序重启；任一服务未健康前不得继续把入口视为已切换。
 10. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问；成功后把锁文件哈希写入当前环境供后续发布判定。
 11. 任一步失败，删除本次新建环境与新增受管文件、恢复旧虚拟环境、源码备份和发布清单，并重启旧版本。
 12. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/` 与 `/home/boyce/agent_backups/`，清理 `/home/boyce/.boyi-venvs/` 中所有非当前环境，并删除仅用于安装依赖的 `/home/boyce/.cache/pip/`；ECS 最终只保留一个 Agent/Console 共用运行环境，不持久保留发布备份、旧虚拟环境或安装缓存。

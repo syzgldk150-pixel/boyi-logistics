@@ -9,8 +9,30 @@ jobs:
   agent-quality:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_DATABASE: agent_control_plane_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     env:
       PYTHONPATH: ${{ github.workspace }}/agent:${{ github.workspace }}
+      PYTHON_DOTENV_DISABLED: "1"
+      RUN_MYSQL_INTEGRATION: "1"
+      AGENT_DB_HOST: 127.0.0.1
+      AGENT_DB_PORT: "3306"
+      AGENT_DB_USER: root
+      AGENT_DB_PASS: ""
+      AGENT_DB_NAME: agent_control_plane_test
+      MIGRATION_ENV_FILE: /dev/null
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,6 +67,7 @@ jobs:
     timeout-minutes: 20
     env:
       PYTHONPATH: ${{ github.workspace }}
+      PYTHON_DOTENV_DISABLED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

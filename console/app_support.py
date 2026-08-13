@@ -48,6 +48,19 @@ from console.template_store import TemplateStore
 
 from console.finance_service import FinanceError, FinanceService, FinanceValidationError
 from shared.redaction import redact_sensitive, redact_text
+from shared.manual_entry_contracts import YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS
+from shared.customer_problem_policy import (
+    CUSTOMER_SERVICE_ALLOWED_ACCOUNT_SYSTEMS,
+    CUSTOMER_SERVICE_DEFAULT_SETTINGS,
+    CUSTOMER_SERVICE_NOTIFIED_SITE_KEYS,
+    CUSTOMER_SERVICE_PUBLISH_SITE_KEYS,
+    CUSTOMER_SERVICE_RESOURCE_KEY,
+    CUSTOMER_SERVICE_SITE_FILTER_LOGIN,
+    CUSTOMER_SERVICE_SITE_FILTER_SITE,
+    customer_problem_clean_text,
+    customer_problem_field,
+    legacy_customer_problem_included,
+)
 from shared.yunda_console_waybill import build_console_waybill_from_yunda_data
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -62,37 +75,6 @@ ADMIN_PASSWORD_ITERATIONS = 260_000
 ADMIN_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 AVATAR_ALLOWED_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
-CUSTOMER_SERVICE_RESOURCE_KEY = "customer_service.problem_settings"
-CUSTOMER_SERVICE_ALLOWED_ACCOUNT_SYSTEMS = {"ronghui", "yunda"}
-CUSTOMER_SERVICE_DEFAULT_SETTINGS = {
-    "ronghui_account_ids": [],
-    "yunda_account_ids": [],
-    "poll_interval_sec": 60,
-}
-CUSTOMER_SERVICE_SITE_FILTER_LOGIN = "739010002"
-CUSTOMER_SERVICE_SITE_FILTER_SITE = "邵阳操作场"
-CUSTOMER_SERVICE_PUBLISH_SITE_KEYS = (
-    "REGISTER_SITE",
-    "register_site",
-    "REGISTER_SITE_NAME",
-    "register_site_name",
-    "site_id",
-    "site_name",
-    "publish_site",
-    "publisher_site",
-)
-CUSTOMER_SERVICE_NOTIFIED_SITE_KEYS = (
-    "SEND_SITE",
-    "send_site",
-    "SEND_SITE_NAME",
-    "send_site_name",
-    "recv_site_id",
-    "notice_site",
-    "notify_site",
-    "notified_site",
-    "rec_comp",
-    "inform_site_name",
-)
 _CURRENT_ADMIN_USER: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "current_admin_user",
     default=None,
@@ -201,7 +183,7 @@ AUTOMATION_RESOURCE_NOTES = {
     "phase7.delivery_status_bitable": "查询并更新签收状态定时扫描的多维表格配置。",
     "phase7.delivery_status_webhook": "旧版签收状态工作流的兼容 webhook 映射。",
     "phase7.price_query_webhook": "旧版价格查询工作流的兼容 webhook 映射。",
-    "phase7.r13_credentials": "每日应签使用的 R13 独立账号配置；不使用顶部共享 TMS 登录态。",
+    "phase7.r13_credentials": "旧版每日应签账号配置，仅用于识别历史资源；控制平面不会读取，请迁移到统一账号管理。",
     "phase7.daily_sign_bitable": "每日应签数据的多维表格配置。",
     "phase7.daily_sign_sheet": "每日应签结果写入表格配置。",
     "phase7.site_send_bitable": "网点出港清单的多维表格配置。",
@@ -236,12 +218,6 @@ AUTOMATION_RESOURCE_JSON_EXAMPLES = {
     },
     "phase7.price_query_webhook": {
         "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx",
-    },
-    "phase7.r13_credentials": {
-        "username": "R13账号",
-        "password": "R13密码",
-        "disp_site_code": "7390004",
-        "days": 7,
     },
     "phase7.daily_sign_bitable": {
         "base_token": "appxxxxxxxx",
@@ -315,32 +291,7 @@ AUTOMATION_RESOURCE_JSON_EXAMPLES = {
     },
 }
 
-YUNDA_ENTRY_ACTIONS = {
-    "/ocr/yunda/bootstrap": "bootstrap",
-    "/ocr/yunda/get-logistics-num": "get-logistics-num",
-    "/ocr/yunda/address-analysis": "address-analysis",
-    "/ocr/yunda/address-resolution": "address-resolution",
-    "/ocr/yunda/quote-checks": "quote-checks",
-    "/ocr/yunda/feedback/address": "feedback/address",
-    "/ocr/yunda/feedback/cost": "feedback/cost",
-    "/ocr/yunda/feedback/cost/upload": "feedback/cost/upload",
-    "/ocr/yunda/return-upload": "return-upload",
-    "/ocr/yunda/download-template": "download-template",
-    "/ocr/yunda/save": "save",
-    "/ocr/yunda/drafts/save": "drafts/save",
-    "/ocr/yunda/drafts/list": "drafts/list",
-    "/ocr/yunda/drafts/load": "drafts/load",
-    "/ocr/yunda/drafts/delete": "drafts/delete",
-    "/ocr/yunda/templates/save": "templates/save",
-    "/ocr/yunda/templates/list": "templates/list",
-    "/ocr/yunda/templates/load": "templates/load",
-    "/ocr/yunda/templates/delete": "templates/delete",
-    "/ocr/yunda/templates/set-default": "templates/set-default",
-    "/ocr/yunda/print/child": "print/child",
-    "/ocr/yunda/print/master": "print/master",
-    "/ocr/yunda/print/triplicate": "print/triplicate",
-    "/ocr/yunda/print/receipt-label": "print/receipt-label",
-}
+YUNDA_ENTRY_ACTIONS = dict(YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS)
 
 YUNDA_LIVE_PROXY_PREFIX = "/ocr/yunda/live"
 YUNDA_LIVE_ENTRY_PATH = "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
@@ -368,23 +319,6 @@ RECEIPT_DETAIL_KEYS = (
     "waybill_no",
 )
 RECEIPT_DETAIL_REQUIRED_KEYS = set(RECEIPT_DETAIL_KEYS)
-RECEIPT_FEISHU_BASE_TOKEN = "Fcm8b2H7wayK1UsYLjlcFmWhnMh"
-RECEIPT_FEISHU_TABLE_ID = "tblX96gGAuBfJrtW"
-RECEIPT_FEISHU_VIEW_ID = "veweDmbdIS"
-RECEIPT_FEISHU_WAYBILL_FIELD = "运单编号"
-RECEIPT_FEISHU_FIELD_MAP = {
-    "recipient_name": ("收货人", "收件人", "收货客户"),
-    "recipient_address": ("收件地址", "收货地址", "地址"),
-    "goods_name": ("货物名称", "品名", "托寄物"),
-    "package_type": ("包装类型", "包装", "包装方式"),
-    "piece_count": ("件数", "数量"),
-    "actual_weight": ("实际重量",),
-    "volume": ("体积",),
-    "waybill_no": (RECEIPT_FEISHU_WAYBILL_FIELD, "运单号", "运单号码"),
-}
-RECEIPT_FEISHU_FIELD_NAMES = tuple(
-    dict.fromkeys(field_name for names in RECEIPT_FEISHU_FIELD_MAP.values() for field_name in names)
-)
 RONGHUI_LIVE_ALLOWED_PREFIXES = (
     "/widget/",
     "/static/",
@@ -552,6 +486,18 @@ AUTOMATION_WORKFLOW_CATALOG = [
             {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
         ],
         "order": 50,
+    },
+    {
+        "task_id": "customer_problems_shadow",
+        "display_name": "客服问题件事项影子采集",
+        "tool_name": "sync_customer_service_problems",
+        "note": "只读遍历全部融辉、韵达账号的发布给我和我发布的列表，并保存新旧口径对账证据。",
+        "task_mode": "scheduled",
+        "trigger_label": "定时任务 / 手动重新核验",
+        "schedule_summary": "每 15 分钟",
+        "default_tool_params": {"direction": "both"},
+        "account_roles": [],
+        "order": 55,
     },
     {
         "task_id": "clockin_daxiang",

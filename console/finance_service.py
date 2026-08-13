@@ -230,16 +230,13 @@ def _add_plot_ratios(rows: list[dict[str, Any]], amount_keys: tuple[str, ...]) -
 
 
 class FinanceService:
-    """Console-facing adapter for the shared finance repository and Agent sync tool."""
+    """Console-facing validation and query adapter for the finance workbench."""
 
     def __init__(
         self,
         repository: Any,
-        *,
-        agent_request: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.source_repository = repository
-        self.agent_request = agent_request
         if callable(getattr(repository, "get_summary", None)):
             self.repository = repository
         elif SharedFinanceRepository is not None and callable(getattr(repository, "connect", None)):
@@ -491,7 +488,9 @@ class FinanceService:
         payload["page_size"] = pagination.page_size
         return payload
 
-    def start_sync(self, body: Mapping[str, Any]) -> dict[str, Any]:
+    def build_sync_arguments(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate one manual sync request without executing it."""
+
         params: dict[str, Any] = {
             "mode": "sync",
             "rescan_days": _bounded_int(body.get("rescan_days", 7), field_name="重扫天数", minimum=1, maximum=31),
@@ -500,9 +499,11 @@ class FinanceService:
         if target_date:
             params["target_date"] = _parse_date(target_date, field_name="目标日期").isoformat()
         self._append_safe_sync_scope(params, body)
-        return self._run_sync_tool(params)
+        return params
 
-    def start_backfill(self, body: Mapping[str, Any]) -> dict[str, Any]:
+    def build_backfill_arguments(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate one historical backfill request without executing it."""
+
         start_text = _required_text(body.get("start_date"), field_name="回溯开始日期", max_length=10)
         end_text = _required_text(body.get("end_date"), field_name="回溯结束日期", max_length=10)
         start_date = _parse_date(start_text, field_name="回溯开始日期")
@@ -515,12 +516,14 @@ class FinanceService:
             "end_date": end_date.isoformat(),
         }
         self._append_safe_sync_scope(params, body)
-        return self._run_sync_tool(params)
+        return params
 
-    def retry_batch(self, batch_id: int) -> dict[str, Any]:
+    def build_retry_arguments(self, batch_id: int) -> dict[str, Any]:
+        """Build the exact selector for a persisted failed sync batch."""
+
         if batch_id < 1:
             raise FinanceValidationError("同步批次 ID 必须是正整数。")
-        return self._run_sync_tool({"mode": "retry", "batch_id": batch_id})
+        return {"mode": "retry", "batch_id": batch_id}
 
     @staticmethod
     def _append_safe_sync_scope(params: dict[str, Any], body: Mapping[str, Any]) -> None:
@@ -540,37 +543,6 @@ class FinanceService:
             params["platform"] = platform
         if account_id:
             params["account_id"] = account_id
-
-    def _run_sync_tool(self, params: dict[str, Any]) -> dict[str, Any]:
-        if not callable(self.agent_request):
-            raise FinanceUnavailableError("Agent 同步接口尚未配置。")
-        result = self.agent_request(
-            "POST",
-            "/internal/v1/tools/run",
-            payload={"tool_name": "sync_finance_bills", "params": params},
-            timeout=21600,
-        )
-        if not isinstance(result, dict):
-            raise FinanceContractError("Agent 同步接口返回格式异常。")
-        if result.get("ok") is False or result.get("success") is False:
-            error = result.get("error") or result.get("message") or "Agent 未完成财务同步。"
-            if isinstance(error, dict):
-                error = error.get("message") or error.get("error") or str(error)
-            raise FinanceUpstreamError(str(error))
-        data = result.get("data")
-        if isinstance(data, dict) and data.get("ok") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        if isinstance(data, dict) and data.get("success") is False:
-            raise FinanceUpstreamError(str(data.get("message") or data.get("error") or "财务同步失败。"))
-        nested_result = data.get("result") if isinstance(data, dict) else None
-        if isinstance(nested_result, dict) and (
-            nested_result.get("ok") is False or nested_result.get("success") is False
-        ):
-            raise FinanceUpstreamError(
-                str(nested_result.get("message") or nested_result.get("error") or "财务同步失败。")
-            )
-        return dict(data) if isinstance(data, dict) else dict(result)
-
 
 def _required_text(value: Any, *, field_name: str, max_length: int = 160) -> str:
     text = str(value or "").strip()

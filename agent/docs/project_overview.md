@@ -1,15 +1,38 @@
 ---
 module: 项目总览
 type: 架构文档
-tags: [项目总览, 模块关系, 本地控制台, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
-related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
+tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
+related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-11
+updated: 2026-08-13
 ---
 
 # 物流 Agent 项目总览
 
 > 本文件是项目总览的唯一规范副本；仓库根或 `agent/` 根目录不得保留同名重复文档。
+
+## 2026-08-13 Agent 统一控制平面
+
+- 保留 Agent + Console 双服务。Agent 内新增持久化 Command Gateway、Work Item、Run、
+  Step、Approval、Evidence、Domain Event 与 MySQL Outbox，不新增 LLM 服务或 Kafka。
+- Console、飞书、APScheduler、Webhook、客服/回单业务入口和兼容工具 API 统一先提交
+  Command；只有 WorkflowRunner 可以调用工具执行端口。登录/验证码、Console 本地 OCR 与
+  博益手工运单 CRUD 继续使用原边界。
+- LLM 目录只开放明确标记的只读/计算能力；风险、权限、审批、工具版本、Evidence 和写后
+  条件全部来自受管 `registry.yaml`。第三方写入要求独立 `super_admin` 审批与写后验证，
+  删除、付款及通用不可逆覆盖禁用。
+- 新增 Console“事项中心”，只代理 Agent `/internal/v1/*`，展示事项、运行步骤、计划、
+  审批、Evidence 与时间线；所有写动作使用真实管理员会话和同源校验。
+- 共享内部 Token 只证明服务调用方；Console 使用独立 HMAC 把真实 MySQL 管理员身份与
+  精确请求绑定。工具子进程不继承管理 Token，只能用 WorkflowRunner 签发的短期能力访问
+  精确 TMS target。韵达/融辉活动原页同源代理和旧韵达 JSON 录单入口暂时固定返回 410，
+  在迁移到独立来源前不调用 Agent；本地 OCR、博益手工 CRUD 与控制平面命令保持可用。
+- “每日应签”和融辉/韵达双向客服问题件作为首期只读事项投影。每日应签以 MySQL 账本和
+  真实主单签收事件为准；问题件必须全账号、双方向、全分页，列表消失后按外部 ID 精确
+  详情复核，不能把未知状态当成关闭。
+- 新投影只影子运行并保存集合哈希、差异和完整性。连续三个完整业务日满足切换标准且差异
+  经管理员确认后，才允许替换首页口径。
+- 完整设计、状态机、权限、API、迁移和发布门禁见 `control_plane_v1.md`。
 
 ## 2026-08-11 架构基线
 
@@ -83,14 +106,14 @@ updated: 2026-08-11
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
-- `sync_daily_should_sign` 使用 R13 独立 SSO，账号资源通过 `workflow_resources.phase7.r13_credentials` 维护，不复用顶部共享 TMS 登录态。
+- `sync_daily_should_sign` 必须显式绑定 `r13_account_id`、`problem_account_id`、`sign_account_id` 与 `detail_account_id` 四个账号角色；各角色从统一账号管理解析独立登录态，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
 - `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由 `agent/tools/` 和 `agent/tms_runtime/` 统一承载；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
 - `sync_yunda_dispatch_forecast` 使用韵达独立登录态 `yunda`，默认每天 17:00 拉取次日“网点派件量预测主单表”并按应派时间覆盖写入飞书多维表格；融辉既有自动化继续使用 `ronghui/default` 登录态。
 - `sync_yunda_send_waybills` 使用同一套韵达登录态 `yunda`，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入 `phase7.yunda_send_waybills_bitable`；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
-- `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。
+- `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。该接入当前只完成 Command/Gateway 治理：在缺少真实任务 ID 集合与远端版本的权威只读预览前，计划固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不会执行第三方打卡写入。
 - `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 会用当天扫描数据反推缺失主单，补抓详情后追加到统计输出。
 - 2026-05-18：`sync_arrival_stats` 会把 `20055750680002` 这类融辉纯数字子单归并到主单 `2005575068`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 默认以扫描索引中的子单扫描数作为到货件数；主单总件数不参与统计计数，避免把仍在上游分拨的子单误算为到货。`count_result.quantity_gaps` 仅作为“扫描子单数低于主单总件数”的审计提示。

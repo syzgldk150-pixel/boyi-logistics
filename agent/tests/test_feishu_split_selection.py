@@ -53,9 +53,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **_kwargs):
                 calls.append((tool_name, dict(params)))
-                if params.get("dry_run"):
+                if tool_name == "preview_split_pending_problems":
                     return {
                         "success": True,
                         "data": {
@@ -124,9 +124,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **_kwargs):
                 calls.append((tool_name, dict(params)))
-                if params.get("dry_run"):
+                if tool_name == "preview_split_pending_problems":
                     return {
                         "success": True,
                         "data": {
@@ -173,7 +173,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
 
         self.assertNotIn("chat", pending_store)
-        formal_calls = [params for _tool_name, params in calls if not params.get("dry_run")]
+        formal_calls = [params for tool_name, params in calls if tool_name == "split_pending_problem_upload"]
         self.assertEqual(1, len(formal_calls))
         self.assertEqual(["R0001", "R0002", "R0003"], formal_calls[0]["selected_bill_codes"])
         self.assertEqual("g" * 64, formal_calls[0]["preview_fingerprint"])
@@ -285,7 +285,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         }
 
         class FakeAgent:
-            async def execute_tool(self, _tool_name, params):
+            async def execute_tool(self, _tool_name, params, **_kwargs):
                 self.params = params
                 return {
                     "success": True,

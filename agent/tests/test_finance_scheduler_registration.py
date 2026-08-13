@@ -5,12 +5,18 @@ import importlib.util
 import unittest
 from pathlib import Path
 
+from agent.orchestration.models import ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 
 HAS_APSCHEDULER = importlib.util.find_spec("apscheduler") is not None
 if HAS_APSCHEDULER:
-    from agent.scheduler import ensure_finance_schedule_task, init_scheduler
+    from agent.scheduler import (
+        ensure_control_plane_schedule_tasks,
+        ensure_finance_schedule_task,
+        init_scheduler,
+    )
 else:
+    ensure_control_plane_schedule_tasks = None
     ensure_finance_schedule_task = None
     init_scheduler = None
 
@@ -25,8 +31,8 @@ class _AgentCore:
         self.memory = _Memory()
         self.calls = []
 
-    async def execute_tool(self, tool_name, params):
-        self.calls.append((tool_name, params))
+    async def execute_tool(self, tool_name, params, **trusted_context):
+        self.calls.append((tool_name, params, trusted_context))
         return {"success": True}
 
 
@@ -67,15 +73,19 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         job = scheduler.get_job("finance_startup_catchup")
         self.assertIsNotNone(job)
         asyncio.run(job.func())
+        self.assertEqual(1, len(core.calls))
+        tool_name, arguments, trusted = core.calls[0]
+        self.assertEqual("sync_finance_bills", tool_name)
+        self.assertEqual({"mode": "sync", "rescan_days": 7}, arguments)
+        self.assertEqual(ActorType.SCHEDULER, trusted["actor"].actor_type)
+        self.assertEqual("finance_startup_catchup", trusted["actor"].actor_id)
+        self.assertEqual("scheduler", trusted["source"])
+        scheduled_for = trusted["execution_context"]["scheduled_for"]
         self.assertEqual(
-            [
-                (
-                    "sync_finance_bills",
-                    {"mode": "sync", "rescan_days": 7, "_startup_catchup": True},
-                )
-            ],
-            core.calls,
+            f"scheduler:finance_startup_catchup:{scheduled_for}",
+            trusted["idempotency_key"],
         )
+        self.assertEqual("@startup", trusted["execution_context"]["cron_expression"])
 
     def test_startup_seeds_only_missing_finance_schedule(self):
         if not HAS_APSCHEDULER:
@@ -102,6 +112,39 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual([], core.memory.upserts)
         self.assertFalse(core.memory.rows[0]["enabled"])
 
+    def test_startup_seeds_customer_shadow_but_preserves_disabled_override(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        empty = _SeedCore()
+
+        seeded = ensure_control_plane_schedule_tasks(empty)
+
+        self.assertIn("customer_problems_shadow", seeded)
+        customer = next(
+            row for row in empty.memory.rows if row["id"] == "customer_problems_shadow"
+        )
+        self.assertTrue(customer["enabled"])
+        self.assertEqual("sync_customer_service_problems", customer["tool_name"])
+        self.assertEqual({"direction": "both"}, customer["tool_params"])
+
+        disabled = _SeedCore(
+            [
+                {
+                    "id": "customer_problems_shadow",
+                    "cron_expression": "*/30 * * * *",
+                    "enabled": False,
+                },
+                {
+                    "id": "finance_bills_0010",
+                    "cron_expression": "10 0 * * *",
+                    "enabled": False,
+                },
+            ]
+        )
+        self.assertEqual((), ensure_control_plane_schedule_tasks(disabled))
+        self.assertEqual([], disabled.memory.upserts)
+        self.assertFalse(disabled.memory.rows[0]["enabled"])
+
     def test_registry_exposes_fixed_finance_tool_parameters(self):
         registry = (
             Path(__file__).resolve().parents[1] / "tools" / "registry.yaml"
@@ -123,8 +166,10 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         source = (
             Path(__file__).resolve().parents[1] / "agent" / "scheduler.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('scheduled_params["target_date"] = target_date', source)
-        self.assertNotIn('scheduled_params.setdefault("target_date", target_date)', source)
+        self.assertIn('arguments["target_date"] = (', source)
+        self.assertIn("scheduled_for.date() - timedelta(days=1)", source)
+        self.assertNotIn('arguments.setdefault("target_date"', source)
+        self.assertIn('idempotency_key=f"scheduler:{task_id}:{scheduled_iso}"', source)
 
     def test_ecs_publish_scope_includes_console_finance_service(self):
         script = (

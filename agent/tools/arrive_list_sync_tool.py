@@ -12,6 +12,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
+from tools.daily_sign_rules import business_now
+from tools.daily_sign_store import save_forecast_snapshot
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import (
     is_receipt_like_tracking,
@@ -79,7 +81,7 @@ def _target_date(params: dict) -> date:
     raw = str(params.get("target_date") or "").strip()
     if raw:
         return date.fromisoformat(raw)
-    return date.today()
+    return business_now().date()
 
 
 def _normalize_dispatch_records(rows: list[Any]) -> tuple[list[dict[str, Any]], list[str], int]:
@@ -96,6 +98,9 @@ def _normalize_dispatch_records(rows: list[Any]) -> tuple[list[dict[str, Any]], 
             if tracking_number:
                 skipped_receipt_codes.add(tracking_number)
             continue
+        previous = records_by_tracking.get(tracking_number)
+        if previous is not None and previous != record:
+            raise ValueError(f"派件预报存在重复冲突运单号: {tracking_number}")
         records_by_tracking[tracking_number] = record
     return list(records_by_tracking.values()), sorted(skipped_receipt_codes), invalid_rows
 
@@ -242,7 +247,16 @@ def run_arrive_list_sync(params: dict) -> dict:
         return {"error": "fetch_dispatch 返回格式异常", "raw": dispatch_result}
     _emit_progress("派件预报拉取完成", rows=len(rows))
 
-    records, skipped_receipt_codes, invalid_rows = _normalize_dispatch_records(rows)
+    try:
+        records, skipped_receipt_codes, invalid_rows = _normalize_dispatch_records(rows)
+    except ValueError as exc:
+        return {"error": str(exc), "stage": "forecast_validation_failed"}
+    if invalid_rows:
+        return {
+            "error": f"派件预报存在 {invalid_rows} 条缺少主单号或结构异常的记录，停止提交",
+            "stage": "forecast_validation_failed",
+            "invalid_rows": invalid_rows,
+        }
     _emit_progress(
         "派件预报整理完成",
         tracking_number=len(records),
@@ -275,6 +289,20 @@ def run_arrive_list_sync(params: dict) -> dict:
             "primary_result": primary_result,
             "sheet_result": secondary_result,
         }
+    try:
+        forecast_snapshot_result = save_forecast_snapshot(
+            _target_date(params),
+            records,
+            dry_run=bool(params.get("dry_run", False)),
+        )
+    except Exception as exc:
+        return {
+            "error": f"预计到货共享快照写入失败: {str(exc)[:500]}",
+            "stage": "forecast_snapshot_failed",
+            "mysql_result": mysql_result,
+            "primary_result": primary_result,
+            "secondary_result": secondary_result,
+        }
     _emit_progress("副飞书表写入完成", rows=secondary_result.get("rows"))
     _emit_progress("arrive-list 同步完成")
 
@@ -289,6 +317,7 @@ def run_arrive_list_sync(params: dict) -> dict:
         "mysql_result": mysql_result,
         "primary_result": primary_result,
         "secondary_result": secondary_result,
+        "forecast_snapshot_result": forecast_snapshot_result,
     }
 
 

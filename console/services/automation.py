@@ -269,15 +269,41 @@ class AutomationServiceMixin:
         self,
         payload: dict[str, Any],
         *,
-        started_at: float,
-    ) -> None:
-        if payload["tool_name"] in AUTOMATION_LONG_RUNNING_TOOLS:
-            run_timeout = None
-        else:
-            run_timeout = max(
-                AUTOMATION_RUN_TIMEOUTS.get(payload["tool_name"], 180),
-                self.settings.agent_timeout_seconds,
-            )
+        trusted_context: dict[str, Any],
+        browser_request_uuid: str,
+    ) -> dict[str, Any]:
+        """Submit one durable command and return its Run receipt immediately."""
+
+        run_result = self._agent_request(
+            "POST",
+            "/internal/v1/commands",
+            payload={
+                "command_type": "tool.execute",
+                "parameters": {
+                    "tool_name": payload["tool_name"],
+                    "arguments": payload["tool_params"],
+                },
+                "entity_refs": [],
+                "idempotency_key": (
+                    f"console:{trusted_context['actor']['actor_id']}:tool.execute:"
+                    f"{browser_request_uuid}"
+                ),
+                **trusted_context,
+            },
+            timeout=self.settings.agent_timeout_seconds,
+        )
+        if not run_result.get("ok"):
+            return run_result
+
+        receipt = run_result.get("data")
+        run_id = str(receipt.get("run_id") or "").strip() if isinstance(receipt, dict) else ""
+        if not run_id:
+            return {
+                "ok": False,
+                "status": HTTPStatus.BAD_GATEWAY,
+                "error": "Agent 未返回可追踪的 run_id。",
+                "error_code": "INVALID_AGENT_RUN_CONTRACT",
+            }
 
         started_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if payload.get("task_mode") == "scheduled":
@@ -297,22 +323,17 @@ class AutomationServiceMixin:
                 last_duration_ms=None,
                 last_message="",
             )
-
-        def runner() -> None:
-            run_result = self._agent_request(
-                "POST",
-                "/internal/v1/tools/run",
-                payload={"tool_name": payload["tool_name"], "params": payload["tool_params"]},
-                timeout=run_timeout,
-            )
-            self._finalize_automation_task_run(payload, run_result, started_at=started_at)
-
-        thread = threading.Thread(
-            target=runner,
-            name=f"automation-run-{payload['task_id']}",
-            daemon=True,
+        state = dict(self.automation_virtual_task_state.get(payload["task_id"], {}))
+        state.update(
+            {
+                "run_id": run_id,
+                "task_mode": payload.get("task_mode"),
+                "last_run": started_stamp,
+                "last_status": "running",
+            }
         )
-        thread.start()
+        self.automation_virtual_task_state[payload["task_id"]] = state
+        return run_result
 
     def _render_automations(
         self,
@@ -714,6 +735,22 @@ class AutomationServiceMixin:
 
     def _handle_automation_task_run_now(self, handler: BaseHTTPRequestHandler) -> None:
         ajax_request = self._is_ajax_request(handler)
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        browser_request_uuid = str(
+            handler.headers.get("X-Browser-Request-UUID") or ""
+        ).strip()
+        if not browser_request_uuid:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error": "缺少稳定的浏览器请求标识，无法安全提交命令。",
+                },
+            )
+            return
         payload, override, error_message = self._collect_automation_task_submission(
             handler,
             allow_missing_schedule=True,
@@ -832,21 +869,54 @@ class AutomationServiceMixin:
             )
             return
 
-        self._start_automation_task_run(payload, started_at=started_at)
+        run_result = self._start_automation_task_run(
+            payload,
+            trusted_context=trusted_context,
+            browser_request_uuid=browser_request_uuid,
+        )
+        if not run_result.get("ok"):
+            failure_message = normalize_feedback_text(
+                run_result.get("error") or "Agent 命令提交失败"
+            )
+            response_payload = {
+                "ok": False,
+                "pending": False,
+                "task_id": payload["task_id"],
+                "title": "立即执行未开始",
+                "message": failure_message,
+                "error": failure_message,
+                "error_code": str(run_result.get("error_code") or "COMMAND_SUBMIT_FAILED"),
+            }
+            if ajax_request:
+                self._send_json(handler, HTTPStatus.BAD_GATEWAY, response_payload)
+                return
+            self._render_automations(
+                handler,
+                {"message": [failure_message], "kind": ["warning"]},
+                task_overrides=override,
+                open_task_id=payload["task_id"],
+            )
+            return
+
+        receipt = dict(run_result.get("data") or {})
         response_payload = {
-            "ok": False,
+            "ok": True,
             "pending": True,
             "task_id": payload["task_id"],
             "title": "执行中",
-            "message": "脚本已开始执行，结果会自动更新。",
+            "message": "命令已受理，结果会按运行状态自动更新。",
             "status_label": "后台执行中",
             "activity_label": "开始时间",
             "activity_value": started_stamp,
             "duration_label": format_duration_label(0),
             "error": "",
+            "command_id": receipt.get("command_id"),
+            "work_item_id": receipt.get("work_item_id"),
+            "run_id": receipt.get("run_id"),
+            "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
         }
         if ajax_request:
-            self._send_json(handler, HTTPStatus.OK, response_payload)
+            self._send_json(handler, HTTPStatus.ACCEPTED, response_payload)
             return
         self._render_automations(
             handler,
@@ -865,10 +935,9 @@ class AutomationServiceMixin:
     def _handle_automation_task_cancel(self, handler: BaseHTTPRequestHandler) -> None:
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id", "") or "").strip()
-        tool_name = str(values.get("tool_name", "") or "").strip()
-        started_at = str(values.get("started_at", "") or "").strip()
+        run_id = str(values.get("run_id", "") or "").strip()
 
-        if not task_id or not tool_name:
+        if not task_id or not run_id:
             self._send_json(
                 handler,
                 HTTPStatus.BAD_REQUEST,
@@ -880,10 +949,13 @@ class AutomationServiceMixin:
             )
             return
 
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         result = self._agent_request(
             "POST",
-            "/internal/v1/tools/cancel",
-            payload={"tool_name": tool_name, "started_at": started_at},
+            f"/internal/v1/runs/{quote(run_id, safe='')}/cancel",
+            payload={"comment": "Console 自动化页面取消", **trusted_context},
             timeout=10,
         )
         if not result.get("ok"):
@@ -902,52 +974,120 @@ class AutomationServiceMixin:
         if not isinstance(payload, dict):
             payload = {}
 
-        if payload.get("ok"):
-            self._send_json(
-                handler,
-                HTTPStatus.OK,
-                {
-                    "ok": True,
-                    "task_id": task_id,
-                    "title": "取消中",
-                    "message": str(payload.get("message") or "已发送取消请求，正在停止脚本。"),
-                    "activity_value": str(payload.get("started_at") or started_at),
-                    "pending": True,
-                    "cancel_requested": True,
-                },
-            )
-            return
-
-        runtime = self._sync_task_runtime_from_latest_tool_log(
-            task_id,
-            tool_name,
-            since=started_at or None,
+        run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+        self._send_json(
+            handler,
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "task_id": task_id,
+                "run_id": run_id,
+                "title": "取消中",
+                "message": "已发送取消请求，正在安全停止当前 Run。",
+                "activity_value": str(run.get("started_at") or run.get("created_at") or ""),
+                "pending": True,
+                "cancel_requested": True,
+            },
         )
-        response_payload: dict[str, Any] = {
-            "ok": False,
-            "task_id": task_id,
-            "message": str(payload.get("message") or "当前没有运行中的任务。"),
-        }
-        if runtime:
-            response_payload["runtime"] = runtime
-        self._send_json(handler, HTTPStatus.OK, response_payload)
 
     def _handle_automation_task_output(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
-        """代理 Agent 的实时工具输出接口"""
+        """Return durable Run state; legacy tool output remains read-only compatibility."""
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         tool_name = str(query.get("tool_name", [""])[0]).strip()
         task_id = str(query.get("task_id", [""])[0]).strip()
         started_at = str(query.get("started_at", [""])[0]).strip()
+        run_id = str(query.get("run_id", [""])[0]).strip()
         try:
             offset = int(query.get("offset", ["0"])[0])
         except (ValueError, IndexError):
             offset = 0
+        if run_id:
+            result = self._agent_request(
+                "GET",
+                f"/internal/v1/runs/{quote(run_id, safe='')}",
+                timeout=5,
+                console_principal=trusted_context["_console_principal"],
+            )
+            if not result.get("ok"):
+                self._send_json(
+                    handler,
+                    HTTPStatus.BAD_GATEWAY,
+                    {
+                        "lines": [],
+                        "running": False,
+                        "offset": 0,
+                        "total": 0,
+                        "error": normalize_feedback_text(result.get("error") or "Run 状态查询失败"),
+                    },
+                )
+                return
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            run = data.get("run") if isinstance(data.get("run"), dict) else {}
+            status = str(run.get("status") or "").upper()
+            terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+            is_terminal = status in terminal_statuses
+            state_line = f"Run {run_id} · {status or 'UNKNOWN'}"
+            payload: dict[str, Any] = {
+                "lines": [state_line] if offset <= 0 else [],
+                "running": not is_terminal,
+                "cancel_requested": bool(run.get("cancel_requested_at")),
+                "started_at": str(run.get("started_at") or run.get("created_at") or started_at),
+                "offset": 1,
+                "total": 1,
+                "run_id": run_id,
+                "status": status,
+                "next_poll_after_ms": data.get("next_poll_after_ms", 1000),
+            }
+            if is_terminal:
+                cancelled = status == "CANCELLED"
+                ok = status == "COMPLETED"
+                error_message = normalize_feedback_text(run.get("error_summary") or "")
+                payload["runtime"] = {
+                    "ok": ok,
+                    "cancelled": cancelled,
+                    "title": "已完成" if ok else "已取消" if cancelled else "执行未完成",
+                    "message": error_message,
+                    "last_run": str(run.get("finished_at") or run.get("updated_at") or ""),
+                    "duration_label": "",
+                    "error": error_message,
+                    "payload": {"run_id": run_id, "status": status},
+                }
+                last_status = "success" if ok else "cancelled" if cancelled else "error"
+                last_run = str(run.get("finished_at") or run.get("updated_at") or "")
+                if task_id:
+                    local_state = self.automation_virtual_task_state.get(task_id, {})
+                    if local_state.get("task_mode") == "scheduled":
+                        self.repository.update_scheduled_task_runtime(
+                            base_task_id=task_id,
+                            last_run=last_run,
+                            last_status=last_status,
+                            last_duration_ms=None,
+                            last_message=error_message,
+                        )
+                    else:
+                        self._record_virtual_task_runtime(
+                            task_id,
+                            last_run=last_run,
+                            last_status=last_status,
+                            last_duration_ms=None,
+                            last_message=error_message,
+                        )
+            self._send_json(handler, HTTPStatus.OK, payload)
+            return
         if not tool_name:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"error": "missing tool_name"})
             return
         query_string = f"/internal/v1/tool-output/{tool_name}?offset={offset}"
         if started_at:
             query_string += f"&started_at={quote(started_at, safe='')}"
-        result = self._agent_request("GET", query_string, timeout=5)
+        result = self._agent_request(
+            "GET",
+            query_string,
+            timeout=5,
+            console_principal=trusted_context["_console_principal"],
+        )
         if result.get("ok"):
             payload = dict(result["data"])
             if task_id:
@@ -961,6 +1101,7 @@ class AutomationServiceMixin:
                             task_id,
                             tool_name,
                             since=started_at or None,
+                            console_principal=trusted_context["_console_principal"],
                         )
                 if runtime:
                     payload["runtime"] = runtime
@@ -974,6 +1115,7 @@ class AutomationServiceMixin:
                         task_id,
                         tool_name,
                         since=started_at or None,
+                        console_principal=trusted_context["_console_principal"],
                     )
                 if runtime:
                     payload["runtime"] = runtime
@@ -1604,88 +1746,22 @@ class AutomationServiceMixin:
             http_status=HTTPStatus.OK,
         )
 
-    def _agent_request(
+    def _latest_tool_log(
         self,
-        method: str,
-        endpoint: str,
+        tool_name: str,
         *,
-        payload: dict[str, Any] | None = None,
-        timeout: int | None = None,
-    ) -> dict[str, Any]:
-        agent_internal_api_token = str(
-            getattr(self.settings, "agent_internal_api_token", "") or ""
-        ).strip()
-        if not agent_internal_api_token:
-            return {
-                "ok": False,
-                "status": None,
-                "error": "AGENT_INTERNAL_API_TOKEN is not configured",
-            }
-        url = f"{self.settings.agent_base_url.rstrip('/')}{endpoint}"
-        body: bytes | None = None
-        headers: dict[str, str] = {
-            "X-Agent-Internal-Token": agent_internal_api_token,
-        }
-        if payload is not None:
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json; charset=utf-8"
-
-        request = Request(url, data=body, headers=headers, method=method.upper())
-        try:
-            if timeout is None:
-                response_handle = urlopen(request)
-            else:
-                response_handle = urlopen(request, timeout=timeout or self.settings.agent_timeout_seconds)
-            with response_handle as response:
-                raw = response.read().decode("utf-8")
-                data = json.loads(raw) if raw else {}
-                if endpoint.startswith("/internal/v1/"):
-                    if not isinstance(data, dict) or not {"ok", "data", "error"}.issubset(data):
-                        return {
-                            "ok": False,
-                            "status": response.status,
-                            "error": "Agent returned an invalid internal API contract",
-                            "error_code": "invalid_internal_contract",
-                        }
-                    if data.get("ok") is not True:
-                        error = data.get("error") if isinstance(data.get("error"), dict) else {}
-                        return {
-                            "ok": False,
-                            "status": response.status,
-                            "error": redact_text(error.get("message") or "Internal API request failed"),
-                            "error_code": str(error.get("code") or "internal_api_failed"),
-                            "data": data.get("data"),
-                        }
-                    data = data.get("data")
-                return {
-                    "ok": True,
-                    "status": response.status,
-                    "data": data,
-                }
-        except HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                data = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                data = raw
-            if endpoint.startswith("/internal/v1/") and isinstance(data, dict):
-                error = data.get("error") if isinstance(data.get("error"), dict) else {}
-                error_payload = error.get("message") or data
-            else:
-                error_payload = data
-            return {
-                "ok": False,
-                "status": exc.code,
-                "error": redact_sensitive(error_payload or str(exc)),
-            }
-        except URLError as exc:
-            return {"ok": False, "status": None, "error": redact_text(exc.reason)}
-        except Exception as exc:
-            return {"ok": False, "status": None, "error": redact_text(exc)}
-
-    def _latest_tool_log(self, tool_name: str, *, since: str | None = None) -> dict[str, Any] | None:
+        since: str | None = None,
+        console_principal: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         endpoint = f"/internal/v1/tool-logs?limit=5&tool_name={quote(tool_name, safe='')}"
-        result = self._agent_request("GET", endpoint, timeout=5)
+        if console_principal is None:
+            return None
+        result = self._agent_request(
+            "GET",
+            endpoint,
+            timeout=5,
+            console_principal=console_principal,
+        )
         if not result.get("ok"):
             return None
         data = result.get("data")
@@ -1707,8 +1783,13 @@ class AutomationServiceMixin:
         tool_name: str,
         *,
         since: str | None = None,
+        console_principal: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        row = self._latest_tool_log(tool_name, since=since)
+        row = self._latest_tool_log(
+            tool_name,
+            since=since,
+            console_principal=console_principal,
+        )
         if not row:
             return None
 

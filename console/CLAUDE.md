@@ -6,7 +6,18 @@
 
 ## 当前职责
 
-Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；响应在该边界统一解包 `ok/data/error`。凭据只从 `AGENT_INTERNAL_API_TOKEN` 注入。禁止新增旧 Agent 路径或绕过该入口的 HTTP 调用，异常与审计内容使用 `shared/redaction.py` 脱敏。
+Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；该 Token 只证明服务连接。涉及管理员命令、审批或账号管理时，服务端还必须用独立 `CONSOLE_AGENT_SIGNING_SECRET` 对 method、精确 path/query、原始 body 哈希、时间戳、一次性 nonce 和真实 MySQL 管理员会话快照签名；浏览器不能提交 `_console_principal`，签名密钥缺失时显式返回 503。响应在该边界统一解包 `ok/data/error`，异常与审计内容使用 `shared/redaction.py` 脱敏。
+
+韵达/融辉活动原页同源代理暂时禁用。`/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*`、`/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，在迁移到独立来源前不得调用 Agent。
+
+## 事项中心与命令入口
+
+- `/work-items` 与 `/work-items/{id}` 是统一事项中心；实现位于 `routes/control_plane.py`、`services/control_plane.py`、`services/agent_api.py`、`templates/work_items*.html` 和 `static/control_plane.*`。Console 不得查询 Agent 控制平面表。
+- 所有业务执行型 POST 先提交 `/internal/v1/commands`。自动化立即运行/取消、客服标记已读/回复/发布/附件上传、回单同步/审核都不能直调 `/tms/*` 或第三方脚本；登录/验证码、Console 本地 OCR 和博益手工运单 CRUD 不在此范围。
+- 控制平面写请求只接受真实 MySQL 管理员会话和同源 Origin/Referer。Basic Auth 明确拒绝；服务端从会话生成私有 principal 并签名，浏览器 actor、roles、source、authenticated_by 和同名私有标记均不能覆盖。`control_plane_role` 只有 `admin`/`super_admin`，高风险审批只允许后者。
+- 浏览器通过 `X-Browser-Request-UUID` 提供每次用户动作的稳定 UUID，服务端生成 `console:{admin_id}:{command_type}:{uuid}`；缺失或格式错误显式失败。approve/reject 只转发 approval ID、plan hash 和 comment。
+- Command 成功提交保留 Agent 的 `202`、`command_id/work_item_id/run_id`、`reused` 与 `next_poll_after_ms`。前端页面隐藏时暂停轮询，等待状态降频，终态停止；Evidence 只用文本安全渲染。
+- 补充信息表单只允许显式 `note/account_id/argument_updates`；参数更新必须是 JSON 对象。普通说明只作审计 note，Console 不解析自然语言为账号或工具参数。
 
 ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。健康检查成功后只保留当前共享环境。
 
@@ -14,8 +25,8 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - 提供统一后台壳层（左侧导航、顶部路径、右侧辅助栏、共享动效与交互反馈）
 - 承载项目总览页和模块导航
 - 承载 OCR 工作区、批量上传、人工复核和导出
-- 承载统一回单管理页（`/receipts`），支持回单列表查询、本地审核弹窗、回单图片旋转预览和后台审核提交
-- 承载财务工作台（`/modules/finance`），提供 BI 总览、交易明细、费用项目绑定和同步记录；数据经 `shared.finance` 仓储读取，同步动作经 Agent `sync_finance_bills` 工具执行
+- 承载统一回单管理页（`/receipts`），支持回单列表查询、本地审核弹窗、回单图片旋转预览和后台审核提交；缺失的韵达飞书明细只允许管理员显式 POST 提交精确单号只读命令，GET 不自动访问飞书
+- 承载财务工作台（`/modules/finance`），提供 BI 总览、交易明细、费用项目绑定和同步记录；数据经 `shared.finance` 仓储读取，同步、回填和重试以真实管理员身份向 `/internal/v1/commands` 提交 `sync_finance_bills` 并返回 202 Run 回执，手工计划等待 `super_admin` 审批
 - 承载客服系统问题件工作台（`/modules/customer-service`），第一版整合融辉/韵达问题件的实时查询、详情、回复、发布、附件上传和页面提醒；页面默认在外层展示关键词、平台、方向、更新时间日期范围和账号摘要，账号列表和轮询折叠；问题件页不提供声音提醒；差错、调拨件后续再接入
 - 承载货拉拉调度工作区（`/dispatch`），车辆管理、派单和线路规划
 - 承载专线分流公司维护页（`/line-haul-contacts`），维护专线物流公司、站点/城市、地址、联系人和电话
@@ -31,7 +42,7 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - `routes/`
   按业务域识别请求路径并把请求分发到领域服务
 - `finance_service.py`
-  财务 Console 服务适配层，负责筛选与分页校验、共享仓储调用、金额字符串透传、服务端图形比例和 Agent 同步请求；费用方向只取共享仓储锁定值，不信任前端提交值；Console 与 Agent 必须使用同一套 Agent MySQL，长回溯请求超时与 Agent 工具上限一致
+  财务 Console 服务适配层，负责筛选与分页校验、共享仓储调用、金额字符串透传、服务端图形比例和受控命令参数构造；不得直接调用工具执行兼容 API。费用方向只取共享仓储锁定值，不信任前端提交值；Console 与 Agent 必须使用同一套 Agent MySQL
 - `config.py`
   路径、数据库、Qwen-OCR、worker 数、模板目录和训练相关配置（PaddleOCR 开关/阈值/模型路径、训练样本阈值）
 - `database.py`
@@ -55,15 +66,15 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - `templates/automation_accounts.html`
   自动化业务账号管理页，入口为 `/automation-accounts`；集中展示融辉、韵达、大祥报价、R7、R13 等 Agent 业务账号状态，并代理账号灰色备注、凭据保存、验证码/登录、清除登录态、默认账号和启停操作；备注可在“编辑”中单独保存并即时更新，保存备注不触发登录态校验；业务账号密码只写入 Agent state，不写入 Console/MySQL，不在 GET 页面回显
 - `templates/customer_service.html`
-  客服系统专用工作台，入口为 `/modules/customer-service`；第一版只做问题件闭环，账号设置只保存融辉/韵达 `account_id` 和轮询间隔，查询和处理动作通过 Console `/customer-service/problems/*` 代理 Agent `/tms/customer_service_problem`，问题件详情不落库；查询异常必须保留并展示每个账号的 `platform/account_label/error_code/message`；登录账号 `739010002` 只展示发布网点和通知网点都为 `邵阳操作场` 的问题件
+  客服系统专用工作台，入口为 `/modules/customer-service`；查询/详情通过受限只读门面，标记已读、回复、发布和附件上传以真实管理员身份提交 `/internal/v1/commands` 的精确工具计划，浏览器提供稳定 UUID，服务端生成 Console 幂等键并返回 202 Run 回执；问题件详情不落库，查询异常保留每个账号的 `platform/account_label/error_code/message`
 - `templates/finance.html`、`static/finance.css`、`static/finance.js`
   财务专用四页签工作台及页面级资源；费用项目候选只使用 `/finance/fee-mappings` 返回的分平台 `booking_fee_items`，图表只消费服务端比例，不在浏览器内进行金额运算；同步记录展示最新失败账号/日期/脱敏错误，显式无数据账号和日期显示零值，缺失或失败日期不补零
 - `templates/receipts.html`
-  统一回单管理页，入口为 `/receipts`；列表行打开本地审核弹窗，图片预览支持旋转调整但不改原图；审核不通过先填原因并在弹层内提交，再进入最终确认和后台审核链路；隐藏原页兜底审核必须核对到原页审核状态已变更后才回写本地
+  统一回单管理页，入口为 `/receipts`；同步与审核都提交 `/internal/v1/commands` 的 `receipts_sync` / `receipts_audit` 计划并返回 202 Run 回执，提交阶段不更新本地成功状态；缺失韵达明细时可显式 POST `/receipts/{id}/feishu-detail-query` 提交 `query_receipt_feishu_detail`，GET 只展示本地快照且不触发回退查询；页面不加载活动原页 iframe，两个回单活动原页前缀所有方法固定返回 410；本地照片、证据与控制平面审核保留
 - `templates/document.html`
-  运单录入工作区与 OCR 复核页，当前 `/ocr` 默认进入页内多页签录单工作区，支持博益、韵达、融辉任意组合同时打开，最多 6 个总页签；刷新或重新进入只按 URL 初始化一个入口页签，不恢复页签或表单内容；博益手工录单在内部 `/ocr/boyi/frame` frame 中渲染，表单分开发货信息和收货信息，不显示外层“客户信息”标题；顶部“地址解析”弹窗只在浏览器本地解析姓名/电话/地址并填入收货人、收货电话、收件地址，不调用外部接口、不自动保存；右侧接入高德地图按收件地址自动定位，地图卡片下方只保留一个起始地址搜索输入框，不显示定位状态、匹配地址或起始地基础行程预估；打印机设置收纳在顶部按钮弹层；完整 OCR 上传/队列从 `/ocr?mode=ocr` 打开，单据详情仍走 `/documents/{id}`；`/ocr?mode=yunda` 和 `/ocr?mode=ronghui` 为兼容入口，分别在多页签壳中创建一个韵达/融辉初始页签，原页仍走 Console 同源 `/ocr/yunda/live/ky_inms/public/...`、`/ocr/ronghui/live` 并代理到 Agent；韵达成功保存响应会同步写入本地 `waybills`，并通过 `shipnow_print_url`/`shipnow_autoprint_url` 打开 Console 本地热敏打印页，旧 `/ocr/yunda/*` JSON 入口保留作兜底；融辉预填必须等待原页注入脚本回传页面已完整可写的 `SHIPNOW_PREFILL_READY` 后再发送；打印页直接调用本机 C-Lodop 服务，不做浏览器打印兜底
+  运单录入工作区与 OCR 复核页；`/ocr` 只创建博益本地页签，博益手工录单在 `/ocr/boyi/frame` 内渲染，完整 OCR 队列从 `/ocr?mode=ocr` 打开。`/ocr?mode=yunda`、`/ocr?mode=ronghui` 回到博益壳并显示停用提示，不创建第三方活动 iframe；旧 `/ocr/yunda/*` JSON 入口与两个活动原页前缀全部返回 410。比价可继续读取真实结果，但第三方原页预填禁用
 - `templates/waybills.html`
-  已开单寄件运单查询页（`/waybills`），查询本地 `waybills` 表，提供关键词、日期、状态、来源、结算方式、派送方式、排序筛选，快捷日期、列表、弹窗详情、列设置、打印、作废和跳转单号查询；状态列优先展示 `scan_status` 的扫描状态简写，缺失时回落到 `waybills.status` 粗状态；空筛选默认不加载全表，只显示主动查询结果
+  已开单寄件运单查询页（`/waybills`），查询本地 `waybills` 表，提供关键词、日期、状态、来源、结算方式、派送方式、排序筛选，快捷日期、列表、弹窗详情、列设置、打印、作废和跳转单号查询；状态列优先展示 `scan_status` 的扫描状态简写，缺失时回落到 `waybills.status` 粗状态；空筛选默认不加载全表，只显示主动查询结果。GET 始终只读，不得因筛选触发外部同步；刷新须从自动化页面显式提交计划
 - `templates/tracking.html`
   单票物流轨迹查询页（`/tracking`），统一代理 Agent `/tms/tracking_query`；融辉 TMS 展示“扫描轨迹 / 运单详情 / 子单详情”三个页签，韵达在原页接口返回明确子单数据时展示子单详情，专线单号展示联系方式提示
 - `templates/line_haul_contacts.html`
@@ -93,7 +104,7 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - `static/console_ui.js`
   通用前端交互脚本：导航筛选、notice 关闭、页面 reveal、折叠和按钮提交态
 - `static/customer_service.js`
-  客服问题件工作台前端脚本：账号筛选、实时查询、详情弹窗、回复成功后即时展示已有回复、发布和新问题件 badge；新提醒去重键保存在浏览器 `localStorage`
+  客服问题件工作台前端脚本：账号筛选、实时查询、详情弹窗、写动作浏览器 UUID 与 202 Run 回执、新问题件 badge；命令提交只显示“计划已提交”，不得把待审批写入渲染成已执行成功；提醒去重键保存在浏览器 `localStorage`
 - `config/templates/`
   模板 JSON 存放目录
 - `runtime/`
@@ -163,7 +174,7 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - WSL / Linux 下如果 `wsl-gateway` 对应的 Windows MySQL/SSH 隧道当前不可达，后端启动直接失败，不再回退本地 SQLite
 - 确认入库时同步写入 waybills 表（`create_waybill_from_fields`）
 - 手工录单提交到 `/waybills/manual`，写入 `waybills source=manual`，并用 `waybill_sequences` 生成 8 位全局递增运单号（从 `00000001` 开始）；打印机偏好保存在浏览器本地设置；`/ocr/boyi/frame` 保存失败或不自动打印时通过 `return_to=/ocr/boyi/frame` 留在本 frame，自动打印仍进入 `/waybills/{id}/print?autoprint=1`。
-- 运单录入 `/ocr` 为多页签壳，默认创建博益 frame，`/ocr?mode=yunda`、`/ocr?mode=ronghui` 分别只创建一个韵达/融辉初始页签；每个韵达/融辉页签都是独立 iframe，韵达同源原页代理链路为 Console `/ocr/yunda/live/...` -> Agent `/tms/yunda_waybill_proxy` -> 韵达 `kyinms.yunda56.com/ky_inms/public/...`；Agent 使用 `yunda` 登录态，Console 持久化成功保存后的运单快照，并给保存 JSON 追加本地打印 URL 供原页注入脚本打开 Console 打印页。
+- 运单录入 `/ocr` 只创建博益本地 frame；韵达/融辉兼容 mode 回到博益壳并提示暂时停用，活动原页和旧韵达 JSON 录单前缀固定返回 410 且不调用 Agent。只有迁移到独立来源并完成安全复核后才可重新开放。
 - 已开单寄件运单查询页 `/waybills` 只读取 `waybills` 表中的已落库运单；单票物流轨迹查询仍走 `/tracking`；`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存同步来源明确返回的当前扫描状态并在页面显示简写；页面作废只写 `cancelled`，后续 Agent 同步不能覆盖作废状态
 - 专线分流公司维护页 `/line-haul-contacts` 只维护基础资料，不直接改变 `/tracking`、运单录入或 Agent 接口逻辑
 - 复核页支持置信度着色、填写人选择、键盘快捷交互（Tab/Enter/Ctrl+Enter）

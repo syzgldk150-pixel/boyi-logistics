@@ -13,7 +13,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **_kwargs):
                 calls.append((tool_name, params))
                 return {
                     "success": True,
@@ -55,7 +55,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("自提到货问题件", "user-1", "chat-1"))
 
             self.assertEqual(
-                [("self_pickup_problem_upload", {"dry_run": True, "account_id": "ronghui_self_pickup_problem"})],
+                [("preview_self_pickup_problems", {"account_id": "ronghui_self_pickup_problem"})],
                 calls,
             )
             self.assertEqual("confirm_action", pending_store["chat-1"]["type"])

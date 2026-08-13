@@ -423,8 +423,8 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 
     if SPLIT_PENDING_PROBLEM_UPLOAD_RE.match(normalized):
         return {
-            "tool_name": "split_pending_problem_upload",
-            "params": {"dry_run": True, "account_id": SPLIT_PENDING_PROBLEM_ACCOUNT_ID},
+            "tool_name": "preview_split_pending_problems",
+            "params": {"account_id": SPLIT_PENDING_PROBLEM_ACCOUNT_ID},
             "mode": "reply",
             "selection_intent": {
                 "description": SPLIT_PENDING_PROBLEM_LABEL,
@@ -433,8 +433,8 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 
     if SELF_PICKUP_PROBLEM_UPLOAD_RE.match(normalized):
         return {
-            "tool_name": "self_pickup_problem_upload",
-            "params": {"dry_run": True, "account_id": SELF_PICKUP_PROBLEM_ACCOUNT_ID},
+            "tool_name": "preview_self_pickup_problems",
+            "params": {"account_id": SELF_PICKUP_PROBLEM_ACCOUNT_ID},
             "mode": "reply",
             "confirm_intent": {
                 "execute_params": {"dry_run": False, "account_id": SELF_PICKUP_PROBLEM_ACCOUNT_ID},
@@ -514,9 +514,9 @@ def format_tool_reply(tool_name: str, result: dict[str, Any]) -> str:
         return format_track_waybill_reply(result)
     if tool_name == "get_price":
         return format_price_reply(result)
-    if tool_name == "split_pending_problem_upload":
+    if tool_name in {"preview_split_pending_problems", "split_pending_problem_upload"}:
         return format_split_pending_problem_upload_reply(result)
-    if tool_name == "self_pickup_problem_upload":
+    if tool_name in {"preview_self_pickup_problems", "self_pickup_problem_upload"}:
         return format_self_pickup_problem_upload_reply(result)
     if tool_name == "sync_scan_codes":
         return format_scan_sync_reply(result)

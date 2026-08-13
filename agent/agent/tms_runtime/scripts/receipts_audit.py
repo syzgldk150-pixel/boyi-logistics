@@ -294,6 +294,51 @@ def _safe_response_json(response: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {"success": False, "message": "融辉保存接口返回格式异常。"}
 
 
+def _verify_ronghui_audit_readback(
+    session: Any,
+    query_row: dict[str, Any],
+    *,
+    headers: dict[str, str],
+    timeout_sec: int,
+    expected_guid: str,
+    expected_bill_code: str,
+    expected_audit_status: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """Read the saved process row back and match the exact approved entity."""
+
+    try:
+        rows = fetch_ronghui_process_rows(
+            session,
+            query_row,
+            headers=headers,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        return None, f"Ronghui receipt audit read-back failed: {exc}"
+
+    matches = [
+        row
+        for row in rows
+        if _first_text(row, "GUID", "PROCESS_RECORD_ID") == expected_guid
+    ]
+    if len(matches) != 1:
+        return None, "Ronghui receipt audit read-back did not return one exact GUID match."
+
+    matched = matches[0]
+    observed_bill_code = _first_text(matched, "BILL_CODE", "BILLCODE", "BILL_NO")
+    observed_audit_status = _first_text(matched, "AUDIT_STATUS", "AUDIT_STATUS_TEXT")
+    if observed_bill_code != expected_bill_code or observed_audit_status != expected_audit_status:
+        return None, "Ronghui receipt audit read-back did not match BILL_CODE and AUDIT_STATUS."
+
+    return {
+        "verified": True,
+        "external_id": expected_guid,
+        "waybill_no": observed_bill_code,
+        "audit_status": observed_audit_status,
+        "observed_at": _utc_iso_millis(),
+    }, ""
+
+
 def _audit_ronghui(params: dict[str, Any]) -> dict[str, Any]:
     result = _clean_text(params.get("result")).lower()
     session_profile = _clean_text(params.get("session_profile")) or RONGHUI_SESSION_PROFILE
@@ -394,12 +439,30 @@ def _audit_ronghui(params: dict[str, Any]) -> dict[str, Any]:
             message=_clean_text(payload.get("message")) or "融辉审核保存失败。",
         )
 
+    verification, verification_error = _verify_ronghui_audit_readback(
+        session,
+        _ronghui_process_query_row(resolved_params),
+        headers=headers,
+        timeout_sec=timeout_sec,
+        expected_guid=_clean_text(audit_row.get("GUID")),
+        expected_bill_code=_clean_text(audit_row.get("BILL_CODE")),
+        expected_audit_status=_clean_text(audit_row.get("AUDIT_STATUS")),
+    )
+    if verification is None:
+        return _failure(
+            platform="ronghui",
+            result=result,
+            error_code="POSTCONDITION_UNVERIFIED",
+            message=verification_error,
+        )
+
     audit_status = AUDIT_STATUS_BY_RESULT[result]
     return {
         "ok": True,
         "platform": "ronghui",
         "result_status": "direct_api_executed",
         "audit_status": audit_status,
+        "verification": verification,
         "message": f"融辉{audit_status}已通过接口提交。",
     }
 

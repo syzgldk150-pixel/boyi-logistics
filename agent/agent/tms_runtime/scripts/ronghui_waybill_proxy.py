@@ -16,6 +16,7 @@ from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
 from agent.tms_runtime.session_broker import get_session_broker
+from shared.manual_entry_contracts import canonical_manual_proxy_path
 
 
 ORDER_ENTRY_MENU_ID = "1622"
@@ -282,7 +283,8 @@ def _client_user_info_cookie_from_session(session: Any) -> str:
 
 
 def _is_allowed_path(path: str) -> bool:
-    return any(path.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
+    canonical = canonical_manual_proxy_path(path)
+    return bool(canonical) and any(canonical.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
 
 
 def _is_relative_allowed_path(path: str) -> bool:
@@ -369,10 +371,12 @@ def _target_from_params(
     if parsed.scheme or parsed.netloc:
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != urlparse(RONGHUI_ORIGIN).netloc:
             raise ValueError("Only Ronghui TMS URLs can be proxied.")
-        path = parsed.path
+        path = canonical_manual_proxy_path(parsed.path)
         query_parts = parse_qsl(parsed.query, keep_blank_values=True)
     else:
-        path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+        path = canonical_manual_proxy_path(
+            parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+        )
         query_parts = parse_qsl(parsed.query, keep_blank_values=True)
 
     if raw_query:

@@ -12,7 +12,7 @@ MAX_REDACTION_DEPTH = 20
 
 _SENSITIVE_KEY = re.compile(
     r"(?:authorization|authentication|cookie|credential|password|passwd|passphrase|secret|"
-    r"token|api[_-]?key|access[_-]?key|private[_-]?key|sso|storage[_-]?state|"
+    r"token|capability|api[_-]?key|access[_-]?key|private[_-]?key|sso|storage[_-]?state|"
     r"session[_-]?(?:state|id)|"
     r"request[_-]?body|raw[_-]?request)",
     re.IGNORECASE,
@@ -30,19 +30,19 @@ _COOKIE_HEADER = re.compile(
     re.IGNORECASE,
 )
 _QUOTED_ASSIGNMENT = re.compile(
-    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token|api[_-]?key|"
+    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token|(?:execution[_-]?)?capability|api[_-]?key|"
     r"access[_-]?key|private[_-]?key|authorization|authentication(?:[_-]?key)?|cookie)"
     r"[\"']?\s*[:=]\s*)(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE,
 )
 _ASSIGNMENT = re.compile(
-    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token|api[_-]?key|"
+    r"(?P<prefix>[\"']?(?:password|passwd|passphrase|secret|token|(?:execution[_-]?)?capability|api[_-]?key|"
     r"access[_-]?key|private[_-]?key|authorization|authentication(?:[_-]?key)?|cookie)"
     r"[\"']?\s*[:=]\s*)(?P<value>[^\s,;}\"']+)",
     re.IGNORECASE,
 )
 _QUERY_VALUE = re.compile(
-    r"(?P<prefix>[?&](?:access_token|token|api_key|access_key|authenticationKey|key|secret|password)=)"
+    r"(?P<prefix>[?&](?:access_token|token|capability|execution_capability|api_key|access_key|authenticationKey|key|secret|password)=)"
     r"[^&#\s]+",
     re.IGNORECASE,
 )

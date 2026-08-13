@@ -7,7 +7,10 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(
             os.environ,
-            {"AGENT_INTERNAL_API_TOKEN": "test-internal-token"},
+            {
+                "AGENT_INTERNAL_API_TOKEN": "test-internal-token",
+                "AGENT_EXECUTION_CAPABILITY": "test-execution-capability",
+            },
             clear=False,
         )
         self.send_order_sql_patch = patch(
@@ -1084,7 +1087,11 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             )
 
         self.assertEqual({"ok": True}, result)
-        self.assertIn("X-Agent-Internal-Token", captured["headers"])
+        self.assertNotIn("X-Agent-Internal-Token", captured["headers"])
+        self.assertEqual(
+            "test-execution-capability",
+            captured["headers"]["X-Agent-Execution-Capability"],
+        )
         self.assertEqual({"bill_codes": ["R0001"]}, captured["json"]["params"])
         self.assertNotIn("params", captured["json"]["params"])
         self.assertEqual(960, captured["json"]["timeout_sec"])
@@ -1168,9 +1175,9 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 request = direct_tool_router.direct_tool_request_from_text(text)
 
                 self.assertIsNotNone(request)
-                self.assertEqual("self_pickup_problem_upload", request["tool_name"])
+                self.assertEqual("preview_self_pickup_problems", request["tool_name"])
                 self.assertEqual(
-                    {"dry_run": True, "account_id": "ronghui_self_pickup_problem"},
+                    {"account_id": "ronghui_self_pickup_problem"},
                     request["params"],
                 )
                 self.assertEqual("reply", request["mode"])

@@ -12,6 +12,13 @@ DEFAULT_MOBILE_BOTTOM_NAV = ("/tracking", "/receipts", "/automations")
 
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = (
     {"route": "/", "label": "概览", "mobile_label": "首页", "icon": "grid", "section": "primary"},
+    {
+        "route": "/work-items",
+        "label": "事项中心",
+        "mobile_label": "事项",
+        "icon": "inbox",
+        "section": "primary",
+    },
     {"route": "/ocr", "label": "运单录入", "mobile_label": "录单", "icon": "file-text", "section": "primary"},
     {"route": "/waybills", "label": "寄件运单查询", "mobile_label": "运单", "icon": "list", "section": "primary"},
     {"route": "/tracking", "label": "物流跟踪", "mobile_label": "跟踪", "icon": "search", "section": "primary"},

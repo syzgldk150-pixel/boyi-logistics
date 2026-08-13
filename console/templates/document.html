@@ -499,9 +499,9 @@
 
 {% if not document %}
 {% if is_entry_tabs_shell %}
-{% set entry_initial_provider = 'ronghui' if is_ronghui_mode else ('yunda' if is_yunda_mode else 'boyi') %}
-{% set entry_initial_label = '融辉 1' if entry_initial_provider == 'ronghui' else ('韵达 1' if entry_initial_provider == 'yunda' else '博益 1') %}
-{% set entry_initial_src = '/ocr/ronghui/live' if entry_initial_provider == 'ronghui' else ('/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil' if entry_initial_provider == 'yunda' else '/ocr/boyi/frame') %}
+{% set entry_initial_provider = 'boyi' %}
+{% set entry_initial_label = '博益 1' %}
+{% set entry_initial_src = '/ocr/boyi/frame' %}
 <div
   class="entry-tabs-shell"
   data-entry-tabs-root
@@ -509,8 +509,6 @@
   data-entry-max-tabs="6"
   data-entry-initial-provider="{{ entry_initial_provider }}"
   data-entry-src-boyi="/ocr/boyi/frame"
-  data-entry-src-yunda="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"
-  data-entry-src-ronghui="/ocr/ronghui/live"
 >
   <div class="entry-tabs-toolbar">
     <div class="entry-tab-list" data-entry-tab-list role="tablist" aria-label="录单页签">
@@ -523,11 +521,14 @@
     </div>
     <div class="entry-tabs-actions">
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
-      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="plus"></i> 新建韵达</button>
-      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="plus"></i> 新建融辉</button>
       <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> OCR队列</a>
     </div>
   </div>
+  {% if active_original_page_disabled|default(false) %}
+  <div class="manual-notice is-error" role="status">
+    第三方活动原页暂时停用，待迁移到独立来源后再开放。当前仍可使用博益手工录单、OCR 队列和控制平面任务。
+  </div>
+  {% endif %}
   <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
   <div class="entry-frame-stack" data-entry-frame-stack>
     <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-session-url="/automations"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations"{% endif %}>
@@ -621,8 +622,6 @@
         {% if not is_boyi_frame %}
         <div class="mode-switch" aria-label="Entry Mode">
           <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
-          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
-          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
           <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
         </div>
         {% endif %}
@@ -815,8 +814,6 @@
       </div>
       <div class="mode-switch" aria-label="Entry Mode">
           <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
-          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
-          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
           <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
         </div>
     </div>
@@ -861,72 +858,6 @@
         <div style="margin-top:4px;">上传图片后会进入 OCR 队列</div>
       </div>
       {% endfor %}
-    </div>
-  </section>
-</div>
-<div class="yunda-workspace mode-panel" data-mode-panel="yunda" {% if not is_yunda_mode %}hidden{% endif %}>
-  <section class="manual-card yunda-card">
-    <div class="manual-head">
-      <div class="manual-title">
-        <h3>韵达录单</h3>
-        <span class="manual-chip" data-yunda-status-chip>登录态</span>
-      </div>
-      <div class="manual-head-tools">
-        <div class="mode-switch" aria-label="Entry Mode">
-          <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
-          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
-          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
-          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
-        </div>
-      </div>
-    </div>
-    <div class="yunda-scroll yunda-live-scroll" data-yunda-root data-yunda-live="1" data-yunda-session-url="/automations">
-      <iframe
-        class="yunda-live-frame"
-        data-yunda-live-frame
-        data-live-src="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"
-        title="韵达原始录单页面"
-        {% if yunda_mode %}
-        src="/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"
-        {% endif %}
-      ></iframe>
-      <div class="yunda-live-fallback yunda-empty" data-yunda-live-fallback hidden>韵达原页面加载失败，可刷新登录态后重试。</div>
-    </div>
-  </section>
-  <aside class="manual-side" data-yunda-side-root>
-    <section class="yunda-side-card">
-      <h4>运行状态</h4>
-      <div class="yunda-empty">正在初始化。</div>
-    </section>
-  </aside>
-</div>
-<div class="yunda-workspace ronghui-workspace mode-panel" data-mode-panel="ronghui" {% if not is_ronghui_mode %}hidden{% endif %}>
-  <section class="manual-card yunda-card ronghui-card">
-    <div class="manual-head">
-      <div class="manual-title">
-        <h3>融辉录单</h3>
-        <span class="manual-chip" data-ronghui-status-chip>登录态</span>
-      </div>
-      <div class="manual-head-tools">
-        <div class="mode-switch" aria-label="Entry Mode">
-          <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
-          <a href="/ocr?mode=yunda" data-mode-link="yunda" aria-pressed="{{ 'true' if is_yunda_mode else 'false' }}">韵达</a>
-          <a href="/ocr?mode=ronghui" data-mode-link="ronghui" aria-pressed="{{ 'true' if is_ronghui_mode else 'false' }}">融辉</a>
-          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
-        </div>
-      </div>
-    </div>
-    <div class="yunda-scroll yunda-live-scroll" data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations">
-      <iframe
-        class="yunda-live-frame ronghui-live-frame"
-        data-ronghui-live-frame
-        data-live-src="/ocr/ronghui/live"
-        title="融辉原始运单录入页面"
-        {% if ronghui_mode %}
-        src="/ocr/ronghui/live"
-        {% endif %}
-      ></iframe>
-      <div class="yunda-live-fallback yunda-empty" data-ronghui-live-fallback hidden>融辉原页面加载失败，可刷新登录态后重试。</div>
     </div>
   </section>
 </div>
@@ -1084,10 +1015,8 @@
     let entryTabSerial = 1;
     const entryProviderLabels = {
       boyi: "博益",
-      yunda: "韵达",
-      ronghui: "融辉",
     };
-    const entryFrameSrc = (provider) => provider === "boyi" ? "/ocr/boyi/frame" : (provider === "ronghui" ? "/ocr/ronghui/live" : (provider === "yunda" ? "/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil" : "/ocr/boyi/frame"));
+    const entryFrameSrc = () => "/ocr/boyi/frame";
     const entryTabCount = () => entryTabsRoot ? entryTabsRoot.querySelectorAll("[data-entry-tab]").length : 0;
     const entryProviderCount = (provider) => entryTabsRoot ? entryTabsRoot.querySelectorAll(`[data-entry-tab][data-entry-provider="${provider}"]`).length : 0;
     const entryFrameForMessage = (event, provider) => {
@@ -1143,7 +1072,7 @@
     };
     function createEntryTab(provider, options = {}) {
       if (!entryTabsRoot || !entryTabList || !entryFrameStack) return null;
-      const normalizedProvider = ["boyi", "yunda", "ronghui"].includes(provider) ? provider : "boyi";
+      const normalizedProvider = provider === "boyi" ? provider : "boyi";
       if (entryTabCount() >= ENTRY_MAX_TABS) {
         updateEntryLimitState();
         return null;
@@ -1383,7 +1312,7 @@
     };
     const setMode = (mode, updateHistory = true) => {
       if (!modeRoot) return;
-      const nextMode = ["manual", "ocr", "yunda", "ronghui"].includes(mode) ? mode : "manual";
+      const nextMode = ["manual", "ocr"].includes(mode) ? mode : "manual";
       modeRoot.dataset.activeMode = nextMode;
       modeRoot.querySelectorAll("[data-mode-panel]").forEach((panel) => {
         panel.hidden = panel.dataset.modePanel !== nextMode;
@@ -1395,11 +1324,7 @@
         if (!window.history.state || window.history.state.consoleMode !== true) {
           window.history.replaceState({ ...(window.history.state || {}), consoleMode: true }, "", window.location.href);
         }
-        const nextUrl = nextMode === "ocr"
-          ? "/ocr?mode=ocr"
-          : (nextMode === "yunda"
-            ? "/ocr?mode=yunda"
-            : (nextMode === "ronghui" ? "/ocr?mode=ronghui" : "/ocr"));
+        const nextUrl = nextMode === "ocr" ? "/ocr?mode=ocr" : "/ocr";
         if (window.location.pathname + window.location.search !== nextUrl) {
           window.history.pushState({ consoleMode: true }, "", nextUrl);
         }
@@ -1728,8 +1653,7 @@
       pending: "待维护",
     }[status] || "失败");
     const quoteButtonText = (provider) => {
-      if (provider === "yunda") return "选择韵达并预填";
-      if (provider === "ronghui") return "选择融辉并预填";
+      if (provider === "yunda" || provider === "ronghui") return "原页预填已停用";
       return "暂不可选";
     };
     const setQuoteSummary = (message, isError = false) => {
@@ -1761,7 +1685,7 @@
               <div class="manual-quote-price">${price}</div>
             </div>
             <div class="manual-quote-meta">${meta.length ? meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("") : "<span>暂无明细</span>"}</div>
-            <button type="button" class="${available ? "primary-btn" : "ghost-btn"} manual-quote-select" data-quote-provider="${escapeHtml(provider)}" ${available && ["yunda", "ronghui"].includes(provider) ? "" : "disabled"}>
+            <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="${escapeHtml(provider)}" disabled>
               ${escapeHtml(quoteButtonText(provider))}
             </button>
           </article>
@@ -1815,6 +1739,10 @@
       }
     };
     const selectQuoteProvider = (provider) => {
+      if (["yunda", "ronghui"].includes(provider)) {
+        showManualNotice("第三方活动原页已安全停用；请在独立原站录入，或使用控制平面任务。", "error");
+        return;
+      }
       const quote = (lastQuotePayload?.quotes || []).find((item) => item.provider === provider);
       if (!quote || quote.status !== "available") {
         showManualNotice("当前平台没有可用报价，不能预填。");

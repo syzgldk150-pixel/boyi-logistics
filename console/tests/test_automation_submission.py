@@ -108,7 +108,7 @@ class AutomationSubmissionTests(unittest.TestCase):
             missing_required,
         )
 
-    def test_daily_sign_requires_r13_credentials_resource(self):
+    def test_daily_sign_no_longer_requires_legacy_r13_credentials_resource(self):
         bindings = build_automation_resource_bindings("daily_sign", {})
 
         missing_required = {
@@ -463,6 +463,11 @@ class AutomationSubmissionTests(unittest.TestCase):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app.repository = SimpleNamespace(list_workflow_resources=lambda: [])
         app._is_ajax_request = lambda handler: True
+        app._control_plane_write_context = lambda handler: {
+            "actor": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
+            "actor_roles": ["admin"],
+            "source": "console",
+        }
         app._collect_automation_task_submission = lambda handler, allow_missing_schedule=False: (
             {
                 "task_id": "arrival_stats",
@@ -478,7 +483,8 @@ class AutomationSubmissionTests(unittest.TestCase):
         captured = {}
         app._send_json = lambda handler, status, payload: captured.update({"status": status, "payload": payload})
 
-        app._handle_automation_task_run_now(None)
+        handler = SimpleNamespace(headers={"X-Browser-Request-UUID": "request-1"})
+        app._handle_automation_task_run_now(handler)
 
         self.assertEqual(False, captured["payload"]["ok"])
         self.assertEqual("执行未开始", captured["payload"]["title"])
@@ -539,9 +545,19 @@ class AutomationSubmissionTests(unittest.TestCase):
             ]
         )
         app.automation_virtual_task_state = {}
+        console_principal = {
+            "actor_id": "17",
+            "roles": ["admin"],
+            "authenticated_by": "mysql_admin_session",
+        }
+        app._control_plane_read_context = lambda handler: {
+            "_console_principal": console_principal,
+        }
         app._agent_request = lambda *args, **kwargs: {"ok": False, "error": "timed out"}
         app._sync_task_runtime_from_latest_tool_log = (
-            lambda task_id, tool_name, since=None: (_ for _ in ()).throw(AssertionError("should not call agent logs"))
+            lambda task_id, tool_name, since=None, console_principal=None: (_ for _ in ()).throw(
+                AssertionError("should not call agent logs")
+            )
         )
         captured = {}
         app._send_json = lambda handler, status, payload: captured.update({"status": status, "payload": payload})

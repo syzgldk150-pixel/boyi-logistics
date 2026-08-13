@@ -2476,7 +2476,6 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         checks = [
             (arrive_list_sync_tool.run_arrive_list_sync, "tools.arrive_list_sync_tool.call_http_service", {}),
             (scan_sync_tool.run_scan_sync, "tools.scan_sync_tool.call_http_service", {}),
-            (daily_sign_sync_tool.run_daily_sign_sync, "tools.daily_sign_sync_tool.call_http_service", {}),
             (site_send_list_sync_tool.run_site_send_list_sync, "tools.site_send_list_sync_tool.call_http_service", {}),
             (
                 yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync,

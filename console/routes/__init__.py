@@ -9,7 +9,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import auth, automation, customer_service, finance, monitoring, ocr, receipts, waybills
+from . import (
+    auth,
+    automation,
+    control_plane,
+    customer_service,
+    finance,
+    monitoring,
+    ocr,
+    receipts,
+    waybills,
+)
 
 
 class ConsoleRouteDispatcher:
@@ -17,6 +27,7 @@ class ConsoleRouteDispatcher:
 
     _ROUTERS = (
         auth,
+        control_plane,
         automation,
         monitoring,
         finance,

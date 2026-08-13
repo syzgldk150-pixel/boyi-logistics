@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+BROWSER_REQUEST_UUID = "123e4567-e89b-42d3-a456-426614174000"
 
 from console.app import LocalDocFlowApp
 from console.finance_service import FinanceValidationError
@@ -20,7 +21,11 @@ from console.navigation import CONSOLE_NAVIGATION
 class _Handler:
     def __init__(self, body=None):
         payload = json.dumps(body or {}, ensure_ascii=False).encode("utf-8")
-        self.headers = {"Content-Length": str(len(payload))}
+        self.headers = {
+            "Content-Length": str(len(payload)),
+            "Content-Type": "application/json",
+            "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+        }
         self.rfile = io.BytesIO(payload)
         self.wfile = io.BytesIO()
 
@@ -52,16 +57,16 @@ class _FakeFinanceService:
     def list_sync_batches(self, query):
         return self._result("sync_batches", query)
 
-    def start_sync(self, body):
+    def build_sync_arguments(self, body):
         return self._result("sync", body)
 
-    def start_backfill(self, body):
+    def build_backfill_arguments(self, body):
         return self._result("backfill", body)
 
     def save_fee_mapping(self, fee_item_id, body, *, changed_by):
         return self._result("save_mapping", fee_item_id, body, changed_by=changed_by)
 
-    def retry_batch(self, batch_id):
+    def build_retry_arguments(self, batch_id):
         return self._result("retry_batch", batch_id)
 
 
@@ -78,6 +83,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.sent_status = None
         self.sent_payload = None
         self.sent_html = ""
+        self.command_submissions = []
 
         def send_json(app, handler, status, payload):
             self.sent_status = status
@@ -89,6 +95,39 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
 
         self.app._send_json = types.MethodType(send_json, self.app)
         self.app._send_html = types.MethodType(send_html, self.app)
+        self.app._control_plane_write_context = lambda _handler: {
+            "actor": {"actor_id": "7"},
+            "actor_roles": ["super_admin"],
+            "source": "console",
+            "_console_principal": {"actor_id": "7"},
+        }
+
+        def submit_command(app, **kwargs):
+            self.command_submissions.append(kwargs)
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-1",
+                    "work_item_id": "work-item-1",
+                    "run_id": "run-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
+
+        def send_receipt(app, handler, result, *, message):
+            self.sent_status = HTTPStatus.ACCEPTED
+            self.sent_payload = {
+                "ok": True,
+                "pending": True,
+                "message": message,
+                **result["data"],
+            }
+
+        self.app._submit_console_tool_command = types.MethodType(submit_command, self.app)
+        self.app._send_console_command_receipt = types.MethodType(send_receipt, self.app)
 
     def test_sidebar_links_to_dedicated_finance_workbench(self):
         item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/modules/finance")
@@ -171,6 +210,14 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
 
+    def test_frontend_submits_stable_browser_uuid_and_uses_run_receipt(self):
+        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
+
+        self.assertIn('"X-Browser-Request-UUID": newBrowserRequestUuid()', script)
+        self.assertIn("receipt?.run_id", script)
+        self.assertIn("事项中心完成审批", script)
+        self.assertNotIn("await loadBatches();\n        await loadOverview();", script)
+
     def test_all_nine_finance_api_routes_are_registered(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
         routes = (
@@ -203,15 +250,23 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
 
     def test_post_handlers_cover_sync_backfill_mapping_and_retry(self):
         self.app._handle_finance_post(_Handler({"rescan_days": 7}), "sync")
-        self.assertEqual("sync", self.sent_payload["data"]["resource"])
+        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
+        self.assertTrue(self.sent_payload["pending"])
+        self.assertEqual("sync_finance_bills", self.command_submissions[-1]["tool_name"])
+        self.assertEqual("sync", self.command_submissions[-1]["arguments"]["resource"])
+        self.assertEqual(BROWSER_REQUEST_UUID, self.command_submissions[-1]["browser_request_uuid"])
 
         self.app._handle_finance_post(
             _Handler({"start_date": "2026-07-01", "end_date": "2026-07-11"}),
             "backfill",
         )
-        self.assertEqual("backfill", self.sent_payload["data"]["resource"])
+        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
+        self.assertEqual("backfill", self.command_submissions[-1]["arguments"]["resource"])
 
-        with patch("console.app.current_admin_user", return_value={"username": "admin"}):
+        with patch(
+            "console.services.monitoring_finance.current_admin_user",
+            return_value={"username": "admin"},
+        ):
             self.app._handle_finance_post(
                 _Handler({"fee_level": "operating"}),
                 "save_mapping",
@@ -225,7 +280,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "retry_batch",
             path="/finance/sync-batches/8/retry",
         )
-        self.assertEqual("retry_batch", self.sent_payload["data"]["resource"])
+        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
+        self.assertEqual("retry_batch", self.command_submissions[-1]["arguments"]["resource"])
 
     def test_validation_errors_are_readable_json(self):
         self.app.finance_service.fail_next = True

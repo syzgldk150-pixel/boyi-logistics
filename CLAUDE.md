@@ -40,6 +40,16 @@
 - 提交前运行 Ruff、工具清单、仓库卫生、内部 API 契约与导入边界检查，GitHub Actions 也必须覆盖这些检查。跟踪文本统一 UTF-8 无 BOM，单个 Python 文件不得超过 3,000 行。
 - `.env` 只允许由服务或脚本入口通过显式 bootstrap 加载一次；库模块、测试导入和共享模块不得读取 `.env`、创建运行目录或连接数据库。
 
+## Agent 统一控制平面
+
+- 系统保持 Agent + Console 双服务；业务编排、审批、执行恢复和事务 Outbox 全部位于 Agent，禁止新增独立 LLM 服务、消息中间件或 Console 侧编排器。完整规范见 `agent/docs/control_plane_v1.md`。
+- 除登录/验证码、Console 本地 OCR 与手工运单 CRUD 外，Console、飞书、APScheduler、Webhook 和兼容工具 API 必须提交 Command；只有 `agent/agent/orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`。
+- Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
+- Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
+- 风险、审批角色、调度免审、Evidence 与写后条件只读取受管工具契约。LLM 只能选择开放的只读/计算工具；第三方写始终要求 `super_admin` 独立审批和可核验写后证据，未知写结果不得盲目重试。
+- “每日应签”和客服问题件先作为只读影子投影。每日应签只由真实主单签收证据关闭；问题件列表消失必须按外部 ID 精确详情复核。未连续三个完整业务日满足完整性与集合一致标准前，不得切换首页口径。
+- Console 事项中心只能代理 Agent `/internal/v1/*`，不得直读控制平面表。所有 POST 使用真实 MySQL 管理员会话、同源校验和服务端身份覆盖；Basic Auth 不具备控制平面写权限。
+
 ## 安全与数据规则
 
 - 永远不要读取、打印或提交 `.env`、凭据文件、私钥或其他敏感内容。
@@ -63,8 +73,9 @@
 
 ## Agent 内部接口安全基线
 
-- `AGENT_INTERNAL_API_TOKEN` 是 Console、Agent 内部工具和飞书内部管理调用共享的服务间凭据；只允许由运行环境注入，不得写入源码、文档、日志或审计记录。
-- Agent 仅公开精简 `/health`、`/feishu/webhook/event` 和带独立 Webhook Token 的 `/webhook/*`；其他 `/admin`、`/tms`、工具、知识库、调度和账号接口统一要求 `X-Agent-Internal-Token`。
+- `AGENT_INTERNAL_API_TOKEN` 只证明服务调用方，不代表管理员身份；只允许由运行环境注入，不得写入源码、文档、日志或审计记录。Console 管理员身份必须使用独立 `CONSOLE_AGENT_SIGNING_SECRET` 对精确请求和真实 MySQL 会话快照签名，Agent 不信任请求体中的 actor、roles、source 或 authenticated_by。
+- Agent 仅公开精简 `/health`、`/feishu/webhook/event` 和带独立 Webhook Token 的 `/webhook/*`；其他 `/admin`、工具、知识库、调度和账号接口要求 `X-Agent-Internal-Token`。WorkflowRunner 工具子进程不得继承该 Token，只能使用按工具/target 绑定的短期执行能力访问精确 `/tms/*`。
+- 韵达/融辉活动原页不得在 Console 管理员同源上下文运行。`/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 对 GET/POST/PUT/PATCH/DELETE 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且不得调用 Agent；待迁移到独立来源后才可重新评估开放。Console 本地 OCR、博益手工运单 CRUD 与控制平面命令链路继续可用。
 - `/health` 只返回存活状态和 `release_sha`；组件、实例和工具状态只在鉴权后的 `/internal/v1/health` 返回。
 - `/internal/v1/*` 使用唯一的 `ok/data/error` 响应契约；Console 调用 Agent 必须使用该接口族。旧内部接口只为兼容保留、继续鉴权并标记 deprecated，不得新增调用方。
 - 日志、工具执行输出、MySQL 工具日志、回单审计和异常文本统一使用 `shared/redaction.py`，新增记录入口不得自建较弱的局部脱敏规则。

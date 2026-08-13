@@ -26,12 +26,26 @@
 ## HTTP 安全边界
 
 - Agent 固定默认监听 `127.0.0.1:9000`。
-- Console、TMS 工具和飞书内部调用必须发送 `X-Agent-Internal-Token`，其值来自 `AGENT_INTERNAL_API_TOKEN`；缺失配置必须显式失败。
+- `AGENT_INTERNAL_API_TOKEN` 只鉴别服务连接，不授予管理员角色。Console 管理员命令、审批和账号管理必须额外使用独立 `CONSOLE_AGENT_SIGNING_SECRET`，把 method、精确 path/query、原始 body 哈希、时间戳、一次性 nonce 与真实 MySQL 管理员会话快照绑定；Agent 忽略请求体伪造的 actor、roles、source 和 authenticated_by。
+- WorkflowRunner 为每个工具执行签发按工具名、target 和必要 action 绑定的短期能力。工具子进程必须剥离内部 API Token、Console 签名密钥、会话/Webhook/验证 Token，只能用该能力访问精确 `/tms/*`。
 - 只有 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*` 属于公开路径。统一策略在 `agent/http_security.py`，不得在各路由重复实现。
 - 所有日志和持久化审计通过 `shared/redaction.py` 脱敏；原始请求体、密码、Token、Cookie 和 Authorization 不得落盘。
 - `agent/agent/` 不得导入 `tools` 或 `feishu`；直接工具执行器和飞书告警回调统一在 `main.py` 注入，TMS 会话事件通过 `shared/runtime_events.py` 发布。
+- 飞书、Webhook、Phase 7、客服与回单入口只能向 Command Gateway 提交命令；旧 `/tms/*` 写入口必须提供稳定幂等键并映射到精确工具。底层 TMS target 只接受 WorkflowRunner 为当前工具签发的短期执行能力，宽泛 `tms_query` 不得承载写端点。
+- 韵达/融辉活动原页同源代理暂时禁用；Console 的四类原页前缀和旧 `/ocr/yunda/*` 入口固定返回 410 且不调用 Agent。Agent 的 `yunda_waybill_entry`、`yunda_waybill_proxy`、`ronghui_waybill_proxy` 在执行能力判断前固定返回 410，待独立来源隔离完成后才可重新评估。
+- 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
 - `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
+
+## 统一控制平面
+
+- `main.py` 是唯一组合根，负责注入 `CommandGateway`、Context/Planner/Validator/Policy、Approval、WorkflowRunner、ResultVerifier、Outbox Dispatcher、真实仓储和执行 adapter，并按 Runner -> Outbox 的顺序停机。
+- `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
+- Run/Work Item 状态转换必须走模型允许表和版本 CAS。登录恢复、补充信息恢复原 Run；`PARTIAL` 或终态失败创建关联新 Run。第三方/财务写的未知结果必须 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，除非存在精确读后 reconciliation。
+- Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
+- 计划固定 Schema v1，计划哈希必须覆盖上下文、目录哈希、工具版本、完整参数/账号、实际影响、Evidence 与写后条件。审批 15 分钟过期，执行前重算；变化时使旧审批失效并生成新轮次。
+- `tools/registry.yaml` 的每项治理字段都必填；宽泛 `tms_query` 和 `feishu_operation` 不向 LLM 开放，破坏性通用飞书操作禁用。定时免审只允许精确任务/版本/参数/cron 命中的内部投影。
+- 每日应签与客服问题件只读试点通过 `pilot_projection.py` 投影；每次采集（包括来源不完整或详情复核失败）都必须保存 COMPLETE/INCOMPLETE 影子 Evidence。客服旧口径集合必须从现有账号选择与站点过滤规则独立计算，不能从新集合反推。首页保持旧口径，直至连续三个完整业务日影子集合、来源完整性和差异证据满足切换标准。
 
 ## 快速定位入口
 
@@ -141,9 +155,8 @@ docs/
 - 本地入口：`http://127.0.0.1:8765/`
 - 实时消息监控大盘：首页 `/`，Console 通过 `/monitoring/summary`、`/monitoring/stream`、`/monitoring/detail-link` 代理 Agent `/internal/v1/admin/monitoring/snapshot` 和 `/internal/v1/admin/monitoring/detail-link`；Agent 只返回分类、数量、状态和非敏感原系统跳转标识。
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
-- 韵达录入页签：`http://127.0.0.1:8765/ocr?mode=yunda`，Console 同源 `/ocr/yunda/live/...` 转发 GET/POST/PUT/PATCH/DELETE 到 Agent `/tms/yunda_waybill_proxy`，Agent 使用 `yunda` 登录态代理韵达原始 `kyinms.yunda56.com/ky_inms/public/...` 页面与接口，成功保存后由 Console 写入本地 `waybills`，并通过保存响应里的 `shipnow_autoprint_url` 打开 Console 本地热敏打印页。
-- 融辉录入页签：`http://127.0.0.1:8765/ocr?mode=ronghui`，Console 只加载当前录单模式 iframe，非当前模式原页延迟到切换后加载；同源 `/ocr/ronghui/live` 转发 GET/POST/PUT/PATCH/DELETE 到 Agent `/tms/ronghui_waybill_proxy`，Agent 使用账号管理中的大祥报价 `price_default` 登录态以浏览器 XHR 头解析菜单 id `1622` 的融辉原始 `/widget/home` 运单录入页，菜单或页面返回登录页时透传 `AUTH_REQUIRED`，融辉原页代理目标在调度层允许 12 并发以承接浏览器首屏接口突发，固定字典/站点/客户下拉 GET 初始化接口在 Agent 侧短缓存 5 分钟且忽略 `_` 缓存破坏参数，运行时代理脚本会同步移除这些安全初始化接口 URL 的 `_` 参数以启用 Chrome 缓存，不缓存生成单号、日期、保存提交或带关键字的地址查询，`/static/...` 大 JS/图片资源直连融辉原站以避免代理大文件，CSS 与字体资源保留同源代理以避免字体 CORS 导致 MiniUI 图标显示异常，静态 CSS/字体响应带 `Cache-Control: public, max-age=86400` 供 Console 保留，并把大祥报价登录态里的必要 `userInfo` 字段桥接到同源 Cookie，初始地图 iframe 延迟到目的地/派件网点地图相关操作时再加载，重写允许的业务页面/接口链接、JSON/XML/XHTML/text/SVG 响应 URL（含 `\/` 斜杠转义形式）、协议相对 URL、跳转响应头 `Location/Refresh`、移除响应头和 HTML meta CSP、静态和动态 meta refresh、静态和动态 `<base href>`、静态和动态 iframe `srcdoc`、静态和动态 `<object data>`、组件 `url/data-url/data-src/data-href/poster/background` 属性、动态样式 URL（`style/cssText/setProperty/insertRule`，含 `url(...)` 与 `@import`）、动态 XHR/fetch/jQuery Ajax/MiniUI `mini.open`/`mini.ajax`/Beacon/SSE/Worker/表单提交、DOM URL 属性（含图片、脚本、iframe、表单、媒体、source/track/embed/object、area/input image）、动态 HTML 注入入口（`innerHTML/outerHTML/insertAdjacentHTML/document.write/writeln`）、DOM 子树和 URL 属性变化扫描（MutationObserver）、`window.open` URL、`history.pushState/replaceState` URL 和静态 `location.assign/replace` 参数，成功保存后由 Console 记录请求/响应快照。
-- 统一回单管理：Console `/receipts/sync` 调 Agent `/tms/receipts_sync`，脚本位于 `agent/tms_runtime/scripts/receipts_sync.py`；融辉使用 `price` 登录态按方向请求 `FIND_SEND_RETURN_PROCESS`（寄方跟踪）或 `FIND_DISP_RETURN_PROCESS`（派方处理），并按处理记录 `FIND_TAB_PROCESS_RECORD` 继续解析附件：人工记录查 `FIND_TAB_PROCESS_RECORD_PATH`，系统生成记录按原页 `renderReplyFiles` 逻辑查 `FIND_TAB_PIC_SCAN_ALL`；韵达使用 `yunda` 登录态从实际回单页的 `#dg` datagrid 配置发现数据 URL 后拉取。返回给 Console 的数据只包含标准化回单字段、附件来源 URL/hash 和统计，不返回 Cookie、Token、密码、SSO 参数；Console 的 `/receipts/yunda/live/...`、`/receipts/ronghui/live/...` 原页模式继续复用现有 waybill proxy 脚本；Console 回单详情补齐可调用 `/tms/query_waybill_detail`，韵达飞书兜底走 `tools/feishu_cli_tool.py` 的 `feishu_operation.search_records`，只用 `records/search` + `运单编号` 等值筛选查询单票业务字段，不分页扫全表；Console 审核按钮点击后先 POST `/receipts/{id}/audit` 调 Agent `/tms/receipts_audit`，融辉已按真实原页 `saveBtn -> saveData()` 抓取并直连 `/dataOperation/saveTables`，提交前会从“寄方回单跟踪/派方回单处理”菜单 URL 取得 `authenticationKey/pageId` 请求头，否则融辉会返回“非法的请求”；本地记录缺处理记录 `GUID` 时会先按同票查询 `FIND_TAB_PROCESS_RECORD` 取得唯一处理记录，再提交 `TAB_PROCESS_RECORD_UPT` 的 `AUDIT_STATUS=2/3`，使用 `price` 登录态 `userInfo` 补审核网点/人员字段；缺登录人字段、处理记录无法唯一确定或韵达未适配时显式失败或返回 `AUDIT_CAPTURE_REQUIRED`，才由前端隐藏同源原页 iframe 兜底执行并通过 `execution=original_page` 回写本地状态，不打开可见原页；审核不通过仍先展示原因/确认，再走同一后台执行链路；不得猜未抓实的第三方审核接口。
+- 韵达/融辉录入兼容 URL 不再创建第三方活动 iframe；`/ocr?mode=yunda`、`/ocr?mode=ronghui` 回到博益本地录单壳并显示停用提示。`/ocr/yunda/*` 与 `/ocr/ronghui/live/*` 对所有方法返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，不调用 Agent；比价仍可读取真实价格，但第三方原页预填按钮禁用。
+- 统一回单管理：Console `/receipts/sync` 与 `/receipts/{id}/audit` 只向 `/internal/v1/commands` 提交精确的 `receipts_sync` / `receipts_audit` 计划，浏览器 UUID 形成 Console 幂等键；提交阶段不得 upsert 同步结果或提前修改本地审核状态。`receipts_audit` 由高风险审批后的 WorkflowRunner 执行并读后核验；缺关键字段、多候选、登录失效、韵达未适配或写后状态不一致均显式失败。旧隐藏 iframe 自动写入兜底已删除，两个回单活动原页前缀对所有方法固定返回 410；页面只保留本地照片、证据和控制平面审核。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
 - 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；账号系统按真实外部系统展示，大祥报价、自提问题件、大祥S站等通过 TMS融辉账号用途区分。所有账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用；协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不得影响凭据和状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。大祥报价显式使用 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一状态，不再写死特殊 `price` 身份；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，只能在页面保存完整凭据后开启；账号管理不得把环境变量凭据计入或展示为已保存凭据。
 - 启动脚本：`console/start_backend.sh`
@@ -156,10 +169,10 @@ docs/
 
 ## 分批差错及问题件
 
-- 飞书文本仅精确指令“分批”触发 `split_pending_problem_upload`；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
-- 交互为 dry-run 编号列表 → 首次回复“确认”直接执行全部候选；数字/多选/区间只选择对应运单，回显选择后再回复“确认”正式执行。两个 pending 阶段均为 10 分钟，重新发送“分批”会丢弃旧选择并刷新列表。
+- 飞书文本仅精确指令“分批”触发低风险只读工具 `preview_split_pending_problems`；自提问题件预览使用 `preview_self_pickup_problems`。两条封装器只接受显式 `account_id` 并强制旧实现 `dry_run=true`，任何写入参数都会被拒绝；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
+- 交互仍可生成 dry-run 编号列表和选择快照，但正式第三方写当前固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`：在按每个运单从目标系统读回问题件/差错记录并形成权威写后 Evidence 之前，不得因用户确认而执行。
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
 - `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉差错或问题件上报。
 - MySQL 表 `split_pending_problem_items` 分别保存 `complaint_status` 与问题件 `upload_status`；同类型刷新保留历史步骤结果，完整成功单隐藏，失败或未完成步骤继续显示，类型变化才重置。
-- 正式模式必须同时提供 `selected_bill_codes` 与 `preview_fingerprint`；执行前重读来源和状态，指纹变化整批零业务写入。正式刷新全部当前未齐 Sheet/MySQL 快照，但融辉只处理所选运单。
-- `0 < 已到 < 应到` 先上报“分批”差错，成功或重复后登记“少货/分批”问题件；差错失败跳过该票问题件并继续后续运单。`已到=0` 只登记“有发未到”问题件。
+- 历史正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 仅保留为离线/测试契约，不构成控制平面可执行条件；不得以工具返回的 `saved/success` 代替第三方读后验证。
+- 历史业务顺序为 `0 < 已到 < 应到` 先差错、再问题件，`已到=0` 只登记“有发未到”问题件；该写链在新的权威读后验证器落地前保持停用。

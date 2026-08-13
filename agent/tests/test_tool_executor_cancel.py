@@ -134,6 +134,39 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fast_result["success"])
         self.assertEqual(fast_result["data"], {"tool": "fast"})
 
+    async def test_unified_tool_failure_preserves_auth_required_classification(self):
+        failure_script = self._write_temp_script(
+            "tool-unified-failure-",
+            """
+            import json
+
+            print(json.dumps({
+                "status": "FAILED",
+                "data": {},
+                "meta": {},
+                "warnings": [],
+                "error": {
+                    "code": "AUTH_REQUIRED",
+                    "message": "session unavailable",
+                    "retryable": True,
+                },
+            }))
+            """,
+        )
+
+        result = await self.executor.execute(
+            {
+                "name": "unified_failure_tool",
+                "executor": os.path.relpath(failure_script, PROJECT_ROOT),
+                "timeout": 5,
+            },
+            {},
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual("AUTH_REQUIRED", result["error_code"])
+        self.assertEqual("FAILED", result["data"]["status"])
+
 
 if __name__ == "__main__":
     unittest.main()

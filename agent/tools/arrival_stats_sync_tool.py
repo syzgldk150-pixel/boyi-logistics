@@ -7,13 +7,15 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
+from tools.daily_sign_rules import business_now
+from tools.daily_sign_store import save_arrival_stat_snapshot
 from tools.feishu_cli_tool import (
     _clear_spreadsheet_sheet_cache,
     _spreadsheet_sheet_info,
@@ -93,7 +95,7 @@ def _apply_scan_window(request_params: dict, scan_window_days: int, target_date:
         if target_date is not None:
             request_params["date"] = target_date.strftime("%Y/%m/%d")
         return request_params
-    end_date = target_date or datetime.now().date()
+    end_date = target_date or business_now().date()
     start_date = end_date - timedelta(days=max(scan_window_days - 1, 0))
     request_params["start"] = f"{start_date.strftime('%Y/%m/%d')} 00:00:00"
     request_params["end"] = f"{end_date.strftime('%Y/%m/%d')} 23:59:59"
@@ -522,7 +524,7 @@ def _archive_title(params: dict | None = None) -> str:
     resolved = _target_date(params)
     if resolved is not None:
         return resolved.strftime("%Y-%m-%d")
-    return datetime.now().strftime("%Y-%m-%d")
+    return business_now().strftime("%Y-%m-%d")
 
 
 def _build_archive_resource(params: dict) -> dict:
@@ -1015,6 +1017,39 @@ def _run_arrival_stats_sync(params: dict) -> dict:
             "flow_result": _public_result(flow_result),
         }
 
+    snapshot_records = [
+        {
+            "tracking_number": record.get("tracking_number"),
+            "destination_station": record.get("destination_station"),
+            "expected_quantity": record.get("quantity"),
+            "arrived_quantity": count_map.get(str(record.get("tracking_number") or "")),
+            "goods_name": record.get("goods_name"),
+            "package_type": record.get("package_type"),
+            "delivery_method": record.get("delivery_method"),
+            "recipient_address": record.get("recipient_address"),
+        }
+        for record in export_records
+        if record.get("tracking_number")
+    ]
+    try:
+        arrival_snapshot_result = save_arrival_stat_snapshot(
+            _target_date(params) or business_now().date(),
+            snapshot_records,
+            dry_run=bool(params.get("dry_run", False)),
+        )
+    except Exception as exc:
+        detail = str(exc)[:500]
+        _emit_progress("实际到货共享快照写入失败", error=detail)
+        return {
+            "error": f"实际到货共享快照写入失败: {detail}",
+            "stage": "arrival_snapshot_failed",
+            "primary_result": _public_result(primary_result),
+            "secondary_result": _public_result(secondary_result),
+            "pending_result": _public_result(pending_result),
+            "split_pending_result": _public_result(split_pending_result),
+            "archive_result": _public_result(archive_result),
+        }
+
     _emit_progress("统计到货数据任务结束")
     return {
         "ok": True,
@@ -1026,6 +1061,7 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         "secondary_result": _public_result(secondary_result),
         "pending_result": _public_result(pending_result),
         "split_pending_result": _public_result(split_pending_result),
+        "arrival_snapshot_result": _public_result(arrival_snapshot_result),
         "archive_result": _public_result(archive_result),
         "flow_result": _public_result(flow_result),
         "debug_tracking": debug_count,

@@ -999,6 +999,7 @@
       running: false,
       startedAt: "",
       cancelRequested: false,
+      runId: "",
     };
 
     function syncRunButtonVisual() {
@@ -1031,6 +1032,7 @@
       if (!runUiState.running) {
         runUiState.startedAt = "";
         runUiState.cancelRequested = false;
+        runUiState.runId = "";
       }
       syncRunButtonVisual();
     }
@@ -1377,6 +1379,7 @@
       fetchOutputState = async function(options = {}) {
         if (!toolName) return null;
         const startedAt = options.startedAt ?? termDrawer.dataset.runStartedAt ?? "";
+        const runId = options.runId ?? runUiState.runId ?? termDrawer.dataset.runId ?? "";
         const offset = options.offset ?? termOffset;
         const query = new URLSearchParams({
           tool_name: toolName,
@@ -1384,6 +1387,7 @@
         });
         if (taskId) query.set("task_id", taskId);
         if (startedAt) query.set("started_at", startedAt);
+        if (runId) query.set("run_id", runId);
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), 10000);
         try {
@@ -1675,8 +1679,18 @@
     async function requestTaskCancel() {
       if (!(runBtn instanceof HTMLElement)) return;
       const taskId = form.querySelector('input[name="task_id"]')?.value || "";
-      const toolName = form.querySelector('input[name="tool_name"]')?.value || "";
       const startedAt = (termDrawer?.dataset.runStartedAt || runUiState.startedAt || "").trim();
+      const runId = (runUiState.runId || termDrawer?.dataset.runId || "").trim();
+
+      if (!runId) {
+        renderFeedback(form, {
+          kind: "error",
+          title: "无法取消",
+          message: "当前页面没有可追踪的 Run 标识，请到事项中心处理。",
+          showTimer: false,
+        });
+        return;
+      }
 
       setButtonLoading(runBtn, true);
       setRunUiState({ running: true, startedAt, cancelRequested: true });
@@ -1691,7 +1705,7 @@
       try {
         const body = new URLSearchParams();
         body.set("task_id", taskId);
-        body.set("tool_name", toolName);
+        body.set("run_id", runId);
         if (startedAt) body.set("started_at", startedAt);
 
         const res = await fetch("/automations/tasks/cancel", {
@@ -1709,7 +1723,7 @@
           if (termDrawer && cancelStartedAt) {
             termDrawer.dataset.runStartedAt = cancelStartedAt;
           }
-          setRunUiState({ running: true, startedAt: cancelStartedAt, cancelRequested: true });
+          setRunUiState({ running: true, startedAt: cancelStartedAt, cancelRequested: true, runId });
           renderFeedback(form, {
             kind: "warning",
             title: result.title || "取消中",
@@ -1789,6 +1803,10 @@
           const fd = new FormData(form);
           const body = new URLSearchParams();
           fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
+          if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
+            throw new Error("当前浏览器无法生成安全的请求标识，命令未提交。");
+          }
+          const browserRequestUuid = window.crypto.randomUUID();
 
           const res = await fetch(runBtn.getAttribute("formaction") || "/automations/tasks/run-now", {
             method: "POST",
@@ -1796,16 +1814,20 @@
               "X-Requested-With": "XMLHttpRequest",
               "Accept": "application/json",
               "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+              "X-Browser-Request-UUID": browserRequestUuid,
             },
             body: body.toString(),
           });
           const result = await res.json();
           if (result.pending) {
             const startedAt = result.activity_value || stamp;
+            const runId = String(result.run_id || "").trim();
+            if (!runId) throw new Error("Agent 未返回可追踪的 Run 标识。");
             if (termDrawer) {
               termDrawer.dataset.runStartedAt = result.activity_value || "";
+              termDrawer.dataset.runId = runId;
             }
-            setRunUiState({ running: true, startedAt, cancelRequested: false });
+            setRunUiState({ running: true, startedAt, cancelRequested: false, runId });
             renderFeedback(form, {
               kind: "info",
               title: result.title || "脚本仍在执行",

@@ -50,7 +50,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -85,7 +85,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 raise AssertionError("invalid tracking number should not execute a tool")
 
@@ -113,7 +113,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -149,7 +149,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -188,7 +188,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": False,
@@ -241,7 +241,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": False,
@@ -288,7 +288,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": False,
@@ -328,13 +328,13 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertIn("验证码已发送", replies[-1])
         self.assertNotIn("工具执行失败", replies[-1])
 
-    def test_feishu_deferred_tool_retries_stale_auth_when_status_is_authenticated(self):
+    def test_feishu_deferred_tool_does_not_blind_retry_stale_auth(self):
         calls: list[tuple[str, dict[str, Any]]] = []
         replies: list[str] = []
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls.append((tool_name, params))
                 if len(calls) == 1:
                     return {"success": False, "error_code": "AUTH_REQUIRED", "error": "AUTH_REQUIRED"}
@@ -374,11 +374,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("ç»Ÿè®¡", "user-1", "chat-1"))
 
-        self.assertEqual(2, len(calls))
-        self.assertEqual(("sync_arrival_stats", {}), calls[-1])
+        self.assertEqual(1, len(calls))
+        self.assertEqual(("sync_arrival_stats", {}), calls[0])
         self.assertEqual([], pending_calls)
-        self.assertIn("missing_resource", replies[-1])
-        self.assertNotIn("AUTH_REQUIRED", replies[-1])
+        self.assertIn("AUTH_REQUIRED", replies[-1])
 
     def test_feishu_direct_tool_clears_stale_login_pending(self):
         calls: list[tuple[str, dict[str, Any]]] = []
@@ -391,7 +390,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         }
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls.append((tool_name, params))
                 return {
                     "success": True,
@@ -993,7 +992,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
         self.assertIn("验证码已发送", replies[-1])
 
-    def test_feishu_price_sms_code_uses_price_session_endpoint_and_resumes(self):
+    def test_feishu_price_sms_code_resumes_original_control_plane_run(self):
         replies: list[str] = []
         admin_calls: list[tuple[str, dict[str, Any] | None]] = []
         execute_calls: list[tuple[str, dict[str, Any]]] = []
@@ -1005,7 +1004,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         }
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 execute_calls.append((tool_name, params))
                 return {"success": True, "data": {"目的网点": "测试站"}}
 
@@ -1029,9 +1028,9 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("123456", "user-1", "chat-1"))
 
         self.assertEqual([("/admin/tms/price-session/submit-code", {"code": "123456"})], admin_calls)
-        self.assertEqual([("get_price", {"address": "长沙", "weight": 800.0})], execute_calls)
-        self.assertIn("登录成功", replies[-2])
-        self.assertIn("目的网点：测试站", replies[-1])
+        self.assertEqual([], execute_calls)
+        self.assertIn("登录成功", replies[-1])
+        self.assertIn("原事项运行已恢复", replies[-1])
 
     def test_feishu_departure_message_executes_single_configured_plate(self):
         calls: dict[str, Any] = {}
@@ -1054,7 +1053,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         class _FakeAgent:
             memory = _FakeMemory()
 
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -1147,7 +1146,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         }
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,

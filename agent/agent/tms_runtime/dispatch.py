@@ -28,6 +28,10 @@ SCRIPTS_PACKAGE = "agent.tms_runtime.scripts"
 class TaskRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     timeout_sec: int = Field(default=600, ge=1, le=24 * 60 * 60)
+    actor: dict[str, Any] | None = None
+    actor_roles: list[str] = Field(default_factory=list)
+    source: str = "legacy_api"
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,10 @@ TARGETS: dict[str, Target] = {
     "tracking_query": Target(module=f"{SCRIPTS_PACKAGE}.tracking_query", func="run_once"),
     "get_scan": Target(module=f"{SCRIPTS_PACKAGE}.get_scan", func="run_once"),
     "get_qianshou": Target(module=f"{SCRIPTS_PACKAGE}.get_qianshou", func="run_once"),
+    "get_sign_records": Target(
+        module="agent.tms_runtime.scripts.get_sign_records",
+        func="run_once",
+    ),
     "get_price": Target(module="agent.tms_runtime.scripts.get_price", func="run_once"),
     "get_wangdiansendlist": Target(module=f"{SCRIPTS_PACKAGE}.get_wangdiansendlist", func="run_once"),
     "child_count": Target(module=f"{SCRIPTS_PACKAGE}.child_count", func="run_once"),
@@ -86,6 +94,7 @@ TARGET_ACCOUNT_SYSTEMS: dict[str, str] = {
     "clock_in_dual": "ronghui",
     "get_scan": "ronghui",
     "get_qianshou": "r13",
+    "get_sign_records": "ronghui",
     "get_wangdiansendlist": "ronghui",
     "child_count": "ronghui",
     "ronghui_tms_tracking": "ronghui",
