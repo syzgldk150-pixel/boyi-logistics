@@ -350,6 +350,49 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             first.rollback()
             first.__exit__(None, None, None)
 
+    def test_two_outbox_workers_recover_distinct_expired_leases(self):
+        repository = self._repository()
+        consumer_name = f"expired-lease-{uuid4()}"
+        for label in ("expired-outbox-a", "expired-outbox-b"):
+            rows = self._aggregate_rows(label)
+            rows[4][0]["consumer_name"] = consumer_name
+            with repository.unit_of_work() as uow:
+                uow.command_gateway_create(*rows)
+                uow.commit()
+        with self._connection(autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE outbox_events SET status='PROCESSING', locked_by='expired', "
+                "locked_until=DATE_SUB(NOW(6), INTERVAL 1 SECOND) "
+                "WHERE consumer_name=%s",
+                (consumer_name,),
+            )
+
+        first = repository.unit_of_work()
+        second = repository.unit_of_work()
+        try:
+            first.__enter__()
+            with first.connection.cursor() as cursor:
+                cursor.execute("SET SESSION innodb_lock_wait_timeout=2")
+            first_claim = first.outbox.claim(
+                "lease-worker-a", consumer_name=consumer_name, limit=1
+            )
+            second.__enter__()
+            with second.connection.cursor() as cursor:
+                cursor.execute("SET SESSION innodb_lock_wait_timeout=2")
+            second_claim = second.outbox.claim(
+                "lease-worker-b", consumer_name=consumer_name, limit=1
+            )
+            self.assertEqual(1, len(first_claim))
+            self.assertEqual(1, len(second_claim))
+            self.assertNotEqual(
+                first_claim[0]["outbox_id"], second_claim[0]["outbox_id"]
+            )
+        finally:
+            second.rollback()
+            second.__exit__(None, None, None)
+            first.rollback()
+            first.__exit__(None, None, None)
+
     def test_concurrent_approval_decisions_accept_only_the_first_commit(self):
         from shared.orchestration_repository import InvalidStateError
 
