@@ -26,6 +26,7 @@ DEFAULT_BILL_CODE = ""
 DEFAULT_TIMEOUT_MS = 30_000
 DEFAULT_ACTION_DELAY_SEC = 1.0
 DEFAULT_DUMP_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_SESSION_PROFILE = "default"
 STATION_KEYS = (
     "station_name",
     "stationName",
@@ -120,6 +121,137 @@ STATION_LOOKUP_CALL_IDS = (
     "FIND_SCAN_SEND_SITE_DIST",
     "FIND_SCAN_SEND_SITE_COMBOBOX",
     "FIND_SITE_ALL_COMBOBOX",
+)
+
+MINI_LOGIN_CONTEXT_RESOLVER_JS = r"""
+() => {
+  const requiredLoginFields = [
+    "loginUserName",
+    "loginUserAccount",
+    "loginSiteName",
+    "loginSiteCode",
+  ];
+  const scopeEntries = [
+    { name: "iframe", scope: window },
+    { name: "top", scope: window.top },
+    { name: "parent", scope: window.parent },
+  ];
+  const seenScopes = [];
+  const statuses = [];
+  const candidates = [];
+  const recordStatus = (scope, status, missingFields = []) => {
+    statuses.push({ scope, status, missing_fields: missingFields });
+  };
+
+  for (const entry of scopeEntries) {
+    const scope = entry.scope;
+    if (!scope || seenScopes.some((seen) => seen === scope)) continue;
+    seenScopes.push(scope);
+
+    let z = null;
+    try {
+      if (scope === window) {
+        if (typeof $Z !== "undefined") z = $Z;
+      } else {
+        z = scope["$Z"];
+      }
+    } catch (_) {
+      recordStatus(entry.name, "cross_origin_or_inaccessible");
+      continue;
+    }
+    if (!z) {
+      recordStatus(entry.name, "z_missing");
+      continue;
+    }
+    if (!z.user || typeof z.user.getUserInfo !== "function") {
+      recordStatus(entry.name, "user_api_missing");
+      continue;
+    }
+
+    let userInfo = null;
+    try {
+      if (scope === window) {
+        userInfo = $Z.user.getUserInfo();
+      } else {
+        userInfo = z.user.getUserInfo();
+      }
+    } catch (_) {
+      recordStatus(entry.name, "user_api_failed");
+      continue;
+    }
+    if (!userInfo || typeof userInfo !== "object") {
+      recordStatus(entry.name, "user_info_missing");
+      continue;
+    }
+    const values = requiredLoginFields.map(
+      (field) => String(userInfo[field] == null ? "" : userInfo[field]).trim()
+    );
+    const missingFields = requiredLoginFields.filter((_, index) => values[index] === "");
+    if (missingFields.length > 0) {
+      recordStatus(entry.name, "required_fields_missing", missingFields);
+      continue;
+    }
+    candidates.push({ source: entry.name, signature: JSON.stringify(values), userInfo });
+    recordStatus(entry.name, "ready");
+  }
+
+  if (candidates.length === 0) {
+    const missingFields = Array.from(
+      new Set(statuses.flatMap((status) => status.missing_fields || []))
+    );
+    if (missingFields.length > 0) {
+      return {
+        ok: false,
+        error: "missing_login_context_fields",
+        context_status: "required_fields_missing",
+        missing_fields: missingFields,
+        scope_statuses: statuses,
+      };
+    }
+    return {
+      ok: false,
+      error: "login_context_unavailable",
+      context_status: "no_ready_scope",
+      scope_statuses: statuses,
+    };
+  }
+  const signatures = new Set(candidates.map((candidate) => candidate.signature));
+  const sources = candidates.map((candidate) => candidate.source);
+  if (signatures.size !== 1) {
+    return {
+      ok: false,
+      error: "ambiguous_login_context",
+      context_status: "scope_values_disagree",
+      sources,
+      scope_statuses: statuses,
+    };
+  }
+  return {
+    ok: true,
+    context_status: "ready",
+    source: candidates[0].source,
+    sources,
+    userInfo: candidates[0].userInfo,
+  };
+}
+"""
+
+MINI_LOGIN_CONTEXT_SCRIPT = (
+    r"""
+() => {
+  const resolveLoginContext = """
+    + MINI_LOGIN_CONTEXT_RESOLVER_JS
+    + r""";
+  const result = resolveLoginContext();
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    context_status: result.context_status,
+    source: result.source,
+    sources: result.sources,
+  };
+}
+"""
 )
 
 MINI_SET_STATION_SCRIPT = r"""
@@ -263,8 +395,12 @@ async ({ stationName, callIds }) => {
 }
 """
 
-MINI_ADD_BILL_CODE_SCRIPT = r"""
+MINI_ADD_BILL_CODE_SCRIPT = (
+    r"""
 (billCode) => {
+  const resolveLoginContext = """
+    + MINI_LOGIN_CONTEXT_RESOLVER_JS
+    + r""";
   const bill = String(billCode || "").trim();
   if (!bill) return { ok: false, error: "empty_bill_code" };
   if (!window.mini || !mini.get) return { ok: false, error: "mini_not_found" };
@@ -351,30 +487,9 @@ MINI_ADD_BILL_CODE_SCRIPT = r"""
     }
   }
 
-  if (typeof $Z === "undefined" || !$Z.user || typeof $Z.user.getUserInfo !== "function") {
-    return { ok: false, error: "login_context_unavailable" };
-  }
-  let userInfo = null;
-  try {
-    userInfo = $Z.user.getUserInfo();
-  } catch (_) {
-    return { ok: false, error: "login_context_unavailable" };
-  }
-  if (!userInfo || typeof userInfo !== "object") {
-    return { ok: false, error: "login_context_unavailable" };
-  }
-  const requiredLoginFields = [
-    "loginUserName",
-    "loginUserAccount",
-    "loginSiteName",
-    "loginSiteCode",
-  ];
-  const missingFields = requiredLoginFields.filter(
-    (field) => String(userInfo[field] == null ? "" : userInfo[field]).trim() === ""
-  );
-  if (missingFields.length > 0) {
-    return { ok: false, error: "missing_login_context_fields", missing_fields: missingFields };
-  }
+  const loginContext = resolveLoginContext();
+  if (!loginContext.ok) return loginContext;
+  const userInfo = loginContext.userInfo;
   const loginUserName = String(userInfo.loginUserName).trim();
   const loginUserAccount = String(userInfo.loginUserAccount).trim();
   const loginSiteName = String(userInfo.loginSiteName).trim();
@@ -419,6 +534,7 @@ MINI_ADD_BILL_CODE_SCRIPT = r"""
   return { ok: false, error: "direct_datagrid_add_failed", before, after };
 }
 """
+)
 
 MINI_UPLOAD_ROWS_SCRIPT = r"""
 () => new Promise((resolve) => {
@@ -608,6 +724,35 @@ def _set_station_by_mini_api(frame, station_name: str) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _get_login_context_status(frame) -> dict[str, Any]:
+    try:
+        return frame.evaluate(MINI_LOGIN_CONTEXT_SCRIPT)
+    except BaseException as exc:
+        return {
+            "ok": False,
+            "error": "login_context_evaluation_failed",
+            "context_status": type(exc).__name__,
+        }
+
+
+def _wait_login_context(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+    deadline = time.time() + timeout_ms / 1000.0
+    last_result: dict[str, Any] = {
+        "ok": False,
+        "error": "login_context_unavailable",
+        "context_status": "not_checked",
+    }
+    while time.time() < deadline:
+        last_result = _get_login_context_status(frame)
+        if last_result.get("ok"):
+            return last_result
+        try:
+            frame.wait_for_timeout(200)
+        except Exception:
+            time.sleep(0.2)
+    raise RuntimeError(f"登录上下文未就绪: {_mini_failure_detail(last_result)}")
+
+
 def _add_bill_code_by_mini_api(frame, bill_code: str) -> dict[str, Any]:
     try:
         return frame.evaluate(MINI_ADD_BILL_CODE_SCRIPT, bill_code)
@@ -632,6 +777,26 @@ def _mini_failure_detail(result: Any) -> str:
         fields = ",".join(str(field).strip() for field in missing_fields if str(field).strip())
         if fields:
             details.append(f"missing_fields={fields}")
+    context_status = str(result.get("context_status") or "").strip()
+    if context_status:
+        details.append(f"context_status={context_status}")
+    sources = result.get("sources")
+    if isinstance(sources, list):
+        source_text = ",".join(str(source).strip() for source in sources if str(source).strip())
+        if source_text:
+            details.append(f"sources={source_text}")
+    scope_statuses = result.get("scope_statuses")
+    if isinstance(scope_statuses, list):
+        status_parts: list[str] = []
+        for item in scope_statuses:
+            if not isinstance(item, dict):
+                continue
+            scope = str(item.get("scope") or "").strip()
+            status = str(item.get("status") or "").strip()
+            if scope and status:
+                status_parts.append(f"{scope}:{status}")
+        if status_parts:
+            details.append(f"scope_statuses={';'.join(status_parts)}")
     actual_bytes = result.get("actual_utf8_bytes")
     maximum_bytes = result.get("maximum_utf8_bytes")
     if actual_bytes not in (None, ""):
@@ -877,6 +1042,7 @@ def _run_flow_impl(
     action_delay_sec: float,
     dump_on_error: bool,
     dump_dir: str,
+    session_profile: str,
 ) -> Dict[str, Any]:
     started = time.time()
     stage = "init"
@@ -900,11 +1066,18 @@ def _run_flow_impl(
                 raise RuntimeError("未提供扫描数据")
             scan_items = [{"station_name": station_text, "bill_code": bill_text}]
         stage = "launch_browser"
-        p, browser, context, page = launch_browser(headless=headless, slow_mo_ms=slow_mo_ms)
+        p, browser, context, page = launch_browser(
+            headless=headless,
+            slow_mo_ms=slow_mo_ms,
+            profile=session_profile,
+        )
 
         stage = "login"
         uid, pwd = _resolve_credentials(config_path, username=username, password=password)
-        auth = TMSBrowserAuth(max_attempts=max(1, int(max_login_attempts)))
+        auth = TMSBrowserAuth(
+            max_attempts=max(1, int(max_login_attempts)),
+            profile=session_profile,
+        )
         log("开始登录")
         auth.login(page, username=uid, password=pwd)
         log(f"登录完成，当前URL：{page.url}")
@@ -917,6 +1090,9 @@ def _run_flow_impl(
         stage = "wait_frame"
         frame = _get_scan_frame(page)
         _wait_xpath_visible(frame, XPATH_SCAN_INPUT, timeout_ms=DEFAULT_TIMEOUT_MS)
+
+        stage = "wait_login_context"
+        _wait_login_context(frame, timeout_ms=DEFAULT_TIMEOUT_MS)
 
         def _upload_current_station() -> None:
             nonlocal stage, pending_codes, station_results, current_station
@@ -1077,7 +1253,11 @@ def run_flow(
     action_delay_sec: float,
     dump_on_error: bool,
     dump_dir: str,
+    session_profile: str = DEFAULT_SESSION_PROFILE,
 ) -> Dict[str, Any]:
+    normalized_session_profile = str(session_profile).strip()
+    if not normalized_session_profile:
+        raise ValueError("session_profile 不能为空")
     kwargs = {
         "station_name": station_name,
         "bill_code": bill_code,
@@ -1091,6 +1271,7 @@ def run_flow(
         "action_delay_sec": action_delay_sec,
         "dump_on_error": dump_on_error,
         "dump_dir": dump_dir,
+        "session_profile": normalized_session_profile,
     }
     if _has_running_event_loop():
         return _run_flow_in_playwright_thread(**kwargs)
@@ -1106,6 +1287,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--username", default="", help="账号（为空则读取 config.json）")
     parser.add_argument("--password", default="", help="密码（为空则读取 config.json）")
     parser.add_argument("--config-path", default=DEFAULT_CONFIG_PATH, help="config.json 路径")
+    parser.add_argument(
+        "--session-profile",
+        default=DEFAULT_SESSION_PROFILE,
+        help="共享登录会话配置名",
+    )
     parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
@@ -1140,6 +1326,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         action_delay_sec=float(args.action_delay_sec),
         dump_on_error=bool(args.dump_on_error),
         dump_dir=str(args.dump_dir),
+        session_profile=str(args.session_profile),
     )
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 1
@@ -1172,6 +1359,16 @@ def run_once(params: Dict[str, Any]) -> Any:
     username = str(_get_param(params, "username", default=""))
     password = str(_get_param(params, "password", default=""))
     config_path = str(_get_param(params, "config_path", "configPath", default=DEFAULT_CONFIG_PATH))
+    session_profile = str(
+        _get_param(
+            params,
+            "session_profile",
+            "sessionProfile",
+            default=DEFAULT_SESSION_PROFILE,
+        )
+    ).strip()
+    if not session_profile:
+        raise ValueError("session_profile 不能为空")
 
     headless = _coerce_bool(_get_param(params, "headless", default=True))
     slow_mo_ms = int(_get_param(params, "slow_mo_ms", "slowMoMs", default=0))
@@ -1199,6 +1396,7 @@ def run_once(params: Dict[str, Any]) -> Any:
         action_delay_sec=action_delay_sec,
         dump_on_error=dump_on_error,
         dump_dir=dump_dir,
+        session_profile=session_profile,
     )
 
 
