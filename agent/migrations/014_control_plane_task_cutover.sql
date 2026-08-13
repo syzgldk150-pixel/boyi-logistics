@@ -11,10 +11,10 @@
 DROP TEMPORARY TABLE IF EXISTS cp014_expected_tasks;
 
 CREATE TEMPORARY TABLE cp014_expected_tasks (
-    id VARCHAR(128) PRIMARY KEY,
-    family VARCHAR(64) NOT NULL,
-    tool_name VARCHAR(128) NOT NULL,
-    cron_expression VARCHAR(64) NOT NULL
+    id VARBINARY(128) PRIMARY KEY,
+    family VARBINARY(64) NOT NULL,
+    tool_name VARBINARY(128) NOT NULL,
+    cron_expression VARBINARY(64) NOT NULL
 ) ENGINE=InnoDB;
 
 INSERT INTO cp014_expected_tasks (id, family, tool_name, cron_expression)

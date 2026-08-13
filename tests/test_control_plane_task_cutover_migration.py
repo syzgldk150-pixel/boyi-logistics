@@ -122,6 +122,22 @@ def test_task_cutover_guards_before_any_permanent_change() -> None:
     assert "REGEXP" not in sql
 
 
+def test_task_cutover_compares_reviewed_bindings_as_exact_binary_values() -> None:
+    sql = _sql()
+
+    # Migration 001 inherits the database collation, while MySQL 8 temporary
+    # tables may inherit another default. VARBINARY keeps all cross-table
+    # contract comparisons exact without relying on either collation.
+    expected_table = sql.split(
+        "CREATE TEMPORARY TABLE cp014_expected_tasks (", 1
+    )[1].split(") ENGINE=InnoDB;", 1)[0]
+    assert "id VARBINARY(128) PRIMARY KEY" in expected_table
+    assert "family VARBINARY(64) NOT NULL" in expected_table
+    assert "tool_name VARBINARY(128) NOT NULL" in expected_table
+    assert "cron_expression VARBINARY(64) NOT NULL" in expected_table
+    assert "VARCHAR" not in expected_table
+
+
 def test_empty_database_is_the_only_allowed_incomplete_reviewed_set() -> None:
     sql = _sql()
     guard_insert = sql.index("INSERT INTO cp014_preflight_guard")
