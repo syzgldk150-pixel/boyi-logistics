@@ -347,7 +347,7 @@ tools:
     heavy: false
 
   - name: sync_arrival_stats
-    description: "到货统计：以目标日 arrive-list 与目标日实际到件扫描的并集为主单范围，保留未扫描单号为 0，使用累计扫描索引计算到货件数并刷新统计/未齐/归档/分批表"
+    description: "到货统计：以目标日 arrive-list 与目标日实际到件扫描的并集为主单范围，过滤历史已到齐且当天未重扫的 arrive-list 重复主单，历史未齐单保留为 0，累计到货件数按开单件数封顶，并刷新统计/未齐/归档/分批表"
     parameters:
       type: object
       properties:

@@ -169,6 +169,65 @@ def save_arrival_stat_snapshot(
         conn.close()
 
 
+def load_completed_arrival_trackings_before(
+    business_date: date,
+) -> tuple[set[str], dict[str, Any]]:
+    """Load waybills whose latest active successful snapshot before the target date is complete."""
+    ensure_daily_sign_tables()
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(DISTINCT business_date) AS prior_successful_dates
+                FROM arrival_stat_runs
+                WHERE status = 'success'
+                  AND is_active = TRUE
+                  AND business_date < %s
+                """,
+                (business_date,),
+            )
+            run_row = cur.fetchone() or {}
+            cur.execute(
+                """
+                SELECT DISTINCT i.tracking_number
+                FROM arrival_stat_items AS i
+                INNER JOIN arrival_stat_runs AS r ON r.run_id = i.run_id
+                INNER JOIN (
+                    SELECT latest_i.tracking_number, MAX(latest_r.business_date) AS latest_business_date
+                    FROM arrival_stat_items AS latest_i
+                    INNER JOIN arrival_stat_runs AS latest_r ON latest_r.run_id = latest_i.run_id
+                    WHERE latest_r.status = 'success'
+                      AND latest_r.is_active = TRUE
+                      AND latest_r.business_date < %s
+                    GROUP BY latest_i.tracking_number
+                ) AS latest
+                  ON latest.tracking_number = i.tracking_number
+                 AND latest.latest_business_date = r.business_date
+                WHERE r.status = 'success'
+                  AND r.is_active = TRUE
+                  AND r.business_date < %s
+                  AND i.expected_quantity IS NOT NULL
+                  AND i.expected_quantity > 0
+                  AND i.arrived_quantity IS NOT NULL
+                  AND i.arrived_quantity >= i.expected_quantity
+                """,
+                (business_date, business_date),
+            )
+            completed = {
+                tracking for row in (cur.fetchall() or []) if (tracking := clean_text(row.get("tracking_number")))
+            }
+    finally:
+        conn.close()
+    return completed, {
+        "ok": True,
+        "source": "arrival_stat_active_snapshots",
+        "target_date": business_date.isoformat(),
+        "prior_successful_dates": int(run_row.get("prior_successful_dates") or 0),
+        "completed_tracking_numbers": len(completed),
+    }
+
+
 def upsert_problem_events(events: list[dict[str, Any]], *, dry_run: bool = False) -> dict[str, Any]:
     if dry_run:
         return {"ok": True, "skipped": True, "upserted": len(events)}
