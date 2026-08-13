@@ -11,7 +11,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from config import Settings
+from console.config import Settings
 
 DELIVERY_METHOD_OPTIONS = ("送货", "自提")
 PAYMENT_METHOD_OPTIONS = (

@@ -99,14 +99,15 @@ updated: 2026-08-13
 
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
 - 项目级本地控制台已接入 `OCR / 价格获取 / 财务对账 / 车辆调度 / AI客服` 5 个模块入口。
-- 目前可交互运行的是 `OCR 工作区`、`融辉/韵达财务工作台` 和 `车辆调度工作区`。
-- 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；旧 `finance_reconciliation/` Excel ETL 保持独立。
+- 目前可交互运行的是 `OCR 工作区`、`融辉财务工作台` 和 `车辆调度工作区`；韵达财务适配器待真实来源验收后再启用。
+- 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；当前生产只调度融辉三个财务角色，逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已从线上运行时删除。
 - `车辆调度` 已完成工作区页面（车辆列表、调度看板、快速调度面板），当前使用演示数据。
 - `AI客服` 当前没有单独目录，运行时能力集中在 `agent/`、`feishu/` 和飞书工具链。
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
 - `sync_daily_should_sign` 必须显式绑定 `r13_account_id`、`problem_account_id`、`sign_account_id` 与 `detail_account_id` 四个账号角色；各角色从统一账号管理解析独立登录态，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
+- R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
 - `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由 `agent/tools/` 和 `agent/tms_runtime/` 统一承载；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
@@ -114,10 +115,10 @@ updated: 2026-08-13
 - `sync_yunda_send_waybills` 使用同一套韵达登录态 `yunda`，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入 `phase7.yunda_send_waybills_bitable`；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
 - `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。该接入当前只完成 Command/Gateway 治理：在缺少真实任务 ID 集合与远端版本的权威只读预览前，计划固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不会执行第三方打卡写入。
-- `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 会用当天扫描数据反推缺失主单，补抓详情后追加到统计输出。
+- `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
 - 2026-05-18：`sync_arrival_stats` 会把 `20055750680002` 这类融辉纯数字子单归并到主单 `2005575068`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
-- `sync_arrival_stats` 默认以扫描索引中的子单扫描数作为到货件数；主单总件数不参与统计计数，避免把仍在上游分拨的子单误算为到货。`count_result.quantity_gaps` 仅作为“扫描子单数低于主单总件数”的审计提示。
-- `scan_codes` 表自 2026-04-26 起改为 UPSERT 累积写入：每次 `sync_arrival_stats` / `sync_scan_codes` 不再 TRUNCATE，而是按 `raw_code` 主键合并历史扫描记录。统计列含义随之从「当日件数」更名为「累计到货件数」。`scan_window_days`（默认 1）控制每次拉取 `/get_scan` 的时间窗，`scan_codes_retention_days`（默认 30）控制保留期；首次部署可临时传 `scan_window_days=30` 一次性回填历史。
+- `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。
+- `scan_codes` 表按 `raw_code` 主键 UPSERT 累积；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
 - `sync_arrival_stats` 现额外输出「未齐货物」清单到 `phase7.pending_arrivals_sheet`，由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除；如未在 `workflow_resources` 中配置该资源，写入步骤会被自动跳过。
 - `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
 - 2026-05-22: `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.

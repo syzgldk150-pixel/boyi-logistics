@@ -5,7 +5,13 @@ import os
 import sys
 from typing import Any
 
-from tools.phase7_sync_common import sync_bitable_snapshot, sync_sheet_snapshot, tms_auth_error_result
+from tools.phase7_sync_common import (
+    bind_explicit_account_id,
+    require_explicit_account_id,
+    sync_bitable_snapshot,
+    sync_sheet_snapshot,
+    tms_auth_error_result,
+)
 from tools.tms_tool import call_http_service
 
 
@@ -63,7 +69,12 @@ def _build_sheet_values(rows: list[dict]) -> list[list[Any]]:
 def run_site_send_list_sync(params: dict) -> dict:
     request_body = dict(params.get("request_body", {}) or {})
     request_params = dict(request_body.get("params") or {})
-    for key in ("session_profile", "account_id", "accountId"):
+    request_params = bind_explicit_account_id(
+        request_params,
+        require_explicit_account_id(params, label="网点出港同步"),
+        label="网点出港请求",
+    )
+    for key in ("session_profile",):
         if params.get(key) not in (None, "") and key not in request_params:
             request_params[key] = params[key]
     request_body["params"] = request_params

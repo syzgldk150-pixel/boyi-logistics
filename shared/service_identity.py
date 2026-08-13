@@ -40,6 +40,25 @@ class ConsoleIdentityError(ValueError):
         self.code = code
 
 
+def validate_service_identity_secrets(
+    *,
+    internal_api_token: str,
+    console_signing_secret: str,
+) -> None:
+    """Fail startup when the service and end-user identity keys are not separate."""
+
+    token = str(internal_api_token or "").strip()
+    signing_secret = str(console_signing_secret or "").strip()
+    if not token:
+        raise RuntimeError("AGENT_INTERNAL_API_TOKEN is required")
+    if not signing_secret:
+        raise RuntimeError("CONSOLE_AGENT_SIGNING_SECRET is required")
+    if hmac.compare_digest(token.encode("utf-8"), signing_secret.encode("utf-8")):
+        raise RuntimeError(
+            "CONSOLE_AGENT_SIGNING_SECRET must be different from AGENT_INTERNAL_API_TOKEN"
+        )
+
+
 def normalize_console_principal(value: Mapping[str, Any]) -> dict[str, Any]:
     """Return the closed principal contract accepted at the Agent boundary."""
 

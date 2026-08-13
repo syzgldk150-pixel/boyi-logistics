@@ -34,6 +34,7 @@ REQUIRED_TABLES = frozenset(
         "waybill_sign_events",
         "daily_sign_ledger",
         "daily_sign_sync_runs",
+        "waybill_sign_verification_state",
     }
 )
 LEDGER_FIELDS = (
@@ -73,7 +74,9 @@ def _json(value: Any) -> str:
 
 def _daily_sign_connect():
     connection = _connect()
-    connection.autocommit(False)
+    set_autocommit = getattr(connection, "autocommit", None)
+    if callable(set_autocommit):
+        set_autocommit(False)
     return connection
 
 
@@ -276,6 +279,70 @@ def save_arrival_stat_snapshot(
     }
 
 
+def load_completed_arrival_trackings_before(
+    business_date: date,
+) -> tuple[set[str], dict[str, Any]]:
+    """Load waybills complete in their latest valid snapshot before the target day."""
+
+    ensure_daily_sign_tables()
+    connection = _daily_sign_connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT business_date) AS prior_successful_dates
+                FROM arrival_stat_runs
+                WHERE status = 'success'
+                  AND is_active = TRUE
+                  AND business_date < %s
+                """,
+                (business_date,),
+            )
+            run_row = cursor.fetchone() or {}
+            cursor.execute(
+                """
+                SELECT DISTINCT i.tracking_number
+                FROM arrival_stat_items AS i
+                INNER JOIN arrival_stat_runs AS r ON r.run_id = i.run_id
+                INNER JOIN (
+                    SELECT latest_i.tracking_number,
+                           MAX(latest_r.business_date) AS latest_business_date
+                    FROM arrival_stat_items AS latest_i
+                    INNER JOIN arrival_stat_runs AS latest_r
+                        ON latest_r.run_id = latest_i.run_id
+                    WHERE latest_r.status = 'success'
+                      AND latest_r.is_active = TRUE
+                      AND latest_r.business_date < %s
+                    GROUP BY latest_i.tracking_number
+                ) AS latest
+                  ON latest.tracking_number = i.tracking_number
+                 AND latest.latest_business_date = r.business_date
+                WHERE r.status = 'success'
+                  AND r.is_active = TRUE
+                  AND r.business_date < %s
+                  AND i.expected_quantity IS NOT NULL
+                  AND i.expected_quantity > 0
+                  AND i.arrived_quantity IS NOT NULL
+                  AND i.arrived_quantity >= i.expected_quantity
+                """,
+                (business_date, business_date),
+            )
+            completed = {
+                tracking
+                for row in (cursor.fetchall() or [])
+                if (tracking := clean_text(row.get("tracking_number")))
+            }
+    finally:
+        connection.close()
+    return completed, {
+        "ok": True,
+        "source": "arrival_stat_active_snapshots",
+        "target_date": business_date.isoformat(),
+        "prior_successful_dates": int(run_row.get("prior_successful_dates") or 0),
+        "completed_tracking_numbers": len(completed),
+    }
+
+
 def _normalize_problem_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = _dedupe_records(
         events,
@@ -334,6 +401,51 @@ def _normalize_sign_events(events: Iterable[dict[str, Any]]) -> list[dict[str, A
                 "scanned_at": scanned_at,
                 "scan_site": scan_site,
                 "is_main_waybill": True,
+            }
+        )
+    return output
+
+
+def _normalize_sign_verification_states(
+    rows: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized = _dedupe_records(
+        rows,
+        identity_fields=("tracking_number",),
+        label="主单签收精确核验状态",
+    )
+    output: list[dict[str, Any]] = []
+    for row in normalized:
+        tracking_number = clean_text(row.get("tracking_number"))
+        last_checked_at = parse_datetime(row.get("last_checked_at"))
+        last_result = clean_text(row.get("last_result"))
+        next_raw = row.get("next_check_at")
+        next_check_at = parse_datetime(next_raw)
+        consecutive = to_int(row.get("consecutive_not_signed"))
+        last_error = clean_text(row.get("last_error"))[:500] or None
+        if last_checked_at is None or last_result not in {"signed", "not_signed", "error"}:
+            raise ValueError("主单签收精确核验状态缺少核验时间或结果类型无效")
+        if next_raw not in (None, "") and next_check_at is None:
+            raise ValueError("主单签收精确核验状态的下次核验时间无效")
+        if consecutive is None or consecutive < 0:
+            raise ValueError("主单签收精确核验状态的连续未签次数必须是非负整数")
+        if last_result == "signed":
+            if next_check_at is not None or consecutive != 0:
+                raise ValueError("已签收核验状态不得保留下次核验时间或连续未签次数")
+        elif next_check_at is None:
+            raise ValueError("未签收或错误核验状态必须提供下次核验时间")
+        if last_result == "not_signed" and consecutive < 1:
+            raise ValueError("未签收核验状态的连续未签次数必须至少为 1")
+        if last_result == "error" and not last_error:
+            raise ValueError("错误核验状态必须提供可审计的错误摘要")
+        output.append(
+            {
+                "tracking_number": tracking_number,
+                "last_checked_at": last_checked_at,
+                "last_result": last_result,
+                "next_check_at": next_check_at,
+                "consecutive_not_signed": consecutive,
+                "last_error": last_error,
             }
         )
     return output
@@ -407,6 +519,39 @@ def _upsert_sign_events(cursor: Any, events: list[dict[str, Any]]) -> None:
                 _json(row.get("payload") or row),
             )
             for row in events
+        ],
+    )
+
+
+def _upsert_sign_verification_states(
+    cursor: Any,
+    rows: list[dict[str, Any]],
+) -> None:
+    if not rows:
+        return
+    cursor.executemany(
+        """
+        INSERT INTO waybill_sign_verification_state (
+            tracking_number, last_checked_at, last_result, next_check_at,
+            consecutive_not_signed, last_error
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            last_checked_at = VALUES(last_checked_at),
+            last_result = VALUES(last_result),
+            next_check_at = VALUES(next_check_at),
+            consecutive_not_signed = VALUES(consecutive_not_signed),
+            last_error = VALUES(last_error)
+        """,
+        [
+            (
+                row["tracking_number"],
+                row["last_checked_at"],
+                row["last_result"],
+                row["next_check_at"],
+                row["consecutive_not_signed"],
+                row["last_error"],
+            )
+            for row in rows
         ],
     )
 
@@ -503,6 +648,58 @@ def upsert_sign_events(
     finally:
         connection.close()
     return {"ok": True, "upserted": len(normalized)}
+
+
+def upsert_sign_verification_states(
+    rows: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    normalized = _normalize_sign_verification_states(rows)
+    if dry_run:
+        return {"ok": True, "skipped": True, "upserted": len(normalized)}
+    ensure_daily_sign_tables()
+    connection = _daily_sign_connect()
+    try:
+        with connection.cursor() as cursor:
+            _upsert_sign_verification_states(cursor, normalized)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return {"ok": True, "upserted": len(normalized)}
+
+
+def upsert_ledger_rows(
+    rows: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    normalized = _dedupe_records(
+        rows,
+        identity_fields=("tracking_number",),
+        label="每日应签账本",
+    )
+    if dry_run:
+        return {"ok": True, "skipped": True, "upserted": len(normalized)}
+    ensure_daily_sign_tables()
+    connection = _daily_sign_connect()
+    try:
+        with connection.cursor() as cursor:
+            _upsert_ledger_rows(cursor, normalized)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return {
+        "ok": True,
+        "upserted": len(normalized),
+        "fingerprint": snapshot_fingerprint(normalized),
+    }
 
 
 def load_daily_sign_state() -> dict[str, Any]:
@@ -616,12 +813,19 @@ def load_daily_sign_state() -> dict[str, Any]:
                 for row in cursor.fetchall() or []
                 if clean_text(row.get("tracking_number"))
             }
+            cursor.execute("SELECT * FROM waybill_sign_verification_state")
+            sign_verifications = {
+                clean_text(row.get("tracking_number")): row
+                for row in cursor.fetchall() or []
+                if clean_text(row.get("tracking_number"))
+            }
         return {
             "ledger": ledger,
             "arrivals": arrivals,
             "target_station_codes": target_station_codes,
             "problems": problems,
             "signs": signs,
+            "sign_verifications": sign_verifications,
             "source_refs": sorted(arrival_refs | forecast_refs),
             "arrival_source_proof": {
                 "complete": bool(active_stat_runs or latest_forecast_runs),
@@ -644,6 +848,7 @@ def persist_daily_sign_snapshot(
     problem_events: list[dict[str, Any]],
     sign_events: list[dict[str, Any]],
     ledger_rows: list[dict[str, Any]],
+    sign_verification_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     normalized_problems = _normalize_problem_events(problem_events)
     normalized_signs = _normalize_sign_events(sign_events)
@@ -652,12 +857,16 @@ def persist_daily_sign_snapshot(
         identity_fields=("tracking_number",),
         label="每日应签账本",
     )
+    normalized_verifications = _normalize_sign_verification_states(
+        sign_verification_states or []
+    )
     ensure_daily_sign_tables()
     connection = _daily_sign_connect()
     try:
         with connection.cursor() as cursor:
             _upsert_problem_events(cursor, normalized_problems)
             _upsert_sign_events(cursor, normalized_signs)
+            _upsert_sign_verification_states(cursor, normalized_verifications)
             _upsert_ledger_rows(cursor, normalized_ledger)
         connection.commit()
     except Exception:
@@ -669,6 +878,7 @@ def persist_daily_sign_snapshot(
         "ok": True,
         "problem_events": len(normalized_problems),
         "sign_events": len(normalized_signs),
+        "sign_verification_states": len(normalized_verifications),
         "ledger_rows": len(normalized_ledger),
         "fingerprint": snapshot_fingerprint(normalized_ledger),
     }

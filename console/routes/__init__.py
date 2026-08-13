@@ -15,6 +15,7 @@ from . import (
     control_plane,
     customer_service,
     finance,
+    llm_settings,
     monitoring,
     ocr,
     receipts,
@@ -28,6 +29,7 @@ class ConsoleRouteDispatcher:
     _ROUTERS = (
         auth,
         control_plane,
+        llm_settings,
         automation,
         monitoring,
         finance,

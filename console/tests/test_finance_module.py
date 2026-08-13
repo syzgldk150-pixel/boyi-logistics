@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import types
 import unittest
 from http import HTTPStatus
@@ -57,6 +58,15 @@ class _FakeFinanceService:
     def list_sync_batches(self, query):
         return self._result("sync_batches", query)
 
+    def list_review_cases(self, query):
+        return self._result("review_cases", query)
+
+    def list_waybill_facts(self, query):
+        return self._result("waybill_facts", query)
+
+    def knowledge_status(self):
+        return self._result("knowledge")
+
     def build_sync_arguments(self, body):
         return self._result("sync", body)
 
@@ -68,6 +78,12 @@ class _FakeFinanceService:
 
     def build_retry_arguments(self, batch_id):
         return self._result("retry_batch", batch_id)
+
+    def analyze_review_cases(self, body):
+        return self._result("analyze_reviews", body)
+
+    def reject_review_case(self, review_case_id, body, *, changed_by):
+        return self._result("reject_review", review_case_id, body, changed_by=changed_by)
 
 
 class FinanceModuleWorkbenchTests(unittest.TestCase):
@@ -135,7 +151,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertEqual("dollar-sign", item["icon"])
         self.assertEqual("财务模块", item["label"])
 
-    def test_finance_route_renders_specialized_four_tab_workbench(self):
+    def test_finance_route_renders_specialized_six_tab_workbench(self):
         self.app._render_finance(_Handler(), {})
 
         self.assertEqual(HTTPStatus.OK, self.sent_status)
@@ -144,6 +160,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('data-finance-tab="entries"', self.sent_html)
         self.assertIn('data-finance-tab="mappings"', self.sent_html)
         self.assertIn('data-finance-tab="sync"', self.sent_html)
+        self.assertIn('data-finance-tab="reviews"', self.sent_html)
+        self.assertIn('data-finance-tab="waybill-facts"', self.sent_html)
         self.assertNotIn("module-detail-sections", self.sent_html)
 
     def test_finance_assets_are_page_scoped_and_no_chart_library_is_global(self):
@@ -166,16 +184,37 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('data-finance-account-table', template)
         self.assertIn("金额单位：元", template)
 
-    def test_booking_fee_lists_are_platform_specific_and_not_hardcoded(self):
-        template = (CONSOLE_DIR / "templates" / "finance.html").read_text(encoding="utf-8")
+    def test_rendered_platform_controls_only_expose_enabled_ronghui(self):
+        self.app._render_finance(_Handler(), {})
+        rendered = self.sent_html
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
-        self.assertIn('id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"', template)
-        self.assertIn('id="finance-booking-yunda" data-finance-booking-fee-items="yunda"', template)
+        platform_selects = re.findall(
+            r'<select (?:data-finance-platform|name="platform")>(.*?)</select>',
+            rendered,
+            flags=re.DOTALL,
+        )
+        self.assertEqual(5, len(platform_selects))
+        for options in platform_selects:
+            self.assertEqual(["all", "ronghui"], re.findall(r'<option value="([^"]+)">', options))
+        self.assertIn(
+            'id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"',
+            rendered,
+        )
+        self.assertNotIn('data-finance-booking-fee-items="yunda"', rendered)
         self.assertIn("payload.booking_fee_items", script)
-        self.assertNotIn("集配站费用", template)
-        self.assertNotIn("增值服务费", template)
-        self.assertNotIn("平台费", template)
+        self.assertNotIn("集配站费用", rendered)
+        self.assertNotIn("增值服务费", rendered)
+        self.assertNotIn("平台费", rendered)
+
+    def test_frontend_keeps_yunda_label_only_for_historical_sync_records(self):
+        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
+
+        self.assertIn('yunda: "韵达"', script)
+        self.assertIn(
+            "failedSources.map((source) => `${platformLabel(source.platform)}",
+            script,
+        )
 
     def test_accessibility_and_responsive_states_are_present(self):
         template = (CONSOLE_DIR / "templates" / "finance.html").read_text(encoding="utf-8")
@@ -204,8 +243,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
         self.assertIn('row[`${key}_plot`]', script)
-        self.assertIn("waybill_cost_plot", script)
-        self.assertIn("operating_cost_plot", script)
+        self.assertIn("waybill_net_plot", script)
+        self.assertIn("operating_net_plot", script)
         self.assertNotIn("parseFloat(row.income", script)
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
@@ -218,7 +257,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn("事项中心完成审批", script)
         self.assertNotIn("await loadBatches();\n        await loadOverview();", script)
 
-    def test_all_nine_finance_api_routes_are_registered(self):
+    def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
         routes = (
             "/finance/summary",
@@ -230,6 +269,11 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "/finance/backfill",
             "/finance/fee-mappings/\\d+",
             "/finance/sync-batches/\\d+/retry",
+            "/finance/review-cases",
+            "/finance/waybill-facts",
+            "/finance/knowledge",
+            "/finance/reviews/analyze",
+            "/finance/review-cases/\\d+/reject",
         )
 
         for route in routes:
@@ -243,7 +287,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
     def test_get_handlers_return_consistent_success_envelope(self):
         for resource in ("summary", "trend", "entries", "fee_mappings", "sync_batches"):
             with self.subTest(resource=resource):
-                self.app._handle_finance_get(_Handler(), resource, {"platform": ["yunda"]})
+                self.app._handle_finance_get(_Handler(), resource, {"platform": ["ronghui"]})
                 self.assertEqual(HTTPStatus.OK, self.sent_status)
                 self.assertTrue(self.sent_payload["ok"])
                 self.assertEqual(resource, self.sent_payload["data"]["resource"])

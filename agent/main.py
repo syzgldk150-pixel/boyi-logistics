@@ -19,15 +19,33 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
-from shared.runtime_events import register_account_session_restored, register_tms_session_alert
-from shared.service_identity import ConsoleIdentityError, ConsoleIdentityVerifier
+from shared.finance.sources import (
+    enabled_finance_platforms,
+    enabled_finance_source_specs,
+)
+from shared.runtime_events import (
+    publish_finance_alert,
+    register_account_session_restored,
+    register_finance_alert,
+    register_tms_session_alert,
+)
+from shared.service_identity import (
+    ConsoleIdentityError,
+    ConsoleIdentityVerifier,
+    validate_service_identity_secrets,
+)
+from shared.scheduled_task_contracts import (
+    APPROVED_SCHEDULED_TASK_PROFILES,
+    ScheduledTaskContractError,
+    validate_persisted_scheduled_task,
+)
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -126,6 +144,11 @@ from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.policy_engine import PolicyEngine, ScheduledAllowlistEntry
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.orchestration.workflow_runner import WorkflowRunner
+from agent.llm_settings import (
+    LLMCompatibilityService,
+    LLMSettingsError,
+    LLMSettingsRepository,
+)
 from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal_request
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import import_phase7_resources
@@ -135,7 +158,6 @@ from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from agent.tms_runtime import router as tms_router
 from agent.api_contracts import validation_failure
 from agent.tms_runtime.account_manager import get_account_manager
-from agent.tms_runtime.account_contracts import FINANCE_ACCOUNT_ROLES
 from agent.tms_runtime.monitoring import configure_feishu_operation
 from agent.tms_runtime.routes import update_account_list_cache_status
 from agent.tms_runtime.routes import bind_agent_command_runtime
@@ -151,7 +173,7 @@ from feishu.bot import (
     websocket_lease_active,
 )
 from feishu.message_handler import queue_bot_menu_payload, queue_im_message_payload
-from feishu.notify import send_tms_session_disconnected_alert
+from feishu.notify import send_finance_anomaly_alert, send_tms_session_disconnected_alert
 from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
@@ -162,6 +184,7 @@ from shared.orchestration_repository import (
 
 
 register_tms_session_alert(send_tms_session_disconnected_alert)
+register_finance_alert(send_finance_anomaly_alert)
 configure_feishu_operation(feishu_operation)
 
 
@@ -190,6 +213,13 @@ TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
     "remote disconnected",
     "temporarily unavailable",
     "temporary failure",
+)
+FINANCE_FAILURE_RUN_STATUSES = frozenset(
+    {
+        RunStatus.BLOCKED_LOGIN.value,
+        RunStatus.BLOCKED_DATA.value,
+        RunStatus.FAILED_TERMINAL.value,
+    }
 )
 
 
@@ -245,16 +275,24 @@ def _resolve_command_accounts(command: Command) -> list[dict]:
     tool_name = str(command.parameters.get("tool_name") or "")
     if tool_name == "sync_customer_service_problems" and not requested:
         active = [row for row in active if str(row.get("system") or "") in {"ronghui", "yunda"}]
-    elif tool_name == "sync_finance_bills" and not requested:
-        finance_roles = set(FINANCE_ACCOUNT_ROLES)
+    elif tool_name == "sync_finance_bills":
+        production_sources = {
+            (spec.platform, spec.account_id)
+            for spec in enabled_finance_source_specs()
+        }
         platform = str(arguments.get("platform") or "").strip().lower()
+        if platform and platform not in enabled_finance_platforms():
+            return []
         active = [
             row
             for row in active
             if (str(row.get("system") or "").strip().lower(), str(row.get("account_id") or ""))
-            in finance_roles
+            in production_sources
             and (not platform or str(row.get("system") or "").strip().lower() == platform)
         ]
+        if requested:
+            requested_set = set(requested)
+            active = [row for row in active if str(row.get("account_id") or "") in requested_set]
     elif requested:
         requested_set = set(requested)
         active = [row for row in active if str(row.get("account_id") or "") in requested_set]
@@ -289,49 +327,320 @@ def _resolve_command_resources(command: Command) -> dict:
 
 def _scheduler_allowlist(catalog) -> tuple[ScheduledAllowlistEntry, ...]:
     entries: list[ScheduledAllowlistEntry] = []
-    for template in PHASE7_SCHEDULED_TASK_TEMPLATES:
-        tool_name = str(template.get("tool_name") or "")
-        capability = catalog.get_capability(tool_name)
-        if not capability:
-            continue
-        if str(capability.get("operation_type") or "") not in {
-            "internal_projection_write",
-            "financial_write",
-        }:
-            continue
-        approval = capability.get("approval") if isinstance(capability.get("approval"), dict) else {}
-        if approval.get("mode") != "schedule_allowlist":
-            continue
-        arguments = dict(template.get("tool_params") or {})
-        dynamic_rules: dict[str, str] = {}
-        if tool_name == "sync_finance_bills":
-            dynamic_rules["target_date"] = "scheduled_previous_day"
-        entries.append(
-            ScheduledAllowlistEntry.from_arguments(
-                task_id=str(template["id"]),
-                tool_name=tool_name,
-                tool_version=str(capability["version"]),
-                arguments=arguments,
-                dynamic_argument_rules=dynamic_rules,
-                cron_expression=str(template.get("cron_expression") or ""),
-            )
-        )
     finance = catalog.get_capability("sync_finance_bills")
-    if finance:
-        entries.append(
-            ScheduledAllowlistEntry.from_arguments(
-                task_id="finance_startup_catchup",
-                tool_name="sync_finance_bills",
-                tool_version=str(finance["version"]),
-                arguments={"mode": "sync", "rescan_days": 7},
-                cron_expression="@startup",
+    finance_profile = APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"]
+    approval = finance.get("approval") if isinstance(finance, dict) else None
+    finance_governance_matches = (
+        isinstance(finance, dict)
+        and str(finance.get("version") or "") == finance_profile.tool_version
+        and str(finance.get("operation_type") or "") == finance_profile.operation_type
+        and isinstance(approval, dict)
+        and approval.get("mode") == "schedule_allowlist"
+        and enabled_finance_platforms() == ("ronghui",)
+    )
+    if finance_governance_matches:
+        startup_arguments = {
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        }
+        try:
+            catalog.validate_arguments("sync_finance_bills", startup_arguments)
+        except Exception:
+            logger.warning("Finance startup allowlist contract is invalid; exemption disabled")
+        else:
+            entries.append(
+                ScheduledAllowlistEntry.from_arguments(
+                    task_id="finance_startup_catchup",
+                    tool_name="sync_finance_bills",
+                    tool_version=finance_profile.tool_version,
+                    arguments=startup_arguments,
+                    cron_expression="@startup",
+                )
             )
-        )
+    return tuple(entries)
+
+
+def _persisted_scheduler_allowlist(runtime, catalog) -> tuple[ScheduledAllowlistEntry, ...]:
+    """Build exact exemptions from the currently enabled persisted rows.
+
+    Invalid rows are omitted rather than preventing service startup.  A
+    repository failure is deliberately allowed to propagate so PolicyEngine
+    can fail the complete dynamic lookup closed for that evaluation.
+    """
+
+    entries: list[ScheduledAllowlistEntry] = []
+    rejected = 0
+    finance_platforms = enabled_finance_platforms()
+    for row in runtime.memory.list_enabled_scheduled_tasks():
+        tool_name = str(row.get("tool_name") or "").strip() if isinstance(row, dict) else ""
+        try:
+            contract = validate_persisted_scheduled_task(
+                row,
+                capability=catalog.get_capability(tool_name),
+                validate_arguments=catalog.validate_arguments,
+                enabled_finance_platforms=finance_platforms,
+            )
+            entries.append(
+                ScheduledAllowlistEntry.from_arguments(
+                    task_id=contract.task_id,
+                    tool_name=contract.tool_name,
+                    tool_version=contract.tool_version,
+                    arguments=contract.arguments,
+                    dynamic_argument_rules=contract.dynamic_argument_rules,
+                    cron_expression=contract.cron_expression,
+                )
+            )
+        except ScheduledTaskContractError:
+            rejected += 1
+        except Exception:
+            rejected += 1
+    if rejected:
+        logger.debug("Persisted scheduler rows excluded from approval exemption count=%d", rejected)
     return tuple(entries)
 
 
 def _noop_outbox_handler(delivery, _uow):
     return {"event_id": delivery.get("event_id"), "acknowledged": True}
+
+
+def _run_plan_steps(run: dict[str, Any]) -> list[dict[str, Any]]:
+    plan = run.get("plan_json")
+    raw_steps = plan.get("steps") if isinstance(plan, dict) else None
+    if not isinstance(raw_steps, list):
+        return []
+    return [dict(step) for step in raw_steps if isinstance(step, dict)]
+
+
+def _project_finance_failure_event(
+    delivery: dict[str, Any],
+    uow: Any,
+    *,
+    run: dict[str, Any],
+    steps: list[dict[str, Any]],
+    failure_status: str,
+) -> dict[str, Any]:
+    finance_steps = [
+        step
+        for step in steps
+        if str(step.get("tool_name") or "").strip() == "sync_finance_bills"
+    ]
+    if not finance_steps:
+        return {"event_id": delivery.get("event_id"), "projected": False}
+
+    source_payload = delivery.get("payload_json")
+    if not isinstance(source_payload, dict):
+        raise RuntimeError("finance failure source event has an invalid payload")
+    run_id = str(delivery.get("run_id") or "").strip()
+    causation_id = str(delivery.get("event_id") or "").strip()
+    if not run_id or not causation_id:
+        raise RuntimeError("finance failure source event is missing identity")
+    startup_catchup = any(
+        isinstance(step.get("arguments"), dict)
+        and step["arguments"].get("_startup_catchup") is True
+        for step in finance_steps
+    )
+    error_code = redact_text(
+        source_payload.get("error_code") or "FINANCE_SYNC_FAILED"
+    ).strip()[:64]
+    error_summary = redact_text(
+        source_payload.get("error_summary") or "Finance synchronization did not complete"
+    )[:500]
+    failure_event_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:finance.sync.failed:{causation_id}")
+    )
+    receipt = uow.events.append_with_outbox(
+        {
+            "event_id": failure_event_id,
+            "event_type": "finance.sync.failed",
+            "schema_version": 1,
+            "source_system": "agent",
+            "source_event_id": causation_id,
+            "entity_type": "agent_run",
+            "entity_id": run_id,
+            "work_item_id": run.get("work_item_id"),
+            "run_id": run_id,
+            "step_id": None,
+            "occurred_at": delivery.get("occurred_at")
+            or datetime.now(timezone.utc).replace(tzinfo=None),
+            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            "correlation_id": str(
+                delivery.get("correlation_id") or run.get("correlation_id") or ""
+            ),
+            "causation_id": causation_id,
+            "payload": {
+                "run_id": run_id,
+                "status": failure_status,
+                "tool_name": "sync_finance_bills",
+                "error_code": error_code or "FINANCE_SYNC_FAILED",
+                "error_summary": error_summary,
+                "startup_catchup": startup_catchup,
+            },
+        },
+        (
+            {
+                "consumer_name": "finance.failure_alert",
+                "topic": "finance.sync.failed",
+                "partition_key": run_id,
+                "max_attempts": 10,
+            },
+        ),
+    )
+    return {
+        "event_id": delivery.get("event_id"),
+        "projected": True,
+        "finance_failure_event_id": receipt["event"]["event_id"],
+    }
+
+
+def _project_run_completed_event(delivery, uow):
+    """Project governed Run completion and finance failure lifecycle events."""
+
+    payload = delivery.get("payload_json")
+    if (
+        str(delivery.get("event_type") or "") != "agent.run.status_changed"
+        or not isinstance(payload, dict)
+    ):
+        return {"event_id": delivery.get("event_id"), "projected": False}
+
+    target_status = str(payload.get("to") or "").strip()
+    if target_status not in {
+        RunStatus.COMPLETED.value,
+        *FINANCE_FAILURE_RUN_STATUSES,
+    }:
+        return {"event_id": delivery.get("event_id"), "projected": False}
+
+    run_id = str(delivery.get("run_id") or "").strip()
+    run = uow.runs.get(run_id, for_update=False) if run_id else None
+    if not isinstance(run, dict):
+        raise RuntimeError("run lifecycle event does not match a durable Run")
+    steps = _run_plan_steps(run)
+    if target_status in FINANCE_FAILURE_RUN_STATUSES:
+        return _project_finance_failure_event(
+            delivery,
+            uow,
+            run=run,
+            steps=steps,
+            failure_status=target_status,
+        )
+
+    if str(run.get("status") or "") != RunStatus.COMPLETED.value:
+        raise RuntimeError("completed run event does not match durable Run state")
+    tool_names = [
+        str(step.get("tool_name") or "").strip()
+        for step in steps
+        if str(step.get("tool_name") or "").strip()
+    ]
+    causation_id = str(delivery.get("event_id") or "").strip()
+    completed_event_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:agent.run.completed:{causation_id}")
+    )
+    receipt = uow.events.append_with_outbox(
+        {
+            "event_id": completed_event_id,
+            "event_type": "agent.run.completed",
+            "schema_version": 1,
+            "source_system": "agent",
+            "source_event_id": causation_id,
+            "entity_type": "agent_run",
+            "entity_id": run_id,
+            "work_item_id": run.get("work_item_id"),
+            "run_id": run_id,
+            "step_id": None,
+            "occurred_at": delivery.get("occurred_at") or datetime.now(timezone.utc).replace(tzinfo=None),
+            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            "correlation_id": str(delivery.get("correlation_id") or run.get("correlation_id") or ""),
+            "causation_id": causation_id,
+            "payload": {
+                "run_id": run_id,
+                "status": RunStatus.COMPLETED.value,
+                "tool_names": tool_names,
+            },
+        },
+        (
+            {
+                "consumer_name": "finance.brain",
+                "topic": "agent.run.completed",
+                "partition_key": run_id,
+                "max_attempts": 5,
+            },
+        ),
+    )
+    return {
+        "event_id": delivery.get("event_id"),
+        "projected": True,
+        "completed_event_id": receipt["event"]["event_id"],
+    }
+
+
+def _finance_sync_failure_handler(delivery, _uow):
+    """Deliver one redacted finance failure alert through the durable outbox."""
+
+    payload = delivery.get("payload_json")
+    if (
+        str(delivery.get("event_type") or "") != "finance.sync.failed"
+        or not isinstance(payload, dict)
+    ):
+        return {"event_id": delivery.get("event_id"), "processed": False}
+    if payload.get("startup_catchup") is True:
+        return {
+            "event_id": delivery.get("event_id"),
+            "processed": True,
+            "suppressed": True,
+            "reason": "startup_catchup",
+        }
+
+    status = str(payload.get("status") or "").strip()
+    if status not in FINANCE_FAILURE_RUN_STATUSES:
+        raise RuntimeError("finance failure event has an unsupported Run status")
+    run_id = str(payload.get("run_id") or delivery.get("run_id") or "").strip()
+    error_code = redact_text(
+        payload.get("error_code") or "FINANCE_SYNC_FAILED"
+    ).strip()[:64]
+    error_summary = redact_text(
+        payload.get("error_summary") or "Finance synchronization did not complete"
+    )[:500]
+    details = f"Run {run_id}; status={status}; {error_summary}"
+    sent = publish_finance_alert(
+        {
+            "anomaly_type": error_code or "FINANCE_SYNC_FAILED",
+            "title": "\u8d22\u52a1\u540c\u6b65\u5931\u8d25\u6216\u963b\u585e",
+            "details": details[:500],
+            "admin_url": "/modules/finance#sync",
+        }
+    )
+    if not sent:
+        raise RuntimeError("finance failure alert delivery was not acknowledged")
+    return {
+        "event_id": delivery.get("event_id"),
+        "processed": True,
+        "suppressed": False,
+        "sent": True,
+    }
+
+
+def _finance_brain_completed_handler(runtime: AgentCore, loop, delivery, _uow):
+    """Consume finance Run completion on the main loop without execution bypasses."""
+
+    payload = delivery.get("payload_json")
+    tool_names = payload.get("tool_names") if isinstance(payload, dict) else None
+    if not isinstance(tool_names, list) or "sync_finance_bills" not in tool_names:
+        return {"event_id": delivery.get("event_id"), "processed": False}
+    brain = runtime.finance_brain
+    if brain is None:
+        raise RuntimeError("finance brain is unavailable")
+    future = asyncio.run_coroutine_threadsafe(brain.process_after_sync(), loop)
+    try:
+        result = future.result(timeout=1800)
+    except Exception:
+        future.cancel()
+        raise
+    return {
+        "event_id": delivery.get("event_id"),
+        "processed": True,
+        "result": result,
+    }
 
 
 def _actor_from_payload(
@@ -602,11 +911,14 @@ async def lifespan(app: FastAPI):
     load_agent_environment()
     setup_logging()
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
-    if not AGENT_INTERNAL_API_TOKEN:
-        raise RuntimeError("AGENT_INTERNAL_API_TOKEN is required")
-    CONSOLE_IDENTITY_VERIFIER = ConsoleIdentityVerifier(
-        str(os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or "").strip()
+    console_signing_secret = str(
+        os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or ""
+    ).strip()
+    validate_service_identity_secrets(
+        internal_api_token=AGENT_INTERNAL_API_TOKEN,
+        console_signing_secret=console_signing_secret,
     )
+    CONSOLE_IDENTITY_VERIFIER = ConsoleIdentityVerifier(console_signing_secret)
     agent_core = AgentCore(
         direct_tool_runners={
             "track_waybill": run_track_waybill,
@@ -614,6 +926,7 @@ async def lifespan(app: FastAPI):
         }
     )
     runtime = _runtime()
+    loop = asyncio.get_running_loop()
     logger.info("Agent service starting instance_id=%s pid=%s", INSTANCE_ID, os.getpid())
 
     await runtime.init()
@@ -640,7 +953,11 @@ async def lifespan(app: FastAPI):
     )
     planner = DeterministicPlanner(catalog)
     validator = PlanValidator(catalog)
-    policy = PolicyEngine(catalog, scheduler_allowlist=_scheduler_allowlist(catalog))
+    policy = PolicyEngine(
+        catalog,
+        scheduler_allowlist=_scheduler_allowlist(catalog),
+        scheduler_allowlist_provider=lambda: _persisted_scheduler_allowlist(runtime, catalog),
+    )
     runner_holder: dict[str, WorkflowRunner] = {}
     approval_service = ApprovalService(
         repository,
@@ -663,9 +980,20 @@ async def lifespan(app: FastAPI):
     dispatcher = OutboxDispatcher(
         repository,
         worker_id=f"{INSTANCE_ID}:outbox",
+        # FinanceBrain may make several bounded model calls.  Keep its durable
+        # lease longer than the handler timeout so a second Agent instance does
+        # not reclaim and duplicate the same post-sync analysis.
+        lease_seconds=3600,
         handlers={
             "orchestration.run_worker": _noop_outbox_handler,
-            "orchestration.audit": _noop_outbox_handler,
+            "orchestration.audit": _project_run_completed_event,
+            "finance.failure_alert": _finance_sync_failure_handler,
+            "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
+                runtime,
+                loop,
+                delivery,
+                uow,
+            ),
         },
     )
     gateway = CommandGateway(repository, wake_runner=runner.wake)
@@ -689,7 +1017,6 @@ async def lifespan(app: FastAPI):
     )
     await runner.start()
     await dispatcher.start()
-    loop = asyncio.get_running_loop()
     bind_agent_runtime(runtime, loop)
     bind_agent_command_runtime(runtime)
 
@@ -808,6 +1135,14 @@ async def orchestration_state_conflict_handler(
             "STATE_CONFLICT",
             redact_text(exc)[:500] or "Control-plane state changed concurrently",
         ),
+    )
+
+
+@app.exception_handler(LLMSettingsError)
+async def llm_settings_error(request: Request, exc: LLMSettingsError):
+    return JSONResponse(
+        status_code=422,
+        content=api_failure("llm_settings_invalid", redact_text(exc)),
     )
 
 
@@ -1007,6 +1342,28 @@ def _phase7_webhook_arguments(tool_name: str, envelope: dict[str, dict]) -> dict
             arguments[field] = body[field]
         elif query_has:
             arguments[field] = query[field]
+
+    webhook_account_profiles = {
+        "sync_delivery_status": "delivery_status",
+        "sync_arrival_stats": "arrival_stats",
+    }
+    profile_name = webhook_account_profiles.get(tool_name)
+    if profile_name is not None:
+        approved_account_id = APPROVED_SCHEDULED_TASK_PROFILES[profile_name].approved_arguments.get(
+            "account_id"
+        )
+        if "account_id" not in properties or not isinstance(approved_account_id, str):
+            raise HTTPException(
+                status_code=500,
+                detail="Webhook account binding is not configured",
+            )
+        supplied_account_id = arguments.get("account_id")
+        if supplied_account_id is not None and supplied_account_id != approved_account_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Webhook account_id cannot override the code-approved account",
+            )
+        arguments["account_id"] = approved_account_id
     try:
         _runtime().registry.validate_arguments(tool_name, arguments)
     except (TypeError, ValueError) as exc:
@@ -1646,6 +2003,32 @@ class KnowledgeRequest(BaseModel):
     source: str | None = None
 
 
+class LLMConfigCandidateRequest(BaseModel):
+    provider: str
+    model_id: str
+    api_key: SecretStr | None = None
+    actor: str
+
+
+class LLMConfigActionRequest(BaseModel):
+    config_id: int
+    actor: str
+
+
+class LLMRollbackRequest(BaseModel):
+    actor: str
+    config_id: int | None = None
+
+
+class LLMClearCredentialRequest(BaseModel):
+    provider: str
+    actor: str
+
+
+class FinanceAnalyzeRequest(BaseModel):
+    limit: int = 20
+
+
 @app.get("/tools", deprecated=True)
 async def list_tools():
     return {"tools": _runtime().registry.list_tools()}
@@ -1692,6 +2075,97 @@ async def reload_runtime():
 @app.post("/internal/v1/admin/reload")
 async def internal_reload_runtime():
     return api_success(await reload_runtime())
+
+
+def _llm_settings_repository() -> LLMSettingsRepository:
+    return LLMSettingsRepository(_runtime().memory.connection_factory)
+
+
+@app.get("/internal/v1/admin/llm/config")
+async def internal_llm_config_status():
+    repository = _llm_settings_repository()
+    payload = await asyncio.to_thread(repository.public_status)
+    payload["runtime"] = _runtime().llm.public_status()
+    return api_success(payload)
+
+
+@app.get("/internal/v1/admin/llm/audit")
+async def internal_llm_config_audit(limit: int = 200):
+    rows = await asyncio.to_thread(_llm_settings_repository().audit_logs, limit=limit)
+    return api_success({"items": rows})
+
+
+@app.post("/internal/v1/admin/llm/candidates")
+async def internal_save_llm_candidate(req: LLMConfigCandidateRequest, request: Request):
+    repository = _llm_settings_repository()
+    key = req.api_key.get_secret_value() if req.api_key is not None else None
+    actor_id = _require_console_admin_request(request).actor_id
+    config_id = await asyncio.to_thread(
+        repository.save_candidate,
+        provider=req.provider,
+        model_id=req.model_id,
+        api_key=key,
+        actor=actor_id,
+    )
+    return api_success({"config_id": config_id})
+
+
+@app.post("/internal/v1/admin/llm/models/refresh")
+async def internal_refresh_llm_models(req: LLMConfigActionRequest):
+    service = LLMCompatibilityService(_llm_settings_repository())
+    models = await service.refresh_models(req.config_id)
+    return api_success({"config_id": req.config_id, "models": models})
+
+
+@app.post("/internal/v1/admin/llm/test")
+async def internal_test_llm_candidate(req: LLMConfigActionRequest):
+    service = LLMCompatibilityService(_llm_settings_repository())
+    result = await service.test_candidate(req.config_id)
+    return api_success(result)
+
+
+@app.post("/internal/v1/admin/llm/activate")
+async def internal_activate_llm_config(req: LLMConfigActionRequest, request: Request):
+    repository = _llm_settings_repository()
+    actor_id = _require_console_admin_request(request).actor_id
+    await asyncio.to_thread(repository.activate, req.config_id, actor=actor_id)
+    runtime_status = await _runtime().reload_llm_config()
+    return api_success({"config_id": req.config_id, "runtime": runtime_status})
+
+
+@app.post("/internal/v1/admin/llm/rollback")
+async def internal_rollback_llm_config(req: LLMRollbackRequest, request: Request):
+    repository = _llm_settings_repository()
+    actor_id = _require_console_admin_request(request).actor_id
+    config_id = await asyncio.to_thread(
+        repository.rollback,
+        actor=actor_id,
+        config_id=req.config_id,
+    )
+    runtime_status = await _runtime().reload_llm_config()
+    return api_success({"config_id": config_id, "runtime": runtime_status})
+
+
+@app.post("/internal/v1/admin/llm/credentials/clear")
+async def internal_clear_llm_credential(req: LLMClearCredentialRequest, request: Request):
+    actor_id = _require_console_admin_request(request).actor_id
+    await asyncio.to_thread(
+        _llm_settings_repository().clear_credentials,
+        req.provider,
+        actor=actor_id,
+    )
+    runtime_status = await _runtime().reload_llm_config()
+    return api_success(
+        {"provider": req.provider, "configured": False, "runtime": runtime_status}
+    )
+
+
+@app.post("/internal/v1/admin/finance/reviews/analyze")
+async def internal_analyze_finance_reviews(req: FinanceAnalyzeRequest):
+    brain = _runtime().finance_brain
+    if brain is None:
+        raise HTTPException(status_code=503, detail="finance brain is not initialized")
+    return api_success(await brain.analyze_pending(limit=max(1, min(req.limit, 100))))
 
 
 @app.post("/knowledge", deprecated=True)

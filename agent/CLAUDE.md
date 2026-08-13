@@ -14,7 +14,7 @@
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
-- Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的临时材料恢复旧环境和源码。健康检查成功后必须立即删除临时回滚材料、持久发布备份和所有非当前虚拟环境，ECS 最终只保留一个运行环境。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
+- Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的精确材料恢复旧环境和源码；成功时也必须保留当次远端回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
 
 ## 本地 WSL 与 ECS 运行隔离
 
@@ -31,10 +31,10 @@
 - 只有 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*` 属于公开路径。统一策略在 `agent/http_security.py`，不得在各路由重复实现。
 - 所有日志和持久化审计通过 `shared/redaction.py` 脱敏；原始请求体、密码、Token、Cookie 和 Authorization 不得落盘。
 - `agent/agent/` 不得导入 `tools` 或 `feishu`；直接工具执行器和飞书告警回调统一在 `main.py` 注入，TMS 会话事件通过 `shared/runtime_events.py` 发布。
-- 飞书、Webhook、Phase 7、客服与回单入口只能向 Command Gateway 提交命令；旧 `/tms/*` 写入口必须提供稳定幂等键并映射到精确工具。底层 TMS target 只接受 WorkflowRunner 为当前工具签发的短期执行能力，宽泛 `tms_query` 不得承载写端点。
+- 飞书、Webhook、Phase 7、客服与回单入口只能向 Command Gateway 提交命令；旧 `/tms/*` 写入口必须提供稳定幂等键并映射到精确工具。Phase 7 签收和到货统计 Webhook 的融辉账号由受信适配器固定绑定代码批准的 `ronghui_default`，兼容旧调用方省略账号，但拒绝任何账号覆盖。底层 TMS target 只接受 WorkflowRunner 为当前工具签发的短期执行能力，宽泛 `tms_query` 不得承载写端点。
 - 韵达/融辉活动原页同源代理暂时禁用；Console 的四类原页前缀和旧 `/ocr/yunda/*` 入口固定返回 410 且不调用 Agent。Agent 的 `yunda_waybill_entry`、`yunda_waybill_proxy`、`ronghui_waybill_proxy` 在执行能力判断前固定返回 410，待独立来源隔离完成后才可重新评估。
 - 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
-- `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。
+- `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。`fetch_dispatch` 必须从显式所选账号的已认证会话 `userInfo` 唯一解析站点身份；缺失、多候选或调用参数与会话不一致时显式失败，不得硬编码或回落到默认站点码。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
 
 ## 统一控制平面
@@ -150,7 +150,19 @@ docs/
 - 正式第三方写当前固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`；`selected_bill_codes` 和 `preview_fingerprint` 只构成选择快照，不能代替按运单从目标系统读回问题件/差错记录的权威写后 Evidence。
 - 历史业务顺序为少货/分批先差错、再问题件，有发未到只登记问题件；在新的读后验证器落地前保持停用。
 - 到货统计成功后仍直接用本次 A:S 统计结果刷新“分批及有发未到表”和 MySQL 未齐快照；全部到齐时清空旧行，人工确认也不得绕过控制平面门禁产生融辉业务写。
+- 到货统计的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1。
 - 投诉页面能力位于不可独立调度的 `agent/tms_runtime/scripts/ronghui_split_complaint.py`；旧独立工具与运行时 target 已删除。
+
+## 每日应签共享台账
+
+- R13、实际到货、问题件与 TMS 主单签收完整分页后写入权威台账；R13 只作候选诊断，只有真实主单“签收”事件关闭事项。
+- 四个账号角色必须显式解析真实登录态，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
+- 长历史签收按 31 天窗口分片并校验总量；离开当前 R13 的候选由迁移 `013` 的状态按 1/3/7 天退避精确复核。来源不完整或冲突无法核验必须显式阻塞。
+
+## 财务同步上线范围
+
+- 当前生产只启用融辉三个财务角色，韵达财务源保持禁用；每日 00:10 同步前一完整业务日并回扫 7 天。
+- 逐笔汇总、平台汇总与 signed-net 必须一致，不一致即 Run 失败，不能用退出码或通用 success 兜底。
 
 ---
 

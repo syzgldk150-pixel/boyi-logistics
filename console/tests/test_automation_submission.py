@@ -128,7 +128,10 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("sync_yunda_send_waybills", workflow["tool_name"])
         self.assertEqual("scheduled", defaults["task_mode"])
         self.assertEqual(False, defaults["enabled"])
-        self.assertEqual("", defaults["tool_params"]["target_date"])
+        self.assertEqual(
+            {"account_id": "yunda_default", "ensure_fields": True},
+            defaults["tool_params"],
+        )
         self.assertNotIn("session_profile", defaults["tool_params"])
         self.assertNotIn("default_schedule_times", workflow)
         self.assertEqual(1800, AUTOMATION_RUN_TIMEOUTS["sync_yunda_send_waybills"])
@@ -146,7 +149,7 @@ class AutomationSubmissionTests(unittest.TestCase):
 
         self.assertEqual("sync_delivery_status", workflow["tool_name"])
         self.assertEqual("scheduled", defaults["task_mode"])
-        self.assertEqual({}, defaults["tool_params"])
+        self.assertEqual({"account_id": "ronghui_default"}, defaults["tool_params"])
         self.assertEqual(1800, AUTOMATION_RUN_TIMEOUTS["sync_delivery_status"])
         self.assertIn(
             "phase7.delivery_status_bitable",
@@ -154,8 +157,16 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
         self.assertEqual(True, bindings[0]["required"])
 
-    def test_send_order_exposes_optional_target_date_field(self):
+    def test_send_order_uses_closed_default_account_contract(self):
         defaults = build_virtual_task_defaults("send_order")
+        self.assertEqual({"account_id": "ronghui_default"}, defaults["tool_params"])
+
+    def test_arrive_list_uses_closed_default_account_contract(self):
+        defaults = build_virtual_task_defaults("arrive_list")
+        self.assertEqual({"account_id": "ronghui_default"}, defaults["tool_params"])
+
+    def test_scan_codes_keeps_optional_target_date_field(self):
+        defaults = build_virtual_task_defaults("scan_codes")
         fields = {item["path"]: item for item in flatten_automation_fields(defaults["tool_params"])}
 
         self.assertEqual("", defaults["tool_params"]["target_date"])

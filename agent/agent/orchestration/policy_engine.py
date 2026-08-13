@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Mapping, Sequence
+import logging
+from typing import Any, Callable, Mapping, Sequence
 
 from agent.orchestration.models import (
     Actor,
@@ -17,6 +18,9 @@ from agent.orchestration.models import (
     sha256_json,
 )
 from agent.orchestration.ports import ToolCatalogPort
+
+
+logger = logging.getLogger("agent")
 
 
 @dataclass(frozen=True)
@@ -87,9 +91,11 @@ class PolicyEngine:
         catalog: ToolCatalogPort,
         *,
         scheduler_allowlist: Sequence[ScheduledAllowlistEntry] = (),
+        scheduler_allowlist_provider: Callable[[], Sequence[ScheduledAllowlistEntry]] | None = None,
     ) -> None:
         self._catalog = catalog
         self._scheduler_allowlist = tuple(scheduler_allowlist)
+        self._scheduler_allowlist_provider = scheduler_allowlist_provider
 
     def evaluate(
         self,
@@ -215,12 +221,20 @@ class PolicyEngine:
         task_id = str(execution_context.get("task_id") or "").strip()
         if not task_id:
             return False
+        entries = self._scheduler_allowlist
+        if self._scheduler_allowlist_provider is not None:
+            try:
+                provided = tuple(self._scheduler_allowlist_provider())
+            except Exception:
+                logger.warning("Persisted scheduler allowlist unavailable; evaluation failed closed")
+                provided = ()
+            entries += tuple(entry for entry in provided if isinstance(entry, ScheduledAllowlistEntry))
         return any(
             entry.task_id == task_id
             and entry.tool_name == step.tool_name
             and entry.tool_version == step.tool_version
             and entry.matches(step=step, execution_context=execution_context)
-            for entry in self._scheduler_allowlist
+            for entry in entries
         )
 
 

@@ -2,9 +2,9 @@
 module: AI客服
 type: 模块文档
 tags: [AI客服, 查单, 报价问答, 异常解释, 工单]
-related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_reconciliation/module_overview.md]
+related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_module.md]
 status: active
-updated: 2026-04-28
+updated: 2026-08-12
 ---
 
 # AI客服模块概述
@@ -15,7 +15,7 @@ AI 客服不是独立的数据源模块，而是整个 `物流 Agent` 的服务�
 
 - 从 `OCR识别` 读取结构化运单字段和单据归档信息
 - 从 `价格获取` 读取标准报价表和客户报价表
-- 从 `财务对账` 读取差异结果、解释口径和对账结论
+- 从 `财务对账` 的共享账本读取费用分类、同步异常和对账结论
 
 ## 目标能力
 

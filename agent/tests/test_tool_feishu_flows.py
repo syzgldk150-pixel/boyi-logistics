@@ -1205,7 +1205,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertIn("回复完整车牌号", replies[-1])
         self.assertIn("2. 湘B12345", replies[-1])
 
-    def test_scan_sync_reply_summarizes_counts_and_failed_batches(self):
+    def test_scan_sync_reply_never_labels_failed_batches_as_complete(self):
         reply = direct_tool_router.format_tool_reply(
             "sync_scan_codes",
             {
@@ -1226,10 +1226,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("扫描任务已完成", reply)
-        self.assertIn("拉取扫描记录：10", reply)
-        self.assertIn("失败批次：1/2", reply)
-        self.assertIn("已签收跳过：1", reply)
+        self.assertIn("扫描任务失败", reply)
+        self.assertNotIn("扫描任务已完成", reply)
+        self.assertIn("第 2 批", reply)
+        self.assertIn("scan_next failed", reply)
 
     def test_scan_sync_reply_uses_nested_scan_next_error(self):
         reply = direct_tool_router.format_tool_reply(

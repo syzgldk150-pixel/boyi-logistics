@@ -47,14 +47,15 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 2. 检查本地 Agent 已停止。
 3. 校验 SSH 主机密钥、远端用户和 systemd 工作目录。
 4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`。
-5. 在本次 `/home/boyce/.boyi-deploy/release-*/_rollback/` 内临时备份当前受管源码和发布清单，只供本次失败回滚使用。
+5. 在本次 `/home/boyce/.boyi-deploy/release-*/_rollback/` 内建立当前受管源码、发布清单、unit 与旧虚拟环境引用的精确回滚包。
 6. 对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口，并在任何 DDL 前验证官方 MySQL 8.x。
 7. 分别计算 Agent、Console `requirements.lock` 的 SHA-256，再生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；若当前共享环境的哈希一致且分别通过两份锁文件校验，直接复用。只有任一锁变化或校验失败时，才创建新的共享环境并一次性安装两份锁文件的并集。
-8. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-9. 先执行全部版本化迁移，再将当前同名 systemd unit 写入当次临时回滚目录、安装新 unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后按 Agent、Console 顺序重启；任一服务未健康前不得继续把入口视为已切换。
-10. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问；成功后把锁文件哈希写入当前环境供后续发布判定。
-11. 任一步失败，删除本次新建环境与新增受管文件、恢复旧虚拟环境、源码备份和发布清单，并重启旧版本。
-12. 健康检查成功后，删除本次临时回滚目录、历史 `/home/boyce/.boyi-backups/` 与 `/home/boyce/agent_backups/`，清理 `/home/boyce/.boyi-venvs/` 中所有非当前环境，并删除仅用于安装依赖的 `/home/boyce/.cache/pip/`；ECS 最终只保留一个 Agent/Console 共用运行环境，不持久保留发布备份、旧虚拟环境或安装缓存。
+8. 在首次源码、虚拟环境或数据库变更前同时停止 Agent 与 Console，并确认两个 unit 均已退出；控制平面发布必须使用 `-Target all`，禁止在运行中的调度器/Worker 上同步混合版本源码。
+9. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
+10. 先执行全部版本化迁移，再安装新 systemd unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后按 Agent、Console 顺序启动；任一服务未健康前不得继续把入口视为已切换。
+11. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问；成功后把锁文件哈希写入当前环境供后续发布判定。
+12. 任一步失败，删除本次新建环境与新增受管文件、恢复旧虚拟环境、源码备份和发布清单，并重启旧版本。数据库 DDL 不随源码回滚，发布前必须另行完成可恢复数据库快照并保留到业务验收结束。
+13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到事项中心、定时自动化、财务、每日应签与客服影子投影完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
 
 业务代码频繁提交但锁文件未变时，发布仍会同步受管源码并重启受影响服务，但不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化时才承担完整依赖安装成本。
 
@@ -77,7 +78,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 
 `-SkipRestart` 和 `-SkipHealthCheck` 仅用于用户明确授权的维护场景。常规生产发布不得跳过重启或健康检查。
 
-本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地和远端临时暂存目录在流程结束后自动清理；失败回滚材料仅存在于当次远端暂存目录中，不作为长期备份保留。
+本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地上传临时目录在完成后清理；远端当次暂存目录及其 `_rollback` 精确恢复材料在成功发布后保留到业务验收结束。若回滚不完整，发布器也必须保留该目录并输出 `rollback_incomplete`，不得销毁唯一恢复材料。
 
 ## Nginx 边界
 

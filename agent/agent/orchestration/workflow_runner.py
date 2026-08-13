@@ -1077,6 +1077,7 @@ class WorkflowRunner:
             RunStatus.BLOCKED_DATA.value,
             RunStatus.FAILED_RETRYABLE.value,
             RunStatus.FAILED_TERMINAL.value,
+            RunStatus.CANCELLED.value,
         }:
             if exc.code in {"ACCOUNT_REQUIRED", "ACCOUNT_AMBIGUOUS", "TOOL_NAME_REQUIRED"}:
                 desired = RunStatus.NEEDS_CLARIFICATION.value
@@ -1097,7 +1098,10 @@ class WorkflowRunner:
             status=desired,
             error_code=exc.code,
             error_summary=exc.message,
-            finished=desired == RunStatus.FAILED_TERMINAL.value,
+            finished=desired in {
+                RunStatus.FAILED_TERMINAL.value,
+                RunStatus.CANCELLED.value,
+            },
         )
 
     def _can_retry_run(self, run_id: str) -> bool:

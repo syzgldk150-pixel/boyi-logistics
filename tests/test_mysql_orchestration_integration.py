@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -314,6 +315,41 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             first.rollback()
             first.__exit__(None, None, None)
 
+    def test_two_outbox_workers_skip_locked_without_duplicate_claim(self):
+        repository = self._repository()
+        for label in ("outbox-claim-a", "outbox-claim-b"):
+            rows = self._aggregate_rows(label)
+            with repository.unit_of_work() as uow:
+                uow.command_gateway_create(*rows)
+                uow.commit()
+
+        first = repository.unit_of_work()
+        second = repository.unit_of_work()
+        try:
+            first.__enter__()
+            first_claim = first.outbox.claim(
+                "outbox-worker-a",
+                consumer_name="integration-consumer",
+                limit=1,
+            )
+            second.__enter__()
+            second_claim = second.outbox.claim(
+                "outbox-worker-b",
+                consumer_name="integration-consumer",
+                limit=1,
+            )
+            self.assertEqual(1, len(first_claim))
+            self.assertEqual(1, len(second_claim))
+            self.assertNotEqual(
+                first_claim[0]["outbox_id"],
+                second_claim[0]["outbox_id"],
+            )
+        finally:
+            second.rollback()
+            second.__exit__(None, None, None)
+            first.rollback()
+            first.__exit__(None, None, None)
+
     def test_concurrent_approval_decisions_accept_only_the_first_commit(self):
         from shared.orchestration_repository import InvalidStateError
 
@@ -455,3 +491,171 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 (receipt["run_id"],),
             )
             self.assertEqual(1, cursor.fetchone()["count"])
+
+    def test_task_cutover_migrates_closed_scheduler_families_fail_closed(self):
+        migration = next(
+            path
+            for version, path in self.runner.discover_migrations()
+            if version == "014"
+        )
+        statements = self.runner.split_sql_statements(migration.read_text(encoding="utf-8"))
+        rows = [
+            (
+                "arrive_list_0830",
+                "arrival no account",
+                "sync_arrive_list",
+                '{"target_date":"","login_site_code":"legacy-site"}',
+            ),
+            (
+                "arrive_list_0930",
+                "arrival explicit account",
+                "sync_arrive_list",
+                '{"account_id":"configured-account","keep_me":true}',
+            ),
+            (
+                "arrival_stats_1000",
+                "arrival conflicting account",
+                "sync_arrival_stats",
+                '{"account_id":"configured-account",'
+                '"arrive_list_request_body":{"params":{"accountId":"other-account"}}}',
+            ),
+            (
+                "daily_sign_1100",
+                "daily sign custom time",
+                "sync_daily_should_sign",
+                '{"days":3,"keep_me":true}',
+            ),
+            (
+                "delivery_status_1030",
+                "delivery status custom time",
+                "sync_delivery_status",
+                '{}',
+            ),
+            (
+                "send_order_2150",
+                "send order custom time",
+                "sync_daily_send_orders",
+                '{}',
+            ),
+            (
+                "site_send_1900",
+                "site send custom time",
+                "sync_site_send_list",
+                '{}',
+            ),
+            (
+                "yunda_dispatch_forecast_1700",
+                "yunda forecast legacy profile",
+                "sync_yunda_dispatch_forecast",
+                '{"session_profile":"yunda","dest_brch":"56739382"}',
+            ),
+            (
+                "yunda_send_waybills_2100",
+                "yunda send legacy defaults",
+                "sync_yunda_send_waybills",
+                '{"session_profile":"yunda","target_date":"","ensure_fields":true}',
+            ),
+            (
+                "finance_bills_0010",
+                "finance canonical",
+                "sync_finance_bills",
+                '{"mode":"sync","rescan_days":7}',
+            ),
+            (
+                "clockin_daxiang_s_1830",
+                "Daxiang S clock",
+                "tms_query",
+                '{"endpoint":"/clock_in_dual","params":{"timeout_sec":600,'
+                '"params":{"sitecode":"configured-site","sitefbcode":"configured-fb",'
+                '"site_name":"configured name","site_fb_name":"configured fb name",'
+                '"first_type":"交件到港","second_type":"接件离港",'
+                '"delay_seconds":4,"administrator_note":"keep"}}}',
+            ),
+        ]
+        with self._connection(autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM control_plane_task_cutover_backup_014")
+            for task_id, name, tool_name, tool_params in rows:
+                cursor.execute(
+                    "INSERT INTO scheduled_tasks "
+                    "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                    "VALUES (%s, %s, %s, CAST(%s AS JSON), '0 1 * * *', TRUE) "
+                    "ON DUPLICATE KEY UPDATE name=VALUES(name), tool_name=VALUES(tool_name), "
+                    "tool_params=VALUES(tool_params), cron_expression=VALUES(cron_expression), enabled=TRUE, "
+                    "last_status=NULL, last_message=NULL",
+                    (task_id, name, tool_name, tool_params),
+                )
+            for statement in statements:
+                cursor.execute(statement)
+            for statement in statements:
+                cursor.execute(statement)
+
+            cursor.execute(
+                "SELECT id, tool_name, tool_params, enabled, last_message "
+                "FROM scheduled_tasks WHERE id IN "
+                "('arrive_list_0830', 'arrive_list_0930', 'arrival_stats_1000', "
+                "'daily_sign_1100', 'delivery_status_1030', 'send_order_2150', "
+                "'site_send_1900', 'yunda_dispatch_forecast_1700', "
+                "'yunda_send_waybills_2100', 'finance_bills_0010', "
+                "'clockin_daxiang_s_1830')"
+            )
+            migrated = {row["id"]: row for row in cursor.fetchall()}
+            for row in migrated.values():
+                if isinstance(row["tool_params"], str):
+                    row["tool_params"] = json.loads(row["tool_params"])
+
+            self.assertEqual("ronghui_default", migrated["arrive_list_0830"]["tool_params"]["account_id"])
+            self.assertNotIn("target_date", migrated["arrive_list_0830"]["tool_params"])
+            self.assertNotIn("login_site_code", migrated["arrive_list_0830"]["tool_params"])
+            self.assertTrue(migrated["arrive_list_0830"]["enabled"])
+            self.assertEqual("configured-account", migrated["arrive_list_0930"]["tool_params"]["account_id"])
+            self.assertTrue(migrated["arrive_list_0930"]["tool_params"]["keep_me"])
+            self.assertFalse(migrated["arrive_list_0930"]["enabled"])
+            self.assertFalse(migrated["arrival_stats_1000"]["enabled"])
+            self.assertIn("参数不符合", migrated["arrival_stats_1000"]["last_message"])
+
+            daily = migrated["daily_sign_1100"]["tool_params"]
+            self.assertEqual(3, daily["days"])
+            self.assertTrue(daily["keep_me"])
+            self.assertEqual("r13_default", daily["r13_account_id"])
+            self.assertFalse(migrated["daily_sign_1100"]["enabled"])
+
+            for task_id in ("delivery_status_1030", "send_order_2150", "site_send_1900"):
+                self.assertEqual(
+                    {"account_id": "ronghui_default"},
+                    migrated[task_id]["tool_params"],
+                )
+                self.assertTrue(migrated[task_id]["enabled"])
+
+            self.assertEqual(
+                {"account_id": "yunda_default", "dest_brch": "56739382"},
+                migrated["yunda_dispatch_forecast_1700"]["tool_params"],
+            )
+            self.assertTrue(migrated["yunda_dispatch_forecast_1700"]["enabled"])
+            self.assertEqual(
+                {"account_id": "yunda_default", "ensure_fields": True},
+                migrated["yunda_send_waybills_2100"]["tool_params"],
+            )
+            self.assertTrue(migrated["yunda_send_waybills_2100"]["enabled"])
+            self.assertEqual(
+                {"mode": "sync", "platform": "ronghui", "rescan_days": 7},
+                migrated["finance_bills_0010"]["tool_params"],
+            )
+            self.assertTrue(migrated["finance_bills_0010"]["enabled"])
+
+            clock = migrated["clockin_daxiang_s_1830"]
+            self.assertEqual("clock_in_dual", clock["tool_name"])
+            self.assertEqual("configured-site", clock["tool_params"]["sitecode"])
+            self.assertEqual("configured name", clock["tool_params"]["sitename"])
+            self.assertEqual("keep", clock["tool_params"]["administrator_note"])
+            self.assertEqual(600, clock["tool_params"]["timeout_sec"])
+            self.assertTrue(clock["enabled"])
+
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM control_plane_task_cutover_backup_014 "
+                "WHERE id IN ('arrive_list_0830', 'arrive_list_0930', 'arrival_stats_1000', "
+                "'daily_sign_1100', 'delivery_status_1030', 'send_order_2150', "
+                "'site_send_1900', 'yunda_dispatch_forecast_1700', "
+                "'yunda_send_waybills_2100', 'finance_bills_0010', "
+                "'clockin_daxiang_s_1830')"
+            )
+            self.assertEqual(11, cursor.fetchone()["count"])

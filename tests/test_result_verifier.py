@@ -229,3 +229,23 @@ def test_unknown_caller_blocked_status_cannot_override_terminal_failure():
 
     assert outcome.accepted is False
     assert outcome.run_status is RunStatus.FAILED_TERMINAL
+
+
+def test_cancelled_tool_result_is_a_cancelled_run_not_a_terminal_failure():
+    result = {
+        "status": "FAILED",
+        "data": {},
+        "meta": {},
+        "warnings": [],
+        "error": {
+            "code": "CANCELLED",
+            "message": "Tool execution was cancelled",
+            "retryable": False,
+        },
+    }
+
+    outcome = ResultVerifier().verify(_step(), result, _capability())
+
+    assert outcome.accepted is False
+    assert outcome.run_status is RunStatus.CANCELLED
+    assert outcome.code == "CANCELLED"

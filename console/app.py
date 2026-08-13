@@ -1,10 +1,13 @@
 """Console composition root and HTTP lifecycle."""
 
+import os
+
 from console.app_support import *  # noqa: F403
 from console.services.agent_api import AgentApiServiceMixin
 from console.services.auth import AuthServiceMixin
 from console.services.control_plane import ControlPlaneServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
+from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.customer_service import CustomerServiceMixin
 from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
 from console.services.tms_proxy import TmsProxyServiceMixin
@@ -15,12 +18,23 @@ from console.navigation import (
     MOBILE_NAVIGATION_CANDIDATES,
     mobile_bottom_nav_for_user,
 )
+from shared.service_identity import validate_service_identity_secrets
+
+
+def _validate_console_service_identity() -> None:
+    validate_service_identity_secrets(
+        internal_api_token=str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip(),
+        console_signing_secret=str(
+            os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or ""
+        ).strip(),
+    )
 
 
 class LocalDocFlowApp(
     AuthServiceMixin,
     AgentApiServiceMixin,
     ControlPlaneServiceMixin,
+    LLMSettingsServiceMixin,
     MonitoringFinanceServiceMixin,
     CustomerServiceMixin,
     WaybillsReceiptsServiceMixin,
@@ -62,7 +76,10 @@ class LocalDocFlowApp(
         self.template_env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
         self.template_env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
         self.project_modules = self._build_project_modules()
-        self.finance_service = FinanceService(self.repository)
+        self.finance_service = FinanceService(
+            self.repository,
+            agent_request=self._agent_request,
+        )
         self.finance_service.initialize_schema()
         self.automation_virtual_task_state: dict[str, dict[str, Any]] = {}
         self.routes = ConsoleRouteDispatcher()
@@ -83,10 +100,12 @@ class LocalDocFlowApp(
             display_name="系统管理员",
             password_hash=hash_admin_password(password),
             is_active=True,
+            role="super_admin",
         )
         print("Created the first admin account from DOCFLOW_ADMIN_USERNAME.")
 
     def run(self) -> None:
+        _validate_console_service_identity()
         handler = self._build_handler()
         server = ThreadingHTTPServer((self.settings.host, self.settings.port), handler)
         print(
@@ -561,4 +580,5 @@ class LocalDocFlowApp(
 
 if __name__ == "__main__":
     load_console_environment()
+    _validate_console_service_identity()
     LocalDocFlowApp().run()

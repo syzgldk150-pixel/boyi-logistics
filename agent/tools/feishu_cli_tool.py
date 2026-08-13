@@ -280,6 +280,25 @@ def _create_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
     )
 
 
+def _update_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
+    field_id = str(params.get("field_id") or "").strip()
+    field_name = str(params.get("field_name") or params.get("name") or "").strip()
+    field_type = params.get("type", params.get("field_type"))
+    if not field_id or not field_name:
+        return {"error": "update_field 缺少 field_id 或 field_name/name"}
+    try:
+        field_type = int(field_type)
+    except (TypeError, ValueError):
+        return {"error": "update_field type/field_type 必须是整数"}
+    payload: dict[str, object] = {"field_name": field_name, "type": field_type}
+    if isinstance(params.get("property"), dict):
+        payload["property"] = params["property"]
+    path = f"/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/fields/{field_id}"
+    if params.get("dry_run"):
+        return {"ok": True, "api": {"method": "PUT", "url": path, "body": payload}}
+    return _call_open_api("PUT", path, payload=payload, timeout=30)
+
+
 def _tenant_access_token() -> str:
     cached = _TOKEN_CACHE.get("token")
     expires_at = float(_TOKEN_CACHE.get("expires_at") or 0.0)
@@ -672,6 +691,16 @@ def feishu_operation(action: str, params: dict) -> dict:
             return _create_bitable_field(base_token, table_id, params)
         except Exception as exc:
             return {"error": f"create_field 调用失败: {str(exc)[:300]}"}
+
+    if action == "update_field":
+        base_token = str(params.get("base_token") or params.get("app_token") or "")
+        table_id = str(params.get("table_id") or "")
+        if not base_token or not table_id:
+            return {"error": "update_field 缺少 base_token/app_token 或 table_id"}
+        try:
+            return _update_bitable_field(base_token, table_id, params)
+        except Exception as exc:
+            return {"error": f"update_field 调用失败: {str(exc)[:300]}"}
 
     if action == "list_records":
         base_token = str(params.get("base_token") or params.get("app_token") or "")

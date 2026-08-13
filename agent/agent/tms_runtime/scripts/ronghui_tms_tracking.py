@@ -1079,6 +1079,21 @@ def _post_form_rows(
     return _rows_from_tms_payload(_safe_json(response))
 
 
+def fetch_main_route_rows(
+    session: Any,
+    bill_code: str,
+    *,
+    tracking_url: str,
+) -> list[dict[str, Any]]:
+    """Fetch main-waybill scan rows from the real TMS tracking-page API."""
+    return _post_form_rows(
+        session,
+        SCAN_MAIN_ROWS_URL,
+        {"BILL_CODE": bill_code},
+        tracking_url=tracking_url,
+    )
+
+
 def _latest_child_scan_rows(rows: list[dict[str, Any]], main_bill_code: str) -> list[dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -1100,7 +1115,7 @@ def _collect_api_tracking_rows(
     tracking_url: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     all_scan_rows = _post_form_rows(session, SCAN_ROWS_URL, {"BILL_CODE": bill_code}, tracking_url=tracking_url)
-    route_rows = _post_form_rows(session, SCAN_MAIN_ROWS_URL, {"BILL_CODE": bill_code}, tracking_url=tracking_url)
+    route_rows = fetch_main_route_rows(session, bill_code, tracking_url=tracking_url)
     if not route_rows:
         route_rows = [
             row
@@ -1170,6 +1185,11 @@ def _resolve_widget_menu_url(session: Any, leaf_text: str = TRACKING_MENU_TEXT) 
             continue
         return url if url.startswith("http") else f"{BASE_URL}{url}"
     raise RonghuiTmsTrackingError(f"未找到融辉 TMS 菜单入口：{leaf_text}")
+
+
+def resolve_tracking_page_url(session: Any) -> str:
+    """Resolve the authenticated tracking-page URL used by its scan APIs."""
+    return _resolve_widget_menu_url(session)
 
 
 def _wait_network_idle(page: Any, timeout_ms: int = 10_000) -> None:

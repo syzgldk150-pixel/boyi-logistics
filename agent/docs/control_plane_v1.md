@@ -70,6 +70,28 @@ Worker 通过 MySQL 8 `FOR UPDATE SKIP LOCKED` 和租约领取。执行中续租
 只读/计算步骤可安全恢复，声明幂等的内部投影写入按契约恢复。第三方或财务写入若没有
 精确读后核验器，一律进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得盲目重试。
 
+调度免审同样遵循显式账号边界。寄件、签收、网点出港、到货清单、到货统计和两项韵达
+同步的顶层 `account_id` 都是必填项；嵌套请求中重复出现的账号只能与顶层值完全一致。
+代码批准的定时参数固定为：融辉单账号任务使用 `ronghui_default`；韵达任务使用
+`yunda_default`，派件预测另锁定 `dest_brch=56739382`，寄件运单另锁定
+`ensure_fields=true`；到货统计另锁定 `trigger_flow=false`；每日应签锁定 R13 与三个
+融辉账号角色及 `days=7`；财务锁定 `mode=sync/platform=ronghui/rescan_days=7`。
+`014` 只迁移这些 Console 标准 `*_HHMM` 任务族，不覆盖管理员已有冲突值；冲突、额外参数
+或未知账号全部保留原行并停用。旧 arrive-list 的 `login_site_code` 会被移除，真实站点码
+仍由页面/账号上下文解析，迁移不猜测任何站点编码。
+Console `/automations` 是修改运行账号、核对参数并重新启用任务的唯一配置路径。只有当前
+工具版本、闭合参数、权威账号、任务 ID 与 cron 全部通过校验的已启用持久化行才能建立
+免审白名单，未知任务和缺少账号的任务保持停用/待审批，不使用隐式默认账号。
+
+Phase 7 签收与到货统计 Webhook 为兼容线上旧调用方，可省略 `account_id`；受信 Webhook
+适配器会在 Schema 校验前固定绑定代码批准的 `ronghui_default`。调用方传入相同账号可接受，
+任何其他账号覆盖均返回 422，且不会创建 Command。该兼容只绑定账号，不扩大 Webhook 的
+审批豁免；手工/Webhook 内部投影仍按 PolicyEngine 决策。
+
+融辉到货清单的 `fetch_dispatch` 不保存或猜测站点码。它必须从显式所选账号的已认证会话
+`userInfo` 唯一解析身份；请求中的站点别名若存在，必须与会话完全一致。缺字段、多候选或
+冲突时进入明确账号/数据阻塞，不能使用历史值或硬编码默认站点。
+
 ## 计划、权限与审批
 
 计划固定为 Schema v1。每步包含工具名/版本、操作类型、完整参数、账号、依赖、幂等键、

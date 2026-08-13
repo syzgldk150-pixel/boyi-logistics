@@ -26,6 +26,7 @@ DEFAULT_BILL_CODE = ""
 DEFAULT_TIMEOUT_MS = 30_000
 DEFAULT_ACTION_DELAY_SEC = 1.0
 DEFAULT_DUMP_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_SESSION_PROFILE = "default"
 STATION_KEYS = (
     "station_name",
     "stationName",
@@ -122,6 +123,137 @@ STATION_LOOKUP_CALL_IDS = (
     "FIND_SITE_ALL_COMBOBOX",
 )
 
+MINI_LOGIN_CONTEXT_RESOLVER_JS = r"""
+() => {
+  const requiredLoginFields = [
+    "loginUserName",
+    "loginUserAccount",
+    "loginSiteName",
+    "loginSiteCode",
+  ];
+  const scopeEntries = [
+    { name: "iframe", scope: window },
+    { name: "top", scope: window.top },
+    { name: "parent", scope: window.parent },
+  ];
+  const seenScopes = [];
+  const statuses = [];
+  const candidates = [];
+  const recordStatus = (scope, status, missingFields = []) => {
+    statuses.push({ scope, status, missing_fields: missingFields });
+  };
+
+  for (const entry of scopeEntries) {
+    const scope = entry.scope;
+    if (!scope || seenScopes.some((seen) => seen === scope)) continue;
+    seenScopes.push(scope);
+
+    let z = null;
+    try {
+      if (scope === window) {
+        if (typeof $Z !== "undefined") z = $Z;
+      } else {
+        z = scope["$Z"];
+      }
+    } catch (_) {
+      recordStatus(entry.name, "cross_origin_or_inaccessible");
+      continue;
+    }
+    if (!z) {
+      recordStatus(entry.name, "z_missing");
+      continue;
+    }
+    if (!z.user || typeof z.user.getUserInfo !== "function") {
+      recordStatus(entry.name, "user_api_missing");
+      continue;
+    }
+
+    let userInfo = null;
+    try {
+      if (scope === window) {
+        userInfo = $Z.user.getUserInfo();
+      } else {
+        userInfo = z.user.getUserInfo();
+      }
+    } catch (_) {
+      recordStatus(entry.name, "user_api_failed");
+      continue;
+    }
+    if (!userInfo || typeof userInfo !== "object") {
+      recordStatus(entry.name, "user_info_missing");
+      continue;
+    }
+    const values = requiredLoginFields.map(
+      (field) => String(userInfo[field] == null ? "" : userInfo[field]).trim()
+    );
+    const missingFields = requiredLoginFields.filter((_, index) => values[index] === "");
+    if (missingFields.length > 0) {
+      recordStatus(entry.name, "required_fields_missing", missingFields);
+      continue;
+    }
+    candidates.push({ source: entry.name, signature: JSON.stringify(values), userInfo });
+    recordStatus(entry.name, "ready");
+  }
+
+  if (candidates.length === 0) {
+    const missingFields = Array.from(
+      new Set(statuses.flatMap((status) => status.missing_fields || []))
+    );
+    if (missingFields.length > 0) {
+      return {
+        ok: false,
+        error: "missing_login_context_fields",
+        context_status: "required_fields_missing",
+        missing_fields: missingFields,
+        scope_statuses: statuses,
+      };
+    }
+    return {
+      ok: false,
+      error: "login_context_unavailable",
+      context_status: "no_ready_scope",
+      scope_statuses: statuses,
+    };
+  }
+  const signatures = new Set(candidates.map((candidate) => candidate.signature));
+  const sources = candidates.map((candidate) => candidate.source);
+  if (signatures.size !== 1) {
+    return {
+      ok: false,
+      error: "ambiguous_login_context",
+      context_status: "scope_values_disagree",
+      sources,
+      scope_statuses: statuses,
+    };
+  }
+  return {
+    ok: true,
+    context_status: "ready",
+    source: candidates[0].source,
+    sources,
+    userInfo: candidates[0].userInfo,
+  };
+}
+"""
+
+MINI_LOGIN_CONTEXT_SCRIPT = (
+    r"""
+() => {
+  const resolveLoginContext = """
+    + MINI_LOGIN_CONTEXT_RESOLVER_JS
+    + r""";
+  const result = resolveLoginContext();
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    context_status: result.context_status,
+    source: result.source,
+    sources: result.sources,
+  };
+}
+"""
+)
+
 MINI_SET_STATION_SCRIPT = r"""
 async ({ stationName, callIds }) => {
   const clean = (value) => String(value || "").trim();
@@ -158,13 +290,16 @@ async ({ stationName, callIds }) => {
   };
   const pickRow = (rows) => {
     const normalized = rows.filter((row) => row && typeof row === "object");
-    const exact = normalized.find((row) => valueFor(row, nameKeys) === wanted);
-    if (exact) return exact;
-    return normalized.find((row) => valueFor(row, nameKeys).includes(wanted) || wanted.includes(valueFor(row, nameKeys)));
+    const exact = normalized.filter((row) => valueFor(row, nameKeys) === wanted);
+    if (exact.length !== 1) return null;
+    return exact[0];
   };
   const applyRow = (row, source) => {
-    const name = valueFor(row, nameKeys) || wanted;
-    const code = valueFor(row, codeKeys) || name;
+    const name = valueFor(row, nameKeys);
+    const code = valueFor(row, codeKeys);
+    if (!name || !code) {
+      return { ok: false, error: "station_fields_missing", source };
+    }
     if (combo.setValue) combo.setValue(code);
     if (combo.setText) combo.setText(name);
     if (combo.setIsValid) combo.setIsValid(true);
@@ -260,8 +395,12 @@ async ({ stationName, callIds }) => {
 }
 """
 
-MINI_ADD_BILL_CODE_SCRIPT = r"""
+MINI_ADD_BILL_CODE_SCRIPT = (
+    r"""
 (billCode) => {
+  const resolveLoginContext = """
+    + MINI_LOGIN_CONTEXT_RESOLVER_JS
+    + r""";
   const bill = String(billCode || "").trim();
   if (!bill) return { ok: false, error: "empty_bill_code" };
   if (!window.mini || !mini.get) return { ok: false, error: "mini_not_found" };
@@ -348,33 +487,25 @@ MINI_ADD_BILL_CODE_SCRIPT = r"""
     }
   }
 
-  let userInfo = {};
-  for (const scope of [window, window.parent, window.top]) {
-    try {
-      const candidate = scope && scope.$Z && scope.$Z.user && scope.$Z.user.getUserInfo
-        ? scope.$Z.user.getUserInfo()
-        : null;
-      if (candidate) {
-        userInfo = candidate;
-        break;
-      }
-    } catch (_) {}
+  const loginContext = resolveLoginContext();
+  if (!loginContext.ok) return loginContext;
+  const userInfo = loginContext.userInfo;
+  const loginUserName = String(userInfo.loginUserName).trim();
+  const loginUserAccount = String(userInfo.loginUserAccount).trim();
+  const loginSiteName = String(userInfo.loginSiteName).trim();
+  const loginSiteCode = String(userInfo.loginSiteCode).trim();
+  if (typeof TextEncoder !== "function") {
+    return { ok: false, error: "utf8_length_unavailable" };
   }
-  let headerUser = "";
-  let headerSite = "";
-  try {
-    const topText = window.top && window.top.document && window.top.document.body
-      ? String(window.top.document.body.innerText || "")
-      : "";
-    const userMatch = topText.match(/登录用户[:：]\s*([^\s]+)/);
-    const siteMatch = topText.match(/登录网点[:：]\s*([^\s]+)/);
-    headerUser = userMatch ? userMatch[1] : "";
-    headerSite = siteMatch ? siteMatch[1] : "";
-  } catch (_) {}
-  const loginUserName = userInfo.loginUserName || headerUser || "TMS";
-  const loginUserAccount = userInfo.loginUserAccount || headerUser || loginUserName;
-  const loginSiteName = userInfo.loginSiteName || headerSite || "";
-  const loginSiteCode = userInfo.loginSiteCode || "73901";
+  const scanManCodeUtf8Bytes = new TextEncoder().encode(loginUserAccount).length;
+  if (scanManCodeUtf8Bytes > 20) {
+    return {
+      ok: false,
+      error: "scan_man_code_too_long",
+      actual_utf8_bytes: scanManCodeUtf8Bytes,
+      maximum_utf8_bytes: 20,
+    };
+  }
   const formData = form.getData();
   formData.PRE_OR_NEXT_STATION_CODE = stationCode;
   formData.PRE_OR_NEXT_STATION = stationText;
@@ -403,6 +534,7 @@ MINI_ADD_BILL_CODE_SCRIPT = r"""
   return { ok: false, error: "direct_datagrid_add_failed", before, after };
 }
 """
+)
 
 MINI_UPLOAD_ROWS_SCRIPT = r"""
 () => new Promise((resolve) => {
@@ -480,22 +612,30 @@ def _coerce_items(raw: Any) -> list[Dict[str, str]]:
             return []
         try:
             raw = json.loads(text)
-        except Exception:
-            return []
+        except Exception as exc:
+            raise ValueError("items 必须是有效 JSON") from exc
     if isinstance(raw, dict):
         for key in ("items", "data", "records", "rows"):
             if key in raw:
                 return _coerce_items(raw.get(key))
         item = _normalize_item(raw)
-        return [item] if item else []
+        if not item:
+            raise ValueError("items 第 1 项缺少 station_name 或 bill_code")
+        return [item]
     if isinstance(raw, list):
         items: list[Dict[str, str]] = []
-        for entry in raw:
+        invalid_indexes: list[int] = []
+        for index, entry in enumerate(raw):
             item = _normalize_item(entry)
             if item:
                 items.append(item)
+            else:
+                invalid_indexes.append(index)
+        if invalid_indexes:
+            indexes = ",".join(str(index) for index in invalid_indexes)
+            raise ValueError(f"items 存在格式错误项，索引: {indexes}")
         return items
-    return []
+    raise ValueError("items 必须是对象、数组或 JSON 字符串")
 
 
 def _load_json_file(path: str) -> Any:
@@ -584,6 +724,35 @@ def _set_station_by_mini_api(frame, station_name: str) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _get_login_context_status(frame) -> dict[str, Any]:
+    try:
+        return frame.evaluate(MINI_LOGIN_CONTEXT_SCRIPT)
+    except BaseException as exc:
+        return {
+            "ok": False,
+            "error": "login_context_evaluation_failed",
+            "context_status": type(exc).__name__,
+        }
+
+
+def _wait_login_context(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+    deadline = time.time() + timeout_ms / 1000.0
+    last_result: dict[str, Any] = {
+        "ok": False,
+        "error": "login_context_unavailable",
+        "context_status": "not_checked",
+    }
+    while time.time() < deadline:
+        last_result = _get_login_context_status(frame)
+        if last_result.get("ok"):
+            return last_result
+        try:
+            frame.wait_for_timeout(200)
+        except Exception:
+            time.sleep(0.2)
+    raise RuntimeError(f"登录上下文未就绪: {_mini_failure_detail(last_result)}")
+
+
 def _add_bill_code_by_mini_api(frame, bill_code: str) -> dict[str, Any]:
     try:
         return frame.evaluate(MINI_ADD_BILL_CODE_SCRIPT, bill_code)
@@ -598,6 +767,47 @@ def _upload_rows_by_mini_api(frame) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _mini_failure_detail(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "invalid_result"
+    error = str(result.get("error") or result.get("message") or "unknown_error").strip()
+    details: list[str] = []
+    missing_fields = result.get("missing_fields")
+    if isinstance(missing_fields, list):
+        fields = ",".join(str(field).strip() for field in missing_fields if str(field).strip())
+        if fields:
+            details.append(f"missing_fields={fields}")
+    context_status = str(result.get("context_status") or "").strip()
+    if context_status:
+        details.append(f"context_status={context_status}")
+    sources = result.get("sources")
+    if isinstance(sources, list):
+        source_text = ",".join(str(source).strip() for source in sources if str(source).strip())
+        if source_text:
+            details.append(f"sources={source_text}")
+    scope_statuses = result.get("scope_statuses")
+    if isinstance(scope_statuses, list):
+        status_parts: list[str] = []
+        for item in scope_statuses:
+            if not isinstance(item, dict):
+                continue
+            scope = str(item.get("scope") or "").strip()
+            status = str(item.get("status") or "").strip()
+            if scope and status:
+                status_parts.append(f"{scope}:{status}")
+        if status_parts:
+            details.append(f"scope_statuses={';'.join(status_parts)}")
+    actual_bytes = result.get("actual_utf8_bytes")
+    maximum_bytes = result.get("maximum_utf8_bytes")
+    if actual_bytes not in (None, ""):
+        details.append(f"actual_utf8_bytes={actual_bytes}")
+    if maximum_bytes not in (None, ""):
+        details.append(f"maximum_utf8_bytes={maximum_bytes}")
+    if details:
+        return f"{error} ({', '.join(details)})"
+    return error
+
+
 def _select_station(frame, station_name: str, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
     _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
     mini_result = _set_station_by_mini_api(frame, station_name)
@@ -608,21 +818,7 @@ def _select_station(frame, station_name: str, *, timeout_ms: int = DEFAULT_TIMEO
             f"({mini_result.get('value') or mini_result.get('stationCode')})"
         )
         return True
-    log(f"MiniUI 设置下一站失败，回退输入法: {mini_result.get('error') or mini_result}")
-
-    _fill_xpath(frame, XPATH_NEXT_STATION_INPUT, station_name, label="下一站")
-    try:
-        input_el = _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
-        input_el.press("Enter")
-        _pause(frame)
-    except Exception:
-        pass
-    try:
-        input_el = _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
-        current_value = input_el.input_value()
-    except Exception:
-        current_value = ""
-    return station_name in (current_value or "")
+    raise RuntimeError(f"下一站设置失败: {_mini_failure_detail(mini_result)}")
 
 
 def _safe_filename(text: str) -> str:
@@ -687,19 +883,14 @@ def dump_page_debug(page, frame=None, *, out_dir: str, prefix: str) -> Dict[str,
 
 def _wait_table_cleared(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
     deadline = time.time() + timeout_ms / 1000.0
-    selected = frame.locator(f"xpath={XPATH_GRID_ROW_SELECTED}")
-    unselected = frame.locator(f"xpath={XPATH_GRID_ROW_UNSELECTED}")
     rows = frame.locator(f"xpath={XPATH_GRID_ROW_ANY}")
     while time.time() < deadline:
         try:
-            selected_count = selected.count()
-            unselected_count = unselected.count()
             total_count = rows.count()
         except Exception:
-            selected_count = 0
-            unselected_count = 0
-            total_count = 0
-        if selected_count == 0 and (unselected_count >= 1 or total_count == 0):
+            frame.wait_for_timeout(300)
+            continue
+        if total_count == 0:
             return True
         frame.wait_for_timeout(300)
     return False
@@ -806,7 +997,7 @@ def _click_confirm_any(
             if message_xpath and _is_visible(frame, message_xpath):
                 _click_xpath(frame, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
-            if _is_visible(frame, XPATH_CONFIRM_BUTTON):
+            if not message_xpath and _is_visible(frame, XPATH_CONFIRM_BUTTON):
                 _click_xpath(frame, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
         except BaseException as exc:
@@ -815,7 +1006,7 @@ def _click_confirm_any(
             if message_xpath and _is_visible(page, message_xpath):
                 _click_xpath(page, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
-            if _is_visible(page, XPATH_CONFIRM_BUTTON):
+            if not message_xpath and _is_visible(page, XPATH_CONFIRM_BUTTON):
                 _click_xpath(page, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
         except BaseException as exc:
@@ -851,6 +1042,7 @@ def _run_flow_impl(
     action_delay_sec: float,
     dump_on_error: bool,
     dump_dir: str,
+    session_profile: str,
 ) -> Dict[str, Any]:
     started = time.time()
     stage = "init"
@@ -874,11 +1066,18 @@ def _run_flow_impl(
                 raise RuntimeError("未提供扫描数据")
             scan_items = [{"station_name": station_text, "bill_code": bill_text}]
         stage = "launch_browser"
-        p, browser, context, page = launch_browser(headless=headless, slow_mo_ms=slow_mo_ms)
+        p, browser, context, page = launch_browser(
+            headless=headless,
+            slow_mo_ms=slow_mo_ms,
+            profile=session_profile,
+        )
 
         stage = "login"
         uid, pwd = _resolve_credentials(config_path, username=username, password=password)
-        auth = TMSBrowserAuth(max_attempts=max(1, int(max_login_attempts)))
+        auth = TMSBrowserAuth(
+            max_attempts=max(1, int(max_login_attempts)),
+            profile=session_profile,
+        )
         log("开始登录")
         auth.login(page, username=uid, password=pwd)
         log(f"登录完成，当前URL：{page.url}")
@@ -892,29 +1091,19 @@ def _run_flow_impl(
         frame = _get_scan_frame(page)
         _wait_xpath_visible(frame, XPATH_SCAN_INPUT, timeout_ms=DEFAULT_TIMEOUT_MS)
 
+        stage = "wait_login_context"
+        _wait_login_context(frame, timeout_ms=DEFAULT_TIMEOUT_MS)
+
         def _upload_current_station() -> None:
             nonlocal stage, pending_codes, station_results, current_station
             if not pending_codes:
                 return
-            stage = "select_all"
-            _click_xpath(frame, XPATH_CHECK_ALL, label="全选复选框")
-            if not _wait_rows_selected(frame, timeout_ms=DEFAULT_TIMEOUT_MS):
-                if not _wait_grid_has_rows(frame, timeout_ms=3_000):
-                    raise RuntimeError("表格未发现可上传数据")
-                log("全选未检测到选中行，继续尝试上传")
             stage = "upload"
             upload_result = _upload_rows_by_mini_api(frame)
             if not upload_result.get("ok"):
-                if upload_result.get("message"):
-                    raise RuntimeError(f"上传失败: {upload_result.get('message')}")
-                log(f"MiniUI 直接上传失败，回退点击上传: {upload_result.get('error') or upload_result}")
-                _click_xpath(frame, XPATH_UPLOAD, label="上传")
-                _click_confirm_any(page, frame, message_xpath=XPATH_CONFIRM_UPLOAD_MESSAGE)
-                stage = "upload_success"
-                _click_confirm_any(page, frame, message_xpath=XPATH_SUCCESS_MESSAGE)
-            else:
-                log(f"扫描数据上传成功: {upload_result.get('message') or upload_result}")
-                stage = "upload_success"
+                raise RuntimeError(f"上传失败: {_mini_failure_detail(upload_result)}")
+            log(f"扫描数据上传成功: {upload_result.get('message') or 'success'}")
+            stage = "upload_success"
             stage = "verify_clear"
             if not _wait_table_cleared(frame, timeout_ms=DEFAULT_TIMEOUT_MS):
                 raise RuntimeError("表格未清空或未刷新完成")
@@ -937,9 +1126,7 @@ def _run_flow_impl(
                     _upload_current_station()
                 stage = "select_station"
                 log(f"输入下一站: {station}")
-                selected = _select_station(frame, station)
-                if not selected:
-                    log(f"下一站未确认: {station}")
+                _select_station(frame, station)
                 current_station = station
 
             stage = "input_bill_code"
@@ -954,14 +1141,7 @@ def _run_flow_impl(
                 skipped_signed_codes.append(bill)
                 continue
             else:
-                log(f"MiniUI 提交扫描单号失败，回退输入法: {add_result.get('error') or add_result}")
-                _fill_xpath(frame, XPATH_SCAN_INPUT, bill, label="扫描单号")
-                try:
-                    scan_input = _wait_xpath_visible(frame, XPATH_SCAN_INPUT, timeout_ms=DEFAULT_TIMEOUT_MS)
-                    scan_input.press("Enter")
-                    _pause(frame)
-                except Exception:
-                    pass
+                raise RuntimeError(f"扫描单号写入失败: {_mini_failure_detail(add_result)}")
             if _wait_signed_popup(page, frame):
                 log(f"单号已做过签收，跳过: {bill}")
                 skipped_signed_codes.append(bill)
@@ -1073,7 +1253,11 @@ def run_flow(
     action_delay_sec: float,
     dump_on_error: bool,
     dump_dir: str,
+    session_profile: str = DEFAULT_SESSION_PROFILE,
 ) -> Dict[str, Any]:
+    normalized_session_profile = str(session_profile).strip()
+    if not normalized_session_profile:
+        raise ValueError("session_profile 不能为空")
     kwargs = {
         "station_name": station_name,
         "bill_code": bill_code,
@@ -1087,6 +1271,7 @@ def run_flow(
         "action_delay_sec": action_delay_sec,
         "dump_on_error": dump_on_error,
         "dump_dir": dump_dir,
+        "session_profile": normalized_session_profile,
     }
     if _has_running_event_loop():
         return _run_flow_in_playwright_thread(**kwargs)
@@ -1102,6 +1287,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--username", default="", help="账号（为空则读取 config.json）")
     parser.add_argument("--password", default="", help="密码（为空则读取 config.json）")
     parser.add_argument("--config-path", default=DEFAULT_CONFIG_PATH, help="config.json 路径")
+    parser.add_argument(
+        "--session-profile",
+        default=DEFAULT_SESSION_PROFILE,
+        help="共享登录会话配置名",
+    )
     parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
@@ -1136,6 +1326,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         action_delay_sec=float(args.action_delay_sec),
         dump_on_error=bool(args.dump_on_error),
         dump_dir=str(args.dump_dir),
+        session_profile=str(args.session_profile),
     )
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 1
@@ -1168,6 +1359,16 @@ def run_once(params: Dict[str, Any]) -> Any:
     username = str(_get_param(params, "username", default=""))
     password = str(_get_param(params, "password", default=""))
     config_path = str(_get_param(params, "config_path", "configPath", default=DEFAULT_CONFIG_PATH))
+    session_profile = str(
+        _get_param(
+            params,
+            "session_profile",
+            "sessionProfile",
+            default=DEFAULT_SESSION_PROFILE,
+        )
+    ).strip()
+    if not session_profile:
+        raise ValueError("session_profile 不能为空")
 
     headless = _coerce_bool(_get_param(params, "headless", default=True))
     slow_mo_ms = int(_get_param(params, "slow_mo_ms", "slowMoMs", default=0))
@@ -1195,6 +1396,7 @@ def run_once(params: Dict[str, Any]) -> Any:
         action_delay_sec=action_delay_sec,
         dump_on_error=dump_on_error,
         dump_dir=dump_dir,
+        session_profile=session_profile,
     )
 
 

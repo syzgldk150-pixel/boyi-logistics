@@ -15,7 +15,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
-from tools.phase7_sync_common import tms_auth_error_result
+from tools.phase7_sync_common import (
+    bind_explicit_account_id,
+    require_explicit_account_id,
+    tms_auth_error_result,
+)
 from tools.tms_tool import call_http_service
 
 
@@ -354,7 +358,11 @@ def _tms_service_error(tms_result: Any) -> dict[str, Any] | None:
 def _build_request_body(params: dict[str, Any], target_date: dt.date) -> dict[str, Any]:
     request_body = params.get("request_body") if isinstance(params.get("request_body"), dict) else {}
     request_params = dict(request_body.get("params") or {})
-    request_params.setdefault("session_profile", "yunda")
+    request_params = bind_explicit_account_id(
+        request_params,
+        require_explicit_account_id(params, label="韵达派件预测同步"),
+        label="韵达派件预测请求",
+    )
     request_params["target_date"] = target_date.isoformat()
     for key in (
         "dest_brch",
@@ -363,8 +371,6 @@ def _build_request_body(params: dict[str, Any], target_date: dt.date) -> dict[st
         "limit",
         "max_pages",
         "session_profile",
-        "account_id",
-        "accountId",
         "two_brch_check",
         "prod_typ",
         "if_same_city",

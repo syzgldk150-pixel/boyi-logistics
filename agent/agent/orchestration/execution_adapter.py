@@ -150,6 +150,20 @@ class RegisteredToolExecutionAdapter:
         payload = process_result.get("data")
         if not isinstance(payload, Mapping):
             payload = {}
+        if process_result.get("canceled") is True or process_result.get("cancelled") is True:
+            return {
+                "status": "FAILED",
+                "data": redact_sensitive(dict(payload)),
+                "meta": self._base_meta(step, capability, execution_context),
+                "warnings": [],
+                "error": {
+                    "code": "CANCELLED",
+                    "message": "Tool execution was cancelled",
+                    "retryable": False,
+                },
+            }
+        if _is_unified_result(payload):
+            return redact_sensitive(dict(payload))
         nested_ok = payload.get("ok")
         nested_success = payload.get("success")
         nested_status = str(payload.get("status") or "").lower()
@@ -167,16 +181,22 @@ class RegisteredToolExecutionAdapter:
                 or ("LOGIN_REQUIRED" if nested_status == "auth_required" else "TOOL_EXECUTION_FAILED")
             ).upper()
             message = str(process_result.get("error") or payload.get("error") or payload.get("message") or "Tool execution failed")
+            nested_error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+            retryable = bool(
+                process_result.get("retryable")
+                or nested_error.get("retryable")
+            )
             return {
                 "status": "FAILED",
                 "data": redact_sensitive(dict(payload)),
                 "meta": self._base_meta(step, capability, execution_context),
                 "warnings": [],
-                "error": {"code": code, "message": redact_text(message)[:500], "retryable": False},
+                "error": {
+                    "code": code,
+                    "message": redact_text(message)[:500],
+                    "retryable": retryable,
+                },
             }
-
-        if _is_unified_result(payload):
-            return redact_sensitive(dict(payload))
 
         meta = self._base_meta(step, capability, execution_context)
         actual_meta = payload.get("meta") if isinstance(payload.get("meta"), Mapping) else {}

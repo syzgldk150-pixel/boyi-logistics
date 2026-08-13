@@ -1,9 +1,7 @@
 """Transactional persistence for the Agent orchestration control plane.
 
-The caller owns configuration and supplies a connection factory.  This module
-never reads environment variables and never mutates schema.  Every unit of work
-forces autocommit off and requires an explicit ``commit()``; leaving the context
-without committing rolls the transaction back.
+Callers supply connections; this module never loads configuration or mutates schema.
+Every unit of work disables autocommit and rolls back unless explicitly committed.
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ from datetime import datetime
 from typing import Any, Callable, Iterator
 
 from shared.redaction import redact_sensitive, redact_text
-
 
 ConnectionFactory = Callable[[], Any]
 
@@ -70,6 +67,9 @@ STEP_STATUSES = frozenset(
 )
 APPROVAL_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "EXPIRED", "INVALIDATED"})
 OUTBOX_STATUSES = frozenset({"PENDING", "PROCESSING", "PUBLISHED", "DEAD_LETTER"})
+TERMINAL_RUN_STATUSES = frozenset(
+    {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+)
 
 REQUIRED_TABLES = frozenset(
     {
@@ -146,45 +146,29 @@ REQUIRED_COLUMNS = frozenset(
 
 class OrchestrationPersistenceError(RuntimeError):
     """Base class for control-plane persistence failures."""
-
-
 class IdempotencyConflict(OrchestrationPersistenceError):
     """An idempotency identity was reused for different immutable input."""
-
-
 class ConcurrentUpdateError(OrchestrationPersistenceError):
     """An optimistic state transition or leased update lost its race."""
-
-
 class InvalidStateError(OrchestrationPersistenceError):
     """A persisted status or state transition is invalid."""
-
-
 def _required_text(value: Any, field: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise ValueError(f"{field} is required")
     return text
-
-
 def _optional_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
-
-
 def _status(value: Any, allowed: frozenset[str], field: str, *, default: str | None = None) -> str:
     raw = getattr(value, "value", value)
     normalized = str(raw or default or "").strip().upper()
     if normalized not in allowed:
         raise InvalidStateError(f"unsupported {field}: {normalized or '<empty>'}")
     return normalized
-
-
 def _safe_error(value: Any) -> str | None:
     text = redact_text(value).strip()
     return text[:500] or None
-
-
 def _json_value(value: Any, default: Any) -> Any:
     if value is None:
         return default
@@ -194,8 +178,6 @@ def _json_value(value: Any, default: Any) -> Any:
         return json.loads(value)
     except (TypeError, ValueError) as exc:
         raise OrchestrationPersistenceError("persisted orchestration JSON is invalid") from exc
-
-
 def _canonical_json(value: Any) -> str:
     return json.dumps(
         redact_sensitive(value),
@@ -204,16 +186,10 @@ def _canonical_json(value: Any) -> str:
         separators=(",", ":"),
         default=str,
     )
-
-
 def _json_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
 def _json_param(value: Any, default: Any) -> str:
     return _canonical_json(default if value is None else value)
-
-
 def _row_dict(cursor: Any, row: Any) -> dict[str, Any] | None:
     if not row:
         return None
@@ -221,12 +197,8 @@ def _row_dict(cursor: Any, row: Any) -> dict[str, Any] | None:
         return dict(row)
     description = getattr(cursor, "description", None) or ()
     return {str(column[0]): value for column, value in zip(description, row)}
-
-
 def _rows(cursor: Any) -> list[dict[str, Any]]:
     return [item for row in (cursor.fetchall() or []) if (item := _row_dict(cursor, row))]
-
-
 def _decode_row(row: dict[str, Any] | None, json_fields: Iterable[str]) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -235,8 +207,6 @@ def _decode_row(row: dict[str, Any] | None, json_fields: Iterable[str]) -> dict[
         if field in payload:
             payload[field] = _json_value(payload.get(field), None)
     return payload
-
-
 def _created_flag(row: dict[str, Any], created: bool) -> dict[str, Any]:
     payload = dict(row)
     payload["_created"] = created
@@ -1068,6 +1038,11 @@ class AgentRunRepository(_RepositoryBase):
         allowed = sorted({_status(item, RUN_STATUSES, "claim run status") for item in statuses})
         if not allowed:
             raise ValueError("statuses is required")
+        terminal = sorted(set(allowed) & TERMINAL_RUN_STATUSES)
+        if terminal:
+            raise InvalidStateError(
+                f"terminal run statuses are not claimable: {', '.join(terminal)}"
+            )
         placeholders = ", ".join("%s" for _ in allowed)
         effective_now = now or datetime.now()
         batch_size = max(1, min(int(limit), 500))
@@ -1126,13 +1101,16 @@ class AgentRunRepository(_RepositoryBase):
         batch_size = max(1, min(int(limit), 500))
         lease = max(1, min(int(lease_seconds), 3600))
         with self.cursor() as cursor:
+            # Keep the locking read on the cancellation index order.  As with
+            # ordinary run claims, a filesort may lock rows that LIMIT does not
+            # return and starve another SKIP LOCKED worker.
             cursor.execute(
                 """
-                SELECT * FROM agent_runs
+                SELECT * FROM agent_runs FORCE INDEX (idx_agent_runs_cancel_requested)
                 WHERE cancel_requested_at IS NOT NULL
                   AND status NOT IN ('COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED')
                   AND (worker_id IS NULL OR lease_expires_at <= %s)
-                ORDER BY cancel_requested_at, created_at, run_id
+                ORDER BY status, cancel_requested_at, lease_expires_at, run_id
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
                 """,
@@ -2312,21 +2290,60 @@ class OutboxRepository(_RepositoryBase):
         worker = _required_text(worker_id, "worker_id")
         batch_size = max(1, min(int(limit), 500))
         lease = max(1, min(int(lease_seconds), 3600))
-        consumer_clause = " AND o.consumer_name=%s" if consumer_name else ""
-        params: list[Any] = [str(consumer_name).strip()] if consumer_name else []
-        params.append(batch_size)
+        consumer = _optional_text(consumer_name)
         with self.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE outbox_events
-                SET status='DEAD_LETTER', locked_by=NULL, locked_until=NULL,
-                    last_error_code=COALESCE(last_error_code, 'LEASE_EXHAUSTED'),
-                    last_error_summary=COALESCE(last_error_summary, 'delivery lease expired at max attempts')
-                WHERE status IN ('PENDING', 'PROCESSING')
-                  AND attempt_count >= max_attempts
-                  AND (status='PENDING' OR locked_until <= NOW(6))
-                """
+            # Recover expired deliveries before new work so a steady pending
+            # stream cannot indefinitely starve an interrupted delivery.
+            ids = self._lock_outbox_ids(
+                cursor,
+                status="PROCESSING",
+                index_name="idx_outbox_lease",
+                due_column="locked_until",
+                due_required=True,
+                attempts_operator="<",
+                limit=batch_size,
+                consumer_name=consumer,
             )
+            if len(ids) < batch_size:
+                ids.extend(
+                    self._lock_outbox_ids(
+                        cursor,
+                        status="PENDING",
+                        index_name=(
+                            "idx_outbox_consumer_status" if consumer else "idx_outbox_claim"
+                        ),
+                        due_column="available_at",
+                        due_required=True,
+                        attempts_operator="<",
+                        limit=batch_size - len(ids),
+                        consumer_name=consumer,
+                    )
+                )
+            if not ids:
+                # Cleanup is deliberately deferred until this worker found no
+                # runnable row.  Scanning a residual attempt-count predicate
+                # before the claim can lock non-exhausted rows and defeat
+                # concurrent SKIP LOCKED workers.
+                self._dead_letter_exhausted(cursor)
+                return []
+            placeholders = ", ".join("%s" for _ in ids)
+            cursor.execute(
+                f"""
+                UPDATE outbox_events
+                SET status='PROCESSING', locked_by=%s,
+                    locked_until=DATE_ADD(NOW(6), INTERVAL {lease} SECOND),
+                    attempt_count=attempt_count+1
+                WHERE outbox_id IN ({placeholders})
+                  AND attempt_count < max_attempts
+                  AND (
+                      status='PENDING'
+                      OR (status='PROCESSING' AND locked_until <= NOW(6))
+                  )
+                """,
+                (worker, *ids),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != len(ids):
+                raise ConcurrentUpdateError("outbox claim lost its locked candidate")
             cursor.execute(
                 f"""
                 SELECT o.*, d.event_type, d.schema_version, d.source_system,
@@ -2336,33 +2353,14 @@ class OutboxRepository(_RepositoryBase):
                        d.payload_json, d.payload_sha256, d.headers_json
                 FROM outbox_events o
                 JOIN domain_events d ON d.event_id = o.event_id
-                WHERE o.attempt_count < o.max_attempts
-                  AND (
-                      (o.status='PENDING' AND o.available_at <= NOW(6))
-                      OR (o.status='PROCESSING' AND o.locked_until <= NOW(6))
-                  )
-                  {consumer_clause}
-                ORDER BY o.available_at, o.outbox_id
-                LIMIT %s
-                FOR UPDATE SKIP LOCKED
+                WHERE o.outbox_id IN ({placeholders})
                 """,
-                params,
+                ids,
             )
-            claimed = _rows(cursor)
-            if not claimed:
-                return []
-            ids = [int(item["outbox_id"]) for item in claimed]
-            placeholders = ", ".join("%s" for _ in ids)
-            cursor.execute(
-                f"""
-                UPDATE outbox_events
-                SET status='PROCESSING', locked_by=%s,
-                    locked_until=DATE_ADD(NOW(6), INTERVAL {lease} SECOND),
-                    attempt_count=attempt_count+1
-                WHERE outbox_id IN ({placeholders})
-                """,
-                (worker, *ids),
-            )
+            rows_by_id = {int(item["outbox_id"]): item for item in _rows(cursor)}
+            if set(rows_by_id) != set(ids):
+                raise OrchestrationPersistenceError("claimed outbox event payload is missing")
+            claimed = [rows_by_id[outbox_id] for outbox_id in ids]
         decoded_claimed: list[dict[str, Any]] = []
         for item in claimed:
             item["status"] = "PROCESSING"
@@ -2370,6 +2368,86 @@ class OutboxRepository(_RepositoryBase):
             item["attempt_count"] = int(item.get("attempt_count") or 0) + 1
             decoded_claimed.append(_decode_row(item, self.EVENT_JSON_FIELDS) or {})
         return decoded_claimed
+
+    def _dead_letter_exhausted(self, cursor: Any) -> None:
+        exhausted_ids = self._lock_outbox_ids(
+            cursor,
+            status="PENDING",
+            index_name="idx_outbox_claim",
+            due_column="available_at",
+            due_required=False,
+            attempts_operator=">=",
+            limit=500,
+        )
+        exhausted_ids.extend(
+            self._lock_outbox_ids(
+                cursor,
+                status="PROCESSING",
+                index_name="idx_outbox_lease",
+                due_column="locked_until",
+                due_required=True,
+                attempts_operator=">=",
+                limit=max(0, 500 - len(exhausted_ids)),
+            )
+        )
+        if not exhausted_ids:
+            return
+        placeholders = ", ".join("%s" for _ in exhausted_ids)
+        cursor.execute(
+            f"""
+            UPDATE outbox_events
+            SET status='DEAD_LETTER', locked_by=NULL, locked_until=NULL,
+                last_error_code=COALESCE(last_error_code, 'LEASE_EXHAUSTED'),
+                last_error_summary=COALESCE(
+                    last_error_summary,
+                    'delivery lease expired at max attempts'
+                )
+            WHERE outbox_id IN ({placeholders})
+              AND status IN ('PENDING', 'PROCESSING')
+              AND attempt_count >= max_attempts
+              AND (status='PENDING' OR locked_until <= NOW(6))
+            """,
+            exhausted_ids,
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) != len(exhausted_ids):
+            raise ConcurrentUpdateError("outbox dead-letter lease cleanup lost its lock")
+
+    @staticmethod
+    def _lock_outbox_ids(
+        cursor: Any,
+        *,
+        status: str,
+        index_name: str,
+        due_column: str,
+        due_required: bool,
+        attempts_operator: str,
+        limit: int,
+        consumer_name: str | None = None,
+    ) -> list[int]:
+        """Lock claim candidates without joining or invoking a filesort."""
+
+        if limit <= 0:
+            return []
+        consumer_clause = " AND consumer_name=%s" if consumer_name else ""
+        due_clause = f" AND {due_column} <= NOW(6)" if due_required else ""
+        order_prefix = "consumer_name, " if consumer_name else ""
+        params: list[Any] = [consumer_name] if consumer_name else []
+        params.append(limit)
+        cursor.execute(
+            f"""
+            SELECT outbox_id
+            FROM outbox_events FORCE INDEX ({index_name})
+            WHERE status='{status}'
+              AND attempt_count {attempts_operator} max_attempts
+              {due_clause}
+              {consumer_clause}
+            ORDER BY {order_prefix}status, {due_column}, outbox_id
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+            """,
+            params,
+        )
+        return [int(item["outbox_id"]) for item in _rows(cursor)]
 
     def mark_published(self, outbox_id: int, *, worker_id: str) -> None:
         with self.cursor() as cursor:

@@ -7,13 +7,84 @@ import datetime
 import json
 from typing import Any, Dict, List, Optional
 
+from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.ronghui_user_context import (
+    RONGHUI_USER_INFO_COOKIE,
+    ronghui_user_context_signature,
+)
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 
 
 DISPATCH_URL = "https://tms.ronghuiwl.com/dataQuery/findPageByCallId"
 DEFAULT_PAGE_SIZE = 100
 DEFAULT_MAX_PAGES = 100
-DEFAULT_LOGIN_SITE_CODE = "73901"
+
+
+def _session_user_context_signatures(session: Any) -> set[tuple[str, ...]]:
+    cookies = getattr(session, "cookies", None)
+    if cookies is None:
+        raise TMSAuthStateError(
+            "AUTH_REQUIRED",
+            "Ronghui session is missing its authenticated user context.",
+        )
+
+    signatures: set[tuple[str, ...]] = set()
+    incomplete = False
+    matched = False
+    try:
+        cookie_rows = list(cookies)
+    except TypeError:
+        cookie_rows = []
+
+    for cookie in cookie_rows:
+        name = str(getattr(cookie, "name", "") or "")
+        if name.lower() != RONGHUI_USER_INFO_COOKIE.lower():
+            continue
+        matched = True
+        signature = ronghui_user_context_signature(getattr(cookie, "value", ""))
+        if signature is None:
+            incomplete = True
+        else:
+            signatures.add(signature)
+
+    if not matched:
+        for name in (RONGHUI_USER_INFO_COOKIE, "USER_INFO"):
+            try:
+                raw = cookies.get(name)
+            except Exception:
+                raw = None
+            if not raw:
+                continue
+            matched = True
+            signature = ronghui_user_context_signature(raw)
+            if signature is None:
+                incomplete = True
+            else:
+                signatures.add(signature)
+
+    if not matched:
+        raise TMSAuthStateError(
+            "AUTH_REQUIRED",
+            "Ronghui session is missing its authenticated user context.",
+        )
+    if incomplete or len(signatures) != 1:
+        raise TMSAuthStateError(
+            "AUTH_REQUIRED",
+            "Ronghui session user context is incomplete or ambiguous.",
+        )
+    return signatures
+
+
+def resolve_login_site_code(session: Any, *, explicit_site_code: str = "") -> str:
+    signature = next(iter(_session_user_context_signatures(session)))
+    observed_site_code = signature[3]
+    requested_site_code = str(explicit_site_code or "").strip()
+    if requested_site_code and requested_site_code != observed_site_code:
+        raise TMSAuthStateError(
+            "ACCOUNT_AMBIGUOUS",
+            "Requested site code does not match the selected account session.",
+        )
+    return observed_site_code
 
 
 def build_date_range(target_date: Optional[datetime.date] = None) -> Dict[str, str]:
@@ -177,20 +248,30 @@ def collect_dispatch_records(
 def _run_once_impl(
     target_date: Optional[datetime.date] = None,
     *,
-    login_site_code: str = DEFAULT_LOGIN_SITE_CODE,
+    session_profile: str,
+    explicit_site_code: str = "",
     page_size: int = DEFAULT_PAGE_SIZE,
     max_pages: int = DEFAULT_MAX_PAGES,
 ) -> List[List[Any]]:
     """登录、拉取当天派件数据并返回整理后的二维数组。"""
-    auth = TMSAuth()
+    safe_session_profile = str(session_profile or "").strip()
+    if not safe_session_profile:
+        raise TMSAuthStateError(
+            "AUTH_REQUIRED",
+            "An explicit account session profile is required.",
+        )
+    auth = TMSAuth(profile=safe_session_profile)
     session = auth.login_and_get_session()
     if session is None:
-        raise RuntimeError("登录失败，无法获取 Session")
+        raise TMSAuthStateError("AUTH_REQUIRED", "Ronghui login did not return a session.")
 
     date_range = build_date_range(target_date)
     return collect_dispatch_records(
         session,
-        login_site_code=login_site_code,
+        login_site_code=resolve_login_site_code(
+            session,
+            explicit_site_code=explicit_site_code,
+        ),
         date_range=date_range,
         page_size=page_size,
         max_pages=max_pages,
@@ -198,7 +279,7 @@ def _run_once_impl(
 
 
 if __name__ == "__main__":
-    result = _run_once_impl()
+    result = _run_once_impl(session_profile="")
     # N8N Execute Command 使用：只打印一条 JSON 结果
     print(json.dumps(result, ensure_ascii=False))
 
@@ -209,17 +290,21 @@ def run_once(params: Dict[str, Any]) -> Any:
     target_date: Optional[datetime.date] = None
     if target_date_str:
         target_date = datetime.date.fromisoformat(str(target_date_str))
-    login_site_code = str(
-        params.get("login_site_code")
-        or params.get("loginSiteCode")
-        or params.get("LOGIN_SITE_CODE")
-        or DEFAULT_LOGIN_SITE_CODE
-    ).strip()
+    site_code_values = {
+        str(params.get(key) or "").strip()
+        for key in ("login_site_code", "loginSiteCode", "LOGIN_SITE_CODE")
+        if str(params.get(key) or "").strip()
+    }
+    if len(site_code_values) > 1:
+        raise ValueError("Conflicting login site-code aliases")
+    explicit_site_code = next(iter(site_code_values), "")
+    session_profile = str(params.get("session_profile") or "").strip()
     page_size = int(params.get("page_size") or params.get("pageSize") or DEFAULT_PAGE_SIZE)
     max_pages = int(params.get("max_pages") or params.get("maxPages") or DEFAULT_MAX_PAGES)
     return _run_once_impl(
         target_date=target_date,
-        login_site_code=login_site_code,
+        session_profile=session_profile,
+        explicit_site_code=explicit_site_code,
         page_size=page_size,
         max_pages=max_pages,
     )

@@ -10,16 +10,17 @@ SKIP_HEALTH="${5:-0}"
 DEPLOY_ROOT="/home/boyce/.boyi-deploy"
 BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
-LEGACY_BACKUP_ROOT="/home/boyce/.boyi-backups"
-LEGACY_AGENT_BACKUP_ROOT="/home/boyce/agent_backups"
+LEGACY_FINANCE_ETL_ROOT="/home/boyce/agent/finance_reconciliation"
 VENV_ROOT="/home/boyce/.boyi-venvs"
-PIP_CACHE_ROOT="/home/boyce/.cache/pip"
 PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
 PIP_TIMEOUT_SECONDS="${BOYI_PIP_TIMEOUT_SECONDS:-300}"
 MUTATION_STARTED=0
 VENV_ACTIVATED=0
+SERVICES_QUIESCED=0
 RELEASE_STAGE="initialization"
+IDENTITY_ENV_FILE="/home/boyce/agent/.env"
+CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -145,6 +146,43 @@ validate_environment() {
   done
 }
 
+preflight_service_identity_configuration() {
+  local runtime_python="${PYTHON_BINS[agent]}"
+  local staged_root="${STAGE_ROOT}"
+  [[ -f "${IDENTITY_ENV_FILE}" ]] || {
+    echo "service_identity_preflight=failed reason=configuration_missing" >&2
+    return 1
+  }
+  [[ -f "${STAGE_ROOT}/shared/service_identity.py" ]] || {
+    echo "service_identity_preflight=failed reason=staged_validator_missing" >&2
+    return 1
+  }
+
+  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
+    BOYI_STAGED_ROOT="${staged_root}" \
+    "${runtime_python}" - <<'PY'
+import os
+import sys
+
+from dotenv import dotenv_values
+
+sys.path.insert(0, os.environ["BOYI_STAGED_ROOT"])
+from shared.service_identity import validate_service_identity_secrets
+
+
+try:
+    values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
+    validate_service_identity_secrets(
+        internal_api_token=str(values.get("AGENT_INTERNAL_API_TOKEN") or ""),
+        console_signing_secret=str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or ""),
+    )
+except Exception:
+    print("service_identity_preflight=failed reason=invalid_configuration", file=sys.stderr)
+    raise SystemExit(1)
+print("service_identity_preflight=ok")
+PY
+}
+
 build_release_virtualenvs() {
   local bootstrap_python release_venv verifier agent_lock console_lock
   local agent_hash console_hash lock_hash active_agent active_console active_hash metadata_file
@@ -246,15 +284,14 @@ activate_release_virtualenvs() {
 
   VENV_ACTIVATED=1
   for target in "${RUNTIME_TARGETS[@]}"; do
-    sudo systemctl stop "${SERVICES[$target]}"
-  done
-  for target in "${RUNTIME_TARGETS[@]}"; do
     active_venv="${ROOTS[$target]}/.venv"
     if [[ -L "${active_venv}" ]]; then
       PREVIOUS_VENV_LINKS[$target]="$(readlink "${active_venv}")"
+      VENV_SWITCHED[$target]="1"
       rm -- "${active_venv}"
     elif [[ -d "${active_venv}" ]]; then
       previous_dir="${BACKUP_DIR}/${target}.venv"
+      VENV_SWITCHED[$target]="1"
       mv -- "${active_venv}" "${previous_dir}"
       PREVIOUS_VENV_DIRS[$target]="${previous_dir}"
     elif [[ -e "${active_venv}" ]]; then
@@ -262,24 +299,69 @@ activate_release_virtualenvs() {
       return 1
     fi
     ln -s "${RELEASE_VENV}" "${active_venv}"
-    VENV_SWITCHED[$target]="1"
+  done
+}
+
+quiesce_runtime_services() {
+  [[ "${SKIP_RESTART}" != "1" ]] || {
+    echo "Cannot mutate source or database while service restart is disabled" >&2
+    return 1
+  }
+  local target
+  # Once shutdown begins, rollback must restore both runtime services even if
+  # stopping or verifying the second unit fails midway.
+  SERVICES_QUIESCED=1
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    sudo systemctl stop "${SERVICES[$target]}"
+  done
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    if systemctl is-active --quiet "${SERVICES[$target]}"; then
+      echo "Failed to quiesce ${SERVICES[$target]}" >&2
+      return 1
+    fi
   done
 }
 
 restore_virtualenvs() {
-  local target active_venv
+  local target active_venv restore_status=0
   for target in "${RUNTIME_TARGETS[@]}"; do
     [[ "${VENV_SWITCHED[$target]:-}" == "1" ]] || continue
     active_venv="${ROOTS[$target]}/.venv"
     if [[ -L "${active_venv}" && "$(readlink -f -- "${active_venv}")" == "$(readlink -f -- "${RELEASE_VENV}")" ]]; then
-      rm -- "${active_venv}"
+      rm -- "${active_venv}" || restore_status=1
+    elif [[ -e "${active_venv}" || -L "${active_venv}" ]]; then
+      echo "Refusing to overwrite unexpected ${target} virtual environment during rollback" >&2
+      restore_status=1
+      continue
     fi
     if [[ -n "${PREVIOUS_VENV_LINKS[$target]:-}" ]]; then
-      ln -s "${PREVIOUS_VENV_LINKS[$target]}" "${active_venv}"
+      ln -s "${PREVIOUS_VENV_LINKS[$target]}" "${active_venv}" || restore_status=1
     elif [[ -n "${PREVIOUS_VENV_DIRS[$target]:-}" && -d "${PREVIOUS_VENV_DIRS[$target]}" ]]; then
-      mv -- "${PREVIOUS_VENV_DIRS[$target]}" "${active_venv}"
+      mv -- "${PREVIOUS_VENV_DIRS[$target]}" "${active_venv}" || restore_status=1
+    else
+      echo "Missing previous ${target} virtual environment rollback material" >&2
+      restore_status=1
     fi
   done
+  return "${restore_status}"
+}
+
+verify_runtime_virtualenvs() {
+  local target runtime_python verify_status=0
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    runtime_python="${PYTHON_BINS[$target]}"
+    if [[ ! -x "${runtime_python}" ]]; then
+      echo "Recovered ${target} virtual environment is not executable" >&2
+      verify_status=1
+      continue
+    fi
+    "${runtime_python}" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 10))' \
+      >/dev/null 2>&1 || {
+        echo "Recovered ${target} virtual environment is not Python 3.10" >&2
+        verify_status=1
+      }
+  done
+  return "${verify_status}"
 }
 
 remove_new_virtualenvs() {
@@ -304,68 +386,12 @@ record_active_dependency_hashes() {
   mv -- "${metadata_temp}" "${expected_release}/.boyi-requirements.sha256"
 }
 
-prune_inactive_virtualenvs() {
-  local target active_venv active_release shared_release candidate candidate_release
-  local -a stale_venvs=()
-
-  shared_release="$(readlink -f -- "${ROOTS[agent]}/.venv")"
-  for target in "${RUNTIME_TARGETS[@]}"; do
-    active_venv="${ROOTS[$target]}/.venv"
-    [[ -L "${active_venv}" ]] || {
-      echo "Active virtual environment is not a symlink: ${active_venv}" >&2
-      return 1
-    }
-    active_release="$(readlink -f -- "${active_venv}")"
-    [[ -d "${active_release}" && "${active_release}" == "${VENV_ROOT}/runtime-deps-"* ]] || {
-      echo "Active virtual environment is outside the managed release root: ${active_venv}" >&2
-      return 1
-    }
-    [[ "${active_release}" == "${shared_release}" ]] || {
-      echo "Agent and Console are not using the same virtual environment" >&2
-      return 1
-    }
-  done
-
-  while IFS= read -r -d '' candidate; do
-    candidate_release="$(readlink -f -- "${candidate}")"
-    case "${candidate_release}" in
-      "${VENV_ROOT}/agent-"*|"${VENV_ROOT}/console-"*|"${VENV_ROOT}/runtime-deps-"*) ;;
-      *) echo "Refusing to remove unmanaged virtual environment: ${candidate}" >&2; return 1 ;;
-    esac
-    if [[ "${candidate_release}" != "${shared_release}" ]]; then
-      stale_venvs+=("${candidate_release}")
-    fi
-  done < <(find "${VENV_ROOT}" -mindepth 1 -maxdepth 1 -type d \
-    \( -name 'agent-*' -o -name 'console-*' -o -name 'runtime-deps-*' \) -print0)
-
-  for candidate_release in "${stale_venvs[@]}"; do
-    rm -rf -- "${candidate_release}"
-  done
-}
-
 cleanup_successful_release() {
-  local cleanup_status=0
-  prune_inactive_virtualenvs || cleanup_status=$?
-  if [[ "${LEGACY_BACKUP_ROOT}" == "/home/boyce/.boyi-backups" ]]; then
-    rm -rf -- "${LEGACY_BACKUP_ROOT}" || cleanup_status=$?
-  else
-    echo "Refusing to remove unexpected legacy backup root: ${LEGACY_BACKUP_ROOT}" >&2
-    cleanup_status=1
-  fi
-  if [[ "${LEGACY_AGENT_BACKUP_ROOT}" == "/home/boyce/agent_backups" ]]; then
-    rm -rf -- "${LEGACY_AGENT_BACKUP_ROOT}" || cleanup_status=$?
-  else
-    echo "Refusing to remove unexpected legacy agent backup root: ${LEGACY_AGENT_BACKUP_ROOT}" >&2
-    cleanup_status=1
-  fi
-  if [[ "${PIP_CACHE_ROOT}" == "/home/boyce/.cache/pip" ]]; then
-    rm -rf -- "${PIP_CACHE_ROOT}" || cleanup_status=$?
-  else
-    echo "Refusing to remove unexpected pip cache root: ${PIP_CACHE_ROOT}" >&2
-    cleanup_status=1
-  fi
-  rm -rf -- "${STAGE_ROOT}" || cleanup_status=$?
-  return "${cleanup_status}"
+  # The staged tree contains the exact pre-release source, unit files, task
+  # cutover backup, and previous virtual-environment references. Keep it until
+  # post-release business validation is complete; cleanup is a separate,
+  # bounded administrative operation.
+  echo "release_recovery_bundle=${STAGE_ROOT} retention=pending_business_validation"
 }
 
 backup_managed_sources() {
@@ -413,6 +439,39 @@ backup_managed_sources() {
   done
 }
 
+retire_legacy_finance_etl() {
+  local target retired_path="${BACKUP_DIR}/retired/finance_reconciliation"
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    [[ "${target}" == "agent" ]] || continue
+    [[ "${LEGACY_FINANCE_ETL_ROOT}" == "/home/boyce/agent/finance_reconciliation" ]] || {
+      echo "Refusing unexpected legacy finance ETL path: ${LEGACY_FINANCE_ETL_ROOT}" >&2
+      return 1
+    }
+    [[ -e "${LEGACY_FINANCE_ETL_ROOT}" ]] || return 0
+    [[ ! -e "${retired_path}" ]] || {
+      echo "Legacy finance ETL rollback path already exists: ${retired_path}" >&2
+      return 1
+    }
+    mkdir -p "$(dirname "${retired_path}")"
+    mv -- "${LEGACY_FINANCE_ETL_ROOT}" "${retired_path}"
+    return 0
+  done
+}
+
+restore_legacy_finance_etl() {
+  local retired_path="${BACKUP_DIR}/retired/finance_reconciliation"
+  [[ -e "${retired_path}" ]] || return 0
+  [[ "${LEGACY_FINANCE_ETL_ROOT}" == "/home/boyce/agent/finance_reconciliation" ]] || {
+    echo "Refusing unexpected legacy finance ETL restore path: ${LEGACY_FINANCE_ETL_ROOT}" >&2
+    return 1
+  }
+  [[ ! -e "${LEGACY_FINANCE_ETL_ROOT}" ]] || {
+    echo "Refusing to overwrite legacy finance ETL during rollback" >&2
+    return 1
+  }
+  mv -- "${retired_path}" "${LEGACY_FINANCE_ETL_ROOT}"
+}
+
 run_static_preflight() {
   local target runtime_python shared_python=""
   for target in "${REQUESTED_TARGETS[@]}"; do
@@ -451,6 +510,65 @@ apply_migrations() {
     migration_python="${RELEASE_VENV}/bin/python"
   fi
   MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${migration_python}" "${runner}"
+}
+
+capture_control_plane_task_cutover_state() {
+  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
+  local migration_python="${PYTHON_BINS[agent]}"
+  local status
+  if [[ ! -d "${STAGE_ROOT}/agent/migrations" ]]; then
+    CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
+    return 0
+  fi
+  [[ -f "${runner}" ]] || {
+    echo "Missing staged migration runner for control-plane task state check" >&2
+    return 1
+  }
+  if [[ -n "${RELEASE_VENV}" && -x "${RELEASE_VENV}/bin/python" ]]; then
+    migration_python="${RELEASE_VENV}/bin/python"
+  fi
+  [[ -x "${migration_python}" ]] || {
+    echo "Missing Python runtime for control-plane task state check" >&2
+    return 1
+  }
+  status="$(
+    MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
+      --control-plane-task-cutover-status
+  )" || return 1
+  case "${status}" in
+    control_plane_task_cutover_status=pending_clean)
+      CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=1
+      ;;
+    control_plane_task_cutover_status=applied)
+      CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
+      ;;
+    control_plane_task_cutover_status=pending_dirty)
+      echo "A previous migration 014 attempt left unrecovered scheduler backup data" >&2
+      return 1
+      ;;
+    *)
+      echo "Unexpected control-plane task migration state response" >&2
+      return 1
+      ;;
+  esac
+}
+
+restore_control_plane_task_cutover_data() {
+  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
+  local migration_python="${PYTHON_BINS[agent]}"
+  [[ -f "${runner}" ]] || {
+    echo "Missing staged migration runner for control-plane task rollback" >&2
+    return 1
+  }
+  if [[ -n "${RELEASE_VENV}" && -x "${RELEASE_VENV}/bin/python" ]]; then
+    migration_python="${RELEASE_VENV}/bin/python"
+  fi
+  [[ -x "${migration_python}" ]] || {
+    echo "Missing Python runtime for control-plane task rollback" >&2
+    return 1
+  }
+  MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
+    --restore-control-plane-task-cutover
 }
 
 sync_scope() {
@@ -500,7 +618,7 @@ restart_services() {
   [[ "${SKIP_RESTART}" == "1" ]] && return 0
   local target service
   local -a restart_targets=("${REQUESTED_TARGETS[@]}")
-  if [[ "${VENV_ACTIVATED}" == "1" ]]; then
+  if [[ "${VENV_ACTIVATED}" == "1" || "${SERVICES_QUIESCED}" == "1" ]]; then
     restart_targets=("${RUNTIME_TARGETS[@]}")
   fi
   for target in "${restart_targets[@]}"; do
@@ -516,11 +634,47 @@ restart_services() {
   done
 }
 
+stop_runtime_services_for_rollback() {
+  local target service stop_status=0
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    service="${SERVICES[$target]}"
+    sudo systemctl stop "${service}" || \
+      echo "Rollback stop command failed for ${service}; checking final state" >&2
+  done
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    service="${SERVICES[$target]}"
+    if systemctl is-active --quiet "${service}"; then
+      echo "Rollback cannot continue while ${service} remains active" >&2
+      stop_status=1
+    fi
+  done
+  return "${stop_status}"
+}
+
+restart_runtime_services_for_rollback() {
+  local target service restart_status=0
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    service="${SERVICES[$target]}"
+    if ! sudo systemctl restart "${service}"; then
+      echo "Rollback restart failed for ${service}" >&2
+      restart_status=1
+    fi
+  done
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    service="${SERVICES[$target]}"
+    if ! systemctl is-active --quiet "${service}"; then
+      echo "Rollback verification found ${service} inactive" >&2
+      restart_status=1
+    fi
+  done
+  return "${restart_status}"
+}
+
 check_health() {
   [[ "${SKIP_HEALTH}" == "1" ]] && return 0
   local target attempt body healthy
   local -a health_targets=("${REQUESTED_TARGETS[@]}")
-  if [[ "${VENV_ACTIVATED}" == "1" ]]; then
+  if [[ "${VENV_ACTIVATED}" == "1" || "${SERVICES_QUIESCED}" == "1" ]]; then
     health_targets=("${RUNTIME_TARGETS[@]}")
   fi
   for target in "${health_targets[@]}"; do
@@ -556,91 +710,242 @@ PY
   done
 }
 
+check_service_identity_smoke() {
+  local console_python="${PYTHON_BINS[console]}"
+  [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
+    echo "service_identity_smoke=failed reason=runtime_unavailable" >&2
+    return 1
+  }
+
+  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
+    BOYI_DEPLOYED_ROOT="/home/boyce" \
+    "${console_python}" - <<'PY'
+import json
+import os
+import secrets
+import sys
+from urllib.request import Request, urlopen
+
+from dotenv import dotenv_values
+
+sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+from shared.service_identity import (
+    build_console_identity_headers,
+    validate_service_identity_secrets,
+)
+
+
+try:
+    values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
+    internal_token = str(values.get("AGENT_INTERNAL_API_TOKEN") or "")
+    signing_secret = str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or "")
+    validate_service_identity_secrets(
+        internal_api_token=internal_token,
+        console_signing_secret=signing_secret,
+    )
+    request_target = "/internal/v1/health"
+    headers = build_console_identity_headers(
+        secret=signing_secret,
+        method="GET",
+        request_target=request_target,
+        body=b"",
+        principal={
+            "actor_type": "console_admin",
+            "actor_id": "release-identity-probe",
+            "roles": ["admin"],
+            "display_name": "Release identity probe",
+            "authenticated_by": "mysql_admin_session",
+        },
+        nonce=secrets.token_urlsafe(24),
+    )
+    headers["X-Agent-Internal-Token"] = internal_token
+    request = Request(
+        f"http://127.0.0.1:9000{request_target}",
+        headers=headers,
+        method="GET",
+    )
+    with urlopen(request, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if response.status != 200 or payload.get("ok") is not True:
+        raise RuntimeError("signed health probe was rejected")
+except Exception:
+    print("service_identity_smoke=failed reason=signed_probe_rejected", file=sys.stderr)
+    raise SystemExit(1)
+print("service_identity_smoke=ok")
+PY
+}
+
+restore_managed_release_state() {
+  local restore_status=0
+  local scope root new_manifest backup_scope relative target
+
+  restore_legacy_finance_etl || {
+    echo "Failed to restore legacy finance ETL rollback data" >&2
+    restore_status=1
+  }
+  for scope in "${SCOPES[@]}"; do
+    root="${ROOTS[$scope]}"
+    new_manifest="${STAGE_ROOT}/_manifests/${scope}.txt"
+    backup_scope="${BACKUP_TREE}/${scope}"
+    if [[ ! -f "${new_manifest}" ]]; then
+      echo "Missing rollback manifest for ${scope}" >&2
+      restore_status=1
+      continue
+    fi
+    while IFS= read -r relative || [[ -n "${relative}" ]]; do
+      if ! safe_relative_path "${relative}"; then
+        echo "Unsafe rollback manifest path in ${scope}: ${relative}" >&2
+        restore_status=1
+        continue
+      fi
+      rm -f -- "${root}/${relative}" || restore_status=1
+    done <"${new_manifest}"
+    if [[ -d "${backup_scope}" ]]; then
+      mkdir -p "${root}" || restore_status=1
+      cp -a "${backup_scope}/." "${root}/" || restore_status=1
+    fi
+    if [[ -f "${BACKUP_DIR}/${scope}.manifest" ]]; then
+      cp -a "${BACKUP_DIR}/${scope}.manifest" "${root}/.deploy-source-manifest" || \
+        restore_status=1
+    elif [[ -f "${BACKUP_DIR}/${scope}.manifest.absent" ]]; then
+      rm -f -- "${root}/.deploy-source-manifest" || restore_status=1
+    else
+      echo "Missing previous deployment manifest state for ${scope}" >&2
+      restore_status=1
+    fi
+  done
+
+  if [[ -f "${BACKUP_DIR}/release_sha" ]]; then
+    mkdir -p "${ROOTS[agent]}/runtime" || restore_status=1
+    cp -a "${BACKUP_DIR}/release_sha" "${ROOTS[agent]}/runtime/release_sha" || \
+      restore_status=1
+  elif [[ -f "${BACKUP_DIR}/release_sha.absent" ]]; then
+    rm -f -- "${ROOTS[agent]}/runtime/release_sha" || restore_status=1
+  else
+    echo "Missing previous release SHA state" >&2
+    restore_status=1
+  fi
+
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    if [[ ! -f "${BACKUP_DIR}/${target}.service" ]]; then
+      echo "Missing rollback unit for ${target}" >&2
+      restore_status=1
+      continue
+    fi
+    sudo install -m 0644 "${BACKUP_DIR}/${target}.service" "${UNIT_PATHS[$target]}" || \
+      restore_status=1
+  done
+  sudo systemctl daemon-reload || restore_status=1
+  return "${restore_status}"
+}
+
 rollback() {
   local exit_code=$?
   local failed_command="${BASH_COMMAND}"
   local failed_line="${BASH_LINENO[0]:-unknown}"
+  local rollback_status=0
+  local services_stopped=1
   trap - ERR
   set +e
+  [[ "${exit_code}" -ne 0 ]] || exit_code=1
   echo "release_error stage=${RELEASE_STAGE} line=${failed_line} command=${failed_command}" >&2
   if [[ "${MUTATION_STARTED}" == "1" ]]; then
-    echo "Release failed; restoring managed source backup" >&2
-    if [[ "${VENV_ACTIVATED}" == "1" ]]; then
-      local stopped_target
-      for stopped_target in "${RUNTIME_TARGETS[@]}"; do
-        sudo systemctl stop "${SERVICES[$stopped_target]}"
-      done
-      restore_virtualenvs
+    echo "Release failed; stopping both runtime services before rollback" >&2
+    if ! stop_runtime_services_for_rollback; then
+      rollback_status=1
+      services_stopped=0
     fi
-    local scope root new_manifest backup_scope relative
-    for scope in "${SCOPES[@]}"; do
-      root="${ROOTS[$scope]}"
-      new_manifest="${STAGE_ROOT}/_manifests/${scope}.txt"
-      backup_scope="${BACKUP_TREE}/${scope}"
-      while IFS= read -r relative || [[ -n "${relative}" ]]; do
-        safe_relative_path "${relative}" && rm -f -- "${root}/${relative}"
-      done <"${new_manifest}"
-      if [[ -d "${backup_scope}" ]]; then
-        cp -a "${backup_scope}/." "${root}/"
+    if [[ "${services_stopped}" == "1" ]]; then
+      echo "Restoring managed release state" >&2
+      if [[ "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1" ]]; then
+        restore_control_plane_task_cutover_data || rollback_status=1
       fi
-      if [[ -f "${BACKUP_DIR}/${scope}.manifest" ]]; then
-        cp -a "${BACKUP_DIR}/${scope}.manifest" "${root}/.deploy-source-manifest"
-      else
-        rm -f -- "${root}/.deploy-source-manifest"
+      if [[ "${VENV_ACTIVATED}" == "1" ]] && ! restore_virtualenvs; then
+        rollback_status=1
       fi
-    done
-    if [[ -f "${BACKUP_DIR}/release_sha" ]]; then
-      mkdir -p "/home/boyce/agent/runtime"
-      cp -a "${BACKUP_DIR}/release_sha" "/home/boyce/agent/runtime/release_sha"
+      restore_managed_release_state || rollback_status=1
+      verify_runtime_virtualenvs || rollback_status=1
+      restart_runtime_services_for_rollback || rollback_status=1
     else
-      rm -f -- "/home/boyce/agent/runtime/release_sha"
+      echo "Rollback restore skipped because a runtime service could not be stopped" >&2
     fi
-    local target
-    for target in "${REQUESTED_TARGETS[@]}"; do
-      sudo install -m 0644 "${BACKUP_DIR}/${target}.service" "${UNIT_PATHS[$target]}"
-    done
-    sudo systemctl daemon-reload
-    restart_services
+
+    if [[ "${rollback_status}" != "0" ]]; then
+      echo "rollback_incomplete stage_root=${STAGE_ROOT} recovery_material_preserved=1" >&2
+      exit "${exit_code:-1}"
+    fi
+
+    if ! remove_new_virtualenvs; then
+      echo "rollback_incomplete stage_root=${STAGE_ROOT} recovery_material_preserved=1" >&2
+      exit "${exit_code:-1}"
+    fi
+    rm -rf -- "${STAGE_ROOT}" || {
+      echo "rollback_incomplete stage_root=${STAGE_ROOT} recovery_material_preserved=1" >&2
+      exit "${exit_code:-1}"
+    }
+  else
+    if ! remove_new_virtualenvs; then
+      echo "release_cleanup_incomplete stage_root=${STAGE_ROOT}" >&2
+      exit "${exit_code:-1}"
+    fi
+    rm -rf -- "${STAGE_ROOT}" || {
+      echo "release_cleanup_incomplete stage_root=${STAGE_ROOT}" >&2
+      exit "${exit_code:-1}"
+    }
   fi
-  remove_new_virtualenvs
-  rm -rf -- "${STAGE_ROOT}"
   exit "${exit_code}"
 }
 
-trap rollback ERR
-RELEASE_STAGE="validate_environment"
-validate_environment
-RELEASE_STAGE="backup_managed_sources"
-mkdir -p "${BACKUP_DIR}"
-backup_managed_sources
-RELEASE_STAGE="static_preflight"
-run_static_preflight
-RELEASE_STAGE="build_release_virtualenvs"
-build_release_virtualenvs
+run_release() {
+  trap rollback ERR
+  RELEASE_STAGE="validate_environment"
+  validate_environment
+  RELEASE_STAGE="preflight_service_identity_configuration"
+  preflight_service_identity_configuration
+  RELEASE_STAGE="backup_managed_sources"
+  mkdir -p "${BACKUP_DIR}"
+  backup_managed_sources
+  RELEASE_STAGE="static_preflight"
+  run_static_preflight
+  RELEASE_STAGE="build_release_virtualenvs"
+  build_release_virtualenvs
 
-MUTATION_STARTED=1
-for scope in "${SCOPES[@]}"; do
-  RELEASE_STAGE="sync_scope:${scope}"
-  sync_scope "${scope}"
-done
-RELEASE_STAGE="apply_migrations"
-apply_migrations
-RELEASE_STAGE="install_service_units"
-install_service_units
-RELEASE_STAGE="activate_release_virtualenvs"
-activate_release_virtualenvs
-RELEASE_STAGE="write_release_sha"
-mkdir -p "/home/boyce/agent/runtime"
-printf '%s\n' "${RELEASE_SHA}" >"/home/boyce/agent/runtime/release_sha"
-RELEASE_STAGE="restart_services"
-restart_services
-RELEASE_STAGE="check_health"
-check_health
-RELEASE_STAGE="record_dependency_hashes"
-record_active_dependency_hashes
+  MUTATION_STARTED=1
+  RELEASE_STAGE="quiesce_runtime_services"
+  quiesce_runtime_services
+  RELEASE_STAGE="retire_legacy_finance_etl"
+  retire_legacy_finance_etl
+  for scope in "${SCOPES[@]}"; do
+    RELEASE_STAGE="sync_scope:${scope}"
+    sync_scope "${scope}"
+  done
+  RELEASE_STAGE="capture_control_plane_task_cutover_state"
+  capture_control_plane_task_cutover_state
+  RELEASE_STAGE="apply_migrations"
+  apply_migrations
+  RELEASE_STAGE="install_service_units"
+  install_service_units
+  RELEASE_STAGE="activate_release_virtualenvs"
+  activate_release_virtualenvs
+  RELEASE_STAGE="write_release_sha"
+  mkdir -p "${ROOTS[agent]}/runtime"
+  printf '%s\n' "${RELEASE_SHA}" >"${ROOTS[agent]}/runtime/release_sha"
+  RELEASE_STAGE="restart_services"
+  restart_services
+  RELEASE_STAGE="check_health"
+  check_health
+  RELEASE_STAGE="check_service_identity_smoke"
+  check_service_identity_smoke
+  RELEASE_STAGE="record_dependency_hashes"
+  record_active_dependency_hashes
 
-MUTATION_STARTED=0
-trap - ERR
-RELEASE_STAGE="cleanup_successful_release"
-cleanup_successful_release
-echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"
+  MUTATION_STARTED=0
+  trap - ERR
+  RELEASE_STAGE="cleanup_successful_release"
+  cleanup_successful_release
+  echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  run_release
+fi

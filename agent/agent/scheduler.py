@@ -6,6 +6,7 @@ import copy
 import logging
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -13,6 +14,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from agent.orchestration.models import Actor, ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+from shared.finance.sources import enabled_finance_platforms
 
 
 logger = logging.getLogger("agent")
@@ -23,6 +25,17 @@ CUSTOMER_PROBLEM_SHADOW_TASK_ID = "customer_problems_shadow"
 LOCKED_CONTROL_PLANE_TASK_IDS = frozenset(
     {FINANCE_SCHEDULE_TASK_ID, CUSTOMER_PROBLEM_SHADOW_TASK_ID}
 )
+
+
+def _enabled_finance_platform_filter() -> dict[str, str]:
+    """Narrow scheduled calls when exactly one production platform is live."""
+
+    platforms = enabled_finance_platforms()
+    if not platforms:
+        raise RuntimeError("没有已上线的财务来源，不能调度财务同步")
+    if len(platforms) == 1:
+        return {"platform": platforms[0]}
+    return {}
 
 
 def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime | None:
@@ -99,13 +112,26 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
     """Perform the bounded startup gap scan through the same control plane."""
 
     async def startup_catchup() -> None:
-        scheduled_for = datetime.now().astimezone()
+        # Use one stable logical occurrence per business day.  Repeated service
+        # restarts therefore reuse the same Command/Run instead of starting a
+        # second finance scan for an arbitrary wall-clock timestamp.
+        scheduled_for = datetime.now(ZoneInfo("Asia/Shanghai")).replace(
+            hour=0,
+            minute=10,
+            second=0,
+            microsecond=0,
+        )
         try:
             result = await _execute_scheduled_tool(
                 agent_core,
                 task_id="finance_startup_catchup",
                 tool_name="sync_finance_bills",
-                arguments={"mode": "sync", "rescan_days": 7},
+                arguments={
+                    "mode": "sync",
+                    "rescan_days": 7,
+                    "_startup_catchup": True,
+                    **_enabled_finance_platform_filter(),
+                },
                 scheduled_for=scheduled_for,
                 cron_expression="@startup",
             )
@@ -175,6 +201,8 @@ def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, ag
                 raise RuntimeError("Unable to determine a stable scheduled fire time")
             arguments = copy.deepcopy(tp or {})
             if tn == "sync_finance_bills":
+                for key, value in _enabled_finance_platform_filter().items():
+                    arguments.setdefault(key, value)
                 arguments["target_date"] = (
                     scheduled_for.date() - timedelta(days=1)
                 ).isoformat()

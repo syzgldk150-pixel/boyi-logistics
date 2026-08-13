@@ -115,6 +115,8 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - Console 接口为 `/finance/summary|trend|entries|fee-mappings|sync-batches`、`POST /finance/sync|backfill`、`POST /finance/fee-mappings/{id}`、`POST /finance/sync-batches/{id}/retry`；同步、回填和重试都必须先校验真实 MySQL 管理员会话与同源请求，再用浏览器 UUID 和签名 principal 向 `/internal/v1/commands` 提交 `sync_finance_bills`，返回 HTTP 202 Run 回执且不得同步等待结果。手工财务同步属于高风险计划，必须在事项中心由 `super_admin` 审批；不接收或透传账号密码、Cookie、Token、登录态等字段。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。
+  - 当前生产只展示和调度共享来源注册表中启用的融辉三个财务角色；韵达财务适配器保持禁用。逐笔汇总、平台汇总与 signed-net 不一致必须显式失败，不能补零或继续发布。
+  - 财务自进化分析只消费控制平面 Run 完成事件和共享账本，不得在 Console 或旧 `execute_tool()` 路径重复执行；全局 LLM 设置、模型测试与 reload 入口继续保留并走签名管理员 API。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`
@@ -139,7 +141,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 为避免第三方活动 HTML/JavaScript 继承 Console 管理员同源权限，`/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 对 GET/POST/PUT/PATCH/DELETE 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且必须在 Console 本地结束、不得调用 Agent。只有迁移到独立来源并完成复核后才可重新开放。
 - 手工录单提交到 `/waybills/manual`，成功后写入 `waybills`；默认自动打印仍跳转 `/waybills/{id}/print?autoprint=1`，frame 内保存失败或不打印时可通过 `return_to=/ocr/boyi/frame` 留在本 frame。
 - 手工录单页右侧地图下方保留“成本比价”只读能力；Console `POST /waybills/quote-options` 仍只展示真实返回金额并比较，但韵达/融辉原页预填按钮固定禁用，不写预填存储、不创建第三方页签。
-- 已开单寄件运单查询页为 `/waybills`，查询本后台 `waybills` 表中已经落库的 OCR/手工运单，以及自动化同步写入的融辉/韵达寄件运单；页面空筛选默认不展示全表，输入运单号/关键字、日期、状态、来源、结算方式或派送方式后才显示结果；带开单日期范围查询时会先刷新融辉/韵达本地 SQL 快照，日期范围最多 31 天，来源筛选为 `ronghui`/`yunda` 时只刷新对应平台，关键词无日期不远程拉历史；单票物流轨迹仍从 `/tracking` 查询。`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存同步来源明确返回的当前扫描状态并在页面显示简写；页面“作废运单”只写 `cancelled`，Agent 后续同步不得覆盖该状态。
+- 已开单寄件运单查询页为 `/waybills`，GET 严格只读本地 `waybills` 表，不得因筛选条件暗中刷新第三方数据；外部刷新必须由管理员在自动化页显式提交 Command。页面空筛选默认不展示全表，单票物流轨迹仍从 `/tracking` 查询。`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存同步来源明确返回的当前扫描状态；页面“作废运单”只写 `cancelled`，Agent 后续同步不得覆盖该状态。
 - 统一回单管理页为 `/receipts`，读取本后台 `receipt_records` 和 `receipt_attachments`；查询与审核只提交控制平面计划并显示 202 Run 回执，审批、执行、证据与结果在事项中心查看。页面不加载活动原页 iframe，回单原页前缀所有方法统一返回 410；本地照片预览、证据和控制平面审核继续可用。
 - 手工单号由 `waybill_sequences` 全局递增生成，格式为 8 位数字（从 `00000001` 开始）。
 - 手工工作台右侧为高德地图定位区，收件地址失焦或回车后自动搜索定位；地图卡片下方只保留一个起始地址搜索输入框，不显示定位状态、匹配地址或起始地基础行程预估；手工录单表单分开发货信息和收货信息，不再显示外层“客户信息”标题；顶部“地址解析”弹窗只在浏览器本地解析姓名/电话/地址并填入收货人、收货电话、收件地址，不调用外部接口、不自动保存；打印机设置收纳到顶部按钮弹层，本地打印机选项通过浏览器 `localStorage` 保存偏好，保存后的打印页直接调用本机 C-Lodop 服务，不做浏览器打印兜底。手工录单页和独立打印页统一使用 `static/js/clodop_loader.js`：优先按 C-Lodop 6.644 官方方案从本机 `8000/18000` 端口通过 WebSocket 加载主脚本，仅在 WebSocket 不可用时按页面协议尝试 HTTP/HTTPS 脚本地址；禁止在两个模板中复制加载器或恢复为只依赖 `8443` SSL 证书的旧实现。

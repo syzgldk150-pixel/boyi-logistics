@@ -1102,10 +1102,34 @@ def format_scan_sync_reply(result: dict[str, Any]) -> str:
     payload = result.get("data")
     if not isinstance(payload, dict):
         return f"扫描任务：{payload}"
+    batch_results = payload.get("batch_results")
+    failed_batches = []
+    if isinstance(batch_results, list):
+        failed_batches = [
+            row for row in batch_results
+            if isinstance(row, dict) and not row.get("ok")
+        ]
     if payload.get("error"):
-        return f"扫描任务失败：{payload['error']}"
+        lines = [f"扫描任务失败：{payload['error']}"]
+        failed_batch = payload.get("failed_batch")
+        if failed_batch not in (None, ""):
+            lines.append(f"停止批次：第 {failed_batch} 批")
+        for row in failed_batches[:5]:
+            lines.append(
+                f"- 第 {row.get('batch', '?')} 批："
+                f"{_scan_sync_batch_error(row.get('raw'))[:120]}"
+            )
+        return "\n".join(lines)
+    if failed_batches:
+        lines = [f"扫描任务失败：检测到 {len(failed_batches)} 个失败批次"]
+        for row in failed_batches[:5]:
+            lines.append(
+                f"- 第 {row.get('batch', '?')} 批："
+                f"{_scan_sync_batch_error(row.get('raw'))[:120]}"
+            )
+        return "\n".join(lines)
 
-    lines = ["扫描任务已完成"]
+    lines = ["扫描任务按计划完成" if payload.get("truncated") else "扫描任务已完成"]
     for label, key in (
         ("拉取扫描记录", "fetched"),
         ("刷新扫描索引", "normalized"),
@@ -1120,23 +1144,12 @@ def format_scan_sync_reply(result: dict[str, Any]) -> str:
     if isinstance(scan_index_result, dict) and scan_index_result.get("replaced") is not None:
         lines.append(f"索引写入：{scan_index_result.get('replaced')}")
 
-    batch_results = payload.get("batch_results")
     if isinstance(batch_results, list):
-        failed_batches = [
-            row for row in batch_results
-            if isinstance(row, dict) and not row.get("ok")
-        ]
-        if failed_batches:
-            lines.append(f"失败批次：{len(failed_batches)}/{len(batch_results)}")
-            for row in failed_batches[:5]:
-                raw = row.get("raw") if isinstance(row, dict) else {}
-                if isinstance(raw, dict):
-                    error_text = _scan_sync_batch_error(raw)
-                else:
-                    error_text = str(raw or "未知错误").strip()
-                lines.append(f"- 第 {row.get('batch', '?')} 批：{error_text[:120]}")
-        else:
-            lines.append("scan_next 结果：全部成功")
+        lines.append("scan_next 结果：全部成功")
+
+    omitted_items = payload.get("omitted_items")
+    if omitted_items not in (None, "", 0):
+        lines.append(f"未排入本次扫描：{omitted_items}")
 
     skipped_signed_count = payload.get("skipped_signed_count")
     if skipped_signed_count not in (None, "", 0):

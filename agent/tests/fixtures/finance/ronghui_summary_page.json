@@ -1,0 +1,17 @@
+{
+  "total": 2,
+  "rows": [
+    {
+      "CENTER_NAME": "Fixture Finance Center",
+      "SITE_NAME": "Fixture Site",
+      "BALANCE_TYPE": "收干线费",
+      "BALANCE_CUR_MONEY": "-12.30"
+    },
+    {
+      "CENTER_NAME": "Fixture Finance Center",
+      "SITE_NAME": "Fixture Site",
+      "BALANCE_TYPE": "收操作费",
+      "BALANCE_CUR_MONEY": "-0.50"
+    }
+  ]
+}
