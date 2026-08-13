@@ -1,6 +1,7 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
 from _tms_runtime_test_support import *  # noqa: F403
+from tools import daily_sign_store
 
 
 class ArrivalStatsToolTests(unittest.TestCase):
@@ -22,14 +23,29 @@ class ArrivalStatsToolTests(unittest.TestCase):
             "tools.delivery_status_sync_tool.update_console_waybill_statuses",
             return_value={"ok": True, "updated": 0, "status": "signed"},
         )
+        self.completed_arrivals_patch = patch(
+            "tools.arrival_stats_sync_tool.load_completed_arrival_trackings_before",
+            return_value=(
+                set(),
+                {
+                    "ok": True,
+                    "source": "arrival_stat_active_snapshots",
+                    "target_date": "2026-08-13",
+                    "prior_successful_dates": 0,
+                    "completed_tracking_numbers": 0,
+                },
+            ),
+        )
         self.internal_token_patch.start()
         self.send_order_sql_mock = self.send_order_sql_patch.start()
         self.addCleanup(self.internal_token_patch.stop)
         self.yunda_send_sql_mock = self.yunda_send_sql_patch.start()
         self.delivery_status_sql_mock = self.delivery_status_sql_patch.start()
+        self.completed_arrivals_mock = self.completed_arrivals_patch.start()
         self.addCleanup(self.send_order_sql_patch.stop)
         self.addCleanup(self.yunda_send_sql_patch.stop)
         self.addCleanup(self.delivery_status_sql_patch.stop)
+        self.addCleanup(self.completed_arrivals_patch.stop)
 
     def test_pre_arrive_site_code_falls_back_to_default(self):
         session = _DummySession(_DummyResponse(status_code=200, text="<html></html>"))
@@ -263,6 +279,188 @@ class ArrivalStatsToolTests(unittest.TestCase):
         self.assertEqual(2, result["main_trackings"])
         self.assertEqual(3, result["accumulated_main_trackings"])
 
+    def test_arrival_stats_filters_prior_complete_arrive_only_but_keeps_current_rescan(self):
+        arrive_records = [
+            {
+                "tracking_number": "R00021000001",
+                "goods_name": "历史已到齐且当天未扫",
+                "quantity": 2,
+                "destination_station": "邵阳",
+            },
+            {
+                "tracking_number": "R00021000002",
+                "goods_name": "历史已到齐但当天重扫",
+                "quantity": 2,
+                "destination_station": "邵阳",
+            },
+            {
+                "tracking_number": "R00021000003",
+                "goods_name": "历史未到齐",
+                "quantity": 3,
+                "destination_station": "邵阳",
+            },
+            {
+                "tracking_number": "R00021000005",
+                "goods_name": "历史到货为零且当天未扫",
+                "quantity": 4,
+                "destination_station": "邵阳",
+            },
+        ]
+        current_scan_rows = [
+            {"raw_code": "R000210000020002", "destination": "邵阳", "code_type": "child"},
+            {"raw_code": "R000210000040001", "destination": "邵阳", "code_type": "child"},
+        ]
+        accumulated_scan_rows = [
+            {"raw_code": "R000210000020001", "destination": "邵阳", "code_type": "child"},
+            {"raw_code": "R000210000030001", "destination": "邵阳", "code_type": "child"},
+            *current_scan_rows,
+        ]
+        fetched_records = [
+            {
+                "tracking_number": "R00021000004",
+                "goods_name": "仅当天扫描",
+                "quantity": 1,
+                "destination_station": "邵阳",
+            }
+        ]
+        written_values = []
+
+        def fake_write_stats(resource_key, values, params):
+            written_values.append(values)
+            return {"ok": True, "rows": len(values)}
+
+        history_result = {
+            "ok": True,
+            "source": "arrival_stat_active_snapshots",
+            "target_date": "2026-08-13",
+            "prior_successful_dates": 1,
+            "completed_tracking_numbers": 2,
+        }
+        with (
+            patch(
+                "tools.arrival_stats_sync_tool.fetch_arrive_list_records",
+                return_value=(arrive_records, {"ok": True, "source": "fetch_dispatch", "bill_codes": 4}),
+            ),
+            patch("tools.arrival_stats_sync_tool._refresh_scan_index", return_value=(current_scan_rows, {"ok": True})),
+            patch("tools.arrival_stats_sync_tool.list_scan_codes", return_value=accumulated_scan_rows),
+            patch(
+                "tools.arrival_stats_sync_tool.load_completed_arrival_trackings_before",
+                return_value=({"R00021000001", "R00021000002"}, history_result),
+            ),
+            patch(
+                "tools.arrival_stats_sync_tool._fetch_waybill_details",
+                return_value=(fetched_records, {"ok": True, "requested": 1, "fetched": 1}),
+            ),
+            patch("tools.arrival_stats_sync_tool._write_stats_sheet", side_effect=fake_write_stats),
+        ):
+            result = arrival_stats_sync_tool.run_arrival_stats_sync(
+                {
+                    "target_date": "2026-08-13",
+                    "dry_run": True,
+                    "archive_snapshot": False,
+                    "pending_sheet_disabled": True,
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        rows_by_tracking = {row[0]: row for row in written_values[0][1:]}
+        self.assertEqual(
+            {"R00021000002", "R00021000003", "R00021000004", "R00021000005"},
+            set(rows_by_tracking),
+        )
+        self.assertNotIn("R00021000001", rows_by_tracking)
+        self.assertEqual(2, rows_by_tracking["R00021000002"][-1])
+        self.assertEqual(1, rows_by_tracking["R00021000003"][-1])
+        self.assertEqual(1, rows_by_tracking["R00021000004"][-1])
+        self.assertEqual(0, rows_by_tracking["R00021000005"][-1])
+        self.assertEqual(
+            {
+                **history_result,
+                "arrive_list_input": 4,
+                "matched_historical_completed": 2,
+                "filtered_arrive_only": 1,
+                "preserved_current_scan": 1,
+                "arrive_list_output": 3,
+            },
+            result["historical_filter_result"],
+        )
+
+    def test_historical_completed_query_uses_only_prior_active_success_snapshots(self):
+        class FakeCursor:
+            def __init__(self):
+                self.queries = []
+                self.fetchone_calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def execute(self, query, params):
+                self.queries.append((query, params))
+
+            def fetchone(self):
+                self.fetchone_calls += 1
+                return {"prior_successful_dates": 2}
+
+            def fetchall(self):
+                return [
+                    {"tracking_number": "R00021000001"},
+                    {"tracking_number": " R00021000002 "},
+                    {"tracking_number": ""},
+                ]
+
+        class FakeConnection:
+            def __init__(self):
+                self.fake_cursor = FakeCursor()
+                self.closed = False
+
+            def cursor(self):
+                return self.fake_cursor
+
+            def close(self):
+                self.closed = True
+
+        connection = FakeConnection()
+        with (
+            patch("tools.daily_sign_store.ensure_daily_sign_tables"),
+            patch("tools.daily_sign_store._connect", return_value=connection),
+        ):
+            completed, summary = daily_sign_store.load_completed_arrival_trackings_before(date(2026, 8, 13))
+
+        self.assertEqual({"R00021000001", "R00021000002"}, completed)
+        self.assertEqual(2, summary["prior_successful_dates"])
+        self.assertEqual(2, summary["completed_tracking_numbers"])
+        self.assertTrue(connection.closed)
+        self.assertEqual(2, len(connection.fake_cursor.queries))
+        run_query, run_params = connection.fake_cursor.queries[0]
+        self.assertIn("status = 'success'", run_query)
+        self.assertIn("is_active = TRUE", run_query)
+        self.assertIn("business_date < %s", run_query)
+        self.assertEqual((date(2026, 8, 13),), run_params)
+        completion_query, completion_params = connection.fake_cursor.queries[1]
+        self.assertIn("status = 'success'", completion_query)
+        self.assertIn("is_active = TRUE", completion_query)
+        self.assertIn("business_date < %s", completion_query)
+        self.assertIn("MAX(latest_r.business_date)", completion_query)
+        self.assertIn("GROUP BY latest_i.tracking_number", completion_query)
+        self.assertIn("i.expected_quantity > 0", completion_query)
+        self.assertEqual((date(2026, 8, 13), date(2026, 8, 13)), completion_params)
+        self.assertIn("arrived_quantity >= i.expected_quantity", completion_query)
+
+    def test_historical_completed_lookup_failure_is_not_silently_ignored(self):
+        with patch(
+            "tools.arrival_stats_sync_tool.load_completed_arrival_trackings_before",
+            side_effect=RuntimeError("historical snapshot unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "historical snapshot unavailable"):
+                arrival_stats_sync_tool._filter_historical_completed_arrive_records(
+                    [{"tracking_number": "R00021000001"}],
+                    set(),
+                    date(2026, 8, 13),
+                )
+
     def test_arrival_stats_rejects_historical_scan_only_mode(self):
         with patch("tools.arrival_stats_sync_tool.fetch_arrive_list_records") as fetch_arrive_list:
             result = arrival_stats_sync_tool.run_arrival_stats_sync({"refresh_disabled": True})
@@ -377,6 +575,25 @@ class ArrivalStatsToolTests(unittest.TestCase):
         self.assertEqual(11, count_map["R00014371325"])
         self.assertEqual(1, result["arrived_nonzero"])
         self.assertEqual(0, result["quantity_gaps"])
+
+    def test_arrival_stats_caps_accumulated_scan_count_at_opened_quantity(self):
+        scan_rows = [
+            {
+                "raw_code": f"R00014371325{index:04d}",
+                "destination": "邵阳",
+                "code_type": "child",
+            }
+            for index in range(1, 5)
+        ]
+
+        count_map, result = arrival_stats_sync_tool._count_arrivals_from_scan_rows(
+            scan_rows,
+            [{"tracking_number": "R00014371325", "quantity": 2}],
+            ["R00014371325"],
+        )
+
+        self.assertEqual(2, count_map["R00014371325"])
+        self.assertEqual(1, result["quantity_adjustments"])
 
     def test_normalize_scan_rows_emits_main_tracking(self):
         normalized = phase7_mysql_store.normalize_scan_rows(
