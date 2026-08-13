@@ -8,6 +8,7 @@ updated: 2026-08-13
 ---
 
 > 2026-08-13: 融辉发件扫描会把任务所选账号的精确 `session_profile` 同时传给浏览器 storage state 和共享登录校验，避免账号已登录但扫描误用默认会话。写表前等待发件扫描同源 iframe/父页/顶层页的 `$Z.user.getUserInfo()` 就绪，只使用真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`；多个可用来源必须完全一致，不一致时显式报 `ambiguous_login_context`，不从页头文字、用户名或硬编码网点补值。上下文不可用、字段缺失或 `SCAN_MAN_CODE` 超过数据库 20 字节限制时显式失败并返回具体状态。站点必须唯一精确匹配并包含真实编码，录单和上传失败不再切换到第二条操作路径。`sync_scan_codes` 任一批次失败后立即停止、不触发后续流程，并向控制台返回失败而不是“已完成”；`dry_run` 不写扫描索引、不调用 `/scan_next`，显式批次/条数限制会返回未排入数量。
+> 2026-08-13: 融辉图片验证码登录改为直接点击真实登录页的 `newLogin()` 按钮，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调，不再用 requests POST 将重定向误判为完整登录。共享会话会保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 和过期属性，并自动把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，主页、菜单和扫描 API 即使可访问也不得显示 authenticated，必须进入重新登录流程。
 > 2026-08-13: 后台 `/automations` 的“获取并扫描数据”和 `arrive-list` 卡片新增独立“指定日期”控件。日期留空时不写入日期覆盖参数，继续使用各脚本的执行当日；选择日期时按 `target_date=YYYY-MM-DD` 拉取指定单日。扫描同步会在调用融辉 `/get_scan` 前转换为原页使用的 `YYYY/MM/DD` 日期格式，并拒绝同时设置 `target_date` 与高级请求体中的 `date/start/end`，避免日期来源歧义。
 > 2026-08-11: 后台账号列表新增直接可见的账号级“自动登录”开关，所有现有/新增账号缺省关闭。账号管理只把页面明确保存的完整账号密码认作可用凭据，不展示或使用部署环境变量兜底；未保存凭据时不能开启自动登录或发起登录，历史残留的开启状态也会在访问登录页前自动关闭。“退出登录”和“清空保存凭据”都会关闭自动登录；关闭后不再定时校验、自动重登或发送飞书断线提醒。“停用账号”停止任务选择、任务执行与登录监控，但不等同于退出。自动登录连续失败上限为 3 次，第 3 次失败后持久熔断，避免账号被锁。
 > 2026-08-11: 账号列表中系统名下方的灰色账号备注由账号 `name` 提供；“编辑”面板可通过 `/admin/accounts/{account_id}/name` 单独修改并持久化。备注保存只更新 `name/updated_at`，不改凭据、登录态、启停或自动登录设置，也不触发额外的登录态校验。

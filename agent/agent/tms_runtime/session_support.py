@@ -25,6 +25,10 @@ except Exception:  # pragma: no cover - fallback for very old urllib3 builds
 
 from agent.tms_runtime import captcha_ocr, yunda_report
 from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.ronghui_user_context import (
+    RONGHUI_USER_INFO_COOKIE,
+    normalize_ronghui_user_info_storage_state,
+)
 from agent.tms_runtime.session_models import (
     LoginConfig,
     PendingBrowser,
@@ -168,6 +172,39 @@ def _join_origin_path(base_origin: str, path_or_url: str) -> str:
     if value.startswith(("http://", "https://")):
         return value
     return urljoin(base_origin.rstrip("/") + "/", value.lstrip("/"))
+
+
+def _set_requests_cookie_from_storage(session: requests.Session, cookie: dict[str, Any]) -> None:
+    """Copy one Playwright storage cookie into Requests without dropping flags."""
+
+    name = str(cookie.get("name") or "").strip()
+    if not name:
+        return
+    rest: dict[str, Any] = {}
+    if "httpOnly" in cookie:
+        rest["HttpOnly"] = bool(cookie.get("httpOnly"))
+    same_site = str(cookie.get("sameSite") or "").strip()
+    if same_site:
+        rest["SameSite"] = same_site
+
+    expires_raw = cookie.get("expires")
+    expires = None
+    if expires_raw not in (None, "", -1, "-1"):
+        try:
+            expires = int(float(expires_raw))
+        except (TypeError, ValueError):
+            expires = None
+
+    kwargs: dict[str, Any] = {
+        "path": str(cookie.get("path") or "/"),
+        "secure": bool(cookie.get("secure")),
+        "expires": expires,
+        "rest": rest,
+    }
+    domain = str(cookie.get("domain") or "").strip()
+    if domain:
+        kwargs["domain"] = domain
+    session.cookies.set(name, str(cookie.get("value") or ""), **kwargs)
 
 
 
