@@ -26,7 +26,7 @@
   - `delivery_status_sync_tool.py`（查询并更新签收状态；无入参时定时扫描融辉寄件数据表的 `未签收明细` 视图，已签收才写回，并同步更新控制台 `waybills.status=signed`；仍兼容旧 webhook 单号 + record_id 模式）
   - `daily_sign_sync_tool.py`（拉 R13 每日应签列表后，默认按运单号调用 `/query_waybill_detail` 补齐脱敏收件地址，并从到货进度缓存读取同单号到达件数写入普通电子表格 H 列，再覆盖写入飞书多维表和电子表格）
   - `site_send_list_sync_tool.py`
-  - `arrival_stats_sync_tool.py`（统计到货数据；用当天扫描数据补齐派件预报缺失主单，写主/副统计表 + 未齐货物表 + 归档快照，并以本次统计结果自动刷新分批及有发未到表）
+  - `arrival_stats_sync_tool.py`（统计到货数据；每次重新拉取目标日 arrive-list 与目标日到件扫描，以两者并集生成当天主单范围，arrive-list 未扫描单保留为 0，累计扫描索引只负责计算这些主单的累计到货件数；写主/副统计表 + 可选未齐货物表 + 归档快照，并以本次统计结果自动刷新分批及有发未到表；可选未齐货物表未配置或写入失败时只标记跳过，不中断主统计）
   - `split_pending_snapshot.py`（统计与分批工具共享的 A:S 表头校验、未齐分类、MySQL 快照和“分批及有发未到表”覆盖刷新；零候选会清空旧行）
   - `arrive_list_sync_tool.py`（拉 TMS 派件预报基础清单，过滤 `H...` / `HR...` 回单号；写 waybill_data + 主/副到货清单表）
   - `yunda_dispatch_forecast_sync_tool.py`（拉韵达网点派件量预测主单表；默认次日应派时间，按应派时间覆盖指定飞书多维表格）
