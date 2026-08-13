@@ -1121,6 +1121,15 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual([], result)
         self.assertEqual("r13", captured["account_key"])
 
+    def test_get_qianshou_uses_actual_sign_time_or_sign_site_as_sign_evidence(self):
+        self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signTime": "2026-08-11 16:54:54"}))
+        self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signSiteName": "长垣魏庄站"}))
+        self.assertFalse(
+            get_qianshou._has_confirmed_sign_signal(
+                {"dispTime": "2026-08-11 16:54:54", "signTime": "", "signSiteName": ""}
+            )
+        )
+
     def test_registry_removed_trigger_n8n_and_contains_sync_tools(self):
         registry_path = Path(__file__).resolve().parents[1] / "tools" / "registry.yaml"
         registry_text = registry_path.read_text(encoding="utf-8")

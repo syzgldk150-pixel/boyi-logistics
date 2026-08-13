@@ -6,6 +6,8 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any, Callable, Mapping
 
+from shared.finance.models import SummarySemantics
+
 from agent.tms_runtime.scripts.finance_capture_common import (
     CaptureResult,
     FinanceCaptureError,
@@ -14,7 +16,6 @@ from agent.tms_runtime.scripts.finance_capture_common import (
     decimal_extrema,
     filter_target_date,
     paginate_by_source_key,
-    require_row_keys,
     validate_normalized_summaries,
     validate_page_identity,
     whitelist_record,
@@ -52,6 +53,9 @@ RONGHUI_SOURCE_PAYLOAD_FIELDS = (
     "FINANCE_DATE",
     "BALANCE_DATE",
     "BALANCE_TYPE",
+    "BALANCE_PRE_CONFIRM_MONEY",
+    "BALANCE_CUR_MONEY_TEXT",
+    "BALANCE_BACK_CONFIRM_MONEY",
     "CENTER_NAME",
     "SITE_NAME",
     "QUANTITY",
@@ -84,7 +88,21 @@ def normalize_ronghui_row(
             stage="field_binding",
         )
     required_source_keys = [RONGHUI_SOURCE_KEY] + [field_bindings[name] for name in RONGHUI_REQUIRED_BINDINGS]
-    require_row_keys(row, required_source_keys, stage="ronghui_normalize")
+    missing_source_keys = sorted(key for key in required_source_keys if key not in row)
+    if missing_source_keys:
+        available_keys = sorted(
+            key
+            for key in row
+            if isinstance(key, str) and key.isascii() and key.replace("_", "").isalnum()
+        )[:40]
+        raise FinanceCaptureError(
+            "FIELD_DRIFT",
+            (
+                f"融辉财务响应缺少字段：{','.join(missing_source_keys)}；"
+                f"响应字段：{','.join(available_keys) or 'none'}"
+            ),
+            stage="ronghui_normalize",
+        )
 
     amount = amount_storage_text(row[field_bindings["amount"]], field="amount")
     amount_decimal = Decimal(amount)
@@ -92,6 +110,14 @@ def normalize_ronghui_row(
         raise FinanceCaptureError(
             "AMOUNT_DIRECTION_INVALID",
             "融辉财务行金额为零，无法确定收支方向",
+            stage="ronghui_normalize",
+        )
+    old_amount = amount_storage_text(row[field_bindings["old_amount"]], field="old_amount")
+    new_amount = amount_storage_text(row[field_bindings["new_amount"]], field="new_amount")
+    if Decimal(old_amount) + amount_decimal != Decimal(new_amount):
+        raise FinanceCaptureError(
+            "BALANCE_EQUATION_MISMATCH",
+            "融辉财务行前余额、本次金额与后余额反算不一致",
             stage="ronghui_normalize",
         )
     zero = amount_storage_text(Decimal("0.0000"), field="direction_zero")
@@ -106,8 +132,8 @@ def normalize_ronghui_row(
         "expend": amount_storage_text(-amount_decimal, field="expend") if amount_decimal < 0 else zero,
         "source_site_code": source_site_code,
         "source_site_name": source_site_name,
-        "old_amount": amount_storage_text(row[field_bindings["old_amount"]], field="old_amount"),
-        "new_amount": amount_storage_text(row[field_bindings["new_amount"]], field="new_amount"),
+        "old_amount": old_amount,
+        "new_amount": new_amount,
         "source_reference": clean_text(row[field_bindings["balance_order"]]),
         "balance_order": clean_text(row[field_bindings["balance_order"]]),
         "bill_code": clean_text(row[field_bindings["bill_code"]]),
@@ -195,4 +221,5 @@ def capture_ronghui_day(
             "pages": batch.pages,
             "amount_extrema": decimal_extrema(transactions, ("amount", "income", "expend")),
         },
+        summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE,
     )

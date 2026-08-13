@@ -43,8 +43,7 @@
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 价格获取 | `price_scripts/` | `docs/price_scripts/` | 已完成（持续维护） |
-| 财务对账 | `finance_reconciliation/` | `docs/finance_reconciliation/` | ETL v5.1 完成 |
-| 财务工作台 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉/韵达逐笔账本、费用绑定、BI、00:10 同步与失败审计；和旧 Excel ETL 隔离 |
+| 财务模块 | `../shared/finance/`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`agent/finance_brain.py`、`agent/llm_settings.py`、`../console/finance_service.py` | `docs/finance_module.md` | 唯一财务架构：当前仅融辉三个生产来源启用；韵达适配器待真实页面验收，不调度、不展示且不计入当前失败告警；融辉统计按费用项目带符号净额与逐笔明细对账；共享启用注册表、逐笔采集、版本化标准科目、异常审批、运单净额、知识镜像及 DeepSeek/GLM 全局配置；00:10 同步并禁止自动模型回退 |
 | OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
 | 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
@@ -59,7 +58,7 @@
 docs/
 ├── code_navigation_index.md             # 修改入口索引：按需求类型定位到具体文件
 ├── project_overview.md               # 项目级架构：模块关系/本地控制台/路由
-├── finance_module.md                 # 融辉/韵达财务同步、账本、绑定、BI 与校验口径
+├── finance_module.md                 # 融辉生产财务同步、韵达待启用边界、账本、绑定、BI 与校验口径
 ├── ai_service/
 │   └── module_overview.md           # 模块文档：AI客服定位与上下游
 ├── agent_automation/
@@ -72,9 +71,6 @@ docs/
 │   ├── tms-batch-quote-resume.md  # 操作手册：断点续传运行方法
 │   ├── tms_price_structure_analysis.md      # 分析报告：逐公斤扫描验证
 │   └── data_accuracy_audit_report.md   # 审计报告：全链路数据准确性
-├── finance_reconciliation/
-│   ├── module_overview.md             # 模块文档：ETL管道结构与数据源
-│   └── data_structure_analysis.md         # 分析报告：全量字段定义与关联关系
 ├── ocr/
 │   └── module_overview.md             # 模块文档：OCR工作区与本地控制台接入
 ├── dispatch/
@@ -137,6 +133,16 @@ docs/
 - 少货/分批先上报差错，成功或重复后登记问题件；有发未到只登记问题件。MySQL 分别保留差错和问题件步骤状态，支持失败续跑并隐藏完整成功单。
 - 到货统计的当天主单范围固定为“目标日 arrive-list ∪ 目标日实际到件扫描主单”；arrive-list 有但未扫描的单号以到货 0 保留，历史 arrive-list 和历史扫描单号不得把旧主单带入当天表，累计扫描索引只计算当天范围内主单的累计到货件数。成功后直接用本次 A:S 统计结果刷新“分批及有发未到表”和 MySQL 未齐快照；全部到齐时清空旧行。`phase7.pending_arrivals_sheet` 是可选输出，资源未配置或写入失败时只返回 skipped，不得让主统计失败；仅人工确认“分批”才允许产生融辉业务操作。
 - 投诉页面能力位于不可独立调度的 `agent/tms_runtime/scripts/ronghui_split_complaint.py`；旧独立工具与运行时 target 已删除。
+
+## 每日应签共享台账
+
+- `arrive-list` 只保存预计到货；`sync_arrival_stats` 所有输出完整成功后才激活实际到货快照。同日最后一份成功快照为该日权威版本。
+- R13 仅提供账号当前单号、R13 应签时间和参考签收状态；R13 消失、显示已签或空结果不得关闭。批量关闭证据只取 TMS“签收管理 → 签收查询”的主单签收记录；本站账号必须按 `FIND_SIGNED_TOTAL` 汇总后携带 `SIGN_SITE_CODE/AREA_NAME` 查询 `FIND_SIGNED_DETAIL_ALL_EXCEL` 明细，并校验汇总与明细总数一致。扫描记录查询不支持签收类型，子单签收无效。
+- TMS 签收长历史查询必须按连续无重叠的 31 天窗口分片，每片完整分页并校验汇总/明细总数，片间按主键去重且冲突失败；日常短增量窗口保持单片查询。
+- 应签候选、到货、问题件、签收证据统一写入迁移 `010_daily_sign_ledger.sql` 创建的共享表，并由 `tools/daily_sign_rules.py` 计算；禁止在其他脚本复制规则。
+- 17:00 前完整成功的少货/分批问题件可使未齐期间系统应签时间为空；补齐当天恢复。人工延期只接受“客户要求延迟派送”“联系不上收件人”两类且严格早于 17:00。
+- 普通表固定九列，B 为 R13 时间、C 为本系统时间；表头不符或 R13/问题件不完整必须保留上一成功发布。签收核验失败只允许保守新增并标记降级。
+- 实际到货件数为零的历史归档行不生成到货候选，融辉子单号禁止进入应签输出。已离开当前 R13 的历史候选使用持久化低频精确轨迹核验；主单在其他网点出现真实“签收”轨迹时同样关闭，未签结果按 1/3/7 天退避以控制耗时。
 
 ---
 

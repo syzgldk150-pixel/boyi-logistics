@@ -214,18 +214,18 @@ class DocumentServiceMixin:
             "finance": ProjectModule(
                 slug="finance",
                 name="财务对账",
-                status="etl-ready",
-                summary="生成财务对账结果、月度 ETL 数据和核验报表。",
-                code_path="finance_reconciliation/",
-                docs_path="docs/finance_reconciliation/",
+                status="ready",
+                summary="从已启用的融辉真实财务页面同步逐笔交易与汇总，提供费用绑定、BI 和失败审计；韵达财务待验收后启用。",
+                code_path="shared/finance/ + agent/tools/ + console/finance_service.py",
+                docs_path="agent/docs/finance_module.md",
                 route="/modules/finance",
-                workspace_path="",
-                current_focus="运单对账、月度损益和差异核验。",
-                inputs=("支付流水", "平台订单", "运单数据", "发票数据", "价格底表"),
-                outputs=("财务工作簿", "清洗中间表", "月度损益", "差异清单"),
-                dependencies=("ocr", "pricing"),
+                workspace_path="/modules/finance",
+                current_focus="真实页面逐笔采集、共享账本、费用分类、运单财务事实和同步审计。",
+                inputs=("融辉财务页", "账号登录态", "费用映射", "运单号"),
+                outputs=("逐笔账本", "平台汇总", "费用分类", "运单财务事实", "同步审计"),
+                dependencies=(),
                 consumers=("ai-service", "customer-service"),
-                commands=('cd /d C:\\Users\\DENG\\Desktop\\agent\\finance_reconciliation && python -m etl.main',),
+                commands=("打开 /modules/finance，通过工作台执行同步、回填或失败重试。",),
             ),
             "customer-service": ProjectModule(
                 slug="customer-service",
@@ -282,7 +282,6 @@ class DocumentServiceMixin:
         pricing_file_count = 0
         if pricing_output_dir.exists():
             pricing_file_count = sum(1 for item in pricing_output_dir.rglob("*") if item.is_file())
-        finance_report = PROJECT_ROOT / "璐㈠姟瀵硅处" / "output" / "reports" / "璐㈠姟瀵硅处鎶ヨ〃.xlsx"
         ai_dir = PROJECT_ROOT / "agent"
         ai_file_count = 0
         if ai_dir.exists():
@@ -316,12 +315,12 @@ class DocumentServiceMixin:
                 "workspace_label": "查看价格模块",
             },
             "finance": {
-                "metric_label": "报表状态",
-                "metric_value": "已生成" if finance_report.exists() else "待生成",
+                "metric_label": "数据架构",
+                "metric_value": "在线账本",
                 "highlights": [
-                    "多渠道财务对账",
-                    "月度损益与发票差异",
-                    "清洗表与核验链路",
+                    "融辉 / 韵达真实页面逐笔采集",
+                    "共享 MySQL 账本与版本化费用映射",
+                    "BI、运单事实与同步失败审计",
                 ],
                 "workspace_label": "查看财务模块",
             },
@@ -398,9 +397,9 @@ class DocumentServiceMixin:
             },
             {
                 "title": "财务对账",
-                "description": "财务模块消费运单、支付和发票数据，产出对账报表。",
-                "inputs": ["OCR 运单", "支付记录", "发票数据", "价格底表"],
-                "outputs": ["财务工作簿", "差异记录"],
+                "description": "财务模块当前从已启用的融辉真实页面采集逐笔交易，经确定性校验后写入共享账本；韵达财务未上线。",
+                "inputs": ["原始财务页面", "账号登录态", "费用映射", "运单号"],
+                "outputs": ["逐笔账本", "费用分类", "运单财务事实", "同步审计"],
             },
             {
                 "title": "客服系统",
@@ -521,7 +520,7 @@ class DocumentServiceMixin:
         message = f"Template saved: {saved_name}"
         if set_active:
             message += " and set as active template."
-        self._redirect_with_message(handler, "/ocr", message, "success")
+        self._redirect_with_message(handler, "/ocr?mode=ocr", message, "success")
 
     def _handle_upload(self, handler: BaseHTTPRequestHandler) -> None:
         form = self._parse_multipart_form(handler)

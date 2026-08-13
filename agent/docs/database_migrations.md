@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-08
+updated: 2026-08-13
 ---
 
 # 数据库迁移
@@ -25,6 +25,7 @@ updated: 2026-08-08
 - 共享财务账本表；
 - Agent 会话、消息、工具日志、知识库和 Phase 7 表；
 - R7 监控事件/状态及到达、发车打卡日志。
+- 每日应签共享台账：预计到货/实际到货版本快照、问题件事件、TMS 主单签收事件、当前台账和同步运行审计（迁移 `010_daily_sign_ledger.sql`）；跨网点历史主单精确签收核验及退避状态（迁移 `013_daily_sign_verification_state.sql`）。
 
 Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流和运单边界；
 财务仓储及 R7/Phase 7/Console 运行时均只做结构校验和业务读写。缺表或缺列必须

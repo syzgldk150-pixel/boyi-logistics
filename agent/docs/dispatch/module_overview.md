@@ -2,9 +2,9 @@
 module: 车辆调度
 type: 模块文档
 tags: [车辆调度, 派单, 线路规划, 运力管理, 车辆管理]
-related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_reconciliation/module_overview.md]
+related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_module.md]
 status: 开发中
-updated: 2026-03-31
+updated: 2026-08-12
 ---
 
 # 车辆调度模块概述
@@ -15,7 +15,7 @@ updated: 2026-03-31
 
 - 从 `OCR识别` 读取结构化运单字段（发货/收货地、货物信息）
 - 从 `价格获取` 读取线路价格基线，辅助成本评估
-- 向 `财务对账` 输出调度记录，用于成本核算
+- 向共享财务账本输出可追溯的调度关联信息，用于后续成本核算
 - 向 `AI客服` 输出车辆状态和轨迹，支撑客户查询
 
 ## 当前功能

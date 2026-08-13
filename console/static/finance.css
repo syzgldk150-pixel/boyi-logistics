@@ -146,6 +146,19 @@
   min-height: 26px;
 }
 
+.finance-integrity-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 10px 14px;
+  border: 1px solid var(--finance-line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--finance-muted);
+  font-size: .78rem;
+  font-weight: 700;
+}
+
 .finance-live-status,
 .finance-freshness {
   margin: 0;
@@ -542,6 +555,28 @@
   .finance-tab,
   .finance-bar-button,
   .finance-row-action { min-height: 44px; }
+}
+
+.finance-review-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 260px;
+}
+
+.finance-review-controls input,
+.finance-review-controls select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--finance-line);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: #fff;
+  color: var(--finance-text);
+}
+
+.finance-mapping-table td:has([data-finance-mapping-booking]) {
+  display: grid;
+  gap: 8px;
 }
 
 @media (prefers-reduced-motion: reduce) {
