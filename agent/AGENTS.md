@@ -159,7 +159,7 @@ docs/
 - 飞书文本仅精确指令“分批”触发 `split_pending_problem_upload`；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
 - 交互为 dry-run 编号列表 → 首次回复“确认”直接执行全部候选；数字/多选/区间只选择对应运单，回显选择后再回复“确认”正式执行。两个 pending 阶段均为 10 分钟，重新发送“分批”会丢弃旧选择并刷新列表。
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
-- `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉差错或问题件上报。
+- `sync_arrival_stats` 的当天主单范围固定为“目标日 arrive-list ∪ 目标日实际到件扫描主单”；arrive-list 有但未扫描的单号以到货 0 保留，历史 arrive-list 和历史扫描单号不得把旧主单带入当天表，累计扫描索引只计算当天范围内主单的累计到货件数。每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。`phase7.pending_arrivals_sheet` 是可选输出，资源未配置或写入失败时只返回 skipped，不得让主统计失败。自动刷新不得触发融辉差错或问题件上报。
 - MySQL 表 `split_pending_problem_items` 分别保存 `complaint_status` 与问题件 `upload_status`；同类型刷新保留历史步骤结果，完整成功单隐藏，失败或未完成步骤继续显示，类型变化才重置。
 - 正式模式必须同时提供 `selected_bill_codes` 与 `preview_fingerprint`；执行前重读来源和状态，指纹变化整批零业务写入。正式刷新全部当前未齐 Sheet/MySQL 快照，但融辉只处理所选运单。
 - `0 < 已到 < 应到` 先上报“分批”差错，成功或重复后登记“少货/分批”问题件；差错失败跳过该票问题件并继续后续运单。`已到=0` 只登记“有发未到”问题件。

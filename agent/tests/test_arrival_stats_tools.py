@@ -154,9 +154,12 @@ class ArrivalStatsToolTests(unittest.TestCase):
             return {"ok": True, "rows": len(values)}
 
         with (
+            patch(
+                "tools.arrival_stats_sync_tool.fetch_arrive_list_records",
+                return_value=(existing_records, {"ok": True, "source": "fetch_dispatch", "bill_codes": 2}),
+            ),
             patch("tools.arrival_stats_sync_tool._refresh_scan_index", return_value=(current_scan_rows, {"ok": True})),
             patch("tools.arrival_stats_sync_tool.list_scan_codes", return_value=current_scan_rows),
-            patch("tools.arrival_stats_sync_tool.list_waybill_records", return_value=existing_records),
             patch("tools.arrival_stats_sync_tool._fetch_waybill_details", return_value=(fetched_records, {"ok": True, "requested": 3, "fetched": 3})) as fetch_details,
             patch("tools.arrival_stats_sync_tool._write_stats_sheet", side_effect=fake_write_stats),
         ):
@@ -178,6 +181,119 @@ class ArrivalStatsToolTests(unittest.TestCase):
             ["R00014600001", "R00014600002", "R00014600003", "R00014600004", "R00014600005"],
             [row[0] for row in written_values[0][1:]],
         )
+
+    def test_arrival_stats_uses_today_arrive_list_union_today_scans(self):
+        arrive_records = [
+            {
+                "tracking_number": "R00020000001",
+                "goods_name": "未扫描货物",
+                "quantity": 3,
+                "recipient_name": "收件人甲",
+                "recipient_phone": "13800000001",
+                "recipient_address": "湖南省邵阳市测试地址1号",
+                "destination_station": "邵阳",
+            },
+            {
+                "tracking_number": "R00020000002",
+                "goods_name": "已扫描货物",
+                "quantity": 2,
+                "recipient_name": "收件人乙",
+                "recipient_phone": "13800000002",
+                "recipient_address": "湖南省邵阳市测试地址2号",
+                "destination_station": "邵阳",
+            },
+        ]
+        current_scan_rows = [
+            {"raw_code": "R000200000020002", "destination": "邵阳", "code_type": "child"},
+            {"raw_code": "R000200000030001", "destination": "邵阳", "code_type": "child"},
+        ]
+        accumulated_scan_rows = [
+            {"raw_code": "R000199999990001", "destination": "邵阳", "code_type": "child"},
+            {"raw_code": "R000200000020001", "destination": "邵阳", "code_type": "child"},
+            *current_scan_rows,
+        ]
+        fetched_records = [
+            {
+                "tracking_number": "R00020000003",
+                "goods_name": "扫描补入货物",
+                "quantity": 1,
+                "recipient_name": "收件人丙",
+                "recipient_phone": "13800000003",
+                "recipient_address": "湖南省邵阳市测试地址3号",
+                "destination_station": "邵阳",
+            }
+        ]
+        written_values = []
+
+        def fake_write_stats(resource_key, values, params):
+            written_values.append(values)
+            return {"ok": True, "rows": len(values)}
+
+        with (
+            patch(
+                "tools.arrival_stats_sync_tool.fetch_arrive_list_records",
+                return_value=(arrive_records, {"ok": True, "source": "fetch_dispatch", "bill_codes": 2}),
+            ),
+            patch("tools.arrival_stats_sync_tool._refresh_scan_index", return_value=(current_scan_rows, {"ok": True})),
+            patch("tools.arrival_stats_sync_tool.list_scan_codes", return_value=accumulated_scan_rows),
+            patch(
+                "tools.arrival_stats_sync_tool._fetch_waybill_details",
+                return_value=(fetched_records, {"ok": True, "requested": 1, "fetched": 1}),
+            ) as fetch_details,
+            patch("tools.arrival_stats_sync_tool._write_stats_sheet", side_effect=fake_write_stats),
+        ):
+            result = arrival_stats_sync_tool.run_arrival_stats_sync(
+                {"dry_run": True, "archive_snapshot": False, "pending_sheet_disabled": True}
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["R00020000003"], fetch_details.call_args.args[0])
+        rows_by_tracking = {row[0]: row for row in written_values[0][1:]}
+        self.assertEqual(
+            {"R00020000001", "R00020000002", "R00020000003"},
+            set(rows_by_tracking),
+        )
+        self.assertNotIn("R00019999999", rows_by_tracking)
+        self.assertEqual(0, rows_by_tracking["R00020000001"][-1])
+        self.assertEqual(2, rows_by_tracking["R00020000002"][-1])
+        self.assertEqual(1, rows_by_tracking["R00020000003"][-1])
+        self.assertEqual(2, result["main_trackings"])
+        self.assertEqual(3, result["accumulated_main_trackings"])
+
+    def test_arrival_stats_rejects_historical_scan_only_mode(self):
+        with patch("tools.arrival_stats_sync_tool.fetch_arrive_list_records") as fetch_arrive_list:
+            result = arrival_stats_sync_tool.run_arrival_stats_sync({"refresh_disabled": True})
+
+        self.assertEqual("current_scan_required", result["stage"])
+        fetch_arrive_list.assert_not_called()
+
+    def test_optional_pending_sheet_missing_resource_is_skipped(self):
+        with patch(
+            "tools.arrival_stats_sync_tool._write_stats_sheet",
+            side_effect=ValueError("未找到 phase7.pending_arrivals_sheet，请先导入到 MySQL"),
+        ):
+            result = arrival_stats_sync_tool._write_optional_pending_sheet([["运单编号"]], {})
+
+        self.assertEqual(
+            {
+                "ok": False,
+                "skipped": True,
+                "reason": "missing_resource",
+                "detail": "未找到 phase7.pending_arrivals_sheet，请先导入到 MySQL",
+            },
+            result,
+        )
+
+    def test_optional_pending_sheet_write_error_is_non_blocking(self):
+        with patch(
+            "tools.arrival_stats_sync_tool._write_stats_sheet",
+            return_value={"error": "写入统计表失败"},
+        ):
+            result = arrival_stats_sync_tool._write_optional_pending_sheet([["运单编号"]], {})
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual("write_failed", result["reason"])
+        self.assertNotIn("error", result)
 
     def test_arrival_stats_does_not_use_total_quantity_for_partial_child_arrivals(self):
         scan_rows = [

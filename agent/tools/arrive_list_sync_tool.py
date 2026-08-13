@@ -20,10 +20,11 @@ from tools.phase7_mysql_store import (
     replace_waybill_records,
 )
 from tools.phase7_sync_common import (
+    TMSAuthSyncError,
     build_range_from_template,
     parse_a1_range,
+    raise_tms_auth_error_if_present,
     resolve_sheet_target,
-    tms_auth_error_result,
 )
 from tools.tms_tool import call_http_service
 
@@ -98,6 +99,38 @@ def _normalize_dispatch_records(rows: list[Any]) -> tuple[list[dict[str, Any]], 
             continue
         records_by_tracking[tracking_number] = record
     return list(records_by_tracking.values()), sorted(skipped_receipt_codes), invalid_rows
+
+
+def fetch_arrive_list_records(
+    params: dict,
+    *,
+    http_call: Any | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch and normalize the target day's authoritative arrive-list rows."""
+    _emit_progress("开始拉取派件预报")
+    dispatch_result = (http_call or call_http_service)("/fetch_dispatch", _build_dispatch_request(params))
+    raise_tms_auth_error_if_present(dispatch_result)
+    rows = _extract_rows(dispatch_result)
+    if rows is None:
+        raise ValueError("fetch_dispatch 返回格式异常")
+    _emit_progress("派件预报拉取完成", rows=len(rows))
+
+    records, skipped_receipt_codes, invalid_rows = _normalize_dispatch_records(rows)
+    result = {
+        "ok": True,
+        "source": "fetch_dispatch",
+        "fetched": len(rows),
+        "bill_codes": len(records),
+        "skipped_receipt_like": len(skipped_receipt_codes),
+        "invalid_rows": invalid_rows,
+    }
+    _emit_progress(
+        "派件预报整理完成",
+        tracking_number=len(records),
+        skipped_receipt_like=len(skipped_receipt_codes),
+        invalid_rows=invalid_rows,
+    )
+    return records, result
 
 
 def _load_sheet_resource(resource_key: str) -> dict:
@@ -233,22 +266,12 @@ def _write_sheet_resource(resource_key: str, rows: list[list[Any]], params: dict
 
 
 def run_arrive_list_sync(params: dict) -> dict:
-    _emit_progress("开始拉取派件预报")
-    dispatch_result = call_http_service("/fetch_dispatch", _build_dispatch_request(params))
-    if auth_error := tms_auth_error_result(dispatch_result):
-        return auth_error
-    rows = _extract_rows(dispatch_result)
-    if rows is None:
-        return {"error": "fetch_dispatch 返回格式异常", "raw": dispatch_result}
-    _emit_progress("派件预报拉取完成", rows=len(rows))
-
-    records, skipped_receipt_codes, invalid_rows = _normalize_dispatch_records(rows)
-    _emit_progress(
-        "派件预报整理完成",
-        tracking_number=len(records),
-        skipped_receipt_like=len(skipped_receipt_codes),
-        invalid_rows=invalid_rows,
-    )
+    try:
+        records, source_result = fetch_arrive_list_records(params)
+    except TMSAuthSyncError as exc:
+        return exc.result
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     sheet_rows = render_arrive_sheet_rows(records)
     _emit_progress("派件预报表格整理完成", rows=len(sheet_rows))
@@ -280,11 +303,7 @@ def run_arrive_list_sync(params: dict) -> dict:
 
     return {
         "ok": True,
-        "source": "fetch_dispatch",
-        "fetched": len(rows),
-        "bill_codes": len(records),
-        "skipped_receipt_like": len(skipped_receipt_codes),
-        "invalid_rows": invalid_rows,
+        **source_result,
         "detail_records": len(records),
         "mysql_result": mysql_result,
         "primary_result": primary_result,

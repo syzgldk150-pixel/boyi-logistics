@@ -14,6 +14,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
+from tools.arrive_list_sync_tool import fetch_arrive_list_records
 from tools.feishu_cli_tool import (
     _clear_spreadsheet_sheet_cache,
     _spreadsheet_sheet_info,
@@ -25,7 +26,6 @@ from tools.phase7_mysql_store import (
     has_waybill_detail,
     list_pending_waybills,
     list_scan_codes,
-    list_waybill_records,
     main_tracking_from_scan_code,
     main_trackings_from_scan_rows,
     normalize_scan_rows,
@@ -33,7 +33,7 @@ from tools.phase7_mysql_store import (
     render_pending_sheet_values,
     render_stats_sheet_values,
     replace_scan_codes,
-    upsert_waybill_records,
+    replace_waybill_records,
 )
 from tools.phase7_sync_common import (
     TMSAuthSyncError,
@@ -102,6 +102,8 @@ def _apply_scan_window(request_params: dict, scan_window_days: int, target_date:
 
 def _refresh_scan_index(params: dict) -> tuple[list[dict[str, str]], dict]:
     scan_window_days = int(params.get("scan_window_days") or 1)
+    if scan_window_days != 1:
+        raise ValueError("统计到货数据只允许拉取单个目标日；历史扫描回填请使用扫描同步工具")
     _emit_progress("开始刷新扫描索引", scan_window_days=scan_window_days)
     request_body = dict(params.get("scan_request_body") or params.get("request_body") or {})
     request_params = dict(request_body.get("params") or {})
@@ -132,6 +134,18 @@ def _refresh_scan_index(params: dict) -> tuple[list[dict[str, str]], dict]:
         scan_window_days=scan_window_days,
     )
     return normalized, replace_result
+
+
+def _arrive_list_params(params: dict) -> dict:
+    arrive_params: dict[str, Any] = {}
+    if params.get("target_date") not in (None, ""):
+        arrive_params["target_date"] = params["target_date"]
+    if params.get("arrive_list_request_body") not in (None, ""):
+        arrive_params["request_body"] = dict(params["arrive_list_request_body"])
+    for key in ("session_profile", "account_id", "accountId"):
+        if params.get(key) not in (None, ""):
+            arrive_params[key] = params[key]
+    return arrive_params
 
 
 def _is_masked_text(value: Any) -> bool:
@@ -517,6 +531,33 @@ def _write_stats_sheet(resource_key: str, values: list[list[Any]], params: dict)
     }
 
 
+def _write_optional_pending_sheet(values: list[list[Any]], params: dict) -> dict:
+    resource_key = "phase7.pending_arrivals_sheet"
+    try:
+        result = _write_stats_sheet(resource_key, values, params)
+    except ValueError as exc:
+        detail = str(exc)
+        _emit_progress("未齐货物表资源未配置，已跳过", reason=detail)
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "missing_resource",
+            "detail": detail,
+        }
+
+    if "error" not in result:
+        return result
+
+    detail = str(result.get("error") or "未齐货物表写入失败")
+    _emit_progress("未齐货物表写入失败，已跳过", error=detail)
+    return {
+        "ok": False,
+        "skipped": True,
+        "reason": "write_failed",
+        "detail": detail,
+    }
+
+
 def _archive_title(params: dict | None = None) -> str:
     params = params or {}
     resolved = _target_date(params)
@@ -871,15 +912,21 @@ def run_arrival_stats_sync(params: dict) -> dict:
 def _run_arrival_stats_sync(params: dict) -> dict:
     _emit_progress("统计到货数据任务开始")
     if params.get("refresh_disabled"):
-        scan_rows = list_scan_codes()
-        current_scan_rows = scan_rows
-        scan_result = {"ok": True, "skipped": True, "reason": "refresh_disabled", "loaded": len(scan_rows)}
-        _emit_progress("跳过刷新扫描索引")
-    else:
-        current_scan_rows, scan_result = _refresh_scan_index(params)
-        scan_rows = list_scan_codes()
-        scan_result["accumulated"] = len(scan_rows)
-        _emit_progress("加载累计扫描索引", accumulated=len(scan_rows))
+        return {
+            "error": "统计到货数据必须刷新目标日扫描数据，不能使用历史扫描索引代替当日扫描集合",
+            "stage": "current_scan_required",
+        }
+
+    arrive_records, arrive_list_result = fetch_arrive_list_records(
+        _arrive_list_params(params),
+        http_call=call_http_service,
+    )
+    _emit_progress("目标日 arrive-list 已加载", tracking_number=len(arrive_records))
+
+    current_scan_rows, scan_result = _refresh_scan_index(params)
+    scan_rows = list_scan_codes()
+    scan_result["accumulated"] = len(scan_rows)
+    _emit_progress("加载累计扫描索引", accumulated=len(scan_rows))
 
     if not bool(params.get("dry_run", False)):
         retention_days = params.get("scan_codes_retention_days", 30)
@@ -895,9 +942,8 @@ def _run_arrival_stats_sync(params: dict) -> dict:
             _emit_progress("清理扫描记录失败", error=str(exc))
             scan_result["cleanup_error"] = str(exc)
 
-    existing_records = list_waybill_records(include_receipt_like=False)
-    missing_tracking_numbers = _missing_trackings_from_current_scan(current_scan_rows, existing_records, params)
-    detail_tracking_numbers, detail_plan = _detail_tracking_numbers(existing_records, missing_tracking_numbers, params)
+    missing_tracking_numbers = _missing_trackings_from_current_scan(current_scan_rows, arrive_records, params)
+    detail_tracking_numbers, detail_plan = _detail_tracking_numbers(arrive_records, missing_tracking_numbers, params)
     _emit_progress(
         "缺失/需补抓主单已识别",
         missing=detail_plan.get("missing"),
@@ -920,13 +966,29 @@ def _run_arrival_stats_sync(params: dict) -> dict:
     else:
         fetched_records, fetch_result = _fetch_waybill_details(detail_tracking_numbers, params)
         fetch_result["detail_plan"] = detail_plan
-    if bool(params.get("dry_run", False)):
-        upsert_result = {"ok": True, "upserted": len(fetched_records), "skipped": True}
-    else:
-        upsert_result = upsert_waybill_records(fetched_records)
-    _emit_progress("主单数据已写入 MySQL", upserted=upsert_result.get("upserted"))
+    merged_records = _merge_records(arrive_records, fetched_records)
+    current_scan_trackings = set(main_trackings_from_scan_rows(current_scan_rows))
+    merged_trackings = {
+        str(record.get("tracking_number") or "").strip()
+        for record in merged_records
+        if str(record.get("tracking_number") or "").strip()
+    }
+    missing_scanned_details = current_scan_trackings - merged_trackings
+    if missing_scanned_details:
+        return {
+            "error": f"目标日扫描主单详情不完整，共 {len(missing_scanned_details)} 票未能补齐",
+            "stage": "current_scan_detail_incomplete",
+            "arrive_list_result": _public_result(arrive_list_result),
+            "scan_result": _public_result(scan_result),
+            "fetch_result": _public_result(fetch_result),
+        }
 
-    merged_records = _merge_records(existing_records, fetched_records)
+    if bool(params.get("dry_run", False)):
+        upsert_result = {"ok": True, "replaced": len(merged_records), "skipped": True}
+    else:
+        upsert_result = replace_waybill_records(merged_records)
+    _emit_progress("目标日主单快照已写入 MySQL", replaced=upsert_result.get("replaced"))
+
     export_records = merged_records
     if params.get("export_limit") not in (None, ""):
         export_records = export_records[: int(params.get("export_limit"))]
@@ -971,15 +1033,7 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         pending_records = list_pending_waybills(include_receipt_like=False)
         pending_values = render_pending_sheet_values(pending_records)
         _emit_progress("未齐货物清单已渲染", rows=len(pending_records))
-        try:
-            pending_result = _write_stats_sheet(
-                "phase7.pending_arrivals_sheet", pending_values, params
-            )
-            if "error" in pending_result:
-                _emit_progress("未齐货物表写入失败", error=pending_result.get("error", ""))
-        except ValueError as exc:
-            pending_result = {"ok": False, "skipped": True, "reason": "missing_resource", "detail": str(exc)}
-            _emit_progress("未齐货物表资源未配置，已跳过", reason=str(exc))
+        pending_result = _write_optional_pending_sheet(pending_values, params)
 
     if params.get("archive_snapshot", True):
         archive_result = _archive_snapshot(values, params)
@@ -1004,6 +1058,7 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         return {
             "error": f"分批及有发未到表刷新失败: {detail}",
             "stage": "split_pending_snapshot_failed",
+            "arrive_list_result": _public_result(arrive_list_result),
             "scan_result": _public_result(scan_result),
             "fetch_result": _public_result(fetch_result),
             "upsert_result": _public_result(upsert_result),
@@ -1018,6 +1073,7 @@ def _run_arrival_stats_sync(params: dict) -> dict:
     _emit_progress("统计到货数据任务结束")
     return {
         "ok": True,
+        "arrive_list_result": _public_result(arrive_list_result),
         "scan_result": _public_result(scan_result),
         "fetch_result": _public_result(fetch_result),
         "upsert_result": _public_result(upsert_result),
@@ -1029,7 +1085,8 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         "archive_result": _public_result(archive_result),
         "flow_result": _public_result(flow_result),
         "debug_tracking": debug_count,
-        "main_trackings": len(main_trackings_from_scan_rows(scan_rows)),
+        "main_trackings": len(current_scan_trackings),
+        "accumulated_main_trackings": len(main_trackings_from_scan_rows(scan_rows)),
         "records": len(export_records),
     }
 

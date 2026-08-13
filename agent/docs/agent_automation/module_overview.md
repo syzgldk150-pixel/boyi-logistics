@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-11
+updated: 2026-08-13
 ---
 
 > 2026-08-11: 后台账号列表新增直接可见的账号级“自动登录”开关，所有现有/新增账号缺省关闭。账号管理只把页面明确保存的完整账号密码认作可用凭据，不展示或使用部署环境变量兜底；未保存凭据时不能开启自动登录或发起登录，历史残留的开启状态也会在访问登录页前自动关闭。“退出登录”和“清空保存凭据”都会关闭自动登录；关闭后不再定时校验、自动重登或发送飞书断线提醒。“停用账号”停止任务选择、任务执行与登录监控，但不等同于退出。自动登录连续失败上限为 3 次，第 3 次失败后持久熔断，避免账号被锁。
@@ -184,9 +184,9 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 到货统计编排 | `tools/arrival_stats_sync_tool.py` + `tools/split_pending_snapshot.py` |
 | 工具对外注册 | `tools/registry.yaml` |
 
-`sync_arrive_list` 的执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` → `tools/arrive_list_sync_tool.py` → `/fetch_dispatch` → MySQL + 飞书表格。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。`sync_arrival_stats` 会再用当天 `/get_scan` 扫描数据反推缺失主单，调用 `/query_waybill_detail` 补齐详情后追加到统计输出。
+`sync_arrive_list` 的执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` → `tools/arrive_list_sync_tool.py` → `/fetch_dispatch` → MySQL + 飞书表格。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。`sync_arrival_stats` 每次也会重新拉取目标日 `/fetch_dispatch` 与目标日 `/get_scan`，以“目标日 arrive-list 主单 ∪ 目标日实际到件扫描主单”生成当天统计范围：arrive-list 有但未扫描的单号继续以到货 0 展示，扫描存在但 arrive-list 缺失的主单通过 `/query_waybill_detail` 补齐详情；历史 arrive-list 和仅存在于累计扫描索引的旧主单不得进入当天表。累计扫描索引仍用于计算当天范围内每票的累计到货件数，支持跨日分批到货。
 
-`sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。该自动阶段只刷新数据，不调用融辉差错或问题件上报。
+`sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。旧的 `phase7.pending_arrivals_sheet` 仅为可选输出，资源未配置或写入失败会返回 skipped，但不会中断主/副统计表、归档和分批未齐快照链路。该自动阶段只刷新数据，不调用融辉差错或问题件上报。
 
 `sync_daily_send_orders` 的执行链路是：后台定时任务 `获取当日寄件数据` 或飞书文本 `获取当日寄件数据/融辉寄件数据/TMS寄件数据` → `tools/send_order_sync_tool.py` → `/send_order` → 融辉 `FIND_BILL_SEND` 寄件查询接口 → 飞书多维表格资源 `phase7.send_order_bitable`。默认 `发件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式逐日执行。写入前会剔除 `运单编号` 为 `H` / `HR` 等回单号开头的记录，并返回 `skipped_receipt_like` 计数。写入策略为按日安全替换：同一台机器上先加本地文件锁，避免多进程重叠执行；再读取飞书中同一 `发件日期` 的旧记录并按 `运单编号` 建索引，本次拉到的单号更新或新增，写入成功后删除同一天旧记录中本次未返回的单号；读取飞书旧记录时按 200 条分页完整扫描，避免飞书列表接口截断后把后续旧单误判为新增；写入和删除完成后会复扫同日记录，同日同单号已有重复记录时只保留首条并删除多余记录。因此重复拉同一天时，飞书中该日期最终记录数会与本次接口返回数一致，其他日期历史不受影响。运行时 `/send_order` 在未显式传 `page_index` 时会按 `page_size/max_pages` 拉完整分页；显式传 `page_index` 时保留旧单页兼容行为。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `ronghui`，明确返回的当前扫描状态写入 `scan_status`，并删除该来源同一 `open_date` 下本次未返回的旧单，保证后台 `/waybills` 运单查询与最新拉取快照一致；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不读写飞书。
 

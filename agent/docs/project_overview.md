@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, 模块关系, 本地控制台, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-11
+updated: 2026-08-13
 ---
 
 # 物流 Agent 项目总览
@@ -91,11 +91,11 @@ updated: 2026-08-11
 - `sync_yunda_send_waybills` 使用同一套韵达登录态 `yunda`，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入 `phase7.yunda_send_waybills_bitable`；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
 - `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。
-- `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 会用当天扫描数据反推缺失主单，补抓详情后追加到统计输出。
+- `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 每次重新拉取目标日派件预报与目标日到件扫描，以两者主单并集生成当天统计范围，派件预报有但目标日未扫描的单号保留为到货 0，历史主单不得进入当天表。
 - 2026-05-18：`sync_arrival_stats` 会把 `20055750680002` 这类融辉纯数字子单归并到主单 `2005575068`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 默认以扫描索引中的子单扫描数作为到货件数；主单总件数不参与统计计数，避免把仍在上游分拨的子单误算为到货。`count_result.quantity_gaps` 仅作为“扫描子单数低于主单总件数”的审计提示。
-- `scan_codes` 表自 2026-04-26 起改为 UPSERT 累积写入：每次 `sync_arrival_stats` / `sync_scan_codes` 不再 TRUNCATE，而是按 `raw_code` 主键合并历史扫描记录。统计列含义随之从「当日件数」更名为「累计到货件数」。`scan_window_days`（默认 1）控制每次拉取 `/get_scan` 的时间窗，`scan_codes_retention_days`（默认 30）控制保留期；首次部署可临时传 `scan_window_days=30` 一次性回填历史。
-- `sync_arrival_stats` 现额外输出「未齐货物」清单到 `phase7.pending_arrivals_sheet`，由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除；如未在 `workflow_resources` 中配置该资源，写入步骤会被自动跳过。
+- `scan_codes` 表自 2026-04-26 起改为 UPSERT 累积写入：每次 `sync_arrival_stats` / `sync_scan_codes` 不再 TRUNCATE，而是按 `raw_code` 主键合并历史扫描记录。统计列含义随之从「当日件数」更名为「累计到货件数」。`sync_arrival_stats` 只允许 `scan_window_days=1`，保证当天主单范围只由目标日扫描决定；`scan_codes_retention_days`（默认 30）控制累计索引保留期，首次部署或历史回填必须单独使用 `sync_scan_codes`，不得扩大到货统计的扫描时间窗。
+- `sync_arrival_stats` 现额外输出「未齐货物」清单到可选资源 `phase7.pending_arrivals_sheet`，由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除；资源未配置或该可选表写入失败时会返回 skipped，但不会让主统计失败。
 - `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
 - 2026-05-22: `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。
