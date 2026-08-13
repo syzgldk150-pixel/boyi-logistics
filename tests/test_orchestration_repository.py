@@ -577,12 +577,24 @@ class OrchestrationRepositoryTests(unittest.TestCase):
 
         rows = repository.claim("dispatcher-1", limit=2, lease_seconds=20)
 
-        locking_reads = [sql for sql, _ in cursor.calls if "SELECT outbox_id" in sql]
+        candidate_reads = [
+            sql
+            for sql, _ in cursor.calls
+            if "SELECT outbox_id" in sql and "FORCE INDEX (PRIMARY)" not in sql
+        ]
+        locking_reads = [
+            sql
+            for sql, _ in cursor.calls
+            if "SELECT outbox_id" in sql and "FORCE INDEX (PRIMARY)" in sql
+        ]
+        self.assertTrue(candidate_reads)
         self.assertTrue(locking_reads)
+        self.assertTrue(all("FOR UPDATE" not in sql for sql in candidate_reads))
         self.assertTrue(all("FOR UPDATE SKIP LOCKED" in sql for sql in locking_reads))
         self.assertTrue(all("JOIN domain_events" not in sql for sql in locking_reads))
-        self.assertTrue(any("FORCE INDEX (idx_outbox_claim)" in sql for sql in locking_reads))
-        self.assertTrue(any("FORCE INDEX (idx_outbox_lease)" in sql for sql in locking_reads))
+        self.assertTrue(any("FORCE INDEX (idx_outbox_claim)" in sql for sql in candidate_reads))
+        self.assertTrue(any("FORCE INDEX (idx_outbox_lease)" in sql for sql in candidate_reads))
+        self.assertTrue(all("outbox_id IN" in sql for sql in locking_reads))
         claim_update_index = next(
             index
             for index, (sql, _) in enumerate(cursor.calls)
