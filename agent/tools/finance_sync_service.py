@@ -454,6 +454,7 @@ class FinanceSyncService:
             page_row_counts=tuple(page_row_counts),
             transactions=transactions,
             summaries=summaries,
+            summary_semantics=capture.summary_semantics,
             intended_write_count=len(transactions),
             response_valid=True,
             known_fee_items=validation_context.get("known_fee_items", ()),

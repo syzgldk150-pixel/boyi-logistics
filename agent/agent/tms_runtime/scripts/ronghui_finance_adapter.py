@@ -6,6 +6,8 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any, Callable, Mapping
 
+from shared.finance.models import SummarySemantics
+
 from agent.tms_runtime.scripts.finance_capture_common import (
     CaptureResult,
     FinanceCaptureError,
@@ -219,4 +221,5 @@ def capture_ronghui_day(
             "pages": batch.pages,
             "amount_extrema": decimal_extrema(transactions, ("amount", "income", "expend")),
         },
+        summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE,
     )
