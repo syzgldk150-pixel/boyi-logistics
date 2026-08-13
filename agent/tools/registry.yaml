@@ -90,22 +90,6 @@ tools:
     timeout: 60
     heavy: true
 
-  - name: finance_etl
-    description: "运行财务对账 ETL 管道，生成报表并返回指定月份或全量摘要"
-    parameters:
-      type: object
-      properties:
-        month:
-          type: string
-          description: "可选，月份摘要范围，格式 YYYY-MM，如 2026-03"
-        input_path:
-          type: string
-          description: "可选，元数据目录路径，或包含 metadata/ 的项目目录路径"
-      required: []
-    executor: tools/finance_tool.py
-    timeout: 600
-    heavy: true
-
   - name: sync_daily_send_orders
     description: "Phase 7 第一批：拉取融辉寄件数据并按发件日期替换写入飞书多维表格"
     parameters:
@@ -197,7 +181,7 @@ tools:
     heavy: false
 
   - name: sync_daily_should_sign
-    description: "Phase 7 第二批：拉取每日应签数据，补齐脱敏收件地址后覆盖飞书多维表格并同步电子表格"
+    description: "共享应签台账：合并R13、实际到货、问题件及TMS主单签收扫描，差异同步飞书九列表格"
     parameters:
       type: object
       properties:
@@ -231,10 +215,47 @@ tools:
         browser_batch_size:
           type: integer
           description: "可选，浏览器补齐详情的批量大小，默认 10"
+        sign_account_id:
+          type: string
+          description: "可选，TMS签收扫描查询账号；默认 ronghui_daxiang_s"
+        sign_site_code:
+          type: string
+          description: "可选，TMS签收扫描网点编码；默认从大祥S站登录态的真实 loginSiteCode 精确取得"
+        problem_account_id:
+          type: string
+          description: "可选，人工问题件增量查询账号；默认 ronghui_daxiang_s"
+        exact_sign_conflict_limit:
+          type: integer
+          description: "可选，R13显示已签但批量扫描无证据时允许逐票精确轨迹核验的最大冲突数，默认50；超过即降级且不按R13关闭"
+        exact_historical_sign_limit:
+          type: integer
+          description: "可选，每次核验已离开当前R13历史候选主单真实签收轨迹的最大数量，默认8；未签结果按1/3/7天退避"
       required: []
     executor: tools/daily_sign_sync_tool.py
     timeout: 2400
     heavy: false
+
+  - name: backfill_daily_sign_ledger
+    description: "合并到货归档、当前应签表、R13历史、问题件及TMS主单签收扫描；默认只做影子计算，apply=true才写共享历史台账，绝不发布飞书"
+    parameters:
+      type: object
+      properties:
+        apply:
+          type: boolean
+          description: "默认false只读影子计算；true时激活逐日实际到货快照并种入当前应签候选"
+        spreadsheet_token:
+          type: string
+          description: "可选，覆盖 phase7.stats_archive_sheet 的 spreadsheet_token"
+        r13_backfill_days:
+          type: integer
+          description: "可选，R13历史回看天数，默认3650"
+        event_backfill_days:
+          type: integer
+          description: "可选，TMS问题件和签收扫描历史回看天数，默认跟随R13回看天数"
+      required: []
+    executor: tools/daily_sign_backfill_tool.py
+    timeout: 2400
+    heavy: true
 
   - name: sync_site_send_list
     description: "Phase 7 第二批：拉取网点出港清单，覆盖飞书多维表格并同步电子表格"
@@ -294,6 +315,9 @@ tools:
         request_body:
           type: object
           description: "可选，覆盖 get_scan 请求体"
+        target_date:
+          type: string
+          description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
         scan_next_request_body:
           type: object
           description: "可选，覆盖 scan_next 请求体模板"
@@ -683,7 +707,7 @@ tools:
     heavy: true
 
   - name: sync_finance_bills
-    description: "按账号管理中的四个财务角色，从融辉和韵达原始财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试"
+    description: "按当前已上线的融辉三个财务角色，从真实财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试；韵达财务尚未上线"
     parameters:
       type: object
       properties:
@@ -702,12 +726,10 @@ tools:
           description: "sync/backfill 可选结束日期；backfill 必填"
         platform:
           type: string
-          enum: [ronghui, yunda]
-          description: "sync/backfill 可选平台过滤"
+          description: "sync/backfill 可选平台过滤；运行时按共享财务来源注册表校验是否已上线"
         account_id:
           type: string
-          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem, yunda_default]
-          description: "sync/backfill 可选账号管理内部角色 ID"
+          description: "sync/backfill 可选账号管理内部角色 ID；运行时按共享财务来源注册表校验是否已上线"
         batch_id:
           type: integer
           description: "retry 模式必填的原失败批次 ID；retry 不接受其他范围过滤"

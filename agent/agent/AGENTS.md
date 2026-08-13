@@ -28,6 +28,7 @@
   - `tms_runtime/session_adapters.py`、`session_state.py`、`session_validators.py`、`session_models.py`
   - `tms_runtime/dispatch.py`
   - `tms_runtime/scripts/`
+  - `tms_runtime/scripts/scan_next.py` 必须复刻融辉发件扫描原页字段：扫描员/网点只取 `$Z.user.getUserInfo()` 的真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`；缺字段、员工编码超长、站点非唯一精确匹配、录单或上传失败均显式停止，禁止页头文字、默认网点、模糊站点和二次输入/上传兜底。
   - `tms_runtime/scripts/` 中与 `price_scripts/` 旧离线脚本重名的模块（如 `login_manager`、`address_utils`、`get_price`、`browser_address_resolver`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager` / `import get_price`，避免旧脚本目录或 `sys.modules` 缓存串线。
   - `SessionBroker` 是对旧调用方的统一门面；融辉/韵达验证码流程分别经 provider adapter，文件状态只由 state store 管理，登录响应识别只放在纯 validator 中。调度器不得访问其私有状态或按目录顺序加载脚本。
 - 融辉、韵达、R7、R13 全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；凭据只来自后台账号管理保存值。大祥报价任务显式绑定 `price_default` 及其 `price_default` profile，后台登录与飞书报价复用同一状态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
@@ -40,7 +41,11 @@
 - 改记忆、LLM、对话编排：
   - `memory.py`
   - `llm_client.py`
+  - `llm_settings.py`
+  - `finance_brain.py`
   - `core.py`
+  - 全系统只使用一个手工激活的供应商和模型；DeepSeek/GLM 地址固定。调用失败必须显式失败，不得自动切换供应商、回退环境配置或复用旧结果。数据库从未激活过模型版本时才允许继续使用升级前的环境托管配置。
+  - 财务大脑只接收未知类目的脱敏聚合证据并返回建议，不得修改正式映射、原始流水、源码或运单事实；所有确认都在 Console 后台由管理员完成。
   - 任意用户请求如果未命中直达工具且 LLM 未产生真实工具调用，`core.py` 必须回复“没有匹配到可执行脚本，我不知道该执行哪个任务。”，不能放行 LLM 自由回答或描述执行结果
   - LLM 产生工具调用后，最终回复必须来自工具结果 formatter，不能采用 LLM 对工具结果的自由总结
 - 改飞书文本指令直达路由（不走 LLM 的确定性命令）：

@@ -158,13 +158,16 @@ async ({ stationName, callIds }) => {
   };
   const pickRow = (rows) => {
     const normalized = rows.filter((row) => row && typeof row === "object");
-    const exact = normalized.find((row) => valueFor(row, nameKeys) === wanted);
-    if (exact) return exact;
-    return normalized.find((row) => valueFor(row, nameKeys).includes(wanted) || wanted.includes(valueFor(row, nameKeys)));
+    const exact = normalized.filter((row) => valueFor(row, nameKeys) === wanted);
+    if (exact.length !== 1) return null;
+    return exact[0];
   };
   const applyRow = (row, source) => {
-    const name = valueFor(row, nameKeys) || wanted;
-    const code = valueFor(row, codeKeys) || name;
+    const name = valueFor(row, nameKeys);
+    const code = valueFor(row, codeKeys);
+    if (!name || !code) {
+      return { ok: false, error: "station_fields_missing", source };
+    }
     if (combo.setValue) combo.setValue(code);
     if (combo.setText) combo.setText(name);
     if (combo.setIsValid) combo.setIsValid(true);
@@ -348,33 +351,46 @@ MINI_ADD_BILL_CODE_SCRIPT = r"""
     }
   }
 
-  let userInfo = {};
-  for (const scope of [window, window.parent, window.top]) {
-    try {
-      const candidate = scope && scope.$Z && scope.$Z.user && scope.$Z.user.getUserInfo
-        ? scope.$Z.user.getUserInfo()
-        : null;
-      if (candidate) {
-        userInfo = candidate;
-        break;
-      }
-    } catch (_) {}
+  if (typeof $Z === "undefined" || !$Z.user || typeof $Z.user.getUserInfo !== "function") {
+    return { ok: false, error: "login_context_unavailable" };
   }
-  let headerUser = "";
-  let headerSite = "";
+  let userInfo = null;
   try {
-    const topText = window.top && window.top.document && window.top.document.body
-      ? String(window.top.document.body.innerText || "")
-      : "";
-    const userMatch = topText.match(/登录用户[:：]\s*([^\s]+)/);
-    const siteMatch = topText.match(/登录网点[:：]\s*([^\s]+)/);
-    headerUser = userMatch ? userMatch[1] : "";
-    headerSite = siteMatch ? siteMatch[1] : "";
-  } catch (_) {}
-  const loginUserName = userInfo.loginUserName || headerUser || "TMS";
-  const loginUserAccount = userInfo.loginUserAccount || headerUser || loginUserName;
-  const loginSiteName = userInfo.loginSiteName || headerSite || "";
-  const loginSiteCode = userInfo.loginSiteCode || "73901";
+    userInfo = $Z.user.getUserInfo();
+  } catch (_) {
+    return { ok: false, error: "login_context_unavailable" };
+  }
+  if (!userInfo || typeof userInfo !== "object") {
+    return { ok: false, error: "login_context_unavailable" };
+  }
+  const requiredLoginFields = [
+    "loginUserName",
+    "loginUserAccount",
+    "loginSiteName",
+    "loginSiteCode",
+  ];
+  const missingFields = requiredLoginFields.filter(
+    (field) => String(userInfo[field] == null ? "" : userInfo[field]).trim() === ""
+  );
+  if (missingFields.length > 0) {
+    return { ok: false, error: "missing_login_context_fields", missing_fields: missingFields };
+  }
+  const loginUserName = String(userInfo.loginUserName).trim();
+  const loginUserAccount = String(userInfo.loginUserAccount).trim();
+  const loginSiteName = String(userInfo.loginSiteName).trim();
+  const loginSiteCode = String(userInfo.loginSiteCode).trim();
+  if (typeof TextEncoder !== "function") {
+    return { ok: false, error: "utf8_length_unavailable" };
+  }
+  const scanManCodeUtf8Bytes = new TextEncoder().encode(loginUserAccount).length;
+  if (scanManCodeUtf8Bytes > 20) {
+    return {
+      ok: false,
+      error: "scan_man_code_too_long",
+      actual_utf8_bytes: scanManCodeUtf8Bytes,
+      maximum_utf8_bytes: 20,
+    };
+  }
   const formData = form.getData();
   formData.PRE_OR_NEXT_STATION_CODE = stationCode;
   formData.PRE_OR_NEXT_STATION = stationText;
@@ -480,22 +496,30 @@ def _coerce_items(raw: Any) -> list[Dict[str, str]]:
             return []
         try:
             raw = json.loads(text)
-        except Exception:
-            return []
+        except Exception as exc:
+            raise ValueError("items 必须是有效 JSON") from exc
     if isinstance(raw, dict):
         for key in ("items", "data", "records", "rows"):
             if key in raw:
                 return _coerce_items(raw.get(key))
         item = _normalize_item(raw)
-        return [item] if item else []
+        if not item:
+            raise ValueError("items 第 1 项缺少 station_name 或 bill_code")
+        return [item]
     if isinstance(raw, list):
         items: list[Dict[str, str]] = []
-        for entry in raw:
+        invalid_indexes: list[int] = []
+        for index, entry in enumerate(raw):
             item = _normalize_item(entry)
             if item:
                 items.append(item)
+            else:
+                invalid_indexes.append(index)
+        if invalid_indexes:
+            indexes = ",".join(str(index) for index in invalid_indexes)
+            raise ValueError(f"items 存在格式错误项，索引: {indexes}")
         return items
-    return []
+    raise ValueError("items 必须是对象、数组或 JSON 字符串")
 
 
 def _load_json_file(path: str) -> Any:
@@ -598,6 +622,27 @@ def _upload_rows_by_mini_api(frame) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _mini_failure_detail(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "invalid_result"
+    error = str(result.get("error") or result.get("message") or "unknown_error").strip()
+    details: list[str] = []
+    missing_fields = result.get("missing_fields")
+    if isinstance(missing_fields, list):
+        fields = ",".join(str(field).strip() for field in missing_fields if str(field).strip())
+        if fields:
+            details.append(f"missing_fields={fields}")
+    actual_bytes = result.get("actual_utf8_bytes")
+    maximum_bytes = result.get("maximum_utf8_bytes")
+    if actual_bytes not in (None, ""):
+        details.append(f"actual_utf8_bytes={actual_bytes}")
+    if maximum_bytes not in (None, ""):
+        details.append(f"maximum_utf8_bytes={maximum_bytes}")
+    if details:
+        return f"{error} ({', '.join(details)})"
+    return error
+
+
 def _select_station(frame, station_name: str, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
     _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
     mini_result = _set_station_by_mini_api(frame, station_name)
@@ -608,21 +653,7 @@ def _select_station(frame, station_name: str, *, timeout_ms: int = DEFAULT_TIMEO
             f"({mini_result.get('value') or mini_result.get('stationCode')})"
         )
         return True
-    log(f"MiniUI 设置下一站失败，回退输入法: {mini_result.get('error') or mini_result}")
-
-    _fill_xpath(frame, XPATH_NEXT_STATION_INPUT, station_name, label="下一站")
-    try:
-        input_el = _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
-        input_el.press("Enter")
-        _pause(frame)
-    except Exception:
-        pass
-    try:
-        input_el = _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
-        current_value = input_el.input_value()
-    except Exception:
-        current_value = ""
-    return station_name in (current_value or "")
+    raise RuntimeError(f"下一站设置失败: {_mini_failure_detail(mini_result)}")
 
 
 def _safe_filename(text: str) -> str:
@@ -687,19 +718,14 @@ def dump_page_debug(page, frame=None, *, out_dir: str, prefix: str) -> Dict[str,
 
 def _wait_table_cleared(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
     deadline = time.time() + timeout_ms / 1000.0
-    selected = frame.locator(f"xpath={XPATH_GRID_ROW_SELECTED}")
-    unselected = frame.locator(f"xpath={XPATH_GRID_ROW_UNSELECTED}")
     rows = frame.locator(f"xpath={XPATH_GRID_ROW_ANY}")
     while time.time() < deadline:
         try:
-            selected_count = selected.count()
-            unselected_count = unselected.count()
             total_count = rows.count()
         except Exception:
-            selected_count = 0
-            unselected_count = 0
-            total_count = 0
-        if selected_count == 0 and (unselected_count >= 1 or total_count == 0):
+            frame.wait_for_timeout(300)
+            continue
+        if total_count == 0:
             return True
         frame.wait_for_timeout(300)
     return False
@@ -806,7 +832,7 @@ def _click_confirm_any(
             if message_xpath and _is_visible(frame, message_xpath):
                 _click_xpath(frame, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
-            if _is_visible(frame, XPATH_CONFIRM_BUTTON):
+            if not message_xpath and _is_visible(frame, XPATH_CONFIRM_BUTTON):
                 _click_xpath(frame, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
         except BaseException as exc:
@@ -815,7 +841,7 @@ def _click_confirm_any(
             if message_xpath and _is_visible(page, message_xpath):
                 _click_xpath(page, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
-            if _is_visible(page, XPATH_CONFIRM_BUTTON):
+            if not message_xpath and _is_visible(page, XPATH_CONFIRM_BUTTON):
                 _click_xpath(page, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
                 return
         except BaseException as exc:
@@ -896,25 +922,12 @@ def _run_flow_impl(
             nonlocal stage, pending_codes, station_results, current_station
             if not pending_codes:
                 return
-            stage = "select_all"
-            _click_xpath(frame, XPATH_CHECK_ALL, label="全选复选框")
-            if not _wait_rows_selected(frame, timeout_ms=DEFAULT_TIMEOUT_MS):
-                if not _wait_grid_has_rows(frame, timeout_ms=3_000):
-                    raise RuntimeError("表格未发现可上传数据")
-                log("全选未检测到选中行，继续尝试上传")
             stage = "upload"
             upload_result = _upload_rows_by_mini_api(frame)
             if not upload_result.get("ok"):
-                if upload_result.get("message"):
-                    raise RuntimeError(f"上传失败: {upload_result.get('message')}")
-                log(f"MiniUI 直接上传失败，回退点击上传: {upload_result.get('error') or upload_result}")
-                _click_xpath(frame, XPATH_UPLOAD, label="上传")
-                _click_confirm_any(page, frame, message_xpath=XPATH_CONFIRM_UPLOAD_MESSAGE)
-                stage = "upload_success"
-                _click_confirm_any(page, frame, message_xpath=XPATH_SUCCESS_MESSAGE)
-            else:
-                log(f"扫描数据上传成功: {upload_result.get('message') or upload_result}")
-                stage = "upload_success"
+                raise RuntimeError(f"上传失败: {_mini_failure_detail(upload_result)}")
+            log(f"扫描数据上传成功: {upload_result.get('message') or 'success'}")
+            stage = "upload_success"
             stage = "verify_clear"
             if not _wait_table_cleared(frame, timeout_ms=DEFAULT_TIMEOUT_MS):
                 raise RuntimeError("表格未清空或未刷新完成")
@@ -937,9 +950,7 @@ def _run_flow_impl(
                     _upload_current_station()
                 stage = "select_station"
                 log(f"输入下一站: {station}")
-                selected = _select_station(frame, station)
-                if not selected:
-                    log(f"下一站未确认: {station}")
+                _select_station(frame, station)
                 current_station = station
 
             stage = "input_bill_code"
@@ -954,14 +965,7 @@ def _run_flow_impl(
                 skipped_signed_codes.append(bill)
                 continue
             else:
-                log(f"MiniUI 提交扫描单号失败，回退输入法: {add_result.get('error') or add_result}")
-                _fill_xpath(frame, XPATH_SCAN_INPUT, bill, label="扫描单号")
-                try:
-                    scan_input = _wait_xpath_visible(frame, XPATH_SCAN_INPUT, timeout_ms=DEFAULT_TIMEOUT_MS)
-                    scan_input.press("Enter")
-                    _pause(frame)
-                except Exception:
-                    pass
+                raise RuntimeError(f"扫描单号写入失败: {_mini_failure_detail(add_result)}")
             if _wait_signed_popup(page, frame):
                 log(f"单号已做过签收，跳过: {bill}")
                 skipped_signed_codes.append(bill)

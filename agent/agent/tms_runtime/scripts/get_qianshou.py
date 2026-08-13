@@ -49,6 +49,15 @@ def _has_value(value: Any) -> bool:
     return True
 
 
+def _has_confirmed_sign_signal(row: Dict[str, Any]) -> bool:
+    """Detect the R13-reported sign signal for diagnostics only.
+
+    The daily-sign ledger deliberately does not use this signal to filter or
+    close a waybill; only a TMS main-waybill ``签收`` scan can do that.
+    """
+    return _has_value(row.get("signTime")) or _has_value(row.get("signSiteName"))
+
+
 def _extract_rows(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return payload
@@ -74,6 +83,23 @@ def _extract_rows(payload: Any) -> List[Dict[str, Any]]:
         if isinstance(rows, list):
             return rows
     return []
+
+
+def _has_rows_container(payload: Any) -> bool:
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    candidates = [payload]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+        if isinstance(data.get("page"), dict):
+            candidates.append(data["page"])
+    for candidate in candidates:
+        if any(isinstance(candidate.get(key), list) for key in ("records", "rows", "list", "items", "data")):
+            return True
+    return False
 
 
 def _extract_total(payload: Any) -> Optional[int]:
@@ -161,6 +187,7 @@ def fetch_qianshou(
 
     start_value, end_value = _resolve_range(start, end, days)
     result: List[Dict[str, Any]] = []
+    seen_rows: Dict[str, Dict[str, Any]] = {}
     current_page = max(1, page)
     fetched_pages = 0
 
@@ -176,25 +203,36 @@ def fetch_qianshou(
         response = session.post(API_URL, json=payload, headers=headers, timeout=20)
         response.raise_for_status()
         data = response.json()
+        if not _has_rows_container(data):
+            raise RuntimeError(f"R13 page {current_page} response is missing a records list")
         rows = _extract_rows(data)
 
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            disp_time = row.get("dispTime")
-            if _has_value(disp_time):
+            bill_code = str(row.get("billNumberMain") or "").strip()
+            if not bill_code:
+                raise RuntimeError(f"R13 page {current_page} contains a row without billNumberMain")
+            normalized = {
+                "billNumberMain": bill_code,
+                "planSignTime": row.get("planSignTime"),
+                "goodsName": row.get("goodsName"),
+                "pcs": _to_int(row.get("pcs")),
+                "dispAddress": row.get("dispAddress"),
+                "dispatchMode": row.get("dispatchMode"),
+                "packTypeDesc": row.get("packTypeDesc"),
+                "isSigns": row.get("isSigns"),
+                "signSiteName": row.get("signSiteName"),
+                "signTime": row.get("signTime"),
+                "dispTime": row.get("dispTime"),
+            }
+            previous = seen_rows.get(bill_code)
+            if previous is not None:
+                if previous != normalized:
+                    raise RuntimeError(f"R13 duplicate bill has conflicting data: {bill_code}")
                 continue
-            result.append(
-                {
-                    "billNumberMain": row.get("billNumberMain"),
-                    "planSignTime": row.get("planSignTime"),
-                    "goodsName": row.get("goodsName"),
-                    "pcs": _to_int(row.get("pcs")),
-                    "dispAddress": row.get("dispAddress"),
-                    "dispatchMode": row.get("dispatchMode"),
-                    "packTypeDesc": row.get("packTypeDesc"),
-                }
-            )
+            seen_rows[bill_code] = normalized
+            result.append(normalized)
 
         fetched_pages += 1
         if not fetch_all:
@@ -209,7 +247,9 @@ def fetch_qianshou(
             if current_page >= total_pages:
                 break
         if fetched_pages >= max_pages:
-            break
+            raise RuntimeError(
+                f"R13 pagination reached max_pages={max_pages} before a complete terminal page"
+            )
         current_page += 1
 
     return result

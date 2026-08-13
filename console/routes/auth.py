@@ -31,4 +31,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path.startswith("/settings/accounts/") and path.endswith("/reset-password"):
         app._handle_admin_account_reset_password(handler, path)
         return True
+    if path.startswith("/settings/accounts/") and path.endswith("/role"):
+        app._handle_admin_account_role(handler, path)
+        return True
     return False
