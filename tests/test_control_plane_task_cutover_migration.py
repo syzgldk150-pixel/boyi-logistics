@@ -144,7 +144,8 @@ def test_empty_database_is_the_only_allowed_incomplete_reviewed_set() -> None:
     missing_guard = sql[guard_insert : sql.index("CREATE TABLE IF NOT EXISTS", guard_insert)]
 
     assert "WHEN EXISTS (" in missing_guard
-    assert "candidate_expected.id IS NOT NULL" in missing_guard
+    assert "FROM scheduled_tasks AS candidate" in missing_guard
+    assert "candidate_expected" not in missing_guard
     assert "LEFT(candidate.id, CHAR_LENGTH('clockin_')) = 'clockin_'" in missing_guard
     assert "LEFT(candidate.id, CHAR_LENGTH('daily_sign_')) = 'daily_sign_'" in missing_guard
     assert "candidate.tool_name = 'clock_in_dual'" in missing_guard
@@ -236,6 +237,13 @@ def test_task_cutover_is_compatible_with_the_deployment_sql_splitter() -> None:
     )
     assert "START TRANSACTION" in statements
     assert "COMMIT" in statements
+    for temporary_table in (
+        "cp014_expected_tasks",
+        "cp014_enabled_snapshot",
+        "cp014_preflight_guard",
+        "cp014_postflight_guard",
+    ):
+        assert all(statement.count(temporary_table) <= 1 for statement in statements)
 
 
 def test_single_account_schedule_registry_requires_explicit_top_level_account() -> None:

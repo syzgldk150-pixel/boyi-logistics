@@ -76,7 +76,7 @@ class ControlPlaneTaskCutoverPreflightError(RuntimeError):
 
 
 def _require_mysql8(cursor) -> str:
-    """Fail before migration bookkeeping unless the server is MySQL 8."""
+    """Fail before bookkeeping unless MySQL enforces the required CHECK guards."""
 
     cursor.execute("SELECT VERSION() AS version")
     row = cursor.fetchone()
@@ -91,9 +91,17 @@ def _require_mysql8(cursor) -> str:
     if "mariadb" in version.lower():
         raise RuntimeError(f"Migration runner requires MySQL 8; MariaDB is unsupported ({version})")
 
-    match = re.match(r"^(\d+)(?:\.|$)", version)
-    if match is None or int(match.group(1)) != 8:
-        raise RuntimeError(f"Migration runner requires MySQL 8; found {version or 'unknown'}")
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:\D|$)", version)
+    supported = False
+    if match is not None and int(match.group(1)) == 8:
+        minor = int(match.group(2))
+        patch = int(match.group(3))
+        supported = minor > 0 or patch >= 16
+    if not supported:
+        raise RuntimeError(
+            "Migration runner requires MySQL 8.0.16 or newer; "
+            f"found {version or 'unknown'}"
+        )
     return version
 
 

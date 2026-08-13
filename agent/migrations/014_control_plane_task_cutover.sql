@@ -129,299 +129,327 @@ INSERT INTO cp014_preflight_guard (
     site_shape,
     yunda_send_shape
 )
-SELECT
-    (
-        SELECT CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM scheduled_tasks AS candidate
-                LEFT JOIN cp014_expected_tasks AS candidate_expected
-                    ON candidate_expected.id = candidate.id
-                WHERE candidate_expected.id IS NOT NULL
-                   OR candidate.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
-                   OR LEFT(candidate.id, CHAR_LENGTH('clockin_')) = 'clockin_'
-                   OR LEFT(candidate.id, CHAR_LENGTH('arrive_list_')) = 'arrive_list_'
-                   OR LEFT(candidate.id, CHAR_LENGTH('daily_sign_')) = 'daily_sign_'
-                   OR LEFT(candidate.id, CHAR_LENGTH('delivery_status_')) = 'delivery_status_'
-                   OR LEFT(candidate.id, CHAR_LENGTH('send_order_')) = 'send_order_'
-                   OR LEFT(candidate.id, CHAR_LENGTH('site_send_')) = 'site_send_'
-                   OR LEFT(candidate.id, CHAR_LENGTH('yunda_send_waybills_'))
-                       = 'yunda_send_waybills_'
-                   OR candidate.tool_name IN (
-                       'sync_daily_send_orders',
-                       'sync_delivery_status',
-                       'sync_daily_should_sign',
-                       'sync_site_send_list',
-                       'sync_arrive_list',
-                       'sync_yunda_send_waybills'
-                   )
-                   OR candidate.tool_name = 'clock_in_dual'
-                   OR (
-                       candidate.tool_name = 'tms_query'
-                       AND COALESCE(
-                           JSON_UNQUOTE(JSON_EXTRACT(candidate.tool_params, '$.endpoint')),
-                           JSON_UNQUOTE(JSON_EXTRACT(candidate.tool_params, '$.params.endpoint')),
-                           ''
-                       ) = '/clock_in_dual'
-                   )
-            )
-            THEN (
-                SELECT COUNT(*)
-                FROM cp014_expected_tasks AS expected
-                LEFT JOIN scheduled_tasks AS task ON task.id = expected.id
-                WHERE task.id IS NULL OR NOT COALESCE(task.enabled = TRUE, FALSE)
-            )
-            ELSE 0
-        END
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        LEFT JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE expected.id IS NULL
-          AND (
-              task.tool_name IN (
-                  'sync_daily_send_orders',
-                  'sync_delivery_status',
-                  'sync_daily_should_sign',
-                  'sync_site_send_list',
-                  'sync_arrive_list',
-                  'sync_yunda_send_waybills'
-              )
-              OR LEFT(task.id, CHAR_LENGTH('arrive_list_')) = 'arrive_list_'
-              OR LEFT(task.id, CHAR_LENGTH('daily_sign_')) = 'daily_sign_'
-              OR LEFT(task.id, CHAR_LENGTH('delivery_status_')) = 'delivery_status_'
-              OR LEFT(task.id, CHAR_LENGTH('send_order_')) = 'send_order_'
-              OR LEFT(task.id, CHAR_LENGTH('site_send_')) = 'site_send_'
-              OR LEFT(task.id, CHAR_LENGTH('yunda_send_waybills_'))
-                  = 'yunda_send_waybills_'
+VALUES (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+-- MySQL cannot reference the same temporary table under multiple aliases in a
+-- single statement.  Keep every guard calculation independent so each one
+-- reads cp014_expected_tasks at most once and still fails before permanent DDL.
+UPDATE cp014_preflight_guard
+SET missing_or_disabled_reviewed = (
+    SELECT CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM scheduled_tasks AS candidate
+            WHERE candidate.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
+               OR LEFT(candidate.id, CHAR_LENGTH('clockin_')) = 'clockin_'
+               OR LEFT(candidate.id, CHAR_LENGTH('arrive_list_')) = 'arrive_list_'
+               OR LEFT(candidate.id, CHAR_LENGTH('daily_sign_')) = 'daily_sign_'
+               OR LEFT(candidate.id, CHAR_LENGTH('delivery_status_')) = 'delivery_status_'
+               OR LEFT(candidate.id, CHAR_LENGTH('send_order_')) = 'send_order_'
+               OR LEFT(candidate.id, CHAR_LENGTH('site_send_')) = 'site_send_'
+               OR LEFT(candidate.id, CHAR_LENGTH('yunda_send_waybills_'))
+                    = 'yunda_send_waybills_'
+               OR candidate.tool_name IN (
+                    'sync_daily_send_orders',
+                    'sync_delivery_status',
+                    'sync_daily_should_sign',
+                    'sync_site_send_list',
+                    'sync_arrive_list',
+                    'sync_yunda_send_waybills'
+               )
+               OR candidate.tool_name = 'clock_in_dual'
+               OR (
+                    candidate.tool_name = 'tms_query'
+                    AND COALESCE(
+                        JSON_UNQUOTE(JSON_EXTRACT(candidate.tool_params, '$.endpoint')),
+                        JSON_UNQUOTE(JSON_EXTRACT(candidate.tool_params, '$.params.endpoint')),
+                        ''
+                    ) = '/clock_in_dual'
+               )
+        )
+        THEN (
+            SELECT COUNT(*)
+            FROM cp014_expected_tasks AS expected
+            LEFT JOIN scheduled_tasks AS task ON task.id = expected.id
+            WHERE task.id IS NULL OR NOT COALESCE(task.enabled = TRUE, FALSE)
+        )
+        ELSE 0
+    END
+);
+
+UPDATE cp014_preflight_guard
+SET unknown_governed = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    LEFT JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE expected.id IS NULL
+      AND (
+          task.tool_name IN (
+              'sync_daily_send_orders',
+              'sync_delivery_status',
+              'sync_daily_should_sign',
+              'sync_site_send_list',
+              'sync_arrive_list',
+              'sync_yunda_send_waybills'
           )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        WHERE (
-              LEFT(task.id, CHAR_LENGTH('clockin_')) = 'clockin_'
-              OR task.tool_name = 'clock_in_dual'
-              OR (
-                  task.tool_name = 'tms_query'
-                  AND COALESCE(
-                      JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.endpoint')),
-                      JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.params.endpoint')),
-                      ''
-                  ) = '/clock_in_dual'
-              )
+          OR LEFT(task.id, CHAR_LENGTH('arrive_list_')) = 'arrive_list_'
+          OR LEFT(task.id, CHAR_LENGTH('daily_sign_')) = 'daily_sign_'
+          OR LEFT(task.id, CHAR_LENGTH('delivery_status_')) = 'delivery_status_'
+          OR LEFT(task.id, CHAR_LENGTH('send_order_')) = 'send_order_'
+          OR LEFT(task.id, CHAR_LENGTH('site_send_')) = 'site_send_'
+          OR LEFT(task.id, CHAR_LENGTH('yunda_send_waybills_')) = 'yunda_send_waybills_'
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET unknown_clock = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    WHERE (
+          LEFT(task.id, CHAR_LENGTH('clockin_')) = 'clockin_'
+          OR task.tool_name = 'clock_in_dual'
+          OR (
+              task.tool_name = 'tms_query'
+              AND COALESCE(
+                  JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.endpoint')),
+                  JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.params.endpoint')),
+                  ''
+              ) = '/clock_in_dual'
           )
-          AND task.id NOT IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND (
-              COALESCE(task.tool_name, '') <> expected.tool_name
-              OR COALESCE(task.cron_expression, '') <> expected.cron_expression
+      )
+      AND task.id NOT IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
+);
+
+UPDATE cp014_preflight_guard
+SET reviewed_binding = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND (
+          COALESCE(task.tool_name, '') <> expected.tool_name
+          OR COALESCE(task.cron_expression, '') <> expected.cron_expression
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET clock_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    WHERE task.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
+      AND (
+          task.tool_name NOT IN ('tms_query', 'clock_in_dual')
+          OR task.tool_name IS NULL
+          OR task.enabled NOT IN (FALSE, TRUE)
+          OR task.enabled IS NULL
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET clock_policy_conflict = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    WHERE task.enabled = TRUE
+      AND (
+          task.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
+          OR task.tool_name = 'clock_in_dual'
+          OR (
+              task.tool_name = 'tms_query'
+              AND COALESCE(
+                  JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.endpoint')),
+                  JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.params.endpoint')),
+                  ''
+              ) = '/clock_in_dual'
           )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        WHERE task.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
-          AND (
-              task.tool_name NOT IN ('tms_query', 'clock_in_dual')
-              OR task.tool_name IS NULL
-              OR task.enabled NOT IN (FALSE, TRUE)
-              OR task.enabled IS NULL
-          )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        WHERE task.enabled = TRUE
-          AND (
-              task.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')
-              OR task.tool_name = 'clock_in_dual'
-              OR (
-                  task.tool_name = 'tms_query'
-                  AND COALESCE(
-                      JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.endpoint')),
-                      JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.params.endpoint')),
-                      ''
-                  ) = '/clock_in_dual'
-              )
-          )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'arrive_list'
-          AND NOT COALESCE(
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
-              )
-              OR
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 4
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.login_site_code')) = 'STRING'
-                  AND SHA2(
-                      TRIM(JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.login_site_code'))),
-                      256
-                  )
-                      = 'c33492072957c7cc41ad8769d0c790b50d3b5314427e3912609432ea9d320912'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.site_code')) = 'STRING'
-                  AND NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.site_code'))), '') IS NOT NULL
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.target_date')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.target_date')) = ''
-              ),
-              FALSE
-          )
-    ),
-    (
-        SELECT CASE
-            WHEN COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.site_code'))) <= 1 THEN 0
-            ELSE 1
-        END
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'arrive_list'
-          AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.site_code')) = 'STRING'
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'daily_sign'
-          AND NOT COALESCE(
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 5
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'r13_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.problem_account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.problem_account_id')) = 'ronghui_daxiang_s'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.sign_account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.sign_account_id')) = 'ronghui_daxiang_s'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'ronghui_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.days')) = 'INTEGER'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.days')) = '7'
-              )
-              OR
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 3
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'r13_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'r13_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'ronghui_default'
-              ),
-              FALSE
-          )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'delivery_status'
-          AND NOT COALESCE(
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 0
-              )
-              OR
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
-              ),
-              FALSE
-          )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'send_order'
-          AND NOT COALESCE(
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'price_default'
-              )
-              OR
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 2
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'price_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.target_date')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.target_date')) = ''
-              ),
-              FALSE
-          )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'site_send'
-          AND NOT COALESCE(
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET arrive_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'arrive_list'
+      AND NOT COALESCE(
+          (
               JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
               AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
               AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default',
-              FALSE
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
           )
-    ),
-    (
-        SELECT COUNT(*)
-        FROM scheduled_tasks AS task
-        INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-        WHERE task.enabled = TRUE
-          AND expected.family = 'yunda_send_waybills'
-          AND NOT COALESCE(
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 2
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
-              )
-              OR
-              (
-                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 4
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.session_profile')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.session_profile')) = 'yunda'
-                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.target_date')) = 'STRING'
-                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.target_date')) = ''
-              ),
-              FALSE
+          OR
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 4
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.login_site_code')) = 'STRING'
+              AND SHA2(
+                  TRIM(JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.login_site_code'))),
+                  256
+              ) = 'c33492072957c7cc41ad8769d0c790b50d3b5314427e3912609432ea9d320912'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.site_code')) = 'STRING'
+              AND NULLIF(
+                  TRIM(JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.site_code'))),
+                  ''
+              ) IS NOT NULL
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.target_date')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.target_date')) = ''
+          ),
+          FALSE
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET arrive_site_values = (
+    SELECT CASE
+        WHEN COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.site_code'))) <= 1
+        THEN 0
+        ELSE 1
+    END
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'arrive_list'
+      AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.site_code')) = 'STRING'
+);
+
+UPDATE cp014_preflight_guard
+SET daily_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'daily_sign'
+      AND NOT COALESCE(
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 5
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'r13_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.problem_account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.problem_account_id')) = 'ronghui_daxiang_s'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.sign_account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.sign_account_id')) = 'ronghui_daxiang_s'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'ronghui_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.days')) = 'INTEGER'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.days')) = '7'
           )
-    );
+          OR
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 3
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'r13_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'r13_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'ronghui_default'
+          ),
+          FALSE
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET delivery_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'delivery_status'
+      AND NOT COALESCE(
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 0
+          )
+          OR
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
+          ),
+          FALSE
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET send_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'send_order'
+      AND NOT COALESCE(
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'price_default'
+          )
+          OR
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 2
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'price_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.target_date')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.target_date')) = ''
+          ),
+          FALSE
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET site_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'site_send'
+      AND NOT COALESCE(
+          JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+          AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+          AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+          AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default',
+          FALSE
+      )
+);
+
+UPDATE cp014_preflight_guard
+SET yunda_send_shape = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND expected.family = 'yunda_send_waybills'
+      AND NOT COALESCE(
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 2
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
+          )
+          OR
+          (
+              JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+              AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 4
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.session_profile')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.session_profile')) = 'yunda'
+              AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.target_date')) = 'STRING'
+              AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.target_date')) = ''
+          ),
+          FALSE
+      )
+);
 
 CREATE TABLE IF NOT EXISTS control_plane_task_cutover_backup_014 LIKE scheduled_tasks;
 
@@ -517,61 +545,65 @@ CREATE TEMPORARY TABLE cp014_postflight_guard (
 ) ENGINE=InnoDB;
 
 INSERT INTO cp014_postflight_guard (enabled_count_changed, noncanonical_rows)
-SELECT
-    ABS(
-        snapshot.enabled_count
-        - (
-            SELECT COUNT(*)
-            FROM scheduled_tasks AS task
-            INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
-            WHERE task.enabled = TRUE
-        )
-    ),
-    (
+VALUES (0, 0);
+
+UPDATE cp014_postflight_guard AS guard
+CROSS JOIN cp014_enabled_snapshot AS snapshot
+SET guard.enabled_count_changed = ABS(
+    snapshot.enabled_count
+    - (
         SELECT COUNT(*)
         FROM scheduled_tasks AS task
         INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
         WHERE task.enabled = TRUE
-          AND NOT COALESCE(
-              CASE expected.family
-                  WHEN 'arrive_list' THEN
-                      JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                      AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                      AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
-                  WHEN 'daily_sign' THEN
-                      JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                      AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 5
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'r13_default'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.problem_account_id')) = 'ronghui_daxiang_s'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.sign_account_id')) = 'ronghui_daxiang_s'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'ronghui_default'
-                      AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.days')) = 'INTEGER'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.days')) = '7'
-                  WHEN 'delivery_status' THEN
-                      JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                      AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
-                  WHEN 'send_order' THEN
-                      JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                      AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'price_default'
-                  WHEN 'site_send' THEN
-                      JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                      AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
-                  WHEN 'yunda_send_waybills' THEN
-                      JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
-                      AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 2
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
-                      AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
-                  ELSE FALSE
-              END,
-              FALSE
-          )
     )
-FROM cp014_enabled_snapshot AS snapshot;
+);
+
+UPDATE cp014_postflight_guard
+SET noncanonical_rows = (
+    SELECT COUNT(*)
+    FROM scheduled_tasks AS task
+    INNER JOIN cp014_expected_tasks AS expected ON expected.id = task.id
+    WHERE task.enabled = TRUE
+      AND NOT COALESCE(
+          CASE expected.family
+              WHEN 'arrive_list' THEN
+                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
+              WHEN 'daily_sign' THEN
+                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 5
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.r13_account_id')) = 'r13_default'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.problem_account_id')) = 'ronghui_daxiang_s'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.sign_account_id')) = 'ronghui_daxiang_s'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.detail_account_id')) = 'ronghui_default'
+                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.days')) = 'INTEGER'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.days')) = '7'
+              WHEN 'delivery_status' THEN
+                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
+              WHEN 'send_order' THEN
+                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'price_default'
+              WHEN 'site_send' THEN
+                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 1
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'ronghui_default'
+              WHEN 'yunda_send_waybills' THEN
+                  JSON_TYPE(COALESCE(task.tool_params, JSON_OBJECT())) = 'OBJECT'
+                  AND JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 2
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
+                  AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
+              ELSE FALSE
+          END,
+          FALSE
+      )
+);
 
 COMMIT;
 
