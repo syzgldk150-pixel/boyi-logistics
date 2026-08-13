@@ -351,7 +351,7 @@ MINI_ADD_BILL_CODE_SCRIPT = r"""
     }
   }
 
-  if (!window.$Z || !$Z.user || typeof $Z.user.getUserInfo !== "function") {
+  if (typeof $Z === "undefined" || !$Z.user || typeof $Z.user.getUserInfo !== "function") {
     return { ok: false, error: "login_context_unavailable" };
   }
   let userInfo = null;
