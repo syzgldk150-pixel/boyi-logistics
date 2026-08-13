@@ -10,10 +10,11 @@ import threading
 import time
 from html import escape, unescape
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.ronghui_user_context import decode_js_cookie_value, parse_ronghui_user_info_cookie
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
 from agent.tms_runtime.session_broker import get_session_broker
 
@@ -211,18 +212,7 @@ def _js_escape_cookie_value(text: str) -> str:
 
 
 def _decode_js_cookie_value(value: Any) -> str:
-    text = _clean_text(value)
-    if not text:
-        return ""
-
-    def replace_unicode_escape(match: re.Match[str]) -> str:
-        try:
-            return chr(int(match.group(1), 16))
-        except Exception:
-            return match.group(0)
-
-    text = re.sub(r"%u([0-9A-Fa-f]{4})", replace_unicode_escape, text)
-    return unquote(text)
+    return decode_js_cookie_value(value)
 
 
 def _session_cookie_value(session: Any, name: str) -> str:
@@ -250,20 +240,7 @@ def _session_cookie_value(session: Any, name: str) -> str:
 
 
 def _parse_user_info_cookie(value: Any) -> dict[str, Any]:
-    raw = _clean_text(value)
-    if not raw:
-        return {}
-    candidates = [raw, _decode_js_cookie_value(raw)]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            payload = json.loads(candidate)
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
+    return parse_ronghui_user_info_cookie(value)
 
 
 def _client_user_info_cookie_from_session(session: Any) -> str:

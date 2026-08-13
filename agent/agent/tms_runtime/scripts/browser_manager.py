@@ -82,12 +82,15 @@ class TMSBrowserAuth:
         profile: str = "default",
     ):
         self.base_url = base_url.rstrip("/")
-        self.login_url = (login_url or f"{self.base_url}{login_path}").strip()
-        self.home_url = (home_url or f"{self.base_url}{home_path}").strip()
-        self.selectors = selectors
-        self.max_attempts = max_attempts
         self.use_shared_session = bool(use_shared_session)
         self.profile = str(profile or "default").strip() or "default"
+        shared_home_url = ""
+        if self.use_shared_session and not home_url:
+            shared_home_url = get_session_broker(self.profile).resolve_login_config().home_url
+        self.login_url = (login_url or f"{self.base_url}{login_path}").strip()
+        self.home_url = (home_url or shared_home_url or f"{self.base_url}{home_path}").strip()
+        self.selectors = selectors
+        self.max_attempts = max_attempts
 
     @staticmethod
     def _sel(selector: str) -> str:
