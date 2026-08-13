@@ -9,6 +9,9 @@ class ScanNextFailFastTests(unittest.TestCase):
     def test_scan_user_fields_match_original_page_without_display_fallbacks(self):
         script = scan_next.MINI_ADD_BILL_CODE_SCRIPT
 
+        self.assertIn('typeof $Z === "undefined"', script)
+        self.assertNotIn("window.$Z", script)
+        self.assertIn("userInfo = $Z.user.getUserInfo();", script)
         self.assertIn('formData.SCAN_MAN = loginUserName;', script)
         self.assertIn('formData.SCAN_MAN_CODE = loginUserAccount;', script)
         self.assertIn('"loginUserName"', script)
@@ -67,3 +70,15 @@ class ScanNextFailFastTests(unittest.TestCase):
         self.assertNotIn("回退输入法", source)
         self.assertNotIn("回退点击上传", source)
         self.assertNotIn("XPATH_UPLOAD", source)
+
+    def test_signed_items_are_skipped_without_stopping_later_items(self):
+        source = inspect.getsource(scan_next._run_flow_impl)  # noqa: SLF001
+
+        self.assertRegex(
+            source,
+            r"(?s)elif add_result\.get\(\"signed\"\):.*?skipped_signed_codes\.append\(bill\).*?continue",
+        )
+        self.assertRegex(
+            source,
+            r"(?s)if skipped:.*?skipped_signed_codes\.append\(bill\).*?continue",
+        )
