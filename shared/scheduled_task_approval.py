@@ -17,6 +17,11 @@ from typing import Any, Mapping
 
 
 POLICY_SCHEMA_VERSION = 1
+ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID = "system:account-credential-change"
+ACCOUNT_CREDENTIAL_CHANGE_REASON = "account_credentials_change_preflight"
+ACCOUNT_CREDENTIAL_CHANGE_COMMENT = (
+    "automatic revocation before account credentials change"
+)
 _DAILY_CRON_RE = re.compile(r"^(?P<minute>\d{1,2}) (?P<hour>\d{1,2}) \* \* \*$")
 
 

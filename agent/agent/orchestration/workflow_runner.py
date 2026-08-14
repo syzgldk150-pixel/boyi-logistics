@@ -7,7 +7,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.context_builder import ContextBuilder
@@ -53,6 +53,8 @@ TERMINAL_STATUSES = {
     RunStatus.FAILED_TERMINAL.value,
     RunStatus.CANCELLED.value,
 }
+PROTECTED_STEP_LOCK_WAIT_SECONDS = 5.0
+PROTECTED_STEP_LOCK_RETRY_SECONDS = 0.1
 
 
 class WorkflowRunner:
@@ -70,6 +72,9 @@ class WorkflowRunner:
         verifier: ResultVerifier,
         worker_id: str,
         pilot_projection: PilotProjectionService | None = None,
+        protected_step_start_guard: (
+            Callable[[PlanStep], Callable[[], None]] | None
+        ) = None,
         poll_interval_seconds: float = 0.5,
         lease_seconds: int = 120,
     ) -> None:
@@ -83,6 +88,7 @@ class WorkflowRunner:
         self._approval_service = approval_service
         self._verifier = verifier
         self._pilot_projection = pilot_projection or PilotProjectionService()
+        self._protected_step_start_guard = protected_step_start_guard
         self._worker_id = worker_id
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._lease_seconds = max(10, int(lease_seconds))
@@ -90,10 +96,12 @@ class WorkflowRunner:
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._active: dict[str, tuple[str, asyncio.Task]] = {}
+        self._release_hold = False
 
-    async def start(self) -> None:
+    async def start(self, *, held_for_release: bool = False) -> None:
         if self._task is not None:
             return
+        self._release_hold = bool(held_for_release)
         self._stop.clear()
         self._task = asyncio.create_task(self._run_loop(), name=f"run-worker:{self._worker_id}")
 
@@ -108,6 +116,38 @@ class WorkflowRunner:
     def wake(self, _run_id: str | None = None) -> None:
         self._wake.set()
 
+    def hold_for_release(self) -> dict[str, Any]:
+        """Stop new durable claims while a deployment marker is active."""
+
+        if self._task is None or self._task.done():
+            raise RuntimeError("Workflow runner is not available for release hold")
+        self._release_hold = True
+        self._wake.set()
+        return self.runtime_status()
+
+    def resume_after_release(self) -> dict[str, Any]:
+        """Idempotently allow durable claims after all release gates pass."""
+
+        if self._task is None or self._task.done():
+            raise RuntimeError("Workflow runner is not available for release activation")
+        self._release_hold = False
+        self._wake.set()
+        return self.runtime_status()
+
+    def runtime_status(self) -> dict[str, Any]:
+        task = self._task
+        if task is None or task.done():
+            state = "stopped"
+        elif self._release_hold:
+            state = "held"
+        else:
+            state = "running"
+        return {
+            "state": state,
+            "release_hold": self._release_hold,
+            "active_runs": len(self._active),
+        }
+
     async def cancel_active(self, run_id: str) -> None:
         active = self._active.get(run_id)
         if active is not None:
@@ -117,6 +157,18 @@ class WorkflowRunner:
 
     async def _run_loop(self) -> None:
         while not self._stop.is_set():
+            if self._release_hold:
+                self._wake.clear()
+                if not self._release_hold or self._stop.is_set():
+                    continue
+                try:
+                    await asyncio.wait_for(
+                        self._wake.wait(),
+                        timeout=self._poll_interval_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                continue
             claimed_any = False
             try:
                 cancellations = await asyncio.to_thread(
@@ -173,6 +225,7 @@ class WorkflowRunner:
                 return
             command = self._load_command(str(run["command_id"]))
             status = RunStatus(str(run["status"]))
+            recovered_running = status is RunStatus.RUNNING
 
             if status in {RunStatus.RECEIVED, RunStatus.FAILED_RETRYABLE}:
                 context = self._context_builder.build(command)
@@ -308,6 +361,53 @@ class WorkflowRunner:
                 )
                 status = RunStatus.RUNNING
 
+            if recovered_running and status is RunStatus.RUNNING and decision.requires_approval:
+                waiting_run = self._defer_unstarted_running_plan_for_approval(
+                    run=run,
+                    plan=plan,
+                )
+                if waiting_run is None:
+                    recovery_complete = await self._reconcile_started_steps_for_policy_recheck(
+                        run=run,
+                        plan=plan,
+                        command=command,
+                    )
+                    if recovery_complete:
+                        run = self._transition(run, RunStatus.VERIFYING)
+                        status = RunStatus.VERIFYING
+                    else:
+                        waiting_run = self._defer_reconciled_running_plan_for_approval(
+                            run=run,
+                            plan=plan,
+                        )
+                if waiting_run is not None:
+                    try:
+                        self._approval_service.request(
+                            run=waiting_run,
+                            plan=_annotate_approval(plan, True),
+                            policy_decision=decision,
+                            requested_by=command.actor,
+                        )
+                    except Exception as exc:
+                        logger.exception(
+                            "Approval request persistence failed after safely pausing run_id=%s",
+                            run_id,
+                        )
+                        await asyncio.to_thread(
+                            self._release,
+                            run_id,
+                            status=RunStatus.WAITING_APPROVAL.value,
+                            error_code="APPROVAL_REQUEST_PENDING",
+                            error_summary=redact_text(exc)[:500],
+                        )
+                        return
+                    await asyncio.to_thread(
+                        self._release,
+                        run_id,
+                        status=RunStatus.WAITING_APPROVAL.value,
+                    )
+                    return
+
             if status is RunStatus.RUNNING:
                 run = await self._execute_plan(run, plan, command)
                 status = RunStatus(str(run["status"]))
@@ -376,12 +476,209 @@ class WorkflowRunner:
             uow.commit()
         return updated, "APPROVED"
 
+    def _defer_unstarted_running_plan_for_approval(
+        self,
+        *,
+        run: Mapping[str, Any],
+        plan: Plan,
+    ) -> dict[str, Any] | None:
+        """Pause a recovered Run before any newly-required write can start.
+
+        A Run can be persisted as RUNNING before its first step is started.  If
+        an exact scheduler exemption is revoked during that crash window, the
+        fresh policy decision must win.  The Run row is the serialization lock
+        shared with step start, so either this CAS reaches WAITING_APPROVAL or a
+        write step reaches RUNNING first; the two outcomes cannot cross.
+
+        An already-started write is deliberately left on the existing
+        reconciliation path.  Resetting it to PENDING or starting a new
+        approval round before its outcome is known could replay an external
+        side effect.
+        """
+
+        annotated_plan = _annotate_approval(plan, True)
+        with self._repository.unit_of_work() as uow:
+            locked_run = uow.runs.get(str(run["run_id"]), for_update=True)
+            if locked_run is None:
+                raise OrchestrationError(
+                    "RUN_NOT_FOUND",
+                    "Run was not found while rechecking execution approval",
+                )
+            if str(locked_run.get("status") or "") != RunStatus.RUNNING.value:
+                raise OrchestrationError(
+                    "RUN_STATE_CONFLICT",
+                    "Run state changed while rechecking execution approval",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+            if str(locked_run.get("worker_id") or "") != self._worker_id:
+                raise OrchestrationError(
+                    "RUN_LEASE_LOST",
+                    "Run lease changed while rechecking execution approval",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+
+            step_operations = {
+                step.step_key: step.operation_type for step in plan.steps
+            }
+            persisted_steps = uow.steps.list_for_run(str(run["run_id"]))
+            if any(
+                _is_started_write_step(step_row, step_operations)
+                for step_row in persisted_steps
+            ):
+                return None
+
+            assert_run_transition(RunStatus.RUNNING, RunStatus.WAITING_APPROVAL)
+            updated = uow.runs.transition(
+                str(run["run_id"]),
+                expected_version=int(locked_run["version"]),
+                expected_statuses=(RunStatus.RUNNING.value,),
+                status=RunStatus.WAITING_APPROVAL.value,
+                plan=annotated_plan.to_dict(),
+            )
+            self._sync_work_item_status(
+                uow,
+                updated,
+                RunStatus.WAITING_APPROVAL,
+            )
+            self._append_event(
+                uow,
+                event_type="agent.run.status_changed",
+                run=updated,
+                payload={
+                    "from": RunStatus.RUNNING.value,
+                    "to": RunStatus.WAITING_APPROVAL.value,
+                    "reason_code": "FRESH_POLICY_REQUIRES_APPROVAL",
+                    "plan_hash": plan.plan_hash,
+                },
+            )
+            uow.commit()
+        return updated
+
+    async def _reconcile_started_steps_for_policy_recheck(
+        self,
+        *,
+        run: Mapping[str, Any],
+        plan: Plan,
+        command: Command,
+    ) -> bool:
+        """Resolve in-flight steps without starting any new tool execution."""
+
+        with self._repository.unit_of_work() as uow:
+            persisted_steps = uow.steps.list_for_run(str(run["run_id"]))
+        plan_by_key = {step.step_key: step for step in plan.steps}
+        for step_row in persisted_steps:
+            status = str(step_row.get("status") or "").strip().upper()
+            if status not in {"RUNNING", "VERIFYING"}:
+                continue
+            step_key = str(step_row.get("step_key") or "")
+            step = plan_by_key.get(step_key)
+            if step is None:
+                raise OrchestrationError(
+                    "STEP_STATE_CONFLICT",
+                    "Persisted in-flight step is not present in the approved plan",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+            await self._recover_interrupted_step(
+                run,
+                step,
+                step_row,
+                command,
+            )
+
+        with self._repository.unit_of_work() as uow:
+            reconciled_steps = uow.steps.list_for_run(str(run["run_id"]))
+        status_by_key = {
+            str(step_row.get("step_key") or ""): str(
+                step_row.get("status") or ""
+            ).strip().upper()
+            for step_row in reconciled_steps
+        }
+        invalid = sorted(
+            f"{step_key}:{step_status or '<empty>'}"
+            for step_key, step_status in status_by_key.items()
+            if step_key not in plan_by_key
+            or step_status not in {"PENDING", "FAILED_RETRYABLE", "COMPLETED"}
+        )
+        if invalid:
+            raise OrchestrationError(
+                "STEP_STATE_CONFLICT",
+                "Recovered steps cannot safely enter approval: " + ", ".join(invalid),
+                details={"status": RunStatus.BLOCKED_DATA.value},
+            )
+        return all(
+            status_by_key.get(step.step_key) == "COMPLETED"
+            for step in plan.steps
+        )
+
+    def _defer_reconciled_running_plan_for_approval(
+        self,
+        *,
+        run: Mapping[str, Any],
+        plan: Plan,
+    ) -> dict[str, Any]:
+        """Move a reconciled RUNNING Run to approval without replaying a step."""
+
+        annotated_plan = _annotate_approval(plan, True)
+        with self._repository.unit_of_work() as uow:
+            locked_run = uow.runs.get(str(run["run_id"]), for_update=True)
+            if locked_run is None:
+                raise OrchestrationError(
+                    "RUN_NOT_FOUND",
+                    "Run was not found after reconciling its interrupted steps",
+                )
+            if (
+                str(locked_run.get("status") or "") != RunStatus.RUNNING.value
+                or str(locked_run.get("worker_id") or "") != self._worker_id
+            ):
+                raise OrchestrationError(
+                    "RUN_LEASE_LOST",
+                    "Run lease changed after reconciling its interrupted steps",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+            persisted_steps = uow.steps.list_for_run(str(run["run_id"]))
+            if any(
+                str(step_row.get("status") or "").strip().upper()
+                in {"RUNNING", "VERIFYING"}
+                for step_row in persisted_steps
+            ):
+                raise OrchestrationError(
+                    "STEP_RECOVERY_INCOMPLETE",
+                    "An interrupted step still requires reconciliation",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+            assert_run_transition(RunStatus.RUNNING, RunStatus.WAITING_APPROVAL)
+            updated = uow.runs.transition(
+                str(run["run_id"]),
+                expected_version=int(locked_run["version"]),
+                expected_statuses=(RunStatus.RUNNING.value,),
+                status=RunStatus.WAITING_APPROVAL.value,
+                plan=annotated_plan.to_dict(),
+            )
+            self._sync_work_item_status(
+                uow,
+                updated,
+                RunStatus.WAITING_APPROVAL,
+            )
+            self._append_event(
+                uow,
+                event_type="agent.run.status_changed",
+                run=updated,
+                payload={
+                    "from": RunStatus.RUNNING.value,
+                    "to": RunStatus.WAITING_APPROVAL.value,
+                    "reason_code": "FRESH_POLICY_REQUIRES_APPROVAL_AFTER_RECOVERY",
+                    "plan_hash": plan.plan_hash,
+                },
+            )
+            uow.commit()
+        return updated
+
     async def _execute_plan(self, run: dict[str, Any], plan: Plan, command: Command) -> dict[str, Any]:
         for order, step in enumerate(plan.steps, start=1):
             step_row = self._get_or_create_step(run, step, order)
             if step_row.get("status") == "COMPLETED":
                 continue
-            if step_row.get("status") == "RUNNING":
+            if step_row.get("status") in {"RUNNING", "VERIFYING"}:
                 step_row = await self._recover_interrupted_step(run, step, step_row, command)
                 if step_row.get("status") == "COMPLETED":
                     continue
@@ -391,16 +688,75 @@ class WorkflowRunner:
                     f"Step {step.step_key} cannot resume from {step_row.get('status')}",
                     details={"status": RunStatus.BLOCKED_DATA.value},
                 )
-            with self._repository.unit_of_work() as uow:
-                started_step = uow.steps.transition(
-                    str(step_row["step_id"]),
-                    expected_version=int(step_row["version"]),
-                    expected_statuses=("PENDING", "FAILED_RETRYABLE"),
-                    status="RUNNING",
-                    increment_attempt=True,
-                    started_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                )
-                uow.commit()
+            finish_protected_step_start = await self._acquire_protected_step_start(
+                step
+            )
+            try:
+                if getattr(self, "_protected_step_start_guard", None) is not None:
+                    fresh_decision = self._policy.evaluate(
+                        plan,
+                        command.actor,
+                        source=command.source,
+                        execution_context=dict(
+                            command.parameters.get("execution_context") or {}
+                        ),
+                    )
+                    if not fresh_decision.allowed:
+                        raise OrchestrationError(
+                            fresh_decision.code,
+                            fresh_decision.reason,
+                        )
+                    if fresh_decision.requires_approval and not step.requires_approval:
+                        waiting_run = self._defer_unstarted_running_plan_for_approval(
+                            run=run,
+                            plan=plan,
+                        )
+                        if waiting_run is None:
+                            raise OrchestrationError(
+                                "ACCOUNT_POLICY_RECHECK_UNSAFE",
+                                "A protected write already started before its account policy recheck",
+                                details={"status": RunStatus.BLOCKED_DATA.value},
+                            )
+                        try:
+                            self._approval_service.request(
+                                run=waiting_run,
+                                plan=_annotate_approval(plan, True),
+                                policy_decision=fresh_decision,
+                                requested_by=command.actor,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Approval request persistence failed after account policy recheck run_id=%s",
+                                run["run_id"],
+                            )
+                        return waiting_run
+                with self._repository.unit_of_work() as uow:
+                    locked_run = uow.runs.get(str(run["run_id"]), for_update=True)
+                    if locked_run is None:
+                        raise OrchestrationError(
+                            "RUN_NOT_FOUND",
+                            "Run was not found before starting a tool step",
+                        )
+                    if (
+                        str(locked_run.get("status") or "") != RunStatus.RUNNING.value
+                        or str(locked_run.get("worker_id") or "") != self._worker_id
+                    ):
+                        raise OrchestrationError(
+                            "RUN_EXECUTION_LEASE_LOST",
+                            "Run is no longer owned for tool execution",
+                            details={"status": RunStatus.BLOCKED_DATA.value},
+                        )
+                    started_step = uow.steps.transition(
+                        str(step_row["step_id"]),
+                        expected_version=int(step_row["version"]),
+                        expected_statuses=("PENDING", "FAILED_RETRYABLE"),
+                        status="RUNNING",
+                        increment_attempt=True,
+                        started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    )
+                    uow.commit()
+            finally:
+                finish_protected_step_start()
             execution_task = asyncio.create_task(
                 self._execution_port.execute_step(
                     step,
@@ -570,6 +926,36 @@ class WorkflowRunner:
                 )
         return self._transition(run, RunStatus.VERIFYING)
 
+    async def _acquire_protected_step_start(
+        self,
+        step: PlanStep,
+    ) -> Callable[[], None]:
+        guard = getattr(self, "_protected_step_start_guard", None)
+        if guard is None:
+            return _noop_finish
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + PROTECTED_STEP_LOCK_WAIT_SECONDS
+        while True:
+            try:
+                finish = guard(step)
+                if not callable(finish):
+                    raise OrchestrationError(
+                        "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                        "Protected step guard returned no cleanup callback",
+                        details={"status": RunStatus.BLOCKED_DATA.value},
+                    )
+                return finish
+            except OrchestrationError as exc:
+                if exc.code != "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS":
+                    raise
+                if loop.time() >= deadline:
+                    raise OrchestrationError(
+                        "ACCOUNT_CREDENTIAL_CHANGE_TIMEOUT",
+                        "Protected execution stayed blocked by a credential change",
+                        details={"status": RunStatus.BLOCKED_DATA.value},
+                    ) from exc
+                await asyncio.sleep(PROTECTED_STEP_LOCK_RETRY_SECONDS)
+
     def _persist_blocked_pilot_projection(
         self,
         *,
@@ -656,7 +1042,7 @@ class WorkflowRunner:
         step_row: Mapping[str, Any],
         command: Command,
     ) -> dict[str, Any]:
-        """Resolve a stale RUNNING step without blindly repeating an external write."""
+        """Resolve a stale RUNNING/VERIFYING step without replaying an external write."""
 
         capability = self._catalog.get_capability(step.tool_name) or {}
         operation = step.operation_type
@@ -711,7 +1097,7 @@ class WorkflowRunner:
                         completed = uow.steps.transition(
                             str(step_row["step_id"]),
                             expected_version=int(step_row["version"]),
-                            expected_statuses=("RUNNING",),
+                            expected_statuses=("RUNNING", "VERIFYING"),
                             status="COMPLETED",
                             result_summary=outcome.result.to_dict() if outcome.result else {},
                             postcondition_status="VERIFIED_AFTER_RECOVERY",
@@ -778,7 +1164,7 @@ class WorkflowRunner:
             updated = uow.steps.transition(
                 str(step_row["step_id"]),
                 expected_version=int(step_row["version"]),
-                expected_statuses=("RUNNING",),
+                expected_statuses=("RUNNING", "VERIFYING"),
                 status="FAILED_RETRYABLE",
                 result_summary=dict(result_summary or {}),
                 postcondition_status="RETRY_ALLOWED",
@@ -803,7 +1189,7 @@ class WorkflowRunner:
             uow.steps.transition(
                 str(step_row["step_id"]),
                 expected_version=int(step_row["version"]),
-                expected_statuses=("RUNNING",),
+                expected_statuses=("RUNNING", "VERIFYING"),
                 status="BLOCKED_DATA",
                 result_summary=dict(reconciliation),
                 postcondition_status="UNKNOWN",
@@ -1178,6 +1564,27 @@ def _annotate_approval(plan: Plan, requires_approval: bool) -> Plan:
         plan,
         steps=tuple(replace(step, requires_approval=requires_approval) for step in plan.steps),
     )
+
+
+def _noop_finish() -> None:
+    return None
+
+
+def _is_started_write_step(
+    step_row: Mapping[str, Any],
+    step_operations: Mapping[str, OperationType],
+) -> bool:
+    status = str(step_row.get("status") or "").strip().upper()
+    if status in {"", "PENDING"}:
+        return False
+    raw_operation = str(step_row.get("operation_type") or "").strip().lower()
+    try:
+        operation = OperationType(raw_operation)
+    except ValueError:
+        operation = step_operations.get(str(step_row.get("step_key") or ""))
+    if operation is None:
+        return True
+    return operation not in {OperationType.READ, OperationType.COMPUTE}
 
 
 def _is_contractually_replay_safe(capability: Mapping[str, Any]) -> bool:

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
+import stat
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.base import STATE_PAUSED, STATE_RUNNING, STATE_STOPPED
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
@@ -23,6 +27,8 @@ FINANCE_MISFIRE_GRACE_SECONDS = 3600
 EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS = 60
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
 FINANCE_STARTUP_TASK_ID = "finance_startup_catchup"
+SCHEDULER_RELEASE_HOLD_ENV = "BOYI_SCHEDULER_RELEASE_HOLD_FILE"
+SCHEDULER_RELEASE_HOLD_NAME = "scheduler-release.pause"
 
 
 def _enabled_finance_platform_filter() -> dict[str, str]:
@@ -381,6 +387,127 @@ def _result_error(result: Any) -> str:
 
 def get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
+
+
+def scheduler_release_hold_path() -> Path:
+    """Return the fixed release hold path without reading deployment secrets."""
+
+    configured = str(os.getenv(SCHEDULER_RELEASE_HOLD_ENV, "") or "").strip()
+    path = (
+        Path(configured)
+        if configured
+        else Path.home() / ".boyi-deploy" / SCHEDULER_RELEASE_HOLD_NAME
+    )
+    if not path.is_absolute():
+        raise RuntimeError("Scheduler release hold path must be absolute")
+    return path
+
+
+def _scheduler_release_hold_value() -> str | None:
+    path = scheduler_release_hold_path()
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError("Scheduler release hold cannot be inspected") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 128:
+        raise RuntimeError("Scheduler release hold is not a bounded regular file")
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError("Scheduler release hold cannot be read") from exc
+
+
+def scheduler_release_hold_requested() -> bool:
+    """Fail closed when the deployment-owned hold marker is present."""
+
+    return _scheduler_release_hold_value() is not None
+
+
+def scheduler_runtime_status() -> dict[str, Any]:
+    scheduler = _scheduler
+    state = STATE_STOPPED if scheduler is None else scheduler.state
+    state_name = {
+        STATE_STOPPED: "stopped",
+        STATE_RUNNING: "running",
+        STATE_PAUSED: "paused",
+    }.get(state, "unknown")
+    return {
+        "state": state_name,
+        "release_hold": scheduler_release_hold_requested(),
+        "jobs": len(scheduler.get_jobs()) if scheduler is not None else 0,
+    }
+
+
+def _validated_release_hold(expected_release_sha: str) -> tuple[str, str | None]:
+    release_sha = str(expected_release_sha or "").strip().lower()
+    if len(release_sha) != 40 or any(char not in "0123456789abcdef" for char in release_sha):
+        raise RuntimeError("A canonical release SHA is required to activate the scheduler")
+    hold_value = _scheduler_release_hold_value()
+    if hold_value is not None and hold_value != release_sha:
+        raise RuntimeError("Scheduler release hold does not match the active release")
+    return release_sha, hold_value
+
+
+def begin_scheduler_release_activation(expected_release_sha: str) -> dict[str, Any]:
+    """Resume the validated scheduler without consuming its crash-safe marker.
+
+    Marker deletion is deliberately a separate final step.  The caller must
+    first confirm both APScheduler and WorkflowRunner are runnable, otherwise
+    a process failure between unlink and resume could bypass the release gate
+    on the next service start.
+    """
+
+    _release_sha, hold_value = _validated_release_hold(expected_release_sha)
+    scheduler = _scheduler
+    if scheduler is None or scheduler.state == STATE_STOPPED:
+        raise RuntimeError("Scheduler is not available for release activation")
+    if hold_value is None and scheduler.state == STATE_PAUSED:
+        raise RuntimeError("Scheduler is paused without the active release hold")
+
+    if scheduler.state == STATE_PAUSED:
+        startup_job = scheduler.get_job(FINANCE_STARTUP_TASK_ID)
+        if startup_job is not None:
+            startup_job.modify(
+                next_run_time=datetime.now(ZoneInfo("Asia/Shanghai"))
+                + timedelta(seconds=15)
+            )
+        scheduler.resume()
+    if scheduler.state != STATE_RUNNING:
+        raise RuntimeError("Scheduler did not enter the running state")
+    return scheduler_runtime_status()
+
+
+def pause_scheduler_for_release() -> dict[str, Any]:
+    """Best-effort re-hold used when activation fails before marker commit."""
+
+    scheduler = _scheduler
+    if scheduler is None or scheduler.state == STATE_STOPPED:
+        raise RuntimeError("Scheduler is not available for release hold")
+    if _scheduler_release_hold_value() is None:
+        raise RuntimeError("Scheduler release hold is missing")
+    if scheduler.state == STATE_RUNNING:
+        scheduler.pause()
+    if scheduler.state != STATE_PAUSED:
+        raise RuntimeError("Scheduler did not enter the paused state")
+    return scheduler_runtime_status()
+
+
+def consume_scheduler_release_hold(expected_release_sha: str) -> dict[str, Any]:
+    """Remove the matching marker only after every runtime reports runnable."""
+
+    _release_sha, hold_value = _validated_release_hold(expected_release_sha)
+    scheduler = _scheduler
+    if scheduler is None or scheduler.state != STATE_RUNNING:
+        raise RuntimeError("Scheduler must be running before release hold commit")
+    if hold_value is None:
+        return scheduler_runtime_status()
+    try:
+        scheduler_release_hold_path().unlink()
+    except OSError as exc:
+        raise RuntimeError("Scheduler release hold could not be consumed") from exc
+    return scheduler_runtime_status()
 
 
 def reload_scheduler(agent_core) -> dict[str, Any]:

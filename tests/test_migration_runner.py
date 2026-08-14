@@ -243,6 +243,76 @@ class _WindowConnection:
         self.closed = True
 
 
+class _ReleaseRestoreCursor:
+    def __init__(
+        self,
+        *,
+        tables: set[str] | None = None,
+        running_count: int = 0,
+        fail_restore: bool = False,
+        applied_versions: set[str] | None = None,
+        dirty_backups: set[str] | None = None,
+        marker_present: bool = False,
+        orphan_policy_count: int = 0,
+    ) -> None:
+        self.tables = tables or {
+            "schema_migrations",
+            "scheduled_tasks",
+            "scheduled_task_contract_upgrade_backup_017",
+            "daily_sign_single_tms_backup_016",
+            "scheduled_task_approval_policies",
+            "scheduled_task_approval_policy_events",
+            "domain_events",
+            "outbox_events",
+            "event_consumptions",
+            "agent_run_steps",
+        }
+        self.running_count = running_count
+        self.fail_restore = fail_restore
+        self.applied_versions = applied_versions or set()
+        self.dirty_backups = dirty_backups or set()
+        self.marker_present = marker_present
+        self.orphan_policy_count = orphan_policy_count
+        self.calls: list[tuple[str, object]] = []
+        self._row = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        self._row = None
+        if normalized == "SELECT VERSION() AS version":
+            self._row = {"version": "8.0.44"}
+        elif "FROM information_schema.TABLES" in normalized:
+            table_name = params[0] if params else ""
+            self._row = {"exists": 1} if table_name in self.tables else None
+        elif normalized.startswith("SELECT COUNT(*) AS running_count"):
+            self._row = {"running_count": self.running_count}
+        elif normalized.startswith("SELECT COUNT(*) AS orphan_count"):
+            self._row = {"orphan_count": self.orphan_policy_count}
+        elif normalized.startswith("SELECT 1 FROM schema_migrations WHERE version="):
+            version = params[0] if params else ""
+            self._row = {"exists": 1} if version in self.applied_versions else None
+        elif normalized.startswith("SELECT 1 FROM scheduled_task_approval_policy_events"):
+            self._row = {"exists": 1} if self.marker_present else None
+        elif normalized.startswith("SELECT 1 FROM ") and normalized.endswith(" LIMIT 1"):
+            table_name = normalized.split()[3]
+            self._row = {"exists": 1} if table_name in self.dirty_backups else None
+        elif normalized.startswith("INSERT INTO scheduled_tasks") and self.fail_restore:
+            raise RuntimeError("injected 017 restore failure")
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return []
+
+
 class MigrationRunnerMySQLVersionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -363,6 +433,184 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             cursor.calls,
         )
 
+    def test_017_restore_replaces_complete_rows_and_makes_upgrade_reapplicable(self):
+        cursor = _ReleaseRestoreCursor()
+        connection = _RestoreConnection(cursor)
+        with patch.object(self.runner, "_connect", return_value=connection):
+            result = self.runner.restore_scheduled_task_contract_upgrade()
+
+        self.assertEqual(0, result)
+        self.assertTrue(connection.begun)
+        self.assertTrue(connection.committed)
+        self.assertFalse(connection.rolled_back)
+        restore = next(
+            sql for sql, _ in cursor.calls if sql.startswith("INSERT INTO scheduled_tasks")
+        )
+        self.assertIn("FROM scheduled_task_contract_upgrade_backup_017", restore)
+        self.assertIn("configuration_version = VALUES(configuration_version)", restore)
+        self.assertIn("updated_at = VALUES(updated_at)", restore)
+        self.assertIn(
+            ("DELETE FROM schema_migrations WHERE version=%s", ("017",)),
+            cursor.calls,
+        )
+        self.assertIn(
+            ("DELETE FROM scheduled_task_contract_upgrade_backup_017", None),
+            cursor.calls,
+        )
+        self.assertTrue(connection.closed)
+
+    def test_017_restore_is_transactional_on_failure(self):
+        cursor = _ReleaseRestoreCursor(fail_restore=True)
+        connection = _RestoreConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            self.assertRaisesRegex(RuntimeError, "injected 017 restore failure"),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+
+        self.assertTrue(connection.begun)
+        self.assertFalse(connection.committed)
+        self.assertTrue(connection.rolled_back)
+        self.assertTrue(connection.closed)
+
+    def test_016_restore_uses_the_same_complete_row_capture_contract(self):
+        cursor = _ReleaseRestoreCursor()
+        connection = _RestoreConnection(cursor)
+        with patch.object(self.runner, "_connect", return_value=connection):
+            result = self.runner.restore_daily_sign_single_tms_account()
+
+        self.assertEqual(0, result)
+        restore = next(
+            sql for sql, _ in cursor.calls if sql.startswith("INSERT INTO scheduled_tasks")
+        )
+        self.assertIn("FROM daily_sign_single_tms_backup_016", restore)
+        self.assertIn(
+            ("DELETE FROM schema_migrations WHERE version=%s", ("016",)),
+            cursor.calls,
+        )
+        self.assertIn(
+            ("DELETE FROM daily_sign_single_tms_backup_016", None),
+            cursor.calls,
+        )
+
+    def test_policy_bootstrap_restore_is_migration_owned_and_admin_safe(self):
+        cursor = _ReleaseRestoreCursor()
+        connection = _RestoreConnection(cursor)
+        with patch.object(self.runner, "_connect", return_value=connection):
+            result = self.runner.restore_control_plane_policy_bootstrap()
+
+        self.assertEqual(0, result)
+        self.assertTrue(connection.committed)
+        statements = [sql for sql, _ in cursor.calls]
+        for prefix in (
+            "DELETE consumption FROM event_consumptions",
+            "DELETE outbox FROM outbox_events",
+            "DELETE domain_event FROM domain_events",
+        ):
+            statement = next(sql for sql in statements if sql.startswith(prefix))
+            self.assertIn("policy_event.actor_id = %s", statement)
+            self.assertIn("policy_event.reason = 'control_plane_v1_bootstrap'", statement)
+            self.assertIn("domain_event.source_system = 'agent'", statement)
+            self.assertIn("domain_event.entity_id = policy_event.task_id", statement)
+        policy_delete = next(
+            sql
+            for sql in statements
+            if sql.startswith("DELETE policy FROM scheduled_task_approval_policies")
+        )
+        self.assertIn("policy.mode = 'EXACT_SCHEDULE_EXEMPT'", policy_delete)
+        self.assertIn("policy.approved_by_actor_id = %s", policy_delete)
+        self.assertIn("event.reason = 'control_plane_v1_bootstrap'", policy_delete)
+        event_delete = next(
+            sql
+            for sql in statements
+            if sql.startswith("DELETE FROM scheduled_task_approval_policy_events")
+        )
+        self.assertIn("control_plane_v1_bootstrap_complete", event_delete)
+        self.assertFalse(any("approved_by_actor_role = 'super_admin'" in sql for sql in statements))
+
+    def test_policy_bootstrap_restore_rejects_migration_exact_without_event(self):
+        cursor = _ReleaseRestoreCursor(orphan_policy_count=1)
+        connection = _RestoreConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "MIGRATION_EXACT_POLICY_BOOTSTRAP_EVENT_MISSING",
+            ),
+        ):
+            self.runner.restore_control_plane_policy_bootstrap()
+
+        self.assertTrue(connection.rolled_back)
+        self.assertFalse(connection.committed)
+        self.assertFalse(
+            any(
+                sql.startswith("DELETE FROM scheduled_task_approval_policy_events")
+                for sql, _ in cursor.calls
+            )
+        )
+
+    def test_running_protected_write_gate_is_read_only_and_redacted(self):
+        for running_count, expected in ((0, 0), (2, 1)):
+            with self.subTest(running_count=running_count):
+                cursor = _ReleaseRestoreCursor(running_count=running_count)
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.check_running_protected_writes()
+
+                self.assertEqual(expected, result)
+                self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+                rendered = " ".join(str(call) for call in print_mock.call_args_list)
+                self.assertNotIn("run_id", rendered)
+                if running_count:
+                    self.assertIn("PROTECTED_WRITE_RUNNING", rendered)
+                protected_query = next(
+                    sql
+                    for sql, _ in cursor.calls
+                    if sql.startswith("SELECT COUNT(*) AS running_count")
+                )
+                self.assertIn("status IN ('RUNNING', 'VERIFYING')", protected_query)
+                self.assertIn("'DESTRUCTIVE'", protected_query)
+                self.assertNotIn("INTERNAL_PROJECTION_WRITE", protected_query)
+
+    def test_release_status_commands_distinguish_clean_dirty_applied_and_marker(self):
+        cases = (
+            (set(), set(), "pending_clean"),
+            (set(), {"scheduled_task_contract_upgrade_backup_017"}, "pending_dirty"),
+            ({"017"}, set(), "applied"),
+        )
+        for applied, dirty, expected in cases:
+            with self.subTest(expected=expected):
+                cursor = _ReleaseRestoreCursor(
+                    applied_versions=applied,
+                    dirty_backups=dirty,
+                )
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.report_scheduled_task_contract_upgrade_status()
+                self.assertEqual(0, result)
+                print_mock.assert_called_once_with(
+                    f"scheduled_task_contract_upgrade_status={expected}"
+                )
+
+        for marker_present, expected in ((False, "absent"), (True, "present")):
+            cursor = _ReleaseRestoreCursor(marker_present=marker_present)
+            connection = _WindowConnection(cursor)
+            with (
+                patch.object(self.runner, "_connect", return_value=connection),
+                patch("builtins.print") as print_mock,
+            ):
+                result = self.runner.report_control_plane_policy_bootstrap_marker_status()
+            self.assertEqual(0, result)
+            print_mock.assert_called_once_with(
+                f"control_plane_policy_bootstrap_marker_status={expected}"
+            )
+
     def test_control_plane_seed_cleanup_set_is_exact_and_code_owned(self):
         from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 
@@ -392,6 +640,142 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         )
         self.assertNotIn("clockin_daxiang_1830", seed_ids)
         self.assertNotIn("clockin_daxiang_s_1833", seed_ids)
+
+    def test_release_manifest_is_exactly_69_with_two_expected_disabled_rows(self):
+        manifest_ids = self.runner._load_control_plane_reviewed_manifest_ids()
+
+        self.assertEqual(69, len(manifest_ids))
+        self.assertEqual(
+            {"finance_bills_0010", "yunda_dispatch_forecast_1700"},
+            self.runner.CONTROL_PLANE_REVIEWED_DISABLED_IDS,
+        )
+        self.assertIn("finance_startup_catchup", manifest_ids)
+        self.assertEqual(67, self.runner.CONTROL_PLANE_REVIEWED_ENABLED_COUNT)
+
+    def test_enabled_default_or_stale_exact_policy_cannot_pass_manifest_health(self):
+        registry = self.runner._load_control_plane_tool_registry()
+        approval = self.runner._load_scheduled_task_approval_contract_module()
+        profiles = self.runner._load_control_plane_scheduled_task_profiles()
+        task_id = "send_order_2359"
+        profile = profiles["send_order"]
+        capability = registry.get_capability(profile.tool_name)
+        task = {
+            "id": task_id,
+            "tool_name": profile.tool_name,
+            "tool_params": dict(profile.approved_arguments),
+            "cron_expression": "59 23 * * *",
+            "enabled": 1,
+            "configuration_version": 1,
+        }
+        contract = approval.build_scheduled_task_contract(
+            task,
+            capability,
+            dynamic_argument_rules=profile.dynamic_argument_rules,
+        )
+        exact = {
+            "task_id": task_id,
+            "mode": "EXACT_SCHEDULE_EXEMPT",
+            "contract_hash": contract.contract_hash,
+            "contract_snapshot_json": contract.snapshot,
+            "tool_contract_hash": contract.tool_contract_hash,
+            "approved_by_actor_id": self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+            "approved_by_actor_role": self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+            "version": 2,
+            "has_explaining_event": 1,
+            "latest_event_reason": "control_plane_v1_bootstrap",
+            **{key: value for key, value in task.items() if key != "id"},
+        }
+        kwargs = {
+            "enabled_ids": {task_id},
+            "registry": registry,
+            "approval_contracts": approval,
+            "profile_by_task_id": {task_id: profile},
+        }
+
+        self.runner._validate_control_plane_policy_states([exact], **kwargs)
+        self.runner._validate_control_plane_policy_states(
+            [exact],
+            **{**kwargs, "require_enabled_exact": True},
+        )
+
+        stale = {**exact, "configuration_version": 2}
+        with self.assertRaises(
+            self.runner.ControlPlaneTaskCutoverPreflightError
+        ) as stale_error:
+            self.runner._validate_control_plane_policy_states([stale], **kwargs)
+        self.assertEqual("CONTROL_PLANE_POLICY_NOT_ACTIVE", stale_error.exception.code)
+
+        default = {
+            "task_id": task_id,
+            "mode": "REQUIRE_EACH_RUN",
+            "contract_hash": None,
+            "contract_snapshot_json": None,
+            "tool_contract_hash": None,
+            "approved_by_actor_id": None,
+            "approved_by_actor_role": None,
+            "version": 1,
+            "has_explaining_event": 0,
+            "latest_event_reason": None,
+        }
+        with self.assertRaises(
+            self.runner.ControlPlaneTaskCutoverPreflightError
+        ) as default_error:
+            self.runner._validate_control_plane_policy_states([default], **kwargs)
+        self.assertEqual(
+            "ENABLED_TASK_DEFAULT_POLICY_NOT_ALLOWED",
+            default_error.exception.code,
+        )
+
+        admin_require = {
+            **default,
+            "approved_by_actor_id": "admin-1",
+            "approved_by_actor_role": "super_admin",
+            "version": 2,
+            "has_explaining_event": 1,
+            "latest_event_reason": "console_policy_change",
+        }
+        self.runner._validate_control_plane_policy_states([admin_require], **kwargs)
+        credential_require = {
+            **admin_require,
+            "approved_by_actor_id": approval.ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+            "approved_by_actor_role": "system",
+            "latest_event_reason": approval.ACCOUNT_CREDENTIAL_CHANGE_REASON,
+        }
+        self.runner._validate_control_plane_policy_states(
+            [credential_require],
+            **kwargs,
+        )
+        for require_policy in (admin_require, credential_require):
+            with self.assertRaises(
+                self.runner.ControlPlaneTaskCutoverPreflightError
+            ) as initial_error:
+                self.runner._validate_control_plane_policy_states(
+                    [require_policy],
+                    **{**kwargs, "require_enabled_exact": True},
+                )
+            self.assertEqual(
+                "INITIAL_ENABLED_TASK_EXACT_POLICY_REQUIRED",
+                initial_error.exception.code,
+            )
+        unreviewed_system = {
+            **credential_require,
+            "approved_by_actor_id": "system:other",
+        }
+        with self.assertRaises(
+            self.runner.ControlPlaneTaskCutoverPreflightError
+        ) as system_error:
+            self.runner._validate_control_plane_policy_states(
+                [unreviewed_system],
+                **kwargs,
+            )
+        self.assertEqual(
+            "ENABLED_TASK_DEFAULT_POLICY_NOT_ALLOWED",
+            system_error.exception.code,
+        )
+        self.runner._validate_control_plane_policy_states(
+            [default],
+            **{**kwargs, "enabled_ids": set()},
+        )
 
     def test_control_plane_task_restore_rolls_back_without_hiding_failure(self):
         cursor = _RestoreCursor(fail_restore=True)

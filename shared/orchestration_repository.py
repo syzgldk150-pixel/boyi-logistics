@@ -33,6 +33,12 @@ from shared.orchestration_repository_support import (
 )
 from shared.orchestration_schema import REQUIRED_COLUMNS, REQUIRED_TABLES
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
+from shared.account_execution_locks import (
+    AccountExecutionLockLease,
+    AccountExecutionLockUnavailable,
+    account_execution_lock_name as _account_execution_lock_name,
+    acquire_account_execution_locks as _acquire_account_execution_locks,
+)
 
 ConnectionFactory = Callable[[], Any]
 
@@ -89,6 +95,7 @@ OUTBOX_CANDIDATE_SCAN_LIMIT = 500
 TERMINAL_RUN_STATUSES = frozenset(
     {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
 )
+
 
 class CommandRepository(_RepositoryBase):
     JSON_FIELDS = ("actor_roles_json", "entity_refs_json", "parameters_json")
@@ -582,6 +589,41 @@ class AgentRunRepository(_RepositoryBase):
         with self.cursor() as cursor:
             cursor.execute(f"SELECT * FROM agent_runs WHERE run_id=%s{suffix}", (run_id,))
             return _decode_row(_row_dict(cursor, cursor.fetchone()), self.JSON_FIELDS)
+
+    def list_nonterminal_with_commands(self) -> list[dict[str, Any]]:
+        """Return the complete non-terminal Run set with command parameters.
+
+        Credential replacement is rare and must fail closed, so this read is
+        intentionally unbounded instead of silently truncating a safety scan.
+        The caller serializes account-bound step starts with a MySQL named lock;
+        no row transaction is held while an external credential store changes.
+        """
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.*,
+                       c.command_type AS command_type,
+                       c.source AS command_source,
+                       c.actor_type AS command_actor_type,
+                       c.actor_id AS command_actor_id,
+                       c.parameters_json AS command_parameters_json
+                FROM agent_runs r
+                INNER JOIN agent_commands c ON c.command_id=r.command_id
+                WHERE r.status NOT IN ('COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED')
+                ORDER BY r.run_id
+                """
+            )
+            rows = _rows(cursor)
+        decoded: list[dict[str, Any]] = []
+        for row in rows:
+            item = _decode_row(row, self.JSON_FIELDS) or {}
+            item["command_parameters_json"] = _json_value(
+                item.get("command_parameters_json"),
+                None,
+            )
+            decoded.append(item)
+        return decoded
 
     def get_first_for_work_item(
         self,
@@ -2632,6 +2674,30 @@ class OrchestrationRepository:
     def list_scheduled_task_policy_rows(self) -> list[dict[str, Any]]:
         with self.unit_of_work() as uow:
             return uow.scheduled_policies.list_with_tasks()
+
+    def acquire_account_execution_locks(
+        self,
+        account_ids: Iterable[str],
+        *,
+        timeout_seconds: int = 0,
+    ) -> AccountExecutionLockLease:
+        """Acquire sorted MySQL named locks on a dedicated connection.
+
+        The lease is connection-scoped and deliberately independent of a Unit
+        of Work, so callers may commit short database transactions before a
+        credential file or broker is changed without losing serialization.
+        """
+
+        return _acquire_account_execution_locks(
+            self._connection_factory,
+            self._cursor_factory,
+            account_ids,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def list_nonterminal_runs_with_commands(self) -> list[dict[str, Any]]:
+        with self.unit_of_work() as uow:
+            return uow.runs.list_nonterminal_with_commands()
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self.unit_of_work() as uow:

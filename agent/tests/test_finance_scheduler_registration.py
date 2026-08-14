@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -109,7 +111,183 @@ class _SeedCore:
         self.memory = _SeedMemory(rows)
 
 
+class _ReleaseStartupJob:
+    def __init__(self):
+        self.next_run_time = None
+
+    def modify(self, *, next_run_time):
+        self.next_run_time = next_run_time
+
+
+class _ReleaseScheduler:
+    def __init__(self, state, startup_job=None):
+        self.state = state
+        self.startup_job = startup_job
+        self.resume_calls = 0
+        self.pause_calls = 0
+
+    def get_jobs(self):
+        return [self.startup_job] if self.startup_job is not None else []
+
+    def get_job(self, job_id):
+        if job_id == "finance_startup_catchup":
+            return self.startup_job
+        return None
+
+    def resume(self):
+        from apscheduler.schedulers.base import STATE_RUNNING
+
+        self.resume_calls += 1
+        self.state = STATE_RUNNING
+
+    def pause(self):
+        from apscheduler.schedulers.base import STATE_PAUSED
+
+        self.pause_calls += 1
+        self.state = STATE_PAUSED
+
+
 class FinanceSchedulerRegistrationTests(unittest.TestCase):
+    def test_release_hold_is_consumed_only_after_running_confirmation(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+        from apscheduler.schedulers.base import STATE_PAUSED
+
+        release_sha = "a" * 40
+        with tempfile.TemporaryDirectory() as temp_root:
+            marker = Path(temp_root) / "scheduler-release.pause"
+            marker.write_text(release_sha + "\n", encoding="utf-8")
+            startup_job = _ReleaseStartupJob()
+            scheduler = _ReleaseScheduler(STATE_PAUSED, startup_job)
+            previous_scheduler = scheduler_module._scheduler
+            scheduler_module._scheduler = scheduler
+            try:
+                with patch.dict(
+                    os.environ,
+                    {scheduler_module.SCHEDULER_RELEASE_HOLD_ENV: str(marker)},
+                ):
+                    self.assertTrue(scheduler_module.scheduler_release_hold_requested())
+                    resumed = scheduler_module.begin_scheduler_release_activation(release_sha)
+                    self.assertTrue(marker.exists())
+                    self.assertEqual("running", resumed["state"])
+                    self.assertTrue(resumed["release_hold"])
+                    status = scheduler_module.consume_scheduler_release_hold(release_sha)
+                    self.assertFalse(marker.exists())
+            finally:
+                scheduler_module._scheduler = previous_scheduler
+
+        self.assertEqual("running", status["state"])
+        self.assertFalse(status["release_hold"])
+        self.assertEqual(1, scheduler.resume_calls)
+        self.assertIsNotNone(startup_job.next_run_time)
+
+    def test_release_activation_rejects_a_marker_for_another_release(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+        from apscheduler.schedulers.base import STATE_PAUSED
+
+        with tempfile.TemporaryDirectory() as temp_root:
+            marker = Path(temp_root) / "scheduler-release.pause"
+            marker.write_text("b" * 40 + "\n", encoding="utf-8")
+            scheduler = _ReleaseScheduler(STATE_PAUSED)
+            previous_scheduler = scheduler_module._scheduler
+            scheduler_module._scheduler = scheduler
+            try:
+                with patch.dict(
+                    os.environ,
+                    {scheduler_module.SCHEDULER_RELEASE_HOLD_ENV: str(marker)},
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "does not match"):
+                        scheduler_module.begin_scheduler_release_activation("a" * 40)
+            finally:
+                scheduler_module._scheduler = previous_scheduler
+
+            self.assertTrue(marker.exists())
+            self.assertEqual(0, scheduler.resume_calls)
+
+    def test_release_activation_rejects_paused_scheduler_without_hold(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+        from apscheduler.schedulers.base import STATE_PAUSED
+
+        with tempfile.TemporaryDirectory() as temp_root:
+            marker = Path(temp_root) / "scheduler-release.pause"
+            scheduler = _ReleaseScheduler(STATE_PAUSED)
+            previous_scheduler = scheduler_module._scheduler
+            scheduler_module._scheduler = scheduler
+            try:
+                with patch.dict(
+                    os.environ,
+                    {scheduler_module.SCHEDULER_RELEASE_HOLD_ENV: str(marker)},
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "paused without the active release hold",
+                    ):
+                        scheduler_module.begin_scheduler_release_activation("a" * 40)
+            finally:
+                scheduler_module._scheduler = previous_scheduler
+
+            self.assertEqual(0, scheduler.resume_calls)
+
+    def test_release_activation_retry_finishes_after_scheduler_resumed(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+        from apscheduler.schedulers.base import STATE_RUNNING
+
+        release_sha = "a" * 40
+        with tempfile.TemporaryDirectory() as temp_root:
+            marker = Path(temp_root) / "scheduler-release.pause"
+            marker.write_text(release_sha + "\n", encoding="utf-8")
+            scheduler = _ReleaseScheduler(STATE_RUNNING)
+            previous_scheduler = scheduler_module._scheduler
+            scheduler_module._scheduler = scheduler
+            try:
+                with patch.dict(
+                    os.environ,
+                    {scheduler_module.SCHEDULER_RELEASE_HOLD_ENV: str(marker)},
+                ):
+                    resumed = scheduler_module.begin_scheduler_release_activation(release_sha)
+                    self.assertEqual("running", resumed["state"])
+                    self.assertTrue(resumed["release_hold"])
+                    status = scheduler_module.consume_scheduler_release_hold(release_sha)
+            finally:
+                scheduler_module._scheduler = previous_scheduler
+
+        self.assertFalse(marker.exists())
+        self.assertEqual("running", status["state"])
+        self.assertFalse(status["release_hold"])
+        self.assertEqual(0, scheduler.resume_calls)
+
+    def test_release_hold_remains_when_final_marker_consumption_fails(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+        from apscheduler.schedulers.base import STATE_RUNNING
+
+        release_sha = "a" * 40
+        with tempfile.TemporaryDirectory() as temp_root:
+            marker = Path(temp_root) / "scheduler-release.pause"
+            marker.write_text(release_sha + "\n", encoding="utf-8")
+            scheduler = _ReleaseScheduler(STATE_RUNNING)
+            previous_scheduler = scheduler_module._scheduler
+            scheduler_module._scheduler = scheduler
+            try:
+                with patch.dict(
+                    os.environ,
+                    {scheduler_module.SCHEDULER_RELEASE_HOLD_ENV: str(marker)},
+                ), patch.object(Path, "unlink", side_effect=OSError("busy")):
+                    with self.assertRaisesRegex(RuntimeError, "could not be consumed"):
+                        scheduler_module.consume_scheduler_release_hold(release_sha)
+            finally:
+                scheduler_module._scheduler = previous_scheduler
+
+            self.assertTrue(marker.exists())
+
     def test_new_finance_template_is_disabled_at_0010(self):
         templates = {
             item["id"]: item for item in PHASE7_SCHEDULED_TASK_TEMPLATES

@@ -27,7 +27,14 @@ def _path_for_bash(path: Path) -> str:
 
 
 def _run_rollback_fault_harness(
-    *, fail_agent_restart: bool, cutover_pending: bool = True
+    *,
+    fail_agent_restart: bool,
+    cutover_pending: bool = True,
+    daily_sign_pending: bool = False,
+    contract_upgrade_pending: bool = False,
+    bootstrap_absent: bool = False,
+    migrations_attempted: bool = False,
+    runtime_start_attempted: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], bool, bool]:
     release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
@@ -62,6 +69,11 @@ def _run_rollback_fault_harness(
             temp_root="$2"
             fail_agent_restart="$3"
             cutover_pending="$4"
+            daily_sign_pending="$5"
+            contract_upgrade_pending="$6"
+            bootstrap_absent="$7"
+            migrations_attempted="$8"
+            runtime_start_attempted="$9"
             stage_root="${temp_root}/stage"
             events_path="${temp_root}/events.log"
             source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
@@ -85,6 +97,11 @@ def _run_rollback_fault_harness(
             SERVICES_QUIESCED=1
             MUTATION_STARTED=1
             CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY="${cutover_pending}"
+            DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY="${daily_sign_pending}"
+            SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY="${contract_upgrade_pending}"
+            CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE="${bootstrap_absent}"
+            MIGRATIONS_ATTEMPTED="${migrations_attempted}"
+            NEW_RUNTIME_START_ATTEMPTED="${runtime_start_attempted}"
             RELEASE_STAGE="check_health"
             declare -A ACTIVE_STATE=(
               [agent.service]=1
@@ -130,7 +147,22 @@ def _run_rollback_fault_harness(
             }
 
             restore_control_plane_task_cutover_data() {
-              printf 'migration-restore\n' >>"${events_path}"
+              printf 'restore-014\n' >>"${events_path}"
+              return 0
+            }
+
+            restore_daily_sign_single_tms_data() {
+              printf 'restore-016\n' >>"${events_path}"
+              return 0
+            }
+
+            restore_scheduled_task_contract_upgrade_data() {
+              printf 'restore-017\n' >>"${events_path}"
+              return 0
+            }
+
+            restore_control_plane_policy_bootstrap_data() {
+              printf 'restore-bootstrap\n' >>"${events_path}"
               return 0
             }
 
@@ -149,6 +181,11 @@ def _run_rollback_fault_harness(
             _path_for_bash(temp_root),
             "1" if fail_agent_restart else "0",
             "1" if cutover_pending else "0",
+            "1" if daily_sign_pending else "0",
+            "1" if contract_upgrade_pending else "0",
+            "1" if bootstrap_absent else "0",
+            "1" if migrations_attempted else "0",
+            "1" if runtime_start_attempted else "0",
         ]
         if os.name == "nt":
             harness_args = ["wsl.exe", "-d", "Ubuntu", "--", *harness_args]
@@ -173,6 +210,54 @@ def _run_rollback_fault_harness(
             (new_venv / "preserve-marker").exists(),
         )
         return result
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+        if not task_tmp_preexisting and task_tmp_root.exists():
+            task_tmp_root.rmdir()
+
+
+def _run_sourced_release_harness(body: str) -> subprocess.CompletedProcess[str]:
+    release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
+    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
+    task_tmp_preexisting = task_tmp_root.exists()
+    task_tmp_root.mkdir(exist_ok=True)
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        temporary = tempfile.TemporaryDirectory(dir=task_tmp_root)
+        temp_root = Path(temporary.name)
+        stage_root = temp_root / "stage"
+        (stage_root / "agent" / "migrations").mkdir(parents=True)
+        harness_path = temp_root / "release_function_harness.sh"
+        harness_path.write_text(
+            textwrap.dedent(
+                f"""
+                release_script="$1"
+                stage_root="$2"
+                source "${{release_script}}" "${{stage_root}}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
+                {body}
+                """
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        command = [
+            "bash",
+            _path_for_bash(harness_path),
+            _path_for_bash(release_script),
+            _path_for_bash(stage_root),
+        ]
+        if os.name == "nt":
+            command = ["wsl.exe", "-d", "Ubuntu", "--", *command]
+        return subprocess.run(
+            command,
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
     finally:
         if temporary is not None:
             temporary.cleanup()
@@ -227,9 +312,18 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(encoding="utf-8")
         execution = release.split("trap rollback ERR", 1)[1]
+        run_release_prefix = release.split("run_release() {", 1)[1].split("trap rollback ERR", 1)[0]
         quiesce_function = release.split("quiesce_runtime_services() {", 1)[1].split("\n}", 1)[0]
         activate_function = release.split("activate_release_virtualenvs() {", 1)[1].split("\n}", 1)[0]
         rollback_function = release.split("\nrollback() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('RELEASE_STAGE="acquire_release_lock"', run_release_prefix)
+        self.assertIn("acquire_release_lock", run_release_prefix)
+        self.assertIn('RELEASE_LOCK_FILE="${DEPLOY_ROOT}/release.lock"', release)
+        self.assertIn(
+            'SCHEDULER_RELEASE_HOLD_FILE="${DEPLOY_ROOT}/scheduler-release.pause"',
+            release,
+        )
+        self.assertIn("flock -n 9", release)
         self.assertLess(
             execution.index("preflight_service_identity_configuration"),
             execution.index("backup_managed_sources"),
@@ -239,14 +333,27 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index('RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"'),
             execution.index("MUTATION_STARTED=1"),
         )
+        self.assertEqual(2, execution.count("preflight_running_protected_writes\n"))
+        self.assertLess(
+            execution.index('RELEASE_STAGE="preflight_running_protected_writes"'),
+            execution.index('RELEASE_STAGE="capture_control_plane_release_state"'),
+        )
+        self.assertLess(
+            execution.index('RELEASE_STAGE="capture_control_plane_release_state"'),
+            execution.index("MUTATION_STARTED=1"),
+        )
         self.assertLess(execution.index("build_release_virtualenvs"), execution.index("MUTATION_STARTED=1"))
         self.assertLess(execution.index("quiesce_runtime_services"), execution.index("retire_legacy_finance_etl"))
+        self.assertLess(
+            execution.index('RELEASE_STAGE="quiesce_runtime_services"'),
+            execution.index('RELEASE_STAGE="verify_protected_writes_quiesced"'),
+        )
+        self.assertLess(
+            execution.index('RELEASE_STAGE="verify_protected_writes_quiesced"'),
+            execution.index('RELEASE_STAGE="retire_legacy_finance_etl"'),
+        )
         self.assertLess(execution.index("quiesce_runtime_services"), execution.index('sync_scope "${scope}"'))
         self.assertLess(execution.index("quiesce_runtime_services"), execution.index("apply_migrations"))
-        self.assertLess(
-            execution.index("capture_control_plane_task_cutover_state"),
-            execution.index("apply_migrations"),
-        )
         self.assertLess(execution.index("apply_migrations"), execution.index("activate_release_virtualenvs"))
         self.assertIn('agent_hash="$(sha256sum "${agent_lock}"', release)
         self.assertIn('console_hash="$(sha256sum "${console_lock}"', release)
@@ -275,9 +382,26 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("verify_runtime_virtualenvs", rollback_function)
         self.assertLess(
             rollback_function.index("stop_runtime_services_for_rollback"),
+            rollback_function.index("restore_control_plane_policy_bootstrap_data"),
+        )
+        self.assertLess(
+            rollback_function.index("restore_control_plane_policy_bootstrap_data"),
+            rollback_function.index("restore_scheduled_task_contract_upgrade_data"),
+        )
+        self.assertLess(
+            rollback_function.index("restore_scheduled_task_contract_upgrade_data"),
+            rollback_function.index("restore_daily_sign_single_tms_data"),
+        )
+        self.assertLess(
+            rollback_function.index("restore_daily_sign_single_tms_data"),
             rollback_function.index("restore_control_plane_task_cutover_data"),
         )
         self.assertIn('CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1', rollback_function)
+        self.assertIn('SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" == "1', rollback_function)
+        self.assertIn('DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" == "1', rollback_function)
+        self.assertIn('CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1', rollback_function)
+        self.assertIn('MIGRATIONS_ATTEMPTED}" == "1', rollback_function)
+        self.assertIn('NEW_RUNTIME_START_ATTEMPTED}" == "1', rollback_function)
         self.assertLess(
             rollback_function.index("restore_control_plane_task_cutover_data"),
             rollback_function.index("restore_managed_release_state"),
@@ -321,6 +445,43 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index('RELEASE_STAGE="check_health"'),
             execution.index('RELEASE_STAGE="check_service_identity_smoke"'),
         )
+        self.assertLess(
+            execution.index('RELEASE_STAGE="check_service_identity_smoke"'),
+            execution.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
+        )
+        self.assertLess(
+            execution.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
+            execution.index('RELEASE_STAGE="record_dependency_hashes"'),
+        )
+        self.assertLess(
+            execution.index('RELEASE_STAGE="create_scheduler_release_hold"'),
+            execution.index('RELEASE_STAGE="restart_services"'),
+        )
+        self.assertLess(
+            execution.index('RELEASE_STAGE="record_dependency_hashes"'),
+            execution.index('RELEASE_STAGE="activate_scheduler_after_release"'),
+        )
+        self.assertLess(
+            execution.index("MUTATION_STARTED=0"),
+            execution.index('RELEASE_STAGE="activate_scheduler_after_release"'),
+        )
+        self.assertIn('scheduler.get("state") != "paused"', release)
+        self.assertIn('scheduler.get("release_hold") is not True', release)
+        self.assertIn('workflow_runner.get("state") != "held"', release)
+        self.assertIn('workflow_runner.get("release_hold") is not True', release)
+        self.assertIn('workflow_runner.get("active_runs") != 0', release)
+        self.assertIn("for _attempt in range(3):", release)
+        self.assertIn(
+            'request_target = "/internal/v1/admin/scheduler/activate-after-release"',
+            release,
+        )
+        self.assertLess(
+            rollback_function.index("clear_scheduler_release_hold_for_rollback"),
+            rollback_function.index("restart_runtime_services_for_rollback"),
+        )
+        self.assertIn("--expect-initial-production-manifest", release)
+        self.assertIn("--check-control-plane-release-manifest", release)
+        self.assertIn("--check-running-protected-writes", release)
         self.assertLess(execution.index("MUTATION_STARTED=0"), execution.index("cleanup_successful_release"))
         self.assertLess(
             execution.index('RELEASE_STAGE="retire_legacy_finance_etl"'),
@@ -330,19 +491,56 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "preflight_service_identity_configuration",
             "static_preflight",
             "build_release_virtualenvs",
+            "preflight_running_protected_writes",
+            "capture_control_plane_release_state",
             "quiesce_runtime_services",
+            "verify_protected_writes_quiesced",
             "retire_legacy_finance_etl",
             "sync_scope:${scope}",
-            "capture_control_plane_task_cutover_state",
             "apply_migrations",
             "activate_release_virtualenvs",
+            "create_scheduler_release_hold",
             "restart_services",
             "check_health",
             "check_service_identity_smoke",
+            "check_control_plane_release_manifest",
             "record_dependency_hashes",
+            "activate_scheduler_after_release",
             "cleanup_successful_release",
         ):
             self.assertIn(f'RELEASE_STAGE="{stage}"', release)
+
+        main_source = (REPOSITORY_ROOT / "agent" / "main.py").read_text(encoding="utf-8")
+        activation_source = main_source.split(
+            "async def internal_activate_scheduler_after_release", 1
+        )[1].split("\ndef _llm_settings_repository", 1)[0]
+        scheduler_source = (
+            REPOSITORY_ROOT / "agent" / "agent" / "scheduler.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("scheduler.start(paused=release_hold)", main_source)
+        self.assertIn("await runner.start(held_for_release=release_hold)", main_source)
+        self.assertIn('"scheduler": scheduler_runtime_status()', main_source)
+        self.assertIn('"workflow_runner": (', main_source)
+        self.assertIn(
+            '@app.post("/internal/v1/admin/scheduler/activate-after-release")',
+            main_source,
+        )
+        self.assertLess(
+            activation_source.index("begin_scheduler_release_activation"),
+            activation_source.index("runner.resume_after_release"),
+        )
+        self.assertLess(
+            activation_source.index("runner.resume_after_release"),
+            activation_source.index("consume_scheduler_release_hold"),
+        )
+        begin_scheduler = scheduler_source.split(
+            "def begin_scheduler_release_activation", 1
+        )[1].split("\ndef pause_scheduler_for_release", 1)[0]
+        consume_hold = scheduler_source.split(
+            "def consume_scheduler_release_hold", 1
+        )[1].split("\ndef reload_scheduler", 1)[0]
+        self.assertNotIn(".unlink()", begin_scheduler)
+        self.assertIn("scheduler_release_hold_path().unlink()", consume_hold)
 
     def test_health_failure_with_reused_venv_stops_and_recovers_both_services(self):
         completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
@@ -356,7 +554,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(["stop:agent.service", "stop:console.service"], events[:2])
         self.assertIn("venv:agent", events)
         self.assertIn("venv:console", events)
-        self.assertLess(events.index("migration-restore"), events.index("venv:agent"))
+        self.assertNotIn("restore-014", events)
         self.assertLess(events.index("restart:agent.service"), events.index("restart:console.service"))
 
     def test_incomplete_rollback_attempts_both_restarts_and_preserves_recovery_material(self):
@@ -380,10 +578,30 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertNotEqual(0, completed.returncode)
         self.assertNotIn("rollback_incomplete", completed.stderr)
-        self.assertNotIn("migration-restore", events)
+        self.assertNotIn("restore-014", events)
         self.assertFalse(stage_exists)
         self.assertIn("restart:agent.service", events)
         self.assertIn("restart:console.service", events)
+
+    def test_rollback_restores_only_current_release_database_state_in_reverse_order(self):
+        completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
+            fail_agent_restart=False,
+            cutover_pending=True,
+            daily_sign_pending=True,
+            contract_upgrade_pending=True,
+            bootstrap_absent=True,
+            migrations_attempted=True,
+            runtime_start_attempted=True,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertFalse(stage_exists)
+        restore_events = [event for event in events if event.startswith("restore-")]
+        self.assertEqual(
+            ["restore-bootstrap", "restore-017", "restore-016", "restore-014"],
+            restore_events,
+        )
+        self.assertLess(events.index("restore-014"), events.index("venv:agent"))
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
@@ -399,6 +617,83 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('"config", "routes", "services", "static", "templates"', publisher)
         self.assertNotIn('".webp"', blocked_extensions)
         self.assertIn('if ($extension -in @(".png", ".jpg", ".jpeg", ".webp"))', publisher)
+
+    def test_release_captures_every_database_prestate_before_mutation(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              case "$1" in
+                --control-plane-task-cutover-status)
+                  echo 'control_plane_task_cutover_status=applied'
+                  ;;
+                --daily-sign-single-tms-status)
+                  echo 'daily_sign_single_tms_status=pending_clean'
+                  ;;
+                --scheduled-task-contract-upgrade-status)
+                  echo 'scheduled_task_contract_upgrade_status=pending_clean'
+                  ;;
+                --control-plane-policy-bootstrap-marker-status)
+                  echo 'control_plane_policy_bootstrap_marker_status=absent'
+                  ;;
+                *) return 91 ;;
+              esac
+            }
+            capture_control_plane_release_state
+            printf 'states=%s,%s,%s,%s\n' \
+              "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" \
+              "${DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" \
+              "${SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" \
+              "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("states=0,1,1,1", completed.stdout)
+
+    def test_release_rejects_dirty_contract_upgrade_before_mutation(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              case "$1" in
+                --control-plane-task-cutover-status)
+                  echo 'control_plane_task_cutover_status=applied'
+                  ;;
+                --daily-sign-single-tms-status)
+                  echo 'daily_sign_single_tms_status=applied'
+                  ;;
+                --scheduled-task-contract-upgrade-status)
+                  echo 'scheduled_task_contract_upgrade_status=pending_dirty'
+                  ;;
+                *) return 91 ;;
+              esac
+            }
+            capture_control_plane_release_state
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("migration 017 attempt left unrecovered", completed.stderr)
+
+    def test_release_manifest_uses_bootstrap_prestate_to_select_initial_gate(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              if [[ "$*" == *'--expect-initial-production-manifest'* ]]; then
+                echo 'control_plane_release_manifest=ok reviewed_rows=69 enabled_rows=67 policies=69 marker=1 initial=1'
+              else
+                echo 'control_plane_release_manifest=ok reviewed_rows=69 enabled_rows=61 policies=69 marker=1 initial=0'
+              fi
+            }
+            CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=1
+            check_control_plane_release_manifest
+            CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
+            check_control_plane_release_manifest
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("enabled_rows=67", completed.stdout)
+        self.assertIn("enabled_rows=61", completed.stdout)
 
     def test_shared_runtime_uses_headless_opencv_for_both_services(self):
         agent_lock = (REPOSITORY_ROOT / "agent" / "requirements.lock").read_text(encoding="utf-8")

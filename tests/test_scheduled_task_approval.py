@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -8,11 +9,14 @@ import pytest
 
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.scheduled_task_approval_service import (
+    ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+    ACCOUNT_CREDENTIAL_CHANGE_REASON,
     BOOTSTRAP_COMPLETION_REQUEST_ID,
     BOOTSTRAP_COMPLETION_TASK_ID,
     ScheduledTaskApprovalService,
 )
 from agent.tool_registry import ToolRegistry
+from shared.finance.sources import enabled_finance_account_ids
 from shared.scheduled_task_approval import (
     ScheduledTaskApprovalContractError,
     build_scheduled_task_contract,
@@ -82,6 +86,117 @@ class _BootstrapRepo:
 
     def unit_of_work(self):
         return _BootstrapUow(self)
+
+
+class _CredentialPolicyStore:
+    def __init__(self, repository):
+        self._repository = repository
+
+    def list_with_tasks(self, *, for_update=False):
+        assert for_update is True
+        return self._repository.rows
+
+    def lock_task(self, task_id):
+        return next(
+            (row for row in self._repository.rows if row["id"] == task_id),
+            None,
+        )
+
+    def ensure_default(self, task_id):
+        row = self.lock_task(task_id)
+        return {
+            "version": int(row.get("policy_version") or 1),
+            "mode": str(row.get("mode") or "REQUIRE_EACH_RUN"),
+        }
+
+    @staticmethod
+    def list_events_by_request(_request_id, *, for_update=False):
+        assert for_update is True
+        return []
+
+    def update_policy(self, task_id, *, expected_version, **changes):
+        row = self.lock_task(task_id)
+        assert row is not None
+        assert int(row.get("policy_version") or 1) == expected_version
+        row.update(
+            mode=changes["mode"],
+            contract_hash=changes["contract_hash"],
+            contract_snapshot_json=changes["contract_snapshot"],
+            tool_contract_hash=changes["tool_contract_hash"],
+        )
+        row["policy_version"] = expected_version + 1
+        return {
+            **changes,
+            "version": row["policy_version"],
+            "contract_snapshot_json": changes["contract_snapshot"],
+        }
+
+    def append_event(self, event):
+        self._repository.policy_events.append(dict(event))
+        return event
+
+
+class _CredentialDomainEvents:
+    def __init__(self, repository):
+        self._repository = repository
+
+    def append_with_outbox(self, event, deliveries):
+        self._repository.domain_events.append((dict(event), tuple(deliveries)))
+
+
+class _CredentialUow:
+    def __init__(self, repository):
+        self._repository = repository
+        self.scheduled_policies = _CredentialPolicyStore(repository)
+        self.events = _CredentialDomainEvents(repository)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        return False
+
+    def commit(self):
+        self._repository.commits += 1
+
+
+class _CredentialRepo:
+    class _Lease:
+        def __init__(self, repository, account_ids):
+            self._repository = repository
+            self._account_ids = tuple(account_ids)
+            self._released = False
+
+        def release(self):
+            if self._released:
+                return
+            self._released = True
+            self._repository.released_account_locks.append(self._account_ids)
+
+    def __init__(self, rows, *, active_runs=()):
+        self.rows = list(rows)
+        self.active_runs = list(active_runs)
+        self.policy_events = []
+        self.domain_events = []
+        self.commits = 0
+        self.fail_next_uow = False
+        self.acquired_account_locks = []
+        self.released_account_locks = []
+
+    def acquire_account_execution_locks(self, account_ids, *, timeout_seconds=0):
+        assert timeout_seconds == 0
+        normalized = tuple(sorted(account_ids))
+        self.acquired_account_locks.append(normalized)
+        return self._Lease(self, normalized)
+
+    def list_nonterminal_runs_with_commands(self):
+        return deepcopy(self.active_runs)
+
+    def unit_of_work(self):
+        if self.fail_next_uow:
+            self.fail_next_uow = False
+            raise RuntimeError("synthetic policy repository failure")
+        return _CredentialUow(self)
 
 
 def test_contract_is_privacy_safe_stable_and_display_name_independent():
@@ -233,6 +348,434 @@ def test_policy_write_requires_signed_console_super_admin_before_repository_acce
         assert error.value.code == "ACTION_FORBIDDEN"
 
 
+def test_account_credential_change_atomically_revokes_only_referencing_exact_policies():
+    rows = [
+        _task(
+            id="task-direct",
+            mode="EXACT_SCHEDULE_EXEMPT",
+            policy_version=2,
+            contract_hash="direct-contract",
+            tool_contract_hash="direct-tool",
+        ),
+        _task(
+            id="task-nested",
+            tool_params={"binding": {"source_account_id": "ronghui_default"}},
+            mode="EXACT_SCHEDULE_EXEMPT",
+            policy_version=4,
+            contract_hash="nested-contract",
+            tool_contract_hash="nested-tool",
+        ),
+        _task(
+            id="task-other-account",
+            tool_params={"account_id": "another-account"},
+            mode="EXACT_SCHEDULE_EXEMPT",
+            policy_version=3,
+        ),
+        _task(
+            id="task-already-requires",
+            mode="REQUIRE_EACH_RUN",
+            policy_version=5,
+        ),
+    ]
+    policy_events = []
+    domain_events = []
+
+    class _Policies:
+        @staticmethod
+        def list_with_tasks(*, for_update=False):
+            assert for_update is True
+            return rows
+
+        @staticmethod
+        def update_policy(task_id, *, expected_version, **changes):
+            row = next(item for item in rows if item["id"] == task_id)
+            assert row["policy_version"] == expected_version
+            row.update(
+                mode=changes["mode"],
+                contract_hash=changes["contract_hash"],
+                contract_snapshot_json=changes["contract_snapshot"],
+                tool_contract_hash=changes["tool_contract_hash"],
+            )
+            row["policy_version"] += 1
+            return {"version": row["policy_version"]}
+
+        @staticmethod
+        def append_event(event):
+            policy_events.append(dict(event))
+            return event
+
+    class _Events:
+        @staticmethod
+        def append_with_outbox(event, deliveries):
+            domain_events.append((dict(event), tuple(deliveries)))
+
+    class _Uow:
+        scheduled_policies = _Policies()
+        events = _Events()
+        commits = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def commit(self):
+            self.commits += 1
+
+    uow = _Uow()
+
+    class _Repo:
+        @staticmethod
+        def unit_of_work():
+            return uow
+
+    result = ScheduledTaskApprovalService(
+        _Repo(),
+        ToolRegistry(),
+    ).revoke_exact_policies_for_account("ronghui_default")
+
+    assert result == {
+        "account_id": "ronghui_default",
+        "revoked_count": 2,
+        "task_ids": ["task-direct", "task-nested"],
+    }
+    assert uow.commits == 1
+    assert [row["mode"] for row in rows] == [
+        "REQUIRE_EACH_RUN",
+        "REQUIRE_EACH_RUN",
+        "EXACT_SCHEDULE_EXEMPT",
+        "REQUIRE_EACH_RUN",
+    ]
+    assert len(policy_events) == 2
+    assert {event["reason"] for event in policy_events} == {
+        ACCOUNT_CREDENTIAL_CHANGE_REASON
+    }
+    assert {event["actor_id"] for event in policy_events} == {
+        ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID
+    }
+    assert len({event["request_id"] for event in policy_events}) == 1
+    assert len(domain_events) == 2
+    assert all(
+        event["event_type"] == "scheduled_task.approval_policy_changed"
+        and deliveries[0]["topic"] == "scheduled_task.approval_policy_changed"
+        for event, deliveries in domain_events
+    )
+
+
+@pytest.mark.parametrize("finance_account_id", enabled_finance_account_ids())
+def test_each_production_finance_account_revokes_implicit_startup_exact_policy(
+    finance_account_id,
+):
+    row = _task(
+        id="finance_startup_catchup",
+        name="startup catch-up",
+        tool_name="sync_finance_bills",
+        tool_params={
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        },
+        cron_expression="@startup",
+        mode="EXACT_SCHEDULE_EXEMPT",
+        policy_version=2,
+        contract_hash="startup-contract",
+        tool_contract_hash="startup-tool-contract",
+    )
+    repository = _CredentialRepo([row])
+    service = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+        implicit_account_ids_by_tool={
+            "sync_finance_bills": enabled_finance_account_ids(),
+        },
+    )
+
+    result = service.revoke_exact_policies_for_account(finance_account_id)
+
+    assert result == {
+        "account_id": finance_account_id,
+        "revoked_count": 1,
+        "task_ids": ["finance_startup_catchup"],
+    }
+    assert row["mode"] == "REQUIRE_EACH_RUN"
+    assert row["contract_hash"] is None
+    assert row["tool_contract_hash"] is None
+    assert repository.commits == 1
+    assert len(repository.policy_events) == 1
+    assert len(repository.domain_events) == 1
+
+
+def test_unrelated_account_does_not_revoke_implicit_finance_exact_policy():
+    row = _task(
+        id="finance_startup_catchup",
+        tool_name="sync_finance_bills",
+        tool_params={"mode": "sync", "platform": "ronghui", "rescan_days": 7},
+        cron_expression="@startup",
+        mode="EXACT_SCHEDULE_EXEMPT",
+        policy_version=2,
+        contract_hash="startup-contract",
+        tool_contract_hash="startup-tool-contract",
+    )
+    repository = _CredentialRepo([row])
+    service = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+        implicit_account_ids_by_tool={
+            "sync_finance_bills": enabled_finance_account_ids(),
+        },
+    )
+
+    result = service.revoke_exact_policies_for_account("yunda_default")
+
+    assert result == {
+        "account_id": "yunda_default",
+        "revoked_count": 0,
+        "task_ids": [],
+    }
+    assert row["mode"] == "EXACT_SCHEDULE_EXEMPT"
+    assert repository.policy_events == []
+    assert repository.domain_events == []
+
+
+def test_credentials_change_rejects_explicit_nonterminal_protected_run():
+    policy_row = _task(
+        mode="EXACT_SCHEDULE_EXEMPT",
+        policy_version=2,
+        contract_hash="active-contract",
+        tool_contract_hash="active-tool-contract",
+    )
+    repository = _CredentialRepo(
+        [policy_row],
+        active_runs=(
+            {
+                "run_id": "run-active-write",
+                "status": "RUNNING",
+                "plan_json": {
+                    "steps": [
+                        {
+                            "tool_name": "clock_in_dual",
+                            "operation_type": "external_write",
+                            "account_id": "ronghui_default",
+                            "arguments": {"account_id": "ronghui_default"},
+                        }
+                    ]
+                },
+                "command_parameters_json": {
+                    "tool_name": "clock_in_dual",
+                    "account_id": "ronghui_default",
+                    "arguments": {"account_id": "ronghui_default"},
+                },
+            },
+        ),
+    )
+    service = ScheduledTaskApprovalService(repository, ToolRegistry())
+
+    with pytest.raises(OrchestrationError) as error:
+        service.begin_credentials_change("ronghui_default")
+
+    assert error.value.code == "ACCOUNT_CREDENTIAL_ACTIVE_RUN"
+    assert error.value.details == {"run_ids": ["run-active-write"]}
+    assert policy_row["mode"] == "EXACT_SCHEDULE_EXEMPT"
+    assert repository.acquired_account_locks == [("ronghui_default",)]
+    assert repository.released_account_locks == [("ronghui_default",)]
+
+
+def test_credentials_change_rejects_implicit_finance_internal_projection_run():
+    repository = _CredentialRepo(
+        [],
+        active_runs=(
+            {
+                "run_id": "run-finance-sync",
+                "status": "WAITING_APPROVAL",
+                "plan_json": None,
+                "command_parameters_json": {
+                    "tool_name": "sync_finance_bills",
+                    "arguments": {
+                        "mode": "sync",
+                        "platform": "ronghui",
+                        "rescan_days": 7,
+                    },
+                },
+            },
+        ),
+    )
+    service = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+        implicit_account_ids_by_tool={
+            "sync_finance_bills": enabled_finance_account_ids(),
+        },
+    )
+
+    with pytest.raises(OrchestrationError) as error:
+        service.begin_credentials_change("price_default")
+
+    assert error.value.code == "ACCOUNT_CREDENTIAL_ACTIVE_RUN"
+    assert error.value.details == {"run_ids": ["run-finance-sync"]}
+    assert repository.released_account_locks == [("price_default",)]
+
+
+def test_read_run_does_not_block_credentials_change_and_lease_spans_finish():
+    policy_row = _task(
+        mode="EXACT_SCHEDULE_EXEMPT",
+        policy_version=2,
+        contract_hash="read-contract",
+        tool_contract_hash="read-tool-contract",
+    )
+    repository = _CredentialRepo(
+        [policy_row],
+        active_runs=(
+            {
+                "run_id": "run-read-only",
+                "status": "RUNNING",
+                "plan_json": {
+                    "steps": [
+                        {
+                            "tool_name": "track_waybill",
+                            "operation_type": "read",
+                            "account_id": "ronghui_default",
+                            "arguments": {"account_id": "ronghui_default"},
+                        }
+                    ]
+                },
+                "command_parameters_json": {
+                    "tool_name": "track_waybill",
+                    "account_id": "ronghui_default",
+                    "arguments": {"account_id": "ronghui_default"},
+                },
+            },
+        ),
+    )
+    service = ScheduledTaskApprovalService(repository, ToolRegistry())
+
+    finish = service.begin_credentials_change("ronghui_default")
+
+    assert policy_row["mode"] == "REQUIRE_EACH_RUN"
+    assert repository.acquired_account_locks == [("ronghui_default",)]
+    assert repository.released_account_locks == []
+
+    finish()
+    finish()
+
+    assert repository.released_account_locks == [("ronghui_default",)]
+
+
+def test_concurrent_exact_grant_is_rejected_during_implicit_account_change():
+    task_id = "finance_startup_catchup"
+    row = _task(
+        id=task_id,
+        name="startup catch-up",
+        tool_name="sync_finance_bills",
+        tool_params={
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        },
+        cron_expression="@startup",
+        mode="REQUIRE_EACH_RUN",
+        policy_version=1,
+    )
+    repository = _CredentialRepo([row])
+    service = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+        enabled_finance_platforms=("ronghui",),
+        implicit_account_ids_by_tool={
+            "sync_finance_bills": enabled_finance_account_ids(),
+        },
+    )
+    actor = Actor(
+        ActorType.CONSOLE_ADMIN,
+        "admin-1",
+        roles=("super_admin",),
+        authenticated_by="mysql_admin_session",
+    )
+    common = {
+        "task_ids": [task_id],
+        "mode": "EXACT_SCHEDULE_EXEMPT",
+        "comment": "reviewed",
+        "expected_versions": {task_id: 1},
+        "expected_configuration_versions": {task_id: 1},
+        "actor": actor,
+    }
+
+    finish_credentials_change = service.begin_credentials_change("price_default")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                service.set_policies,
+                request_id="00000000-0000-4000-8000-000000000101",
+                **common,
+            )
+            with pytest.raises(OrchestrationError) as error:
+                future.result(timeout=5)
+        assert error.value.code == "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS"
+        assert error.value.details == {"task_ids": [task_id]}
+        assert row["mode"] == "REQUIRE_EACH_RUN"
+    finally:
+        finish_credentials_change()
+
+    result = service.set_policies(
+        request_id="00000000-0000-4000-8000-000000000102",
+        **common,
+    )
+
+    assert result["updated_count"] == 1
+    assert row["mode"] == "EXACT_SCHEDULE_EXEMPT"
+
+
+def test_failed_revocation_releases_credentials_change_marker():
+    task_id = "finance_startup_catchup"
+    row = _task(
+        id=task_id,
+        name="startup catch-up",
+        tool_name="sync_finance_bills",
+        tool_params={
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        },
+        cron_expression="@startup",
+        mode="REQUIRE_EACH_RUN",
+        policy_version=1,
+    )
+    repository = _CredentialRepo([row])
+    repository.fail_next_uow = True
+    service = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+        enabled_finance_platforms=("ronghui",),
+        implicit_account_ids_by_tool={
+            "sync_finance_bills": enabled_finance_account_ids(),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic policy repository failure"):
+        service.begin_credentials_change("price_default")
+
+    result = service.set_policies(
+        task_ids=[task_id],
+        mode="EXACT_SCHEDULE_EXEMPT",
+        comment="reviewed",
+        request_id="00000000-0000-4000-8000-000000000103",
+        expected_versions={task_id: 1},
+        expected_configuration_versions={task_id: 1},
+        actor=Actor(
+            ActorType.CONSOLE_ADMIN,
+            "admin-1",
+            roles=("super_admin",),
+            authenticated_by="mysql_admin_session",
+        ),
+    )
+
+    assert result["updated_count"] == 1
+    assert row["mode"] == "EXACT_SCHEDULE_EXEMPT"
+
+
 def test_request_id_must_be_uuid_before_repository_access():
     class _Repo:
         def unit_of_work(self):
@@ -346,7 +889,17 @@ def test_policy_write_rejects_stale_task_configuration_after_lock(monkeypatch, m
     assert error.value.details == {"task_id": task_id}
 
 
-def test_task_configuration_conflict_maps_to_http_409():
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        "TASK_CONFIGURATION_VERSION_CONFLICT",
+        "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS",
+        "ACCOUNT_EXECUTION_IN_PROGRESS",
+        "ACCOUNT_CREDENTIAL_ACTIVE_RUN",
+        "ACCOUNT_POLICY_REVOCATION_CONFLICT",
+    ),
+)
+def test_scheduled_policy_conflicts_map_to_http_409(error_code):
     from main import orchestration_error_handler
 
     response = asyncio.run(
@@ -357,14 +910,39 @@ def test_task_configuration_conflict_maps_to_http_409():
                 )
             ),
             OrchestrationError(
-                "TASK_CONFIGURATION_VERSION_CONFLICT",
+                error_code,
                 "refresh and review",
             ),
         )
     )
 
     assert response.status_code == 409
-    assert b"TASK_CONFIGURATION_VERSION_CONFLICT" in response.body
+    assert error_code.encode("ascii") in response.body
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+        "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+    ),
+)
+def test_scheduled_policy_guard_failures_map_to_http_503(error_code):
+    from main import orchestration_error_handler
+
+    response = asyncio.run(
+        orchestration_error_handler(
+            SimpleNamespace(
+                url=SimpleNamespace(
+                    path="/internal/v1/scheduled-task-approval-policies"
+                )
+            ),
+            OrchestrationError(error_code, "guard unavailable"),
+        )
+    )
+
+    assert response.status_code == 503
+    assert error_code.encode("ascii") in response.body
 
 
 @pytest.mark.parametrize("initially_present", (False, True))

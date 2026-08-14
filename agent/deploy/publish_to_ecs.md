@@ -52,9 +52,9 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 7. 分别计算 Agent、Console `requirements.lock` 的 SHA-256，再生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；若当前共享环境的哈希一致且分别通过两份锁文件校验，直接复用。只有任一锁变化或校验失败时，才创建新的共享环境并一次性安装两份锁文件的并集。
 8. 在首次源码、虚拟环境或数据库变更前同时停止 Agent 与 Console，并确认两个 unit 均已退出；控制平面发布必须使用 `-Target all`，禁止在运行中的调度器/Worker 上同步混合版本源码。
 9. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-10. 先执行全部版本化迁移，再安装新 systemd unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后按 Agent、Console 顺序启动；任一服务未健康前不得继续把入口视为已切换。
-11. Agent `/health` 必须返回本次 Git SHA；Console 必须可访问；成功后把锁文件哈希写入当前环境供后续发布判定。
-12. 任一步失败，删除本次新建环境与新增受管文件、恢复旧虚拟环境、源码备份和发布清单，并重启旧版本。数据库 DDL 不随源码回滚，发布前必须另行完成可恢复数据库快照并保留到业务验收结束。
+10. 先执行全部版本化迁移，再安装新 systemd unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后，发布器创建仅属于本次 SHA 的固定 release hold，再按 Agent、Console 顺序启动；Agent 只注册任务，Scheduler 保持 paused，WorkflowRunner 保持 held 且不领取既存或新 Run，任何自动任务都不得在发布门禁完成前执行。发现遗留 marker 时新发布必须失败关闭，不得覆盖。
+11. Agent `/health` 必须返回本次 Git SHA，Console 必须可访问；签名内部健康探针还必须确认 Scheduler paused、WorkflowRunner held 且 active Run 为零。随后完成 Agent/Console 签名身份联通、首次或后续控制平面 manifest、依赖哈希与数据库状态检查，最后才由签名 Console 管理员请求调用激活端点。端点先恢复并确认 WorkflowRunner 与 Scheduler 均可运行，再删除匹配本次 SHA 的 marker，并把财务启动补偿推迟 15 秒；marker 删除是发布提交点。
+12. 激活提交点之前任一步失败，发布器保持 Scheduler 与 WorkflowRunner hold，按 bootstrap、017、016、014 的本次变更范围逆序恢复，再恢复旧虚拟环境、源码、unit 与发布清单并重启旧版本。激活期间异常或进程退出必须保留 marker，使下一次启动继续 hold；响应丢失可用新签名 nonce 幂等重试。激活请求一旦发出便不得自动回滚，因为任务可能已经开始；此时必须保留远端暂存树并报告 `release_activation_incomplete`，由人工核验 Scheduler、WorkflowRunner 和业务状态。数据库 DDL 不随普通源码回滚，发布前必须另行完成可恢复数据库快照并保留到业务验收结束。
 13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到事项中心、定时自动化、财务、每日应签与客服影子投影完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
 
 业务代码频繁提交但锁文件未变时，发布仍会同步受管源码并重启受影响服务，但不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化时才承担完整依赖安装成本。

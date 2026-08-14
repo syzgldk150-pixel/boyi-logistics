@@ -8,6 +8,8 @@ SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
 
 DEPLOY_ROOT="/home/boyce/.boyi-deploy"
+RELEASE_LOCK_FILE="${DEPLOY_ROOT}/release.lock"
+SCHEDULER_RELEASE_HOLD_FILE="${DEPLOY_ROOT}/scheduler-release.pause"
 BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
 LEGACY_FINANCE_ETL_ROOT="/home/boyce/agent/finance_reconciliation"
@@ -21,6 +23,12 @@ SERVICES_QUIESCED=0
 RELEASE_STAGE="initialization"
 IDENTITY_ENV_FILE="/home/boyce/agent/.env"
 CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
+DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
+SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
+CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
+MIGRATIONS_ATTEMPTED=0
+NEW_RUNTIME_START_ATTEMPTED=0
+SCHEDULER_RELEASE_HOLD_CREATED=0
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -62,6 +70,48 @@ safe_relative_path() {
   [[ -n "${value}" && "${value}" != /* && "${value}" != *".."* && "${value}" != *$'\n'* ]]
 }
 
+acquire_release_lock() {
+  command -v flock >/dev/null 2>&1 || {
+    echo "release_lock=blocked reason=FLOCK_UNAVAILABLE" >&2
+    return 1
+  }
+  mkdir -p "${DEPLOY_ROOT}"
+  exec 9>"${RELEASE_LOCK_FILE}"
+  if ! flock -n 9; then
+    echo "release_lock=blocked reason=RELEASE_ALREADY_RUNNING" >&2
+    return 1
+  fi
+  echo "release_lock=acquired"
+}
+
+create_scheduler_release_hold() {
+  [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
+    echo "scheduler_release_hold=blocked reason=STALE_RELEASE_HOLD" >&2
+    return 1
+  }
+  (
+    umask 077
+    set -o noclobber
+    printf '%s\n' "${RELEASE_SHA}" >"${SCHEDULER_RELEASE_HOLD_FILE}"
+  )
+  SCHEDULER_RELEASE_HOLD_CREATED=1
+  echo "scheduler_release_hold=created"
+}
+
+clear_scheduler_release_hold_for_rollback() {
+  [[ "${SCHEDULER_RELEASE_HOLD_CREATED}" == "1" ]] || return 0
+  [[ -f "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
+    echo "Current release scheduler hold is missing or unsafe" >&2
+    return 1
+  }
+  [[ "$(tr -d '[:space:]' <"${SCHEDULER_RELEASE_HOLD_FILE}")" == "${RELEASE_SHA}" ]] || {
+    echo "Current release scheduler hold has an unexpected owner" >&2
+    return 1
+  }
+  rm -- "${SCHEDULER_RELEASE_HOLD_FILE}"
+  SCHEDULER_RELEASE_HOLD_CREATED=0
+}
+
 validate_environment() {
   [[ "$(id -un)" == "boyce" ]] || {
     echo "Release must run as boyce" >&2
@@ -73,6 +123,10 @@ validate_environment() {
   }
   [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
     echo "Invalid release SHA" >&2
+    return 1
+  }
+  [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
+    echo "A stale scheduler release hold requires manual recovery" >&2
     return 1
   }
   [[ "${PIP_INDEX_URL}" =~ ^https://[^[:space:]]+$ ]] || {
@@ -243,6 +297,66 @@ preflight_scheduled_write_window() {
     echo "${output}" >&2
   else
     echo "scheduled_write_window=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+  fi
+  return 1
+}
+
+run_staged_migration_runner() {
+  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
+  local migration_python="${PYTHON_BINS[agent]}"
+  [[ -f "${runner}" ]] || {
+    echo "Missing staged migration runner" >&2
+    return 1
+  }
+  if [[ -n "${RELEASE_VENV}" && -x "${RELEASE_VENV}/bin/python" ]]; then
+    migration_python="${RELEASE_VENV}/bin/python"
+  fi
+  [[ -x "${migration_python}" ]] || {
+    echo "Missing Python runtime for staged migration runner" >&2
+    return 1
+  }
+  MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" "$@"
+}
+
+preflight_running_protected_writes() {
+  local output
+  if output="$(run_staged_migration_runner --check-running-protected-writes 2>&1)"; then
+    if [[ "${output}" == "protected_write_quiesce=ok running_writes=0" ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "protected_write_quiesce=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+  if [[ "${output}" =~ ^protected_write_quiesce=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
+    echo "${output}" >&2
+  else
+    echo "protected_write_quiesce=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+  fi
+  return 1
+}
+
+check_control_plane_release_manifest() {
+  local expected_initial="0"
+  local output pattern
+  local -a args=(--check-control-plane-release-manifest)
+  if [[ "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1" ]]; then
+    args+=(--expect-initial-production-manifest)
+    expected_initial="1"
+  fi
+  if output="$(run_staged_migration_runner "${args[@]}" 2>&1)"; then
+    pattern="^control_plane_release_manifest=ok reviewed_rows=[0-9]+ enabled_rows=[0-9]+ policies=[0-9]+ marker=1 initial=${expected_initial}$"
+    if [[ "${output}" =~ ${pattern} ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "control_plane_release_manifest=blocked reason=UNEXPECTED_MANIFEST_RESPONSE count=1" >&2
+    return 1
+  fi
+  if [[ "${output}" =~ ^control_plane_release_manifest=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
+    echo "${output}" >&2
+  else
+    echo "control_plane_release_manifest=blocked reason=UNEXPECTED_MANIFEST_RESPONSE count=1" >&2
   fi
   return 1
 }
@@ -576,29 +690,16 @@ apply_migrations() {
   MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${migration_python}" "${runner}"
 }
 
-capture_control_plane_task_cutover_state() {
-  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
-  local migration_python="${PYTHON_BINS[agent]}"
+capture_control_plane_release_state() {
   local status
   if [[ ! -d "${STAGE_ROOT}/agent/migrations" ]]; then
     CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
+    DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
+    SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
+    CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
     return 0
   fi
-  [[ -f "${runner}" ]] || {
-    echo "Missing staged migration runner for control-plane task state check" >&2
-    return 1
-  }
-  if [[ -n "${RELEASE_VENV}" && -x "${RELEASE_VENV}/bin/python" ]]; then
-    migration_python="${RELEASE_VENV}/bin/python"
-  fi
-  [[ -x "${migration_python}" ]] || {
-    echo "Missing Python runtime for control-plane task state check" >&2
-    return 1
-  }
-  status="$(
-    MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
-      --control-plane-task-cutover-status
-  )" || return 1
+  status="$(run_staged_migration_runner --control-plane-task-cutover-status)" || return 1
   case "${status}" in
     control_plane_task_cutover_status=pending_clean)
       CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=1
@@ -615,24 +716,72 @@ capture_control_plane_task_cutover_state() {
       return 1
       ;;
   esac
+
+  status="$(run_staged_migration_runner --daily-sign-single-tms-status)" || return 1
+  case "${status}" in
+    daily_sign_single_tms_status=pending_clean)
+      DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=1
+      ;;
+    daily_sign_single_tms_status=applied)
+      DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
+      ;;
+    daily_sign_single_tms_status=pending_dirty)
+      echo "A previous migration 016 attempt left unrecovered daily-sign backup data" >&2
+      return 1
+      ;;
+    *)
+      echo "Unexpected migration 016 state response" >&2
+      return 1
+      ;;
+  esac
+
+  status="$(run_staged_migration_runner --scheduled-task-contract-upgrade-status)" || return 1
+  case "${status}" in
+    scheduled_task_contract_upgrade_status=pending_clean)
+      SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=1
+      ;;
+    scheduled_task_contract_upgrade_status=applied)
+      SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
+      ;;
+    scheduled_task_contract_upgrade_status=pending_dirty)
+      echo "A previous migration 017 attempt left unrecovered scheduler backup data" >&2
+      return 1
+      ;;
+    *)
+      echo "Unexpected migration 017 state response" >&2
+      return 1
+      ;;
+  esac
+
+  status="$(run_staged_migration_runner --control-plane-policy-bootstrap-marker-status)" || return 1
+  case "${status}" in
+    control_plane_policy_bootstrap_marker_status=absent)
+      CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=1
+      ;;
+    control_plane_policy_bootstrap_marker_status=present)
+      CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
+      ;;
+    *)
+      echo "Unexpected control-plane policy bootstrap marker response" >&2
+      return 1
+      ;;
+  esac
 }
 
 restore_control_plane_task_cutover_data() {
-  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
-  local migration_python="${PYTHON_BINS[agent]}"
-  [[ -f "${runner}" ]] || {
-    echo "Missing staged migration runner for control-plane task rollback" >&2
-    return 1
-  }
-  if [[ -n "${RELEASE_VENV}" && -x "${RELEASE_VENV}/bin/python" ]]; then
-    migration_python="${RELEASE_VENV}/bin/python"
-  fi
-  [[ -x "${migration_python}" ]] || {
-    echo "Missing Python runtime for control-plane task rollback" >&2
-    return 1
-  }
-  MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
-    --restore-control-plane-task-cutover
+  run_staged_migration_runner --restore-control-plane-task-cutover
+}
+
+restore_daily_sign_single_tms_data() {
+  run_staged_migration_runner --restore-daily-sign-single-tms-account
+}
+
+restore_scheduled_task_contract_upgrade_data() {
+  run_staged_migration_runner --restore-scheduled-task-contract-upgrade
+}
+
+restore_control_plane_policy_bootstrap_data() {
+  run_staged_migration_runner --restore-control-plane-policy-bootstrap
 }
 
 sync_scope() {
@@ -834,6 +983,23 @@ try:
         raise RuntimeError("signed health probe was rejected")
     data = payload.get("data")
     components = data.get("components") if isinstance(data, dict) else None
+    scheduler = components.get("scheduler") if isinstance(components, dict) else None
+    workflow_runner = (
+        components.get("workflow_runner") if isinstance(components, dict) else None
+    )
+    if (
+        not isinstance(scheduler, dict)
+        or scheduler.get("state") != "paused"
+        or scheduler.get("release_hold") is not True
+    ):
+        raise RuntimeError("scheduler was not held for release validation")
+    if (
+        not isinstance(workflow_runner, dict)
+        or workflow_runner.get("state") != "held"
+        or workflow_runner.get("release_hold") is not True
+        or workflow_runner.get("active_runs") != 0
+    ):
+        raise RuntimeError("workflow runner was not held for release validation")
     bootstrap = (
         components.get("scheduled_task_approval_bootstrap")
         if isinstance(components, dict)
@@ -857,6 +1023,94 @@ except Exception:
     print("service_identity_smoke=failed reason=signed_probe_rejected", file=sys.stderr)
     raise SystemExit(1)
 print("service_identity_smoke=ok")
+PY
+}
+
+activate_scheduler_after_release() {
+  local console_python="${PYTHON_BINS[console]}"
+  [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
+    echo "scheduler_release_activation=failed reason=runtime_unavailable" >&2
+    return 1
+  }
+
+  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
+    BOYI_DEPLOYED_ROOT="/home/boyce" \
+    "${console_python}" - <<'PY'
+import json
+import os
+import secrets
+import sys
+from urllib.request import Request, urlopen
+
+from dotenv import dotenv_values
+
+sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+from shared.service_identity import (
+    build_console_identity_headers,
+    validate_service_identity_secrets,
+)
+
+
+try:
+    values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
+    internal_token = str(values.get("AGENT_INTERNAL_API_TOKEN") or "")
+    signing_secret = str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or "")
+    validate_service_identity_secrets(
+        internal_api_token=internal_token,
+        console_signing_secret=signing_secret,
+    )
+    request_target = "/internal/v1/admin/scheduler/activate-after-release"
+    principal = {
+        "actor_type": "console_admin",
+        "actor_id": "release-scheduler-activation",
+        "roles": ["admin"],
+        "display_name": "Release scheduler activation",
+        "authenticated_by": "mysql_admin_session",
+    }
+    payload = None
+    response_status = None
+    last_error = None
+    for _attempt in range(3):
+        headers = build_console_identity_headers(
+            secret=signing_secret,
+            method="POST",
+            request_target=request_target,
+            body=b"",
+            principal=principal,
+            nonce=secrets.token_urlsafe(24),
+        )
+        headers["X-Agent-Internal-Token"] = internal_token
+        request = Request(
+            f"http://127.0.0.1:9000{request_target}",
+            data=b"",
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                response_status = response.status
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except Exception as exc:
+            last_error = exc
+    if payload is None:
+        raise RuntimeError("signed activation did not return a response") from last_error
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if (
+        response_status != 200
+        or payload.get("ok") is not True
+        or not isinstance(data, dict)
+        or data.get("state") != "running"
+        or data.get("release_hold") is not False
+        or not isinstance(data.get("workflow_runner"), dict)
+        or data["workflow_runner"].get("state") != "running"
+        or data["workflow_runner"].get("release_hold") is not False
+    ):
+        raise RuntimeError("release runtime activation was not confirmed")
+except Exception:
+    print("release_runtime_activation=failed reason=signed_activation_rejected", file=sys.stderr)
+    raise SystemExit(1)
+print("release_runtime_activation=ok")
 PY
 }
 
@@ -942,7 +1196,20 @@ rollback() {
     fi
     if [[ "${services_stopped}" == "1" ]]; then
       echo "Restoring managed release state" >&2
-      if [[ "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1" ]]; then
+      if [[ "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1" && \
+        "${NEW_RUNTIME_START_ATTEMPTED}" == "1" ]]; then
+        restore_control_plane_policy_bootstrap_data || rollback_status=1
+      fi
+      if [[ "${SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" == "1" && \
+        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
+        restore_scheduled_task_contract_upgrade_data || rollback_status=1
+      fi
+      if [[ "${DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" == "1" && \
+        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
+        restore_daily_sign_single_tms_data || rollback_status=1
+      fi
+      if [[ "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1" && \
+        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
         restore_control_plane_task_cutover_data || rollback_status=1
       fi
       if [[ "${VENV_ACTIVATED}" == "1" ]] && ! restore_virtualenvs; then
@@ -950,7 +1217,12 @@ rollback() {
       fi
       restore_managed_release_state || rollback_status=1
       verify_runtime_virtualenvs || rollback_status=1
-      restart_runtime_services_for_rollback || rollback_status=1
+      if clear_scheduler_release_hold_for_rollback; then
+        restart_runtime_services_for_rollback || rollback_status=1
+      else
+        rollback_status=1
+        echo "Rollback restart skipped because the scheduler release hold could not be cleared" >&2
+      fi
     else
       echo "Rollback restore skipped because a runtime service could not be stopped" >&2
     fi
@@ -982,6 +1254,8 @@ rollback() {
 }
 
 run_release() {
+  RELEASE_STAGE="acquire_release_lock"
+  acquire_release_lock
   trap rollback ERR
   RELEASE_STAGE="validate_environment"
   validate_environment
@@ -1004,18 +1278,23 @@ run_release() {
   # service quiesce so a third-party action is never straddled by the release.
   RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
   preflight_scheduled_write_window
+  RELEASE_STAGE="preflight_running_protected_writes"
+  preflight_running_protected_writes
+  RELEASE_STAGE="capture_control_plane_release_state"
+  capture_control_plane_release_state
   MUTATION_STARTED=1
   RELEASE_STAGE="quiesce_runtime_services"
   quiesce_runtime_services
+  RELEASE_STAGE="verify_protected_writes_quiesced"
+  preflight_running_protected_writes
   RELEASE_STAGE="retire_legacy_finance_etl"
   retire_legacy_finance_etl
   for scope in "${SCOPES[@]}"; do
     RELEASE_STAGE="sync_scope:${scope}"
     sync_scope "${scope}"
   done
-  RELEASE_STAGE="capture_control_plane_task_cutover_state"
-  capture_control_plane_task_cutover_state
   RELEASE_STAGE="apply_migrations"
+  MIGRATIONS_ATTEMPTED=1
   apply_migrations
   RELEASE_STAGE="install_service_units"
   install_service_units
@@ -1024,17 +1303,31 @@ run_release() {
   RELEASE_STAGE="write_release_sha"
   mkdir -p "${ROOTS[agent]}/runtime"
   printf '%s\n' "${RELEASE_SHA}" >"${ROOTS[agent]}/runtime/release_sha"
+  RELEASE_STAGE="create_scheduler_release_hold"
+  create_scheduler_release_hold
   RELEASE_STAGE="restart_services"
+  NEW_RUNTIME_START_ATTEMPTED=1
   restart_services
   RELEASE_STAGE="check_health"
   check_health
   RELEASE_STAGE="check_service_identity_smoke"
   check_service_identity_smoke
+  RELEASE_STAGE="check_control_plane_release_manifest"
+  check_control_plane_release_manifest
   RELEASE_STAGE="record_dependency_hashes"
   record_active_dependency_hashes
 
+  # Every rollback-capable gate has passed. Scheduler activation is the
+  # release commit point: an ambiguous HTTP response may mean jobs have begun,
+  # so never roll source or database state back after this request is sent.
   MUTATION_STARTED=0
   trap - ERR
+  RELEASE_STAGE="activate_scheduler_after_release"
+  if ! activate_scheduler_after_release; then
+    echo "release_activation_incomplete stage_root=${STAGE_ROOT} scheduler_state_requires_recovery=1" >&2
+    exit 1
+  fi
+  SCHEDULER_RELEASE_HOLD_CREATED=0
   RELEASE_STAGE="cleanup_successful_release"
   cleanup_successful_release
   echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"

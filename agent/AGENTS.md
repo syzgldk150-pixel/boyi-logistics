@@ -46,6 +46,9 @@
 - 计划固定 Schema v1，计划哈希必须覆盖上下文、目录哈希、工具版本、完整参数/账号、实际影响、Evidence 与写后条件。审批 15 分钟过期，执行前重算；变化时使旧审批失效并生成新轮次。
 - `tools/registry.yaml` 的每项治理字段都必填；宽泛 `tms_query` 和 `feishu_operation` 不向 LLM 开放，破坏性通用飞书操作禁用。`approval.mode: schedule_allowlist` 只表示该工具具备进入任务级免审设置的资格，不是固定白名单或自动授权。
 - 每个持久化定时任务默认 `REQUIRE_EACH_RUN`，可由签名真实 MySQL 会话的 Console `super_admin` 配置为 `EXACT_SCHEDULE_EXEMPT`。该策略只对 Scheduler 生效；手工、Console、飞书、Webhook 始终逐次审批。策略哈希绑定任务 ID、工具/版本、参数/账号、cron、enabled、治理字段、postconditions、动态规则与 `configuration_version`，不包含展示名称；任一受绑定变更令策略 stale 并恢复逐次审批。`014` 只规范化遗留任务，`015` 才保存配置版本、当前策略和审计事件；代码内 69 个精确审阅合同由一次审计 bootstrap 仅为部署时已启用且仍完整命中的既有任务保留原调度行为（当前生产预期 67 项），禁用项和新任务默认逐次审批。
+- 生产已应用的 `014_control_plane_task_cutover.sql` 按线上校验和保持字节不可变；后续合同修正只能通过 `016`/`017` 前向迁移。首次切换要求 67 个既有启用任务全部为当前有效的精确免审；后续发布允许管理员逐任务启停或改回逐次审批，但启用项必须具有当前有效的精确策略或有审计依据的安全降权。
+- 账号凭据保存/清除前必须原子撤销所有显式引用、以及财务同步等代码声明的隐式账号依赖对应的精确定时免审并写审计/Outbox；账号级 MySQL 执行锁必须让凭据变更与全部非终态受保护写 Run 串行化，活动 Run 检查、锁获取或撤权失败时禁止改凭据。每个受保护写步骤在同一账号锁内重新评估当前策略并提交 `RUNNING`；免审已失效时原子回到 `WAITING_APPROVAL`，已开始的写只 reconcile，未知结果不重放。人工 terminal retry 只允许原计划全为 read/compute；任何写计划必须重新提交 Command 并重新策略评估/审批，不得复制 Scheduler 身份或豁免重放。
+- 发布器必须在 mutation 前捕获 `014`/`016`/`017` 与 bootstrap marker 原状态，停服务前后阻断 `RUNNING`/`VERIFYING` 的受保护写；失败仅按本次发布状态逆序恢复 bootstrap、`017`、`016`、`014`。新 Agent 必须带发布标记以 paused 状态装载 Scheduler，并让 WorkflowRunner 保持 held、不领取 Run；identity smoke、69-task manifest 和依赖记录全部通过后，签名接口才先恢复并确认两者均可运行，最后删除匹配本次 SHA 的 marker。marker 删除是发布提交点；删除前异常/进程退出保留 marker，下次启动继续 hold，响应丢失后的重复激活必须幂等完成。激活请求发出后不得自动回滚可能已经启动的任务。
 - 打卡的 `clock_in_dual` 为 v1.1 精确账号/会话配置的外部写：不安全结果不重试，ACK 证据不是独立读后验证，未知写结果必须阻塞。财务启动只继承已持久化的财务任务策略，不得以启动补拉绕过审批。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
 - 每日应签与客服问题件只读试点通过 `pilot_projection.py` 投影；每次采集（包括来源不完整或详情复核失败）都必须保存 COMPLETE/INCOMPLETE 影子 Evidence。客服旧口径集合必须从现有账号选择与站点过滤规则独立计算，不能从新集合反推。首页保持旧口径，直至连续三个完整业务日影子集合、来源完整性和差异证据满足切换标准。
 

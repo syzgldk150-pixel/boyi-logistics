@@ -51,10 +51,11 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `event_consumptions`。事件与业务聚合必须通过同一 Unit of Work 提交。
 - `013_daily_sign_verification_state.sql`：保存离开当前 R13 的历史候选精确核验结果、
   下一次复核时间和失败退避。该迁移已在线上应用，不得修改文件内容或校验和。
-- `014_control_plane_task_cutover.sql`：仅规范化闭合的遗留生产任务 ID/ID 族并先备份原行，
-  不创建任何免审授权。它保留安全内部投影工具的合法 `*_HHMM` 任务族，规范化两条历史
-  打卡到 `clock_in_dual` v1.1 的精确账号/会话参数；未知账号、冲突值或缺关键打卡站点字段
-  会在任何永久变更前阻断整次迁移并保留原行，绝不猜测补齐或静默停用。
+- `014_control_plane_task_cutover.sql`：这是生产已经执行的历史迁移，生产
+  `schema_migrations` 记录的原始字节 SHA-256
+  `4b447a7c139980369c61eb9c2c5e250a974452b8c80036a1bce0f04a95a4fcdf`
+  是唯一权威。该文件只保留当时的遗留任务规范化行为；不得把后续安全收口回写进 `014`，
+  也不得改变任何字节、文件名或校验和。后续任务契约修正只能新增迁移。
 - `015_scheduled_task_approval_policies.sql`：为 `scheduled_tasks` 增加单调的
   `configuration_version` 与更新时间，建立 `scheduled_task_approval_policies`（当前任务策略）和
   `scheduled_task_approval_policy_events`（不可变策略事件）。模式仅为
@@ -63,15 +64,35 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   独立保留以支持审计和时间槽重配。迁移本身不把任何任务改为免审。
 - `016_daily_sign_single_tms_account.sql`：把每日应签任务重复的三个融辉角色收敛为唯一的
   邵阳大祥站 `account_id`，保留独立 R13 来源账号，并递增任务配置版本使旧审批策略自动失效；
-  非已审核的旧/新精确参数形状会在更新前显式阻断迁移。
+  非已审核的旧/新精确参数形状会在更新前显式阻断迁移。迁移前完整行写入
+  `daily_sign_single_tms_backup_016`；发布失败时
+  `--restore-daily-sign-single-tms-account` 恢复原行并删除本次 `016` 历史，重复恢复安全。
+- `017_scheduled_task_contract_upgrade.sql`：在不可变 `014` 之后精确升级两条打卡和可选财务任务；
+  只接受已审核的生产过渡形状或当前规范形状，完整备份原行后统一到代码审阅的工具、cron 与
+  参数契约，并递增配置版本。迁移前状态由 `--scheduled-task-contract-upgrade-status` 报告为
+  `pending_clean`、`pending_dirty` 或 `applied`；失败时
+  `--restore-scheduled-task-contract-upgrade` 恢复完整行、清除本次 `017` 历史并支持再次应用。
 
-生产迁移序列固定连续递增且不得改写已执行文件；线上已存在 `009`、`010`、`013` 时，
-发布器按版本顺序补执行待处理的 `011`、`012`、`014`、`015`、`016`。MySQL DDL 不参与源码回滚，发布前必须完成可恢复数据库备份。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计策略；其失败或不完整匹配不能使任何写任务获得免审。
+生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `014`，发布器只按
+顺序补执行 `015`、`016`、`017`。`016`/`017` 在业务行变更前各自保存完整行备份；远端发布必须在
+变更前捕获两项迁移状态和 bootstrap marker 状态，`pending_dirty` 直接阻断，回滚只撤销本次从
+pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
+策略；其失败或不完整匹配不能使任何写任务获得免审。
+
+首次生产切换在启动健康后使用
+`--check-control-plane-release-manifest --expect-initial-production-manifest`，精确要求 69 条已审阅任务、
+67 条启用，且仅财务日任务和韵达预测任务禁用；67 条启用任务必须全部是按当前任务行和已暂存
+工具目录重算仍为 ACTIVE 的 `EXACT_SCHEDULE_EXEMPT`。marker 已存在的后续发布使用不带额外 flag 的
+`--check-control-plane-release-manifest`：仍要求 69 个任务全部存在且参数规范，但允许管理员合法启停；
+每个当前启用任务必须具有仍绑定当前任务行和工具目录的有效精确免审，或具有明确管理员/凭据变更
+审计事件的逐次审批策略。停止服务前还必须执行 `--check-running-protected-writes`，在任何
+`RUNNING`/`VERIFYING` 的外部写、财务写或 destructive step 存在时阻断 quiesce。
 
 控制平面要求 MySQL 8.0.16 或更高版本。部署预检必须验证服务端版本、必需表列和
 `SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
-CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、从 `010` 升级、部分失败后重跑、
+CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整 `014 -> 015 -> 016 -> 017` 升级、
+部分历史、`017` 恢复后重应用、
 `--check`、JSON、外键、唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码
 只接受显式 CI 环境变量，不读取项目 `.env`。

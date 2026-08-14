@@ -46,6 +46,10 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls.rollback_database = f"{cls.database[:-5]}_rollback_test"
         cls.collation_database = f"{cls.database[:-5]}_collation_test"
         cls.compat_database = f"{cls.database[:-5]}_schedule_compat_test"
+        cls.contract_chain_database = f"{cls.database[:-5]}_contract_chain_test"
+        cls.policy_restore_database = f"{cls.database[:-5]}_policy_restore_test"
+        cls.release_manifest_database = f"{cls.database[:-5]}_release_manifest_test"
+        cls.protected_write_database = f"{cls.database[:-5]}_protected_write_test"
         cls.databases = (
             cls.database,
             cls.upgrade_database,
@@ -53,7 +57,14 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             cls.rollback_database,
             cls.collation_database,
         )
-        cls.all_databases = (*cls.databases, cls.compat_database)
+        cls.all_databases = (
+            *cls.databases,
+            cls.compat_database,
+            cls.contract_chain_database,
+            cls.policy_restore_database,
+            cls.release_manifest_database,
+            cls.protected_write_database,
+        )
         cls.runner = _load_migration_runner()
 
         with cls._server_connection() as connection, connection.cursor() as cursor:
@@ -85,7 +96,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     cursor.execute(statement)
         cls._run_migrations(cls.partial_database)
         cls._run_migrations(cls.rollback_database)
+        cls._run_migrations(cls.policy_restore_database)
+        cls._run_migrations(cls.release_manifest_database)
+        cls._run_migrations(cls.protected_write_database)
         cls._apply_through(cls.compat_database, "013")
+        cls._apply_through(cls.contract_chain_database, "013")
 
         # The shared runtime table can predate the control plane under a
         # different database/table collation. Run 015's SQL directly twice:
@@ -212,7 +227,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 )
 
     @classmethod
-    def _repository(cls):
+    def _repository(cls, database: str | None = None):
         from shared.orchestration_repository import OrchestrationRepository
 
         def connect():
@@ -221,7 +236,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 port=cls.port,
                 user=cls.user,
                 password=cls.password,
-                database=cls.database,
+                database=database or cls.database,
                 charset="utf8mb4",
                 autocommit=False,
                 cursorclass=cls.pymysql.cursors.DictCursor,
@@ -287,6 +302,216 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             ],
         )
 
+    def _seed_release_manifest(self, database: str) -> dict[str, object]:
+        registry = self.runner._load_control_plane_tool_registry()
+        approval = self.runner._load_scheduled_task_approval_contract_module()
+        profiles = self.runner._load_control_plane_scheduled_task_profiles()
+        profile_by_task_id = {
+            task_id: profile
+            for profile in profiles.values()
+            for task_id in profile.approved_task_ids
+        }
+        task_contracts: dict[str, dict] = {}
+        for loader in (
+            self.runner._load_control_plane_reviewed_task_contracts,
+            self.runner._load_control_plane_optional_task_contracts,
+            self.runner._load_control_plane_clock_contracts,
+            self.runner._load_control_plane_r7_contracts,
+        ):
+            task_contracts.update(loader())
+        expected_ids = self.runner._load_control_plane_reviewed_manifest_ids()
+        self.assertEqual(expected_ids, set(task_contracts))
+
+        exact_contracts: dict[str, object] = {}
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                for task_id in sorted(expected_ids):
+                    reviewed = task_contracts[task_id]
+                    arguments = dict(reviewed["canonical_arguments"])
+                    enabled = task_id not in self.runner.CONTROL_PLANE_REVIEWED_DISABLED_IDS
+                    task = {
+                        "id": task_id,
+                        "tool_name": reviewed["tool_name"],
+                        "tool_params": arguments,
+                        "cron_expression": reviewed["cron_expression"],
+                        "enabled": enabled,
+                        "configuration_version": 1,
+                    }
+                    cursor.execute(
+                        "INSERT INTO scheduled_tasks "
+                        "(id, name, tool_name, tool_params, cron_expression, enabled, "
+                        "configuration_version) VALUES (%s, %s, %s, CAST(%s AS JSON), "
+                        "%s, %s, %s)",
+                        (
+                            task_id,
+                            f"release manifest {task_id}",
+                            task["tool_name"],
+                            json.dumps(
+                                arguments,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            task["cron_expression"],
+                            enabled,
+                            task["configuration_version"],
+                        ),
+                    )
+                    if not enabled:
+                        cursor.execute(
+                            "INSERT INTO scheduled_task_approval_policies (task_id) "
+                            "VALUES (%s)",
+                            (task_id,),
+                        )
+                        continue
+
+                    profile = profile_by_task_id[task_id]
+                    capability = registry.get_capability(task["tool_name"])
+                    registry.validate_arguments(task["tool_name"], arguments)
+                    exact = approval.build_scheduled_task_contract(
+                        task,
+                        capability,
+                        dynamic_argument_rules=profile.dynamic_argument_rules,
+                        allowed_special_cron=profile.cron_expression,
+                    )
+                    exact_contracts[task_id] = exact
+                    snapshot = json.dumps(
+                        exact.snapshot,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    cursor.execute(
+                        "INSERT INTO scheduled_task_approval_policies "
+                        "(task_id, mode, contract_hash, contract_snapshot_json, "
+                        "tool_contract_hash, approved_by_actor_id, "
+                        "approved_by_actor_role, approved_at, version) "
+                        "VALUES (%s, 'EXACT_SCHEDULE_EXEMPT', %s, CAST(%s AS JSON), "
+                        "%s, %s, %s, NOW(6), 2)",
+                        (
+                            task_id,
+                            exact.contract_hash,
+                            snapshot,
+                            exact.tool_contract_hash,
+                            self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                            self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                        ),
+                    )
+                    cursor.execute(
+                        "INSERT INTO scheduled_task_approval_policy_events "
+                        "(task_id, from_mode, to_mode, contract_hash, "
+                        "contract_snapshot_json, tool_contract_hash, actor_id, "
+                        "actor_role, reason, correlation_id, request_id) "
+                        "VALUES (%s, 'REQUIRE_EACH_RUN', 'EXACT_SCHEDULE_EXEMPT', "
+                        "%s, CAST(%s AS JSON), %s, %s, %s, "
+                        "'control_plane_v1_bootstrap', %s, %s)",
+                        (
+                            task_id,
+                            exact.contract_hash,
+                            snapshot,
+                            exact.tool_contract_hash,
+                            self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                            self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                            str(uuid4()),
+                            str(uuid4()),
+                        ),
+                    )
+                cursor.execute(
+                    "INSERT INTO scheduled_task_approval_policy_events "
+                    "(task_id, to_mode, actor_id, actor_role, reason, "
+                    "correlation_id, request_id) "
+                    "VALUES (%s, 'REQUIRE_EACH_RUN', %s, %s, "
+                    "'control_plane_v1_bootstrap_complete', %s, %s)",
+                    (
+                        self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+                        self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                        self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                        self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                        self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                    ),
+                )
+        self.assertEqual(
+            self.runner.CONTROL_PLANE_REVIEWED_ENABLED_COUNT,
+            len(exact_contracts),
+        )
+        return exact_contracts
+
+    def _set_manifest_require_policy(
+        self,
+        database: str,
+        task_id: str,
+        *,
+        actor_id: str,
+        actor_role: str,
+        reason: str,
+    ) -> None:
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_task_approval_policies SET "
+                    "mode='REQUIRE_EACH_RUN', contract_hash=NULL, "
+                    "contract_snapshot_json=NULL, tool_contract_hash=NULL, "
+                    "approved_by_actor_id=%s, approved_by_actor_role=%s, "
+                    "approved_at=NOW(6), version=version+1 WHERE task_id=%s",
+                    (actor_id, actor_role, task_id),
+                )
+                self.assertEqual(1, cursor.rowcount)
+                cursor.execute(
+                    "INSERT INTO scheduled_task_approval_policy_events "
+                    "(task_id, from_mode, to_mode, actor_id, actor_role, reason, "
+                    "correlation_id, request_id) "
+                    "VALUES (%s, 'EXACT_SCHEDULE_EXEMPT', 'REQUIRE_EACH_RUN', "
+                    "%s, %s, %s, %s, %s)",
+                    (task_id, actor_id, actor_role, reason, str(uuid4()), str(uuid4())),
+                )
+
+    def _restore_manifest_exact_policy(
+        self,
+        database: str,
+        task_id: str,
+        exact: object,
+    ) -> None:
+        snapshot = json.dumps(
+            exact.snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_task_approval_policies SET "
+                    "mode='EXACT_SCHEDULE_EXEMPT', contract_hash=%s, "
+                    "contract_snapshot_json=CAST(%s AS JSON), tool_contract_hash=%s, "
+                    "approved_by_actor_id=%s, approved_by_actor_role=%s, "
+                    "approved_at=NOW(6), version=version+1 WHERE task_id=%s",
+                    (
+                        exact.contract_hash,
+                        snapshot,
+                        exact.tool_contract_hash,
+                        self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                        self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                        task_id,
+                    ),
+                )
+                self.assertEqual(1, cursor.rowcount)
+                cursor.execute(
+                    "INSERT INTO scheduled_task_approval_policy_events "
+                    "(task_id, from_mode, to_mode, contract_hash, "
+                    "contract_snapshot_json, tool_contract_hash, actor_id, "
+                    "actor_role, reason, correlation_id, request_id) "
+                    "VALUES (%s, 'REQUIRE_EACH_RUN', 'EXACT_SCHEDULE_EXEMPT', "
+                    "%s, CAST(%s AS JSON), %s, %s, %s, "
+                    "'control_plane_v1_bootstrap', %s, %s)",
+                    (
+                        task_id,
+                        exact.contract_hash,
+                        snapshot,
+                        exact.tool_contract_hash,
+                        self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                        self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                        str(uuid4()),
+                        str(uuid4()),
+                    ),
+                )
+
     def test_empty_upgrade_and_partial_migrations_are_reentrant(self):
         for database in self.databases:
             with self._connection(database) as connection, connection.cursor() as cursor:
@@ -348,6 +573,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     ),
                 )
 
+    @unittest.skip("superseded by immutable-014 forward-chain restore coverage")
     def test_empty_cutover_seed_rollback_is_reentrant_and_preserves_prior_rows(self):
         database = self.rollback_database
         seed_task_ids = self.runner._load_control_plane_seed_task_ids()
@@ -447,6 +673,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         # integration execution and prove a second rollback remains reentrant.
         self._run_migrations(database)
 
+    @unittest.skip("superseded by immutable-014 forward-chain restore coverage")
     def test_legacy_finance_yunda_startup_apply_restore_and_reapply_are_exact(self):
         database = self.compat_database
         contracts = self.runner._load_control_plane_reviewed_task_contracts()
@@ -571,6 +798,205 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             if key != "created_at"
         }
         self.assertEqual(applied_startup, reapplied_startup)
+
+    def test_immutable_014_forward_chain_017_restore_partial_and_reapply(self):
+        database = self.contract_chain_database
+        internal = self.runner._load_control_plane_reviewed_task_contracts()
+        optional = self.runner._load_control_plane_optional_task_contracts()
+        clocks = self.runner._load_control_plane_clock_contracts()
+        r7 = self.runner._load_control_plane_r7_contracts()
+        expected_ids = self.runner._load_control_plane_reviewed_manifest_ids()
+        self.assertEqual(69, len(expected_ids))
+
+        # Production already owns immutable 014 history. The reviewed rows
+        # below model its exact post-cutover state before forward upgrades.
+        self._apply_one(database, "014")
+        self._apply_one(database, "015")
+
+        daily_transition = {
+            "account_id": "r13_default",
+            "r13_account_id": "r13_default",
+            "problem_account_id": "ronghui_daxiang_s",
+            "sign_account_id": "ronghui_daxiang_s",
+            "detail_account_id": "ronghui_default",
+            "days": 7,
+        }
+        rows: dict[str, tuple[str, dict, str, bool]] = {}
+        for task_id, contract in internal.items():
+            arguments = (
+                daily_transition
+                if contract["group_id"] == "daily_sign"
+                else dict(contract["canonical_arguments"])
+            )
+            rows[task_id] = (
+                contract["tool_name"],
+                arguments,
+                contract["cron_expression"],
+                True,
+            )
+        for task_id, contract in r7.items():
+            rows[task_id] = (
+                contract["tool_name"],
+                dict(contract["canonical_arguments"]),
+                contract["cron_expression"],
+                True,
+            )
+        for task_id, contract in clocks.items():
+            rows[task_id] = (
+                "clock_in_dual" if task_id == "clockin_daxiang_1830" else "tms_query",
+                self.runner._applied_014_clock_arguments(
+                    task_id,
+                    contract["canonical_arguments"],
+                ),
+                contract["cron_expression"],
+                True,
+            )
+        rows["finance_bills_0010"] = (
+            optional["finance_bills_0010"]["tool_name"],
+            {
+                "account_id": "ronghui_default",
+                "mode": "sync",
+                "platform": "ronghui",
+                "rescan_days": 7,
+            },
+            optional["finance_bills_0010"]["cron_expression"],
+            False,
+        )
+        rows["finance_startup_catchup"] = (
+            optional["finance_startup_catchup"]["tool_name"],
+            dict(optional["finance_startup_catchup"]["canonical_arguments"]),
+            optional["finance_startup_catchup"]["cron_expression"],
+            True,
+        )
+        rows["yunda_dispatch_forecast_1700"] = (
+            optional["yunda_dispatch_forecast_1700"]["tool_name"],
+            dict(optional["yunda_dispatch_forecast_1700"]["canonical_arguments"]),
+            optional["yunda_dispatch_forecast_1700"]["cron_expression"],
+            False,
+        )
+        self.assertEqual(expected_ids, set(rows))
+
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            for task_id, (tool_name, arguments, cron_expression, enabled) in sorted(rows.items()):
+                cursor.execute(
+                    "INSERT INTO scheduled_tasks "
+                    "(id, name, tool_name, tool_params, cron_expression, enabled, "
+                    "last_status, last_duration_ms, last_message) "
+                    "VALUES (%s, %s, %s, CAST(%s AS JSON), %s, %s, "
+                    "'pre-017', 17, 'preserve exact row')",
+                    (
+                        task_id,
+                        f"reviewed {task_id}",
+                        tool_name,
+                        json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
+                        cron_expression,
+                        enabled,
+                    ),
+                )
+
+        self._apply_one(database, "016")
+
+        def load_daily_arguments() -> dict:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT tool_params FROM scheduled_tasks WHERE id='daily_sign_0500'"
+                )
+                value = cursor.fetchone()["tool_params"]
+            return json.loads(value) if isinstance(value, str) else dict(value)
+
+        self.assertEqual(
+            dict(internal["daily_sign_0500"]["canonical_arguments"]),
+            load_daily_arguments(),
+        )
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_daily_sign_single_tms_account())
+            self.assertEqual(0, self.runner.restore_daily_sign_single_tms_account())
+        self.assertEqual(daily_transition, load_daily_arguments())
+        self._apply_one(database, "016")
+        self.assertEqual(
+            dict(internal["daily_sign_0500"]["canonical_arguments"]),
+            load_daily_arguments(),
+        )
+
+        restored_ids = tuple(
+            sorted(
+                {
+                    "clockin_daxiang_1830",
+                    "clockin_daxiang_s_1833",
+                    "finance_bills_0010",
+                }
+            )
+        )
+        placeholders = ",".join("%s" for _ in restored_ids)
+
+        def load_restore_rows() -> dict[str, dict]:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, name, tool_name, tool_params, cron_expression, enabled, "
+                    "last_run, last_status, last_duration_ms, last_message, created_at, "
+                    "configuration_version, updated_at FROM scheduled_tasks "
+                    f"WHERE id IN ({placeholders}) ORDER BY id",
+                    restored_ids,
+                )
+                result = {str(row["id"]): dict(row) for row in cursor.fetchall()}
+            for row in result.values():
+                if isinstance(row["tool_params"], str):
+                    row["tool_params"] = json.loads(row["tool_params"])
+            return result
+
+        pre_017 = load_restore_rows()
+        self._apply_one(database, "017")
+        canonical = load_restore_rows()
+        for task_id, contract in clocks.items():
+            self.assertEqual("clock_in_dual", canonical[task_id]["tool_name"])
+            self.assertEqual(
+                dict(contract["canonical_arguments"]),
+                canonical[task_id]["tool_params"],
+            )
+        self.assertEqual(
+            dict(optional["finance_bills_0010"]["canonical_arguments"]),
+            canonical["finance_bills_0010"]["tool_params"],
+        )
+
+        migration_017 = next(
+            path
+            for version, path in self.runner.discover_migrations()
+            if version == "017"
+        )
+        statements_017 = self.runner.split_sql_statements(
+            migration_017.read_text(encoding="utf-8")
+        )
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            for statement in statements_017:
+                cursor.execute(statement)
+        self.assertEqual(canonical, load_restore_rows())
+
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_scheduled_task_contract_upgrade())
+        self.assertEqual(pre_017, load_restore_rows())
+
+        # Simulate an interrupted 017 whose SQL committed but whose history
+        # insert did not. Restore must still use the capture table.
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            for statement in statements_017:
+                cursor.execute(statement)
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM schema_migrations WHERE version='017'"
+            )
+            self.assertEqual(0, cursor.fetchone()["count"])
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_scheduled_task_contract_upgrade())
+            self.assertEqual(0, self.runner.restore_scheduled_task_contract_upgrade())
+        self.assertEqual(pre_017, load_restore_rows())
+
+        self._apply_one(database, "017")
+        self.assertEqual(canonical, load_restore_rows())
+        with self._connection(database) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
+            self.assertEqual(
+                [version for version, _ in self.runner.discover_migrations()],
+                [str(row["version"]) for row in cursor.fetchall()],
+            )
 
     def test_two_workers_skip_locked_without_duplicate_claim(self):
         repository = self._repository()
@@ -822,6 +1248,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(1, cursor.fetchone()["count"])
 
+    @unittest.skip("014 is production-applied and byte-immutable; upgrades live in 016/017")
     def test_task_cutover_exact_production_set_is_reentrant_and_fail_closed(self):
         migration = next(
             path
@@ -1320,3 +1747,396 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 "DELETE FROM scheduled_task_approval_policy_events WHERE task_id=%s",
                 (task_id,),
             )
+
+    def test_policy_bootstrap_restore_is_exact_reentrant_and_transactional(self):
+        database = self.policy_restore_database
+        migration_actor = self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID
+        migration_role = self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE
+        migration_task = "integration_restore_migration"
+        admin_task = "integration_restore_admin"
+        unrelated_task = "integration_restore_unrelated"
+
+        def insert_exact_policy(
+            cursor,
+            *,
+            task_id: str,
+            actor_id: str,
+            actor_role: str,
+            reason: str | None,
+        ) -> str | None:
+            contract_hash = hashlib.sha256(f"contract:{task_id}".encode()).hexdigest()
+            tool_hash = hashlib.sha256(f"tool:{task_id}".encode()).hexdigest()
+            snapshot = json.dumps(
+                {"task_id": task_id, "enabled": True},
+                separators=(",", ":"),
+            )
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES (%s, %s, 'query_waybill', JSON_OBJECT(), '0 3 * * *', TRUE)",
+                (task_id, task_id),
+            )
+            cursor.execute(
+                "INSERT INTO scheduled_task_approval_policies "
+                "(task_id, mode, contract_hash, contract_snapshot_json, "
+                "tool_contract_hash, approved_by_actor_id, approved_by_actor_role, "
+                "approved_at, version) VALUES (%s, 'EXACT_SCHEDULE_EXEMPT', %s, "
+                "CAST(%s AS JSON), %s, %s, %s, NOW(6), 2)",
+                (
+                    task_id,
+                    contract_hash,
+                    snapshot,
+                    tool_hash,
+                    actor_id,
+                    actor_role,
+                ),
+            )
+            if reason is None:
+                return None
+            request_id = str(uuid4())
+            cursor.execute(
+                "INSERT INTO scheduled_task_approval_policy_events "
+                "(task_id, from_mode, to_mode, contract_hash, "
+                "contract_snapshot_json, tool_contract_hash, actor_id, actor_role, "
+                "reason, correlation_id, request_id) VALUES (%s, "
+                "'REQUIRE_EACH_RUN', 'EXACT_SCHEDULE_EXEMPT', %s, "
+                "CAST(%s AS JSON), %s, %s, %s, %s, %s, %s)",
+                (
+                    task_id,
+                    contract_hash,
+                    snapshot,
+                    tool_hash,
+                    actor_id,
+                    actor_role,
+                    reason,
+                    str(uuid4()),
+                    request_id,
+                ),
+            )
+            return request_id
+
+        def insert_domain_chain(cursor, *, task_id: str, request_id: str) -> str:
+            event_id = str(uuid4())
+            correlation_id = str(uuid4())
+            payload = json.dumps({"task_id": task_id}, separators=(",", ":"))
+            payload_hash = hashlib.sha256(payload.encode()).hexdigest()
+            cursor.execute(
+                "INSERT INTO domain_events "
+                "(event_id, event_type, schema_version, source_system, source_event_id, "
+                "entity_type, entity_id, occurred_at, observed_at, correlation_id, "
+                "payload_json, payload_sha256) VALUES (%s, "
+                "'scheduled_task.approval_policy_changed', 1, 'agent', %s, "
+                "'scheduled_task', %s, NOW(6), NOW(6), %s, CAST(%s AS JSON), %s)",
+                (
+                    event_id,
+                    f"{task_id}:{request_id}",
+                    task_id,
+                    correlation_id,
+                    payload,
+                    payload_hash,
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO outbox_events "
+                "(event_id, consumer_name, topic, partition_key) "
+                "VALUES (%s, 'integration-release-gate', "
+                "'scheduled_task.approval_policy_changed', %s)",
+                (event_id, task_id),
+            )
+            cursor.execute(
+                "INSERT INTO event_consumptions (consumer_name, event_id, processed_at) "
+                "VALUES ('integration-release-gate', %s, NOW(6))",
+                (event_id,),
+            )
+            return event_id
+
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                migration_request = insert_exact_policy(
+                    cursor,
+                    task_id=migration_task,
+                    actor_id=migration_actor,
+                    actor_role=migration_role,
+                    reason="control_plane_v1_bootstrap",
+                )
+                admin_request = insert_exact_policy(
+                    cursor,
+                    task_id=admin_task,
+                    actor_id="integration-admin",
+                    actor_role="super_admin",
+                    reason="console_policy_change",
+                )
+                self.assertIsNotNone(migration_request)
+                self.assertIsNotNone(admin_request)
+                migration_domain_event = insert_domain_chain(
+                    cursor,
+                    task_id=migration_task,
+                    request_id=str(migration_request),
+                )
+                admin_domain_event = insert_domain_chain(
+                    cursor,
+                    task_id=admin_task,
+                    request_id=str(admin_request),
+                )
+                unrelated_request = str(uuid4())
+                cursor.execute(
+                    "INSERT INTO scheduled_task_approval_policy_events "
+                    "(task_id, to_mode, actor_id, actor_role, reason, "
+                    "correlation_id, request_id) VALUES (%s, 'REQUIRE_EACH_RUN', "
+                    "'integration-system', 'system', 'unrelated_audit', %s, %s)",
+                    (unrelated_task, str(uuid4()), unrelated_request),
+                )
+                unrelated_domain_event = insert_domain_chain(
+                    cursor,
+                    task_id=unrelated_task,
+                    request_id=unrelated_request,
+                )
+                cursor.execute(
+                    "INSERT INTO scheduled_task_approval_policy_events "
+                    "(task_id, to_mode, actor_id, actor_role, reason, "
+                    "correlation_id, request_id) VALUES (%s, 'REQUIRE_EACH_RUN', "
+                    "%s, %s, 'control_plane_v1_bootstrap_complete', %s, %s)",
+                    (
+                        self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+                        migration_actor,
+                        migration_role,
+                        self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                        self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                    ),
+                )
+
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_control_plane_policy_bootstrap())
+
+        with self._connection(database) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT task_id FROM scheduled_task_approval_policies ORDER BY task_id"
+            )
+            self.assertEqual([admin_task], [row["task_id"] for row in cursor.fetchall()])
+            cursor.execute(
+                "SELECT task_id, reason FROM scheduled_task_approval_policy_events "
+                "ORDER BY task_id, event_id"
+            )
+            self.assertEqual(
+                [(admin_task, "console_policy_change"), (unrelated_task, "unrelated_audit")],
+                [(row["task_id"], row["reason"]) for row in cursor.fetchall()],
+            )
+            for event_id, expected in (
+                (migration_domain_event, 0),
+                (admin_domain_event, 1),
+                (unrelated_domain_event, 1),
+            ):
+                for table in ("domain_events", "outbox_events", "event_consumptions"):
+                    cursor.execute(
+                        f"SELECT COUNT(*) AS count FROM {table} WHERE event_id=%s",
+                        (event_id,),
+                    )
+                    self.assertEqual(expected, cursor.fetchone()["count"])
+
+        tracked_tables = (
+            "scheduled_task_approval_policies",
+            "scheduled_task_approval_policy_events",
+            "domain_events",
+            "outbox_events",
+            "event_consumptions",
+        )
+
+        def table_counts() -> dict[str, int]:
+            with self._connection(database) as connection:
+                with connection.cursor() as cursor:
+                    counts = {}
+                    for table in tracked_tables:
+                        cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")
+                        counts[table] = int(cursor.fetchone()["count"])
+            return counts
+
+        before_reentrant = table_counts()
+        with patch.dict(os.environ, self._environment(database), clear=False):
+            self.assertEqual(0, self.runner.restore_control_plane_policy_bootstrap())
+        self.assertEqual(before_reentrant, table_counts())
+
+        valid_task = "integration_restore_valid_second"
+        orphan_task = "integration_restore_orphan"
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                valid_request = insert_exact_policy(
+                    cursor,
+                    task_id=valid_task,
+                    actor_id=migration_actor,
+                    actor_role=migration_role,
+                    reason="control_plane_v1_bootstrap",
+                )
+                self.assertIsNotNone(valid_request)
+                insert_domain_chain(
+                    cursor,
+                    task_id=valid_task,
+                    request_id=str(valid_request),
+                )
+                self.assertIsNone(
+                    insert_exact_policy(
+                        cursor,
+                        task_id=orphan_task,
+                        actor_id=migration_actor,
+                        actor_role=migration_role,
+                        reason=None,
+                    )
+                )
+
+        before_failed_restore = table_counts()
+        with (
+            patch.dict(os.environ, self._environment(database), clear=False),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "MIGRATION_EXACT_POLICY_BOOTSTRAP_EVENT_MISSING",
+            ),
+        ):
+            self.runner.restore_control_plane_policy_bootstrap()
+        self.assertEqual(before_failed_restore, table_counts())
+
+    def test_database_backed_release_manifest_initial_and_later_policy_gates(self):
+        database = self.release_manifest_database
+        exact_contracts = self._seed_release_manifest(database)
+
+        def check(*, initial: bool = False) -> int:
+            with patch.dict(os.environ, self._environment(database), clear=False):
+                return self.runner.check_control_plane_release_manifest(
+                    expect_initial_production_manifest=initial
+                )
+
+        self.assertEqual(0, check(initial=True))
+        self.assertEqual(0, check())
+        task_ids = sorted(exact_contracts)
+        admin_task, credential_task, default_task, stale_task, missing_task = task_ids[:5]
+
+        self._set_manifest_require_policy(
+            database,
+            admin_task,
+            actor_id="integration-admin",
+            actor_role="super_admin",
+            reason="console_policy_change",
+        )
+        self.assertEqual(1, check(initial=True))
+        self.assertEqual(0, check())
+        self._restore_manifest_exact_policy(
+            database,
+            admin_task,
+            exact_contracts[admin_task],
+        )
+
+        approval = self.runner._load_scheduled_task_approval_contract_module()
+        self._set_manifest_require_policy(
+            database,
+            credential_task,
+            actor_id=approval.ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+            actor_role="system",
+            reason=approval.ACCOUNT_CREDENTIAL_CHANGE_REASON,
+        )
+        self.assertEqual(1, check(initial=True))
+        self.assertEqual(0, check())
+        self._restore_manifest_exact_policy(
+            database,
+            credential_task,
+            exact_contracts[credential_task],
+        )
+
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_task_approval_policies SET "
+                    "mode='REQUIRE_EACH_RUN', contract_hash=NULL, "
+                    "contract_snapshot_json=NULL, tool_contract_hash=NULL, "
+                    "approved_by_actor_id=NULL, approved_by_actor_role=NULL, "
+                    "approved_at=NULL, version=1 WHERE task_id=%s",
+                    (default_task,),
+                )
+                self.assertEqual(1, cursor.rowcount)
+        self.assertEqual(1, check())
+        self._restore_manifest_exact_policy(
+            database,
+            default_task,
+            exact_contracts[default_task],
+        )
+
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_tasks SET configuration_version=2 WHERE id=%s",
+                    (stale_task,),
+                )
+                self.assertEqual(1, cursor.rowcount)
+        self.assertEqual(1, check())
+        with self._connection(database, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_tasks SET configuration_version=1 WHERE id=%s",
+                    (stale_task,),
+                )
+                cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (missing_task,))
+                self.assertEqual(1, cursor.rowcount)
+        self.assertEqual(1, check())
+
+    def test_protected_write_gate_uses_real_mysql_step_state(self):
+        database = self.protected_write_database
+        repository = self._repository(database)
+        aggregate = self._aggregate_rows("protected-write-gate")
+        with repository.unit_of_work() as uow:
+            receipt = uow.command_gateway_create(*aggregate)
+            uow.commit()
+        run_id = receipt["run_id"]
+
+        def insert_step(*, status: str, operation_type: str, order: int) -> str:
+            step_id = str(uuid4())
+            with self._connection(database, autocommit=True) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "INSERT INTO agent_run_steps "
+                        "(step_id, run_id, step_key, step_order, tool_name, tool_version, "
+                        "operation_type, risk_level, status, requires_approval, retry_safe, "
+                        "idempotency_key) VALUES (%s, %s, %s, %s, %s, '1.0.0', %s, "
+                        "'HIGH', %s, TRUE, FALSE, %s)",
+                        (
+                            step_id,
+                            run_id,
+                            f"gate-{order}",
+                            order,
+                            f"integration_gate_{order}",
+                            operation_type,
+                            status,
+                            f"integration-gate:{step_id}",
+                        ),
+                    )
+            return step_id
+
+        def check() -> int:
+            with patch.dict(os.environ, self._environment(database), clear=False):
+                return self.runner.check_running_protected_writes()
+
+        order = 0
+        for operation_type in ("EXTERNAL_WRITE", "FINANCIAL_WRITE", "DESTRUCTIVE"):
+            for status in ("RUNNING", "VERIFYING"):
+                order += 1
+                step_id = insert_step(
+                    status=status,
+                    operation_type=operation_type,
+                    order=order,
+                )
+                with self.subTest(operation_type=operation_type, status=status):
+                    self.assertEqual(1, check())
+                with self._connection(database, autocommit=True) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "DELETE FROM agent_run_steps WHERE step_id=%s",
+                            (step_id,),
+                        )
+
+        safe_rows = (
+            ("RUNNING", "INTERNAL_PROJECTION_WRITE"),
+            ("VERIFYING", "INTERNAL_PROJECTION_WRITE"),
+            ("COMPLETED", "EXTERNAL_WRITE"),
+            ("FAILED_TERMINAL", "FINANCIAL_WRITE"),
+            ("CANCELLED", "DESTRUCTIVE"),
+        )
+        for status, operation_type in safe_rows:
+            order += 1
+            insert_step(status=status, operation_type=operation_type, order=order)
+        self.assertEqual(0, check())
