@@ -145,9 +145,9 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
         return
 
     async def startup_catchup() -> None:
-        # Use one stable logical occurrence per business day.  Repeated service
-        # restarts therefore reuse the same Command/Run instead of starting a
-        # second finance scan for an arbitrary wall-clock timestamp.
+        # Use one stable logical occurrence per task-contract version and
+        # business day. Repeated starts on the same version therefore reuse the
+        # same Command/Run instead of starting another arbitrary wall-clock scan.
         scheduled_for = datetime.now(ZoneInfo("Asia/Shanghai")).replace(
             hour=0,
             minute=10,
@@ -342,12 +342,24 @@ async def _execute_scheduled_tool(
     }
     if configuration_version is not None:
         execution_context["configuration_version"] = configuration_version
+    idempotency_key = f"scheduler:{task_id}:{scheduled_iso}"
+    if cron_expression == "@startup":
+        if type(configuration_version) is not int or configuration_version < 1:
+            raise ValueError("@startup tasks require a positive configuration_version")
+        # A startup occurrence is stable for one task contract version.  Older
+        # production builds used the same daily timestamp without a contract
+        # version; retaining that key after the task contract changes would
+        # collide with an immutable legacy Command instead of submitting the
+        # newly governed occurrence.
+        idempotency_key = (
+            f"scheduler:{task_id}:v{configuration_version}:{scheduled_iso}"
+        )
     return await agent_core.execute_tool(
         tool_name,
         arguments,
         actor=Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
         source="scheduler",
-        idempotency_key=f"scheduler:{task_id}:{scheduled_iso}",
+        idempotency_key=idempotency_key,
         execution_context=execution_context,
     )
 

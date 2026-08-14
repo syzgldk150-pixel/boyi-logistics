@@ -304,6 +304,8 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
     def test_startup_scheduler_registers_gap_only_catchup(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
         core = _AgentCore()
         scheduler = init_scheduler(core)
         job = scheduler.get_job("finance_startup_catchup")
@@ -326,7 +328,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual("scheduler", trusted["source"])
         scheduled_for = trusted["execution_context"]["scheduled_for"]
         self.assertEqual(
-            f"scheduler:finance_startup_catchup:{scheduled_for}",
+            f"scheduler:finance_startup_catchup:v8:{scheduled_for}",
             trusted["idempotency_key"],
         )
         self.assertEqual("@startup", trusted["execution_context"]["cron_expression"])
@@ -340,6 +342,47 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             core.calls[0][2]["idempotency_key"],
             core.calls[1][2]["idempotency_key"],
         )
+
+        # A contract revision is a distinct governed occurrence and must not
+        # collide with the immutable Command created by an older task version.
+        asyncio.run(
+            scheduler_module._execute_scheduled_tool(
+                core,
+                task_id="finance_startup_catchup",
+                tool_name="sync_finance_bills",
+                arguments={
+                    "mode": "sync",
+                    "platform": "ronghui",
+                    "rescan_days": 7,
+                    "_startup_catchup": True,
+                },
+                scheduled_for=datetime.fromisoformat(scheduled_for),
+                cron_expression="@startup",
+                configuration_version=9,
+            )
+        )
+        self.assertEqual(
+            f"scheduler:finance_startup_catchup:v9:{scheduled_for}",
+            core.calls[2][2]["idempotency_key"],
+        )
+
+        for invalid_version in (None, 0, True):
+            with self.subTest(configuration_version=invalid_version):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "@startup tasks require a positive configuration_version",
+                ):
+                    asyncio.run(
+                        scheduler_module._execute_scheduled_tool(
+                            core,
+                            task_id="finance_startup_catchup",
+                            tool_name="sync_finance_bills",
+                            arguments={"mode": "sync"},
+                            scheduled_for=datetime.fromisoformat(scheduled_for),
+                            cron_expression="@startup",
+                            configuration_version=invalid_version,
+                        )
+                    )
 
     def test_daily_finance_job_freezes_scope_and_submits_through_gateway(self):
         if not HAS_APSCHEDULER:
@@ -776,7 +819,8 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertIn('arguments["target_date"] = (', source)
         self.assertIn("scheduled_for.date() - timedelta(days=1)", source)
         self.assertNotIn('arguments.setdefault("target_date"', source)
-        self.assertIn('idempotency_key=f"scheduler:{task_id}:{scheduled_iso}"', source)
+        self.assertIn('idempotency_key = f"scheduler:{task_id}:{scheduled_iso}"', source)
+        self.assertIn("idempotency_key=idempotency_key", source)
 
     def test_ecs_publish_scope_includes_console_finance_service(self):
         script = (
