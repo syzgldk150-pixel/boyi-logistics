@@ -827,18 +827,48 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             "detail_account_id": "ronghui_default",
             "days": 7,
         }
+        reviewed_arrive_site = "mysql-integration-reviewed-arrive-site"
+        arrive_transition = {
+            "account_id": "ronghui_default",
+            "site_code": reviewed_arrive_site,
+        }
+        arrive_ids = tuple(
+            sorted(
+                task_id
+                for task_id, contract in internal.items()
+                if contract["group_id"] == "arrive_list"
+            )
+        )
+        self.assertEqual(
+            (
+                "arrive_list_0830",
+                "arrive_list_0900",
+                "arrive_list_0930",
+            ),
+            arrive_ids,
+        )
+        yunda_send_id = "yunda_send_waybills_2355"
+        yunda_send_pre_014 = {
+            "account_id": "yunda_default",
+            "session_profile": "yunda",
+            "ensure_fields": False,
+            "target_date": "",
+        }
+        yunda_disabled_message = "mysql-integration-014-disabled-message"
         rows: dict[str, tuple[str, dict, str, bool]] = {}
         for task_id, contract in internal.items():
             arguments = (
                 daily_transition
                 if contract["group_id"] == "daily_sign"
+                else arrive_transition
+                if contract["group_id"] == "arrive_list"
                 else dict(contract["canonical_arguments"])
             )
             rows[task_id] = (
                 contract["tool_name"],
                 arguments,
                 contract["cron_expression"],
-                True,
+                task_id != yunda_send_id,
             )
         for task_id, contract in r7.items():
             rows[task_id] = (
@@ -884,12 +914,17 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
         with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
             for task_id, (tool_name, arguments, cron_expression, enabled) in sorted(rows.items()):
+                last_status = "disabled" if task_id == yunda_send_id else "pre-017"
+                last_message = (
+                    yunda_disabled_message
+                    if task_id == yunda_send_id
+                    else "preserve exact row"
+                )
                 cursor.execute(
                     "INSERT INTO scheduled_tasks "
                     "(id, name, tool_name, tool_params, cron_expression, enabled, "
                     "last_status, last_duration_ms, last_message) "
-                    "VALUES (%s, %s, %s, CAST(%s AS JSON), %s, %s, "
-                    "'pre-017', 17, 'preserve exact row')",
+                    "VALUES (%s, %s, %s, CAST(%s AS JSON), %s, %s, %s, 17, %s)",
                     (
                         task_id,
                         f"reviewed {task_id}",
@@ -897,8 +932,26 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                         json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
                         cron_expression,
                         enabled,
+                        last_status,
+                        last_message,
                     ),
                 )
+            cursor.execute(
+                "INSERT INTO control_plane_task_cutover_backup_014 "
+                "(id, name, tool_name, tool_params, cron_expression, enabled, "
+                "last_status, last_duration_ms, last_message) "
+                "VALUES (%s, %s, 'sync_yunda_send_waybills', CAST(%s AS JSON), "
+                "'55 23 * * *', TRUE, 'legacy-active', 23, 'pre-014-yunda')",
+                (
+                    yunda_send_id,
+                    "pre-014 reviewed yunda send",
+                    json.dumps(
+                        yunda_send_pre_014,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
 
         self._apply_one(database, "016")
 
@@ -924,12 +977,256 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             load_daily_arguments(),
         )
 
+        migration_017 = next(
+            path
+            for version, path in self.runner.discover_migrations()
+            if version == "017"
+        )
+        migration_017_sql = migration_017.read_text(encoding="utf-8")
+        production_arrive_sha256 = (
+            self.runner.CONTROL_PLANE_REVIEWED_ARRIVE_SITE_SHA256
+        )
+        integration_arrive_sha256 = hashlib.sha256(
+            reviewed_arrive_site.encode("utf-8")
+        ).hexdigest()
+        production_disabled_message_sha256 = (
+            self.runner.CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256
+        )
+        integration_disabled_message_sha256 = hashlib.sha256(
+            yunda_disabled_message.encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(1, migration_017_sql.count(production_arrive_sha256))
+        self.assertEqual(
+            1,
+            migration_017_sql.count(production_disabled_message_sha256),
+        )
+        integration_017_sql = migration_017_sql.replace(
+            production_arrive_sha256,
+            integration_arrive_sha256,
+        ).replace(
+            production_disabled_message_sha256,
+            integration_disabled_message_sha256,
+        )
+        statements_017 = self.runner.split_sql_statements(integration_017_sql)
+
+        def set_arrive_arguments(task_id: str, arguments: dict) -> None:
+            with self._connection(
+                database,
+                autocommit=True,
+            ) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_tasks SET tool_params=CAST(%s AS JSON) "
+                    "WHERE id=%s",
+                    (
+                        json.dumps(
+                            arguments,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        task_id,
+                    ),
+                )
+
+        def load_arrive_arguments(task_id: str) -> dict:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT tool_params FROM scheduled_tasks WHERE id=%s",
+                    (task_id,),
+                )
+                value = cursor.fetchone()["tool_params"]
+            return json.loads(value) if isinstance(value, str) else dict(value)
+
+        def load_yunda_proof_state() -> tuple[dict | None, dict | None]:
+            result: list[dict | None] = []
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                for table in (
+                    "scheduled_tasks",
+                    "control_plane_task_cutover_backup_014",
+                ):
+                    version_column = (
+                        ", configuration_version"
+                        if table == "scheduled_tasks"
+                        else ""
+                    )
+                    cursor.execute(
+                        "SELECT id, tool_name, tool_params, cron_expression, enabled, "
+                        f"last_status, last_message{version_column} "
+                        f"FROM {table} WHERE id=%s",
+                        (yunda_send_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is not None:
+                        row = dict(row)
+                        if isinstance(row["tool_params"], str):
+                            row["tool_params"] = json.loads(row["tool_params"])
+                    result.append(row)
+            return result[0], result[1]
+
+        def restore_yunda_proof_state() -> None:
+            with self._connection(
+                database,
+                autocommit=True,
+            ) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE scheduled_tasks SET "
+                    "tool_name='sync_yunda_send_waybills', "
+                    "tool_params=CAST(%s AS JSON), cron_expression='55 23 * * *', "
+                    "enabled=FALSE, last_status='disabled', last_message=%s, "
+                    "configuration_version=1 "
+                    "WHERE id=%s",
+                    (
+                        json.dumps(
+                            internal[yunda_send_id]["canonical_arguments"],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        yunda_disabled_message,
+                        yunda_send_id,
+                    ),
+                )
+                cursor.execute(
+                    "INSERT INTO control_plane_task_cutover_backup_014 "
+                    "(id, name, tool_name, tool_params, cron_expression, enabled, "
+                    "last_status, last_duration_ms, last_message) "
+                    "VALUES (%s, %s, 'sync_yunda_send_waybills', CAST(%s AS JSON), "
+                    "'55 23 * * *', TRUE, 'legacy-active', 23, 'pre-014-yunda') "
+                    "ON DUPLICATE KEY UPDATE "
+                    "tool_name=VALUES(tool_name), tool_params=VALUES(tool_params), "
+                    "cron_expression=VALUES(cron_expression), enabled=VALUES(enabled), "
+                    "last_status=VALUES(last_status), last_duration_ms=VALUES(last_duration_ms), "
+                    "last_message=VALUES(last_message)",
+                    (
+                        yunda_send_id,
+                        "pre-014 reviewed yunda send",
+                        json.dumps(
+                            yunda_send_pre_014,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    ),
+                )
+
+        def apply_017() -> None:
+            with self._connection(
+                database,
+                autocommit=True,
+            ) as connection, connection.cursor() as cursor:
+                for statement in statements_017:
+                    cursor.execute(statement)
+                cursor.execute(
+                    "INSERT INTO schema_migrations (version, filename, checksum) "
+                    "VALUES (%s, %s, %s)",
+                    (
+                        "017",
+                        migration_017.name,
+                        self.runner.migration_checksum(migration_017),
+                    ),
+                )
+
+        for invalid_arguments in (
+            {
+                "account_id": "ronghui_default",
+                "site_code": "wrong-reviewed-site",
+            },
+            {
+                "account_id": "ronghui_default",
+                "site_code": reviewed_arrive_site,
+                "unexpected": True,
+            },
+            {
+                "account_id": "ronghui_default",
+                "site_code": 123,
+            },
+        ):
+            set_arrive_arguments(arrive_ids[0], invalid_arguments)
+            with self.assertRaises(self.pymysql.MySQLError):
+                with self._connection(
+                    database,
+                    autocommit=True,
+                ) as connection, connection.cursor() as cursor:
+                    for statement in statements_017:
+                        cursor.execute(statement)
+            self.assertEqual(
+                invalid_arguments,
+                load_arrive_arguments(arrive_ids[0]),
+            )
+        set_arrive_arguments(arrive_ids[0], arrive_transition)
+
+        yunda_invalid_mutations = (
+            (
+                "missing backup",
+                "DELETE FROM control_plane_task_cutover_backup_014 WHERE id=%s",
+                (yunda_send_id,),
+            ),
+            (
+                "backup disabled",
+                "UPDATE control_plane_task_cutover_backup_014 SET enabled=FALSE "
+                "WHERE id=%s",
+                (yunda_send_id,),
+            ),
+            (
+                "backup extra argument",
+                "UPDATE control_plane_task_cutover_backup_014 SET "
+                "tool_params=JSON_SET(tool_params, '$.unexpected', TRUE) WHERE id=%s",
+                (yunda_send_id,),
+            ),
+            (
+                "current extra argument",
+                "UPDATE scheduled_tasks SET "
+                "tool_params=JSON_SET(tool_params, '$.unexpected', TRUE) WHERE id=%s",
+                (yunda_send_id,),
+            ),
+            (
+                "current wrong status",
+                "UPDATE scheduled_tasks SET last_status='success' WHERE id=%s",
+                (yunda_send_id,),
+            ),
+            (
+                "current wrong message",
+                "UPDATE scheduled_tasks SET last_message='changed-message' WHERE id=%s",
+                (yunda_send_id,),
+            ),
+            (
+                "current changed version",
+                "UPDATE scheduled_tasks SET configuration_version=2 WHERE id=%s",
+                (yunda_send_id,),
+            ),
+        )
+        for label, mutation_sql, mutation_params in yunda_invalid_mutations:
+            with self.subTest(yunda_proof=label):
+                with self._connection(
+                    database,
+                    autocommit=True,
+                ) as connection, connection.cursor() as cursor:
+                    cursor.execute(mutation_sql, mutation_params)
+                invalid_state = load_yunda_proof_state()
+                with self.assertRaises(self.pymysql.MySQLError):
+                    with self._connection(
+                        database,
+                        autocommit=True,
+                    ) as connection, connection.cursor() as cursor:
+                        for statement in statements_017:
+                            cursor.execute(statement)
+                self.assertEqual(invalid_state, load_yunda_proof_state())
+                restore_yunda_proof_state()
+
+        with self._connection(database) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=%s "
+                "AND TABLE_NAME='scheduled_task_contract_upgrade_backup_017'",
+                (database,),
+            )
+            self.assertEqual(0, cursor.fetchone()["count"])
+
         restored_ids = tuple(
             sorted(
                 {
                     "clockin_daxiang_1830",
                     "clockin_daxiang_s_1833",
                     "finance_bills_0010",
+                    yunda_send_id,
+                    *arrive_ids,
                 }
             )
         )
@@ -951,7 +1248,19 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             return result
 
         pre_017 = load_restore_rows()
-        self._apply_one(database, "017")
+        for task_id in arrive_ids:
+            self.assertEqual(arrive_transition, pre_017[task_id]["tool_params"])
+        self.assertFalse(pre_017[yunda_send_id]["enabled"])
+        self.assertEqual(
+            dict(internal[yunda_send_id]["canonical_arguments"]),
+            pre_017[yunda_send_id]["tool_params"],
+        )
+        self.assertEqual("disabled", pre_017[yunda_send_id]["last_status"])
+        self.assertEqual(
+            yunda_disabled_message,
+            pre_017[yunda_send_id]["last_message"],
+        )
+        apply_017()
         canonical = load_restore_rows()
         for task_id, contract in clocks.items():
             self.assertEqual("clock_in_dual", canonical[task_id]["tool_name"])
@@ -963,15 +1272,24 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             dict(optional["finance_bills_0010"]["canonical_arguments"]),
             canonical["finance_bills_0010"]["tool_params"],
         )
+        for task_id in arrive_ids:
+            self.assertEqual(
+                dict(internal[task_id]["canonical_arguments"]),
+                canonical[task_id]["tool_params"],
+            )
+            self.assertNotIn("site_code", canonical[task_id]["tool_params"])
+        self.assertTrue(canonical[yunda_send_id]["enabled"])
+        self.assertEqual(
+            dict(internal[yunda_send_id]["canonical_arguments"]),
+            canonical[yunda_send_id]["tool_params"],
+        )
+        self.assertEqual("legacy-active", canonical[yunda_send_id]["last_status"])
+        self.assertEqual("pre-014-yunda", canonical[yunda_send_id]["last_message"])
+        self.assertEqual(
+            pre_017[yunda_send_id]["configuration_version"] + 1,
+            canonical[yunda_send_id]["configuration_version"],
+        )
 
-        migration_017 = next(
-            path
-            for version, path in self.runner.discover_migrations()
-            if version == "017"
-        )
-        statements_017 = self.runner.split_sql_statements(
-            migration_017.read_text(encoding="utf-8")
-        )
         with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
             for statement in statements_017:
                 cursor.execute(statement)
@@ -995,7 +1313,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self.assertEqual(0, self.runner.restore_scheduled_task_contract_upgrade())
         self.assertEqual(pre_017, load_restore_rows())
 
-        self._apply_one(database, "017")
+        apply_017()
         def stable_contract_rows(source: dict[str, dict]) -> dict[str, dict]:
             return {
                 task_id: {

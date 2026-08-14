@@ -179,7 +179,9 @@ Run 租约，避免审批回退与 executor 启动交叉。已有 `RUNNING/VERIF
 Step、Approval、Evidence、实体映射并扩展工具日志；`012` 建立不可变 Domain Event、
 Outbox 和消费者幂等回执。生产已执行的 `014` 按 `schema_migrations` 校验和保持原字节不可变；
 `015` 增加任务配置版本、当前审批策略与不可变策略事件，`016`/`017` 通过新的前向迁移升级账号与
-定时任务合同。`016`/`017` 都先备份完整任务行，并提供只撤销本次发布状态的恢复入口。
+定时任务合同。`017` 还以精确字段指纹清除三条到车列表的 `014` 遗留字段，并只在原始 `014` 备份、
+迁移停用消息和配置版本共同证明未发生管理员后续变更时，恢复被 `014` 误停用的韵达寄件任务。
+`016`/`017` 都先备份完整任务行，并提供只撤销本次发布状态的恢复入口。
 
 `shared/orchestration_repository.py` 是唯一编排持久化实现。连接必须
 `autocommit=False`，显式 Unit of Work 负责 begin/commit/rollback。Work Item、Run、Step、

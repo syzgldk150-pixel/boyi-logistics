@@ -8,6 +8,11 @@ from pathlib import Path
 import pytest
 
 
+REVIEWED_ARRIVE_SITE_SHA256 = (
+    "5ff8d6c00584886090be588977393764370cbcac7f7d983a2f0b330c5f37b135"
+)
+
+
 def _load_runner():
     project_root = Path(__file__).resolve().parents[1]
     script_path = project_root / "agent" / "scripts" / "run_migrations.py"
@@ -43,19 +48,47 @@ def _canonical_rows(contracts: dict[str, dict]) -> list[dict]:
     ]
 
 
-def _legacy_arrive_row(*, login_site_code: str = "reviewed-login-site") -> dict:
+def _legacy_arrive_row(
+    *,
+    login_site_code: str = "reviewed-login-site",
+    site_code: str = "reviewed-arrive-site",
+) -> dict:
     return {
         "id": "arrive_list_0830",
         "tool_name": "sync_arrive_list",
         "tool_params": {
             "account_id": "ronghui_default",
             "login_site_code": login_site_code,
-            "site_code": "opaque-unconsumed-legacy-site",
+            "site_code": site_code,
             "target_date": "",
         },
         "cron_expression": "30 8 * * *",
         "enabled": 1,
     }
+
+
+def _applied_014_arrive_rows(
+    contracts: dict[str, dict],
+    *,
+    site_code: object = "reviewed-applied-014-site",
+) -> list[dict]:
+    rows = _canonical_rows(contracts)
+    arrive_rows = [
+        row
+        for row in rows
+        if contracts[row["id"]]["group_id"] == "arrive_list"
+    ]
+    assert {row["id"] for row in arrive_rows} == {
+        "arrive_list_0830",
+        "arrive_list_0900",
+        "arrive_list_0930",
+    }
+    for row in arrive_rows:
+        row["tool_params"] = {
+            "account_id": "ronghui_default",
+            "site_code": site_code,
+        }
+    return rows
 
 
 def _canonical_clock_rows(runner, contracts: dict[str, dict]) -> list[dict]:
@@ -382,6 +415,73 @@ def test_applied_014_daily_sign_and_finance_shapes_are_transition_only(runner) -
     assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
 
 
+def test_exact_applied_014_arrive_set_is_hash_bound_transition_only(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    site_code = "reviewed-applied-014-site"
+    rows = _applied_014_arrive_rows(contracts, site_code=site_code)
+
+    assert runner.CONTROL_PLANE_REVIEWED_ARRIVE_SITE_SHA256 == (
+        REVIEWED_ARRIVE_SITE_SHA256
+    )
+    result = runner.validate_control_plane_task_cutover(
+        rows,
+        contracts=contracts,
+        reviewed_arrive_site_sha256=hashlib.sha256(
+            site_code.encode("utf-8")
+        ).hexdigest(),
+    )
+
+    assert result == {
+        "reviewed_rows": 51,
+        "canonical_rows": 48,
+        "legacy_rows": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        (
+            lambda row: row["tool_params"].update(site_code="wrong-site"),
+            "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH",
+        ),
+        (
+            lambda row: row["tool_params"].update(site_code=123),
+            "TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+        (
+            lambda row: row["tool_params"].update(unexpected=True),
+            "TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+        (
+            lambda row: row.update(enabled=0),
+            "PROTECTED_TASK_DISABLED",
+        ),
+    ),
+)
+def test_applied_014_arrive_wrong_hash_type_keys_or_state_fails_closed(
+    runner,
+    mutation,
+    expected_code: str,
+) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    site_code = "reviewed-applied-014-site"
+    rows = _applied_014_arrive_rows(contracts, site_code=site_code)
+    arrive_row = next(row for row in rows if row["id"] == "arrive_list_0830")
+    mutation(arrive_row)
+
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            reviewed_arrive_site_sha256=hashlib.sha256(
+                site_code.encode("utf-8")
+            ).hexdigest(),
+        )
+
+    assert error.value.code == expected_code
+
+
 def test_truly_empty_scheduler_is_a_clean_bootstrap_not_a_partial_cutover(runner) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
 
@@ -469,6 +569,47 @@ def test_extra_field_fails_even_when_canonical_values_are_unchanged(runner) -> N
         runner.validate_control_plane_task_cutover([row], contracts=contracts)
 
     assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
+
+
+def test_applied_014_yunda_disabled_row_requires_explicit_reviewed_id(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    rows = _canonical_rows(contracts)
+    task_id = "yunda_send_waybills_2355"
+    row = next(row for row in rows if row["id"] == task_id)
+    row["enabled"] = 0
+
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(rows, contracts=contracts)
+    assert error.value.code == "PROTECTED_TASK_DISABLED"
+
+    result = runner.validate_control_plane_task_cutover(
+        rows,
+        contracts=contracts,
+        allow_reviewed_disabled_ids={task_id},
+    )
+    assert result == {
+        "reviewed_rows": 51,
+        "canonical_rows": 51,
+        "legacy_rows": 0,
+    }
+
+    row["tool_params"] = json.loads(row["tool_params"])
+    row["tool_params"]["unexpected"] = True
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            allow_reviewed_disabled_ids={task_id},
+        )
+    assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
+
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            _canonical_rows(contracts),
+            contracts=contracts,
+            allow_reviewed_disabled_ids={"unreviewed_task"},
+        )
+    assert error.value.code == "REVIEWED_DISABLED_TASK_SET_INVALID"
 
 
 @pytest.mark.parametrize(
@@ -560,6 +701,50 @@ def test_legacy_arrive_login_identity_must_equal_reviewed_fingerprint(runner) ->
         )
 
     assert error.value.code == "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
+
+
+def test_pre_014_arrive_shape_requires_both_reviewed_fingerprints(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    login_site_code = "reviewed-login-site"
+    arrive_site_code = "reviewed-arrive-site"
+    rows = _canonical_rows(contracts)
+    for row in rows:
+        if contracts[row["id"]]["group_id"] == "arrive_list":
+            row["tool_params"] = _legacy_arrive_row(
+                login_site_code=login_site_code,
+                site_code=arrive_site_code,
+            )["tool_params"]
+
+    validation_kwargs = {
+        "contracts": contracts,
+        "reviewed_login_site_sha256": hashlib.sha256(
+            login_site_code.encode("utf-8")
+        ).hexdigest(),
+        "reviewed_arrive_site_sha256": hashlib.sha256(
+            arrive_site_code.encode("utf-8")
+        ).hexdigest(),
+    }
+    result = runner.validate_control_plane_task_cutover(
+        rows,
+        **validation_kwargs,
+    )
+    assert result == {
+        "reviewed_rows": 51,
+        "canonical_rows": 48,
+        "legacy_rows": 3,
+    }
+
+    for field in ("login_site_code", "site_code"):
+        changed = [dict(row) for row in rows]
+        target = next(row for row in changed if row["id"] == "arrive_list_0830")
+        target["tool_params"] = dict(target["tool_params"])
+        target["tool_params"][field] = "unreviewed-site"
+        with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+            runner.validate_control_plane_task_cutover(
+                changed,
+                **validation_kwargs,
+            )
+        assert error.value.code == "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
 
 
 class _ReadOnlyCursor:

@@ -67,9 +67,12 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   非已审核的旧/新精确参数形状会在更新前显式阻断迁移。迁移前完整行写入
   `daily_sign_single_tms_backup_016`；发布失败时
   `--restore-daily-sign-single-tms-account` 恢复原行并删除本次 `016` 历史，重复恢复安全。
-- `017_scheduled_task_contract_upgrade.sql`：在不可变 `014` 之后精确升级两条打卡和可选财务任务；
-  只接受已审核的生产过渡形状或当前规范形状，完整备份原行后统一到代码审阅的工具、cron 与
-  参数契约，并递增配置版本。迁移前状态由 `--scheduled-task-contract-upgrade-status` 报告为
+- `017_scheduled_task_contract_upgrade.sql`：在不可变 `014` 之后精确升级两条打卡和可选财务任务，
+  清除三条到车列表中经指纹绑定的 `014` 遗留字段，并只对“`014` 备份证明原先启用、当前仍保持
+  迁移停用状态且配置版本未变化”的韵达寄件任务恢复启用。迁移只接受已审核的生产过渡形状或当前
+  规范形状，完整备份原行后统一到代码审阅的工具、cron 与参数契约，并递增配置版本；任何额外字段、
+  类型变化、管理员后续配置版本或备份不匹配都会在更新前阻断。迁移前状态由
+  `--scheduled-task-contract-upgrade-status` 报告为
   `pending_clean`、`pending_dirty` 或 `applied`；失败时
   `--restore-scheduled-task-contract-upgrade` 恢复完整行、清除本次 `017` 历史并支持再次应用。
 
