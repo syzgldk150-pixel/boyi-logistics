@@ -148,6 +148,37 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertFalse(app.sent[1]["running"])
         self.assertTrue(app.sent[1]["runtime"]["ok"])
 
+    def test_output_poll_does_not_treat_waiting_approval_as_running(self):
+        app = _App(
+            {
+                "ok": True,
+                "status": 200,
+                "data": {
+                    "run": {
+                        "run_id": "run-approval-1",
+                        "status": "WAITING_APPROVAL",
+                        "created_at": "2026-08-15 00:01:33",
+                    },
+                    "next_poll_after_ms": 3000,
+                },
+            }
+        )
+
+        app._handle_automation_task_output(
+            object(),
+            {
+                "run_id": ["run-approval-1"],
+                "task_id": ["daily_sign"],
+                "offset": ["0"],
+            },
+        )
+
+        payload = app.sent[1]
+        self.assertFalse(payload["running"])
+        self.assertTrue(payload["pending"])
+        self.assertTrue(payload["awaiting_approval"])
+        self.assertEqual("WAITING_APPROVAL", payload["status"])
+
 
 if __name__ == "__main__":
     unittest.main()
