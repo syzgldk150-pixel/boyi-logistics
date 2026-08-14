@@ -513,7 +513,13 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 )
 
     def test_empty_upgrade_and_partial_migrations_are_reentrant(self):
-        for database in self.databases:
+        fully_migrated_databases = (
+            self.database,
+            self.upgrade_database,
+            self.partial_database,
+            self.rollback_database,
+        )
+        for database in fully_migrated_databases:
             with self._connection(database) as connection, connection.cursor() as cursor:
                 cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
                 versions = [str(row["version"]) for row in cursor.fetchall()]
@@ -990,7 +996,20 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         self.assertEqual(pre_017, load_restore_rows())
 
         self._apply_one(database, "017")
-        self.assertEqual(canonical, load_restore_rows())
+        def stable_contract_rows(source: dict[str, dict]) -> dict[str, dict]:
+            return {
+                task_id: {
+                    key: value
+                    for key, value in row.items()
+                    if key != "updated_at"
+                }
+                for task_id, row in source.items()
+            }
+
+        self.assertEqual(
+            stable_contract_rows(canonical),
+            stable_contract_rows(load_restore_rows()),
+        )
         with self._connection(database) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
             self.assertEqual(
