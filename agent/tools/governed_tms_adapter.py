@@ -86,6 +86,7 @@ def build_clock_in_params(params: dict[str, Any]) -> dict[str, Any]:
     selected = _selected(
         params,
         (
+            "account_id",
             "sitecode",
             "sitefbcode",
             "sitename",
@@ -96,7 +97,10 @@ def build_clock_in_params(params: dict[str, Any]) -> dict[str, Any]:
         ),
     )
     selected["mode"] = "api"
-    return selected
+    # Keep the legacy server-side timeout envelope.  The outer governed tool
+    # has a larger timeout so cancellation and final evidence can still be
+    # recorded cleanly.
+    return {"params": selected, "timeout_sec": 60, "client_timeout_sec": 75}
 
 
 def _customer_base(params: dict[str, Any], action: str) -> dict[str, Any]:
@@ -488,8 +492,11 @@ def validate_clock_in_response(
         response,
         condition="both_third_party_clock_ins_confirmed",
         details={
+            "account_id": _clean(params.get("account_id")),
             "sitecode": _clean(params.get("sitecode")),
             "sitefbcode": _clean(params.get("sitefbcode")),
+            "sitename": _clean(params.get("sitename")),
+            "sitefbname": _clean(params.get("sitefbname")),
             "first_type": _clean(params.get("first_type")),
             "second_type": _clean(params.get("second_type")),
         },

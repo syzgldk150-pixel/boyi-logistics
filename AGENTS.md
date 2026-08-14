@@ -44,9 +44,11 @@
 
 - 系统保持 Agent + Console 双服务；业务编排、审批、执行恢复和事务 Outbox 全部位于 Agent，禁止新增独立 LLM 服务、消息中间件或 Console 侧编排器。完整规范见 `agent/docs/control_plane_v1.md`。
 - 除登录/验证码、Console 本地 OCR 与手工运单 CRUD 外，Console、飞书、APScheduler、Webhook 和兼容工具 API 必须提交 Command；只有 `agent/agent/orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`。
-- Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
+- Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；通用仓储原语、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
 - Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
-- 风险、审批角色、调度免审、Evidence 与写后条件只读取受管工具契约。LLM 只能选择开放的只读/计算工具；第三方写始终要求 `super_admin` 独立审批和可核验写后证据，未知写结果不得盲目重试。
+- 风险、审批角色、调度免审、Evidence 与写后条件只读取受管工具契约。LLM 只能选择开放的只读/计算工具；第三方写要求 `super_admin` 独立审批和可核验写后证据，除非 Scheduler 命中当前有效的精确任务豁免；未知写结果不得盲目重试。
+- 定时任务的审批不是按工具一刀切：每个持久化任务都有 `REQUIRE_EACH_RUN`（默认）或 `EXACT_SCHEDULE_EXEMPT` 两种策略。只有真实 MySQL 管理员会话签名的 Console `super_admin` 可以变更策略；该豁免只由 Scheduler 使用，手工、Console、飞书和 Webhook 发起的同一工具仍走逐次审批。`registry.yaml` 的 `approval.mode: schedule_allowlist` 只是可配置豁免的资格上限，不会自动授权。
+- `EXACT_SCHEDULE_EXEMPT` 必须绑定任务 ID、工具/版本、完整参数及账号、cron、启用状态、治理字段、写后条件、动态规则与配置版本；显示名称不属于行为哈希。任一受绑定配置或受管工具契约变化都会令原策略失效并回到逐次审批。迁移 `014` 只做遗留任务的规范化切换，不授予免审；迁移 `015` 保存任务配置版本和策略/审计事件。代码内共有 69 个精确审阅合同（54 个内部投影、15 个外部写）；一次可审计 bootstrap 只为部署时已启用且仍完整命中的既有任务保留原调度行为，当前生产预期 67 项，禁用项和新任务均默认逐次审批。
 - “每日应签”和客服问题件先作为只读影子投影。每日应签只由真实主单签收证据关闭；问题件列表消失必须按外部 ID 精确详情复核。未连续三个完整业务日满足完整性与集合一致标准前，不得切换首页口径。
 - Console 事项中心只能代理 Agent `/internal/v1/*`，不得直读控制平面表。所有 POST 使用真实 MySQL 管理员会话、同源校验和服务端身份覆盖；Basic Auth 不具备控制平面写权限。
 

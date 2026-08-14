@@ -6,6 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = ROOT / "agent" / "migrations" / "014_control_plane_task_cutover.sql"
+POLICY_MIGRATION_PATH = (
+    ROOT / "agent" / "migrations" / "015_scheduled_task_approval_policies.sql"
+)
 
 
 def _load_migration_runner():
@@ -113,8 +116,8 @@ def test_task_cutover_guards_before_any_permanent_change() -> None:
     assert "CONSTRAINT cp014_no_unknown_governed CHECK" in sql
     assert "CONSTRAINT cp014_no_unknown_clock CHECK" in sql
     assert "CONSTRAINT cp014_no_binding_mismatch CHECK" in sql
+    assert "CONSTRAINT cp014_clock_pair_complete CHECK" in sql
     assert "CONSTRAINT cp014_clock_shape_reviewed CHECK" in sql
-    assert "CONSTRAINT cp014_no_clock_write CHECK" in sql
     assert "CONSTRAINT cp014_arrive_shape_closed CHECK" in sql
     assert "CONSTRAINT cp014_daily_shape_closed CHECK" in sql
     assert "CONSTRAINT cp014_all_rows_canonical CHECK" in sql
@@ -137,6 +140,14 @@ def test_task_cutover_compares_reviewed_bindings_as_exact_binary_values() -> Non
     assert "cron_expression VARBINARY(64) NOT NULL" in expected_table
     assert "VARCHAR" not in expected_table
 
+    clock_table = sql.split(
+        "CREATE TEMPORARY TABLE cp014_expected_clocks (", 1
+    )[1].split(") ENGINE=InnoDB;", 1)[0]
+    assert "id VARBINARY(128) PRIMARY KEY" in clock_table
+    assert "cron_expression VARBINARY(64) NOT NULL" in clock_table
+    assert "account_id VARBINARY(128) NOT NULL" in clock_table
+    assert "VARCHAR" not in clock_table
+
 
 def test_empty_database_is_the_only_allowed_incomplete_reviewed_set() -> None:
     sql = _sql()
@@ -150,7 +161,8 @@ def test_empty_database_is_the_only_allowed_incomplete_reviewed_set() -> None:
     assert "LEFT(candidate.id, CHAR_LENGTH('daily_sign_')) = 'daily_sign_'" in missing_guard
     assert "candidate.tool_name = 'clock_in_dual'" in missing_guard
     assert "'sync_arrival_stats'" not in missing_guard
-    assert "'sync_finance_bills'" not in missing_guard
+    assert "'sync_finance_bills'" in missing_guard
+    assert "'sync_yunda_dispatch_forecast'" in missing_guard
     assert "WHERE task.id IS NULL OR NOT COALESCE(task.enabled = TRUE, FALSE)" in missing_guard
     assert "ELSE 0" in missing_guard
 
@@ -180,9 +192,10 @@ def test_task_cutover_normalizes_only_reviewed_legacy_semantics() -> None:
     sql = _sql()
 
     assert "'$.account_id', 'price_default'" in sql
-    assert "'$.detail_account_id', 'ronghui_default'" in sql
-    assert "'$.problem_account_id', 'ronghui_daxiang_s'" in sql
-    assert "'$.sign_account_id', 'ronghui_daxiang_s'" in sql
+    assert "'$.account_id', 'ronghui_daxiang_s'" in sql
+    assert "'$.problem_account_id'," in sql
+    assert "'$.sign_account_id'," in sql
+    assert "'$.detail_account_id'" in sql
     assert "'$.days', 7" in sql
     assert "'$.ensure_fields', CAST('false' AS JSON)" in sql
 
@@ -198,16 +211,127 @@ def test_task_cutover_normalizes_only_reviewed_legacy_semantics() -> None:
     assert "'$.login_site_code',\n    '$.site_code',\n    '$.target_date'" in sql
 
 
-def test_task_cutover_blocks_external_clock_writes_without_mutating_them() -> None:
+def test_task_cutover_normalizes_only_the_exact_optional_clock_pair() -> None:
     sql = _sql()
+    clock_contracts = _load_migration_runner()._load_control_plane_clock_contracts()
 
-    assert "task.id IN ('clockin_daxiang_1830', 'clockin_daxiang_s_1833')" in sql
+    assert "'clockin_daxiang_1830'" in sql
+    assert "'clockin_daxiang_s_1833'" in sql
     assert "CONSTRAINT cp014_no_unknown_clock CHECK" in sql
+    assert "CONSTRAINT cp014_clock_pair_complete CHECK" in sql
     assert "CONSTRAINT cp014_clock_shape_reviewed CHECK" in sql
     assert "= '/clock_in_dual'" in sql
     assert "clockin_daxiang_s_1830" not in sql
-    assert "SET task.tool_name = 'clock_in_dual'" not in sql
-    assert "sitefbcode" not in sql
+    assert "task.tool_name = 'clock_in_dual'" in sql
+    assert "INNER JOIN cp014_expected_clocks AS expected ON expected.id = task.id" in sql
+    assert "'account_id', CONVERT(expected.account_id USING utf8mb4)" in sql
+    assert "'sitefbcode', CONVERT(expected.sitefbcode USING utf8mb4)" in sql
+    assert set(clock_contracts) == {
+        "clockin_daxiang_1830",
+        "clockin_daxiang_s_1833",
+    }
+    assert {contract["cron_expression"] for contract in clock_contracts.values()} == {
+        "30 18 * * *",
+        "33 18 * * *",
+    }
+    for contract in clock_contracts.values():
+        for key, value in contract["canonical_arguments"].items():
+            assert f"'{key}'" in sql
+            if isinstance(value, str):
+                assert f"'{value}'" in sql
+            else:
+                assert str(value) in sql
+
+
+def test_optional_finance_yunda_and_startup_rows_are_fail_closed_and_state_preserving() -> None:
+    sql = _sql()
+    statements = split_sql_statements(sql)
+
+    assert "('finance_bills_0010', 'finance_bills', 'sync_finance_bills', '10 0 * * *')" in sql
+    assert "'finance_startup_catchup',\n        'finance_startup_catchup'" in sql
+    assert "'@startup'" in sql
+    assert "'yunda_dispatch_forecast_1700'" in sql
+    assert "CONSTRAINT cp014_finance_shape_closed" in sql
+    assert "CONSTRAINT cp014_finance_startup_shape_closed" in sql
+    assert "CONSTRAINT cp014_yunda_dispatch_shape_closed" in sql
+
+    finance_update = next(
+        statement
+        for statement in statements
+        if statement.startswith("UPDATE scheduled_tasks AS task")
+        and "expected.family = 'finance_bills'" in statement
+    )
+    yunda_update = next(
+        statement
+        for statement in statements
+        if statement.startswith("UPDATE scheduled_tasks AS task")
+        and "expected.family = 'yunda_dispatch_forecast'" in statement
+    )
+    assert "task.enabled" not in finance_update
+    assert "task.enabled" not in yunda_update
+    assert "'$.platform', 'ronghui'" in finance_update
+    assert "'$.account_id', 'yunda_default'" in yunda_update
+    assert "'$.session_profile'" in yunda_update
+
+    optional_backup = next(
+        statement
+        for statement in statements
+        if statement.startswith("INSERT IGNORE INTO control_plane_task_cutover_backup_014")
+        and "cp014_expected_optional_tasks" in statement
+    )
+    assert "WHERE TRUE" in optional_backup
+    assert "WHERE task.enabled" not in optional_backup
+
+
+def test_exact_thirteen_r7_profiles_are_locked_without_persisted_scheduler_envelope() -> None:
+    sql = _sql()
+    expected = {
+        "r7_arrival_checkin_0900": "0 9 * * *",
+        "r7_arrival_checkin_0930": "30 9 * * *",
+        "r7_arrival_checkin_1000": "0 10 * * *",
+        "r7_arrival_checkin_1030": "30 10 * * *",
+        "r7_arrival_checkin_1100": "0 11 * * *",
+        "r7_arrival_checkin_1130": "30 11 * * *",
+        "r7_arrival_checkin_1200": "0 12 * * *",
+        "r7_arrival_checkin_1230": "30 12 * * *",
+        "r7_arrival_checkin_1300": "0 13 * * *",
+        "r7_arrival_checkin_1330": "30 13 * * *",
+        "r7_arrival_checkin_1400": "0 14 * * *",
+        "r7_arrival_checkin_1430": "30 14 * * *",
+        "r7_arrival_checkin_1900": "0 19 * * *",
+    }
+    values = sql.split(
+        "INSERT INTO cp014_expected_r7_tasks (id, cron_expression)\nVALUES\n",
+        1,
+    )[1].split(";", 1)[0]
+    actual = dict(re.findall(r"\('([^']+)', '([^']+)'\)", values))
+
+    assert actual == expected
+    assert "CONSTRAINT cp014_r7_binding_closed" in sql
+    assert "CONSTRAINT cp014_r7_shape_closed" in sql
+    assert "JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 10" in sql
+    assert "'$.account_id')) = 'r7_default'" in sql
+    assert "'$.daily_success_limit') = 1" in sql
+    assert "'$.max_login_attempts') = 6" in sql
+    assert "_scheduled_task" not in sql
+
+
+def test_startup_insert_marker_makes_restore_authority_explicit() -> None:
+    sql = _sql()
+
+    marker_table = sql.index(
+        "CREATE TABLE IF NOT EXISTS control_plane_task_cutover_created_014"
+    )
+    transaction = sql.index("START TRANSACTION")
+    marker_insert = sql.index(
+        "INSERT IGNORE INTO control_plane_task_cutover_created_014 (task_id)"
+    )
+    startup_insert = sql.index("INSERT IGNORE INTO scheduled_tasks (", marker_insert)
+    assert marker_table < transaction < marker_insert < startup_insert
+    marker_statement = sql[marker_insert:startup_insert]
+    assert "finance.id = 'finance_bills_0010'" in marker_statement
+    assert "NOT EXISTS" in marker_statement
+    assert "startup.id = 'finance_startup_catchup'" in marker_statement
 
 
 def test_task_cutover_is_recoverable_transactional_and_reentrant() -> None:
@@ -215,13 +339,15 @@ def test_task_cutover_is_recoverable_transactional_and_reentrant() -> None:
 
     assert "CREATE TABLE IF NOT EXISTS control_plane_task_cutover_backup_014" in sql
     assert "INSERT IGNORE INTO control_plane_task_cutover_backup_014" in sql
+    assert "SELECT task.*" not in sql
+    assert "last_duration_ms, last_message, created_at" in sql
     assert sql.index("INSERT IGNORE INTO control_plane_task_cutover_backup_014") < sql.index(
         "START TRANSACTION"
     )
     assert sql.index("START TRANSACTION") < sql.index("COMMIT")
     assert "CONSTRAINT cp014_enabled_count_preserved CHECK" in sql
-    assert sql.count("DROP TEMPORARY TABLE IF EXISTS") >= 4
-    assert "tool_params = JSON_OBJECT(" not in sql
+    assert sql.count("DROP TEMPORARY TABLE IF EXISTS") >= 7
+    assert sql.count("task.tool_params = JSON_OBJECT(") == 1
 
 
 def test_task_cutover_is_compatible_with_the_deployment_sql_splitter() -> None:
@@ -239,6 +365,9 @@ def test_task_cutover_is_compatible_with_the_deployment_sql_splitter() -> None:
     assert "COMMIT" in statements
     for temporary_table in (
         "cp014_expected_tasks",
+        "cp014_expected_optional_tasks",
+        "cp014_expected_r7_tasks",
+        "cp014_expected_clocks",
         "cp014_enabled_snapshot",
         "cp014_preflight_guard",
         "cp014_postflight_guard",
@@ -270,3 +399,45 @@ def test_single_account_schedule_registry_requires_explicit_top_level_account() 
         }
         assert tool["input_schema"]["required"] == ["account_id"]
         assert tool["input_schema"]["properties"]["account_id"]["minLength"] == 1
+
+
+def test_policy_migration_defaults_every_task_to_per_run_approval() -> None:
+    sql = POLICY_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert "configuration_version BIGINT UNSIGNED NOT NULL DEFAULT 1" in sql
+    assert "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)" in sql
+    assert "CREATE TABLE IF NOT EXISTS scheduled_task_approval_policies" in sql
+    assert "CREATE TABLE IF NOT EXISTS scheduled_task_approval_policy_events" in sql
+    assert "mode VARCHAR(32) NOT NULL DEFAULT 'REQUIRE_EACH_RUN'" in sql
+    assert "mode IN ('REQUIRE_EACH_RUN', 'EXACT_SCHEDULE_EXEMPT')" in sql
+    assert "approved_by_actor_role = 'super_admin'" in sql
+    assert "approved_by_actor_role = 'migration_authority'" in sql
+    assert "approved_by_actor_id = 'system:migration:control-plane-v1'" in sql
+    assert "request_id CHAR(36) NOT NULL" in sql
+    assert "UNIQUE KEY uq_scheduled_task_policy_event_request (task_id, request_id)" in sql
+    assert "SELECT task.id, 'REQUIRE_EACH_RUN'" in sql
+    assert "SELECT task.id, 'EXACT_SCHEDULE_EXEMPT'" not in sql
+
+
+def test_policy_migration_is_reentrant_and_contains_no_fabricated_approval() -> None:
+    sql = POLICY_MIGRATION_PATH.read_text(encoding="utf-8")
+    statements = split_sql_statements(sql)
+
+    assert sql.count("FROM information_schema.COLUMNS") == 4
+    assert "PREPARE cp015_configuration_version_stmt" in sql
+    assert "PREPARE cp015_updated_at_stmt" in sql
+    assert "PREPARE cp015_policy_fk_stmt" in sql
+    assert "PREPARE cp015_modify_policy_task_id_stmt" in sql
+    assert "PREPARE cp015_modify_event_task_id_stmt" in sql
+    assert "PREPARE cp015_add_policy_task_fk_stmt" in sql
+    assert "cp015_invalid_parent_task_id_metadata" in sql
+    assert sql.index("cp015_drop_policy_task_fk") < sql.index(
+        "cp015_modify_policy_task_id_stmt"
+    )
+    assert "CREATE TABLE IF NOT EXISTS" in sql
+    assert "LEFT JOIN scheduled_task_approval_policies AS policy" in sql
+    assert "WHERE policy.task_id IS NULL" in sql
+    assert not any("INSERT INTO scheduled_task_approval_policy_events" in item for item in statements)
+    assert "approved_by_actor_id, approved_by_actor_role" not in sql.split(
+        "INSERT INTO scheduled_task_approval_policies", 1
+    )[1]

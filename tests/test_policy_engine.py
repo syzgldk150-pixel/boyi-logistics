@@ -14,16 +14,18 @@ from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.policy_engine import PolicyEngine, ScheduledAllowlistEntry
 from agent.tool_registry import ToolRegistry
+from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
 
 class _Catalog:
     catalog_hash = "catalog-hash"
 
-    def __init__(self, capability: dict) -> None:
+    def __init__(self, capability: dict, *, tool_name: str = "governed_tool") -> None:
         self.capability = capability
+        self.tool_name = tool_name
 
     def get_capability(self, tool_name: str):
-        return self.capability if tool_name == "governed_tool" else None
+        return self.capability if tool_name == self.tool_name else None
 
 
 def _plan(
@@ -31,6 +33,8 @@ def _plan(
     risk_level: RiskLevel = RiskLevel.LOW,
     *,
     arguments: dict | None = None,
+    tool_name: str = "governed_tool",
+    tool_version: str = "1.0.0",
 ) -> Plan:
     return Plan(
         command_type="tool.execute",
@@ -39,8 +43,8 @@ def _plan(
         steps=(
             PlanStep(
                 step_key="step_1",
-                tool_name="governed_tool",
-                tool_version="1.0.0",
+                tool_name=tool_name,
+                tool_version=tool_version,
                 operation_type=operation_type,
                 arguments={} if arguments is None else arguments,
                 account_id=None,
@@ -134,15 +138,184 @@ def test_high_risk_write_submission_is_separate_from_super_admin_approval() -> N
     assert decision.required_role == "super_admin"
 
 
+def _clock_policy(group_id: str) -> tuple[PolicyEngine, Plan, Actor, dict]:
+    profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
+    task_id = next(iter(profile.approved_task_ids))
+    cron_expression = (
+        "30 18 * * *" if task_id == "clockin_daxiang_1830" else "33 18 * * *"
+    )
+    capability = _capability(
+        OperationType.EXTERNAL_WRITE,
+        roles=["super_admin"],
+        approval={"mode": "schedule_allowlist", "required_role": "super_admin"},
+    )
+    entry = ScheduledAllowlistEntry.from_arguments(
+        task_id=task_id,
+        tool_name="clock_in_dual",
+        tool_version="1.1.0",
+        arguments=profile.approved_arguments,
+        cron_expression=cron_expression,
+    )
+    return (
+        PolicyEngine(
+            _Catalog(capability, tool_name="clock_in_dual"),
+            scheduler_allowlist=(entry,),
+        ),
+        _plan(
+            OperationType.EXTERNAL_WRITE,
+            RiskLevel.HIGH,
+            arguments=dict(profile.approved_arguments),
+            tool_name="clock_in_dual",
+            tool_version="1.1.0",
+        ),
+        Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
+        {
+            "task_id": task_id,
+            "scheduled_for": (
+                "2026-08-13T18:30:00+08:00"
+                if task_id == "clockin_daxiang_1830"
+                else "2026-08-13T18:33:00+08:00"
+            ),
+            "cron_expression": cron_expression,
+        },
+    )
+
+
+def test_exact_two_clock_schedules_bypass_only_the_separate_approval() -> None:
+    for group_id in ("clockin_daxiang", "clockin_daxiang_s"):
+        engine, plan, actor, execution_context = _clock_policy(group_id)
+
+        decision = engine.evaluate(
+            plan,
+            actor,
+            source="scheduler",
+            execution_context=execution_context,
+        )
+
+        assert decision.allowed is True
+        assert decision.requires_approval is False
+        assert decision.required_role is None
+        assert decision.code == "ALLOWED"
+
+
+def test_clock_schedule_change_matrix_requires_super_admin_approval() -> None:
+    engine, exact_plan, exact_actor, exact_context = _clock_policy("clockin_daxiang")
+    exact_arguments = dict(exact_plan.steps[0].arguments)
+    changed_arguments = {
+        "account": {**exact_arguments, "account_id": "ronghui_daxiang_s"},
+        "site": {**exact_arguments, "sitecode": "7390017"},
+        "delay": {**exact_arguments, "delay_seconds": 3},
+        "extra": {**exact_arguments, "extra": "not-approved"},
+    }
+    cases = {
+        "task_id": (
+            exact_plan,
+            Actor(ActorType.SCHEDULER, "clockin_daxiang_1831", roles=("system",)),
+            {**exact_context, "task_id": "clockin_daxiang_1831"},
+        ),
+        "actor_id": (
+            exact_plan,
+            Actor(ActorType.SCHEDULER, "different-scheduler", roles=("system",)),
+            exact_context,
+        ),
+        "version": (
+            _plan(
+                OperationType.EXTERNAL_WRITE,
+                RiskLevel.HIGH,
+                arguments=exact_arguments,
+                tool_name="clock_in_dual",
+                tool_version="1.1.1",
+            ),
+            exact_actor,
+            exact_context,
+        ),
+        "cron": (
+            exact_plan,
+            exact_actor,
+            {**exact_context, "cron_expression": "31 18 * * *"},
+        ),
+        "scheduled_time": (
+            exact_plan,
+            exact_actor,
+            {**exact_context, "scheduled_for": "2026-08-13T18:31:00+08:00"},
+        ),
+        "scheduled_for_missing": (
+            exact_plan,
+            exact_actor,
+            {key: value for key, value in exact_context.items() if key != "scheduled_for"},
+        ),
+        "scheduled_for_naive": (
+            exact_plan,
+            exact_actor,
+            {**exact_context, "scheduled_for": "2026-08-13T18:30:00"},
+        ),
+        **{
+            label: (
+                _plan(
+                    OperationType.EXTERNAL_WRITE,
+                    RiskLevel.HIGH,
+                    arguments=arguments,
+                    tool_name="clock_in_dual",
+                    tool_version="1.1.0",
+                ),
+                exact_actor,
+                exact_context,
+            )
+            for label, arguments in changed_arguments.items()
+        },
+    }
+
+    for label, (plan, actor, execution_context) in cases.items():
+        decision = engine.evaluate(
+            plan,
+            actor,
+            source="scheduler",
+            execution_context=execution_context,
+        )
+
+        assert decision.allowed is True, label
+        assert decision.requires_approval is True, label
+        assert decision.required_role == "super_admin", label
+        assert decision.code == "APPROVAL_REQUIRED", label
+
+
+def test_exact_clock_arguments_from_non_scheduler_sources_require_approval() -> None:
+    engine, plan, scheduler_actor, execution_context = _clock_policy("clockin_daxiang")
+    cases = (
+        (scheduler_actor, "manual"),
+        (scheduler_actor, "console"),
+        (Actor(ActorType.CONSOLE_ADMIN, "admin-1", roles=("super_admin",)), "console"),
+        (Actor(ActorType.FEISHU_USER, "open-id"), "feishu"),
+        (Actor(ActorType.LEGACY_API, "legacy-client", roles=("super_admin",)), "legacy_api"),
+    )
+
+    for actor, source in cases:
+        decision = engine.evaluate(
+            plan,
+            actor,
+            source=source,
+            execution_context=execution_context,
+        )
+
+        assert decision.allowed is True, source
+        assert decision.requires_approval is True, source
+        assert decision.required_role == "super_admin", source
+
+
 def test_finance_scheduler_fanout_validates_against_real_catalog_and_allowlist() -> None:
     catalog = ToolRegistry()
-    arguments = {"mode": "sync", "rescan_days": 7}
+    arguments = {
+        "mode": "sync",
+        "platform": "ronghui",
+        "rescan_days": 7,
+        "_startup_catchup": True,
+    }
     command = Command(
         command_type="tool.execute",
         source="scheduler",
         actor=Actor(ActorType.SCHEDULER, "finance_startup_catchup", roles=("system",)),
         parameters={"tool_name": "sync_finance_bills", "arguments": arguments},
-        idempotency_key="scheduler:finance_startup_catchup:2026-08-13T00:00:00+08:00",
+        idempotency_key="scheduler:finance_startup_catchup:2026-08-13T00:10:00+08:00",
     )
     context = ContextSnapshot(
         values={"accounts": [{"account_id": value} for value in (
@@ -180,7 +353,7 @@ def test_finance_scheduler_fanout_validates_against_real_catalog_and_allowlist()
         source=command.source,
         execution_context={
             "task_id": "finance_startup_catchup",
-            "scheduled_for": "2026-08-13T00:00:00+08:00",
+            "scheduled_for": "2026-08-13T00:10:00+08:00",
             "cron_expression": "@startup",
         },
     )
@@ -188,6 +361,28 @@ def test_finance_scheduler_fanout_validates_against_real_catalog_and_allowlist()
     assert plan.steps[0].account_id is None
     assert decision.allowed is True
     assert decision.requires_approval is False
+
+    for scheduled_for in (
+        "2026-08-13T00:10:00",
+        "2026-08-13T00:09:00+08:00",
+        "2026-08-13T00:10:01+08:00",
+        "2026-08-12T16:10:00+00:00",
+    ):
+        invalid = policy.evaluate(
+            plan,
+            command.actor,
+            source=command.source,
+            execution_context={
+                "task_id": "finance_startup_catchup",
+                "scheduled_for": scheduled_for,
+                "cron_expression": "@startup",
+            },
+        )
+        if scheduled_for.endswith("+00:00"):
+            # 16:10 UTC is exactly 00:10 in the locked Asia/Shanghai zone.
+            assert invalid.requires_approval is False
+        else:
+            assert invalid.requires_approval is True
 
 
 def test_scheduler_allowlist_provider_is_reloaded_for_each_policy_evaluation() -> None:
@@ -268,7 +463,57 @@ def test_scheduler_allowlist_provider_failure_requires_approval() -> None:
 
     assert decision.allowed is True
     assert decision.requires_approval is True
-    assert decision.code == "APPROVAL_REQUIRED"
+
+
+def test_configuration_version_must_match_the_loaded_scheduler_occurrence() -> None:
+    entry = ScheduledAllowlistEntry.from_arguments(
+        task_id="persisted_task_0900",
+        tool_name="governed_tool",
+        tool_version="1.0.0",
+        arguments={},
+        cron_expression="0 9 * * *",
+        configuration_version=7,
+    )
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.INTERNAL_PROJECTION_WRITE,
+                roles=["admin"],
+                approval={"mode": "schedule_allowlist", "required_role": "admin"},
+            )
+        ),
+        scheduler_allowlist=(entry,),
+    )
+    actor = Actor(ActorType.SCHEDULER, "persisted_task_0900", roles=("system",))
+    base_context = {
+        "task_id": "persisted_task_0900",
+        "scheduled_for": "2026-08-13T09:00:00+08:00",
+        "cron_expression": "0 9 * * *",
+    }
+
+    exact = engine.evaluate(
+        _plan(OperationType.INTERNAL_PROJECTION_WRITE, RiskLevel.MEDIUM),
+        actor,
+        source="scheduler",
+        execution_context={**base_context, "configuration_version": 7},
+    )
+    stale = engine.evaluate(
+        _plan(OperationType.INTERNAL_PROJECTION_WRITE, RiskLevel.MEDIUM),
+        actor,
+        source="scheduler",
+        execution_context={**base_context, "configuration_version": 6},
+    )
+    missing = engine.evaluate(
+        _plan(OperationType.INTERNAL_PROJECTION_WRITE, RiskLevel.MEDIUM),
+        actor,
+        source="scheduler",
+        execution_context=base_context,
+    )
+
+    assert exact.requires_approval is False
+    assert stale.requires_approval is True
+    assert missing.requires_approval is True
+    assert stale.code == "APPROVAL_REQUIRED"
 
 
 def test_scheduler_allowlist_requires_exact_persisted_arguments_hash() -> None:

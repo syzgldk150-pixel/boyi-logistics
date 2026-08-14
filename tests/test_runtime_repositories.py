@@ -54,6 +54,8 @@ class RuntimeRepositoryTests(unittest.TestCase):
                     "last_status": "success",
                     "last_duration_ms": 12,
                     "last_message": None,
+                    "configuration_version": 3,
+                    "updated_at": datetime(2026, 8, 8, 1, 1, 0),
                     "created_at": datetime(2026, 8, 1, 1, 0, 0),
                 }
             ]
@@ -65,6 +67,8 @@ class RuntimeRepositoryTests(unittest.TestCase):
 
         self.assertEqual({"scope": "today"}, rows[0]["tool_params"])
         self.assertEqual("2026-08-08 01:00:00", rows[0]["last_run"])
+        self.assertEqual(3, rows[0]["configuration_version"])
+        self.assertEqual("2026-08-08 01:01:00", rows[0]["updated_at"])
         self.assertIn("WHERE enabled=TRUE", cursor.calls[0][0])
         self.assertTrue(connection.closed)
 
@@ -107,7 +111,25 @@ class RuntimeRepositoryTests(unittest.TestCase):
 
         self.assertEqual(2, len(cursor.calls))
         self.assertIn("INSERT INTO scheduled_tasks", cursor.calls[0][0])
+        self.assertIn("configuration_version = configuration_version + IF", cursor.calls[0][0])
+        self.assertNotIn("NOT (name <=> VALUES(name))", cursor.calls[0][0])
         self.assertEqual(("daily__slot_0",), cursor.calls[1][1])
+
+    def test_runtime_updates_do_not_increment_task_configuration_version(self):
+        cursor = _Cursor()
+        repository = ScheduledTaskRepository(lambda: _Connection(cursor))
+
+        repository.update_runtime(
+            "daily",
+            last_status="success",
+            last_duration_ms=15,
+            last_message=None,
+        )
+
+        sql, params = cursor.calls[0]
+        self.assertIn("updated_at=updated_at", sql)
+        self.assertNotIn("configuration_version", sql)
+        self.assertEqual(("success", 15, None, "daily"), params)
 
     def test_migration_runner_discovers_ordered_sql_without_loading_configuration(self):
         project_root = Path(__file__).resolve().parents[1]
@@ -135,6 +157,8 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "012",
                 "013",
                 "014",
+                "015",
+                "016",
             ],
             [version for version, _ in migrations],
         )

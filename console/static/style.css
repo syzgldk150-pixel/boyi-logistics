@@ -1078,6 +1078,62 @@ body.dispatch-page .notice { display: none; }
 .auto-resource-alert { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px; border: 1px solid #fde68a; border-radius: var(--radius-md); background: #fffbeb; color: #92400e; font-size: 0.8rem; line-height: 1.55; }
 .auto-resource-alert .feather { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; color: #b45309; }
 
+/* ── Scheduled task approval policy ── */
+.auto-approval-policy { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(360px, auto); align-items: end; gap: 16px 24px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.auto-approval-policy-copy { min-width: 0; }
+.auto-approval-policy--grouped .auto-approval-policy-copy { grid-column: 1 / -1; }
+.auto-approval-policy-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.auto-approval-policy-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.8rem; font-weight: 700; }
+.auto-approval-policy-title .feather { width: 15px; height: 15px; }
+.auto-approval-policy-state { color: var(--text-strong); font-size: 0.84rem; }
+.auto-approval-policy--stale .auto-approval-policy-state { color: #92400e; }
+.auto-approval-policy--unavailable .auto-approval-policy-state { color: #b91c1c; }
+.auto-approval-policy-count,
+.auto-approval-policy-restriction { display: inline-flex; align-items: center; min-height: 24px; padding: 1px 8px; border-radius: var(--radius-pill); font-size: 0.74rem; font-weight: 700; }
+.auto-approval-policy-restriction[hidden],
+.auto-approval-policy-meta [hidden] { display: none !important; }
+.auto-approval-policy-count { color: #475569; background: #f1f5f9; }
+.auto-approval-policy-restriction { color: #92400e; background: #fffbeb; border: 1px solid #fde68a; }
+.auto-approval-policy-summary { max-width: 72ch; margin: 5px 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.55; text-wrap: pretty; }
+.auto-approval-policy-modes { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 5px 0 0; color: var(--muted); font-size: 0.74rem; }
+.auto-approval-policy-modes strong { color: var(--text); font-weight: 700; }
+.auto-approval-policy-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 0; color: var(--muted); font-size: 0.74rem; }
+.auto-approval-policy-meta div { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.auto-approval-policy-meta dt { font-weight: 700; }
+.auto-approval-policy-meta dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.auto-approval-policy-editor { display: flex; flex-wrap: wrap; align-items: end; justify-content: flex-end; gap: 10px; }
+.auto-approval-policy-field { display: flex; flex-direction: column; gap: 5px; min-width: 190px; margin: 0; color: var(--text-strong); font-size: 0.78rem; font-weight: 700; }
+.auto-approval-policy-field select,
+.auto-approval-policy-field input { min-height: 40px; }
+.auto-approval-policy-comment { min-width: min(260px, 32vw); }
+.auto-approval-policy-save { min-height: 40px; gap: 6px; white-space: nowrap; }
+.auto-approval-policy-save .feather { width: 14px; height: 14px; }
+.auto-approval-policy-readonly { align-self: center; justify-self: end; margin: 0; color: var(--muted); font-size: 0.78rem; }
+.auto-approval-policy-feedback { grid-column: 1 / -1; flex-basis: 100%; width: 100%; margin: 2px 0 0; font-size: 0.78rem; font-weight: 700; }
+.auto-approval-policy-feedback[data-kind="success"] { color: #047857; }
+.auto-approval-policy-feedback[data-kind="error"] { color: #b91c1c; }
+.auto-approval-policy-list { grid-column: 1 / -1; display: grid; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--canvas); }
+.auto-approval-policy-item { display: grid; grid-template-columns: minmax(160px, 0.7fr) minmax(210px, 1fr) minmax(0, 1.8fr); align-items: center; gap: 12px 16px; padding: 12px; border-top: 1px solid var(--line); }
+.auto-approval-policy-item:first-child { border-top: 0; }
+.auto-approval-policy-item--stale,
+.auto-approval-policy-item--unsupported { background: #fffbeb; }
+.auto-approval-policy-item-identity { display: grid; gap: 4px; min-width: 0; }
+.auto-approval-policy-item-identity strong { color: var(--text-strong); font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+.auto-approval-policy-item-identity code { color: var(--muted); font-family: var(--font-ui); font-size: 0.72rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.auto-approval-policy-item-status { display: grid; gap: 4px; min-width: 0; }
+.auto-approval-policy-item-state { color: var(--text-strong); font-size: 0.78rem; }
+.auto-approval-policy-item--stale .auto-approval-policy-item-state,
+.auto-approval-policy-item--unsupported .auto-approval-policy-item-state { color: #92400e; }
+.auto-approval-policy-item-modes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; color: var(--muted); font-size: 0.72rem; line-height: 1.45; }
+.auto-approval-policy-item-modes strong { color: var(--text); font-weight: 700; }
+.auto-approval-policy-item-reason { margin: 0; color: #92400e; font-size: 0.72rem; line-height: 1.45; overflow-wrap: anywhere; }
+.auto-approval-policy-item-editor { display: grid; grid-template-columns: minmax(175px, 1fr) minmax(210px, 1.2fr) auto; align-items: end; gap: 8px; min-width: 0; }
+.auto-approval-policy-item-editor .auto-approval-policy-field { min-width: 0; }
+.auto-approval-policy-item-editor select,
+.auto-approval-policy-item-editor input,
+.auto-approval-policy-item-editor .auto-approval-policy-save { min-height: 40px; }
+.auto-approval-policy-item-editor .auto-approval-policy-save { min-width: 84px; justify-content: center; }
+
 /* ── Settings panel (graphical) ── */
 .auto-settings { display: grid; gap: 16px; overflow: hidden; max-height: 0; opacity: 0; margin-top: 0; padding-top: 0; border-top: 1px solid transparent; transition: max-height var(--slow), opacity 200ms ease, margin-top 200ms ease, padding-top 200ms ease, border-color 200ms ease; }
 .auto-settings[hidden] { display: none; }
@@ -1217,6 +1273,11 @@ body.dispatch-page .notice { display: none; }
 @media (max-width: 1100px) {
   .auto-card-row { flex-direction: column; align-items: flex-start; gap: 12px; }
   .auto-card-actions { width: 100%; justify-content: flex-start; }
+  .auto-approval-policy { grid-template-columns: 1fr; align-items: stretch; }
+  .auto-approval-policy-editor { justify-content: flex-start; }
+  .auto-approval-policy-readonly { justify-self: start; }
+  .auto-approval-policy-item { grid-template-columns: minmax(160px, 0.65fr) minmax(240px, 1fr); }
+  .auto-approval-policy-item-editor { grid-column: 1 / -1; }
 }
 @media (max-width: 640px) {
   .tms-popover,
@@ -1238,6 +1299,17 @@ body.dispatch-page .notice { display: none; }
   .auto-account-select-row { align-items: stretch; flex-direction: column; }
   .auto-account-role-row { grid-template-columns: 1fr; }
   .auto-account-select, .auto-account-manage-link { max-width: none; width: 100%; }
+  .auto-approval-policy-editor { display: grid; grid-template-columns: 1fr; }
+  .auto-approval-policy-field,
+  .auto-approval-policy-comment { min-width: 0; width: 100%; }
+  .auto-approval-policy-field select,
+  .auto-approval-policy-field input,
+  .auto-approval-policy-save { min-height: 44px; width: 100%; }
+  .auto-approval-policy-item { grid-template-columns: 1fr; gap: 10px; padding: 12px; }
+  .auto-approval-policy-item-editor { grid-column: auto; grid-template-columns: 1fr; }
+  .auto-approval-policy-item-editor select,
+  .auto-approval-policy-item-editor input,
+  .auto-approval-policy-item-editor .auto-approval-policy-save { min-height: 44px; width: 100%; }
 }
 
 .login-page { min-height: 100vh; background: #fff; }

@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # 数据库迁移
@@ -29,6 +29,8 @@ updated: 2026-08-13
 - 每日应签权威账本、来源运行、到货/问题件/主单签收证据与影子差异；
 - Agent 控制平面的 Command、Work Item、Run、Step、Approval、Evidence 和实体映射；
 - 不可变领域事件、事务 Outbox、死信状态和消费者幂等回执。
+- 定时任务的配置版本、当前审批策略及不可变策略审计事件；策略快照不保存凭据、Cookie、Token、
+  原始请求体或可执行 HTML。
 - 财务演进与全局 LLM 设置（迁移 `009_finance_evolution_llm.sql`）；
 - 跨网点历史主单精确签收核验与 1/3/7 天退避状态（迁移 `013_daily_sign_verification_state.sql`）。
 
@@ -49,18 +51,22 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `event_consumptions`。事件与业务聚合必须通过同一 Unit of Work 提交。
 - `013_daily_sign_verification_state.sql`：保存离开当前 R13 的历史候选精确核验结果、
   下一次复核时间和失败退避。该迁移已在线上应用，不得修改文件内容或校验和。
-- `014_control_plane_task_cutover.sql`：迁移闭合的生产任务 ID/ID 族并先备份原行；备份范围
-  覆盖 Console 已知安全内部投影工具的合法 `*_HHMM` 任务族（仅接受 `00:00` 至 `23:59`），
-  不包含 R7 或通用第三方写入；融辉五类单账号任务锁定 `ronghui_default`，两类韵达任务
-  锁定 `yunda_default`，每日应签锁定四个账号角色和 7 日范围，财务任务锁定融辉多来源
-  日常同步参数。迁移只删除已知无业务影响的空日期、标准旧 session profile 和 arrive-list
-  旧 `login_site_code`，不猜测真实站点码。管理员已有冲突值、未知账号或额外参数由
-  `JSON_INSERT` 保留原值并显式停用，必须经 Console 自动化修复后重新启用。大祥打卡使用
-  `JSON_MERGE_PATCH/JSON_SET` 提升旧嵌套参数、重命名字段并保留管理员附加参数；缺少
-  `sitecode/sitefbcode` 时安全停用。
+- `014_control_plane_task_cutover.sql`：仅规范化闭合的遗留生产任务 ID/ID 族并先备份原行，
+  不创建任何免审授权。它保留安全内部投影工具的合法 `*_HHMM` 任务族，规范化两条历史
+  打卡到 `clock_in_dual` v1.1 的精确账号/会话参数；未知账号、冲突值或缺关键打卡站点字段
+  会在任何永久变更前阻断整次迁移并保留原行，绝不猜测补齐或静默停用。
+- `015_scheduled_task_approval_policies.sql`：为 `scheduled_tasks` 增加单调的
+  `configuration_version` 与更新时间，建立 `scheduled_task_approval_policies`（当前任务策略）和
+  `scheduled_task_approval_policy_events`（不可变策略事件）。模式仅为
+  `REQUIRE_EACH_RUN`（默认）与 `EXACT_SCHEDULE_EXEMPT`；请求 ID、任务 ID、CAS 版本与
+  审计快照约束保证同一配置请求幂等且不覆盖并发更新。当前策略随任务删除，历史事件则
+  独立保留以支持审计和时间槽重配。迁移本身不把任何任务改为免审。
+- `016_daily_sign_single_tms_account.sql`：把每日应签任务重复的三个融辉角色收敛为唯一的
+  邵阳大祥站 `account_id`，保留独立 R13 来源账号，并递增任务配置版本使旧审批策略自动失效；
+  非已审核的旧/新精确参数形状会在更新前显式阻断迁移。
 
 生产迁移序列固定连续递增且不得改写已执行文件；线上已存在 `009`、`010`、`013` 时，
-发布器按版本顺序补执行待处理的 `011`、`012`、`014`。MySQL DDL 不参与源码回滚，发布前必须完成可恢复数据库备份。
+发布器按版本顺序补执行待处理的 `011`、`012`、`014`、`015`、`016`。MySQL DDL 不参与源码回滚，发布前必须完成可恢复数据库备份。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计策略；其失败或不完整匹配不能使任何写任务获得免审。
 
 控制平面要求 MySQL 8.0.16 或更高版本。部署预检必须验证服务端版本、必需表列和
 `SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须

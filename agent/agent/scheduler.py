@@ -20,7 +20,9 @@ from shared.finance.sources import enabled_finance_platforms
 logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
+EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS = 60
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
+FINANCE_STARTUP_TASK_ID = "finance_startup_catchup"
 
 
 def _enabled_finance_platform_filter() -> dict[str, str]:
@@ -131,8 +133,9 @@ def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[s
 def _add_finance_startup_catchup_job(agent_core) -> None:
     """Perform the bounded startup gap scan through the same control plane."""
 
-    if not _finance_schedule_enabled(agent_core):
-        logger.info("Finance startup catch-up skipped because its persisted task is disabled")
+    startup_task = _finance_startup_schedule_task(agent_core)
+    if startup_task is None:
+        logger.info("Finance startup catch-up skipped because its independent task is disabled")
         return
 
     async def startup_catchup() -> None:
@@ -148,16 +151,12 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
         try:
             result = await _execute_scheduled_tool(
                 agent_core,
-                task_id="finance_startup_catchup",
+                task_id=FINANCE_STARTUP_TASK_ID,
                 tool_name="sync_finance_bills",
-                arguments={
-                    "mode": "sync",
-                    "rescan_days": 7,
-                    "_startup_catchup": True,
-                    **_enabled_finance_platform_filter(),
-                },
+                arguments=copy.deepcopy(startup_task.get("tool_params") or {}),
                 scheduled_for=scheduled_for,
                 cron_expression="@startup",
+                configuration_version=int(startup_task.get("configuration_version") or 1),
             )
             if not isinstance(result, dict) or not result.get("success"):
                 logger.error("Startup finance catch-up did not complete: %s", _result_error(result))
@@ -180,26 +179,39 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
     )
 
 
-def _finance_schedule_enabled(agent_core) -> bool:
-    """Honor the persisted administrator switch; missing or unknown is disabled."""
+def _finance_startup_schedule_task(agent_core) -> dict[str, Any] | None:
+    """Return the enabled task that independently owns startup gap scanning."""
 
     for row in agent_core.memory.list_scheduled_tasks():
         if not isinstance(row, dict):
             continue
-        if str(row.get("id") or "").strip() != FINANCE_SCHEDULE_TASK_ID:
+        if str(row.get("id") or "").strip() != FINANCE_STARTUP_TASK_ID:
             continue
         enabled = row.get("enabled")
-        return enabled is True or type(enabled) is int and enabled == 1
-    return False
+        if not (enabled is True or type(enabled) is int and enabled == 1):
+            return None
+        if (
+            str(row.get("tool_name") or "") != "sync_finance_bills"
+            or str(row.get("cron_expression") or "") != "@startup"
+        ):
+            logger.error("Finance startup task has an invalid persisted binding")
+            return None
+        return row
+    return None
 
 
 def _load_tasks_from_db(agent_core) -> None:
     for task in agent_core.memory.list_enabled_scheduled_tasks():
+        if str(task.get("id") or "") == FINANCE_STARTUP_TASK_ID:
+            # ``@startup`` is a persisted special occurrence, not a cron
+            # expression.  Its dedicated DateTrigger is registered below.
+            continue
         _add_job(
             task_id=task["id"],
             cron_expr=task["cron_expression"],
             tool_name=task["tool_name"],
             tool_params=task.get("tool_params") or {},
+            configuration_version=int(task.get("configuration_version") or 1),
             agent_core=agent_core,
         )
         logger.info(
@@ -210,7 +222,15 @@ def _load_tasks_from_db(agent_core) -> None:
         )
 
 
-def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, agent_core) -> None:
+def _add_job(
+    task_id: str,
+    cron_expr: str,
+    tool_name: str,
+    tool_params: dict,
+    agent_core,
+    *,
+    configuration_version: int = 1,
+) -> None:
     parts = str(cron_expr or "").split()
     if len(parts) != 5:
         logger.error("Invalid cron expression for task %s: %s", task_id, cron_expr)
@@ -230,6 +250,7 @@ def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, ag
         tp: dict = tool_params,
         tid: str = task_id,
         cron: str = cron_expr,
+        config_version: int = configuration_version,
     ) -> None:
         logger.info("Scheduled task fired: %s -> %s", tid, tn)
         try:
@@ -250,6 +271,7 @@ def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, ag
                 arguments=arguments,
                 scheduled_for=scheduled_for,
                 cron_expression=cron,
+                configuration_version=config_version,
             )
             status = "success" if isinstance(result, dict) and result.get("success") else "error"
             if status != "success":
@@ -260,6 +282,27 @@ def _add_job(task_id: str, cron_expr: str, tool_name: str, tool_params: dict, ag
             _update_task_status(agent_core, tid, "error", {"error": str(exc)})
 
     options: dict[str, Any] = {}
+    registry = getattr(agent_core, "registry", None)
+    capability = (
+        registry.get_capability(tool_name)
+        if registry is not None and hasattr(registry, "get_capability")
+        else None
+    )
+    operation_type = (
+        str(capability.get("operation_type") or "")
+        if isinstance(capability, dict)
+        else ""
+    )
+    if operation_type == "external_write":
+        # External writes are never replayed concurrently.  A missed in-memory
+        # occurrence gets only a short grace window; durable Command
+        # idempotency still protects duplicate submissions for the same exact
+        # scheduled timestamp.
+        options = {
+            "max_instances": 1,
+            "coalesce": True,
+            "misfire_grace_time": EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS,
+        }
     if tool_name == "sync_finance_bills":
         options = {
             "max_instances": 1,
@@ -279,23 +322,27 @@ async def _execute_scheduled_tool(
     arguments: dict,
     scheduled_for: datetime,
     cron_expression: str,
+    configuration_version: int | None = None,
 ):
     """Submit one deterministic scheduler occurrence."""
 
     if scheduled_for.tzinfo is None:
         raise ValueError("scheduled_for must be timezone-aware")
     scheduled_iso = scheduled_for.isoformat()
+    execution_context = {
+        "task_id": task_id,
+        "scheduled_for": scheduled_iso,
+        "cron_expression": cron_expression,
+    }
+    if configuration_version is not None:
+        execution_context["configuration_version"] = configuration_version
     return await agent_core.execute_tool(
         tool_name,
         arguments,
         actor=Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
         source="scheduler",
         idempotency_key=f"scheduler:{task_id}:{scheduled_iso}",
-        execution_context={
-            "task_id": task_id,
-            "scheduled_for": scheduled_iso,
-            "cron_expression": cron_expression,
-        },
+        execution_context=execution_context,
     )
 
 

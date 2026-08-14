@@ -41,11 +41,7 @@ from shared.service_identity import (
     ConsoleIdentityVerifier,
     validate_service_identity_secrets,
 )
-from shared.scheduled_task_contracts import (
-    APPROVED_SCHEDULED_TASK_PROFILES,
-    ScheduledTaskContractError,
-    validate_persisted_scheduled_task,
-)
+from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -141,7 +137,8 @@ from agent.orchestration.models import (
 from agent.orchestration.outbox_dispatcher import OutboxDispatcher
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
-from agent.orchestration.policy_engine import PolicyEngine, ScheduledAllowlistEntry
+from agent.orchestration.policy_engine import PolicyEngine
+from agent.orchestration.scheduled_task_approval_service import ScheduledTaskApprovalService
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.orchestration.workflow_runner import WorkflowRunner
 from agent.llm_settings import (
@@ -192,6 +189,8 @@ orchestration_repository: OrchestrationRepository | None = None
 workflow_runner: WorkflowRunner | None = None
 outbox_dispatcher: OutboxDispatcher | None = None
 control_plane_service: ControlPlaneService | None = None
+scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
+scheduled_task_approval_bootstrap: dict[str, int] = {}
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 AGENT_INTERNAL_API_TOKEN = ""
@@ -238,6 +237,12 @@ def _orchestration_repo() -> OrchestrationRepository:
     if orchestration_repository is None:
         raise RuntimeError("Agent orchestration repository is not initialized")
     return orchestration_repository
+
+
+def _scheduled_task_approvals() -> ScheduledTaskApprovalService:
+    if scheduled_task_approval_service is None:
+        raise RuntimeError("Scheduled task approval service is not initialized")
+    return scheduled_task_approval_service
 
 
 def _orchestration_connection():
@@ -307,6 +312,15 @@ def _resolve_command_accounts(command: Command) -> list[dict]:
     ]
 
 
+def _active_account_ids() -> tuple[str, ...]:
+    rows = get_account_manager().list_accounts(include_status=False, validate=False)
+    return tuple(
+        str(row.get("account_id") or "").strip()
+        for row in rows
+        if bool(row.get("is_active", True)) and str(row.get("account_id") or "").strip()
+    )
+
+
 def _resolve_command_entities(command: Command) -> list[dict]:
     return [reference.to_dict() for reference in command.entity_refs]
 
@@ -322,82 +336,6 @@ def _resolve_source_integrity(command: Command) -> dict:
 def _resolve_command_resources(command: Command) -> dict:
     service = control_plane_service
     return service.resolve_command_context(command) if service is not None else {}
-
-
-def _scheduler_allowlist(catalog) -> tuple[ScheduledAllowlistEntry, ...]:
-    entries: list[ScheduledAllowlistEntry] = []
-    finance = catalog.get_capability("sync_finance_bills")
-    finance_profile = APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"]
-    approval = finance.get("approval") if isinstance(finance, dict) else None
-    finance_governance_matches = (
-        isinstance(finance, dict)
-        and str(finance.get("version") or "") == finance_profile.tool_version
-        and str(finance.get("operation_type") or "") == finance_profile.operation_type
-        and isinstance(approval, dict)
-        and approval.get("mode") == "schedule_allowlist"
-        and enabled_finance_platforms() == ("ronghui",)
-    )
-    if finance_governance_matches:
-        startup_arguments = {
-            "mode": "sync",
-            "platform": "ronghui",
-            "rescan_days": 7,
-            "_startup_catchup": True,
-        }
-        try:
-            catalog.validate_arguments("sync_finance_bills", startup_arguments)
-        except Exception:
-            logger.warning("Finance startup allowlist contract is invalid; exemption disabled")
-        else:
-            entries.append(
-                ScheduledAllowlistEntry.from_arguments(
-                    task_id="finance_startup_catchup",
-                    tool_name="sync_finance_bills",
-                    tool_version=finance_profile.tool_version,
-                    arguments=startup_arguments,
-                    cron_expression="@startup",
-                )
-            )
-    return tuple(entries)
-
-
-def _persisted_scheduler_allowlist(runtime, catalog) -> tuple[ScheduledAllowlistEntry, ...]:
-    """Build exact exemptions from the currently enabled persisted rows.
-
-    Invalid rows are omitted rather than preventing service startup.  A
-    repository failure is deliberately allowed to propagate so PolicyEngine
-    can fail the complete dynamic lookup closed for that evaluation.
-    """
-
-    entries: list[ScheduledAllowlistEntry] = []
-    rejected = 0
-    finance_platforms = enabled_finance_platforms()
-    for row in runtime.memory.list_enabled_scheduled_tasks():
-        tool_name = str(row.get("tool_name") or "").strip() if isinstance(row, dict) else ""
-        try:
-            contract = validate_persisted_scheduled_task(
-                row,
-                capability=catalog.get_capability(tool_name),
-                validate_arguments=catalog.validate_arguments,
-                enabled_finance_platforms=finance_platforms,
-            )
-            entries.append(
-                ScheduledAllowlistEntry.from_arguments(
-                    task_id=contract.task_id,
-                    tool_name=contract.tool_name,
-                    tool_version=contract.tool_version,
-                    arguments=contract.arguments,
-                    dynamic_argument_rules=contract.dynamic_argument_rules,
-                    cron_expression=contract.cron_expression,
-                )
-            )
-        except ScheduledTaskContractError:
-            rejected += 1
-        except Exception:
-            rejected += 1
-    if rejected:
-        logger.debug("Persisted scheduler rows excluded from approval exemption count=%d", rejected)
-    return tuple(entries)
 
 
 def _noop_outbox_handler(delivery, _uow):
@@ -907,6 +845,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global orchestration_repository, workflow_runner, outbox_dispatcher, control_plane_service
+    global scheduled_task_approval_service, scheduled_task_approval_bootstrap
     load_agent_environment()
     setup_logging()
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
@@ -952,10 +891,28 @@ async def lifespan(app: FastAPI):
     )
     planner = DeterministicPlanner(catalog)
     validator = PlanValidator(catalog)
+    schedule_policy_service = ScheduledTaskApprovalService(
+        repository,
+        catalog,
+        enabled_finance_platforms=enabled_finance_platforms(),
+        active_account_ids_provider=_active_account_ids,
+    )
+    scheduled_task_approval_service = schedule_policy_service
+    scheduled_task_approval_bootstrap = await asyncio.to_thread(
+        schedule_policy_service.bootstrap_reviewed_policies
+    )
+    logger.info(
+        "Scheduled approval bootstrap reviewed=%d created=%d existing=%d configured=%d rejected=%d completed=%d",
+        scheduled_task_approval_bootstrap.get("reviewed_candidates", 0),
+        scheduled_task_approval_bootstrap.get("created", 0),
+        scheduled_task_approval_bootstrap.get("already_present", 0),
+        scheduled_task_approval_bootstrap.get("explicitly_configured", 0),
+        scheduled_task_approval_bootstrap.get("rejected", 0),
+        scheduled_task_approval_bootstrap.get("completed", 0),
+    )
     policy = PolicyEngine(
         catalog,
-        scheduler_allowlist=_scheduler_allowlist(catalog),
-        scheduler_allowlist_provider=lambda: _persisted_scheduler_allowlist(runtime, catalog),
+        scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
     )
     runner_holder: dict[str, WorkflowRunner] = {}
     approval_service = ApprovalService(
@@ -1064,6 +1021,8 @@ async def lifespan(app: FastAPI):
     await dispatcher.stop()
     await runtime.close()
     control_plane_service = None
+    scheduled_task_approval_service = None
+    scheduled_task_approval_bootstrap = {}
     outbox_dispatcher = None
     workflow_runner = None
     orchestration_repository = None
@@ -1111,7 +1070,10 @@ async def orchestration_error_handler(request: Request, exc: OrchestrationError)
         "APPROVAL_REJECTED": 409,
         "APPROVAL_NOT_PENDING": 409,
         "PLAN_STALE": 409,
+        "POLICY_VERSION_CONFLICT": 409,
+        "TASK_CONFIGURATION_VERSION_CONFLICT": 409,
         "IDEMPOTENCY_CONFLICT": 409,
+        "SCHEDULE_TASK_NOT_FOUND": 404,
         "ILLEGAL_RUN_TRANSITION": 409,
     }
     status_code = status_by_code.get(exc.code, 422)
@@ -1231,8 +1193,12 @@ def _admin_request_requires_console_principal(path: str) -> bool:
     """Keep service authentication separate from administrator authority."""
 
     normalized = "/" + str(path or "").lstrip("/")
-    return normalized in {"/admin", "/internal/v1/admin"} or normalized.startswith(
-        ("/admin/", "/internal/v1/admin/")
+    return (
+        normalized == "/internal/v1/scheduled-task-approval-policies"
+        or normalized in {"/admin", "/internal/v1/admin"}
+        or normalized.startswith(
+            ("/admin/", "/internal/v1/admin/")
+        )
     )
 
 
@@ -1566,6 +1532,7 @@ async def internal_health():
                 "glm": runtime.llm_status("glm"),
                 "mysql": runtime.db_status(),
                 "outbox": _orchestration_repo().outbox_health(),
+                "scheduled_task_approval_bootstrap": dict(scheduled_task_approval_bootstrap),
                 "tms_session": get_session_broker().describe_status(validate=False),
             },
             "last_tool_run": runtime.last_tool_info(),
@@ -1638,12 +1605,29 @@ class ApprovalDecisionRequest(TrustedActionRequest):
     comment: str = ""
 
 
+class ScheduledTaskApprovalPolicyRequest(TrustedActionRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str]
+    mode: str
+    comment: str = ""
+    request_id: str
+    expected_versions: dict[str, int]
+    expected_configuration_versions: dict[str, int]
+
+
 def _http_request_actor(
     request: Request,
     *,
     requested_source: str,
 ) -> tuple[Actor, str]:
     """Derive an HTTP actor from verified caller scope, never from JSON fields."""
+
+    if requested_source in {"scheduler", "system"}:
+        raise OrchestrationError(
+            "TRUSTED_IN_PROCESS_SOURCE_REQUIRED",
+            "Scheduler and system commands may only originate in process through in-process trusted adapters",
+        )
 
     principal = getattr(request.state, "console_principal", None)
     if isinstance(principal, dict):
@@ -2282,8 +2266,34 @@ async def scheduled_tasks():
 
 
 @app.get("/internal/v1/scheduled-tasks")
-async def internal_scheduled_tasks():
+async def internal_scheduled_tasks(request: Request):
+    _require_console_admin_request(request)
     return api_success({"rows": _runtime().memory.list_scheduled_tasks()})
+
+
+@app.get("/internal/v1/scheduled-task-approval-policies")
+async def internal_scheduled_task_approval_policies(request: Request):
+    _require_console_admin_request(request)
+    return api_success(_scheduled_task_approvals().list_policies())
+
+
+@app.post("/internal/v1/scheduled-task-approval-policies")
+async def update_scheduled_task_approval_policies(
+    req: ScheduledTaskApprovalPolicyRequest,
+    request: Request,
+):
+    actor = _require_console_admin_action(req, request)
+    return api_success(
+        _scheduled_task_approvals().set_policies(
+            task_ids=req.task_ids,
+            mode=req.mode,
+            comment=req.comment,
+            request_id=req.request_id,
+            expected_versions=req.expected_versions,
+            expected_configuration_versions=req.expected_configuration_versions,
+            actor=actor,
+        )
+    )
 
 
 @app.post("/admin/seed-phase7-tasks", deprecated=True)

@@ -10,6 +10,7 @@ from typing import Any
 
 from agent.orchestration.models import OperationType, OrchestrationError, PlanStep, sha256_json
 from agent.execution_boundary import execution_capability_scope
+from agent.tool_executor import build_trusted_scheduler_context
 from shared.redaction import redact_sensitive, redact_text
 
 
@@ -57,7 +58,18 @@ class RegisteredToolExecutionAdapter:
                     "duration_s": round(time.monotonic() - started, 3),
                 }
             else:
-                process_result = await self._executor.execute(capability, dict(step.arguments))
+                trusted_context = build_trusted_scheduler_context(
+                    step.tool_name,
+                    execution_context,
+                )
+                if trusted_context is None:
+                    process_result = await self._executor.execute(capability, dict(step.arguments))
+                else:
+                    process_result = await self._executor.execute(
+                        capability,
+                        dict(step.arguments),
+                        trusted_scheduler_context=trusted_context,
+                    )
                 info = self._executor.running_tool_info(step.tool_name)
                 self._step_to_tool[(run_id, step_id)] = (step.tool_name, str(info.get("started_at") or ""))
         except Exception as exc:

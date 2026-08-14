@@ -24,6 +24,8 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
             scheduled_task_count=1,
             enabled_task_count=0,
             automation_db_warning="",
+            automation_approval_policy_warning="",
+            can_manage_approval_policies=True,
             tms_session_status={
                 "status": "logged_out",
                 "label": "未登录",
@@ -152,7 +154,46 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
                 "can_save": False,
                 "can_run_now": False,
                 "control_plane_only": True,
-                "control_plane_notice": "第三方高风险写入只允许通过控制平面审批。",
+                "control_plane_notice": (
+                    "代码锁定的既有自动打卡任务；"
+                    "任务配置只读，但审批策略可以单独设置。"
+                ),
+                "approval_policy": {
+                    "available": True,
+                    "task_ids": ["clockin_daxiang_s_1833"],
+                    "item_count": 1,
+                    "items": [
+                        {
+                            "task_id": "clockin_daxiang_s_1833",
+                            "schedule_label": "每天 18:33",
+                            "mode": "EXACT_SCHEDULE_EXEMPT",
+                            "configured_mode": "EXACT_SCHEDULE_EXEMPT",
+                            "effective_mode": "EXACT_SCHEDULE_EXEMPT",
+                            "effective_status": "ACTIVE",
+                            "can_exempt": True,
+                            "version": 3,
+                            "configuration_version": 7,
+                            "policy_hash_short": "ab12cd34",
+                            "approved_by": "系统管理员",
+                            "approved_at": "2026-08-14 12:00:00",
+                            "invalid_reason": "",
+                        }
+                    ],
+                    "mode": "EXACT_SCHEDULE_EXEMPT",
+                    "configured_mode": "EXACT_SCHEDULE_EXEMPT",
+                    "effective_mode": "EXACT_SCHEDULE_EXEMPT",
+                    "effective_status": "ACTIVE",
+                    "label": "固定计划自动执行",
+                    "summary": "仅 Scheduler 定时触发可免审；手工运行仍需审批。",
+                    "can_exempt": True,
+                    "mixed": False,
+                    "expected_versions": {"clockin_daxiang_s_1833": 3},
+                    "expected_configuration_versions": {"clockin_daxiang_s_1833": 7},
+                    "policy_hash_short": "ab12cd34",
+                    "approved_by": "系统管理员",
+                    "approved_at": "2026-08-14 12:00:00",
+                    "invalid_reason": "",
+                },
             }
         )
         task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
@@ -161,9 +202,12 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertNotIn("data-run-now", task_html)
         self.assertNotIn("data-settings-toggle", task_html)
         self.assertNotIn("data-schedule-stack", task_html)
-        self.assertIn("第三方高风险写入只允许通过控制平面审批", task_html)
+        self.assertIn("任务配置只读，但审批策略可以单独设置", task_html)
         self.assertIn("当前任务：已启用", task_html)
-        self.assertIn("需审批", task_html)
+        self.assertIn("固定计划自动执行", task_html)
+        self.assertIn("每次运行审批", task_html)
+        self.assertIn("保存审批策略", task_html)
+        self.assertIn("手工运行仍需审批", task_html)
 
     def test_missing_required_resources_render_resource_editor(self):
         html = self._render(

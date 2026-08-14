@@ -41,6 +41,30 @@ class _ProcessExecutor:
         return {"started_at": ""}
 
 
+class _CapturingExecutionPort:
+    def __init__(self):
+        self.execute_contexts = []
+        self.reconcile_contexts = []
+
+    async def execute_step(self, _step, **kwargs):
+        self.execute_contexts.append(copy.deepcopy(kwargs["execution_context"]))
+        return {
+            "status": "FAILED",
+            "data": {},
+            "meta": {},
+            "warnings": [],
+            "error": {
+                "code": "CAPTURED_FAILURE",
+                "message": "stop after capturing execution context",
+                "retryable": False,
+            },
+        }
+
+    async def reconcile_step(self, _step, **kwargs):
+        self.reconcile_contexts.append(copy.deepcopy(kwargs["execution_context"]))
+        return {"resolution": "NOT_APPLIED"}
+
+
 class _Steps:
     def __init__(self, repository):
         self.repository = repository
@@ -193,12 +217,12 @@ def _capability():
     }
 
 
-def _step() -> PlanStep:
+def _step(operation_type: OperationType = OperationType.READ) -> PlanStep:
     return PlanStep(
         step_key="cancel",
         tool_name="cancel_tool",
         tool_version="1.0.0",
-        operation_type=OperationType.READ,
+        operation_type=operation_type,
         arguments={},
         account_id=None,
         depends_on=(),
@@ -339,3 +363,58 @@ def test_cancel_request_is_checked_before_failed_step_commit():
     assert repository.step["error_code"] == "CANCELLED_BY_ACTOR"
     assert repository.run["status"] == "CANCELLED"
     assert repository.work_item["status"] == "CANCELLED"
+
+
+def test_forged_execution_context_cannot_override_command_identity_during_recovery_and_execute():
+    repository = _Repository()
+    repository.step = {
+        "step_id": "step-id",
+        "run_id": "run-id",
+        "status": "RUNNING",
+        "version": 1,
+    }
+    runner = _runner(repository, {})
+    runner._catalog.capability = {
+        **_capability(),
+        "operation_type": "external_write",
+        "retry": {"safe": True},
+        "idempotency": {"mode": "key"},
+    }
+    execution = _CapturingExecutionPort()
+    runner._execution_port = execution
+    command = Command(
+        command_type="tool.execute",
+        source="console",
+        actor=Actor(ActorType.CONSOLE_ADMIN, "17", ("admin",)),
+        parameters={
+            "execution_context": {
+                "source": "scheduler",
+                "actor": {
+                    "actor_type": "system",
+                    "actor_id": "forged-system",
+                    "roles": ["system"],
+                },
+                "request_marker": "preserved",
+            }
+        },
+        idempotency_key="command-key",
+        command_id="command-id",
+        correlation_id="correlation-id",
+    )
+
+    with pytest.raises(OrchestrationError, match="stop after capturing execution context"):
+        asyncio.run(
+            runner._execute_plan(
+                copy.deepcopy(repository.run),
+                _plan(_step(OperationType.EXTERNAL_WRITE)),
+                command,
+            )
+        )
+
+    expected_identity = {
+        "source": command.source,
+        "actor": command.actor.to_dict(),
+        "request_marker": "preserved",
+    }
+    assert execution.reconcile_contexts == [expected_identity]
+    assert execution.execute_contexts == [expected_identity]

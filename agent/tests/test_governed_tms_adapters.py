@@ -95,9 +95,10 @@ class GovernedTmsAdapterTests(unittest.TestCase):
 
         self.assertEqual(result["payload"]["delete_after_upload"], False)
 
-    def test_clock_in_adapter_forces_api_mode(self):
+    def test_clock_in_adapter_carries_account_and_uses_fixed_inner_timeouts(self):
         result = adapter.build_clock_in_params(
             {
+                "account_id": "ronghui_daxiang_s",
                 "sitecode": "site-code",
                 "sitefbcode": "operation-code",
                 "sitename": "site",
@@ -108,7 +109,21 @@ class GovernedTmsAdapterTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result["mode"], "api")
+        self.assertEqual(result["timeout_sec"], 60)
+        self.assertEqual(result["client_timeout_sec"], 75)
+        self.assertEqual(
+            result["params"],
+            {
+                "account_id": "ronghui_daxiang_s",
+                "sitecode": "site-code",
+                "sitefbcode": "operation-code",
+                "sitename": "site",
+                "sitefbname": "operation",
+                "first_type": "交件到港",
+                "second_type": "接件离港",
+                "mode": "api",
+            },
+        )
 
     def test_fixed_target_returns_compact_failure_without_echoing_payload(self):
         with patch.object(
@@ -287,8 +302,11 @@ class GovernedTmsAdapterTests(unittest.TestCase):
 
     def test_clock_in_requires_explicit_success_from_both_source_responses(self):
         params = {
+            "account_id": "ronghui_daxiang_s",
             "sitecode": "site-code",
             "sitefbcode": "operation-code",
+            "sitename": "site",
+            "sitefbname": "operation",
             "first_type": "first",
             "second_type": "second",
         }
@@ -313,6 +331,12 @@ class GovernedTmsAdapterTests(unittest.TestCase):
             result["meta"]["postcondition_evidence"]["0"]["condition"],
             "both_third_party_clock_ins_confirmed",
         )
+        proof = result["meta"]["postcondition_evidence"]["0"]["details"]
+        self.assertEqual(proof["account_id"], "ronghui_daxiang_s")
+        self.assertEqual(proof["sitecode"], "site-code")
+        self.assertEqual(proof["sitefbcode"], "operation-code")
+        self.assertEqual(proof["sitename"], "site")
+        self.assertEqual(proof["sitefbname"], "operation")
 
         not_explicit = dict(response)
         not_explicit["data"] = dict(response["data"])

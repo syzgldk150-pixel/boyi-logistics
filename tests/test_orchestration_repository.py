@@ -718,6 +718,9 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertEqual("item-1", item["work_item_id"])
         self.assertEqual({"source": "retry"}, item["resolution_json"])
         self.assertEqual(2, len(cursor.calls))
+        primary_sql, primary_params = cursor.calls[0]
+        rendered_primary_sql = primary_sql % tuple(primary_params)
+        self.assertIn("LIKE 'command:%'", rendered_primary_sql)
         self.assertIn("JOIN agent_runs r", cursor.calls[1][0])
 
     def test_work_item_list_applies_exact_filters_search_and_sla_window(self):

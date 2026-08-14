@@ -409,7 +409,15 @@ class AgentExecutionToolTests(unittest.TestCase):
                 "ok": True,
                 "stage": "done",
                 "message": "success",
-                "detail": {"status_text": params.get("status_text")},
+                "detail": {
+                    "status_text": params.get("status_text"),
+                    "verify_status_text": params.get("verify_status_text"),
+                    "task_number": "R7-TASK-1",
+                    "observed_status": params.get("verify_status_text"),
+                    "url": "https://r7.example/task?token=must-not-leak",
+                    "diagnostic": "password=must-not-leak",
+                },
+                "ts": "2026-08-14T09:00:01+08:00",
                 "cost_sec": 1.2,
             }
 
@@ -449,9 +457,44 @@ class AgentExecutionToolTests(unittest.TestCase):
         )
         self.assertNotIn("timeout_sec", captured)
         self.assertNotIn("_scheduled_task", captured)
+        self.assertNotIn(
+            "_scheduled_task",
+            r7_arrival_checkin_tool._sanitize_for_log(
+                {"_scheduled_task": {"id": "browser-controlled"}}
+            ),
+        )
         self.assertEqual("success", insert_log.call_args.kwargs["status"])
         self.assertEqual(0, insert_log.call_args.kwargs["success_count_before"])
         self.assertEqual(1, insert_log.call_args.kwargs["success_count_after"])
+        self.assertEqual({"0": True}, result["postconditions"])
+        proof = result["postcondition_evidence"]["0"]
+        self.assertTrue(proof["verified"])
+        self.assertEqual(
+            "third_party_r7_arrival_state_confirmed",
+            proof["condition"],
+        )
+        self.assertEqual("R7-TASK-1", proof["details"]["external_task_id"])
+        self.assertEqual("已到达", proof["details"]["observed_status"])
+        self.assertNotIn("url", result["detail"])
+        self.assertNotIn("must-not-leak", result["detail"]["diagnostic"])
+        logged_result = insert_log.call_args.kwargs["result"]
+        self.assertNotIn("url", logged_result["detail"])
+
+    def test_r7_log_task_identity_uses_only_trusted_scheduler_side_channel(self):
+        with patch(
+            "tools.r7_arrival_checkin_tool.trusted_scheduler_context",
+            return_value=None,
+        ):
+            self.assertEqual("", r7_arrival_checkin_tool._scheduled_task_id())
+
+        with patch(
+            "tools.r7_arrival_checkin_tool.trusted_scheduler_context",
+            return_value={"task_id": "r7_arrival_checkin_0900"},
+        ):
+            self.assertEqual(
+                "r7_arrival_checkin_0900",
+                r7_arrival_checkin_tool._scheduled_task_id(),
+            )
 
     def test_r7_arrival_checkin_tool_keeps_dispatched_status_for_dry_run(self):
         captured: dict[str, Any] = {}
@@ -486,6 +529,15 @@ class AgentExecutionToolTests(unittest.TestCase):
             ),
             patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
             patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=1),
+            patch(
+                "tools.r7_arrival_checkin_tool._latest_success_observation",
+                return_value={
+                    "log_id": 42,
+                    "task_number": "R7-TASK-1",
+                    "observed_status": "已到达",
+                    "verified_at": "2026-08-14T09:00:01+08:00",
+                },
+            ),
             patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
             patch("tools.r7_arrival_checkin_tool.auto_checkin_r7.run_once") as run_once,
         ):
@@ -499,6 +551,36 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertEqual("skipped", insert_log.call_args.kwargs["status"])
         self.assertEqual(1, insert_log.call_args.kwargs["success_count_before"])
         self.assertEqual(1, insert_log.call_args.kwargs["success_count_after"])
+        self.assertEqual({"0": True}, result["postconditions"])
+        self.assertEqual(
+            {"external_task_id", "observed_status", "source_verified_at"},
+            set(result["postcondition_evidence"]["0"]["details"]),
+        )
+
+    def test_r7_arrival_daily_limit_fails_closed_without_prior_exact_proof(self):
+        with (
+            patch(
+                "tools.r7_arrival_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
+            patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
+            patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=1),
+            patch(
+                "tools.r7_arrival_checkin_tool._latest_success_observation",
+                return_value=None,
+            ),
+            patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
+            patch("tools.r7_arrival_checkin_tool.auto_checkin_r7.run_once") as run_once,
+        ):
+            result = r7_arrival_checkin_tool.run_r7_arrival_checkin(
+                {"daily_success_limit": 1}
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertIn("prior exact-task proof", result["error"])
+        run_once.assert_not_called()
+        self.assertFalse(insert_log.call_args.kwargs["ok"])
 
     def test_r7_arrival_checkin_tool_marks_script_not_ok_as_error(self):
         with (

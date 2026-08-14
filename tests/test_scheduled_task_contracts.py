@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-from types import SimpleNamespace
-
 import pytest
 
 from agent.tool_registry import ToolRegistry
@@ -13,6 +10,11 @@ from shared.scheduled_task_contracts import (
 
 
 EXPECTED_APPROVED_TASK_IDS = {
+    "clockin_daxiang": {"clockin_daxiang_1830"},
+    "clockin_daxiang_s": {"clockin_daxiang_s_1833"},
+    "finance_bills": {"finance_bills_0010"},
+    "finance_startup_catchup": {"finance_startup_catchup"},
+    "yunda_dispatch_forecast": {"yunda_dispatch_forecast_1700"},
     "arrive_list": {
         "arrive_list_0830",
         "arrive_list_0900",
@@ -72,6 +74,21 @@ EXPECTED_APPROVED_TASK_IDS = {
         "site_send_2100",
     },
     "yunda_send_waybills": {"yunda_send_waybills_2355"},
+    "r7_arrival_checkin": {
+        "r7_arrival_checkin_0900",
+        "r7_arrival_checkin_0930",
+        "r7_arrival_checkin_1000",
+        "r7_arrival_checkin_1030",
+        "r7_arrival_checkin_1100",
+        "r7_arrival_checkin_1130",
+        "r7_arrival_checkin_1200",
+        "r7_arrival_checkin_1230",
+        "r7_arrival_checkin_1300",
+        "r7_arrival_checkin_1330",
+        "r7_arrival_checkin_1400",
+        "r7_arrival_checkin_1430",
+        "r7_arrival_checkin_1900",
+    },
 }
 
 
@@ -127,8 +144,50 @@ def test_only_reviewed_production_task_ids_are_code_approved() -> None:
 
     assert actual == EXPECTED_APPROVED_TASK_IDS
     assert not APPROVED_SCHEDULED_TASK_PROFILES["arrival_stats"].approved_task_ids
-    assert not APPROVED_SCHEDULED_TASK_PROFILES["yunda_dispatch_forecast"].approved_task_ids
-    assert not APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"].approved_task_ids
+    assert APPROVED_SCHEDULED_TASK_PROFILES["arrival_stats"].seed_governed_template
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["yunda_dispatch_forecast"].seed_governed_template
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"].seed_governed_template
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["finance_startup_catchup"].seed_governed_template
+    assert not APPROVED_SCHEDULED_TASK_PROFILES["r7_arrival_checkin"].seed_governed_template
+
+
+def test_only_two_complete_clock_contracts_are_code_approved() -> None:
+    expected = {
+        "clockin_daxiang": {
+            "task_id": "clockin_daxiang_1830",
+            "account_id": "ronghui_default",
+            "sitecode": "7390004",
+            "sitefbcode": "73901",
+            "sitename": "邵阳大祥站",
+            "sitefbname": "邵阳操作场",
+        },
+        "clockin_daxiang_s": {
+            "task_id": "clockin_daxiang_s_1833",
+            "account_id": "ronghui_daxiang_s",
+            "sitecode": "7390017",
+            "sitefbcode": "73901",
+            "sitename": "邵阳大祥S站",
+            "sitefbname": "邵阳操作场",
+        },
+    }
+
+    for group_id, locked in expected.items():
+        profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
+        assert profile.tool_name == "clock_in_dual"
+        assert profile.tool_version == "1.1.0"
+        assert profile.operation_type == "external_write"
+        assert profile.approved_task_ids == frozenset({locked["task_id"]})
+        assert profile.dynamic_argument_rules == {}
+        assert profile.approved_arguments == {
+            "account_id": locked["account_id"],
+            "sitecode": locked["sitecode"],
+            "sitefbcode": locked["sitefbcode"],
+            "sitename": locked["sitename"],
+            "sitefbname": locked["sitefbname"],
+            "first_type": "交件到港",
+            "second_type": "接件离港",
+            "delay_seconds": 2,
+        }
 
 
 @pytest.mark.parametrize(
@@ -149,7 +208,7 @@ def test_each_reviewed_task_id_accepts_only_its_code_owned_contract(
             task_id=task_id,
             tool_name=profile.tool_name,
             tool_params=dict(profile.approved_arguments),
-            cron_expression=_cron_for_task_id(task_id),
+            cron_expression=profile.cron_expression or _cron_for_task_id(task_id),
         )
     )
 
@@ -176,9 +235,7 @@ def test_each_reviewed_task_id_accepts_only_its_code_owned_contract(
             "daily_sign_1100",
             {
                 "r13_account_id": "r13_default",
-                "problem_account_id": "ronghui_daxiang_s",
-                "sign_account_id": "ronghui_daxiang_s",
-                "detail_account_id": "ronghui_default",
+                "account_id": "ronghui_daxiang_s",
                 "days": 6,
             },
         ),
@@ -197,6 +254,54 @@ def test_each_reviewed_task_id_accepts_only_its_code_owned_contract(
             "yunda_send_waybills_2355",
             {"account_id": "yunda_default", "ensure_fields": True},
         ),
+        (
+            "finance_startup_catchup",
+            "finance_startup_catchup",
+            {
+                **dict(
+                    APPROVED_SCHEDULED_TASK_PROFILES[
+                        "finance_startup_catchup"
+                    ].approved_arguments
+                ),
+                "rescan_days": 6,
+            },
+        ),
+        (
+            "r7_arrival_checkin",
+            "r7_arrival_checkin_0900",
+            {
+                **dict(
+                    APPROVED_SCHEDULED_TASK_PROFILES[
+                        "r7_arrival_checkin"
+                    ].approved_arguments
+                ),
+                "daily_success_limit": 2,
+            },
+        ),
+        (
+            "clockin_daxiang",
+            "clockin_daxiang_1830",
+            {
+                **dict(APPROVED_SCHEDULED_TASK_PROFILES["clockin_daxiang"].approved_arguments),
+                "account_id": "ronghui_daxiang_s",
+            },
+        ),
+        (
+            "clockin_daxiang_s",
+            "clockin_daxiang_s_1833",
+            {
+                **dict(APPROVED_SCHEDULED_TASK_PROFILES["clockin_daxiang_s"].approved_arguments),
+                "sitecode": "7390004",
+            },
+        ),
+        (
+            "clockin_daxiang_s",
+            "clockin_daxiang_s_1833",
+            {
+                **dict(APPROVED_SCHEDULED_TASK_PROFILES["clockin_daxiang_s"].approved_arguments),
+                "delay_seconds": 3,
+            },
+        ),
     ),
 )
 def test_schema_valid_argument_change_never_becomes_its_own_allowlist_baseline(
@@ -209,7 +314,7 @@ def test_schema_valid_argument_change_never_becomes_its_own_allowlist_baseline(
         task_id=task_id,
         tool_name=profile.tool_name,
         tool_params=changed_arguments,
-        cron_expression=_cron_for_task_id(task_id),
+        cron_expression=profile.cron_expression or _cron_for_task_id(task_id),
     )
 
     with pytest.raises(ScheduledTaskContractError) as error:
@@ -225,14 +330,12 @@ def test_schema_valid_argument_change_never_becomes_its_own_allowlist_baseline(
         ("arrive_list_0831", "sync_arrive_list"),
         ("arrive_list__slot_2", "sync_arrive_list"),
         ("arrival_stats_0900", "sync_arrival_stats"),
-        ("finance_bills_0010", "sync_finance_bills"),
-        ("yunda_dispatch_forecast_1700", "sync_yunda_dispatch_forecast"),
-        ("clockin_daxiang_1830", "tms_query"),
-        ("clockin_daxiang_s_1833", "tms_query"),
+        ("clockin_daxiang_1831", "clock_in_dual"),
+        ("clockin_daxiang_s_1830", "clock_in_dual"),
         ("r7_arrival_checkin", "r7_arrival_checkin"),
     ),
 )
-def test_unreviewed_or_external_write_task_id_is_never_eligible(
+def test_unreviewed_task_id_is_never_eligible(
     task_id: str,
     tool_name: str,
 ) -> None:
@@ -240,6 +343,45 @@ def test_unreviewed_or_external_write_task_id_is_never_eligible(
         _validate(_row(task_id=task_id, tool_name=tool_name))
 
     assert error.value.code == "TASK_GROUP_NOT_APPROVED"
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ("clockin_daxiang_1830", "clockin_daxiang_s_1833"),
+)
+def test_legacy_broad_clock_tool_is_not_eligible(task_id: str) -> None:
+    with pytest.raises(ScheduledTaskContractError) as error:
+        _validate(
+            _row(
+                task_id=task_id,
+                tool_name="tms_query",
+                cron_expression=_cron_for_task_id(task_id),
+            )
+        )
+
+    assert error.value.code == "TOOL_NOT_APPROVED_FOR_GROUP"
+
+
+@pytest.mark.parametrize(
+    "group_id",
+    ("clockin_daxiang", "clockin_daxiang_s"),
+)
+def test_clock_contract_rejects_unknown_argument(group_id: str) -> None:
+    profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
+    task_id = next(iter(profile.approved_task_ids))
+    arguments = {**dict(profile.approved_arguments), "extra": "not-approved"}
+
+    with pytest.raises(ScheduledTaskContractError) as error:
+        _validate(
+            _row(
+                task_id=task_id,
+                tool_name=profile.tool_name,
+                tool_params=arguments,
+                cron_expression=_cron_for_task_id(task_id),
+            )
+        )
+
+    assert error.value.code == "ARGUMENT_SCHEMA_MISMATCH"
 
 
 @pytest.mark.parametrize(
@@ -294,27 +436,10 @@ def test_registry_version_change_requires_code_profile_update() -> None:
     assert error.value.code == "TOOL_VERSION_NOT_APPROVED"
 
 
-def test_finance_profile_remains_available_only_for_static_startup_contract() -> None:
+def test_finance_profile_is_reviewed_in_place_but_not_auto_enabled() -> None:
     profile = APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"]
 
-    assert not profile.approved_task_ids
+    assert profile.approved_task_ids == frozenset({"finance_bills_0010"})
+    assert profile.seed_governed_template is False
     assert profile.approved_arguments == {"mode": "sync", "platform": "ronghui", "rescan_days": 7}
     assert profile.dynamic_argument_rules == {"target_date": "scheduled_previous_day"}
-
-
-def test_main_provider_reads_enabled_memory_rows_and_omits_invalid_rows() -> None:
-    from main import _persisted_scheduler_allowlist
-
-    rows = [
-        _row(),
-        _row(task_id="clockin_daxiang_1830", tool_name="tms_query"),
-    ]
-    runtime = SimpleNamespace(
-        memory=SimpleNamespace(list_enabled_scheduled_tasks=lambda: rows),
-    )
-
-    entries = _persisted_scheduler_allowlist(runtime, ToolRegistry())
-
-    assert len(entries) == 1
-    assert entries[0].task_id == "arrive_list_0830"
-    assert entries[0].tool_name == "sync_arrive_list"

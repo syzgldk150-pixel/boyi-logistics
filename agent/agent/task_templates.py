@@ -37,7 +37,13 @@ def _cron_and_label(task_id: str) -> tuple[str, str]:
 def _build_governed_schedule_templates() -> list[dict[str, Any]]:
     templates: list[dict[str, Any]] = []
     for group_id, profile in APPROVED_SCHEDULED_TASK_PROFILES.items():
-        if not profile.approved_task_ids:
+        # Existing production clock jobs are governed in place.  External
+        # writes are never introduced automatically on a fresh installation.
+        if (
+            not profile.approved_task_ids
+            or profile.operation_type != "internal_projection_write"
+            or not profile.seed_governed_template
+        ):
             continue
         display_name = _GROUP_DISPLAY_NAMES.get(group_id)
         if display_name is None:
@@ -84,6 +90,20 @@ STATIC_DISABLED_SCHEDULED_TASK_TEMPLATES = [
             "rescan_days": 7,
         },
         "cron_expression": "10 0 * * *",
+        "enabled": False,
+        "source": "finance-ledger",
+    },
+    {
+        "id": "finance_startup_catchup",
+        "name": "财务启动缺口扫描",
+        "tool_name": "sync_finance_bills",
+        "tool_params": {
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        },
+        "cron_expression": "@startup",
         "enabled": False,
         "source": "finance-ledger",
     },

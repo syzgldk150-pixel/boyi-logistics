@@ -4,7 +4,7 @@ type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
 status: active
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # Agent 统一控制平面 v1
@@ -70,28 +70,32 @@ Worker 通过 MySQL 8 `FOR UPDATE SKIP LOCKED` 和租约领取。执行中续租
 只读/计算步骤可安全恢复，声明幂等的内部投影写入按契约恢复。第三方或财务写入若没有
 精确读后核验器，一律进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得盲目重试。
 
-调度免审同样遵循显式账号边界。寄件、签收、网点出港、到货清单、到货统计和两项韵达
-同步的顶层 `account_id` 都是必填项；嵌套请求中重复出现的账号只能与顶层值完全一致。
-代码批准的自动免审任务固定为 51 条：3 条到货清单、17 条每日应签、20 条派送状态、
-9 条网点出港清单，以及 `send_order_2359`、`yunda_send_waybills_2355`。寄件使用
-`price_default`，普通融辉单账号任务使用 `ronghui_default`；韵达寄件使用
-`yunda_default/ensure_fields=false`；每日应签锁定 `r13_default`、问题件/签收
-`ronghui_daxiang_s`、详情 `ronghui_default` 及 `days=7`。任务模板直接从同一份受管契约
-生成，避免 ID、cron 和参数形成第二份可漂移清单。
+调度策略遵循显式账号边界。寄件、签收、网点出港、到货清单、到货统计和两项韵达同步的顶层
+`account_id` 都是必填项；嵌套请求中重复出现的账号只能与顶层值完全一致。每个持久化任务默认
+`REQUIRE_EACH_RUN`，可单独配置为 `EXACT_SCHEDULE_EXEMPT`，不是按工具或任务类别一刀切。
+工具注册表的 `approval.mode: schedule_allowlist` 仅是该工具能够被配置免审的资格上限；disabled、
+付款、删除和不可逆批量覆盖永远不能被设置为免审。
 
-发布前只读预检只比较上述代码审阅 ID、cron、工具及闭合参数，并用代码持有的 SHA-256 指纹核对
-到货任务遗留登录站点字段；它不得打开 `.env`、Cookie、凭据或会话状态文件。迁移 `014` 在任何永久 DDL/
-数据修改前执行同一组关闭校验：真空库可初始化，出现任一受管候选后必须完整命中 51 条；任一已启用
-第三方打卡任务会以 `EXTERNAL_WRITE_SCHEDULE_POLICY_BLOCKED` 阻断发布，既不会静默停用，也不会绕过审批。
+只有签名后的真实 MySQL Console `super_admin` 会话可创建或变更任务策略。豁免仅由 APScheduler
+提交的 Scheduler Command 使用；手工运行、Console 立即运行、飞书和 Webhook 即使调用相同任务/工具
+也必须逐次走通常的计划审批。策略服务端生成隐私安全快照和行为哈希，绑定任务 ID、工具名/版本、
+完整参数与账号、cron、enabled、治理字段、postconditions、动态规则和 `configuration_version`；展示名称
+不属于行为哈希。任一受绑定任务配置或工具治理契约改变，策略立即为 stale，运行时的有效模式退回
+`REQUIRE_EACH_RUN`，不得读取时写回或继续使用旧授权。
+
+迁移 `014` 仅把经代码审阅的历史任务行规范化到当前闭合契约（包括内部投影、财务启动补拉、
+13 条 R7 到达任务与两条 `clock_in_dual` v1.1 任务），不授予免审。迁移 `015` 维护
+`scheduled_tasks.configuration_version`、当前策略和不可变策略事件。代码内共有 69 个精确审阅合同：
+54 个内部投影与 15 个外部写。部署期一次可审计 bootstrap 只为部署时已启用、仍完整命中且此前未被
+管理员显式配置的既有任务保留原调度行为；当前生产预期 67 项。禁用项、新任务和任何校验失败项均
+保持 `REQUIRE_EACH_RUN`，bootstrap 或运行时校验失败都不会默许写操作。
 
 Agent 启动和 seed API 的空库补种都只插入缺失行，所有新行默认停用；已有行的管理员
-`enabled`、cron 和参数保持原样。
-财务、韵达派件预测和客服问题件影子采集只保留为默认停用的配置占位。打卡和 R7 等第三方
-写操作不在模板中，也不会被自动补种或纳入调度免审。财务启动补拉仅在持久化财务任务明确
-启用时注册，缺失、停用或读取失败均不执行。
-Console `/automations` 是修改运行账号、核对参数并重新启用任务的唯一配置路径。只有当前
-工具版本、闭合参数、权威账号、任务 ID 与 cron 全部通过校验的已启用持久化行才能建立
-免审白名单，未知任务和缺少账号的任务保持停用/待审批，不使用隐式默认账号。
+`enabled`、cron 和参数保持原样。日常财务、韵达派件预测和客服问题件影子采集只保留为默认停用的
+配置占位。财务启动补拉使用独立持久化任务 `finance_startup_catchup` 及其当前有效策略，不存在静态
+免审旁路；任务缺失、停用、策略失效或读取失败均不自动执行。Console `/automations` 是修改账号、
+核对参数、设置每任务审批策略和重新启用任务的唯一配置路径；未知任务、缺少账号或不满足工具资格的
+任务保持待审批，不使用隐式默认账号。
 
 Phase 7 签收与到货统计 Webhook 为兼容线上旧调用方，可省略 `account_id`；受信 Webhook
 适配器会在 Schema 校验前固定绑定代码批准的 `ronghui_default`。调用方传入相同账号可接受，
@@ -108,8 +112,8 @@ Phase 7 签收与到货统计 Webhook 为兼容线上旧调用方，可省略 `a
 证据要求和写后条件。风险、审批和角色只读取受管工具目录，调用方和 LLM 提供的同名值
 无效。金额先规范为 Decimal 字符串，再进入计划哈希。
 
-LLM 目录只暴露明确标记为 `llm_exposed` 的只读/计算工具。外部写入始终要求一名
-`super_admin`；手工内部投影写入要求 `admin`；财务高风险要求 `super_admin`；删除、付款
+LLM 目录只暴露明确标记为 `llm_exposed` 的只读/计算工具。外部写入要求一名
+`super_admin`，除非 Scheduler 命中当前有效的精确任务豁免；手工内部投影写入要求 `admin`；财务高风险要求 `super_admin`；删除、付款
 和通用不可逆覆盖禁用。飞书用户可以提交高风险计划，但只能由 Console 的真实管理员
 会话执行独立批准或拒绝动作。
 
@@ -117,9 +121,10 @@ LLM 目录只暴露明确标记为 `llm_exposed` 的只读/计算工具。外部
 提交命令与 approve/reject 必须是两个独立动作；系统必须分别保留发起人与审批人的身份/角色
 快照、计划哈希、决定、理由和时间，形成完整审计，不能把提交命令视为隐式批准。
 
-定时免审只匹配 `task_id + tool_name + tool_version + 参数规则 + cron` 的精确白名单，且
-仅限内部投影。工具版本、参数范围或调度定义变化会立即失去白名单资格；第三方业务写入
-永不进入定时免审。
+定时免审是每任务的 `EXACT_SCHEDULE_EXEMPT` 策略，而不是固定代码白名单。它只在 Scheduler
+来源上生效，并受 `schedule_allowlist` 工具资格、完整行为哈希和当前配置版本共同约束。工具/版本、
+参数/账号、cron、enabled、治理字段、写后条件或动态规则变化立即失效；显示名称变化不改变行为哈希。
+允许免审的外部写仍必须满足精确账号/会话、禁止不安全重试和写后验证契约，未知结果一律阻塞。
 
 `plan_hash` 使用稳定紧凑 JSON 与 SHA-256，包含上下文指纹、目录哈希、工具版本、完整
 参数/账号、实际影响实体/金额、证据与写后条件。审批有效期 15 分钟。执行前重建上下文
@@ -160,7 +165,8 @@ MySQL `NOW(6)` 判断有效期。事务会先把已到期的 `PENDING/APPROVED` 
 
 迁移 `010` 建立每日应签权威账本与来源运行表；`011` 建立 Command、Work Item、Run、
 Step、Approval、Evidence、实体映射并扩展工具日志；`012` 建立不可变 Domain Event、
-Outbox 和消费者幂等回执。
+Outbox 和消费者幂等回执；`014` 仅规范化遗留任务；`015` 增加任务配置版本、当前审批策略与
+不可变策略事件。
 
 `shared/orchestration_repository.py` 是唯一编排持久化实现。连接必须
 `autocommit=False`，显式 Unit of Work 负责 begin/commit/rollback。Work Item、Run、Step、
@@ -239,6 +245,12 @@ proof、观测时间和 Evidence 引用；通用“脚本返回成功”不能�
 `approval_id`、`plan_hash`、`comment` 与服务端身份快照，不回传完整计划。浏览器为命令
 生成稳定请求 UUID，服务端构造 `console:{admin_id}:{command_type}:{uuid}` 幂等键。
 
+`/automations` 同时展示每项任务的审批策略、可用性、stale 原因、最近配置者/时间和隐私安全
+摘要。同一业务存在多个 cron 时，业务卡片只汇总状态，每个真实 `scheduled_tasks.id` 都有独立的
+策略行；保存一行不得批量覆盖同组其他时刻。只有签名 `super_admin` 可提交策略变更；页面只发送当前
+任务 ID、目标模式、说明、请求 UUID 与该行的策略/配置 CAS 版本前提，Agent 自行计算快照/哈希。
+不会向浏览器暴露完整参数、Cookie、Token 或可执行内容。
+
 `AGENT_INTERNAL_API_TOKEN` 只证明服务调用方，不代表管理员身份。Console 使用独立的
 `CONSOLE_AGENT_SIGNING_SECRET` 对 method、精确 path/query、原始 body SHA-256、时间戳、
 随机 nonce 和 MySQL 管理员身份快照做 HMAC-SHA256；Agent 在 30 秒有效期内验签并拒绝
@@ -277,7 +289,8 @@ authenticated_by 一律不能覆盖该 principal。签名密钥未配置时 Cons
 ## 发布顺序与门禁
 
 发布顺序固定为迁移预检/执行 -> Agent -> Console -> 鉴权健康检查 -> 启用入口。发布前
-必须确认 MySQL 8 和 `SKIP LOCKED` 可用；不提供旧版本兼容领取兜底。
+必须确认 MySQL 8 和 `SKIP LOCKED` 可用；不提供旧版本兼容领取兜底。发布器根据当前有效的
+外部写任务策略快照计算动态静默窗口；落入窗口即停止发布，不能使用固定时段猜测或绕过。
 
 CI 必须覆盖 Ruff、Python 3.10 编译、工具注册表、导入/执行边界、内部 API、空库迁移、
 从 `010` 升级、部分迁移重跑、真实 MySQL JSON/外键/唯一约束/事务/`SKIP LOCKED`，以及

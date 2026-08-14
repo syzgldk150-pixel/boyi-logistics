@@ -24,6 +24,8 @@ class ScheduledTaskProfile:
     dynamic_argument_rules: Mapping[str, str]
     approved_task_ids: frozenset[str] = frozenset()
     operation_type: str = "internal_projection_write"
+    seed_governed_template: bool = True
+    cron_expression: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,62 @@ _SITE_SEND_TASK_IDS = frozenset(
         "site_send_2100",
     }
 )
+_R7_ARRIVAL_TASK_IDS = frozenset(
+    {
+        "r7_arrival_checkin_0900",
+        "r7_arrival_checkin_0930",
+        "r7_arrival_checkin_1000",
+        "r7_arrival_checkin_1030",
+        "r7_arrival_checkin_1100",
+        "r7_arrival_checkin_1130",
+        "r7_arrival_checkin_1200",
+        "r7_arrival_checkin_1230",
+        "r7_arrival_checkin_1300",
+        "r7_arrival_checkin_1330",
+        "r7_arrival_checkin_1400",
+        "r7_arrival_checkin_1430",
+        "r7_arrival_checkin_1900",
+    }
+)
+R7_ARRIVAL_ARGUMENTS: Mapping[str, Any] = {
+    "headless": True,
+    "flow_mode": 1,
+    "account_id": "r7_default",
+    "slow_mo_ms": 0,
+    "status_text": "车辆到达",
+    "max_login_attempts": 6,
+    "verify_status_text": "已到达",
+    "daily_success_limit": 1,
+    "after_action_delay_ms": 1500,
+    "do_arrive_wait_unload": True,
+}
+
+
+# These two clock-in profiles are cutover/bootstrap contracts for the reviewed
+# production rows. Runtime exemption authority lives in the persisted,
+# super-admin-managed task approval policy and its exact contract hash. The
+# values below only prove that migration preserves the legacy business meaning;
+# they do not grant a permanent exemption by task ID.
+CLOCK_IN_DAXIANG_ARGUMENTS: Mapping[str, Any] = {
+    "account_id": "ronghui_default",
+    "sitecode": "7390004",
+    "sitefbcode": "73901",
+    "sitename": "邵阳大祥站",
+    "sitefbname": "邵阳操作场",
+    "first_type": "交件到港",
+    "second_type": "接件离港",
+    "delay_seconds": 2,
+}
+CLOCK_IN_DAXIANG_S_ARGUMENTS: Mapping[str, Any] = {
+    "account_id": "ronghui_daxiang_s",
+    "sitecode": "7390017",
+    "sitefbcode": "73901",
+    "sitename": "邵阳大祥S站",
+    "sitefbname": "邵阳操作场",
+    "first_type": "交件到港",
+    "second_type": "接件离港",
+    "delay_seconds": 2,
+}
 
 
 APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
@@ -127,12 +185,10 @@ APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
     ),
     "daily_sign": ScheduledTaskProfile(
         tool_name="sync_daily_should_sign",
-        tool_version="2.0.0",
+        tool_version="2.1.0",
         approved_arguments={
             "r13_account_id": "r13_default",
-            "problem_account_id": "ronghui_daxiang_s",
-            "sign_account_id": "ronghui_daxiang_s",
-            "detail_account_id": "ronghui_default",
+            "account_id": "ronghui_daxiang_s",
             "days": 7,
         },
         dynamic_argument_rules={},
@@ -163,6 +219,11 @@ APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
         tool_version="1.0.0",
         approved_arguments={"account_id": "yunda_default", "dest_brch": "56739382"},
         dynamic_argument_rules={},
+        approved_task_ids=frozenset({"yunda_dispatch_forecast_1700"}),
+        # This c7 production row is reviewed in place.  A missing row remains
+        # only the existing disabled static placeholder; it must never be
+        # introduced as enabled merely because it is policy-eligible.
+        seed_governed_template=False,
     ),
     "yunda_send_waybills": ScheduledTaskProfile(
         tool_name="sync_yunda_send_waybills",
@@ -176,6 +237,51 @@ APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
         tool_version="1.0.0",
         approved_arguments={"mode": "sync", "platform": "ronghui", "rescan_days": 7},
         dynamic_argument_rules={"target_date": "scheduled_previous_day"},
+        approved_task_ids=frozenset({"finance_bills_0010"}),
+        # Preserve an existing reviewed schedule, while keeping fresh installs
+        # and absent production rows disabled through the static seed template.
+        seed_governed_template=False,
+    ),
+    "finance_startup_catchup": ScheduledTaskProfile(
+        tool_name="sync_finance_bills",
+        tool_version="1.0.0",
+        approved_arguments={
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        },
+        dynamic_argument_rules={},
+        approved_task_ids=frozenset({"finance_startup_catchup"}),
+        seed_governed_template=False,
+        cron_expression="@startup",
+    ),
+    "r7_arrival_checkin": ScheduledTaskProfile(
+        tool_name="r7_arrival_checkin",
+        tool_version="1.0.0",
+        approved_arguments=R7_ARRIVAL_ARGUMENTS,
+        dynamic_argument_rules={},
+        approved_task_ids=_R7_ARRIVAL_TASK_IDS,
+        operation_type="external_write",
+        # These exact Console-expanded production rows are reviewed in place.
+        # They are never introduced on a fresh installation.
+        seed_governed_template=False,
+    ),
+    "clockin_daxiang": ScheduledTaskProfile(
+        tool_name="clock_in_dual",
+        tool_version="1.1.0",
+        approved_arguments=CLOCK_IN_DAXIANG_ARGUMENTS,
+        dynamic_argument_rules={},
+        approved_task_ids=frozenset({"clockin_daxiang_1830"}),
+        operation_type="external_write",
+    ),
+    "clockin_daxiang_s": ScheduledTaskProfile(
+        tool_name="clock_in_dual",
+        tool_version="1.1.0",
+        approved_arguments=CLOCK_IN_DAXIANG_S_ARGUMENTS,
+        dynamic_argument_rules={},
+        approved_task_ids=frozenset({"clockin_daxiang_s_1833"}),
+        operation_type="external_write",
     ),
 }
 
@@ -204,11 +310,14 @@ def validate_persisted_scheduled_task(
     group_id, time_suffix = _resolve_task_group(task_id)
     if group_id is None:
         raise ScheduledTaskContractError("TASK_GROUP_NOT_APPROVED")
-    minute, hour = _parse_daily_cron(cron_expression)
-    if time_suffix is not None and time_suffix != (hour, minute):
-        raise ScheduledTaskContractError("TASK_ID_CRON_MISMATCH")
-
     profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
+    if profile.cron_expression is not None:
+        if cron_expression != profile.cron_expression:
+            raise ScheduledTaskContractError("TASK_CRON_NOT_APPROVED")
+    else:
+        minute, hour = _parse_daily_cron(cron_expression)
+        if time_suffix is not None and time_suffix != (hour, minute):
+            raise ScheduledTaskContractError("TASK_ID_CRON_MISMATCH")
     tool_name = str(row.get("tool_name") or "").strip()
     if tool_name != profile.tool_name:
         raise ScheduledTaskContractError("TOOL_NOT_APPROVED_FOR_GROUP")
@@ -241,6 +350,8 @@ def validate_persisted_scheduled_task(
         _validate_nested_account_scope(arguments)
     if group_id == "finance_bills":
         _validate_finance_schedule(arguments, enabled_finance_platforms)
+    if group_id == "finance_startup_catchup":
+        _validate_finance_startup(arguments, enabled_finance_platforms)
 
     return PersistedScheduledTaskContract(
         task_id=task_id,
@@ -259,6 +370,8 @@ def _resolve_task_group(task_id: str) -> tuple[str | None, tuple[int, int] | Non
         time_match = _TIME_SUFFIX_RE.fullmatch(task_id.rsplit("_", 1)[-1])
         if time_match:
             return group_id, (int(time_match.group("hour")), int(time_match.group("minute")))
+        if profile.cron_expression is not None:
+            return group_id, None
     return None, None
 
 
@@ -301,6 +414,22 @@ def _validate_finance_schedule(arguments: Mapping[str, Any], platforms: Sequence
         raise ScheduledTaskContractError("FINANCE_SCHEDULE_ARGUMENTS_NOT_LOCKED")
     if arguments.get("mode") != "sync" or arguments.get("platform") != "ronghui":
         raise ScheduledTaskContractError("FINANCE_SCHEDULE_MODE_NOT_APPROVED")
+    if type(arguments.get("rescan_days")) is not int or arguments.get("rescan_days") != 7:
+        raise ScheduledTaskContractError("FINANCE_RESCAN_RANGE_NOT_APPROVED")
+
+
+def _validate_finance_startup(arguments: Mapping[str, Any], platforms: Sequence[str]) -> None:
+    normalized_platforms = tuple(str(value).strip() for value in platforms if str(value).strip())
+    if normalized_platforms != ("ronghui",):
+        raise ScheduledTaskContractError("FINANCE_PLATFORM_NOT_PRODUCTION_READY")
+    if set(arguments) != {"mode", "platform", "rescan_days", "_startup_catchup"}:
+        raise ScheduledTaskContractError("FINANCE_STARTUP_ARGUMENTS_NOT_LOCKED")
+    if (
+        arguments.get("mode") != "sync"
+        or arguments.get("platform") != "ronghui"
+        or arguments.get("_startup_catchup") is not True
+    ):
+        raise ScheduledTaskContractError("FINANCE_STARTUP_MODE_NOT_APPROVED")
     if type(arguments.get("rescan_days")) is not int or arguments.get("rescan_days") != 7:
         raise ScheduledTaskContractError("FINANCE_RESCAN_RANGE_NOT_APPROVED")
 

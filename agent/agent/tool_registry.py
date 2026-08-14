@@ -399,10 +399,10 @@ def _validate_governance(index: int, tool: dict[str, Any]) -> None:
             )
 
     if operation_type == "external_write":
-        if risk_level != "high" or approval_mode != "required":
+        if risk_level != "high" or approval_mode not in {"required", "schedule_allowlist"}:
             raise _validation_error(
                 index,
-                "external writes must have high risk and require approval",
+                "external writes must have high risk and require approval or explicitly permit an exact schedule exemption",
             )
         if approval.get("required_role") != "super_admin" or "super_admin" not in required_roles:
             raise _validation_error(index, "external writes must require super_admin")

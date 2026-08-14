@@ -50,6 +50,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/tasks/cancel":
         app._handle_automation_task_cancel(handler)
         return True
+    if path == "/automations/tasks/approval-policy":
+        app._handle_automation_task_approval_policy(handler)
+        return True
     session_route = app._automation_session_route(path)
     if session_route and app._handle_automation_session_post(handler, session_route[0], session_route[1]):
         return True

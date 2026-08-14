@@ -350,9 +350,9 @@ def _build_detail_request(bill_codes: list[str], params: dict) -> dict:
     }
     if params.get("detail_session_profile") not in (None, ""):
         request_params["session_profile"] = params["detail_session_profile"]
-    detail_account_id = params.get("detail_account_id") or params.get("detailAccountId")
-    if detail_account_id not in (None, ""):
-        request_params["account_id"] = detail_account_id
+    account_id = params.get("account_id") or params.get("accountId")
+    if account_id not in (None, ""):
+        request_params["account_id"] = account_id
     return {
         "params": request_params,
         "timeout_sec": _coerce_int(params.get("waybill_timeout_sec"), default=2400),
@@ -541,7 +541,7 @@ def _enrich_missing_addresses(
     ]
     if not requested:
         return rows, {"ok": True, "requested": 0, "updated": 0}
-    account_id = _required_account_id(params, "detail_account_id")
+    account_id = _required_account_id(params, "account_id")
     detail_result = call_http_service(
         "/query_waybill_detail",
         {
@@ -622,7 +622,7 @@ def _problem_query_window(params: dict[str, Any]) -> tuple[str, str]:
 def _sync_manual_problem_events(params: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
     if params.get("skip_problem_sync"):
         return [], {"ok": True, "skipped": True, "complete": True, "rows": 0}
-    problem_account_id = _required_account_id(params, "problem_account_id")
+    account_id = _required_account_id(params, "account_id")
     date_from, date_to = _problem_query_window(params)
     page_size = min(max(int(params.get("problem_page_size") or 200), 1), 200)
     max_pages = max(int(params.get("problem_max_pages") or 500), 1)
@@ -640,7 +640,7 @@ def _sync_manual_problem_events(params: dict[str, Any]) -> tuple[list[dict[str, 
                         "action": "query",
                         "platform": "ronghui",
                         "direction": "registered",
-                        "account_id": problem_account_id,
+                        "account_id": account_id,
                         "filters": {
                             "direction": "registered",
                             "date_from": date_from,
@@ -742,7 +742,7 @@ def _sign_query_window(params: dict[str, Any]) -> tuple[str, str]:
 
 
 def _sync_sign_events(params: dict[str, Any], known_main_codes: set[str]) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
-    sign_account_id = _required_account_id(params, "sign_account_id")
+    account_id = _required_account_id(params, "account_id")
     start, end = _sign_query_window(params)
     response = call_http_service(
         "/get_sign_records",
@@ -752,7 +752,7 @@ def _sync_sign_events(params: dict[str, Any], known_main_codes: set[str]) -> tup
                 "end": end,
                 "page_size": int(params.get("sign_page_size") or 200),
                 "max_pages": int(params.get("sign_max_pages") or 500),
-                "account_id": sign_account_id,
+                "account_id": account_id,
             },
             "timeout_sec": int(params.get("sign_timeout_sec") or 1200),
         },
@@ -817,13 +817,13 @@ def _tracking_payload(response: Any) -> dict[str, Any] | None:
 
 
 def _query_exact_main_sign(code: str, params: dict[str, Any]) -> dict[str, Any]:
-    sign_account_id = _required_account_id(params, "sign_account_id")
+    account_id = _required_account_id(params, "account_id")
     response = call_http_service(
         "/ronghui_tms_tracking",
         {
             "params": {
                 "tracking_number": code,
-                "account_id": sign_account_id,
+                "account_id": account_id,
             },
             "timeout_sec": int(params.get("exact_sign_timeout_sec") or 180),
         },
@@ -1404,9 +1404,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "权威每日应签同步不支持跳过持久化的 dry_run。",
             )
         r13_account_id = _required_pipeline_account_id(params, "r13_account_id")
-        problem_account_id = _required_pipeline_account_id(params, "problem_account_id")
-        sign_account_id = _required_pipeline_account_id(params, "sign_account_id")
-        detail_account_id = _required_pipeline_account_id(params, "detail_account_id")
+        account_id = _required_pipeline_account_id(params, "account_id")
 
         run_id, started_at = start_sync_run()
         observed_at = started_at
@@ -1444,7 +1442,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         )
         problem_events, problem_proof = _collect_problem_events(
             params,
-            account_id=problem_account_id,
+            account_id=account_id,
             start=source_start,
             end=source_end,
         )
@@ -1467,7 +1465,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         )
         bulk_sign_events, bulk_sign_proof = _collect_sign_events(
             params,
-            account_id=sign_account_id,
+            account_id=account_id,
             start=source_start,
             end=source_end,
             known_codes=known_codes,

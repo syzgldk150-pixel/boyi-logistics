@@ -545,7 +545,7 @@ tools:
     heavy: false
 
   - name: sync_daily_should_sign
-    version: "2.0.0"
+    version: "2.1.0"
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
@@ -556,7 +556,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: parameters
@@ -596,22 +596,14 @@ tools:
         enrich_addresses:
           type: boolean
           description: "是否按运单号调用 query_waybill_detail 补齐脱敏收件地址，默认 true"
-        detail_account_id:
+        account_id:
           type: string
           minLength: 1
-          description: "必填，补齐地址时使用的融辉详情查询账号 ID"
+          description: "必填，唯一的融辉 TMS 邵阳大祥站账号 ID；统一用于问题件、主单签收、轨迹核验和地址补全"
         r13_account_id:
           type: string
           minLength: 1
           description: "必填，每日应签 R13 查询账号 ID"
-        problem_account_id:
-          type: string
-          minLength: 1
-          description: "必填，读取融辉我发布的问题件账号 ID"
-        sign_account_id:
-          type: string
-          minLength: 1
-          description: "必填，读取融辉主单签收记录账号 ID"
         days:
           type: integer
           minimum: 1
@@ -677,7 +669,7 @@ tools:
           type: integer
           minimum: 0
           description: "每轮按 1/3/7 天退避策略精确复核历史候选的最大数量"
-      required: [r13_account_id, problem_account_id, sign_account_id, detail_account_id]
+      required: [r13_account_id, account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -706,7 +698,7 @@ tools:
     heavy: false
 
   - name: backfill_daily_sign_ledger
-    version: "1.0.0"
+    version: "1.1.0"
     operation_type: internal_projection_write
     risk_level: high
     llm_exposed: false
@@ -717,7 +709,7 @@ tools:
       required_roles:
         - super_admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: parameters
@@ -744,10 +736,7 @@ tools:
         r13_account_id:
           type: string
           minLength: 1
-        problem_account_id:
-          type: string
-          minLength: 1
-        sign_account_id:
+        account_id:
           type: string
           minLength: 1
         request_body:
@@ -763,7 +752,7 @@ tools:
           type: integer
           minimum: 1
           maximum: 3650
-      required: [r13_account_id, problem_account_id, sign_account_id]
+      required: [r13_account_id, account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1731,7 +1720,7 @@ tools:
     risk_level: high
     llm_exposed: false
     approval:
-      mode: required
+      mode: schedule_allowlist
       required_role: super_admin
     permissions:
       required_roles:
@@ -1795,7 +1784,7 @@ tools:
         daily_success_limit:
           type: integer
           description: "一天需要成功打卡的次数，达到后当天后续定时执行会跳过，默认 1"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -2445,17 +2434,17 @@ tools:
     heavy: false
 
   - name: clock_in_dual
-    version: "1.0.0"
+    version: "1.1.0"
     operation_type: external_write
     risk_level: high
     llm_exposed: false
     approval:
-      mode: required
+      mode: schedule_allowlist
       required_role: super_admin
     permissions:
       required_roles: [super_admin]
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -2467,11 +2456,12 @@ tools:
       required: true
       required_fields: [source, site, execution_result]
     postconditions: [both_third_party_clock_ins_confirmed]
-    description: "向融辉提交一次交件到港和一次接件离港；不得通过定时任务免审批执行"
+    description: "向融辉提交一次交件到港和一次接件离港；super_admin 可为配置完全锁定的定时任务授权免逐次审批，手工调用及失效计划仍需审批"
     input_schema:
       type: object
       additionalProperties: false
       properties:
+        account_id: {type: string, minLength: 1, maxLength: 128}
         sitecode: {type: string, minLength: 1, maxLength: 64}
         sitefbcode: {type: string, minLength: 1, maxLength: 64}
         sitename: {type: string, minLength: 1, maxLength: 100}
@@ -2483,7 +2473,7 @@ tools:
           type: string
           enum: [接件离港]
         delay_seconds: {type: number, minimum: 0, maximum: 30}
-      required: [sitecode, sitefbcode, sitename, sitefbname, first_type, second_type]
+      required: [account_id, sitecode, sitefbcode, sitename, sitefbname, first_type, second_type]
     output_schema:
       type: object
       additionalProperties: false

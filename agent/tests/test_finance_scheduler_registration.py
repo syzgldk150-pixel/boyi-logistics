@@ -38,8 +38,47 @@ else:
 
 
 class _Memory:
+    def __init__(self):
+        self.rows = [
+            {
+                "id": "finance_bills_0010",
+                "name": "Finance bills",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync", "platform": "ronghui", "rescan_days": 7},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 7,
+            },
+            {
+                "id": "finance_startup_catchup",
+                "name": "Finance startup catch-up",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {
+                    "mode": "sync",
+                    "platform": "ronghui",
+                    "rescan_days": 7,
+                    "_startup_catchup": True,
+                },
+                "cron_expression": "@startup",
+                "enabled": True,
+                "configuration_version": 8,
+            },
+        ]
+
     def _conn(self):
         raise RuntimeError("fixture database unavailable")
+
+    def list_scheduled_tasks(self):
+        return list(self.rows)
+
+    def list_enabled_scheduled_tasks(self):
+        return [dict(row) for row in self.rows if row.get("enabled")]
+
+    def upsert_scheduled_task(self, task):
+        self.rows.append(dict(task))
+
+    def update_scheduled_task_runtime(self, *_args, **_kwargs):
+        return None
 
 
 class _AgentCore:
@@ -88,8 +127,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         core = _AgentCore()
-        with patch("agent.scheduler._finance_schedule_enabled", return_value=True):
-            scheduler = init_scheduler(core)
+        scheduler = init_scheduler(core)
         job = scheduler.get_job("finance_startup_catchup")
         self.assertIsNotNone(job)
         asyncio.run(job.func())
@@ -114,6 +152,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             trusted["idempotency_key"],
         )
         self.assertEqual("@startup", trusted["execution_context"]["cron_expression"])
+        self.assertEqual(8, trusted["execution_context"]["configuration_version"])
 
         # A second service start on the same business day must submit the same
         # logical occurrence so CommandGateway reuses the original Run.
@@ -242,14 +281,31 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
     def test_governed_seed_templates_exactly_match_policy_ids_and_arguments(self):
         from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
-        approved_ids = frozenset(
+        all_approved_ids = frozenset(
             task_id
             for profile in APPROVED_SCHEDULED_TASK_PROFILES.values()
             for task_id in profile.approved_task_ids
         )
-        self.assertEqual(51, len(approved_ids))
-        self.assertEqual(approved_ids, GOVERNED_SCHEDULED_TASK_IDS)
+        internal_approved_ids = frozenset(
+            task_id
+            for profile in APPROVED_SCHEDULED_TASK_PROFILES.values()
+            if profile.operation_type == "internal_projection_write"
+            for task_id in profile.approved_task_ids
+        )
+        self.assertEqual(69, len(all_approved_ids))
+        self.assertEqual(54, len(internal_approved_ids))
+        self.assertEqual(
+            internal_approved_ids
+            - {
+                "finance_bills_0010",
+                "finance_startup_catchup",
+                "yunda_dispatch_forecast_1700",
+            },
+            GOVERNED_SCHEDULED_TASK_IDS,
+        )
         self.assertEqual(51, len(GOVERNED_SCHEDULED_TASK_TEMPLATES))
+        self.assertIn("clockin_daxiang_1830", all_approved_ids)
+        self.assertIn("clockin_daxiang_s_1833", all_approved_ids)
 
         templates = {
             task["id"]: task for task in GOVERNED_SCHEDULED_TASK_TEMPLATES
@@ -264,9 +320,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual(
             {
                 "r13_account_id": "r13_default",
-                "problem_account_id": "ronghui_daxiang_s",
-                "sign_account_id": "ronghui_daxiang_s",
-                "detail_account_id": "ronghui_default",
+                "account_id": "ronghui_daxiang_s",
                 "days": 7,
             },
             templates["daily_sign_0500"]["tool_params"],
@@ -274,6 +328,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertNotIn("send_order_2150", templates)
         self.assertNotIn("clockin_daxiang_1830", templates)
         self.assertNotIn("clockin_daxiang_s_1833", templates)
+        self.assertFalse(any(task_id.startswith("r7_arrival_checkin_") for task_id in templates))
 
     def test_every_new_seed_row_is_disabled_and_external_writes_are_absent(self):
         templates = {
@@ -309,7 +364,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         )
         self.assertEqual((), seed_phase7_schedule_tasks(core))
 
-    def test_disabled_finance_switch_suppresses_startup_catchup(self):
+    def test_disabled_daily_finance_does_not_suppress_enabled_startup_catchup(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -319,7 +374,47 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 {
                     "id": "finance_bills_0010",
                     "enabled": False,
-                }
+                },
+                {
+                    "id": "finance_startup_catchup",
+                    "tool_name": "sync_finance_bills",
+                    "tool_params": {
+                        "mode": "sync",
+                        "platform": "ronghui",
+                        "rescan_days": 7,
+                        "_startup_catchup": True,
+                    },
+                    "cron_expression": "@startup",
+                    "enabled": True,
+                },
+            ]
+        )
+        previous_scheduler = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )
+        try:
+            scheduler_module._add_finance_startup_catchup_job(core)
+            self.assertIsNotNone(
+                scheduler_module._scheduler.get_job("finance_startup_catchup")
+            )
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+
+    def test_disabled_startup_task_suppresses_catchup_even_when_daily_is_enabled(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _SeedCore(
+            [
+                {"id": "finance_bills_0010", "enabled": True},
+                {
+                    "id": "finance_startup_catchup",
+                    "tool_name": "sync_finance_bills",
+                    "cron_expression": "@startup",
+                    "enabled": False,
+                },
             ]
         )
         previous_scheduler = scheduler_module._scheduler

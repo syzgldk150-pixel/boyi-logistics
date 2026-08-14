@@ -213,6 +213,40 @@ preflight_control_plane_task_cutover() {
   return 1
 }
 
+preflight_scheduled_write_window() {
+  # Database/source rollback cannot undo a third-party write that already
+  # happened.  Ask the staged, read-only checker about every currently exempt
+  # external-write schedule instead of hard-coding particular task IDs/times.
+  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
+  local migration_python="${PYTHON_BINS[agent]}"
+  local output
+  [[ -f "${runner}" && -x "${migration_python}" ]] || {
+    echo "scheduled_write_window=blocked reason=PREFLIGHT_RUNNER_MISSING count=1" >&2
+    return 1
+  }
+
+  if output="$({
+    MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
+      --check-scheduled-write-window \
+      --scheduled-write-window-before-minutes 60 \
+      --scheduled-write-window-after-minutes 45
+  } 2>&1)"; then
+    if [[ "${output}" =~ ^scheduled_write_window=ok\ checked_schedules=[0-9]+$ ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "scheduled_write_window=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+
+  if [[ "${output}" =~ ^scheduled_write_window=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
+    echo "${output}" >&2
+  else
+    echo "scheduled_write_window=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+  fi
+  return 1
+}
+
 build_release_virtualenvs() {
   local bootstrap_python release_venv verifier agent_lock console_lock
   local agent_hash console_hash lock_hash active_agent active_console active_hash metadata_file
@@ -798,6 +832,27 @@ try:
         payload = json.loads(response.read().decode("utf-8"))
     if response.status != 200 or payload.get("ok") is not True:
         raise RuntimeError("signed health probe was rejected")
+    data = payload.get("data")
+    components = data.get("components") if isinstance(data, dict) else None
+    bootstrap = (
+        components.get("scheduled_task_approval_bootstrap")
+        if isinstance(components, dict)
+        else None
+    )
+    if not isinstance(bootstrap, dict):
+        raise RuntimeError("scheduled approval bootstrap health is missing")
+    reviewed = int(bootstrap.get("reviewed_candidates", -1))
+    created = int(bootstrap.get("created", -1))
+    existing = int(bootstrap.get("already_present", -1))
+    configured = int(bootstrap.get("explicitly_configured", -1))
+    rejected = int(bootstrap.get("rejected", -1))
+    completed = int(bootstrap.get("completed", -1))
+    if min(reviewed, created, existing, configured, rejected, completed) < 0:
+        raise RuntimeError("scheduled approval bootstrap health is invalid")
+    if completed != 1:
+        raise RuntimeError("scheduled approval bootstrap one-time evaluation is incomplete")
+    if rejected != 0 or created + existing + configured != reviewed:
+        raise RuntimeError("scheduled approval bootstrap did not preserve reviewed tasks")
 except Exception:
     print("service_identity_smoke=failed reason=signed_probe_rejected", file=sys.stderr)
     raise SystemExit(1)
@@ -934,6 +989,8 @@ run_release() {
   preflight_service_identity_configuration
   RELEASE_STAGE="preflight_control_plane_task_cutover"
   preflight_control_plane_task_cutover
+  RELEASE_STAGE="preflight_scheduled_write_window"
+  preflight_scheduled_write_window
   RELEASE_STAGE="backup_managed_sources"
   mkdir -p "${BACKUP_DIR}"
   backup_managed_sources
@@ -942,6 +999,11 @@ run_release() {
   RELEASE_STAGE="build_release_virtualenvs"
   build_release_virtualenvs
 
+  # Static checks and dependency builds can take long enough to cross into an
+  # exempt external-write schedule. Recheck immediately before any mutation or
+  # service quiesce so a third-party action is never straddled by the release.
+  RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
+  preflight_scheduled_write_window
   MUTATION_STARTED=1
   RELEASE_STAGE="quiesce_runtime_services"
   quiesce_runtime_services

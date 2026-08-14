@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 
 def _load_runner():
@@ -14,6 +17,63 @@ def _load_runner():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+class ScheduledTaskPolicyMigrationContractTests(unittest.TestCase):
+    def test_current_policy_cascades_but_immutable_events_do_not_reference_tasks(self):
+        project_root = Path(__file__).resolve().parents[1]
+        migration_sql = (
+            project_root
+            / "agent"
+            / "migrations"
+            / "015_scheduled_task_approval_policies.sql"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(migration_sql.split())
+
+        policy_table_sql = migration_sql.split(
+            "CREATE TABLE IF NOT EXISTS scheduled_task_approval_policies",
+            maxsplit=1,
+        )[1].split(
+            ") ENGINE=InnoDB",
+            maxsplit=1,
+        )[0]
+        self.assertNotIn("FOREIGN KEY", policy_table_sql)
+        event_table_sql = migration_sql.split(
+            "CREATE TABLE IF NOT EXISTS scheduled_task_approval_policy_events",
+            maxsplit=1,
+        )[1].split(
+            ") ENGINE=InnoDB",
+            maxsplit=1,
+        )[0]
+        self.assertNotIn("FOREIGN KEY", event_table_sql)
+        self.assertIn(
+            "ALTER TABLE scheduled_task_approval_policy_events DROP FOREIGN KEY "
+            "fk_scheduled_task_policy_event_task",
+            normalized,
+        )
+        self.assertIn(
+            "ALTER TABLE scheduled_task_approval_policies DROP FOREIGN KEY "
+            "fk_scheduled_task_policy_task",
+            normalized,
+        )
+        self.assertLess(
+            migration_sql.index("cp015_drop_policy_task_fk"),
+            migration_sql.index("cp015_modify_policy_task_id_stmt"),
+        )
+        self.assertIn(
+            "SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS",
+            normalized,
+        )
+        self.assertIn(
+            "SELECT COLLATION_NAME FROM information_schema.COLUMNS",
+            normalized,
+        )
+        self.assertIn("cp015_invalid_parent_task_id_metadata", migration_sql)
+        self.assertIn(
+            "ADD CONSTRAINT fk_scheduled_task_policy_task FOREIGN KEY (task_id) "
+            "REFERENCES scheduled_tasks (id) ON DELETE CASCADE",
+            normalized,
+        )
 
 
 class _MigrationCursor:
@@ -124,6 +184,65 @@ class _RestoreConnection:
         self.closed = True
 
 
+class _WindowCursor:
+    def __init__(
+        self,
+        rows: list[dict],
+        *,
+        policy_exists: bool,
+        candidate_rows: list[dict] | None = None,
+    ) -> None:
+        self.rows = rows
+        self.candidate_rows = rows if candidate_rows is None else candidate_rows
+        self.policy_exists = policy_exists
+        self.calls: list[tuple[str, object]] = []
+        self._row = None
+        self._rows: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        self._row = None
+        self._rows = []
+        if normalized == "SELECT VERSION() AS version":
+            self._row = {"version": "8.0.44"}
+        elif "FROM information_schema.TABLES" in normalized:
+            table_name = params[0] if params else ""
+            exists = table_name == "scheduled_tasks" or (
+                table_name == "scheduled_task_approval_policies"
+                and self.policy_exists
+            )
+            self._row = {"exists": 1} if exists else None
+        elif normalized.startswith("SELECT policy.task_id"):
+            self._rows = list(self.rows)
+        elif normalized.startswith("SELECT id, tool_name, tool_params"):
+            self._rows = list(self.candidate_rows)
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._rows
+
+
+class _WindowConnection:
+    def __init__(self, cursor: _WindowCursor) -> None:
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self):
+        return self._cursor
+
+    def close(self):
+        self.closed = True
+
+
 class MigrationRunnerMySQLVersionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -227,7 +346,18 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             set(self.runner._load_control_plane_seed_task_ids()),
             set(cleanup_params[1:]),
         )
-        self.assertEqual(54, len(cleanup_params[1:]))
+        self.assertEqual(55, len(cleanup_params[1:]))
+        marker_cleanup_calls = [
+            (sql, params)
+            for sql, params in cursor.calls
+            if sql.startswith("DELETE created_task FROM scheduled_tasks AS created_task")
+        ]
+        self.assertEqual(1, len(marker_cleanup_calls))
+        self.assertIn(
+            "INNER JOIN control_plane_task_cutover_created_014 AS marker",
+            marker_cleanup_calls[0][0],
+        )
+        self.assertIn("backup.id IS NULL", marker_cleanup_calls[0][0])
         self.assertIn(
             ("DELETE FROM schema_migrations WHERE version=%s", ("014",)),
             cursor.calls,
@@ -246,6 +376,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             {
                 "customer_problems_shadow",
                 "finance_bills_0010",
+                "finance_startup_catchup",
                 "yunda_dispatch_forecast_1700",
             },
             self.runner.CONTROL_PLANE_STATIC_SEED_TASK_IDS,
@@ -254,7 +385,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             reviewed_ids | self.runner.CONTROL_PLANE_STATIC_SEED_TASK_IDS,
             seed_ids,
         )
-        self.assertEqual(54, len(seed_ids))
+        self.assertEqual(55, len(seed_ids))
         self.assertEqual(
             {str(task["id"]) for task in PHASE7_SCHEDULED_TASK_TEMPLATES},
             seed_ids,
@@ -354,6 +485,237 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         print_mock.assert_called_once_with(
             "control_plane_task_cutover_status=pending_dirty"
         )
+
+    def test_scheduled_write_window_uses_shanghai_daily_boundaries(self):
+        zone = ZoneInfo("Asia/Shanghai")
+        is_active = self.runner._is_within_daily_schedule_window
+
+        self.assertTrue(
+            is_active(
+                datetime(2026, 8, 14, 17, 30, tzinfo=zone),
+                "30 18 * * *",
+                before_minutes=60,
+                after_minutes=45,
+            )
+        )
+        self.assertTrue(
+            is_active(
+                datetime(2026, 8, 14, 19, 15, tzinfo=zone),
+                "30 18 * * *",
+                before_minutes=60,
+                after_minutes=45,
+            )
+        )
+        self.assertFalse(
+            is_active(
+                datetime(2026, 8, 14, 19, 16, tzinfo=zone),
+                "30 18 * * *",
+                before_minutes=60,
+                after_minutes=45,
+            )
+        )
+        self.assertTrue(
+            is_active(
+                datetime(2026, 8, 14, 23, 30, tzinfo=zone),
+                "15 0 * * *",
+                before_minutes=60,
+                after_minutes=45,
+            )
+        )
+
+    def test_scheduled_write_snapshot_must_match_active_task_binding(self):
+        snapshot = {
+            "task_id": "external_write_1830",
+            "tool_name": "exact_external_write",
+            "operation_type": "external_write",
+            "cron_expression": "30 18 * * *",
+            "enabled": True,
+        }
+        row = {
+            "task_id": "external_write_1830",
+            "mode": "EXACT_SCHEDULE_EXEMPT",
+            "contract_snapshot_json": json.dumps(snapshot),
+            "tool_name": "exact_external_write",
+            "cron_expression": "30 18 * * *",
+            "enabled": 1,
+        }
+
+        self.assertEqual(
+            "30 18 * * *",
+            self.runner._scheduled_write_snapshot_cron(row),
+        )
+        for field, value in (
+            ("tool_name", "changed_tool"),
+            ("cron_expression", "31 18 * * *"),
+        ):
+            changed = dict(row)
+            changed[field] = value
+            with self.subTest(field=field), self.assertRaises(
+                self.runner.ControlPlaneTaskCutoverPreflightError
+            ) as error:
+                self.runner._scheduled_write_snapshot_cron(changed)
+            self.assertEqual("SCHEDULED_WRITE_BINDING_INVALID", error.exception.code)
+
+        disabled = dict(row)
+        disabled["enabled"] = 0
+        self.assertIsNone(self.runner._scheduled_write_snapshot_cron(disabled))
+
+    def test_scheduled_write_window_policy_path_is_read_only_and_redacted(self):
+        task_id = "sensitive-task-id"
+        row = {
+            "task_id": task_id,
+            "mode": "EXACT_SCHEDULE_EXEMPT",
+            "contract_snapshot_json": json.dumps(
+                {
+                    "task_id": task_id,
+                    "tool_name": "external_write_tool",
+                    "operation_type": "external_write",
+                    "cron_expression": "30 18 * * *",
+                    "enabled": True,
+                    "arguments": {"secret": "TASK_PARAM_SECRET_SENTINEL"},
+                }
+            ),
+            "tool_name": "external_write_tool",
+            "cron_expression": "30 18 * * *",
+            "enabled": 1,
+        }
+        cursor = _WindowCursor([row], policy_exists=True)
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    18,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(1, result)
+        self.assertTrue(connection.closed)
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+        rendered = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
+        self.assertNotIn(task_id, rendered)
+        self.assertNotIn("TASK_PARAM_SECRET_SENTINEL", rendered)
+
+    def test_scheduled_write_window_legacy_path_uses_exact_clock_and_r7_rows(self):
+        internal = self.runner._load_control_plane_reviewed_task_contracts()
+        clocks = self.runner._load_control_plane_clock_contracts()
+        r7_contracts = self.runner._load_control_plane_r7_contracts()
+        rows = [
+            {
+                "id": task_id,
+                "tool_name": contract["tool_name"],
+                "tool_params": dict(contract["canonical_arguments"]),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for task_id, contract in sorted(internal.items())
+        ]
+        rows.extend(
+            {
+                "id": task_id,
+                "tool_name": "tms_query",
+                "tool_params": self.runner._legacy_clock_arguments(
+                    task_id,
+                    contract["canonical_arguments"],
+                ),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for task_id, contract in sorted(clocks.items())
+        )
+        rows.extend(
+            {
+                "id": task_id,
+                "tool_name": contract["tool_name"],
+                "tool_params": dict(contract["canonical_arguments"]),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for task_id, contract in sorted(r7_contracts.items())
+        )
+        cursor = _WindowCursor(rows, policy_exists=False)
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    3,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(0, result)
+        print_mock.assert_called_once_with(
+            "scheduled_write_window=ok checked_schedules=15"
+        )
+
+    def test_policy_tables_do_not_hide_legacy_external_window_after_source_rollback(self):
+        clocks = self.runner._load_control_plane_clock_contracts()
+        r7_contracts = self.runner._load_control_plane_r7_contracts()
+        clock_rows = [
+            {
+                "id": task_id,
+                "tool_name": contract["tool_name"],
+                "tool_params": dict(contract["canonical_arguments"]),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for task_id, contract in sorted(clocks.items())
+        ]
+        r7_rows = [
+            {
+                "id": task_id,
+                "tool_name": contract["tool_name"],
+                "tool_params": dict(contract["canonical_arguments"]),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for task_id, contract in sorted(r7_contracts.items())
+        ]
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=clock_rows + r7_rows,
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    12,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(1, result)
+        rendered = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
 
 
 if __name__ == "__main__":

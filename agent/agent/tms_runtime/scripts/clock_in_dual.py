@@ -278,6 +278,8 @@ def submit_dual_clockin(
     first_type: str = DEFAULT_FIRST_TYPE,
     second_type: str = DEFAULT_SECOND_TYPE,
     delay_seconds: float = 2.0,
+    *,
+    session_profile: str,
 ) -> Dict[str, Any]:
     """执行双重打卡：交件到港 + 接件离港"""
 
@@ -285,7 +287,10 @@ def submit_dual_clockin(
     logger.info("开始执行双重打卡流程")
     logger.info("=" * 70)
 
-    auth = TMSAuth()
+    normalized_session_profile = str(session_profile or "").strip()
+    if not normalized_session_profile:
+        raise ValueError("session_profile is required")
+    auth = TMSAuth(profile=normalized_session_profile)
     session = auth.login_and_get_session()
     if session is None:
         raise RuntimeError("登录失败，Session is None")
@@ -448,6 +453,9 @@ def run_api(params: Dict[str, Any] | None = None) -> Dict[str, Any]:
 
     params = params or {}
     _validate_clockin_params(params)
+    session_profile = str(params.get("session_profile") or "").strip()
+    if not session_profile:
+        raise ValueError("account_id must resolve to one explicit session_profile")
     return submit_dual_clockin(
         sitecode=str(_get_param(params, "sitecode", default=DEFAULT_SITE_CODE)),
         sitefbcode=str(_get_param(params, "sitefbcode", default=DEFAULT_SITE_FB_CODE)),
@@ -460,6 +468,7 @@ def run_api(params: Dict[str, Any] | None = None) -> Dict[str, Any]:
         first_type=str(_get_param(params, "first_type", default=DEFAULT_FIRST_TYPE)),
         second_type=str(_get_param(params, "second_type", default=DEFAULT_SECOND_TYPE)),
         delay_seconds=float(_get_param(params, "delay_seconds", default=2.0)),
+        session_profile=session_profile,
     )
 
 

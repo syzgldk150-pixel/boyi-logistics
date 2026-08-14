@@ -707,9 +707,7 @@ def run_authoritative_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "权威每日应签同步不支持跳过持久化的 dry_run。",
             )
         r13_account_id = _required_account_id(params, "r13_account_id")
-        problem_account_id = _required_account_id(params, "problem_account_id")
-        sign_account_id = _required_account_id(params, "sign_account_id")
-        detail_account_id = _required_account_id(params, "detail_account_id")
+        account_id = _required_account_id(params, "account_id")
 
         run_id, started_at = start_sync_run()
         observed_at = started_at
@@ -743,7 +741,7 @@ def run_authoritative_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         )
         problem_events, problem_proof = _collect_problem_events(
             params,
-            account_id=problem_account_id,
+            account_id=account_id,
             start=source_start,
             end=source_end,
         )
@@ -762,7 +760,7 @@ def run_authoritative_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         )
         sign_events, sign_proof = _collect_sign_events(
             params,
-            account_id=sign_account_id,
+            account_id=account_id,
             start=source_start,
             end=source_end,
             known_codes=known_codes,
@@ -778,7 +776,7 @@ def run_authoritative_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
 
         enriched_r13_rows, address_result = _enrich_rows_with_detail_addresses(
             r13_rows,
-            {**params, "enrich_addresses": True, "detail_account_id": detail_account_id},
+            {**params, "enrich_addresses": True, "account_id": account_id},
         )
         if address_result.get("error"):
             raise DailySignSyncError(

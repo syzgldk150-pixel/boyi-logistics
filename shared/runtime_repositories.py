@@ -93,7 +93,8 @@ class ScheduledTaskRepository:
     def list_tasks(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
         sql = """
             SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                   last_run, last_status, last_duration_ms, last_message, created_at
+                   last_run, last_status, last_duration_ms, last_message,
+                   configuration_version, updated_at, created_at
             FROM scheduled_tasks
         """
         if enabled_only:
@@ -105,7 +106,7 @@ class ScheduledTaskRepository:
                 rows = list(cursor.fetchall() or [])
         for row in rows:
             row["tool_params"] = _decode_json(row.get("tool_params"), {})
-            for field in ("last_run", "created_at"):
+            for field in ("last_run", "updated_at", "created_at"):
                 row[field] = _format_datetime(row.get(field))
         return rows
 
@@ -115,7 +116,8 @@ class ScheduledTaskRepository:
                 cursor.execute(
                     """
                     SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                           last_run, last_status, last_duration_ms, last_message, created_at
+                           last_run, last_status, last_duration_ms, last_message,
+                           configuration_version, updated_at, created_at
                     FROM scheduled_tasks WHERE id=%s
                     """,
                     (task_id,),
@@ -124,7 +126,7 @@ class ScheduledTaskRepository:
         if not row:
             return None
         row["tool_params"] = _decode_json(row.get("tool_params"), {})
-        for field in ("last_run", "created_at"):
+        for field in ("last_run", "updated_at", "created_at"):
             row[field] = _format_datetime(row.get(field))
         return row
 
@@ -135,12 +137,23 @@ class ScheduledTaskRepository:
 
     @staticmethod
     def _upsert_cursor(cursor: Any, task: dict[str, Any]) -> None:
+        # MySQL evaluates single-table assignments from left to right.  Keep
+        # the version predicate before overwriting configuration columns so a
+        # material edit invalidates any exact-schedule policy atomically.
+        changed = """(
+            NOT (tool_name <=> VALUES(tool_name))
+            OR NOT (tool_params <=> VALUES(tool_params))
+            OR NOT (cron_expression <=> VALUES(cron_expression))
+            OR NOT (enabled <=> VALUES(enabled))
+        )"""
         cursor.execute(
-            """
+            f"""
             INSERT INTO scheduled_tasks
                 (id, name, tool_name, tool_params, cron_expression, enabled)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+                configuration_version = configuration_version + IF({changed}, 1, 0),
+                updated_at = IF({changed}, CURRENT_TIMESTAMP(6), updated_at),
                 name = VALUES(name),
                 tool_name = VALUES(tool_name),
                 tool_params = VALUES(tool_params),
@@ -184,7 +197,8 @@ class ScheduledTaskRepository:
                 cursor.execute(
                     """
                     UPDATE scheduled_tasks
-                    SET last_run=NOW(), last_status=%s, last_duration_ms=%s, last_message=%s
+                    SET last_run=NOW(), last_status=%s, last_duration_ms=%s,
+                        last_message=%s, updated_at=updated_at
                     WHERE id=%s
                     """,
                     (last_status, last_duration_ms, last_message, task_id),
@@ -204,7 +218,8 @@ class ScheduledTaskRepository:
         placeholders = ", ".join("%s" for _ in task_ids)
         sql = (
             "UPDATE scheduled_tasks "
-            "SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s "
+            "SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s, "
+            "updated_at=updated_at "
             f"WHERE id IN ({placeholders})"
         )
         with _connection(self._connection_factory) as connection:
