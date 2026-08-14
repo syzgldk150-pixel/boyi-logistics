@@ -510,23 +510,13 @@ class AutomationServiceMixin:
     ) -> dict[str, Any]:
         """Submit one durable command and return its Run receipt immediately."""
 
-        run_result = self._agent_request(
-            "POST",
-            "/internal/v1/commands",
-            payload={
-                "command_type": "tool.execute",
-                "parameters": {
-                    "tool_name": payload["tool_name"],
-                    "arguments": payload["tool_params"],
-                },
-                "entity_refs": [],
-                "idempotency_key": (
-                    f"console:{trusted_context['actor']['actor_id']}:tool.execute:"
-                    f"{browser_request_uuid}"
-                ),
-                **trusted_context,
-            },
-            timeout=self.settings.agent_timeout_seconds,
+        run_result = self._submit_console_tool_command(
+            trusted_context=trusted_context,
+            browser_request_uuid=browser_request_uuid,
+            tool_name=payload["tool_name"],
+            arguments=payload["tool_params"],
+            entity_refs=[],
+            console_entry="/automations/tasks/run-now",
         )
         if not run_result.get("ok"):
             return run_result
@@ -1454,8 +1444,14 @@ class AutomationServiceMixin:
         result = self._agent_request(
             "POST",
             f"/internal/v1/runs/{quote(run_id, safe='')}/cancel",
-            payload={"comment": "Console 自动化页面取消", **trusted_context},
+            payload={
+                "comment": "Console 自动化页面取消",
+                "actor": trusted_context["actor"],
+                "actor_roles": list(trusted_context.get("actor_roles") or []),
+                "source": "console",
+            },
             timeout=10,
+            console_principal=trusted_context.get("_console_principal"),
         )
         if not result.get("ok"):
             self._send_json(

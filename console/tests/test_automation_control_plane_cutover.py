@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from console.services.agent_api import AgentApiServiceMixin
 from console.services.automation import AutomationServiceMixin
 
 
@@ -16,13 +17,13 @@ class _Repository:
         self.runtime_updates.append(values)
 
 
-class _App(AutomationServiceMixin):
+class _App(AutomationServiceMixin, AgentApiServiceMixin):
     def __init__(self, result: dict) -> None:
         self.settings = SimpleNamespace(agent_timeout_seconds=12)
         self.repository = _Repository()
         self.automation_virtual_task_state: dict[str, dict] = {}
         self.result = result
-        self.calls: list[tuple[str, str, dict | None, int | None]] = []
+        self.calls: list[tuple[str, str, dict | None, int | None, dict | None]] = []
         self.sent = None
         self._control_plane_read_context = lambda _handler: {
             "_console_principal": {
@@ -42,7 +43,7 @@ class _App(AutomationServiceMixin):
         timeout=None,
         console_principal=None,
     ):
-        self.calls.append((method, endpoint, payload, timeout))
+        self.calls.append((method, endpoint, payload, timeout, console_principal))
         return self.result
 
     def _send_json(self, _handler, status, payload):
@@ -63,10 +64,18 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 },
             }
         )
+        console_principal = {
+            "actor_type": "console_admin",
+            "actor_id": "17",
+            "roles": ["admin"],
+            "authenticated_by": "mysql_admin_session",
+        }
+        request_uuid = "11111111-1111-4111-8111-111111111111"
         trusted = {
             "actor": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
             "actor_roles": ["admin"],
             "source": "console",
+            "_console_principal": console_principal,
         }
 
         result = app._start_automation_task_run(
@@ -79,28 +88,39 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "name": "每日应签",
             },
             trusted_context=trusted,
-            browser_request_uuid="browser-1",
+            browser_request_uuid=request_uuid,
         )
 
         self.assertTrue(result["ok"])
-        method, endpoint, payload, _timeout = app.calls[0]
+        method, endpoint, payload, _timeout, signed_principal = app.calls[0]
         self.assertEqual(("POST", "/internal/v1/commands"), (method, endpoint))
-        self.assertEqual("console:17:tool.execute:browser-1", payload["idempotency_key"])
+        self.assertEqual(f"console:17:tool.execute:{request_uuid}", payload["idempotency_key"])
         self.assertEqual("sync_daily_should_sign", payload["parameters"]["tool_name"])
+        self.assertNotIn("_console_principal", payload)
+        self.assertEqual(console_principal, signed_principal)
         self.assertEqual("run-1", app.automation_virtual_task_state["daily_sign"]["run_id"])
 
     def test_cancel_targets_the_exact_run(self):
         app = _App({"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}})
         app._parse_urlencoded_form = lambda _handler: {"task_id": "daily_sign", "run_id": "run-1"}
+        console_principal = {
+            "actor_type": "console_admin",
+            "actor_id": "17",
+            "roles": ["admin"],
+            "authenticated_by": "mysql_admin_session",
+        }
         app._control_plane_write_context = lambda _handler: {
             "actor": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
             "actor_roles": ["admin"],
             "source": "console",
+            "_console_principal": console_principal,
         }
 
         app._handle_automation_task_cancel(object())
 
         self.assertEqual("/internal/v1/runs/run-1/cancel", app.calls[0][1])
+        self.assertNotIn("_console_principal", app.calls[0][2])
+        self.assertEqual(console_principal, app.calls[0][4])
         self.assertTrue(app.sent[1]["cancel_requested"])
 
     def test_output_poll_uses_run_state_not_tool_process_guessing(self):
