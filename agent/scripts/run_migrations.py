@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,7 +30,27 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 CONTROL_PLANE_TASK_CUTOVER_VERSION = "014"
 CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE = "control_plane_task_cutover_backup_014"
 CONTROL_PLANE_TASK_CUTOVER_CREATED_TABLE = "control_plane_task_cutover_created_014"
+SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION = "017"
+SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = (
+    "scheduled_task_contract_upgrade_backup_017"
+)
+DAILY_SIGN_SINGLE_TMS_VERSION = "016"
+DAILY_SIGN_SINGLE_TMS_BACKUP_TABLE = "daily_sign_single_tms_backup_016"
 SCHEDULED_TASK_APPROVAL_POLICY_TABLE = "scheduled_task_approval_policies"
+SCHEDULED_TASK_APPROVAL_EVENT_TABLE = "scheduled_task_approval_policy_events"
+CONTROL_PLANE_MIGRATION_ACTOR_ID = "system:migration:control-plane-v1"
+CONTROL_PLANE_MIGRATION_ACTOR_ROLE = "migration_authority"
+CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID = (
+    "__control_plane_v1_bootstrap_complete__"
+)
+CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID = str(
+    uuid.uuid5(uuid.NAMESPACE_URL, "boyi:control-plane-v1:bootstrap-complete")
+)
+CONTROL_PLANE_REVIEWED_MANIFEST_COUNT = 69
+CONTROL_PLANE_REVIEWED_ENABLED_COUNT = 67
+CONTROL_PLANE_REVIEWED_DISABLED_IDS = frozenset(
+    {"finance_bills_0010", "yunda_dispatch_forecast_1700"}
+)
 SCHEDULED_WRITE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 SCHEDULED_WRITE_WINDOW_BEFORE_MINUTES = 60
 SCHEDULED_WRITE_WINDOW_AFTER_MINUTES = 45
@@ -305,6 +326,59 @@ def _load_control_plane_scheduled_task_profiles() -> Mapping[str, Any]:
     if not isinstance(profiles, Mapping):
         raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
     return profiles
+
+
+def _load_control_plane_tool_registry() -> Any:
+    """Load the staged, fully validated registry without changing sys.path."""
+
+    module_path = PROJECT_ROOT / "agent" / "tool_registry.py"
+    registry_path = PROJECT_ROOT / "tools" / "registry.yaml"
+    module_name = "_boyi_control_plane_tool_registry"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ControlPlaneTaskCutoverPreflightError("TOOL_REGISTRY_MODULE_INVALID")
+    module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        registry = module.ToolRegistry(
+            registry_path=registry_path,
+            project_root=PROJECT_ROOT,
+        )
+    except Exception as exc:
+        raise ControlPlaneTaskCutoverPreflightError("TOOL_REGISTRY_INVALID") from exc
+    finally:
+        if previous_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
+    return registry
+
+
+def _load_scheduled_task_approval_contract_module() -> Any:
+    module_path = PROJECT_ROOT.parent / "shared" / "scheduled_task_approval.py"
+    module_name = "_boyi_control_plane_scheduled_task_approval"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "SCHEDULED_APPROVAL_MODULE_INVALID"
+        )
+    module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "SCHEDULED_APPROVAL_MODULE_INVALID"
+        ) from exc
+    finally:
+        if previous_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
+    return module
 
 
 def _load_control_plane_reviewed_task_contracts() -> dict[str, dict[str, Any]]:
@@ -601,13 +675,37 @@ def _is_legacy_task_arguments(group_id: str, arguments: dict[str, Any]) -> bool:
             and arguments.get("target_date") == ""
         )
     if group_id == "daily_sign":
-        return _strict_json_equal(
-            arguments,
-            {
-                "account_id": "r13_default",
-                "detail_account_id": "ronghui_default",
-                "r13_account_id": "r13_default",
-            },
+        return any(
+            _strict_json_equal(arguments, legacy_arguments)
+            for legacy_arguments in (
+                {
+                    "account_id": "r13_default",
+                    "detail_account_id": "ronghui_default",
+                    "r13_account_id": "r13_default",
+                },
+                {
+                    "r13_account_id": "r13_default",
+                    "problem_account_id": "ronghui_daxiang_s",
+                    "sign_account_id": "ronghui_daxiang_s",
+                    "detail_account_id": "ronghui_default",
+                    "days": 7,
+                },
+                {
+                    "r13_account_id": "r13_default",
+                    "problem_account_id": "ronghui_daxiang_s",
+                    "sign_account_id": "ronghui_daxiang_s",
+                    "detail_account_id": "ronghui_daxiang_s",
+                    "days": 7,
+                },
+                {
+                    "account_id": "r13_default",
+                    "r13_account_id": "r13_default",
+                    "problem_account_id": "ronghui_daxiang_s",
+                    "sign_account_id": "ronghui_daxiang_s",
+                    "detail_account_id": "ronghui_default",
+                    "days": 7,
+                },
+            )
         )
     if group_id == "delivery_status":
         return arguments == {}
@@ -629,7 +727,18 @@ def _is_legacy_task_arguments(group_id: str, arguments: dict[str, Any]) -> bool:
             },
         )
     if group_id == "finance_bills":
-        return _strict_json_equal(arguments, {"mode": "sync", "rescan_days": 7})
+        return any(
+            _strict_json_equal(arguments, legacy_arguments)
+            for legacy_arguments in (
+                {"mode": "sync", "rescan_days": 7},
+                {
+                    "account_id": "ronghui_default",
+                    "mode": "sync",
+                    "platform": "ronghui",
+                    "rescan_days": 7,
+                },
+            )
+        )
     if group_id == "yunda_dispatch_forecast":
         return _strict_json_equal(
             arguments,
@@ -664,6 +773,37 @@ def _legacy_clock_arguments(
     }
 
 
+def _applied_014_clock_arguments(
+    task_id: str,
+    canonical_arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the exact production shape left by the already-applied 014.
+
+    This is a release-preflight compatibility contract only. Migration 017
+    converts either shape to the current direct ``clock_in_dual`` contract.
+    """
+
+    if task_id == "clockin_daxiang_1830":
+        return {
+            "account_id": canonical_arguments["account_id"],
+            "delay_seconds": canonical_arguments["delay_seconds"],
+            "first_type": canonical_arguments["first_type"],
+            "second_type": canonical_arguments["second_type"],
+            "sitefbname": canonical_arguments["sitefbname"],
+            "sitename": canonical_arguments["sitename"],
+            "timeout_sec": 600,
+        }
+    if task_id == "clockin_daxiang_s_1833":
+        arguments = _legacy_clock_arguments(task_id, canonical_arguments)
+        return {
+            "account_id": canonical_arguments["account_id"],
+            **arguments,
+        }
+    raise ControlPlaneTaskCutoverPreflightError(
+        "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
+    )
+
+
 def _is_clock_candidate(row: Mapping[str, Any]) -> bool:
     task_id = row.get("id")
     tool_name = row.get("tool_name")
@@ -688,6 +828,7 @@ def _validate_clock_policy(
     rows: Sequence[Mapping[str, Any]],
     *,
     contracts: Mapping[str, Mapping[str, Any]],
+    allow_reviewed_disabled: bool = False,
 ) -> dict[str, int]:
     clock_rows = [row for row in rows if isinstance(row, Mapping) and _is_clock_candidate(row)]
     unknown = [row for row in clock_rows if row.get("id") not in contracts]
@@ -713,7 +854,7 @@ def _validate_clock_policy(
         enabled = row.get("enabled")
         if type(enabled) not in {bool, int} or enabled not in {False, True, 0, 1}:
             raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ENABLED_TYPE_INVALID")
-        if not bool(enabled):
+        if not bool(enabled) and not allow_reviewed_disabled:
             raise ControlPlaneTaskCutoverPreflightError("PROTECTED_CLOCK_TASK_DISABLED")
 
         contract = contracts[task_id]
@@ -742,6 +883,15 @@ def _validate_clock_policy(
         if tool_name == "tms_query" and _strict_json_equal(
             arguments,
             _legacy_clock_arguments(task_id, canonical_arguments),
+        ):
+            legacy_count += 1
+            continue
+        applied_014_tool = (
+            "clock_in_dual" if task_id == "clockin_daxiang_1830" else "tms_query"
+        )
+        if tool_name == applied_014_tool and _strict_json_equal(
+            arguments,
+            _applied_014_clock_arguments(task_id, canonical_arguments),
         ):
             legacy_count += 1
             continue
@@ -817,6 +967,7 @@ def validate_control_plane_task_cutover(
     clock_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     r7_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     reviewed_login_site_sha256: str = CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256,
+    allow_reviewed_disabled: bool = False,
 ) -> dict[str, int]:
     """Validate scheduler rows without returning any persisted values."""
 
@@ -835,7 +986,11 @@ def validate_control_plane_task_cutover(
     resolved_r7_contracts = (
         _load_control_plane_r7_contracts() if r7_contracts is None else r7_contracts
     )
-    clock_summary = _validate_clock_policy(rows, contracts=resolved_clock_contracts)
+    clock_summary = _validate_clock_policy(
+        rows,
+        contracts=resolved_clock_contracts,
+        allow_reviewed_disabled=allow_reviewed_disabled,
+    )
     # A truly empty database has no scheduler state to cut over.  Once any
     # governed-family or external-write candidate exists, the complete 51-row
     # reviewed set becomes mandatory below; partial bootstrap state fails.
@@ -887,7 +1042,7 @@ def validate_control_plane_task_cutover(
             raise ControlPlaneTaskCutoverPreflightError("TASK_CRON_NOT_REVIEWED")
         if type(enabled) not in {bool, int} or enabled not in {False, True, 0, 1}:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ENABLED_TYPE_INVALID")
-        if not bool(enabled) and not optional:
+        if not bool(enabled) and not optional and not allow_reviewed_disabled:
             raise ControlPlaneTaskCutoverPreflightError("PROTECTED_TASK_DISABLED")
 
         arguments = _decode_task_arguments(row.get("tool_params"))
@@ -900,7 +1055,7 @@ def validate_control_plane_task_cutover(
             arguments,
         )
         if is_canonical:
-            if bool(enabled):
+            if bool(enabled) or allow_reviewed_disabled:
                 canonical_count += 1
         elif is_legacy:
             if contract.get("group_id") == "arrive_list":
@@ -911,11 +1066,11 @@ def validate_control_plane_task_cutover(
                     raise ControlPlaneTaskCutoverPreflightError(
                         "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
                     )
-            if bool(enabled):
+            if bool(enabled) or allow_reviewed_disabled:
                 legacy_count += 1
         else:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_NOT_REVIEWED")
-        if bool(enabled):
+        if bool(enabled) or allow_reviewed_disabled:
             reviewed_count += 1
 
     missing_count = len(set(contracts) - seen_task_ids)
@@ -1236,6 +1391,633 @@ def check_scheduled_write_window(
     return 0
 
 
+def _load_control_plane_reviewed_manifest_ids() -> frozenset[str]:
+    task_ids = {
+        *_load_control_plane_reviewed_task_contracts(),
+        *_load_control_plane_optional_task_contracts(),
+        *_load_control_plane_clock_contracts(),
+        *_load_control_plane_r7_contracts(),
+    }
+    if len(task_ids) != CONTROL_PLANE_REVIEWED_MANIFEST_COUNT:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_MANIFEST_INVALID")
+    return frozenset(task_ids)
+
+
+def _validate_control_plane_policy_states(
+    policies: Sequence[Mapping[str, Any]],
+    *,
+    enabled_ids: set[str],
+    registry: Any,
+    approval_contracts: Any,
+    profile_by_task_id: Mapping[str, Any],
+    require_enabled_exact: bool = False,
+) -> None:
+    policy_ids = {str(row.get("task_id") or "") for row in policies}
+    if not enabled_ids.issubset(policy_ids):
+        raise ControlPlaneTaskCutoverPreflightError(
+            "CONTROL_PLANE_POLICY_SET_INCOMPLETE",
+            count=len(enabled_ids - policy_ids),
+        )
+    for policy in policies:
+        mode = policy.get("mode")
+        version = policy.get("version")
+        actor_id = policy.get("approved_by_actor_id")
+        actor_role = policy.get("approved_by_actor_role")
+        if (
+            mode not in {"REQUIRE_EACH_RUN", "EXACT_SCHEDULE_EXEMPT"}
+            or isinstance(version, bool)
+            or not isinstance(version, int)
+            or version < 1
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "CONTROL_PLANE_POLICY_STATE_INVALID"
+            )
+        task_id = str(policy.get("task_id") or "")
+        if (
+            require_enabled_exact
+            and task_id in enabled_ids
+            and mode != "EXACT_SCHEDULE_EXEMPT"
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "INITIAL_ENABLED_TASK_EXACT_POLICY_REQUIRED"
+            )
+        untouched_default = (
+            mode == "REQUIRE_EACH_RUN"
+            and version == 1
+            and actor_id is None
+            and actor_role is None
+        )
+        if not untouched_default and policy.get("has_explaining_event") not in {
+            True,
+            1,
+        }:
+            raise ControlPlaneTaskCutoverPreflightError(
+                "CONTROL_PLANE_POLICY_EVENT_MISSING"
+            )
+        if mode == "REQUIRE_EACH_RUN":
+            if any(
+                policy.get(field) is not None
+                for field in (
+                    "contract_hash",
+                    "contract_snapshot_json",
+                    "tool_contract_hash",
+                )
+            ):
+                raise ControlPlaneTaskCutoverPreflightError(
+                    "CONTROL_PLANE_POLICY_STATE_INVALID"
+                )
+            if task_id in enabled_ids:
+                explicit_admin = (
+                    policy.get("has_explaining_event") in {True, 1}
+                    and actor_role == "super_admin"
+                    and type(actor_id) is str
+                    and bool(actor_id.strip())
+                    and actor_id != CONTROL_PLANE_MIGRATION_ACTOR_ID
+                    and policy.get("latest_event_reason") == "console_policy_change"
+                )
+                credential_safety_downgrade = (
+                    policy.get("has_explaining_event") in {True, 1}
+                    and actor_id
+                    == approval_contracts.ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID
+                    and actor_role == "system"
+                    and policy.get("latest_event_reason")
+                    == approval_contracts.ACCOUNT_CREDENTIAL_CHANGE_REASON
+                )
+                if not (explicit_admin or credential_safety_downgrade):
+                    raise ControlPlaneTaskCutoverPreflightError(
+                        "ENABLED_TASK_DEFAULT_POLICY_NOT_ALLOWED"
+                    )
+            continue
+        snapshot = _decode_task_arguments(policy.get("contract_snapshot_json"))
+        if (
+            str(policy.get("contract_hash") or "")
+            != approval_contracts.sha256_json(snapshot)
+            or str(policy.get("tool_contract_hash") or "")
+            != str(snapshot.get("tool_contract_hash") or "")
+            or snapshot.get("task_id") != policy.get("task_id")
+            or snapshot.get("enabled") is not True
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "CONTROL_PLANE_POLICY_STATE_INVALID"
+            )
+        if task_id not in enabled_ids:
+            continue
+        profile = profile_by_task_id.get(task_id)
+        capability = registry.get_capability(str(policy.get("tool_name") or ""))
+        if profile is None or not isinstance(capability, Mapping):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "CONTROL_PLANE_POLICY_NOT_ACTIVE"
+            )
+        try:
+            arguments = _decode_task_arguments(policy.get("tool_params"))
+            registry.validate_arguments(str(policy["tool_name"]), arguments)
+            if (
+                capability.get("version") != profile.tool_version
+                or capability.get("operation_type") != profile.operation_type
+                or (capability.get("approval") or {}).get("mode")
+                != "schedule_allowlist"
+            ):
+                raise ValueError("staged tool governance changed")
+            current_contract = approval_contracts.build_scheduled_task_contract(
+                {
+                    "id": task_id,
+                    "tool_name": policy["tool_name"],
+                    "tool_params": arguments,
+                    "cron_expression": policy["cron_expression"],
+                    "enabled": policy["enabled"],
+                    "configuration_version": policy["configuration_version"],
+                },
+                capability,
+                dynamic_argument_rules=profile.dynamic_argument_rules,
+                allowed_special_cron=profile.cron_expression,
+            )
+        except Exception as exc:
+            raise ControlPlaneTaskCutoverPreflightError(
+                "CONTROL_PLANE_POLICY_NOT_ACTIVE"
+            ) from exc
+        if (
+            policy.get("contract_hash") != current_contract.contract_hash
+            or policy.get("tool_contract_hash") != current_contract.tool_contract_hash
+            or not _strict_json_equal(snapshot, current_contract.snapshot)
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "CONTROL_PLANE_POLICY_NOT_ACTIVE"
+            )
+
+
+def check_control_plane_release_manifest(
+    *,
+    expect_initial_production_manifest: bool = False,
+) -> int:
+    """Validate the post-start control-plane manifest without requiring exemptions.
+
+    The one-time bootstrap must have evaluated every enabled reviewed task. On
+    later releases administrators may legitimately switch any task back to
+    per-run approval, so this check validates explainable policy state rather
+    than requiring every reviewed task to remain exempt.
+    """
+
+    connection = None
+    try:
+        expected_ids = _load_control_plane_reviewed_manifest_ids()
+        registry = _load_control_plane_tool_registry()
+        approval_contracts = _load_scheduled_task_approval_contract_module()
+        profiles = _load_control_plane_scheduled_task_profiles()
+        profile_by_task_id = {
+            task_id: profile
+            for profile in profiles.values()
+            for task_id in profile.approved_task_ids
+        }
+        connection = _connect()
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            for table_name in (
+                "scheduled_tasks",
+                SCHEDULED_TASK_APPROVAL_POLICY_TABLE,
+                SCHEDULED_TASK_APPROVAL_EVENT_TABLE,
+            ):
+                if not _table_exists(cursor, table_name):
+                    raise ControlPlaneTaskCutoverPreflightError(
+                        "CONTROL_PLANE_MANIFEST_TABLE_MISSING"
+                    )
+
+            cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
+            rows = cursor.fetchall()
+            task_ids = {
+                str(row.get("id") or "")
+                for row in rows
+                if isinstance(row, Mapping)
+            }
+            if task_ids != expected_ids or len(rows) != len(expected_ids):
+                raise ControlPlaneTaskCutoverPreflightError(
+                    "REVIEWED_MANIFEST_TASK_SET_MISMATCH",
+                    count=max(len(expected_ids - task_ids) + len(task_ids - expected_ids), 1),
+                )
+
+            summary = validate_control_plane_task_cutover(
+                rows,
+                contracts=_load_control_plane_reviewed_task_contracts(),
+                optional_contracts=_load_control_plane_optional_task_contracts(),
+                clock_contracts=_load_control_plane_clock_contracts(),
+                r7_contracts=_load_control_plane_r7_contracts(),
+                allow_reviewed_disabled=not expect_initial_production_manifest,
+            )
+            enabled_ids = {
+                str(row["id"])
+                for row in rows
+                if row.get("enabled") in {True, 1}
+            }
+            expected_reviewed_count = (
+                CONTROL_PLANE_REVIEWED_ENABLED_COUNT
+                if expect_initial_production_manifest
+                else CONTROL_PLANE_REVIEWED_MANIFEST_COUNT
+            )
+            initial_state_mismatch = expect_initial_production_manifest and (
+                len(enabled_ids) != CONTROL_PLANE_REVIEWED_ENABLED_COUNT
+                or expected_ids - enabled_ids != CONTROL_PLANE_REVIEWED_DISABLED_IDS
+            )
+            if initial_state_mismatch or summary != {
+                "reviewed_rows": expected_reviewed_count,
+                "canonical_rows": expected_reviewed_count,
+                "legacy_rows": 0,
+            }:
+                raise ControlPlaneTaskCutoverPreflightError(
+                    "REVIEWED_MANIFEST_STATE_MISMATCH"
+                )
+
+            cursor.execute(
+                f"""
+                SELECT 1
+                FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE}
+                WHERE task_id=%s
+                  AND request_id=%s
+                  AND actor_id=%s
+                  AND actor_role=%s
+                  AND reason='control_plane_v1_bootstrap_complete'
+                LIMIT 1
+                """,
+                (
+                    CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+                    CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                ),
+            )
+            if cursor.fetchone() is None:
+                raise ControlPlaneTaskCutoverPreflightError(
+                    "CONTROL_PLANE_BOOTSTRAP_MARKER_MISSING"
+                )
+
+            placeholders = ", ".join("%s" for _ in expected_ids)
+            cursor.execute(
+                f"""
+                SELECT
+                    policy.task_id,
+                    policy.mode,
+                    policy.contract_hash,
+                    policy.contract_snapshot_json,
+                    policy.tool_contract_hash,
+                    policy.approved_by_actor_id,
+                    policy.approved_by_actor_role,
+                    policy.version,
+                    task.tool_name,
+                    task.tool_params,
+                    task.cron_expression,
+                    task.enabled,
+                    task.configuration_version,
+                    (
+                        latest_event.event_id IS NOT NULL
+                        AND latest_event.to_mode = policy.mode
+                        AND latest_event.actor_id = policy.approved_by_actor_id
+                        AND latest_event.actor_role = policy.approved_by_actor_role
+                        AND latest_event.contract_hash <=> policy.contract_hash
+                    ) AS has_explaining_event,
+                    latest_event.reason AS latest_event_reason
+                FROM {SCHEDULED_TASK_APPROVAL_POLICY_TABLE} AS policy
+                INNER JOIN scheduled_tasks AS task ON task.id = policy.task_id
+                LEFT JOIN {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS latest_event
+                  ON latest_event.event_id = (
+                      SELECT MAX(candidate.event_id)
+                      FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS candidate
+                      WHERE candidate.task_id = policy.task_id
+                  )
+                WHERE policy.task_id IN ({placeholders})
+                """,
+                tuple(sorted(expected_ids)),
+            )
+            policies = cursor.fetchall()
+            _validate_control_plane_policy_states(
+                policies,
+                enabled_ids=enabled_ids,
+                registry=registry,
+                approval_contracts=approval_contracts,
+                profile_by_task_id=profile_by_task_id,
+                require_enabled_exact=expect_initial_production_manifest,
+            )
+    except ControlPlaneTaskCutoverPreflightError as exc:
+        print(
+            "control_plane_release_manifest=blocked "
+            f"reason={exc.code} count={exc.count}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception:
+        print(
+            "control_plane_release_manifest=blocked "
+            "reason=CONTROL_PLANE_MANIFEST_RUNTIME_ERROR count=1",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+    print(
+        "control_plane_release_manifest=ok "
+        f"reviewed_rows={len(expected_ids)} "
+        f"enabled_rows={len(enabled_ids)} policies={len(policies)} marker=1 "
+        f"initial={int(expect_initial_production_manifest)}"
+    )
+    return 0
+
+
+def check_running_protected_writes() -> int:
+    """Block quiesce while a protected write is running or verifying."""
+
+    connection = None
+    try:
+        connection = _connect()
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            if not _table_exists(cursor, "agent_run_steps"):
+                running_count = 0
+            else:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS running_count
+                    FROM agent_run_steps
+                    WHERE status IN ('RUNNING', 'VERIFYING')
+                      AND operation_type IN (
+                          'EXTERNAL_WRITE', 'FINANCIAL_WRITE', 'DESTRUCTIVE'
+                      )
+                    """
+                )
+                row = cursor.fetchone()
+                running_count = int((row or {}).get("running_count") or 0)
+            if running_count:
+                raise ControlPlaneTaskCutoverPreflightError(
+                    "PROTECTED_WRITE_RUNNING",
+                    count=running_count,
+                )
+    except ControlPlaneTaskCutoverPreflightError as exc:
+        print(
+            "protected_write_quiesce=blocked "
+            f"reason={exc.code} count={exc.count}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception:
+        print(
+            "protected_write_quiesce=blocked reason=QUIESCE_RUNTIME_ERROR count=1",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+    print("protected_write_quiesce=ok running_writes=0")
+    return 0
+
+
+def _restore_scheduled_task_rows_from_migration(
+    *,
+    version: str,
+    backup_table: str,
+    output_name: str,
+) -> int:
+    connection = _connect()
+    transaction_started = False
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            if not _migration_table_exists(cursor):
+                print(f"{output_name}=skipped reason=history_missing")
+                return 0
+            if not _table_exists(cursor, backup_table):
+                print(f"{output_name}=skipped reason=backup_not_created")
+                return 0
+
+            connection.begin()
+            transaction_started = True
+            cursor.execute(
+                f"""
+                INSERT INTO scheduled_tasks (
+                    id, name, tool_name, tool_params, cron_expression, enabled,
+                    last_run, last_status, last_duration_ms, last_message, created_at,
+                    configuration_version, updated_at
+                )
+                SELECT
+                    id, name, tool_name, tool_params, cron_expression, enabled,
+                    last_run, last_status, last_duration_ms, last_message, created_at,
+                    configuration_version, updated_at
+                FROM {backup_table}
+                WHERE TRUE
+                ON DUPLICATE KEY UPDATE
+                    name = VALUES(name),
+                    tool_name = VALUES(tool_name),
+                    tool_params = VALUES(tool_params),
+                    cron_expression = VALUES(cron_expression),
+                    enabled = VALUES(enabled),
+                    last_run = VALUES(last_run),
+                    last_status = VALUES(last_status),
+                    last_duration_ms = VALUES(last_duration_ms),
+                    last_message = VALUES(last_message),
+                    created_at = VALUES(created_at),
+                    configuration_version = VALUES(configuration_version),
+                    updated_at = VALUES(updated_at)
+                """
+            )
+            cursor.execute(
+                "DELETE FROM schema_migrations WHERE version=%s",
+                (version,),
+            )
+            cursor.execute(f"DELETE FROM {backup_table}")
+            connection.commit()
+            transaction_started = False
+            print(f"{output_name}=ok")
+    except Exception:
+        if transaction_started:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return 0
+
+
+def restore_daily_sign_single_tms_account() -> int:
+    """Restore exact pre-016 daily-sign rows and make 016 re-applicable."""
+
+    return _restore_scheduled_task_rows_from_migration(
+        version=DAILY_SIGN_SINGLE_TMS_VERSION,
+        backup_table=DAILY_SIGN_SINGLE_TMS_BACKUP_TABLE,
+        output_name="daily_sign_single_tms_restore",
+    )
+
+
+def restore_scheduled_task_contract_upgrade() -> int:
+    """Restore exact pre-017 scheduler rows and make 017 safely re-applicable."""
+
+    return _restore_scheduled_task_rows_from_migration(
+        version=SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION,
+        backup_table=SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE,
+        output_name="scheduled_task_contract_upgrade_restore",
+    )
+
+
+def restore_control_plane_policy_bootstrap() -> int:
+    """Remove only migration-owned bootstrap state after a failed first release."""
+
+    connection = _connect()
+    transaction_started = False
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            if not all(
+                _table_exists(cursor, table_name)
+                for table_name in (
+                    SCHEDULED_TASK_APPROVAL_POLICY_TABLE,
+                    SCHEDULED_TASK_APPROVAL_EVENT_TABLE,
+                )
+            ):
+                print("control_plane_policy_bootstrap_restore=skipped reason=tables_missing")
+                return 0
+
+            connection.begin()
+            transaction_started = True
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS orphan_count
+                FROM {SCHEDULED_TASK_APPROVAL_POLICY_TABLE} AS policy
+                LEFT JOIN {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS event
+                  ON event.task_id = policy.task_id
+                 AND event.to_mode = policy.mode
+                 AND event.contract_hash = policy.contract_hash
+                 AND event.actor_id = %s
+                 AND event.actor_role = %s
+                 AND event.reason = 'control_plane_v1_bootstrap'
+                WHERE policy.mode = 'EXACT_SCHEDULE_EXEMPT'
+                  AND policy.approved_by_actor_id = %s
+                  AND policy.approved_by_actor_role = %s
+                  AND event.event_id IS NULL
+                """,
+                (
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                ),
+            )
+            orphan_row = cursor.fetchone() or {}
+            if int(orphan_row.get("orphan_count") or 0):
+                raise RuntimeError("MIGRATION_EXACT_POLICY_BOOTSTRAP_EVENT_MISSING")
+            domain_tables_exist = all(
+                _table_exists(cursor, table_name)
+                for table_name in ("domain_events", "outbox_events", "event_consumptions")
+            )
+            if domain_tables_exist:
+                actor_params = (
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                )
+                cursor.execute(
+                    "DELETE consumption FROM event_consumptions AS consumption "
+                    "INNER JOIN domain_events AS domain_event "
+                    "ON domain_event.event_id = consumption.event_id "
+                    f"INNER JOIN {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS policy_event "
+                    "ON domain_event.source_event_id = CONCAT("
+                    "policy_event.task_id, ':', policy_event.request_id) "
+                    "WHERE domain_event.event_type = "
+                    "'scheduled_task.approval_policy_changed' "
+                    "AND domain_event.source_system = 'agent' "
+                    "AND domain_event.entity_type = 'scheduled_task' "
+                    "AND domain_event.entity_id = policy_event.task_id "
+                    "AND policy_event.actor_id = %s "
+                    "AND policy_event.actor_role = %s "
+                    "AND policy_event.reason = 'control_plane_v1_bootstrap'",
+                    actor_params,
+                )
+                cursor.execute(
+                    "DELETE outbox FROM outbox_events AS outbox "
+                    "INNER JOIN domain_events AS domain_event "
+                    "ON domain_event.event_id = outbox.event_id "
+                    f"INNER JOIN {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS policy_event "
+                    "ON domain_event.source_event_id = CONCAT("
+                    "policy_event.task_id, ':', policy_event.request_id) "
+                    "WHERE domain_event.event_type = "
+                    "'scheduled_task.approval_policy_changed' "
+                    "AND domain_event.source_system = 'agent' "
+                    "AND domain_event.entity_type = 'scheduled_task' "
+                    "AND domain_event.entity_id = policy_event.task_id "
+                    "AND policy_event.actor_id = %s "
+                    "AND policy_event.actor_role = %s "
+                    "AND policy_event.reason = 'control_plane_v1_bootstrap'",
+                    actor_params,
+                )
+                cursor.execute(
+                    "DELETE domain_event FROM domain_events AS domain_event "
+                    f"INNER JOIN {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS policy_event "
+                    "ON domain_event.source_event_id = CONCAT("
+                    "policy_event.task_id, ':', policy_event.request_id) "
+                    "WHERE domain_event.event_type = "
+                    "'scheduled_task.approval_policy_changed' "
+                    "AND domain_event.source_system = 'agent' "
+                    "AND domain_event.entity_type = 'scheduled_task' "
+                    "AND domain_event.entity_id = policy_event.task_id "
+                    "AND policy_event.actor_id = %s "
+                    "AND policy_event.actor_role = %s "
+                    "AND policy_event.reason = 'control_plane_v1_bootstrap'",
+                    actor_params,
+                )
+
+            cursor.execute(
+                f"""
+                DELETE policy
+                FROM {SCHEDULED_TASK_APPROVAL_POLICY_TABLE} AS policy
+                WHERE policy.mode = 'EXACT_SCHEDULE_EXEMPT'
+                  AND policy.approved_by_actor_id = %s
+                  AND policy.approved_by_actor_role = %s
+                  AND EXISTS (
+                      SELECT 1
+                      FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS event
+                      WHERE event.task_id = policy.task_id
+                        AND event.to_mode = policy.mode
+                        AND event.contract_hash = policy.contract_hash
+                        AND event.actor_id = %s
+                        AND event.actor_role = %s
+                        AND event.reason = 'control_plane_v1_bootstrap'
+                  )
+                """,
+                (
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                ),
+            )
+            cursor.execute(
+                f"""
+                DELETE FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE}
+                WHERE actor_id = %s
+                  AND actor_role = %s
+                  AND (
+                      reason = 'control_plane_v1_bootstrap'
+                      OR (
+                          task_id = %s
+                          AND request_id = %s
+                          AND reason = 'control_plane_v1_bootstrap_complete'
+                      )
+                  )
+                """,
+                (
+                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                    CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+                    CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                ),
+            )
+            connection.commit()
+            transaction_started = False
+            print("control_plane_policy_bootstrap_restore=ok")
+    except Exception:
+        if transaction_started:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return 0
+
+
 def restore_control_plane_task_cutover() -> int:
     """Restore scheduler rows when this release attempted migration 014.
 
@@ -1339,6 +2121,85 @@ def restore_control_plane_task_cutover() -> int:
     return 0
 
 
+def _report_migration_capture_status(
+    *,
+    version: str,
+    backup_table: str,
+    output_name: str,
+) -> int:
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            applied = False
+            if _migration_table_exists(cursor):
+                cursor.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version=%s",
+                    (version,),
+                )
+                applied = cursor.fetchone() is not None
+            if applied:
+                status = "applied"
+            elif _table_exists(cursor, backup_table):
+                cursor.execute(f"SELECT 1 FROM {backup_table} LIMIT 1")
+                status = "pending_dirty" if cursor.fetchone() is not None else "pending_clean"
+            else:
+                status = "pending_clean"
+            print(f"{output_name}={status}")
+    finally:
+        connection.close()
+    return 0
+
+
+def report_daily_sign_single_tms_status() -> int:
+    return _report_migration_capture_status(
+        version=DAILY_SIGN_SINGLE_TMS_VERSION,
+        backup_table=DAILY_SIGN_SINGLE_TMS_BACKUP_TABLE,
+        output_name="daily_sign_single_tms_status",
+    )
+
+
+def report_scheduled_task_contract_upgrade_status() -> int:
+    return _report_migration_capture_status(
+        version=SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION,
+        backup_table=SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE,
+        output_name="scheduled_task_contract_upgrade_status",
+    )
+
+
+def report_control_plane_policy_bootstrap_marker_status() -> int:
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            present = False
+            if _table_exists(cursor, SCHEDULED_TASK_APPROVAL_EVENT_TABLE):
+                cursor.execute(
+                    f"""
+                    SELECT 1
+                    FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE}
+                    WHERE task_id=%s
+                      AND request_id=%s
+                      AND actor_id=%s
+                      AND actor_role=%s
+                      AND reason='control_plane_v1_bootstrap_complete'
+                    LIMIT 1
+                    """,
+                    (
+                        CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+                        CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                        CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                        CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                    ),
+                )
+                present = cursor.fetchone() is not None
+            status = "present" if present else "absent"
+            print(f"control_plane_policy_bootstrap_marker_status={status}")
+    finally:
+        connection.close()
+    return 0
+
+
 def report_control_plane_task_cutover_status() -> int:
     """Report whether migration 014 is safe to apply, without exposing row data."""
 
@@ -1378,9 +2239,39 @@ def main() -> int:
         help="Restore the fixed scheduler rows backed up by migration 014",
     )
     modes.add_argument(
+        "--restore-scheduled-task-contract-upgrade",
+        action="store_true",
+        help="Restore the exact scheduler rows backed up by migration 017",
+    )
+    modes.add_argument(
+        "--restore-daily-sign-single-tms-account",
+        action="store_true",
+        help="Restore the exact daily-sign rows backed up by migration 016",
+    )
+    modes.add_argument(
+        "--restore-control-plane-policy-bootstrap",
+        action="store_true",
+        help="Remove only migration-owned one-time policy bootstrap state",
+    )
+    modes.add_argument(
         "--control-plane-task-cutover-status",
         action="store_true",
         help="Report whether migration 014 is pending without returning row data",
+    )
+    modes.add_argument(
+        "--daily-sign-single-tms-status",
+        action="store_true",
+        help="Report applied, pending_clean, or pending_dirty for migration 016",
+    )
+    modes.add_argument(
+        "--scheduled-task-contract-upgrade-status",
+        action="store_true",
+        help="Report applied, pending_clean, or pending_dirty for migration 017",
+    )
+    modes.add_argument(
+        "--control-plane-policy-bootstrap-marker-status",
+        action="store_true",
+        help="Report whether the one-time bootstrap completion marker is present",
     )
     modes.add_argument(
         "--preflight-control-plane-task-cutover",
@@ -1391,6 +2282,21 @@ def main() -> int:
         "--check-scheduled-write-window",
         action="store_true",
         help="Block release mutation near an exempt external-write schedule",
+    )
+    modes.add_argument(
+        "--check-control-plane-release-manifest",
+        action="store_true",
+        help="Validate the post-start 69-task manifest and explainable policies",
+    )
+    modes.add_argument(
+        "--check-running-protected-writes",
+        action="store_true",
+        help="Block quiesce while an external or financial write is running",
+    )
+    parser.add_argument(
+        "--expect-initial-production-manifest",
+        action="store_true",
+        help="Require the one-time 69 reviewed / 67 enabled production shape",
     )
     parser.add_argument(
         "--scheduled-write-window-before-minutes",
@@ -1403,10 +2309,30 @@ def main() -> int:
         default=SCHEDULED_WRITE_WINDOW_AFTER_MINUTES,
     )
     args = parser.parse_args()
+    if (
+        args.expect_initial_production_manifest
+        and not args.check_control_plane_release_manifest
+    ):
+        parser.error(
+            "--expect-initial-production-manifest requires "
+            "--check-control-plane-release-manifest"
+        )
     if args.restore_control_plane_task_cutover:
         return restore_control_plane_task_cutover()
+    if args.restore_scheduled_task_contract_upgrade:
+        return restore_scheduled_task_contract_upgrade()
+    if args.restore_daily_sign_single_tms_account:
+        return restore_daily_sign_single_tms_account()
+    if args.restore_control_plane_policy_bootstrap:
+        return restore_control_plane_policy_bootstrap()
     if args.control_plane_task_cutover_status:
         return report_control_plane_task_cutover_status()
+    if args.daily_sign_single_tms_status:
+        return report_daily_sign_single_tms_status()
+    if args.scheduled_task_contract_upgrade_status:
+        return report_scheduled_task_contract_upgrade_status()
+    if args.control_plane_policy_bootstrap_marker_status:
+        return report_control_plane_policy_bootstrap_marker_status()
     if args.preflight_control_plane_task_cutover:
         return preflight_control_plane_task_cutover()
     if args.check_scheduled_write_window:
@@ -1414,6 +2340,12 @@ def main() -> int:
             before_minutes=args.scheduled_write_window_before_minutes,
             after_minutes=args.scheduled_write_window_after_minutes,
         )
+    if args.check_control_plane_release_manifest:
+        return check_control_plane_release_manifest(
+            expect_initial_production_manifest=args.expect_initial_production_manifest,
+        )
+    if args.check_running_protected_writes:
+        return check_running_protected_writes()
     return run(check_only=args.check)
 
 

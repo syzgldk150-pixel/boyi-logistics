@@ -326,6 +326,12 @@ class ControlPlaneService:
     def retry_run(self, run_id: str, *, actor: Actor, reason: str = "") -> dict[str, Any]:
         source = self._require_run(run_id)
         status = RunStatus(str(source["status"]))
+        if status in {
+            RunStatus.FAILED_RETRYABLE,
+            RunStatus.PARTIAL,
+            RunStatus.FAILED_TERMINAL,
+        }:
+            _require_manual_retry_safe_plan(source)
         event_type: str
         if status is RunStatus.FAILED_RETRYABLE:
             with self._repository.unit_of_work() as uow:
@@ -1070,6 +1076,37 @@ def _run_actions(status: str) -> list[str]:
     }:
         actions.append("retry")
     return actions
+
+
+def _require_manual_retry_safe_plan(run: Mapping[str, Any]) -> None:
+    """Reject a human retry that could replay any write-side effect.
+
+    Automatic retry eligibility is established while executing the original
+    plan. A later human action must not copy Scheduler identity or an exact
+    schedule exemption into a fresh write. Writes need a newly submitted
+    Command and a new policy decision (or an authoritative NOT_APPLIED
+    reconciliation path), neither of which this endpoint represents.
+    """
+
+    plan = run.get("plan_json")
+    steps = plan.get("steps") if isinstance(plan, Mapping) else None
+    if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)) or not steps:
+        raise OrchestrationError(
+            "RUN_RETRY_PROOF_MISSING",
+            "The original plan is unavailable; submit a new command instead",
+        )
+    for step in steps:
+        if not isinstance(step, Mapping):
+            raise OrchestrationError(
+                "RUN_RETRY_PROOF_MISSING",
+                "The original plan is unavailable; submit a new command instead",
+            )
+        operation = str(step.get("operation_type") or "").strip().lower()
+        if operation not in {"read", "compute"}:
+            raise OrchestrationError(
+                "UNSAFE_WRITE_RETRY_REQUIRES_NEW_COMMAND",
+                "Write runs cannot be replayed; submit a new command for approval",
+            )
 
 
 def _detail_actions(

@@ -2,16 +2,31 @@
 
 from __future__ import annotations
 
+import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
-import uuid
 
-from agent.orchestration.models import Actor, ActorType, OrchestrationError, new_id
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    OperationType,
+    OrchestrationError,
+    PlanStep,
+    new_id,
+)
 from agent.orchestration.policy_engine import ScheduledAllowlistEntry
 from agent.orchestration.ports import ToolCatalogPort
 from shared.redaction import redact_text
-from shared.orchestration_repository import ConcurrentUpdateError, OrchestrationRepository
+from shared.orchestration_repository import (
+    AccountExecutionLockUnavailable,
+    ConcurrentUpdateError,
+    OrchestrationRepository,
+)
 from shared.scheduled_task_approval import (
+    ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+    ACCOUNT_CREDENTIAL_CHANGE_COMMENT,
+    ACCOUNT_CREDENTIAL_CHANGE_REASON,
     ScheduledTaskApprovalContractError,
     ScheduledTaskApprovalMode,
     ScheduledTaskPolicyStatus,
@@ -33,6 +48,17 @@ BOOTSTRAP_COMPLETION_REQUEST_ID = str(
     uuid.uuid5(uuid.NAMESPACE_URL, "boyi:control-plane-v1:bootstrap-complete")
 )
 BOOTSTRAP_COMPLETION_COMMENT = "control-plane v1 reviewed schedule evaluation completed"
+TERMINAL_RUN_STATUSES = frozenset(
+    {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+)
+PROTECTED_CREDENTIAL_OPERATIONS = frozenset(
+    {
+        OperationType.INTERNAL_PROJECTION_WRITE.value,
+        OperationType.EXTERNAL_WRITE.value,
+        OperationType.FINANCIAL_WRITE.value,
+        OperationType.DESTRUCTIVE.value,
+    }
+)
 
 
 class ScheduledTaskApprovalService:
@@ -43,11 +69,17 @@ class ScheduledTaskApprovalService:
         *,
         enabled_finance_platforms: Sequence[str] = (),
         active_account_ids_provider: Callable[[], Sequence[str]] | None = None,
+        implicit_account_ids_by_tool: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self._repository = repository
         self._catalog = catalog
         self._enabled_finance_platforms = tuple(enabled_finance_platforms)
         self._active_account_ids_provider = active_account_ids_provider
+        self._implicit_account_ids_by_tool = _normalize_implicit_account_ids(
+            implicit_account_ids_by_tool
+        )
+        self._credential_policy_lock = threading.RLock()
+        self._credential_changes_in_progress: dict[str, int] = {}
 
     def list_policies(self) -> dict[str, Any]:
         rows = self._repository.list_scheduled_task_policy_rows()
@@ -88,6 +120,330 @@ class ScheduledTaskApprovalService:
                 )
             )
         return tuple(entries)
+
+    def begin_credentials_change(self, account_id: str) -> Callable[[], None]:
+        """Reject active writes, revoke exemptions, and hold an account lease.
+
+        The MySQL named lock is connection-scoped rather than transactional: all
+        database checks and revocation transactions finish before the caller
+        changes a broker/file credential, while protected step starts remain
+        serialized until the returned idempotent callback releases the lock.
+        """
+
+        safe_account_id = _validate_account_id(account_id)
+        try:
+            execution_lease = self._repository.acquire_account_execution_locks(
+                (safe_account_id,),
+                timeout_seconds=0,
+            )
+        except AccountExecutionLockUnavailable as exc:
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_IN_PROGRESS",
+                "Credentials cannot change while account-bound execution is starting",
+            ) from exc
+        except Exception as exc:
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                "Credentials cannot change because the account execution guard is unavailable",
+            ) from exc
+        self._mark_credentials_change_started(safe_account_id)
+        try:
+            self._assert_no_active_protected_runs(safe_account_id)
+            self._revoke_exact_policies_for_account(safe_account_id)
+        except BaseException:
+            self._mark_credentials_change_finished(safe_account_id)
+            execution_lease.release()
+            raise
+
+        finish_lock = threading.Lock()
+        finished = False
+
+        def finish() -> None:
+            nonlocal finished
+            with finish_lock:
+                if finished:
+                    return
+                execution_lease.release()
+                self._mark_credentials_change_finished(safe_account_id)
+                finished = True
+
+        return finish
+
+    def begin_protected_step_start(self, step: PlanStep) -> Callable[[], None]:
+        """Serialize one account-bound write until its RUNNING state commits."""
+
+        if step.operation_type in {OperationType.READ, OperationType.COMPUTE}:
+            return _noop_finish
+        account_ids = self._account_ids_for_tool_execution(
+            tool_name=step.tool_name,
+            arguments=step.arguments,
+            explicit_account_id=step.account_id,
+        )
+        if not account_ids:
+            return _noop_finish
+        try:
+            lease = self._repository.acquire_account_execution_locks(
+                account_ids,
+                timeout_seconds=0,
+            )
+        except AccountExecutionLockUnavailable as exc:
+            raise OrchestrationError(
+                "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS",
+                "Account credentials are changing; protected execution has not started",
+            ) from exc
+        except Exception as exc:
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                "Protected execution cannot start because the account guard is unavailable",
+                details={"status": "BLOCKED_DATA"},
+            ) from exc
+        return lease.release
+
+    def _assert_no_active_protected_runs(self, account_id: str) -> None:
+        try:
+            rows = self._repository.list_nonterminal_runs_with_commands()
+        except Exception as exc:
+            raise OrchestrationError(
+                "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                "Credentials cannot change because active Runs could not be checked",
+            ) from exc
+        active_run_ids: list[str] = []
+        try:
+            for row in rows:
+                if str(row.get("status") or "").strip().upper() in TERMINAL_RUN_STATUSES:
+                    continue
+                if self._run_references_protected_account(row, account_id):
+                    active_run_ids.append(str(row.get("run_id") or "").strip())
+        except OrchestrationError:
+            raise
+        except Exception as exc:
+            raise OrchestrationError(
+                "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                "Credentials cannot change because an active Run could not be classified",
+            ) from exc
+        if active_run_ids:
+            raise OrchestrationError(
+                "ACCOUNT_CREDENTIAL_ACTIVE_RUN",
+                "Credentials cannot change while a protected account-bound Run is non-terminal",
+                details={"run_ids": sorted(active_run_ids)},
+            )
+
+    def _run_references_protected_account(
+        self,
+        row: Mapping[str, Any],
+        account_id: str,
+    ) -> bool:
+        plan = row.get("plan_json")
+        if plan is not None and not isinstance(plan, Mapping):
+            raise OrchestrationError(
+                "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                "An active Run has an invalid persisted plan",
+            )
+        raw_steps = plan.get("steps") if isinstance(plan, Mapping) else None
+        if raw_steps is not None and not isinstance(raw_steps, list):
+            raise OrchestrationError(
+                "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                "An active Run has invalid persisted plan steps",
+            )
+        for raw_step in raw_steps or ():
+            if not isinstance(raw_step, Mapping):
+                raise OrchestrationError(
+                    "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                    "An active Run has an invalid persisted step",
+                )
+            if self._execution_descriptor_is_protected_for_account(
+                raw_step,
+                account_id=account_id,
+                arguments=raw_step.get("arguments"),
+            ):
+                return True
+
+        parameters = row.get("command_parameters_json")
+        if not isinstance(parameters, Mapping):
+            raise OrchestrationError(
+                "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                "An active Run has invalid command parameters",
+            )
+        return self._execution_descriptor_is_protected_for_account(
+            parameters,
+            account_id=account_id,
+            arguments=parameters.get("arguments"),
+        )
+
+    def _execution_descriptor_is_protected_for_account(
+        self,
+        descriptor: Mapping[str, Any],
+        *,
+        account_id: str,
+        arguments: Any,
+    ) -> bool:
+        tool_name = str(descriptor.get("tool_name") or "").strip()
+        descriptor_arguments = arguments if isinstance(arguments, Mapping) else {}
+        explicit_account_id = descriptor.get("account_id")
+        account_ids = self._account_ids_for_tool_execution(
+            tool_name=tool_name,
+            arguments=descriptor_arguments,
+            explicit_account_id=explicit_account_id,
+        )
+        if account_id not in account_ids:
+            return False
+        raw_operation = str(descriptor.get("operation_type") or "").strip()
+        if not raw_operation:
+            capability = self._catalog.get_capability(tool_name)
+            if not isinstance(capability, Mapping):
+                raise OrchestrationError(
+                    "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                    "An account-bound active Run references an unknown tool contract",
+                )
+            raw_operation = str(capability.get("operation_type") or "").strip()
+        if raw_operation not in {item.value for item in OperationType}:
+            raise OrchestrationError(
+                "ACCOUNT_ACTIVE_RUN_CHECK_FAILED",
+                "An account-bound active Run has an invalid operation type",
+            )
+        return raw_operation in PROTECTED_CREDENTIAL_OPERATIONS
+
+    def revoke_exact_policies_for_account(self, account_id: str) -> dict[str, Any]:
+        """Atomically revoke every exact exemption that references ``account_id``.
+
+        Credential persistence calls this synchronously before touching the
+        credential store. Any repository failure propagates so the caller can
+        fail closed without changing the external principal behind an approved
+        account slot.
+        """
+
+        safe_account_id = _validate_account_id(account_id)
+        self._mark_credentials_change_started(safe_account_id)
+        try:
+            return self._revoke_exact_policies_for_account(safe_account_id)
+        finally:
+            self._mark_credentials_change_finished(safe_account_id)
+
+    def _revoke_exact_policies_for_account(
+        self,
+        safe_account_id: str,
+    ) -> dict[str, Any]:
+        request_id = new_id()
+        correlation_id = new_id()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        revoked_task_ids: list[str] = []
+        try:
+            with self._repository.unit_of_work() as uow:
+                rows = uow.scheduled_policies.list_with_tasks(for_update=True)
+                affected = [
+                    row
+                    for row in rows
+                    if str(row.get("mode") or "")
+                    == ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value
+                    and safe_account_id in self._account_ids_for_task(row)
+                ]
+                for row in affected:
+                    task_id = str(row.get("id") or "").strip()
+                    updated = uow.scheduled_policies.update_policy(
+                        task_id,
+                        expected_version=int(row.get("policy_version") or 0),
+                        mode=ScheduledTaskApprovalMode.REQUIRE_EACH_RUN.value,
+                        contract_hash=None,
+                        contract_snapshot=None,
+                        tool_contract_hash=None,
+                        actor_id=ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+                        actor_role="system",
+                        actor_display_name="Account credential safety guard",
+                        comment=ACCOUNT_CREDENTIAL_CHANGE_COMMENT,
+                    )
+                    uow.scheduled_policies.append_event(
+                        {
+                            "task_id": task_id,
+                            "request_id": request_id,
+                            "from_mode": ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
+                            "to_mode": ScheduledTaskApprovalMode.REQUIRE_EACH_RUN.value,
+                            "contract_hash": None,
+                            "contract_snapshot_json": None,
+                            "tool_contract_hash": None,
+                            "actor_id": ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+                            "actor_role": "system",
+                            "actor_display_name": "Account credential safety guard",
+                            "reason": ACCOUNT_CREDENTIAL_CHANGE_REASON,
+                            "comment": ACCOUNT_CREDENTIAL_CHANGE_COMMENT,
+                            "occurred_at": now,
+                            "correlation_id": correlation_id,
+                        }
+                    )
+                    self._append_domain_event(
+                        uow,
+                        task_id=task_id,
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        mode=ScheduledTaskApprovalMode.REQUIRE_EACH_RUN.value,
+                        version=int(updated["version"]),
+                        actor_id=ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+                        occurred_at=now,
+                    )
+                    revoked_task_ids.append(task_id)
+                uow.commit()
+        except ConcurrentUpdateError as exc:
+            raise OrchestrationError(
+                "ACCOUNT_POLICY_REVOCATION_CONFLICT",
+                "Scheduled approval policy changed while credentials were being prepared",
+            ) from exc
+        return {
+            "account_id": safe_account_id,
+            "revoked_count": len(revoked_task_ids),
+            "task_ids": sorted(revoked_task_ids),
+        }
+
+    def _mark_credentials_change_started(self, account_id: str) -> None:
+        with self._credential_policy_lock:
+            self._credential_changes_in_progress[account_id] = (
+                self._credential_changes_in_progress.get(account_id, 0) + 1
+            )
+
+    def _mark_credentials_change_finished(self, account_id: str) -> None:
+        with self._credential_policy_lock:
+            remaining = self._credential_changes_in_progress.get(account_id, 0) - 1
+            if remaining > 0:
+                self._credential_changes_in_progress[account_id] = remaining
+            else:
+                self._credential_changes_in_progress.pop(account_id, None)
+
+    def _account_ids_for_task(self, task: Mapping[str, Any]) -> set[str]:
+        return self._account_ids_for_tool_execution(
+            tool_name=str(task.get("tool_name") or "").strip(),
+            arguments=task.get("tool_params") or {},
+        )
+
+    def _account_ids_for_tool_execution(
+        self,
+        *,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        explicit_account_id: Any = None,
+    ) -> set[str]:
+        account_ids = _collect_account_ids(arguments)
+        safe_explicit = str(explicit_account_id or "").strip()
+        if safe_explicit:
+            account_ids.add(safe_explicit)
+        account_ids.update(
+            self._implicit_account_ids_by_tool.get(str(tool_name or "").strip(), ())
+        )
+        return account_ids
+
+    def _reject_exact_grant_during_credentials_change(
+        self,
+        tasks: Sequence[Mapping[str, Any]],
+    ) -> None:
+        changing = set(self._credential_changes_in_progress)
+        blocked_task_ids = sorted(
+            str(task.get("id") or "").strip()
+            for task in tasks
+            if self._account_ids_for_task(task) & changing
+        )
+        if blocked_task_ids:
+            raise OrchestrationError(
+                "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS",
+                "Exact schedule exemption cannot be granted while referenced account credentials are changing",
+                details={"task_ids": blocked_task_ids},
+            )
 
     def set_policies(
         self,
@@ -130,6 +486,9 @@ class ScheduledTaskApprovalService:
         safe_comment = redact_text(comment).strip()[:1000]
         results: list[dict[str, Any]] = []
         active_account_ids = self._load_active_account_ids()
+        exact_grant = target_mode is ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT
+        if exact_grant:
+            self._credential_policy_lock.acquire()
         try:
             with self._repository.unit_of_work() as uow:
                 prepared: list[tuple[dict[str, Any], dict[str, Any], Any, dict[str, str]]] = []
@@ -159,6 +518,11 @@ class ScheduledTaskApprovalService:
                             "Scheduled task configuration changed; refresh and review it before changing approval policy",
                             details={"task_id": task_id},
                         )
+
+                if exact_grant:
+                    self._reject_exact_grant_during_credentials_change(
+                        tuple(task for task, _policy in locked)
+                    )
 
                 existing_events = uow.scheduled_policies.list_events_by_request(
                     safe_request_id,
@@ -255,6 +619,9 @@ class ScheduledTaskApprovalService:
                 uow.commit()
         except ConcurrentUpdateError as exc:
             raise OrchestrationError("POLICY_VERSION_CONFLICT", "A scheduled policy changed concurrently") from exc
+        finally:
+            if exact_grant:
+                self._credential_policy_lock.release()
         return {"items": results, "updated_count": len(results)}
 
     def bootstrap_reviewed_policies(self) -> dict[str, int]:
@@ -366,64 +733,66 @@ class ScheduledTaskApprovalService:
         request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:control-plane-v1:{task_id}"))
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         correlation_id = new_id()
-        with self._repository.unit_of_work() as uow:
-            locked_task = uow.scheduled_policies.lock_task(task_id)
-            if locked_task is None:
-                raise OrchestrationError("SCHEDULE_TASK_NOT_FOUND", "Scheduled task disappeared")
-            _capability, locked_contract, _rules = self._contract_for_task(
-                locked_task,
-                require_reviewed=True,
-                active_account_ids=active_account_ids,
-            )
-            if locked_contract is None:
-                raise OrchestrationError("SCHEDULE_EXEMPT_NOT_ALLOWED", "Reviewed task contract changed")
-            policy = uow.scheduled_policies.ensure_default(task_id)
-            if uow.scheduled_policies.get_event_by_request(task_id, request_id):
+        with self._credential_policy_lock:
+            with self._repository.unit_of_work() as uow:
+                locked_task = uow.scheduled_policies.lock_task(task_id)
+                if locked_task is None:
+                    raise OrchestrationError("SCHEDULE_TASK_NOT_FOUND", "Scheduled task disappeared")
+                self._reject_exact_grant_during_credentials_change((locked_task,))
+                _capability, locked_contract, _rules = self._contract_for_task(
+                    locked_task,
+                    require_reviewed=True,
+                    active_account_ids=active_account_ids,
+                )
+                if locked_contract is None:
+                    raise OrchestrationError("SCHEDULE_EXEMPT_NOT_ALLOWED", "Reviewed task contract changed")
+                policy = uow.scheduled_policies.ensure_default(task_id)
+                if uow.scheduled_policies.get_event_by_request(task_id, request_id):
+                    uow.commit()
+                    return
+                if str(policy.get("mode") or "") != ScheduledTaskApprovalMode.REQUIRE_EACH_RUN.value:
+                    raise OrchestrationError("POLICY_VERSION_CONFLICT", "Scheduled policy is already configured")
+                updated = uow.scheduled_policies.update_policy(
+                    task_id,
+                    expected_version=int(policy["version"]),
+                    mode=ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
+                    contract_hash=locked_contract.contract_hash,
+                    contract_snapshot=locked_contract.snapshot,
+                    tool_contract_hash=locked_contract.tool_contract_hash,
+                    actor_id=MIGRATION_ACTOR_ID,
+                    actor_role=MIGRATION_ACTOR_ROLE,
+                    actor_display_name="Control Plane v1 migration",
+                    comment=MIGRATION_COMMENT,
+                )
+                uow.scheduled_policies.append_event(
+                    {
+                        "task_id": task_id,
+                        "request_id": request_id,
+                        "from_mode": policy.get("mode"),
+                        "to_mode": ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
+                        "contract_hash": locked_contract.contract_hash,
+                        "contract_snapshot_json": locked_contract.snapshot,
+                        "tool_contract_hash": locked_contract.tool_contract_hash,
+                        "actor_id": MIGRATION_ACTOR_ID,
+                        "actor_role": MIGRATION_ACTOR_ROLE,
+                        "actor_display_name": "Control Plane v1 migration",
+                        "reason": "control_plane_v1_bootstrap",
+                        "comment": MIGRATION_COMMENT,
+                        "occurred_at": now,
+                        "correlation_id": correlation_id,
+                    }
+                )
+                self._append_domain_event(
+                    uow,
+                    task_id=task_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    mode=ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
+                    version=int(updated["version"]),
+                    actor_id=MIGRATION_ACTOR_ID,
+                    occurred_at=now,
+                )
                 uow.commit()
-                return
-            if str(policy.get("mode") or "") != ScheduledTaskApprovalMode.REQUIRE_EACH_RUN.value:
-                raise OrchestrationError("POLICY_VERSION_CONFLICT", "Scheduled policy is already configured")
-            updated = uow.scheduled_policies.update_policy(
-                task_id,
-                expected_version=int(policy["version"]),
-                mode=ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
-                contract_hash=locked_contract.contract_hash,
-                contract_snapshot=locked_contract.snapshot,
-                tool_contract_hash=locked_contract.tool_contract_hash,
-                actor_id=MIGRATION_ACTOR_ID,
-                actor_role=MIGRATION_ACTOR_ROLE,
-                actor_display_name="Control Plane v1 migration",
-                comment=MIGRATION_COMMENT,
-            )
-            uow.scheduled_policies.append_event(
-                {
-                    "task_id": task_id,
-                    "request_id": request_id,
-                    "from_mode": policy.get("mode"),
-                    "to_mode": ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
-                    "contract_hash": locked_contract.contract_hash,
-                    "contract_snapshot_json": locked_contract.snapshot,
-                    "tool_contract_hash": locked_contract.tool_contract_hash,
-                    "actor_id": MIGRATION_ACTOR_ID,
-                    "actor_role": MIGRATION_ACTOR_ROLE,
-                    "actor_display_name": "Control Plane v1 migration",
-                    "reason": "control_plane_v1_bootstrap",
-                    "comment": MIGRATION_COMMENT,
-                    "occurred_at": now,
-                    "correlation_id": correlation_id,
-                }
-            )
-            self._append_domain_event(
-                uow,
-                task_id=task_id,
-                request_id=request_id,
-                correlation_id=correlation_id,
-                mode=ScheduledTaskApprovalMode.EXACT_SCHEDULE_EXEMPT.value,
-                version=int(updated["version"]),
-                actor_id=MIGRATION_ACTOR_ID,
-                occurred_at=now,
-            )
-            uow.commit()
 
     def _contract_for_task(
         self,
@@ -633,6 +1002,10 @@ def _datetime_text(value: Any) -> str | None:
     return str(value)
 
 
+def _noop_finish() -> None:
+    return None
+
+
 def _enabled(value: Any) -> bool:
     return value is True or type(value) is int and value == 1
 
@@ -648,6 +1021,41 @@ def _runtime_dynamic_rules(tool_name: str) -> dict[str, str]:
     if tool_name == "sync_finance_bills":
         return {"target_date": "scheduled_previous_day"}
     return {}
+
+
+def _validate_account_id(account_id: str) -> str:
+    safe_account_id = str(account_id or "").strip()
+    if not safe_account_id or len(safe_account_id) > 191:
+        raise OrchestrationError(
+            "INVALID_ACCOUNT_ID",
+            "A valid account_id is required before changing credentials",
+        )
+    return safe_account_id
+
+
+def _normalize_implicit_account_ids(
+    values: Mapping[str, Sequence[str]] | None,
+) -> dict[str, frozenset[str]]:
+    normalized: dict[str, frozenset[str]] = {}
+    for raw_tool_name, raw_account_ids in (values or {}).items():
+        tool_name = str(raw_tool_name or "").strip()
+        if not tool_name:
+            raise ValueError("implicit account mapping contains an empty tool name")
+        if isinstance(raw_account_ids, str):
+            candidates: Sequence[str] = (raw_account_ids,)
+        else:
+            candidates = raw_account_ids
+        account_ids = frozenset(
+            str(value or "").strip()
+            for value in candidates
+            if str(value or "").strip()
+        )
+        if not account_ids:
+            raise ValueError(
+                f"implicit account mapping for {tool_name!r} must not be empty"
+            )
+        normalized[tool_name] = account_ids
+    return normalized
 
 
 def _collect_account_ids(value: Any, *, key: str = "") -> set[str]:

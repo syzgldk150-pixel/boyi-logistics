@@ -17,12 +17,14 @@ def test_daily_sign_account_migration_accepts_only_reviewed_old_or_new_shapes() 
     assert "@cp016_invalid_daily_sign_rows" in sql
     assert "JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 3" in sql
     assert "JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 5" in sql
+    assert "JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 6" in sql
     assert "'$.r13_account_id')) = 'r13_default'" in sql
     assert "'$.account_id')) = 'ronghui_daxiang_s'" in sql
     assert "'$.problem_account_id')) = 'ronghui_daxiang_s'" in sql
     assert "'$.sign_account_id')) = 'ronghui_daxiang_s'" in sql
     assert "'$.detail_account_id')) IN ('ronghui_default', 'ronghui_daxiang_s')" in sql
     assert "information_schema.cp016_invalid_daily_sign_account_contract" in sql
+    assert "'$.account_id')) = 'r13_default'" in sql
 
 
 def test_daily_sign_account_migration_writes_one_tms_account_contract() -> None:
@@ -36,4 +38,18 @@ def test_daily_sign_account_migration_writes_one_tms_account_contract() -> None:
     assert "sign_account_id" not in update_sql
     assert "detail_account_id" not in update_sql
     assert "task.configuration_version = task.configuration_version + 1" in update_sql
-    assert "JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) = 5" in update_sql
+    assert "JSON_LENGTH(COALESCE(task.tool_params, JSON_OBJECT())) IN (5, 6)" in update_sql
+
+
+def test_daily_sign_account_migration_is_backed_up_and_transaction_guarded() -> None:
+    sql = _sql()
+
+    backup = sql.index("CREATE TABLE IF NOT EXISTS daily_sign_single_tms_backup_016")
+    transaction = sql.index("START TRANSACTION")
+    update = sql.index("UPDATE scheduled_tasks AS task")
+    post_guard = sql.index("@cp016_noncanonical_rows")
+    commit = sql.index("COMMIT")
+
+    assert backup < transaction < update < post_guard < commit
+    assert "INSERT IGNORE INTO daily_sign_single_tms_backup_016" in sql
+    assert "information_schema.cp016_daily_sign_account_upgrade_failed" in sql

@@ -172,6 +172,7 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     ),
     RunStatus.RUNNING: frozenset(
         {
+            RunStatus.WAITING_APPROVAL,
             RunStatus.VERIFYING,
             RunStatus.NEEDS_CLARIFICATION,
             RunStatus.BLOCKED_LOGIN,

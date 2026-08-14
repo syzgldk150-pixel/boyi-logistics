@@ -27,6 +27,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
 from shared.finance.sources import (
+    enabled_finance_account_ids,
     enabled_finance_platforms,
     enabled_finance_source_specs,
 )
@@ -150,7 +151,16 @@ from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import import_phase7_resources
 from agent.runtime_config import load_agent_environment
-from agent.scheduler import init_scheduler, reload_scheduler, seed_phase7_schedule_tasks
+from agent.scheduler import (
+    begin_scheduler_release_activation,
+    consume_scheduler_release_hold,
+    init_scheduler,
+    pause_scheduler_for_release,
+    reload_scheduler,
+    scheduler_release_hold_requested,
+    scheduler_runtime_status,
+    seed_phase7_schedule_tasks,
+)
 from agent.tms_runtime import router as tms_router
 from agent.api_contracts import validation_failure
 from agent.tms_runtime.account_manager import get_account_manager
@@ -195,6 +205,7 @@ _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 AGENT_INTERNAL_API_TOKEN = ""
 CONSOLE_IDENTITY_VERIFIER: ConsoleIdentityVerifier | None = None
+RELEASE_ACTIVATION_LOCK = asyncio.Lock()
 TMS_SESSION_ALERT_STATUSES = {"pending_code", "expired", "logged_out", "error"}
 TMS_SESSION_TRANSITION_ALERT_STATUSES = {"expired", "logged_out", "error"}
 TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
@@ -896,6 +907,13 @@ async def lifespan(app: FastAPI):
         catalog,
         enabled_finance_platforms=enabled_finance_platforms(),
         active_account_ids_provider=_active_account_ids,
+        implicit_account_ids_by_tool={
+            "sync_finance_bills": enabled_finance_account_ids(),
+        },
+    )
+    account_manager = get_account_manager()
+    account_manager.set_credentials_change_guard(
+        schedule_policy_service.begin_credentials_change
     )
     scheduled_task_approval_service = schedule_policy_service
     scheduled_task_approval_bootstrap = await asyncio.to_thread(
@@ -931,6 +949,7 @@ async def lifespan(app: FastAPI):
         approval_service=approval_service,
         verifier=ResultVerifier(),
         worker_id=f"{INSTANCE_ID}:runs",
+        protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
     )
     runner_holder["runner"] = runner
     dispatcher = OutboxDispatcher(
@@ -971,7 +990,8 @@ async def lifespan(app: FastAPI):
         execution_runtime=tool_executor,
         control_plane_service=service,
     )
-    await runner.start()
+    release_hold = scheduler_release_hold_requested()
+    await runner.start(held_for_release=release_hold)
     await dispatcher.start()
     bind_agent_runtime(runtime, loop)
     bind_agent_command_runtime(runtime)
@@ -989,8 +1009,12 @@ async def lifespan(app: FastAPI):
     register_account_session_restored(on_session_restored)
 
     scheduler = init_scheduler(runtime)
-    scheduler.start()
-    logger.info("APScheduler started with %d jobs", len(scheduler.get_jobs()))
+    scheduler.start(paused=release_hold)
+    logger.info(
+        "APScheduler started with %d jobs state=%s",
+        len(scheduler.get_jobs()),
+        "paused_for_release" if release_hold else "running",
+    )
 
     if websocket_enabled():
         await start_feishu_ws(runtime)
@@ -1028,6 +1052,7 @@ async def lifespan(app: FastAPI):
     orchestration_repository = None
     agent_core = None
     CONSOLE_IDENTITY_VERIFIER = None
+    account_manager.set_credentials_change_guard(None)
     logger.info("Agent service stopped")
 
 
@@ -1072,6 +1097,12 @@ async def orchestration_error_handler(request: Request, exc: OrchestrationError)
         "PLAN_STALE": 409,
         "POLICY_VERSION_CONFLICT": 409,
         "TASK_CONFIGURATION_VERSION_CONFLICT": 409,
+        "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS": 409,
+        "ACCOUNT_EXECUTION_IN_PROGRESS": 409,
+        "ACCOUNT_CREDENTIAL_ACTIVE_RUN": 409,
+        "ACCOUNT_POLICY_REVOCATION_CONFLICT": 409,
+        "ACCOUNT_ACTIVE_RUN_CHECK_FAILED": 503,
+        "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE": 503,
         "IDEMPOTENCY_CONFLICT": 409,
         "SCHEDULE_TASK_NOT_FOUND": 404,
         "ILLEGAL_RUN_TRANSITION": 409,
@@ -1532,6 +1563,16 @@ async def internal_health():
                 "glm": runtime.llm_status("glm"),
                 "mysql": runtime.db_status(),
                 "outbox": _orchestration_repo().outbox_health(),
+                "scheduler": scheduler_runtime_status(),
+                "workflow_runner": (
+                    workflow_runner.runtime_status()
+                    if workflow_runner is not None
+                    else {
+                        "state": "stopped",
+                        "release_hold": False,
+                        "active_runs": 0,
+                    }
+                ),
                 "scheduled_task_approval_bootstrap": dict(scheduled_task_approval_bootstrap),
                 "tms_session": get_session_broker().describe_status(validate=False),
             },
@@ -2058,6 +2099,42 @@ async def reload_runtime():
 @app.post("/internal/v1/admin/reload")
 async def internal_reload_runtime():
     return api_success(await reload_runtime())
+
+
+@app.post("/internal/v1/admin/scheduler/activate-after-release")
+async def internal_activate_scheduler_after_release(request: Request):
+    _require_console_admin_request(request)
+    runner = workflow_runner
+    if runner is None:
+        raise HTTPException(status_code=409, detail="Workflow runner is unavailable")
+    async with RELEASE_ACTIVATION_LOCK:
+        try:
+            scheduler_status = begin_scheduler_release_activation(_release_sha())
+            worker_status = runner.resume_after_release()
+            if (
+                scheduler_status.get("state") != "running"
+                or worker_status.get("state") != "running"
+                or worker_status.get("release_hold") is not False
+            ):
+                raise RuntimeError("Release runtimes did not enter the running state")
+            scheduler_status = consume_scheduler_release_hold(_release_sha())
+        except RuntimeError as exc:
+            if scheduler_release_hold_requested():
+                try:
+                    runner.hold_for_release()
+                except RuntimeError:
+                    logger.exception("Workflow runner could not be re-held after activation failure")
+                try:
+                    pause_scheduler_for_release()
+                except RuntimeError:
+                    logger.exception("Scheduler could not be re-held after activation failure")
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    status = {
+        **scheduler_status,
+        "workflow_runner": runner.runtime_status(),
+    }
+    logger.info("Release hold consumed after scheduler and workflow runner activation")
+    return api_success(status)
 
 
 def _llm_settings_repository() -> LLMSettingsRepository:

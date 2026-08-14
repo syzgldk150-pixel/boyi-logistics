@@ -87,6 +87,26 @@ def _legacy_clock_rows(runner, contracts: dict[str, dict]) -> list[dict]:
     ]
 
 
+def _applied_014_clock_rows(runner, contracts: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "id": task_id,
+            "tool_name": (
+                "clock_in_dual"
+                if task_id == "clockin_daxiang_1830"
+                else "tms_query"
+            ),
+            "tool_params": runner._applied_014_clock_arguments(
+                task_id,
+                contract["canonical_arguments"],
+            ),
+            "cron_expression": contract["cron_expression"],
+            "enabled": 1,
+        }
+        for task_id, contract in sorted(contracts.items())
+    ]
+
+
 def test_preflight_consumes_the_exact_code_reviewed_51_id_set(runner) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
     clock_contracts = runner._load_control_plane_clock_contracts()
@@ -187,6 +207,43 @@ def test_optional_finance_yunda_and_startup_contracts_are_exact_and_disabled_saf
     assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
 
 
+def test_post_bootstrap_manifest_allows_admin_enabled_state_changes(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    optional = runner._load_control_plane_optional_task_contracts()
+    clocks = runner._load_control_plane_clock_contracts()
+    r7_contracts = runner._load_control_plane_r7_contracts()
+    rows = (
+        _canonical_rows(contracts)
+        + _canonical_rows(optional)
+        + _canonical_clock_rows(runner, clocks)
+        + _canonical_rows(r7_contracts)
+    )
+    rows[0]["enabled"] = 0
+    next(row for row in rows if row["id"] == "clockin_daxiang_1830")[
+        "enabled"
+    ] = 0
+
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError):
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            optional_contracts=optional,
+            clock_contracts=clocks,
+            r7_contracts=r7_contracts,
+        )
+
+    result = runner.validate_control_plane_task_cutover(
+        rows,
+        contracts=contracts,
+        optional_contracts=optional,
+        clock_contracts=clocks,
+        r7_contracts=r7_contracts,
+        allow_reviewed_disabled=True,
+    )
+
+    assert result == {"reviewed_rows": 69, "canonical_rows": 69, "legacy_rows": 0}
+
+
 def test_exact_thirteen_r7_rows_are_all_or_nothing_and_shape_locked(runner) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
     r7_contracts = runner._load_control_plane_r7_contracts()
@@ -246,6 +303,83 @@ def test_exact_clock_pair_accepts_c7_legacy_and_canonical_shapes(runner) -> None
         "canonical_rows": 53,
         "legacy_rows": 0,
     }
+
+
+def test_exact_clock_pair_accepts_only_the_known_applied_014_transition(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    clock_contracts = runner._load_control_plane_clock_contracts()
+    rows = _applied_014_clock_rows(runner, clock_contracts)
+
+    result = runner.validate_control_plane_task_cutover(
+        _canonical_rows(contracts) + rows,
+        contracts=contracts,
+        clock_contracts=clock_contracts,
+    )
+
+    assert result == {
+        "reviewed_rows": 53,
+        "canonical_rows": 51,
+        "legacy_rows": 2,
+    }
+
+    rows[0]["tool_params"]["timeout_sec"] = 601
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            _canonical_rows(contracts) + rows,
+            contracts=contracts,
+            clock_contracts=clock_contracts,
+        )
+    assert error.value.code == "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED"
+
+
+def test_applied_014_daily_sign_and_finance_shapes_are_transition_only(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    optional = runner._load_control_plane_optional_task_contracts()
+    rows = _canonical_rows(contracts)
+    daily_row = next(row for row in rows if row["id"] == "daily_sign_0500")
+    daily_row["tool_params"] = {
+        "account_id": "r13_default",
+        "r13_account_id": "r13_default",
+        "problem_account_id": "ronghui_daxiang_s",
+        "sign_account_id": "ronghui_daxiang_s",
+        "detail_account_id": "ronghui_default",
+        "days": 7,
+    }
+    rows.append(
+        {
+            "id": "finance_bills_0010",
+            "tool_name": "sync_finance_bills",
+            "tool_params": {
+                "account_id": "ronghui_default",
+                "mode": "sync",
+                "platform": "ronghui",
+                "rescan_days": 7,
+            },
+            "cron_expression": "10 0 * * *",
+            "enabled": 0,
+        }
+    )
+
+    result = runner.validate_control_plane_task_cutover(
+        rows,
+        contracts=contracts,
+        optional_contracts=optional,
+    )
+
+    assert result == {
+        "reviewed_rows": 51,
+        "canonical_rows": 50,
+        "legacy_rows": 1,
+    }
+
+    daily_row["tool_params"]["unexpected"] = True
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            optional_contracts=optional,
+        )
+    assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
 
 
 def test_truly_empty_scheduler_is_a_clean_bootstrap_not_a_partial_cutover(runner) -> None:

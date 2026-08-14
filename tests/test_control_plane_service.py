@@ -429,6 +429,24 @@ class ControlPlaneServiceTests(unittest.TestCase):
         self.assertEqual("FAILED_TERMINAL", repository.runs["run-1"]["status"])
         self.assertEqual(1, repository.run_store.linked_retry_calls)
 
+    def test_terminal_write_retry_is_rejected_before_scheduler_identity_can_be_reused(self):
+        source = _run("run-1", "FAILED_TERMINAL")
+        source["plan_json"]["steps"][0]["operation_type"] = "external_write"
+        repository = _FakeRepository([source])
+        service, _approval = self._service(repository)
+
+        with self.assertRaisesRegex(
+            OrchestrationError,
+            "Write runs cannot be replayed",
+        ) as raised:
+            service.retry_run("run-1", actor=ACTOR)
+
+        self.assertEqual(
+            "UNSAFE_WRITE_RETRY_REQUIRES_NEW_COMMAND",
+            raised.exception.code,
+        )
+        self.assertEqual(0, repository.run_store.linked_retry_calls)
+
     def test_completed_run_cannot_be_retried(self):
         repository = _FakeRepository([_run("run-1", "COMPLETED")])
         service, _approval = self._service(repository)

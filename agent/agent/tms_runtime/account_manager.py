@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID, PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
@@ -272,6 +272,39 @@ class AutomationAccountManager:
         self._migrate_legacy_price_session()
         self._auto_login_locks: dict[str, threading.Lock] = {}
         self._auto_login_locks_guard = threading.Lock()
+        self._credentials_change_guard: (
+            Callable[[str], Callable[[], None]] | None
+        ) = None
+
+    def set_credentials_change_guard(
+        self,
+        callback: Callable[[str], Callable[[], None]] | None,
+    ) -> None:
+        if callback is not None and not callable(callback):
+            raise TypeError("credentials change guard must be callable")
+        self._credentials_change_guard = callback
+
+    def _begin_credentials_change(
+        self,
+        account_id: str,
+    ) -> Callable[[], None]:
+        callback = self._credentials_change_guard
+        if callback is None:
+            return lambda: None
+        try:
+            finish = callback(account_id)
+            if not callable(finish):
+                raise TypeError("credentials change guard must return a cleanup callback")
+        except Exception as exc:
+            logger.warning(
+                "Credential change blocked because scheduled policy revocation failed account_id=%s",
+                account_id,
+            )
+            raise TMSAuthStateError(
+                "CREDENTIAL_POLICY_REVOCATION_FAILED",
+                "Credentials were not changed because scheduled approval exemptions could not be revoked.",
+            ) from exc
+        return finish
 
     @staticmethod
     def _migrate_legacy_price_session() -> None:
@@ -836,11 +869,17 @@ class AutomationAccountManager:
         row = self._get_account_row(account_id)
         config = SYSTEMS[row["system"]]
         if self._uses_tms_broker(row):
-            self._broker(row).save_credentials(
-                username=username,
-                password=password,
-                phone=phone,
+            finish_credentials_change = self._begin_credentials_change(
+                row["account_id"]
             )
+            try:
+                self._broker(row).save_credentials(
+                    username=username,
+                    password=password,
+                    phone=phone,
+                )
+            finally:
+                finish_credentials_change()
             return self.public_credentials(row["account_id"])
 
         existing = self._load_local_credentials(row["account_id"])
@@ -862,15 +901,27 @@ class AutomationAccountManager:
             missing.append("手机号")
         if missing:
             raise TMSAuthStateError("AUTH_REQUIRED", "、".join(missing) + "不能为空。")
-        _write_json(_local_credential_path(row["account_id"]), payload)
+        finish_credentials_change = self._begin_credentials_change(
+            row["account_id"]
+        )
+        try:
+            _write_json(_local_credential_path(row["account_id"]), payload)
+        finally:
+            finish_credentials_change()
         return self.public_credentials(row["account_id"])
 
     def clear_credentials(self, account_id: str) -> dict[str, Any]:
         row = self._get_account_row(account_id)
-        if self._uses_tms_broker(row):
-            self._broker(row).clear_saved_credentials()
-        else:
-            _local_credential_path(row["account_id"]).unlink(missing_ok=True)
+        finish_credentials_change = self._begin_credentials_change(
+            row["account_id"]
+        )
+        try:
+            if self._uses_tms_broker(row):
+                self._broker(row).clear_saved_credentials()
+            else:
+                _local_credential_path(row["account_id"]).unlink(missing_ok=True)
+        finally:
+            finish_credentials_change()
         self._set_auto_login_state(
             row["account_id"],
             enabled=False,
