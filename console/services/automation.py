@@ -1,6 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from console.services.control_plane import ControlPlaneServiceMixin
 
 
 class AutomationServiceMixin:
@@ -288,7 +289,7 @@ class AutomationServiceMixin:
                     f"console:{trusted_context['actor']['actor_id']}:tool.execute:"
                     f"{browser_request_uuid}"
                 ),
-                **trusted_context,
+                **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context),
             },
             timeout=self.settings.agent_timeout_seconds,
         )
@@ -955,7 +956,7 @@ class AutomationServiceMixin:
         result = self._agent_request(
             "POST",
             f"/internal/v1/runs/{quote(run_id, safe='')}/cancel",
-            payload={"comment": "Console 自动化页面取消", **trusted_context},
+            payload={"comment": "Console 自动化页面取消", **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=10,
         )
         if not result.get("ok"):

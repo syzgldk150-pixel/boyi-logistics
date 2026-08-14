@@ -1,6 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from console.services.control_plane import ControlPlaneServiceMixin
 from shared.manual_entry_contracts import canonical_manual_proxy_path
 
 
@@ -342,7 +343,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180, **trusted_context},
+            payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -425,7 +426,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180, **trusted_context},
+            payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -529,7 +530,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180, **trusted_context},
+            payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
@@ -622,7 +623,7 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180, **trusted_context},
+            payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
         )
         if not result.get("ok"):
