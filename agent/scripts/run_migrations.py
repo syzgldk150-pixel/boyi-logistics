@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -111,6 +111,13 @@ CONTROL_PLANE_STATIC_SEED_TASK_IDS = frozenset(
 )
 CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256 = (
     "c33492072957c7cc41ad8769d0c790b50d3b5314427e3912609432ea9d320912"
+)
+CONTROL_PLANE_REVIEWED_ARRIVE_SITE_SHA256 = (
+    "5ff8d6c00584886090be588977393764370cbcac7f7d983a2f0b330c5f37b135"
+)
+CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID = "yunda_send_waybills_2355"
+CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256 = (
+    "19129e9c68d5e20050a7d8c8e8489f4f1313f9fb6188adc55229aaeacad9c0e3"
 )
 CONTROL_PLANE_CLOCK_TOOL_NAMES = frozenset({"tms_query", "clock_in_dual"})
 CONTROL_PLANE_TASK_CANDIDATE_SQL = """
@@ -662,17 +669,22 @@ def _decode_task_arguments(value: Any) -> dict[str, Any]:
 
 def _is_legacy_task_arguments(group_id: str, arguments: dict[str, Any]) -> bool:
     if group_id == "arrive_list":
-        return (
-            set(arguments) == {"account_id", "login_site_code", "site_code", "target_date"}
-            and arguments.get("account_id") == "ronghui_default"
+        legacy_shape = (
+            set(arguments)
+            == {"account_id", "login_site_code", "site_code", "target_date"}
             and type(arguments.get("login_site_code")) is str
             and bool(arguments["login_site_code"].strip())
-            # ``site_code`` was audited as unconsumed by the legacy
-            # sync_arrive_list wrapper.  It is accepted only in this exact
-            # legacy shape, is never treated as authority, and is never logged.
+            and arguments.get("target_date") == ""
+        )
+        applied_014_shape = set(arguments) == {"account_id", "site_code"}
+        return (
+            arguments.get("account_id") == "ronghui_default"
+            and (legacy_shape or applied_014_shape)
+            # ``site_code`` was audited as unconsumed by the arrive-list
+            # wrapper.  Both accepted shapes are fingerprint-bound below;
+            # migration 017 removes the applied-014 residue transactionally.
             and type(arguments.get("site_code")) is str
             and bool(arguments["site_code"].strip())
-            and arguments.get("target_date") == ""
         )
     if group_id == "daily_sign":
         return any(
@@ -967,7 +979,9 @@ def validate_control_plane_task_cutover(
     clock_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     r7_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     reviewed_login_site_sha256: str = CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256,
+    reviewed_arrive_site_sha256: str = CONTROL_PLANE_REVIEWED_ARRIVE_SITE_SHA256,
     allow_reviewed_disabled: bool = False,
+    allow_reviewed_disabled_ids: Collection[str] | None = None,
 ) -> dict[str, int]:
     """Validate scheduler rows without returning any persisted values."""
 
@@ -986,6 +1000,11 @@ def validate_control_plane_task_cutover(
     resolved_r7_contracts = (
         _load_control_plane_r7_contracts() if r7_contracts is None else r7_contracts
     )
+    reviewed_disabled_ids = frozenset(allow_reviewed_disabled_ids or ())
+    if not reviewed_disabled_ids.issubset(contracts):
+        raise ControlPlaneTaskCutoverPreflightError(
+            "REVIEWED_DISABLED_TASK_SET_INVALID"
+        )
     clock_summary = _validate_clock_policy(
         rows,
         contracts=resolved_clock_contracts,
@@ -1042,8 +1061,15 @@ def validate_control_plane_task_cutover(
             raise ControlPlaneTaskCutoverPreflightError("TASK_CRON_NOT_REVIEWED")
         if type(enabled) not in {bool, int} or enabled not in {False, True, 0, 1}:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ENABLED_TYPE_INVALID")
-        if not bool(enabled) and not optional and not allow_reviewed_disabled:
+        reviewed_disabled = task_id in reviewed_disabled_ids
+        if (
+            not bool(enabled)
+            and not optional
+            and not allow_reviewed_disabled
+            and not reviewed_disabled
+        ):
             raise ControlPlaneTaskCutoverPreflightError("PROTECTED_TASK_DISABLED")
+        count_reviewed = bool(enabled) or allow_reviewed_disabled or reviewed_disabled
 
         arguments = _decode_task_arguments(row.get("tool_params"))
         canonical_arguments = contract.get("canonical_arguments")
@@ -1055,22 +1081,30 @@ def validate_control_plane_task_cutover(
             arguments,
         )
         if is_canonical:
-            if bool(enabled) or allow_reviewed_disabled:
+            if count_reviewed:
                 canonical_count += 1
         elif is_legacy:
             if contract.get("group_id") == "arrive_list":
-                login_site_sha256 = hashlib.sha256(
-                    arguments["login_site_code"].strip().encode("utf-8")
-                ).hexdigest()
-                if login_site_sha256 != reviewed_login_site_sha256:
-                    raise ControlPlaneTaskCutoverPreflightError(
-                        "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
+                expected_fingerprints = {"site_code": reviewed_arrive_site_sha256}
+                if "login_site_code" in arguments:
+                    expected_fingerprints["login_site_code"] = (
+                        reviewed_login_site_sha256
                     )
-            if bool(enabled) or allow_reviewed_disabled:
+                for fingerprint_field, expected_fingerprint in (
+                    expected_fingerprints.items()
+                ):
+                    observed_fingerprint = hashlib.sha256(
+                        arguments[fingerprint_field].strip().encode("utf-8")
+                    ).hexdigest()
+                    if observed_fingerprint != expected_fingerprint:
+                        raise ControlPlaneTaskCutoverPreflightError(
+                            "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
+                        )
+            if count_reviewed:
                 legacy_count += 1
         else:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_NOT_REVIEWED")
-        if bool(enabled) or allow_reviewed_disabled:
+        if count_reviewed:
             reviewed_count += 1
 
     missing_count = len(set(contracts) - seen_task_ids)
@@ -1245,8 +1279,74 @@ def _is_within_daily_schedule_window(
     )
 
 
+def _applied_014_yunda_send_was_enabled(
+    cursor: Any,
+    *,
+    require_configuration_version: bool = False,
+) -> bool:
+    """Prove that 014 alone disabled the reviewed Yunda send schedule."""
+
+    if not _table_exists(cursor, CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE):
+        return False
+    configuration_version_predicate = (
+        "AND task.configuration_version = 1"
+        if require_configuration_version
+        else ""
+    )
+    cursor.execute(
+        f"""
+        SELECT COUNT(*) AS matched_count
+        FROM scheduled_tasks AS task
+        INNER JOIN {CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE} AS prior
+          ON BINARY prior.id = BINARY task.id
+        WHERE task.id = %s
+          AND task.tool_name = 'sync_yunda_send_waybills'
+          AND task.cron_expression = '55 23 * * *'
+          AND task.enabled = FALSE
+          AND task.last_status = 'disabled'
+          AND SHA2(COALESCE(task.last_message, ''), 256) = %s
+          {configuration_version_predicate}
+          AND JSON_LENGTH(task.tool_params) = 2
+          AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'
+          AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'yunda_default'
+          AND JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'BOOLEAN'
+          AND JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.ensure_fields')) = 'false'
+          AND prior.tool_name = 'sync_yunda_send_waybills'
+          AND prior.cron_expression = '55 23 * * *'
+          AND prior.enabled = TRUE
+          AND JSON_LENGTH(prior.tool_params) = 4
+          AND JSON_TYPE(JSON_EXTRACT(prior.tool_params, '$.account_id')) = 'STRING'
+          AND JSON_UNQUOTE(JSON_EXTRACT(prior.tool_params, '$.account_id')) = 'yunda_default'
+          AND JSON_TYPE(JSON_EXTRACT(prior.tool_params, '$.session_profile')) = 'STRING'
+          AND JSON_UNQUOTE(JSON_EXTRACT(prior.tool_params, '$.session_profile')) = 'yunda'
+          AND JSON_TYPE(JSON_EXTRACT(prior.tool_params, '$.ensure_fields')) = 'BOOLEAN'
+          AND JSON_UNQUOTE(JSON_EXTRACT(prior.tool_params, '$.ensure_fields')) = 'false'
+          AND JSON_TYPE(JSON_EXTRACT(prior.tool_params, '$.target_date')) = 'STRING'
+          AND JSON_UNQUOTE(JSON_EXTRACT(prior.tool_params, '$.target_date')) = ''
+        """,
+        (
+            CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID,
+            CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256,
+        ),
+    )
+    row = cursor.fetchone()
+    if isinstance(row, Mapping):
+        matched_count = row.get("matched_count")
+    elif isinstance(row, (tuple, list)) and row:
+        matched_count = row[0]
+    else:
+        matched_count = None
+    if type(matched_count) is not int or matched_count not in {0, 1}:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "APPLIED_014_YUNDA_SEND_PROOF_INVALID"
+        )
+    return matched_count == 1
+
+
 def _legacy_scheduled_write_crons(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    allow_reviewed_disabled_ids: Collection[str] = (),
 ) -> tuple[str, ...]:
     internal_contracts = _load_control_plane_reviewed_task_contracts()
     clock_contracts = _load_control_plane_clock_contracts()
@@ -1256,6 +1356,7 @@ def _legacy_scheduled_write_crons(
         contracts=internal_contracts,
         clock_contracts=clock_contracts,
         r7_contracts=r7_contracts,
+        allow_reviewed_disabled_ids=allow_reviewed_disabled_ids,
     )
     present_clock_ids = {
         row.get("id")
@@ -1267,7 +1368,20 @@ def _legacy_scheduled_write_crons(
         for task_id in sorted(present_clock_ids)
     )
     r7_crons = _validate_r7_policy(rows, contracts=r7_contracts)
-    return tuple(sorted(set((*clock_crons, *r7_crons))))
+    reviewed_yunda_crons = tuple(
+        str(internal_contracts[CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID]["cron_expression"])
+        for row in rows
+        if isinstance(row, Mapping)
+        and row.get("id") == CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID
+        and (
+            bool(row.get("enabled"))
+            or CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID
+            in allow_reviewed_disabled_ids
+        )
+    )
+    return tuple(
+        sorted(set((*clock_crons, *r7_crons, *reviewed_yunda_crons)))
+    )
 
 
 def check_scheduled_write_window(
@@ -1337,6 +1451,63 @@ def check_scheduled_write_window(
                     str(clock_contracts[task_id]["cron_expression"])
                     for task_id in sorted(present_clock_ids)
                 )
+                reviewed_yunda_crons = ()
+                yunda_rows = tuple(
+                    row
+                    for row in candidate_rows
+                    if isinstance(row, Mapping)
+                    and row.get("id") == CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID
+                )
+                if len(yunda_rows) > 1:
+                    raise ControlPlaneTaskCutoverPreflightError(
+                        "APPLIED_014_YUNDA_SEND_PROOF_INVALID"
+                    )
+                if yunda_rows:
+                    yunda_row = yunda_rows[0]
+                    enabled = yunda_row.get("enabled")
+                    if type(enabled) not in {bool, int} or enabled not in {
+                        False,
+                        True,
+                        0,
+                        1,
+                    }:
+                        raise ControlPlaneTaskCutoverPreflightError(
+                            "TASK_ENABLED_TYPE_INVALID"
+                        )
+                    internal_contract = _load_control_plane_reviewed_task_contracts()[
+                        CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID
+                    ]
+                    cron_expression = str(internal_contract["cron_expression"])
+                    if bool(enabled):
+                        arguments = _decode_task_arguments(yunda_row.get("tool_params"))
+                        if (
+                            yunda_row.get("tool_name")
+                            != internal_contract["tool_name"]
+                            or yunda_row.get("cron_expression") != cron_expression
+                            or not _strict_json_equal(
+                                arguments,
+                                internal_contract["canonical_arguments"],
+                            )
+                        ):
+                            raise ControlPlaneTaskCutoverPreflightError(
+                                "TASK_ARGUMENTS_NOT_REVIEWED"
+                            )
+                        reviewed_yunda_crons = (cron_expression,)
+                    else:
+                        cursor.execute(
+                            "SELECT 1 FROM schema_migrations WHERE version=%s",
+                            (SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION,),
+                        )
+                        contract_upgrade_applied = cursor.fetchone() is not None
+                        if not contract_upgrade_applied:
+                            if not _applied_014_yunda_send_was_enabled(
+                                cursor,
+                                require_configuration_version=True,
+                            ):
+                                raise ControlPlaneTaskCutoverPreflightError(
+                                    "APPLIED_014_YUNDA_SEND_PROOF_INVALID"
+                                )
+                            reviewed_yunda_crons = (cron_expression,)
                 crons = tuple(
                     sorted(
                         set(
@@ -1344,6 +1515,7 @@ def check_scheduled_write_window(
                                 *policy_crons,
                                 *reviewed_clock_crons,
                                 *reviewed_r7_crons,
+                                *reviewed_yunda_crons,
                             )
                         )
                     )
@@ -1352,7 +1524,16 @@ def check_scheduled_write_window(
                 crons = ()
             else:
                 cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
-                crons = _legacy_scheduled_write_crons(cursor.fetchall())
+                candidate_rows = cursor.fetchall()
+                allowed_reviewed_disabled_ids = (
+                    frozenset({CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID})
+                    if _applied_014_yunda_send_was_enabled(cursor)
+                    else frozenset()
+                )
+                crons = _legacy_scheduled_write_crons(
+                    candidate_rows,
+                    allow_reviewed_disabled_ids=allowed_reviewed_disabled_ids,
+                )
 
         checked_at = now or datetime.now(tz=SCHEDULED_WRITE_TIMEZONE)
         blocked_count = sum(

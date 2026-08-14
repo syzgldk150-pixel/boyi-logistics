@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
 import importlib.util
 import json
+import re
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -191,10 +194,18 @@ class _WindowCursor:
         *,
         policy_exists: bool,
         candidate_rows: list[dict] | None = None,
+        cutover_backup_exists: bool = False,
+        backup_rows: list[dict] | None = None,
+        applied_014: bool = False,
+        applied_017: bool = False,
     ) -> None:
         self.rows = rows
         self.candidate_rows = rows if candidate_rows is None else candidate_rows
         self.policy_exists = policy_exists
+        self.cutover_backup_exists = cutover_backup_exists
+        self.backup_rows = [] if backup_rows is None else backup_rows
+        self.applied_014 = applied_014
+        self.applied_017 = applied_017
         self.calls: list[tuple[str, object]] = []
         self._row = None
         self._rows: list[dict] = []
@@ -215,12 +226,116 @@ class _WindowCursor:
         elif "FROM information_schema.TABLES" in normalized:
             table_name = params[0] if params else ""
             exists = table_name == "scheduled_tasks" or (
+                table_name == "schema_migrations"
+                and (self.applied_014 or self.applied_017)
+            ) or (
                 table_name == "scheduled_task_approval_policies"
                 and self.policy_exists
+            ) or (
+                table_name == "control_plane_task_cutover_backup_014"
+                and self.cutover_backup_exists
             )
             self._row = {"exists": 1} if exists else None
+        elif normalized.startswith("SELECT 1 FROM schema_migrations WHERE version="):
+            version_match = re.search(r"version='([^']+)'", normalized)
+            version = (
+                params[0]
+                if isinstance(params, tuple) and params
+                else version_match.group(1)
+                if version_match is not None
+                else None
+            )
+            self._row = (
+                {"exists": 1}
+                if (
+                    self.applied_014
+                    and str(version) == "014"
+                    or self.applied_017
+                    and str(version) == "017"
+                )
+                else None
+            )
         elif normalized.startswith("SELECT policy.task_id"):
             self._rows = list(self.rows)
+        elif (
+            "COUNT(*) AS matched_count" in normalized
+            and "control_plane_task_cutover_backup_014" in normalized
+        ):
+            task_id = params[0] if params else ""
+            expected_message_sha256 = params[1] if params else ""
+            current = next(
+                (
+                    row
+                    for row in self.candidate_rows
+                    if row.get("id") == task_id
+                ),
+                None,
+            )
+            prior = next(
+                (row for row in self.backup_rows if row.get("id") == task_id),
+                None,
+            )
+            current_arguments = (
+                current.get("tool_params") if isinstance(current, dict) else None
+            )
+            prior_arguments = (
+                prior.get("tool_params") if isinstance(prior, dict) else None
+            )
+            current_message = (
+                current.get("last_message") if isinstance(current, dict) else None
+            )
+            requires_configuration_version = (
+                "task.configuration_version = 1" in normalized
+            )
+            matched = bool(
+                isinstance(current, dict)
+                and isinstance(prior, dict)
+                and current.get("tool_name") == "sync_yunda_send_waybills"
+                and current.get("cron_expression") == "55 23 * * *"
+                and current.get("enabled") in {False, 0}
+                and type(current.get("enabled")) in {bool, int}
+                and current.get("last_status") == "disabled"
+                and (
+                    not requires_configuration_version
+                    or (
+                        type(current.get("configuration_version")) is int
+                        and current.get("configuration_version") == 1
+                    )
+                )
+                and type(current_message) is str
+                and hashlib.sha256(current_message.encode("utf-8")).hexdigest()
+                == expected_message_sha256
+                and type(current_arguments) is dict
+                and set(current_arguments) == {"account_id", "ensure_fields"}
+                and type(current_arguments.get("account_id")) is str
+                and current_arguments.get("account_id") == "yunda_default"
+                and type(current_arguments.get("ensure_fields")) is bool
+                and current_arguments.get("ensure_fields") is False
+                and prior.get("tool_name") == "sync_yunda_send_waybills"
+                and prior.get("cron_expression") == "55 23 * * *"
+                and prior.get("enabled") in {True, 1}
+                and type(prior.get("enabled")) in {bool, int}
+                and type(prior_arguments) is dict
+                and set(prior_arguments)
+                == {
+                    "account_id",
+                    "session_profile",
+                    "ensure_fields",
+                    "target_date",
+                }
+                and type(prior_arguments.get("account_id")) is str
+                and prior_arguments.get("account_id") == "yunda_default"
+                and type(prior_arguments.get("session_profile")) is str
+                and prior_arguments.get("session_profile") == "yunda"
+                and type(prior_arguments.get("ensure_fields")) is bool
+                and prior_arguments.get("ensure_fields") is False
+                and type(prior_arguments.get("target_date")) is str
+                and prior_arguments.get("target_date") == ""
+            )
+            self._row = {"matched_count": int(matched)}
+        elif "FROM control_plane_task_cutover_backup_014" in normalized:
+            self._rows = list(self.backup_rows)
+            self._row = self.backup_rows[0] if self.backup_rows else None
         elif normalized.startswith("SELECT id, tool_name, tool_params"):
             self._rows = list(self.candidate_rows)
 
@@ -1015,6 +1130,277 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertNotIn(task_id, rendered)
         self.assertNotIn("TASK_PARAM_SECRET_SENTINEL", rendered)
 
+    def _applied_014_yunda_window_rows(
+        self,
+        *,
+        disabled_message: str,
+    ) -> tuple[list[dict], list[dict]]:
+        internal = self.runner._load_control_plane_reviewed_task_contracts()
+        clocks = self.runner._load_control_plane_clock_contracts()
+        r7_contracts = self.runner._load_control_plane_r7_contracts()
+        task_id = "yunda_send_waybills_2355"
+        rows = [
+            {
+                "id": current_task_id,
+                "tool_name": contract["tool_name"],
+                "tool_params": dict(contract["canonical_arguments"]),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 0 if current_task_id == task_id else 1,
+                "last_status": "disabled" if current_task_id == task_id else None,
+                "last_message": disabled_message if current_task_id == task_id else None,
+                "configuration_version": 1 if current_task_id == task_id else None,
+            }
+            for current_task_id, contract in sorted(internal.items())
+        ]
+        rows.extend(
+            {
+                "id": current_task_id,
+                "tool_name": "tms_query",
+                "tool_params": self.runner._legacy_clock_arguments(
+                    current_task_id,
+                    contract["canonical_arguments"],
+                ),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for current_task_id, contract in sorted(clocks.items())
+        )
+        rows.extend(
+            {
+                "id": current_task_id,
+                "tool_name": contract["tool_name"],
+                "tool_params": dict(contract["canonical_arguments"]),
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for current_task_id, contract in sorted(r7_contracts.items())
+        )
+        backup_rows = [
+            {
+                "id": task_id,
+                "tool_name": "sync_yunda_send_waybills",
+                "tool_params": {
+                    "account_id": "yunda_default",
+                    "session_profile": "yunda",
+                    "ensure_fields": False,
+                    "target_date": "",
+                },
+                "cron_expression": internal[task_id]["cron_expression"],
+                "enabled": 1,
+            }
+        ]
+        return rows, backup_rows
+
+    def test_applied_014_yunda_disable_proof_keeps_legacy_write_window(self):
+        message = "reviewed-014-disabled-message"
+        message_sha256 = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        self.assertEqual(
+            "19129e9c68d5e20050a7d8c8e8489f4f1313f9fb6188adc55229aaeacad9c0e3",
+            self.runner.CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256,
+        )
+        candidate_rows, backup_rows = self._applied_014_yunda_window_rows(
+            disabled_message=message,
+        )
+        for policy_exists in (False, True):
+            with self.subTest(policy_exists=policy_exists):
+                cursor = _WindowCursor(
+                    [],
+                    policy_exists=policy_exists,
+                    candidate_rows=deepcopy(candidate_rows),
+                    cutover_backup_exists=True,
+                    backup_rows=deepcopy(backup_rows),
+                    applied_014=True,
+                )
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch.object(
+                        self.runner,
+                        "CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256",
+                        message_sha256,
+                    ),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.check_scheduled_write_window(
+                        before_minutes=60,
+                        after_minutes=45,
+                        now=datetime(
+                            2026,
+                            8,
+                            14,
+                            23,
+                            30,
+                            tzinfo=ZoneInfo("Asia/Shanghai"),
+                        ),
+                    )
+
+                self.assertEqual(1, result)
+                self.assertTrue(connection.closed)
+                self.assertTrue(
+                    all(sql.startswith("SELECT") for sql, _ in cursor.calls)
+                )
+                rendered = " ".join(
+                    str(call) for call in print_mock.call_args_list
+                )
+                self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
+                self.assertNotIn("yunda_send_waybills_2355", rendered)
+                self.assertNotIn(message, rendered)
+
+    def test_applied_014_yunda_disable_exception_fails_closed_without_exact_proof(self):
+        message = "reviewed-014-disabled-message"
+        message_sha256 = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        mutations = (
+            ("missing backup", lambda current, backup: backup.clear()),
+            (
+                "backup disabled",
+                lambda current, backup: backup[0].update(enabled=0),
+            ),
+            (
+                "backup wrong tool",
+                lambda current, backup: backup[0].update(tool_name="changed_tool"),
+            ),
+            (
+                "backup wrong cron",
+                lambda current, backup: backup[0].update(
+                    cron_expression="54 23 * * *"
+                ),
+            ),
+            (
+                "backup extra argument",
+                lambda current, backup: backup[0]["tool_params"].update(
+                    unexpected=True
+                ),
+            ),
+            (
+                "current extra argument",
+                lambda current, backup: current["tool_params"].update(
+                    unexpected=True
+                ),
+            ),
+            (
+                "current wrong status",
+                lambda current, backup: current.update(last_status="success"),
+            ),
+            (
+                "current wrong message",
+                lambda current, backup: current.update(last_message="changed-message"),
+            ),
+            (
+                "current enabled type",
+                lambda current, backup: current.update(enabled="0"),
+            ),
+            (
+                "current changed version",
+                lambda current, backup: current.update(configuration_version=2),
+            ),
+        )
+
+        for policy_exists in (False, True):
+            for label, mutation in mutations:
+                if label == "current changed version" and not policy_exists:
+                    continue
+                with self.subTest(policy_exists=policy_exists, label=label):
+                    candidate_rows, backup_rows = self._applied_014_yunda_window_rows(
+                        disabled_message=message,
+                    )
+                    current = next(
+                        row
+                        for row in candidate_rows
+                        if row["id"] == "yunda_send_waybills_2355"
+                    )
+                    mutation(current, backup_rows)
+                    cursor = _WindowCursor(
+                        [],
+                        policy_exists=policy_exists,
+                        candidate_rows=deepcopy(candidate_rows),
+                        cutover_backup_exists=True,
+                        backup_rows=deepcopy(backup_rows),
+                        applied_014=True,
+                    )
+                    connection = _WindowConnection(cursor)
+                    with (
+                        patch.object(self.runner, "_connect", return_value=connection),
+                        patch.object(
+                            self.runner,
+                            "CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256",
+                            message_sha256,
+                        ),
+                        patch("builtins.print") as print_mock,
+                    ):
+                        result = self.runner.check_scheduled_write_window(
+                            before_minutes=60,
+                            after_minutes=45,
+                            now=datetime(
+                                2026,
+                                8,
+                                14,
+                                3,
+                                0,
+                                tzinfo=ZoneInfo("Asia/Shanghai"),
+                            ),
+                        )
+
+                    self.assertEqual(1, result)
+                    self.assertTrue(connection.closed)
+                    self.assertTrue(
+                        all(sql.startswith("SELECT") for sql, _ in cursor.calls)
+                    )
+                    rendered = " ".join(
+                        str(call) for call in print_mock.call_args_list
+                    )
+                    self.assertIn("scheduled_write_window=blocked", rendered)
+                    self.assertNotIn("yunda_send_waybills_2355", rendered)
+                    self.assertNotIn(message, rendered)
+
+    def test_applied_017_admin_disabled_yunda_does_not_reenter_014_exception(self):
+        message = "administrator-disabled-after-cutover"
+        candidate_rows, _backup_rows = self._applied_014_yunda_window_rows(
+            disabled_message=message,
+        )
+        current = next(
+            row
+            for row in candidate_rows
+            if row["id"] == "yunda_send_waybills_2355"
+        )
+        current.update(
+            configuration_version=2,
+            last_status="disabled",
+            last_message=message,
+        )
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=candidate_rows,
+            cutover_backup_exists=True,
+            backup_rows=[],
+            applied_014=True,
+            applied_017=True,
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    23,
+                    30,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(0, result)
+        self.assertTrue(connection.closed)
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+        print_mock.assert_called_once_with(
+            "scheduled_write_window=ok checked_schedules=15"
+        )
+
     def test_scheduled_write_window_legacy_path_uses_exact_clock_and_r7_rows(self):
         internal = self.runner._load_control_plane_reviewed_task_contracts()
         clocks = self.runner._load_control_plane_clock_contracts()
@@ -1073,7 +1459,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
 
         self.assertEqual(0, result)
         print_mock.assert_called_once_with(
-            "scheduled_write_window=ok checked_schedules=15"
+            "scheduled_write_window=ok checked_schedules=16"
         )
 
     def test_policy_tables_do_not_hide_legacy_external_window_after_source_rollback(self):
