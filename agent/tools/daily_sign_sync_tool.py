@@ -1193,8 +1193,7 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         return {"error": f"读取应签表头失败: {read_result.get('error')}"}
     values = _sheet_values(read_result)
     actual_headers = [clean_text(value) for value in (values[0] if values else [])]
-    if actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] != SHEET_HEADERS:
-        return {"error": "应签明细表头不一致，停止写入", "expected_headers": SHEET_HEADERS, "actual_headers": actual_headers}
+    header_mismatch = actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] != SHEET_HEADERS
     sheet_values = _build_ledger_sheet_values(rows)
     write_range = build_range_from_template(
         f"{info['sheet']}!A2:I2", max(len(sheet_values), 1), DAILY_SIGN_SHEET_COL_COUNT
@@ -1228,7 +1227,15 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         )
         if clear_result.get("error"):
             return {"error": f"清理应签明细旧行失败: {clear_result.get('error')}", "write_result": write_result, "clear_result": clear_result}
-    return {"ok": True, "rows": len(sheet_values), "write_result": write_result, "clear_result": clear_result}
+    return {
+        "ok": True,
+        "rows": len(sheet_values),
+        "header_mismatch": header_mismatch,
+        "actual_headers": actual_headers,
+        "expected_headers": SHEET_HEADERS if header_mismatch else [],
+        "write_result": write_result,
+        "clear_result": clear_result,
+    }
 
 
 def _field_items(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1608,6 +1615,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "address_enrichment": address_result,
                 "bitable_written": bitable_result.get("written", 0),
                 "sheet_rows": sheet_result.get("rows", len(open_rows)),
+                "sheet_header_mismatch": bool(sheet_result.get("header_mismatch")),
+                "sheet_actual_headers": sheet_result.get("actual_headers", [])
+                if sheet_result.get("header_mismatch")
+                else [],
+                "sheet_expected_headers": sheet_result.get("expected_headers", [])
+                if sheet_result.get("header_mismatch")
+                else [],
             }
         )
         legacy_keys = _legacy_candidate_keys(r13_rows, observed_at)

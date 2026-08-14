@@ -664,18 +664,51 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(["read_sheet", "write_sheet", "clear_sheet"], actions)
 
-    def test_sheet_header_mismatch_fails_without_write(self):
+    def test_sheet_header_mismatch_still_writes_from_second_row(self):
+        actions = []
+
+        def fake_operation(action, params):
+            actions.append((action, params))
+            if action == "read_sheet":
+                return {"ok": True, "data": {"valueRange": {"values": [["运单编号", "旧应签收时间", "问题件后应签时间"]]}}}
+            return {"ok": True}
+
         with (
             patch("tools.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
-            patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
-                return_value={"ok": True, "data": {"valueRange": {"values": [["运单编号", "旧应签收时间"]]}}},
-            ) as operation,
+            patch("tools.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
         ):
-            result = daily_sign_sync_tool._sync_sheet([], {})
+            result = daily_sign_sync_tool._sync_sheet(
+                [{"tracking_number": "R1", "r13_plan_sign_at": "2026-08-13 23:59:59"}], {}
+            )
 
-        self.assertIn("表头不一致", result["error"])
-        self.assertEqual(1, operation.call_count)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["header_mismatch"])
+        self.assertEqual(["运单编号", "旧应签收时间", "问题件后应签时间"], result["actual_headers"])
+        self.assertEqual(daily_sign_sync_tool.SHEET_HEADERS, result["expected_headers"])
+        self.assertEqual(["read_sheet", "write_sheet", "clear_sheet"], [a for a, _ in actions])
+        write_action, write_params = actions[1]
+        self.assertEqual("write_sheet", write_action)
+        self.assertEqual("Sheet1!A2:I2", write_params["range"])
+
+    def test_sheet_header_read_failure_returns_error_without_write(self):
+        actions = []
+
+        def fake_operation(action, params):
+            actions.append(action)
+            if action == "read_sheet":
+                return {"error": "飞书读取失败"}
+            return {"ok": True}
+
+        with (
+            patch("tools.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
+            patch("tools.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
+        ):
+            result = daily_sign_sync_tool._sync_sheet(
+                [{"tracking_number": "R1", "r13_plan_sign_at": "2026-08-13 23:59:59"}], {}
+            )
+
+        self.assertIn("读取应签表头失败", result["error"])
+        self.assertEqual(["read_sheet"], actions)
 
     def test_bitable_uses_delta_write_then_delete(self):
         actions = []
