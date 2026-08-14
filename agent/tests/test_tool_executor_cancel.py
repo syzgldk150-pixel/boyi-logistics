@@ -142,7 +142,7 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         started_at = ""
         for _ in range(50):
             output = self.executor.get_running_output(tool_name)
-            if output.get("running"):
+            if output.get("running") and "[progress] started" in output.get("lines", []):
                 started_at = str(output.get("started_at") or "")
                 break
             await asyncio.sleep(0.1)
@@ -156,6 +156,70 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["canceled"])
         self.assertTrue(result["cancelled"])
         self.assertEqual("CANCELLED", result["error_code"])
+
+    async def test_cancel_is_accepted_while_subprocess_is_spawning(self):
+        tool_name = "cancel_during_spawn_tool"
+        spawn_entered = asyncio.Event()
+        allow_spawn = asyncio.Event()
+        create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def delayed_spawn(*args, **kwargs):
+            spawn_entered.set()
+            await allow_spawn.wait()
+            return await create_subprocess_exec(*args, **kwargs)
+
+        with patch("agent.tool_executor.asyncio.create_subprocess_exec", side_effect=delayed_spawn):
+            task = asyncio.create_task(
+                self.executor.execute(
+                    {
+                        "name": tool_name,
+                        "executor": self.executor_relpath,
+                        "timeout": 30,
+                    },
+                    {},
+                )
+            )
+            await asyncio.wait_for(spawn_entered.wait(), timeout=2)
+
+            output = self.executor.get_running_output(tool_name)
+            self.assertTrue(output["running"])
+            started_at = str(output.get("started_at") or "")
+            self.assertTrue(started_at)
+
+            cancel_result = await self.executor.cancel_tool(tool_name, started_at=started_at)
+            self.assertTrue(cancel_result["ok"])
+            self.assertTrue(
+                self.executor.get_running_output(tool_name)["cancel_requested"]
+            )
+
+            allow_spawn.set()
+            result = await asyncio.wait_for(task, timeout=5)
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["cancelled"])
+        self.assertEqual("CANCELLED", result["error_code"])
+        self.assertFalse(self.executor.is_tool_running(tool_name))
+
+    async def test_subprocess_spawn_failure_clears_running_state(self):
+        tool_name = "spawn_failure_tool"
+
+        async def fail_spawn(*_args, **_kwargs):
+            raise OSError("controlled spawn failure")
+
+        with patch("agent.tool_executor.asyncio.create_subprocess_exec", side_effect=fail_spawn):
+            result = await self.executor.execute(
+                {
+                    "name": tool_name,
+                    "executor": self.executor_relpath,
+                    "timeout": 30,
+                },
+                {},
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("controlled spawn failure", result["error"])
+        self.assertFalse(self.executor.is_tool_running(tool_name))
+        self.assertIsNone(self.executor._running_outputs[tool_name]["proc"])
 
     async def test_heavy_tools_wait_for_existing_heavy_task(self):
         slow_script = self._write_temp_script(
