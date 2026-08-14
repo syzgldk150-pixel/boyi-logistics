@@ -4,18 +4,6 @@ from console.app_support import *  # noqa: F403
 from console.services.control_plane import ControlPlaneServiceMixin
 
 
-def _mysql_datetime_value(value: Any) -> str:
-    """Normalize an Agent ISO-8601 timestamp to MySQL DATETIME in the ECS local timezone."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return text
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-
-
 class AutomationServiceMixin:
     def _build_virtual_automation_task(
         self,
@@ -1070,7 +1058,7 @@ class AutomationServiceMixin:
                     "payload": {"run_id": run_id, "status": status},
                 }
                 last_status = "success" if ok else "cancelled" if cancelled else "error"
-                last_run = _mysql_datetime_value(str(run.get("finished_at") or run.get("updated_at") or ""))
+                last_run = mysql_datetime_value(str(run.get("finished_at") or run.get("updated_at") or ""))
                 if task_id:
                     local_state = self.automation_virtual_task_state.get(task_id, {})
                     if local_state.get("task_mode") == "scheduled":
@@ -1813,7 +1801,7 @@ class AutomationServiceMixin:
             result = {}
         cancelled = bool(result.get("canceled"))
         ok = bool(row.get("success")) and not cancelled
-        last_run = str(row.get("created_at") or "")
+        last_run = mysql_datetime_value(str(row.get("created_at") or ""))
         duration_ms = row.get("duration_ms")
         error_message_full = normalize_feedback_text(result.get("error") or "")
         error_message_value = shorten_error_message(error_message_full)
@@ -1920,7 +1908,7 @@ class AutomationServiceMixin:
 
         cancelled = bool(parsed_result.get("canceled"))
         ok = bool(parsed_result.get("ok")) and not parsed_result.get("error") and not cancelled
-        last_run = _mysql_datetime_value(str(output_payload.get("started_at") or "")) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        last_run = mysql_datetime_value(str(output_payload.get("started_at") or "")) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         duration_ms = None
         for key in ("duration_s", "cost_sec"):
             raw_value = parsed_result.get(key)

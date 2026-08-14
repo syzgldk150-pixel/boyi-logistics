@@ -6,6 +6,7 @@ from typing import Any, Iterator
 
 import pymysql
 
+from console.app_support import mysql_datetime_value
 from console.config import Settings
 from shared.redaction import redact_sensitive, redact_text
 from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
@@ -2254,7 +2255,7 @@ class DocumentRepository:
 
         self._scheduled_tasks.update_runtime_at(
             group_ids,
-            last_run=last_run,
+            last_run=mysql_datetime_value(last_run) if last_run else last_run,
             last_status=last_status,
             last_duration_ms=last_duration_ms,
             last_message=last_message,
