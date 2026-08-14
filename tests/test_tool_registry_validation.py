@@ -164,8 +164,40 @@ class ToolRegistryValidationTests(unittest.TestCase):
                 llm_exposed=False,
                 approval_mode="none",
             )
-            with self.assertRaisesRegex(ValueError, "external writes must have high risk and require approval"):
+            with self.assertRaisesRegex(ValueError, "external writes must have high risk"):
                 validate_registry({"tools": [unsafe_write]}, project_root=Path(root))
+
+            explicitly_allowlisted_write = _tool(
+                name="customer_service_problem_reply",
+                operation_type="external_write",
+                risk_level="high",
+                llm_exposed=False,
+                approval_mode="schedule_allowlist",
+                approval_required_role="super_admin",
+                required_roles=["super_admin"],
+            )
+            validated = validate_registry(
+                {"tools": [explicitly_allowlisted_write]},
+                project_root=Path(root),
+            )
+            self.assertEqual(
+                validated[0]["approval"]["mode"],
+                "schedule_allowlist",
+            )
+
+            clock_allowlisted_write = _tool(
+                name="clock_in_dual",
+                operation_type="external_write",
+                risk_level="high",
+                llm_exposed=False,
+                approval_mode="schedule_allowlist",
+                approval_required_role="super_admin",
+                required_roles=["super_admin"],
+            )
+            validate_registry(
+                {"tools": [clock_allowlisted_write]},
+                project_root=Path(root),
+            )
 
             missing_admin = _tool(
                 operation_type="external_write",
@@ -357,7 +389,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
             "init_waybills_sql_from_feishu",
         }
         external_writes = {
-            "clock_in_dual",
             "customer_service_problem_mark_read",
             "customer_service_problem_publish",
             "customer_service_problem_reply",
@@ -365,7 +396,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
             "receipts_audit",
             "self_pickup_problem_upload",
             "split_pending_problem_upload",
-            "r7_arrival_checkin",
             "r7_departure_checkin",
         }
 
@@ -391,6 +421,34 @@ class ToolRegistryValidationTests(unittest.TestCase):
                 {"mode": "required", "required_role": "super_admin"},
             )
 
+        clock = registry.get_capability("clock_in_dual")
+        self.assertEqual(clock["operation_type"], "external_write")
+        self.assertEqual(clock["risk_level"], "high")
+        self.assertEqual(
+            clock["approval"],
+            {"mode": "schedule_allowlist", "required_role": "super_admin"},
+        )
+
+        r7_arrival = registry.get_capability("r7_arrival_checkin")
+        self.assertEqual(r7_arrival["operation_type"], "external_write")
+        self.assertEqual(r7_arrival["risk_level"], "high")
+        self.assertEqual(
+            r7_arrival["approval"],
+            {"mode": "schedule_allowlist", "required_role": "super_admin"},
+        )
+        self.assertEqual(
+            r7_arrival["postconditions"],
+            [{"name": "third_party_r7_arrival_state_confirmed"}],
+        )
+
+        backfill = registry.get_capability("backfill_daily_sign_ledger")
+        self.assertEqual(backfill["operation_type"], "internal_projection_write")
+        self.assertEqual(backfill["risk_level"], "high")
+        self.assertEqual(
+            backfill["approval"],
+            {"mode": "required", "required_role": "super_admin"},
+        )
+
         finance_sync = registry.get_capability("sync_finance_bills")
         self.assertEqual(finance_sync["operation_type"], "internal_projection_write")
         self.assertEqual(finance_sync["risk_level"], "high")
@@ -411,6 +469,31 @@ class ToolRegistryValidationTests(unittest.TestCase):
         destructive = registry.get_capability("feishu_operation")
         self.assertEqual(destructive["risk_level"], "extreme")
         self.assertEqual(destructive["approval"], {"mode": "disabled"})
+
+    def test_daily_sign_uses_one_explicit_tms_account_for_all_tms_reads(self):
+        registry = ToolRegistry()
+
+        for name, version in (
+            ("sync_daily_should_sign", "2.1.0"),
+            ("backfill_daily_sign_ledger", "1.1.0"),
+        ):
+            capability = registry.get_capability(name)
+            self.assertIsNotNone(capability)
+            self.assertEqual(capability["version"], version)
+            self.assertEqual(
+                capability["account_scope"],
+                {"required": True, "allow_implicit_default": False},
+            )
+            properties = capability["input_schema"]["properties"]
+            self.assertIn("r13_account_id", properties)
+            self.assertIn("account_id", properties)
+            self.assertNotIn("problem_account_id", properties)
+            self.assertNotIn("sign_account_id", properties)
+            self.assertNotIn("detail_account_id", properties)
+            self.assertEqual(
+                set(capability["input_schema"]["required"]),
+                {"r13_account_id", "account_id"},
+            )
 
     def test_production_tms_compatibility_tool_cannot_address_write_targets(self):
         registry = ToolRegistry()
@@ -536,18 +619,54 @@ class ToolRegistryValidationTests(unittest.TestCase):
                 },
             )
 
-    def test_clock_in_is_never_a_scheduler_allowlist_write(self):
+    def test_clock_in_scheduler_exception_keeps_a_closed_high_risk_contract(self):
         registry = ToolRegistry()
         capability = registry.get_capability("clock_in_dual")
 
+        self.assertEqual(capability["version"], "1.1.0")
         self.assertEqual(capability["operation_type"], "external_write")
         self.assertEqual(
             capability["approval"],
-            {"mode": "required", "required_role": "super_admin"},
+            {"mode": "schedule_allowlist", "required_role": "super_admin"},
         )
-        self.assertNotEqual(capability["approval"]["mode"], "schedule_allowlist")
+        self.assertEqual(capability["permissions"]["required_roles"], ["super_admin"])
+        self.assertEqual(capability["account_scope"]["required"], True)
+        self.assertEqual(capability["retry"], {"safe": False, "max_attempts": 1})
+        self.assertEqual(
+            capability["postconditions"],
+            [{"name": "both_third_party_clock_ins_confirmed"}],
+        )
+        self.assertIn("account_id", capability["input_schema"]["required"])
         with self.assertRaisesRegex(ValueError, "missing required properties"):
             registry.validate_arguments("clock_in_dual", {})
+        registry.validate_arguments(
+            "clock_in_dual",
+            {
+                "account_id": "ronghui_default",
+                "sitecode": "7390004",
+                "sitefbcode": "73901",
+                "sitename": "邵阳大祥站",
+                "sitefbname": "邵阳操作场",
+                "first_type": "交件到港",
+                "second_type": "接件离港",
+                "delay_seconds": 2,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "unknown properties.*extra"):
+            registry.validate_arguments(
+                "clock_in_dual",
+                {
+                    "account_id": "ronghui_default",
+                    "sitecode": "7390004",
+                    "sitefbcode": "73901",
+                    "sitename": "邵阳大祥站",
+                    "sitefbname": "邵阳操作场",
+                    "first_type": "交件到港",
+                    "second_type": "接件离港",
+                    "delay_seconds": 2,
+                    "extra": "not-approved",
+                },
+            )
 
 
 if __name__ == "__main__":

@@ -17,9 +17,7 @@ from tools.daily_sign_rules import build_ledger_row
 
 ACCOUNT_PARAMS = {
     "r13_account_id": "r13_default",
-    "problem_account_id": "ronghui_daxiang_s",
-    "sign_account_id": "ronghui_daxiang_s",
-    "detail_account_id": "ronghui_daxiang_s",
+    "account_id": "ronghui_daxiang_s",
     "days": 1,
 }
 
@@ -246,7 +244,7 @@ class DailySignPipelineTests(unittest.TestCase):
             PlanStep(
                 step_key="sync",
                 tool_name="sync_daily_should_sign",
-                tool_version="2.0.0",
+                tool_version="2.1.0",
                 operation_type=OperationType.INTERNAL_PROJECTION_WRITE,
                 arguments=ACCOUNT_PARAMS,
                 account_id=None,

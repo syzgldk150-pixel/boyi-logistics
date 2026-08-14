@@ -469,16 +469,12 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "schedule_summary": "",
         "default_tool_params": {
             "r13_account_id": "r13_default",
-            "problem_account_id": "ronghui_daxiang_s",
-            "sign_account_id": "ronghui_daxiang_s",
-            "detail_account_id": "ronghui_default",
+            "account_id": "ronghui_daxiang_s",
             "days": 7,
         },
         "account_roles": [
             {"label": "R13应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
-            {"label": "问题件账号", "field": "problem_account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
-            {"label": "主单签收账号", "field": "sign_account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
-            {"label": "补地址账号", "field": "detail_account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
+            {"label": "TMS邵阳大祥站账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
         ],
         "order": 40,
     },
@@ -512,9 +508,9 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "task_id": "clockin_daxiang",
         "display_name": "网点打卡-大祥",
         "tool_name": "clock_in_dual",
-        "note": "大祥站双打卡属于第三方高风险写入；此卡片只展示既有任务，不能保存或立即执行。",
+        "note": "大祥站双打卡是代码锁定的既有自动任务；参数仍只读，审批策略由超级管理员单独配置。",
         "task_mode": "scheduled",
-        "trigger_label": "控制平面审批",
+        "trigger_label": "定时任务",
         "schedule_summary": "",
         "control_plane_only": True,
         "default_tool_params": {},
@@ -527,9 +523,9 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "task_id": "clockin_daxiang_s",
         "display_name": "网点打卡-大祥S站",
         "tool_name": "clock_in_dual",
-        "note": "大祥 S 站双打卡属于第三方高风险写入；此卡片只展示既有任务，不能保存或立即执行。",
+        "note": "大祥 S 站双打卡是代码锁定的既有自动任务；参数仍只读，审批策略由超级管理员单独配置。",
         "task_mode": "scheduled",
-        "trigger_label": "控制平面审批",
+        "trigger_label": "定时任务",
         "schedule_summary": "",
         "control_plane_only": True,
         "default_tool_params": {},
@@ -737,8 +733,8 @@ CONTROL_PLANE_ONLY_AUTOMATION_TASK_IDS = frozenset(
     if workflow.get("control_plane_only") is True
 )
 CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE = (
-    "第三方高风险写入只允许通过控制平面提交独立计划并审批；"
-    "此处仅展示既有任务，不能保存、创建定时任务或立即执行。"
+    "这两条打卡的时间、账号与参数仍由代码锁定；"
+    "此处不能修改任务配置或立即执行，但超级管理员可以单独设置审批策略。"
 )
 
 AUTOMATION_PROVIDER_LABELS = {

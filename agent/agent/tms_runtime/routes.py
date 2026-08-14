@@ -757,6 +757,7 @@ def _normalize_clock_in_dual_params(params: dict[str, Any]) -> dict[str, Any]:
 
     normalized = _without_empty_values(
         {
+            "account_id": selected("account_id", "accountId"),
             "sitecode": selected("sitecode"),
             "sitefbcode": selected("sitefbcode"),
             "sitename": selected("sitename", "site_name"),

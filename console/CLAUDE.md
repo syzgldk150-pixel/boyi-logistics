@@ -18,6 +18,10 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 浏览器通过 `X-Browser-Request-UUID` 提供每次用户动作的稳定 UUID，服务端生成 `console:{admin_id}:{command_type}:{uuid}`；缺失或格式错误显式失败。approve/reject 只转发 approval ID、plan hash 和 comment。
 - Command 成功提交保留 Agent 的 `202`、`command_id/work_item_id/run_id`、`reused` 与 `next_poll_after_ms`。前端页面隐藏时暂停轮询，等待状态降频，终态停止；Evidence 只用文本安全渲染。
 - 补充信息表单只允许显式 `note/account_id/argument_updates`；参数更新必须是 JSON 对象。普通说明只作审计 note，Console 不解析自然语言为账号或工具参数。
+- 自动化页提供每个真实定时任务行的审批策略与有效状态：默认 `REQUIRE_EACH_RUN`，可配置为 `EXACT_SCHEDULE_EXEMPT`。同一业务存在多个 cron 时可以按每个执行时刻独立设置，保存单行不得覆盖同组其他任务。只有同源、真实 MySQL 会话并持有 `super_admin` 的签名 Console 请求可以设置；Basic Auth、普通管理员和浏览器伪造身份必须被拒绝。页面只提交当前任务 ID、模式、说明、请求 UUID 及该行的策略/配置版本前提，Agent 在服务端计算行为哈希；不得让浏览器传入参数哈希或完整策略快照。
+- 豁免只适用于 Scheduler；从 Console、飞书、Webhook 或手工“立即运行”发起的同一任务仍逐次审批。页面须明确展示 stale/不受支持状态、最近配置者/时间和隐私安全的哈希摘要。显示名称不进入行为哈希；工具/版本、参数/账号、cron、enabled、治理字段、postconditions、动态规则或配置版本变化会使豁免失效。`approval.mode: schedule_allowlist` 只是工具可被设置为免审的资格上限。
+
+迁移 `014` 仅把遗留任务规范化为当前契约，不能作为免审授权；迁移 `015` 增加任务配置版本、当前审批策略和不可变审计事件。代码内 69 个精确审阅合同由一次可审计 bootstrap 只为部署时已启用且仍完整命中的既有任务保留调度行为（当前生产预期 67 项）；禁用项和新任务默认逐次审批。打卡卡片仍按精确账号/会话配置展示，外部写的未知结果不会显示为成功。
 
 ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。健康检查成功后只保留当前共享环境。
 

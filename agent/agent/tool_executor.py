@@ -12,6 +12,8 @@ import sys
 import time
 from collections.abc import Mapping
 from datetime import datetime
+from types import MappingProxyType
+from zoneinfo import ZoneInfo
 
 from agent.execution_boundary import (
     EXECUTION_CAPABILITY_ENV,
@@ -19,6 +21,7 @@ from agent.execution_boundary import (
     revoke_execution_capability,
 )
 from shared.redaction import redact_sensitive, redact_text
+from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
 logger = logging.getLogger("tools")
 
@@ -28,6 +31,12 @@ LOCK_FILE = os.path.join(PROJECT_ROOT, "logs", ".heavy_task.lock")
 CANCEL_MESSAGE = "任务已取消"
 HEAVY_LOCK_RETRY_SECONDS = 0.5
 DEFAULT_HEAVY_QUEUE_TIMEOUT = 900.0
+TRUSTED_SCHEDULER_CONTEXT_ENV = "AGENT_TRUSTED_SCHEDULER_CONTEXT"
+_TRUSTED_SCHEDULER_CONTEXT_SCHEMA_VERSION = 1
+_TRUSTED_SCHEDULER_TOOL = "r7_arrival_checkin"
+_R7_SCHEDULED_PROFILE = APPROVED_SCHEDULED_TASK_PROFILES["r7_arrival_checkin"]
+_R7_SCHEDULED_TASK_IDS = _R7_SCHEDULED_PROFILE.approved_task_ids
+_SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 SUBPROCESS_STRIPPED_MANAGEMENT_ENV = frozenset(
     {
         "AGENT_INTERNAL_API_TOKEN",
@@ -73,13 +82,166 @@ def _redact_structured_execution_capability(value: object, capability: str) -> o
     return redact_sensitive(value)
 
 
-def build_tool_subprocess_environment(execution_capability: str) -> dict[str, str]:
+def build_trusted_scheduler_context(
+    tool_name: str,
+    execution_context: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Extract the private R7 scheduler side-channel from trusted command metadata.
+
+    The returned value is deliberately separate from tool arguments.  Invalid,
+    incomplete, manual, or non-R7 contexts receive no side-channel at all.
+    """
+
+    if tool_name != _TRUSTED_SCHEDULER_TOOL or not isinstance(execution_context, Mapping):
+        return None
+    actor = execution_context.get("actor")
+    if not isinstance(actor, Mapping):
+        return None
+    task_id = execution_context.get("task_id")
+    configuration_version = execution_context.get("configuration_version")
+    scheduled_for = execution_context.get("scheduled_for")
+    cron_expression = execution_context.get("cron_expression")
+    roles = actor.get("roles")
+    if (
+        execution_context.get("source") != "scheduler"
+        or actor.get("actor_type") != "scheduler"
+        or type(task_id) is not str
+        or task_id not in _R7_SCHEDULED_TASK_IDS
+        or actor.get("actor_id") != task_id
+        or not isinstance(roles, (list, tuple))
+        or tuple(roles) != ("system",)
+        or type(configuration_version) is not int
+        or configuration_version <= 0
+        or type(scheduled_for) is not str
+        or type(cron_expression) is not str
+    ):
+        return None
+    occurrence = _parse_aware_datetime(scheduled_for)
+    if occurrence is None:
+        return None
+    local_occurrence = occurrence.astimezone(_SHANGHAI_TIMEZONE)
+    if not _matches_r7_schedule_contract(task_id, cron_expression, local_occurrence):
+        return None
+    return {
+        "schema_version": _TRUSTED_SCHEDULER_CONTEXT_SCHEMA_VERSION,
+        "source": "scheduler",
+        "actor_type": "scheduler",
+        "actor_id": task_id,
+        "task_id": task_id,
+        "configuration_version": configuration_version,
+        "scheduled_for": scheduled_for,
+        "cron_expression": cron_expression,
+    }
+
+
+def trusted_scheduler_context() -> Mapping[str, object] | None:
+    """Read a validated private scheduler context inside an R7 tool process."""
+
+    raw = os.environ.get(TRUSTED_SCHEDULER_CONTEXT_ENV)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    normalized = _normalize_trusted_scheduler_payload(payload)
+    return MappingProxyType(normalized) if normalized is not None else None
+
+
+def _normalize_trusted_scheduler_payload(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    expected_keys = {
+        "schema_version",
+        "source",
+        "actor_type",
+        "actor_id",
+        "task_id",
+        "configuration_version",
+        "scheduled_for",
+        "cron_expression",
+    }
+    if set(value) != expected_keys:
+        return None
+    task_id = value.get("task_id")
+    configuration_version = value.get("configuration_version")
+    scheduled_for = value.get("scheduled_for")
+    cron_expression = value.get("cron_expression")
+    if (
+        type(value.get("schema_version")) is not int
+        or value.get("schema_version") != _TRUSTED_SCHEDULER_CONTEXT_SCHEMA_VERSION
+        or value.get("source") != "scheduler"
+        or value.get("actor_type") != "scheduler"
+        or type(task_id) is not str
+        or task_id not in _R7_SCHEDULED_TASK_IDS
+        or value.get("actor_id") != task_id
+        or type(configuration_version) is not int
+        or configuration_version <= 0
+        or type(scheduled_for) is not str
+        or type(cron_expression) is not str
+    ):
+        return None
+    occurrence = _parse_aware_datetime(scheduled_for)
+    if occurrence is None:
+        return None
+    local_occurrence = occurrence.astimezone(_SHANGHAI_TIMEZONE)
+    if not _matches_r7_schedule_contract(task_id, cron_expression, local_occurrence):
+        return None
+    return {key: value[key] for key in sorted(expected_keys)}
+
+
+def _parse_aware_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _matches_r7_schedule_contract(
+    task_id: str,
+    cron_expression: str,
+    local_occurrence: datetime,
+) -> bool:
+    if _R7_SCHEDULED_PROFILE.cron_expression is not None:
+        if cron_expression != _R7_SCHEDULED_PROFILE.cron_expression:
+            return False
+    parts = cron_expression.split()
+    if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
+        return False
+    minute_text, hour_text = parts[:2]
+    if not minute_text.isdigit() or not hour_text.isdigit():
+        return False
+    minute = int(minute_text)
+    hour = int(hour_text)
+    if not (0 <= minute <= 59 and 0 <= hour <= 23):
+        return False
+    return (
+        task_id.rsplit("_", 1)[-1] == f"{hour:02d}{minute:02d}"
+        and local_occurrence.hour == hour
+        and local_occurrence.minute == minute
+        and local_occurrence.second == 0
+        and local_occurrence.microsecond == 0
+    )
+
+
+def build_tool_subprocess_environment(
+    execution_capability: str,
+    *,
+    trusted_context: Mapping[str, object] | None = None,
+) -> dict[str, str]:
     """Preserve business runtime settings but remove service-management secrets."""
 
     environment = dict(os.environ)
     for name in SUBPROCESS_STRIPPED_MANAGEMENT_ENV:
         environment.pop(name, None)
     environment.pop(EXECUTION_CAPABILITY_ENV, None)
+    # Never inherit a same-named value from the service manager or an operator
+    # shell.  Only the validated per-invocation value below may cross the
+    # parent -> tool process boundary.
+    environment.pop(TRUSTED_SCHEDULER_CONTEXT_ENV, None)
     environment["PYTHONPATH"] = os.pathsep.join(
         filter(None, (WORKSPACE_ROOT, environment.get("PYTHONPATH", "")))
     )
@@ -89,6 +251,14 @@ def build_tool_subprocess_environment(execution_capability: str) -> dict[str, st
     # management credentials that were deliberately removed above.
     environment["PYTHON_DOTENV_DISABLED"] = "1"
     environment[EXECUTION_CAPABILITY_ENV] = str(execution_capability)
+    normalized_context = _normalize_trusted_scheduler_payload(trusted_context)
+    if normalized_context is not None:
+        environment[TRUSTED_SCHEDULER_CONTEXT_ENV] = json.dumps(
+            normalized_context,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     return environment
 
 
@@ -251,7 +421,13 @@ class ToolExecutor:
             "duration_s": duration,
         }
 
-    async def execute(self, tool_config: dict, params: dict) -> dict:
+    async def execute(
+        self,
+        tool_config: dict,
+        params: dict,
+        *,
+        trusted_scheduler_context: Mapping[str, object] | None = None,
+    ) -> dict:
         name = tool_config["name"]
         heavy = tool_config.get("heavy", False)
         existing = self._running_outputs.get(name)
@@ -263,10 +439,18 @@ class ToolExecutor:
             self._queued_tools.add(name)
             try:
                 async with self._heavy_queue_lock:
-                    return await self._execute_now(tool_config, params)
+                    return await self._execute_now(
+                        tool_config,
+                        params,
+                        trusted_scheduler_context=trusted_scheduler_context,
+                    )
             finally:
                 self._queued_tools.discard(name)
-        return await self._execute_now(tool_config, params)
+        return await self._execute_now(
+            tool_config,
+            params,
+            trusted_scheduler_context=trusted_scheduler_context,
+        )
 
     async def _acquire_heavy_lock(self, *, queue_timeout: float) -> int:
         lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR)
@@ -288,7 +472,13 @@ class ToolExecutor:
                 os.close(lock_fd)
                 raise
 
-    async def _execute_now(self, tool_config: dict, params: dict) -> dict:
+    async def _execute_now(
+        self,
+        tool_config: dict,
+        params: dict,
+        *,
+        trusted_scheduler_context: Mapping[str, object] | None = None,
+    ) -> dict:
         """Execute a tool script via subprocess."""
         name = tool_config["name"]
         executor = os.path.join(PROJECT_ROOT, tool_config["executor"])
@@ -343,7 +533,14 @@ class ToolExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=PROJECT_ROOT,
-                env=build_tool_subprocess_environment(execution_capability),
+                env=build_tool_subprocess_environment(
+                    execution_capability,
+                    trusted_context=(
+                        trusted_scheduler_context
+                        if name == _TRUSTED_SCHEDULER_TOOL
+                        else None
+                    ),
+                ),
                 start_new_session=True,
             )
             entry["proc"] = proc

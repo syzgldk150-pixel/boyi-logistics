@@ -26,19 +26,65 @@ def _runtime_patches(source_responses):
     )
 
 
-def test_dual_clock_in_requires_explicit_success_from_each_save_response():
-    auth, page, user, submit, sleep = _runtime_patches([{"ok": True}, {"ok": True}])
-    with auth, page, user, submit, sleep, pytest.raises(RuntimeError, match="dual clock-in failed"):
-        clock_in_dual.submit_dual_clockin(delay_seconds=0)
+@pytest.mark.parametrize(
+    "source_responses",
+    (
+        ({"ok": True}, {"success": True}),
+        ({"success": True}, {"ok": True}),
+    ),
+)
+def test_dual_clock_in_failure_is_not_retried(source_responses):
+    auth, page, user, submit, sleep = _runtime_patches(source_responses)
+    with (
+        auth as auth_class,
+        page,
+        user,
+        submit as submit_mock,
+        sleep,
+        pytest.raises(RuntimeError, match="dual clock-in failed"),
+    ):
+        clock_in_dual.submit_dual_clockin(
+            delay_seconds=0,
+            session_profile="default",
+        )
+
+    auth_class.assert_called_once_with(profile="default")
+    assert submit_mock.call_count == 2
 
 
 def test_dual_clock_in_preserves_both_explicit_source_confirmations():
     responses = [{"success": True, "message": "saved"}, {"success": True, "message": "saved"}]
     auth, page, user, submit, sleep = _runtime_patches(responses)
-    with auth, page, user, submit, sleep:
-        result = clock_in_dual.submit_dual_clockin(delay_seconds=0)
+    with auth as auth_class, page, user, submit as submit_mock, sleep:
+        result = clock_in_dual.submit_dual_clockin(
+            delay_seconds=0,
+            session_profile="daxiang_s",
+        )
 
+    auth_class.assert_called_once_with(profile="daxiang_s")
+    assert submit_mock.call_count == 2
     assert result["first_success"] is True
     assert result["second_success"] is True
     assert result["first_response"] == responses[0]
     assert result["second_response"] == responses[1]
+
+
+def test_run_api_requires_an_explicit_session_profile_without_fallback():
+    with pytest.raises(
+        ValueError,
+        match="account_id must resolve to one explicit session_profile",
+    ):
+        clock_in_dual.run_api({})
+
+
+@pytest.mark.parametrize("session_profile", ("default", "daxiang_s"))
+def test_run_api_forwards_only_the_explicit_resolved_session_profile(session_profile):
+    with patch.object(
+        clock_in_dual,
+        "submit_dual_clockin",
+        return_value={"first_success": True, "second_success": True},
+    ) as submit:
+        result = clock_in_dual.run_api({"session_profile": session_profile})
+
+    assert result == {"first_success": True, "second_success": True}
+    assert submit.call_args.kwargs["session_profile"] == session_profile

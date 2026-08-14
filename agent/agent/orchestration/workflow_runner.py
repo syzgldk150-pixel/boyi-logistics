@@ -407,9 +407,9 @@ class WorkflowRunner:
                     run_id=str(run["run_id"]),
                     step_id=str(step_row["step_id"]),
                     execution_context={
+                        **dict(command.parameters.get("execution_context") or {}),
                         "source": command.source,
                         "actor": command.actor.to_dict(),
-                        **dict(command.parameters.get("execution_context") or {}),
                     },
                 )
             )
@@ -690,9 +690,9 @@ class WorkflowRunner:
                 step_id=str(step_row["step_id"]),
                 persisted_step=dict(step_row),
                 execution_context={
+                    **dict(command.parameters.get("execution_context") or {}),
                     "source": command.source,
                     "actor": command.actor.to_dict(),
-                    **dict(command.parameters.get("execution_context") or {}),
                 },
             )
         )

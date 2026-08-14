@@ -239,12 +239,17 @@ def _receipt_audit(_account_id: str | None, arguments: Mapping[str, Any]) -> dic
     }
 
 
-def _clock_in(_account_id: str | None, arguments: Mapping[str, Any]) -> dict[str, Any]:
+def _clock_in(account_id: str | None, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    resolved_account = _required_text(
+        {"account_id": account_id or arguments.get("account_id")},
+        "account_id",
+    )
     site_code = _required_text(arguments, "sitecode")
     site_fb_code = _required_text(arguments, "sitefbcode")
     first_action = _required_text(arguments, "first_type")
     second_action = _required_text(arguments, "second_type")
     selector = {
+        "account_id": resolved_account,
         "sitecode": site_code,
         "sitefbcode": site_fb_code,
         "first_type": first_action,
@@ -257,14 +262,14 @@ def _clock_in(_account_id: str | None, arguments: Mapping[str, Any]) -> dict[str
                 entity_id=f"{site_code}:{first_action}",
                 source_system="ronghui",
                 action=first_action,
-                metadata={"sitecode": site_code},
+                metadata={"sitecode": site_code, "account_id": resolved_account},
             ),
             _entity(
                 entity_type="site_clock_action",
                 entity_id=f"{site_fb_code}:{second_action}",
                 source_system="ronghui",
                 action=second_action,
-                metadata={"sitecode": site_fb_code},
+                metadata={"sitecode": site_fb_code, "account_id": resolved_account},
             ),
         ],
         "source_version": _selector_source_version(selector),

@@ -40,11 +40,13 @@
 ## 统一控制平面
 
 - `main.py` 是唯一组合根，负责注入 `CommandGateway`、Context/Planner/Validator/Policy、Approval、WorkflowRunner、ResultVerifier、Outbox Dispatcher、真实仓储和执行 adapter，并按 Runner -> Outbox 的顺序停机。
-- `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
+- `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；通用仓储原语、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
 - Run/Work Item 状态转换必须走模型允许表和版本 CAS。登录恢复、补充信息恢复原 Run；`PARTIAL` 或终态失败创建关联新 Run。第三方/财务写的未知结果必须 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，除非存在精确读后 reconciliation。
 - Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
 - 计划固定 Schema v1，计划哈希必须覆盖上下文、目录哈希、工具版本、完整参数/账号、实际影响、Evidence 与写后条件。审批 15 分钟过期，执行前重算；变化时使旧审批失效并生成新轮次。
-- `tools/registry.yaml` 的每项治理字段都必填；宽泛 `tms_query` 和 `feishu_operation` 不向 LLM 开放，破坏性通用飞书操作禁用。定时免审只允许精确任务/版本/参数/cron 命中的内部投影。
+- `tools/registry.yaml` 的每项治理字段都必填；宽泛 `tms_query` 和 `feishu_operation` 不向 LLM 开放，破坏性通用飞书操作禁用。`approval.mode: schedule_allowlist` 只表示该工具具备进入任务级免审设置的资格，不是固定白名单或自动授权。
+- 每个持久化定时任务默认 `REQUIRE_EACH_RUN`，可由签名真实 MySQL 会话的 Console `super_admin` 配置为 `EXACT_SCHEDULE_EXEMPT`。该策略只对 Scheduler 生效；手工、Console、飞书、Webhook 始终逐次审批。策略哈希绑定任务 ID、工具/版本、参数/账号、cron、enabled、治理字段、postconditions、动态规则与 `configuration_version`，不包含展示名称；任一受绑定变更令策略 stale 并恢复逐次审批。`014` 只规范化遗留任务，`015` 才保存配置版本、当前策略和审计事件；代码内 69 个精确审阅合同由一次审计 bootstrap 仅为部署时已启用且仍完整命中的既有任务保留原调度行为（当前生产预期 67 项），禁用项和新任务默认逐次审批。
+- 打卡的 `clock_in_dual` 为 v1.1 精确账号/会话配置的外部写：不安全结果不重试，ACK 证据不是独立读后验证，未知写结果必须阻塞。财务启动只继承已持久化的财务任务策略，不得以启动补拉绕过审批。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
 - 每日应签与客服问题件只读试点通过 `pilot_projection.py` 投影；每次采集（包括来源不完整或详情复核失败）都必须保存 COMPLETE/INCOMPLETE 影子 Evidence。客服旧口径集合必须从现有账号选择与站点过滤规则独立计算，不能从新集合反推。首页保持旧口径，直至连续三个完整业务日影子集合、来源完整性和差异证据满足切换标准。
 
 ## 快速定位入口
@@ -181,7 +183,7 @@ docs/
 ## 每日应签共享台账
 
 - R13、实际到货、问题件与 TMS 主单签收必须完整分页并写入 `010_daily_sign_ledger.sql` 建立的权威台账；R13 状态只作候选诊断，只有真实主单“签收”事件可关闭事项。
-- 四个账号角色必须显式传入并分别解析真实登录态，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
+- 必须显式传入独立的 R13 来源账号和唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
 - TMS 签收长历史查询按连续无重叠的 31 天窗口分片，校验汇总/明细总量并按主键去重；已离开当前 R13 的候选使用 `013_daily_sign_verification_state.sql` 按 1/3/7 天持久化退避精确复核。
 - 来源不完整、冲突无法核验、字段缺失或账号不唯一必须显式阻塞；不得发布新展示口径覆盖上一轮完整结果。
 

@@ -146,9 +146,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
     def _params(**overrides):
         return {
             "r13_account_id": "r13-test",
-            "problem_account_id": "ronghui-test",
-            "sign_account_id": "ronghui-test",
-            "detail_account_id": "ronghui-test",
+            "account_id": "ronghui-test",
             "days": 1,
             "enrich_addresses": False,
             **overrides,
@@ -389,7 +387,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         ):
             events, result = daily_sign_sync_tool._sync_manual_problem_events(
                 {
-                    "problem_account_id": "ronghui-test",
+                    "account_id": "ronghui-test",
                     "problem_start_date": "2026-08-12",
                     "problem_end_date": "2026-08-12",
                     "problem_page_retries": 2,
@@ -416,7 +414,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         ):
             events, result = daily_sign_sync_tool._sync_manual_problem_events(
                 {
-                    "problem_account_id": "ronghui-test",
+                    "account_id": "ronghui-test",
                     "problem_start_date": "2026-08-12",
                     "problem_end_date": "2026-08-12",
                     "problem_page_retries": 2,
@@ -460,7 +458,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True, "upserted": 1}) as store,
         ):
             events, result = daily_sign_sync_tool._sync_r13_sign_conflicts(
-                {"exact_sign_workers": 2, "sign_account_id": "ronghui-test"},
+                {"exact_sign_workers": 2, "account_id": "ronghui-test"},
                 {"R1": {"isSigns": "已签"}, "R2": {"signTime": "2026-08-12 11:00:00"}},
                 state,
             )

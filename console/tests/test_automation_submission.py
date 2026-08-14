@@ -157,26 +157,27 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual(
             {
                 "r13_account_id": "r13_default",
-                "problem_account_id": "ronghui_daxiang_s",
-                "sign_account_id": "ronghui_daxiang_s",
-                "detail_account_id": "ronghui_default",
+                "account_id": "ronghui_daxiang_s",
                 "days": 7,
             },
             daily_sign["default_tool_params"],
         )
-        detail_role = next(
+        tms_role = next(
             role
             for role in daily_sign["account_roles"]
-            if role["field"] == "detail_account_id"
+            if role["field"] == "account_id"
         )
-        self.assertEqual("ronghui_default", detail_role["default_account_id"])
+        self.assertEqual("ronghui_daxiang_s", tms_role["default_account_id"])
+        self.assertEqual(2, len(daily_sign["account_roles"]))
 
     def test_clock_catalog_is_read_only_and_not_tms_query(self):
         for task_id in ("clockin_daxiang", "clockin_daxiang_s"):
             workflow = AUTOMATION_WORKFLOW_BY_ID[task_id]
             self.assertEqual("clock_in_dual", workflow["tool_name"])
             self.assertTrue(workflow["control_plane_only"])
-            self.assertEqual("控制平面审批", workflow["trigger_label"])
+            self.assertEqual("定时任务", workflow["trigger_label"])
+            self.assertIn("参数仍只读", workflow["note"])
+            self.assertIn("审批策略由超级管理员单独配置", workflow["note"])
 
     def test_clock_submission_is_rejected_before_save_or_run(self):
         for task_id in ("clockin_daxiang", "clockin_daxiang_s_1833"):
@@ -202,8 +203,9 @@ class AutomationSubmissionTests(unittest.TestCase):
                 )
 
                 self.assertIsNone(payload)
-                self.assertIn("第三方高风险写入", error_message)
-                self.assertIn("不能保存", error_message)
+                self.assertIn("时间、账号与参数仍由代码锁定", error_message)
+                self.assertIn("不能修改任务配置", error_message)
+                self.assertIn("可以单独设置审批策略", error_message)
 
     def test_direct_clock_persist_is_fail_closed_without_repository_write(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
@@ -221,7 +223,8 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertIn("第三方高风险写入", result["error"])
+        self.assertIn("时间、账号与参数仍由代码锁定", result["error"])
+        self.assertIn("可以单独设置审批策略", result["error"])
 
     def test_delivery_status_workflow_is_scheduled_scan(self):
         workflow = AUTOMATION_WORKFLOW_BY_ID["delivery_status"]
@@ -267,7 +270,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("ronghui", automation_task_provider("self_pickup_problem_upload", workflow))
         self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["self_pickup_problem_upload"])
 
-    def test_daily_sign_account_roles_select_r13_and_detail_accounts(self):
+    def test_daily_sign_account_roles_select_r13_and_one_tms_account(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         tasks = [
             {
@@ -277,7 +280,7 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "tool_params_json": json.dumps(
                     {
                         "r13_account_id": "r13_ops",
-                        "detail_account_id": "ronghui_detail",
+                        "account_id": "ronghui_daxiang_s",
                     }
                 ),
             }
@@ -291,9 +294,9 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "is_default": True,
             },
             {
-                "account_id": "ronghui_detail",
+                "account_id": "ronghui_daxiang_s",
                 "system": "ronghui",
-                "name": "融辉详情账号",
+                "name": "TMS邵阳大祥站账号",
                 "is_active": True,
                 "is_default": False,
             },
@@ -321,11 +324,12 @@ class AutomationSubmissionTests(unittest.TestCase):
             ["r13_default", "r13_ops"],
             [item["account_id"] for item in roles["r13_account_id"]["options"]],
         )
-        self.assertEqual("ronghui_detail", roles["detail_account_id"]["selected_account_id"])
+        self.assertEqual("ronghui_daxiang_s", roles["account_id"]["selected_account_id"])
         self.assertEqual(
-            ["ronghui_default", "ronghui_detail"],
-            [item["account_id"] for item in roles["detail_account_id"]["options"]],
+            ["ronghui_default", "ronghui_daxiang_s"],
+            [item["account_id"] for item in roles["account_id"]["options"]],
         )
+        self.assertEqual({"r13_account_id", "account_id"}, set(roles))
 
     def test_self_pickup_problem_upload_exposes_two_account_roles(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)

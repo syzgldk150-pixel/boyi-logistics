@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
 from typing import Any, Callable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from agent.orchestration.models import (
     Actor,
@@ -31,6 +32,8 @@ class ScheduledAllowlistEntry:
     arguments_hash: str
     dynamic_argument_rules: Mapping[str, str] = field(default_factory=dict)
     cron_expression: str = ""
+    contract_hash: str = ""
+    configuration_version: int | None = None
 
     @classmethod
     def from_arguments(
@@ -42,6 +45,8 @@ class ScheduledAllowlistEntry:
         arguments: Mapping[str, Any],
         dynamic_argument_rules: Mapping[str, str] | None = None,
         cron_expression: str = "",
+        contract_hash: str = "",
+        configuration_version: int | None = None,
     ) -> "ScheduledAllowlistEntry":
         return cls(
             task_id=task_id,
@@ -50,6 +55,12 @@ class ScheduledAllowlistEntry:
             arguments_hash=sha256_json(arguments),
             dynamic_argument_rules=dict(dynamic_argument_rules or {}),
             cron_expression=str(cron_expression or ""),
+            contract_hash=str(contract_hash or ""),
+            configuration_version=(
+                int(configuration_version)
+                if configuration_version is not None
+                else None
+            ),
         )
 
     def matches(
@@ -59,8 +70,24 @@ class ScheduledAllowlistEntry:
         execution_context: Mapping[str, Any],
     ) -> bool:
         arguments = dict(step.arguments)
+        if self.configuration_version is not None:
+            actual_configuration_version = execution_context.get("configuration_version")
+            if (
+                isinstance(actual_configuration_version, bool)
+                or not isinstance(actual_configuration_version, int)
+                or actual_configuration_version != self.configuration_version
+            ):
+                return False
         if self.cron_expression and str(execution_context.get("cron_expression") or "") != self.cron_expression:
             return False
+        if self.cron_expression == "@startup":
+            scheduled_for = _parse_scheduled_for(execution_context.get("scheduled_for"))
+            if scheduled_for is None or not _matches_startup_occurrence(scheduled_for):
+                return False
+        elif self.cron_expression:
+            scheduled_for = _parse_scheduled_for(execution_context.get("scheduled_for"))
+            if scheduled_for is None or not _matches_daily_cron(scheduled_for, self.cron_expression):
+                return False
         for field_name, rule in self.dynamic_argument_rules.items():
             actual = arguments.pop(field_name, None)
             if rule == "scheduled_previous_day":
@@ -167,6 +194,11 @@ class PolicyEngine:
                 continue
 
             if step.operation_type is OperationType.EXTERNAL_WRITE:
+                if (
+                    mode is ApprovalMode.SCHEDULE_ALLOWLIST
+                    and self._scheduled_allowlisted(step, actor, source, execution_context)
+                ):
+                    continue
                 requires_approval = True
                 required_roles.add("super_admin")
                 continue
@@ -219,7 +251,7 @@ class PolicyEngine:
         if source != "scheduler" or actor.actor_type is not ActorType.SCHEDULER:
             return False
         task_id = str(execution_context.get("task_id") or "").strip()
-        if not task_id:
+        if not task_id or actor.actor_id != task_id:
             return False
         entries = self._scheduler_allowlist
         if self._scheduler_allowlist_provider is not None:
@@ -258,3 +290,31 @@ def _parse_scheduled_for(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def _matches_daily_cron(scheduled_for: datetime, cron_expression: str) -> bool:
+    parts = cron_expression.split()
+    if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
+        return False
+    try:
+        minute = int(parts[0])
+        hour = int(parts[1])
+    except ValueError:
+        return False
+    local = scheduled_for.astimezone(ZoneInfo("Asia/Shanghai"))
+    return (
+        local.hour == hour
+        and local.minute == minute
+        and local.second == 0
+        and local.microsecond == 0
+    )
+
+
+def _matches_startup_occurrence(scheduled_for: datetime) -> bool:
+    local = scheduled_for.astimezone(ZoneInfo("Asia/Shanghai"))
+    return (
+        local.hour == 0
+        and local.minute == 10
+        and local.second == 0
+        and local.microsecond == 0
+    )

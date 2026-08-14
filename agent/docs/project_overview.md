@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # 物流 Agent 项目总览
@@ -19,7 +19,7 @@ updated: 2026-08-13
   Command；只有 WorkflowRunner 可以调用工具执行端口。登录/验证码、Console 本地 OCR 与
   博益手工运单 CRUD 继续使用原边界。
 - LLM 目录只开放明确标记的只读/计算能力；风险、权限、审批、工具版本、Evidence 和写后
-  条件全部来自受管 `registry.yaml`。第三方写入要求独立 `super_admin` 审批与写后验证，
+  条件全部来自受管 `registry.yaml`。第三方写入要求独立 `super_admin` 审批与写后验证，除非 Scheduler 命中当前有效的精确任务豁免，
   删除、付款及通用不可逆覆盖禁用。
 - 新增 Console“事项中心”，只代理 Agent `/internal/v1/*`，展示事项、运行步骤、计划、
   审批、Evidence 与时间线；所有写动作使用真实管理员会话和同源校验。
@@ -33,6 +33,26 @@ updated: 2026-08-13
 - 新投影只影子运行并保存集合哈希、差异和完整性。连续三个完整业务日满足切换标准且差异
   经管理员确认后，才允许替换首页口径。
 - 完整设计、状态机、权限、API、迁移和发布门禁见 `control_plane_v1.md`。
+
+## 2026-08-14 每任务定时审批策略（实施/发布契约）
+
+- 定时写操作不再依赖“某类任务一律免审”的规则。每个持久化 `scheduled_tasks` 行默认
+  `REQUIRE_EACH_RUN`；只有符合工具 `approval.mode: schedule_allowlist` 资格的任务，才可由
+  签名真实 MySQL Console 会话中的 `super_admin` 单独设置为 `EXACT_SCHEDULE_EXEMPT`。
+- 免审仅对 Scheduler Command 生效。Console 立即运行、飞书、Webhook 和其他手工入口即使使用
+  同一个工具/任务，仍需常规审批；Basic Auth、普通管理员及浏览器传入的身份/哈希均不能配置策略。
+- Agent 服务端生成策略行为哈希，覆盖任务 ID、工具/版本、完整参数和账号、cron、启用状态、
+  治理字段、postconditions、动态规则和配置版本。任务显示名称不是行为，故不进入哈希；任何其他
+  受绑定配置或工具治理变更使原豁免 stale 并恢复逐次审批。
+- `014_control_plane_task_cutover.sql` 只把遗留任务转为当前规范，不授予免审。`015_scheduled_task_approval_policies.sql`
+  保存任务配置版本、当前策略及不可变策略审计。代码内共有 69 个精确审阅合同（54 个内部投影、
+  15 个外部写）；一次可审计 bootstrap 仅延续部署时已启用且仍完整命中的既有任务，当前生产预期
+  67 项。禁用项和新任务全部默认逐次审批。
+- 两项打卡使用 `clock_in_dual` v1.1，绑定精确账号/会话。外部写的安全契约是：不盲目重试、ACK
+  只是执行证据而非独立读后验证、未知结果转为阻塞。财务启动补拉使用独立持久化任务
+  `finance_startup_catchup` 的有效策略，不存在静态免审旁路。
+- 发布在迁移和重启前根据有效外部写策略快照计算动态静默窗口；若将与外部写任务相撞，发布停止。
+  这是一项上线门禁，而不是对某两个打卡任务的永久硬编码。
 
 ## 2026-08-11 架构基线
 
@@ -106,7 +126,7 @@ updated: 2026-08-13
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
-- `sync_daily_should_sign` 必须显式绑定 `r13_account_id`、`problem_account_id`、`sign_account_id` 与 `detail_account_id` 四个账号角色；各角色从统一账号管理解析独立登录态，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
+- `sync_daily_should_sign` 必须显式绑定独立的 `r13_account_id` 与唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
 - R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。

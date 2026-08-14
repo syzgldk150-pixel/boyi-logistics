@@ -251,6 +251,14 @@
     </div>
   </div>
   {% endif %}
+  {% if automation_approval_policy_warning %}
+  <div class="auto-feedback auto-feedback--warning" role="status">
+    <div class="auto-feedback-head">
+      <strong>审批策略暂不可编辑</strong>
+      <span>{{ automation_approval_policy_warning }}</span>
+    </div>
+  </div>
+  {% endif %}
 
   {# ── 分类切换 ── #}
   {% set provider_counts = automation_provider_counts | default({}, true) %}
@@ -369,9 +377,9 @@
               <span data-run-label>执行</span>
             </button>
             {% else %}
-            <button class="primary-btn auto-run-btn" type="button" disabled title="第三方写入需在事项中心完成独立审批">
-              <i data-feather="shield"></i>
-              <span>需审批</span>
+            <button class="primary-btn auto-run-btn" type="button" disabled title="当前任务只按已保存的定时计划运行">
+              <i data-feather="lock"></i>
+              <span>仅自动执行</span>
             </button>
             {% endif %}
 
@@ -390,6 +398,166 @@
             {% endif %}
           </div>
         </div>
+
+        {% if task.is_schedulable %}
+        {% set policy = task.approval_policy | default({}, true) %}
+        {% set policy_items = policy.get('items', []) %}
+        <section
+          class="auto-approval-policy auto-approval-policy--{{ policy.effective_status | default('unavailable', true) | lower }}{% if policy.item_count | default(0) > 1 %} auto-approval-policy--grouped{% endif %}"
+          data-approval-policy
+          aria-label="审批策略"
+        >
+          <div class="auto-approval-policy-copy">
+            <div class="auto-approval-policy-heading">
+              <span class="auto-approval-policy-title">
+                <i data-feather="shield"></i>
+                审批策略
+              </span>
+              <strong class="auto-approval-policy-state" data-approval-policy-label>
+                {{ policy.label | default('审批策略不可用', true) }}
+              </strong>
+              {% if policy.item_count | default(0) > 1 %}
+              <span class="auto-approval-policy-count" data-approval-policy-count>{{ policy.item_count }} 条任务</span>
+              {% endif %}
+              <span class="auto-approval-policy-restriction" data-approval-policy-restriction {% if not (policy.available and not policy.can_exempt) %}hidden{% endif %}>{% if policy.item_count | default(0) > 1 %}部分计划不允许免审{% else %}工具不允许免审{% endif %}</span>
+            </div>
+            <p class="auto-approval-policy-summary" data-approval-policy-summary>
+              {{ policy.summary | default('未取得任务级审批策略，请稍后刷新。', true) }}
+            </p>
+            {% if policy.available %}
+            <p class="auto-approval-policy-modes">
+              已配置：<strong data-policy-configured-mode>{% if policy.configured_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% elif policy.configured_mode == 'REQUIRE_EACH_RUN' %}每次运行审批{% else %}混合策略{% endif %}</strong>
+              <span aria-hidden="true">·</span>
+              当前生效：<strong data-policy-effective-mode>{% if policy.effective_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% elif policy.effective_mode == 'REQUIRE_EACH_RUN' %}每次运行审批{% else %}混合策略{% endif %}</strong>
+            </p>
+            {% endif %}
+            <dl class="auto-approval-policy-meta">
+              <div {% if not policy.policy_hash_short %}hidden{% endif %} data-policy-meta-hash>
+                <dt>策略标识</dt>
+                <dd data-policy-hash>{{ policy.policy_hash_short }}</dd>
+              </div>
+              <div {% if not policy.approved_by %}hidden{% endif %} data-policy-meta-actor>
+                <dt>授权人</dt>
+                <dd data-policy-approved-by>{{ policy.approved_by }}</dd>
+              </div>
+              <div {% if not policy.approved_at %}hidden{% endif %} data-policy-meta-time>
+                <dt>授权时间</dt>
+                <dd data-policy-approved-at>{{ policy.approved_at }}</dd>
+              </div>
+              <div {% if not policy.invalid_reason %}hidden{% endif %} data-policy-meta-reason>
+                <dt>失效原因</dt>
+                <dd data-policy-invalid-reason>{{ policy.invalid_reason }}</dd>
+              </div>
+            </dl>
+          </div>
+
+          {% if policy.available and policy_items | length == 1 %}
+          {% set policy_item = policy_items[0] %}
+          {% if can_manage_approval_policies %}
+          <div
+            class="auto-approval-policy-editor"
+            data-approval-policy-item
+            data-policy-item="{{ policy_item | tojson | forceescape }}"
+          >
+            <label class="auto-approval-policy-field">
+              <span>审批方式</span>
+              <select class="review-input compact-input" data-approval-policy-mode>
+                <option value="REQUIRE_EACH_RUN" {% if policy_item.mode == 'REQUIRE_EACH_RUN' %}selected{% endif %}>每次运行审批</option>
+                <option value="EXACT_SCHEDULE_EXEMPT" {% if policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}selected{% endif %} {% if not policy_item.can_exempt %}disabled{% endif %}>固定计划自动执行</option>
+              </select>
+            </label>
+            <label class="auto-approval-policy-field auto-approval-policy-comment">
+              <span>变更理由（可选）</span>
+              <input
+                class="review-input compact-input"
+                type="text"
+                maxlength="500"
+                autocomplete="off"
+                placeholder="例如：固定晚间打卡计划"
+                data-approval-policy-comment
+              >
+            </label>
+            <button
+              class="ghost-btn auto-approval-policy-save"
+              type="button"
+              data-approval-policy-save
+              aria-label="保存 {{ policy_item.schedule_label }}审批策略"
+            >
+              <i data-feather="save"></i>
+              <span data-approval-policy-save-label>{% if policy_item.effective_status == 'STALE' and policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}重新授权固定计划{% else %}保存审批策略{% endif %}</span>
+            </button>
+            <p class="auto-approval-policy-feedback" data-approval-policy-feedback role="status" aria-live="polite" hidden></p>
+          </div>
+          {% else %}
+          <p class="auto-approval-policy-readonly">当前账号只读，需超级管理员修改。</p>
+          {% endif %}
+          {% elif policy.available and policy_items %}
+          <div class="auto-approval-policy-list" role="list" aria-label="按执行时间设置审批策略">
+            {% for policy_item in policy_items %}
+            <div
+              class="auto-approval-policy-item auto-approval-policy-item--{{ policy_item.effective_status | lower }}"
+              role="listitem"
+              data-approval-policy-item
+              data-policy-item="{{ policy_item | tojson | forceescape }}"
+            >
+              <div class="auto-approval-policy-item-identity">
+                <strong id="approval-policy-task-{{ task.task_id }}-{{ loop.index }}">{{ policy_item.schedule_label }}</strong>
+                <code>{{ policy_item.task_id }}</code>
+              </div>
+              <div class="auto-approval-policy-item-status" aria-labelledby="approval-policy-task-{{ task.task_id }}-{{ loop.index }}">
+                <strong class="auto-approval-policy-item-state" data-policy-item-state>
+                  {% if policy_item.effective_status == 'STALE' %}免审已失效{% elif policy_item.effective_status == 'UNSUPPORTED' %}不支持免审{% elif policy_item.effective_mode == 'EXACT_SCHEDULE_EXEMPT' %}免审生效{% else %}需要审批{% endif %}
+                </strong>
+                <p class="auto-approval-policy-item-modes">
+                  配置：<strong data-policy-item-configured-mode>{% if policy_item.configured_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% else %}每次运行审批{% endif %}</strong>
+                  <span aria-hidden="true">·</span>
+                  生效：<strong data-policy-item-effective-mode>{% if policy_item.effective_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% else %}每次运行审批{% endif %}</strong>
+                </p>
+                <p class="auto-approval-policy-item-reason" data-policy-item-invalid-reason {% if not policy_item.invalid_reason %}hidden{% endif %}>{{ policy_item.invalid_reason }}</p>
+              </div>
+              {% if can_manage_approval_policies %}
+              <div class="auto-approval-policy-item-editor">
+                <label class="auto-approval-policy-field auto-approval-policy-item-mode">
+                  <span>审批方式</span>
+                  <select class="review-input compact-input" data-approval-policy-mode>
+                    <option value="REQUIRE_EACH_RUN" {% if policy_item.mode == 'REQUIRE_EACH_RUN' %}selected{% endif %}>每次运行审批</option>
+                    <option value="EXACT_SCHEDULE_EXEMPT" {% if policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}selected{% endif %} {% if not policy_item.can_exempt %}disabled{% endif %}>固定计划自动执行</option>
+                  </select>
+                </label>
+                <label class="auto-approval-policy-field auto-approval-policy-item-comment">
+                  <span>变更理由（可选）</span>
+                  <input
+                    class="review-input compact-input"
+                    type="text"
+                    maxlength="500"
+                    autocomplete="off"
+                    placeholder="例如：该时段固定自动运行"
+                    data-approval-policy-comment
+                  >
+                </label>
+                <button
+                  class="ghost-btn auto-approval-policy-save"
+                  type="button"
+                  data-approval-policy-save
+                  aria-label="保存 {{ policy_item.schedule_label }}审批策略"
+                >
+                  <i data-feather="save"></i>
+                  <span data-approval-policy-save-label>{% if policy_item.effective_status == 'STALE' and policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}重新授权{% else %}保存{% endif %}</span>
+                </button>
+              </div>
+              {% endif %}
+              <p class="auto-approval-policy-feedback" data-approval-policy-feedback role="status" aria-live="polite" hidden></p>
+            </div>
+            {% endfor %}
+          </div>
+          {% if not can_manage_approval_policies %}
+          <p class="auto-approval-policy-readonly">当前账号只读，需超级管理员修改。</p>
+          {% endif %}
+          {% else %}
+          <p class="auto-approval-policy-readonly">当前策略不可编辑，请先处理上方提示。</p>
+          {% endif %}
+        </section>
+        {% endif %}
 
         {% if task.control_plane_only %}
         <div class="auto-resource-alert">
@@ -2881,4 +3049,5 @@
 
   feather.replace();
 </script>
+<script src="/static/automation_approval_policy.js?v=20260814-3" defer></script>
 {% endblock %}

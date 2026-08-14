@@ -9,7 +9,12 @@ from unittest.mock import patch
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, RunStatus
 from agent.orchestration.result_verifier import ResultVerifier
-from agent.tool_executor import CANCEL_MESSAGE, PROJECT_ROOT, ToolExecutor
+from agent.tool_executor import (
+    CANCEL_MESSAGE,
+    PROJECT_ROOT,
+    ToolExecutor,
+    build_trusted_scheduler_context,
+)
 
 
 class _Catalog:
@@ -299,6 +304,69 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(outcome.accepted)
         self.assertIs(outcome.run_status, RunStatus.FAILED_RETRYABLE)
         self.assertEqual("TRANSIENT_SOURCE_FAILURE", outcome.code)
+
+    async def test_private_scheduler_context_reaches_only_r7_subprocess(self):
+        context_script = self._write_temp_script(
+            "tool-private-scheduler-context-",
+            """
+            import json
+
+            from agent.tool_executor import trusted_scheduler_context
+
+            context = trusted_scheduler_context()
+            print(json.dumps({
+                "has_context": context is not None,
+                "task_id": context.get("task_id") if context is not None else None,
+            }))
+            """,
+        )
+        trusted_context = build_trusted_scheduler_context(
+            "r7_arrival_checkin",
+            {
+                "source": "scheduler",
+                "actor": {
+                    "actor_type": "scheduler",
+                    "actor_id": "r7_arrival_checkin_1900",
+                    "roles": ["system"],
+                },
+                "task_id": "r7_arrival_checkin_1900",
+                "configuration_version": 4,
+                "scheduled_for": "2026-08-14T19:00:00+08:00",
+                "cron_expression": "0 19 * * *",
+            },
+        )
+        self.assertIsNotNone(trusted_context)
+        executor_path = os.path.relpath(context_script, PROJECT_ROOT)
+
+        r7_result = await self.executor.execute(
+            {
+                "name": "r7_arrival_checkin",
+                "executor": executor_path,
+                "timeout": 5,
+            },
+            {},
+            trusted_scheduler_context=trusted_context,
+        )
+        other_result = await self.executor.execute(
+            {
+                "name": "unrelated_tool",
+                "executor": executor_path,
+                "timeout": 5,
+            },
+            {},
+            trusted_scheduler_context=trusted_context,
+        )
+
+        self.assertTrue(r7_result["success"])
+        self.assertEqual(
+            r7_result["data"],
+            {"has_context": True, "task_id": "r7_arrival_checkin_1900"},
+        )
+        self.assertTrue(other_result["success"])
+        self.assertEqual(
+            other_result["data"],
+            {"has_context": False, "task_id": None},
+        )
 
     async def test_explicit_false_result_is_failure_without_error_text(self):
         failure_script = self._write_temp_script(

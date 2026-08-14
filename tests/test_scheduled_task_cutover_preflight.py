@@ -58,8 +58,38 @@ def _legacy_arrive_row(*, login_site_code: str = "reviewed-login-site") -> dict:
     }
 
 
+def _canonical_clock_rows(runner, contracts: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "id": task_id,
+            "tool_name": contract["tool_name"],
+            "tool_params": dict(contract["canonical_arguments"]),
+            "cron_expression": contract["cron_expression"],
+            "enabled": 1,
+        }
+        for task_id, contract in sorted(contracts.items())
+    ]
+
+
+def _legacy_clock_rows(runner, contracts: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "id": task_id,
+            "tool_name": "tms_query",
+            "tool_params": runner._legacy_clock_arguments(
+                task_id,
+                contract["canonical_arguments"],
+            ),
+            "cron_expression": contract["cron_expression"],
+            "enabled": 1,
+        }
+        for task_id, contract in sorted(contracts.items())
+    ]
+
+
 def test_preflight_consumes_the_exact_code_reviewed_51_id_set(runner) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
+    clock_contracts = runner._load_control_plane_clock_contracts()
 
     assert len(contracts) == 51
     assert {contract["group_id"] for contract in contracts.values()} == {
@@ -72,6 +102,18 @@ def test_preflight_consumes_the_exact_code_reviewed_51_id_set(runner) -> None:
     }
     assert "clockin_daxiang_1830" not in contracts
     assert "clockin_daxiang_s_1833" not in contracts
+    assert set(clock_contracts) == {
+        "clockin_daxiang_1830",
+        "clockin_daxiang_s_1833",
+    }
+    assert {contract["group_id"] for contract in clock_contracts.values()} == {
+        "clockin_daxiang",
+        "clockin_daxiang_s",
+    }
+    assert all(
+        contract["canonical_arguments"]["account_id"]
+        for contract in clock_contracts.values()
+    )
 
 
 def test_every_canonical_reviewed_task_passes_without_session_state(runner) -> None:
@@ -83,6 +125,127 @@ def test_every_canonical_reviewed_task_passes_without_session_state(runner) -> N
     )
 
     assert result == {"reviewed_rows": 51, "canonical_rows": 51, "legacy_rows": 0}
+
+
+def test_optional_finance_yunda_and_startup_contracts_are_exact_and_disabled_safe(
+    runner,
+) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    optional = runner._load_control_plane_optional_task_contracts()
+    assert set(optional) == {
+        "finance_bills_0010",
+        "finance_startup_catchup",
+        "yunda_dispatch_forecast_1700",
+    }
+    rows = _canonical_rows(contracts)
+    rows.extend(
+        [
+            {
+                "id": "finance_bills_0010",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync", "rescan_days": 7},
+                "cron_expression": "10 0 * * *",
+                "enabled": 0,
+            },
+            {
+                "id": "yunda_dispatch_forecast_1700",
+                "tool_name": "sync_yunda_dispatch_forecast",
+                "tool_params": {
+                    "session_profile": "yunda",
+                    "dest_brch": "56739382",
+                },
+                "cron_expression": "0 17 * * *",
+                "enabled": 0,
+            },
+            {
+                "id": "finance_startup_catchup",
+                "tool_name": "sync_finance_bills",
+                "tool_params": dict(
+                    optional["finance_startup_catchup"]["canonical_arguments"]
+                ),
+                "cron_expression": "@startup",
+                "enabled": 0,
+            },
+        ]
+    )
+
+    result = runner.validate_control_plane_task_cutover(
+        rows,
+        contracts=contracts,
+        optional_contracts=optional,
+    )
+
+    assert result == {"reviewed_rows": 51, "canonical_rows": 51, "legacy_rows": 0}
+
+    rows[-3]["tool_params"]["rescan_days"] = 8
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            optional_contracts=optional,
+        )
+    assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
+
+
+def test_exact_thirteen_r7_rows_are_all_or_nothing_and_shape_locked(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    r7_contracts = runner._load_control_plane_r7_contracts()
+    assert set(r7_contracts) == runner.CONTROL_PLANE_REVIEWED_R7_IDS
+    r7_rows = _canonical_rows(r7_contracts)
+
+    result = runner.validate_control_plane_task_cutover(
+        _canonical_rows(contracts) + r7_rows,
+        contracts=contracts,
+        r7_contracts=r7_contracts,
+    )
+    assert result == {"reviewed_rows": 64, "canonical_rows": 64, "legacy_rows": 0}
+
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            _canonical_rows(contracts) + r7_rows[:-1],
+            contracts=contracts,
+            r7_contracts=r7_contracts,
+        )
+    assert error.value.code == "REVIEWED_R7_TASK_SET_INCOMPLETE"
+
+    changed = [dict(row) for row in r7_rows]
+    changed[0]["tool_params"] = json.loads(changed[0]["tool_params"])
+    changed[0]["tool_params"]["daily_success_limit"] = 2
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner.validate_control_plane_task_cutover(
+            _canonical_rows(contracts) + changed,
+            contracts=contracts,
+            r7_contracts=r7_contracts,
+        )
+    assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
+
+
+def test_exact_clock_pair_accepts_c7_legacy_and_canonical_shapes(runner) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    clock_contracts = runner._load_control_plane_clock_contracts()
+    internal_rows = _canonical_rows(contracts)
+
+    legacy_result = runner.validate_control_plane_task_cutover(
+        internal_rows + _legacy_clock_rows(runner, clock_contracts),
+        contracts=contracts,
+        clock_contracts=clock_contracts,
+    )
+    canonical_result = runner.validate_control_plane_task_cutover(
+        internal_rows + _canonical_clock_rows(runner, clock_contracts),
+        contracts=contracts,
+        clock_contracts=clock_contracts,
+    )
+
+    assert legacy_result == {
+        "reviewed_rows": 53,
+        "canonical_rows": 51,
+        "legacy_rows": 2,
+    }
+    assert canonical_result == {
+        "reviewed_rows": 53,
+        "canonical_rows": 53,
+        "legacy_rows": 0,
+    }
 
 
 def test_truly_empty_scheduler_is_a_clean_bootstrap_not_a_partial_cutover(runner) -> None:
@@ -174,30 +337,54 @@ def test_extra_field_fails_even_when_canonical_values_are_unchanged(runner) -> N
     assert error.value.code == "TASK_ARGUMENTS_NOT_REVIEWED"
 
 
-def test_two_enabled_clock_writes_return_the_explicit_policy_blocker(runner) -> None:
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        (lambda rows: rows.pop(), "REVIEWED_CLOCK_TASK_PAIR_INCOMPLETE"),
+        (
+            lambda rows: rows[0].update(enabled=0),
+            "PROTECTED_CLOCK_TASK_DISABLED",
+        ),
+        (
+            lambda rows: rows[0].update(cron_expression="31 18 * * *"),
+            "CLOCK_TASK_CRON_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0].update(tool_name="sync_arrive_list"),
+            "CLOCK_TASK_TOOL_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0]["tool_params"].update(unexpected=True),
+            "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0]["tool_params"].update(delay_seconds=3),
+            "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0].update(id="clockin_unknown_1830"),
+            "CLOCK_TASK_ID_NOT_REVIEWED",
+        ),
+    ),
+)
+def test_clock_pair_wrong_id_state_binding_or_arguments_fails_closed(
+    runner,
+    mutation,
+    expected_code: str,
+) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
-    rows = [
-        {
-            "id": "clockin_daxiang_1830",
-            "tool_name": "tms_query",
-            "tool_params": "must-not-be-parsed-or-printed-1",
-            "cron_expression": "30 18 * * *",
-            "enabled": 1,
-        },
-        {
-            "id": "clockin_daxiang_s_1833",
-            "tool_name": "tms_query",
-            "tool_params": "must-not-be-parsed-or-printed-2",
-            "cron_expression": "33 18 * * *",
-            "enabled": True,
-        },
-    ]
+    clock_contracts = runner._load_control_plane_clock_contracts()
+    rows = _canonical_clock_rows(runner, clock_contracts)
+    mutation(rows)
 
     with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
-        runner.validate_control_plane_task_cutover(rows, contracts=contracts)
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            clock_contracts=clock_contracts,
+        )
 
-    assert error.value.code == "EXTERNAL_WRITE_SCHEDULE_POLICY_BLOCKED"
-    assert error.value.count == 2
+    assert error.value.code == expected_code
 
 
 def test_candidate_query_does_not_capture_unrelated_read_only_tms_query(runner) -> None:
@@ -206,26 +393,24 @@ def test_candidate_query_does_not_capture_unrelated_read_only_tms_query(runner) 
     assert "id REGEXP" in query
     assert "clockin_" in query
     assert "'clock_in_dual'" in query
-    assert "'tms_query'" not in query
+    assert "tool_name = 'tms_query'" in query
+    assert "= '/clock_in_dual'" in query
 
 
-def test_clock_policy_blocker_wins_before_session_or_argument_parsing(runner) -> None:
+def test_legacy_clock_shape_is_exact_and_does_not_accept_nested_extras(runner) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
-    rows = [
-        {
-            "id": "clockin_daxiang_1830",
-            "tool_name": "tms_query",
-            "tool_params": object(),
-            "cron_expression": "30 18 * * *",
-            "enabled": 1,
-        },
-        _legacy_arrive_row(),
-    ]
+    clock_contracts = runner._load_control_plane_clock_contracts()
+    rows = _legacy_clock_rows(runner, clock_contracts)
+    rows[0]["tool_params"]["params"]["params"]["unexpected"] = "blocked"
 
     with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
-        runner.validate_control_plane_task_cutover(rows, contracts=contracts)
+        runner.validate_control_plane_task_cutover(
+            rows,
+            contracts=contracts,
+            clock_contracts=clock_contracts,
+        )
 
-    assert error.value.code == "EXTERNAL_WRITE_SCHEDULE_POLICY_BLOCKED"
+    assert error.value.code == "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED"
 
 
 def test_legacy_arrive_login_identity_must_equal_reviewed_fingerprint(runner) -> None:
@@ -340,6 +525,33 @@ def test_reporter_is_select_only_and_never_reads_or_leaks_session_values(
     assert all(sql.startswith("SELECT") for sql, _ in cursor.calls)
 
 
+def test_clock_preflight_error_never_prints_persisted_argument_values(
+    runner,
+    monkeypatch,
+    capsys,
+) -> None:
+    contracts = runner._load_control_plane_reviewed_task_contracts()
+    clock_contracts = runner._load_control_plane_clock_contracts()
+    rows = _canonical_rows(contracts) + _canonical_clock_rows(runner, clock_contracts)
+    sentinel = "CLOCK_TASK_PARAM_SECRET_SENTINEL"
+    rows[-1]["tool_params"]["second_type"] = sentinel
+    cursor = _ReadOnlyCursor(rows)
+    connection = _ReadOnlyConnection(cursor)
+    monkeypatch.setattr(runner, "_connect", lambda: connection)
+
+    result = runner.preflight_control_plane_task_cutover()
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert connection.closed
+    assert captured.out == ""
+    assert captured.err == (
+        "control_plane_task_cutover_preflight=blocked "
+        "reason=CLOCK_TASK_ARGUMENTS_NOT_REVIEWED count=1\n"
+    )
+    assert sentinel not in captured.err
+
+
 def test_preflight_skips_completed_cutover_and_allows_true_empty_bootstrap(
     runner,
     monkeypatch,
@@ -393,3 +605,10 @@ def test_release_runs_cutover_preflight_before_any_managed_mutation() -> None:
     assert preflight_index < run_release.index("quiesce_runtime_services")
     assert "UNEXPECTED_PREFLIGHT_RESPONSE" in release_script
     assert "--runtime-agent-root" not in release_script
+    write_window_index = run_release.index("preflight_scheduled_write_window")
+    assert write_window_index < run_release.index("backup_managed_sources")
+    assert write_window_index < run_release.index("MUTATION_STARTED=1")
+    assert "--check-scheduled-write-window" in release_script
+    assert "--scheduled-write-window-before-minutes 60" in release_script
+    assert "--scheduled-write-window-after-minutes 45" in release_script
+    assert "preflight_clock_release_window" not in release_script

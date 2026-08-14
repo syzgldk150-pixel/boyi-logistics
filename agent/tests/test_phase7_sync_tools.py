@@ -1996,9 +1996,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
                     "r13_account_id": "r13_default",
-                    "problem_account_id": "ronghui_daxiang_s",
-                    "sign_account_id": "ronghui_daxiang_s",
-                    "detail_account_id": "ronghui_daxiang_s",
+                    "account_id": "ronghui_daxiang_s",
                     "days": 1,
                 }
             )
@@ -2099,9 +2097,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
                     "r13_account_id": "r13_default",
-                    "problem_account_id": "ronghui_daxiang_s",
-                    "sign_account_id": "ronghui_daxiang_s",
-                    "detail_account_id": "ronghui_daxiang_s",
+                    "account_id": "ronghui_daxiang_s",
                     "days": 1,
                 }
             )
@@ -2198,9 +2194,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
                     "r13_account_id": "r13_default",
-                    "problem_account_id": "ronghui_daxiang_s",
-                    "sign_account_id": "ronghui_daxiang_s",
-                    "detail_account_id": "ronghui_daxiang_s",
+                    "account_id": "ronghui_daxiang_s",
                     "days": 1,
                 }
             )
@@ -2344,7 +2338,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         ):
             rows, result = daily_sign_sync_tool._enrich_rows_with_detail_addresses(
                 rows,
-                {"detail_account_id": "ronghui_daxiang_s"},
+                {"account_id": "ronghui_daxiang_s"},
             )
 
         self.assertTrue(result["ok"])

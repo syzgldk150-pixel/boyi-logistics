@@ -234,6 +234,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index("preflight_service_identity_configuration"),
             execution.index("backup_managed_sources"),
         )
+        self.assertEqual(2, execution.count("preflight_scheduled_write_window\n"))
+        self.assertLess(
+            execution.index('RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"'),
+            execution.index("MUTATION_STARTED=1"),
+        )
         self.assertLess(execution.index("build_release_virtualenvs"), execution.index("MUTATION_STARTED=1"))
         self.assertLess(execution.index("quiesce_runtime_services"), execution.index("retire_legacy_finance_etl"))
         self.assertLess(execution.index("quiesce_runtime_services"), execution.index('sync_scope "${scope}"'))
@@ -283,6 +288,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("dotenv_values", release)
         self.assertIn("build_console_identity_headers", release)
         self.assertIn('request_target = "/internal/v1/health"', release)
+        self.assertIn('scheduled_task_approval_bootstrap', release)
+        self.assertIn('completed != 1', release)
+        self.assertIn('created + existing + configured != reviewed', release)
         self.assertIn("https://mirrors.aliyun.com/pypi/simple", release)
         self.assertIn('--retries "${PIP_RETRIES}"', release)
         self.assertIn('--timeout "${PIP_TIMEOUT_SECONDS}"', release)
@@ -379,6 +387,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
+        publisher_finally = publisher.split("\nfinally {", 1)[1]
+        self.assertNotIn("rm -rf", publisher_finally)
+        self.assertIn("Remote release stage preserved for recovery", publisher_finally)
         blocked_extensions = publisher[
             publisher.index("$BlockedExtensions = @(") : publisher.index("function Assert-Command")
         ]

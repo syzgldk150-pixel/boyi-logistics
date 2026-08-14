@@ -11,8 +11,9 @@ class WriteImpactPreviewTests(unittest.TestCase):
         impact = build_write_impact(
             tool_name="clock_in_dual",
             operation_type=OperationType.EXTERNAL_WRITE,
-            account_id=None,
+            account_id="clock-account",
             arguments={
+                "account_id": "clock-account",
                 "sitecode": "SITE-A",
                 "sitefbcode": "SITE-B",
                 "sitename": "A",

@@ -10,8 +10,10 @@ import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = PROJECT_ROOT / "migrations"
@@ -26,6 +28,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 CONTROL_PLANE_TASK_CUTOVER_VERSION = "014"
 CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE = "control_plane_task_cutover_backup_014"
+CONTROL_PLANE_TASK_CUTOVER_CREATED_TABLE = "control_plane_task_cutover_created_014"
+SCHEDULED_TASK_APPROVAL_POLICY_TABLE = "scheduled_task_approval_policies"
+SCHEDULED_WRITE_TIMEZONE = ZoneInfo("Asia/Shanghai")
+SCHEDULED_WRITE_WINDOW_BEFORE_MINUTES = 60
+SCHEDULED_WRITE_WINDOW_AFTER_MINUTES = 45
 CONTROL_PLANE_REVIEWED_PROFILE_GROUPS = frozenset(
     {
         "arrive_list",
@@ -37,13 +44,47 @@ CONTROL_PLANE_REVIEWED_PROFILE_GROUPS = frozenset(
     }
 )
 CONTROL_PLANE_REVIEWED_TASK_COUNT = 51
+CONTROL_PLANE_OPTIONAL_PROFILE_GROUPS = frozenset(
+    {"finance_bills", "finance_startup_catchup", "yunda_dispatch_forecast"}
+)
+CONTROL_PLANE_OPTIONAL_TASK_IDS = frozenset(
+    {"finance_bills_0010", "finance_startup_catchup", "yunda_dispatch_forecast_1700"}
+)
 CONTROL_PLANE_REVIEWED_CLOCK_IDS = frozenset(
     {"clockin_daxiang_1830", "clockin_daxiang_s_1833"}
 )
+CONTROL_PLANE_REVIEWED_CLOCK_PROFILE_GROUPS = frozenset(
+    {"clockin_daxiang", "clockin_daxiang_s"}
+)
+CONTROL_PLANE_REVIEWED_EXTERNAL_PROFILE_GROUPS = frozenset(
+    {*CONTROL_PLANE_REVIEWED_CLOCK_PROFILE_GROUPS, "r7_arrival_checkin"}
+)
+CONTROL_PLANE_REVIEWED_R7_IDS = frozenset(
+    {
+        "r7_arrival_checkin_0900",
+        "r7_arrival_checkin_0930",
+        "r7_arrival_checkin_1000",
+        "r7_arrival_checkin_1030",
+        "r7_arrival_checkin_1100",
+        "r7_arrival_checkin_1130",
+        "r7_arrival_checkin_1200",
+        "r7_arrival_checkin_1230",
+        "r7_arrival_checkin_1300",
+        "r7_arrival_checkin_1330",
+        "r7_arrival_checkin_1400",
+        "r7_arrival_checkin_1430",
+        "r7_arrival_checkin_1900",
+    }
+)
+CONTROL_PLANE_REVIEWED_CLOCK_CRONS = {
+    "clockin_daxiang_1830": "30 18 * * *",
+    "clockin_daxiang_s_1833": "33 18 * * *",
+}
 CONTROL_PLANE_STATIC_SEED_TASK_IDS = frozenset(
     {
         "customer_problems_shadow",
         "finance_bills_0010",
+        "finance_startup_catchup",
         "yunda_dispatch_forecast_1700",
     }
 )
@@ -54,7 +95,7 @@ CONTROL_PLANE_CLOCK_TOOL_NAMES = frozenset({"tms_query", "clock_in_dual"})
 CONTROL_PLANE_TASK_CANDIDATE_SQL = """
 SELECT id, tool_name, tool_params, cron_expression, enabled
 FROM scheduled_tasks
-WHERE id REGEXP '^(arrive_list_|daily_sign_|delivery_status_|send_order_|site_send_|yunda_send_waybills_|clockin_)'
+WHERE id REGEXP '^(arrive_list_|daily_sign_|delivery_status_|send_order_|site_send_|yunda_send_waybills_|finance_bills_|finance_startup_catchup$|yunda_dispatch_forecast_|clockin_|r7_arrival_checkin_)'
    OR tool_name IN (
        'sync_arrive_list',
        'sync_daily_should_sign',
@@ -62,7 +103,18 @@ WHERE id REGEXP '^(arrive_list_|daily_sign_|delivery_status_|send_order_|site_se
        'sync_daily_send_orders',
        'sync_site_send_list',
        'sync_yunda_send_waybills',
+       'sync_finance_bills',
+       'sync_yunda_dispatch_forecast',
+       'r7_arrival_checkin',
        'clock_in_dual'
+   )
+   OR (
+       tool_name = 'tms_query'
+       AND COALESCE(
+           JSON_UNQUOTE(JSON_EXTRACT(tool_params, '$.endpoint')),
+           JSON_UNQUOTE(JSON_EXTRACT(tool_params, '$.params.endpoint')),
+           ''
+       ) = '/clock_in_dual'
    )
 """
 _TIME_SUFFIX_RE = re.compile(r"^(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)$")
@@ -220,8 +272,8 @@ def run(*, check_only: bool) -> int:
     return 0
 
 
-def _load_control_plane_reviewed_task_contracts() -> dict[str, dict[str, Any]]:
-    """Load the staged code-owned scheduler contract without changing sys.path.
+def _load_control_plane_scheduled_task_profiles() -> Mapping[str, Any]:
+    """Load the staged code-owned scheduler profiles without changing sys.path.
 
     Migration preflight must consume the same reviewed task IDs and canonical
     arguments as runtime policy.  It deliberately does not infer either from
@@ -252,11 +304,19 @@ def _load_control_plane_reviewed_task_contracts() -> dict[str, dict[str, Any]]:
     profiles = getattr(module, "APPROVED_SCHEDULED_TASK_PROFILES", None)
     if not isinstance(profiles, Mapping):
         raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+    return profiles
 
+
+def _load_control_plane_reviewed_task_contracts() -> dict[str, dict[str, Any]]:
+    """Return only the 51 reviewed internal-projection task contracts."""
+
+    profiles = _load_control_plane_scheduled_task_profiles()
     populated_groups = {
         str(group_id)
         for group_id, profile in profiles.items()
         if getattr(profile, "approved_task_ids", frozenset())
+        and getattr(profile, "operation_type", None) == "internal_projection_write"
+        and getattr(profile, "seed_governed_template", True)
     }
     if populated_groups != CONTROL_PLANE_REVIEWED_PROFILE_GROUPS:
         raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
@@ -293,6 +353,184 @@ def _load_control_plane_reviewed_task_contracts() -> dict[str, dict[str, Any]]:
 
     if len(contracts) != CONTROL_PLANE_REVIEWED_TASK_COUNT:
         raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
+    return contracts
+
+
+def _load_control_plane_optional_task_contracts() -> dict[str, dict[str, Any]]:
+    """Return the three optional c7 internal schedules reviewed in place."""
+
+    profiles = _load_control_plane_scheduled_task_profiles()
+    populated_groups = {
+        str(group_id)
+        for group_id, profile in profiles.items()
+        if getattr(profile, "approved_task_ids", frozenset())
+        and getattr(profile, "operation_type", None) == "internal_projection_write"
+        and not getattr(profile, "seed_governed_template", True)
+    }
+    if populated_groups != CONTROL_PLANE_OPTIONAL_PROFILE_GROUPS:
+        raise ControlPlaneTaskCutoverPreflightError("OPTIONAL_CONTRACT_SET_INVALID")
+
+    contracts: dict[str, dict[str, Any]] = {}
+    for group_id in sorted(CONTROL_PLANE_OPTIONAL_PROFILE_GROUPS):
+        profile = profiles.get(group_id)
+        task_ids = getattr(profile, "approved_task_ids", None)
+        arguments = getattr(profile, "approved_arguments", None)
+        tool_name = getattr(profile, "tool_name", None)
+        dynamic_rules = getattr(profile, "dynamic_argument_rules", None)
+        if (
+            not isinstance(task_ids, (set, frozenset))
+            or len(task_ids) != 1
+            or not isinstance(arguments, Mapping)
+            or type(tool_name) is not str
+            or not isinstance(dynamic_rules, Mapping)
+            or getattr(profile, "operation_type", None) != "internal_projection_write"
+        ):
+            raise ControlPlaneTaskCutoverPreflightError("OPTIONAL_CONTRACT_SET_INVALID")
+        task_id = next(iter(task_ids))
+        if (
+            type(task_id) is not str
+            or task_id not in CONTROL_PLANE_OPTIONAL_TASK_IDS
+            or task_id in contracts
+        ):
+            raise ControlPlaneTaskCutoverPreflightError("OPTIONAL_CONTRACT_SET_INVALID")
+        profile_cron = getattr(profile, "cron_expression", None)
+        if profile_cron is not None:
+            if type(profile_cron) is not str or profile_cron != "@startup":
+                raise ControlPlaneTaskCutoverPreflightError("OPTIONAL_CONTRACT_SET_INVALID")
+            cron_expression = profile_cron
+        else:
+            suffix = task_id.rsplit("_", 1)[-1]
+            match = _TIME_SUFFIX_RE.fullmatch(suffix)
+            if match is None:
+                raise ControlPlaneTaskCutoverPreflightError("OPTIONAL_CONTRACT_SET_INVALID")
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+            cron_expression = f"{minute} {hour} * * *"
+        contracts[task_id] = {
+            "group_id": group_id,
+            "tool_name": tool_name,
+            "canonical_arguments": dict(arguments),
+            "dynamic_argument_rules": dict(dynamic_rules),
+            "cron_expression": cron_expression,
+        }
+
+    if set(contracts) != CONTROL_PLANE_OPTIONAL_TASK_IDS:
+        raise ControlPlaneTaskCutoverPreflightError("OPTIONAL_CONTRACT_SET_INVALID")
+    return contracts
+
+
+def _load_control_plane_clock_contracts() -> dict[str, dict[str, Any]]:
+    """Return the exact optional pair of reviewed external clock schedules."""
+
+    profiles = _load_control_plane_scheduled_task_profiles()
+    populated_groups = {
+        str(group_id)
+        for group_id, profile in profiles.items()
+        if getattr(profile, "approved_task_ids", frozenset())
+        and getattr(profile, "operation_type", None) == "external_write"
+    }
+    if populated_groups != CONTROL_PLANE_REVIEWED_EXTERNAL_PROFILE_GROUPS:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CLOCK_CONTRACT_SET_INVALID")
+
+    contracts: dict[str, dict[str, Any]] = {}
+    expected_argument_keys = {
+        "account_id",
+        "sitecode",
+        "sitefbcode",
+        "sitename",
+        "sitefbname",
+        "first_type",
+        "second_type",
+        "delay_seconds",
+    }
+    for group_id in sorted(CONTROL_PLANE_REVIEWED_CLOCK_PROFILE_GROUPS):
+        profile = profiles.get(group_id)
+        task_ids = getattr(profile, "approved_task_ids", None)
+        arguments = getattr(profile, "approved_arguments", None)
+        tool_name = getattr(profile, "tool_name", None)
+        tool_version = getattr(profile, "tool_version", None)
+        dynamic_rules = getattr(profile, "dynamic_argument_rules", None)
+        if (
+            not isinstance(task_ids, (set, frozenset))
+            or len(task_ids) != 1
+            or not isinstance(arguments, Mapping)
+            or set(arguments) != expected_argument_keys
+            or type(tool_name) is not str
+            or tool_name != "clock_in_dual"
+            or type(tool_version) is not str
+            or tool_version != "1.1.0"
+            or not isinstance(dynamic_rules, Mapping)
+            or bool(dynamic_rules)
+            or getattr(profile, "operation_type", None) != "external_write"
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
+            )
+        task_id = next(iter(task_ids))
+        if (
+            type(task_id) is not str
+            or task_id not in CONTROL_PLANE_REVIEWED_CLOCK_IDS
+            or task_id in contracts
+            or type(arguments.get("account_id")) is not str
+            or not arguments["account_id"].strip()
+            or type(arguments.get("sitecode")) is not str
+            or not arguments["sitecode"].strip()
+            or type(arguments.get("sitefbcode")) is not str
+            or not arguments["sitefbcode"].strip()
+            or type(arguments.get("sitename")) is not str
+            or not arguments["sitename"].strip()
+            or type(arguments.get("sitefbname")) is not str
+            or not arguments["sitefbname"].strip()
+            or type(arguments.get("first_type")) is not str
+            or not arguments["first_type"].strip()
+            or type(arguments.get("second_type")) is not str
+            or not arguments["second_type"].strip()
+            or type(arguments.get("delay_seconds")) is not int
+            or arguments["delay_seconds"] < 0
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
+            )
+        contracts[task_id] = {
+            "group_id": group_id,
+            "tool_name": tool_name,
+            "tool_version": tool_version,
+            "canonical_arguments": dict(arguments),
+            "cron_expression": CONTROL_PLANE_REVIEWED_CLOCK_CRONS[task_id],
+        }
+
+    if set(contracts) != CONTROL_PLANE_REVIEWED_CLOCK_IDS:
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CLOCK_CONTRACT_SET_INVALID")
+    return contracts
+
+
+def _load_control_plane_r7_contracts() -> dict[str, dict[str, Any]]:
+    """Return only the exact 13 production R7 poll schedules."""
+
+    profiles = _load_control_plane_scheduled_task_profiles()
+    profile = profiles.get("r7_arrival_checkin")
+    task_ids = getattr(profile, "approved_task_ids", None)
+    arguments = getattr(profile, "approved_arguments", None)
+    if (
+        not isinstance(task_ids, (set, frozenset))
+        or set(task_ids) != CONTROL_PLANE_REVIEWED_R7_IDS
+        or not isinstance(arguments, Mapping)
+        or getattr(profile, "tool_name", None) != "r7_arrival_checkin"
+        or getattr(profile, "tool_version", None) != "1.0.0"
+        or getattr(profile, "operation_type", None) != "external_write"
+    ):
+        raise ControlPlaneTaskCutoverPreflightError("REVIEWED_R7_CONTRACT_SET_INVALID")
+    contracts: dict[str, dict[str, Any]] = {}
+    for task_id in task_ids:
+        match = _TIME_SUFFIX_RE.fullmatch(task_id.rsplit("_", 1)[-1])
+        if match is None:
+            raise ControlPlaneTaskCutoverPreflightError("REVIEWED_R7_CONTRACT_SET_INVALID")
+        contracts[task_id] = {
+            "group_id": "r7_arrival_checkin",
+            "tool_name": "r7_arrival_checkin",
+            "canonical_arguments": dict(arguments),
+            "cron_expression": f"{int(match.group('minute'))} {int(match.group('hour'))} * * *",
+        }
     return contracts
 
 
@@ -390,49 +628,214 @@ def _is_legacy_task_arguments(group_id: str, arguments: dict[str, Any]) -> bool:
                 "target_date": "",
             },
         )
+    if group_id == "finance_bills":
+        return _strict_json_equal(arguments, {"mode": "sync", "rescan_days": 7})
+    if group_id == "yunda_dispatch_forecast":
+        return _strict_json_equal(
+            arguments,
+            {"session_profile": "yunda", "dest_brch": "56739382"},
+        )
     return False
 
 
-def _validate_clock_policy(rows: Sequence[Mapping[str, Any]]) -> None:
-    clock_rows = []
-    for row in rows:
-        task_id = row.get("id")
-        if type(task_id) is str and task_id.startswith("clockin_"):
-            clock_rows.append(row)
-    unknown = [row for row in clock_rows if row.get("id") not in CONTROL_PLANE_REVIEWED_CLOCK_IDS]
+def _legacy_clock_arguments(
+    task_id: str,
+    canonical_arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Materialize the exact c7 nested scheduler shape for one clock row."""
+
+    inner_arguments = {
+        "mode": "api",
+        "site_name": canonical_arguments["sitename"],
+        "site_fb_name": canonical_arguments["sitefbname"],
+        "first_type": canonical_arguments["first_type"],
+        "second_type": canonical_arguments["second_type"],
+        "delay_seconds": canonical_arguments["delay_seconds"],
+    }
+    if task_id == "clockin_daxiang_s_1833":
+        inner_arguments["sitecode"] = canonical_arguments["sitecode"]
+        inner_arguments["sitefbcode"] = canonical_arguments["sitefbcode"]
+    return {
+        "endpoint": "/clock_in_dual",
+        "params": {
+            "timeout_sec": 600,
+            "params": inner_arguments,
+        },
+    }
+
+
+def _is_clock_candidate(row: Mapping[str, Any]) -> bool:
+    task_id = row.get("id")
+    tool_name = row.get("tool_name")
+    if type(task_id) is str and task_id.startswith("clockin_"):
+        return True
+    if tool_name == "clock_in_dual":
+        return True
+    if tool_name != "tms_query":
+        return False
+    try:
+        arguments = _decode_task_arguments(row.get("tool_params"))
+    except ControlPlaneTaskCutoverPreflightError:
+        return False
+    endpoint = arguments.get("endpoint")
+    if endpoint == "/clock_in_dual":
+        return True
+    nested = arguments.get("params")
+    return isinstance(nested, Mapping) and nested.get("endpoint") == "/clock_in_dual"
+
+
+def _validate_clock_policy(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    contracts: Mapping[str, Mapping[str, Any]],
+) -> dict[str, int]:
+    clock_rows = [row for row in rows if isinstance(row, Mapping) and _is_clock_candidate(row)]
+    unknown = [row for row in clock_rows if row.get("id") not in contracts]
     if unknown:
-        raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ID_NOT_REVIEWED", count=len(unknown))
-
-    invalid = [
-        row
-        for row in clock_rows
-        if type(row.get("tool_name")) is not str
-        or row.get("tool_name") not in CONTROL_PLANE_CLOCK_TOOL_NAMES
-        or type(row.get("enabled")) not in {bool, int}
-        or row.get("enabled") not in {False, True, 0, 1}
-    ]
-    if invalid:
-        raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_SHAPE_NOT_REVIEWED", count=len(invalid))
-
-    enabled = [row for row in clock_rows if bool(row.get("enabled"))]
-    if enabled:
         raise ControlPlaneTaskCutoverPreflightError(
-            "EXTERNAL_WRITE_SCHEDULE_POLICY_BLOCKED",
-            count=len(enabled),
+            "CLOCK_TASK_ID_NOT_REVIEWED",
+            count=len(unknown),
         )
+    if not clock_rows:
+        return {"reviewed_rows": 0, "canonical_rows": 0, "legacy_rows": 0}
+
+    seen_ids: set[str] = set()
+    canonical_count = 0
+    legacy_count = 0
+    for row in clock_rows:
+        task_id = row.get("id")
+        if type(task_id) is not str:
+            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ID_NOT_REVIEWED")
+        if task_id in seen_ids:
+            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ID_DUPLICATE")
+        seen_ids.add(task_id)
+
+        enabled = row.get("enabled")
+        if type(enabled) not in {bool, int} or enabled not in {False, True, 0, 1}:
+            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ENABLED_TYPE_INVALID")
+        if not bool(enabled):
+            raise ControlPlaneTaskCutoverPreflightError("PROTECTED_CLOCK_TASK_DISABLED")
+
+        contract = contracts[task_id]
+        cron_expression = row.get("cron_expression")
+        if (
+            type(cron_expression) is not str
+            or cron_expression != contract.get("cron_expression")
+        ):
+            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_CRON_NOT_REVIEWED")
+        tool_name = row.get("tool_name")
+        if type(tool_name) is not str or tool_name not in CONTROL_PLANE_CLOCK_TOOL_NAMES:
+            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_TOOL_NOT_REVIEWED")
+
+        canonical_arguments = contract.get("canonical_arguments")
+        if not isinstance(canonical_arguments, Mapping):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
+            )
+        arguments = _decode_task_arguments(row.get("tool_params"))
+        if tool_name == contract.get("tool_name") and _strict_json_equal(
+            arguments,
+            dict(canonical_arguments),
+        ):
+            canonical_count += 1
+            continue
+        if tool_name == "tms_query" and _strict_json_equal(
+            arguments,
+            _legacy_clock_arguments(task_id, canonical_arguments),
+        ):
+            legacy_count += 1
+            continue
+        raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_ARGUMENTS_NOT_REVIEWED")
+
+    missing_count = len(set(contracts) - seen_ids)
+    if missing_count:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "REVIEWED_CLOCK_TASK_PAIR_INCOMPLETE",
+            count=missing_count,
+        )
+    return {
+        "reviewed_rows": len(clock_rows),
+        "canonical_rows": canonical_count,
+        "legacy_rows": legacy_count,
+    }
+
+
+def _validate_r7_policy(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    contracts: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, ...]:
+    candidates = [
+        row
+        for row in rows
+        if isinstance(row, Mapping)
+        and (
+            str(row.get("id") or "").startswith("r7_arrival_checkin_")
+            or row.get("tool_name") == "r7_arrival_checkin"
+        )
+    ]
+    if not candidates:
+        return ()
+    seen: set[str] = set()
+    for row in candidates:
+        task_id = row.get("id")
+        if type(task_id) is not str or task_id not in contracts:
+            raise ControlPlaneTaskCutoverPreflightError("R7_TASK_ID_NOT_REVIEWED")
+        if task_id in seen:
+            raise ControlPlaneTaskCutoverPreflightError("R7_TASK_ID_DUPLICATE")
+        seen.add(task_id)
+        contract = contracts[task_id]
+        if row.get("tool_name") != contract.get("tool_name"):
+            raise ControlPlaneTaskCutoverPreflightError("R7_TASK_TOOL_NOT_REVIEWED")
+        if row.get("cron_expression") != contract.get("cron_expression"):
+            raise ControlPlaneTaskCutoverPreflightError("R7_TASK_CRON_NOT_REVIEWED")
+        if row.get("enabled") not in {True, 1}:
+            raise ControlPlaneTaskCutoverPreflightError("PROTECTED_R7_TASK_DISABLED")
+        arguments = _decode_task_arguments(row.get("tool_params"))
+        if not _strict_json_equal(
+            arguments,
+            dict(contract.get("canonical_arguments") or {}),
+        ):
+            raise ControlPlaneTaskCutoverPreflightError("R7_TASK_ARGUMENTS_NOT_REVIEWED")
+    missing_count = len(set(contracts) - seen)
+    if missing_count:
+        raise ControlPlaneTaskCutoverPreflightError(
+            "REVIEWED_R7_TASK_SET_INCOMPLETE",
+            count=missing_count,
+        )
+    return tuple(
+        str(contracts[task_id]["cron_expression"])
+        for task_id in sorted(seen)
+    )
 
 
 def validate_control_plane_task_cutover(
     rows: Sequence[Mapping[str, Any]],
     *,
     contracts: Mapping[str, Mapping[str, Any]],
+    optional_contracts: Mapping[str, Mapping[str, Any]] | None = None,
+    clock_contracts: Mapping[str, Mapping[str, Any]] | None = None,
+    r7_contracts: Mapping[str, Mapping[str, Any]] | None = None,
     reviewed_login_site_sha256: str = CONTROL_PLANE_REVIEWED_ARRIVE_LOGIN_SITE_SHA256,
 ) -> dict[str, int]:
     """Validate scheduler rows without returning any persisted values."""
 
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
         raise ControlPlaneTaskCutoverPreflightError("TASK_ROWS_INVALID")
-    _validate_clock_policy(rows)
+    resolved_clock_contracts = (
+        _load_control_plane_clock_contracts()
+        if clock_contracts is None
+        else clock_contracts
+    )
+    resolved_optional_contracts = (
+        _load_control_plane_optional_task_contracts()
+        if optional_contracts is None
+        else optional_contracts
+    )
+    resolved_r7_contracts = (
+        _load_control_plane_r7_contracts() if r7_contracts is None else r7_contracts
+    )
+    clock_summary = _validate_clock_policy(rows, contracts=resolved_clock_contracts)
     # A truly empty database has no scheduler state to cut over.  Once any
     # governed-family or external-write candidate exists, the complete 51-row
     # reviewed set becomes mandatory below; partial bootstrap state fails.
@@ -443,20 +846,37 @@ def validate_control_plane_task_cutover(
     legacy_count = 0
     reviewed_count = 0
     seen_task_ids: set[str] = set()
+    seen_optional_task_ids: set[str] = set()
+    seen_r7_task_ids: set[str] = set()
     for row in rows:
         if not isinstance(row, Mapping):
             raise ControlPlaneTaskCutoverPreflightError("TASK_ROW_INVALID")
         task_id = row.get("id")
         if type(task_id) is not str:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ID_INVALID")
-        if task_id.startswith("clockin_"):
+        if task_id in resolved_clock_contracts:
             continue
         contract = contracts.get(task_id)
+        optional = False
+        r7 = False
+        if not isinstance(contract, Mapping):
+            contract = resolved_optional_contracts.get(task_id)
+            optional = isinstance(contract, Mapping)
+        if not isinstance(contract, Mapping):
+            contract = resolved_r7_contracts.get(task_id)
+            r7 = isinstance(contract, Mapping)
         if not isinstance(contract, Mapping):
             raise ControlPlaneTaskCutoverPreflightError("TASK_ID_NOT_REVIEWED")
-        if task_id in seen_task_ids:
+        target_seen = (
+            seen_optional_task_ids
+            if optional
+            else seen_r7_task_ids
+            if r7
+            else seen_task_ids
+        )
+        if task_id in target_seen:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ID_DUPLICATE")
-        seen_task_ids.add(task_id)
+        target_seen.add(task_id)
 
         tool_name = row.get("tool_name")
         cron_expression = row.get("cron_expression")
@@ -467,16 +887,22 @@ def validate_control_plane_task_cutover(
             raise ControlPlaneTaskCutoverPreflightError("TASK_CRON_NOT_REVIEWED")
         if type(enabled) not in {bool, int} or enabled not in {False, True, 0, 1}:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ENABLED_TYPE_INVALID")
-        if not bool(enabled):
+        if not bool(enabled) and not optional:
             raise ControlPlaneTaskCutoverPreflightError("PROTECTED_TASK_DISABLED")
 
         arguments = _decode_task_arguments(row.get("tool_params"))
         canonical_arguments = contract.get("canonical_arguments")
         if not isinstance(canonical_arguments, Mapping):
             raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
-        if _strict_json_equal(arguments, dict(canonical_arguments)):
-            canonical_count += 1
-        elif _is_legacy_task_arguments(str(contract.get("group_id") or ""), arguments):
+        is_canonical = _strict_json_equal(arguments, dict(canonical_arguments))
+        is_legacy = _is_legacy_task_arguments(
+            str(contract.get("group_id") or ""),
+            arguments,
+        )
+        if is_canonical:
+            if bool(enabled):
+                canonical_count += 1
+        elif is_legacy:
             if contract.get("group_id") == "arrive_list":
                 login_site_sha256 = hashlib.sha256(
                     arguments["login_site_code"].strip().encode("utf-8")
@@ -485,10 +911,12 @@ def validate_control_plane_task_cutover(
                     raise ControlPlaneTaskCutoverPreflightError(
                         "ARRIVE_LOGIN_SITE_FINGERPRINT_MISMATCH"
                     )
-            legacy_count += 1
+            if bool(enabled):
+                legacy_count += 1
         else:
             raise ControlPlaneTaskCutoverPreflightError("TASK_ARGUMENTS_NOT_REVIEWED")
-        reviewed_count += 1
+        if bool(enabled):
+            reviewed_count += 1
 
     missing_count = len(set(contracts) - seen_task_ids)
     if missing_count:
@@ -496,11 +924,18 @@ def validate_control_plane_task_cutover(
             "REVIEWED_TASK_SET_INCOMPLETE",
             count=missing_count,
         )
+    if seen_r7_task_ids:
+        missing_r7_count = len(set(resolved_r7_contracts) - seen_r7_task_ids)
+        if missing_r7_count:
+            raise ControlPlaneTaskCutoverPreflightError(
+                "REVIEWED_R7_TASK_SET_INCOMPLETE",
+                count=missing_r7_count,
+            )
 
     return {
-        "reviewed_rows": reviewed_count,
-        "canonical_rows": canonical_count,
-        "legacy_rows": legacy_count,
+        "reviewed_rows": reviewed_count + clock_summary["reviewed_rows"],
+        "canonical_rows": canonical_count + clock_summary["canonical_rows"],
+        "legacy_rows": legacy_count + clock_summary["legacy_rows"],
     }
 
 
@@ -515,6 +950,9 @@ def preflight_control_plane_task_cutover() -> int:
     connection = None
     try:
         contracts = _load_control_plane_reviewed_task_contracts()
+        optional_contracts = _load_control_plane_optional_task_contracts()
+        r7_contracts = _load_control_plane_r7_contracts()
+        clock_contracts = _load_control_plane_clock_contracts()
         connection = _connect()
         with connection.cursor() as cursor:
             _require_mysql8(cursor)
@@ -545,6 +983,9 @@ def preflight_control_plane_task_cutover() -> int:
                 summary = validate_control_plane_task_cutover(
                     rows,
                     contracts=contracts,
+                    optional_contracts=optional_contracts,
+                    clock_contracts=clock_contracts,
+                    r7_contracts=r7_contracts,
                 )
     except ControlPlaneTaskCutoverPreflightError as exc:
         print(
@@ -570,6 +1011,228 @@ def preflight_control_plane_task_cutover() -> int:
         f"canonical_rows={summary['canonical_rows']} "
         f"legacy_rows={summary['legacy_rows']}"
     )
+    return 0
+
+
+def _daily_schedule_minutes(cron_expression: Any) -> int:
+    if type(cron_expression) is not str:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_CRON_INVALID")
+    match = re.fullmatch(
+        r"(?P<minute>\d{1,2}) (?P<hour>\d{1,2}) \* \* \*",
+        cron_expression.strip(),
+    )
+    if match is None:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_CRON_INVALID")
+    minute = int(match.group("minute"))
+    hour = int(match.group("hour"))
+    if not 0 <= minute <= 59 or not 0 <= hour <= 23:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_CRON_INVALID")
+    return hour * 60 + minute
+
+
+def _scheduled_write_snapshot_cron(
+    row: Mapping[str, Any],
+) -> str | None:
+    if row.get("mode") != "EXACT_SCHEDULE_EXEMPT":
+        return None
+    snapshot = _decode_task_arguments(row.get("contract_snapshot_json"))
+    if snapshot.get("operation_type") != "external_write":
+        return None
+    if row.get("enabled") not in {True, 1}:
+        return None
+
+    task_id = row.get("task_id")
+    if type(task_id) is not str or not task_id:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_BINDING_INVALID")
+    if snapshot.get("task_id") != task_id:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_BINDING_INVALID")
+    if snapshot.get("enabled") is not True:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_BINDING_INVALID")
+
+    cron_expression = row.get("cron_expression")
+    snapshot_cron = snapshot.get("cron_expression")
+    if type(cron_expression) is not str or snapshot_cron != cron_expression:
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_BINDING_INVALID")
+    snapshot_tool = snapshot.get("tool_name")
+    if type(snapshot_tool) is not str or snapshot_tool != row.get("tool_name"):
+        raise ControlPlaneTaskCutoverPreflightError("SCHEDULED_WRITE_BINDING_INVALID")
+    _daily_schedule_minutes(cron_expression)
+    return cron_expression
+
+
+def _is_within_daily_schedule_window(
+    now: datetime,
+    cron_expression: str,
+    *,
+    before_minutes: int,
+    after_minutes: int,
+) -> bool:
+    if before_minutes < 0 or after_minutes < 0:
+        raise ValueError("scheduled write window minutes must be non-negative")
+    local_now = now.astimezone(SCHEDULED_WRITE_TIMEZONE)
+    scheduled_minutes = _daily_schedule_minutes(cron_expression)
+    scheduled_hour, scheduled_minute = divmod(scheduled_minutes, 60)
+    today = local_now.replace(
+        hour=scheduled_hour,
+        minute=scheduled_minute,
+        second=0,
+        microsecond=0,
+    )
+    return any(
+        candidate - timedelta(minutes=before_minutes)
+        <= local_now
+        <= candidate + timedelta(minutes=after_minutes)
+        for candidate in (
+            today - timedelta(days=1),
+            today,
+            today + timedelta(days=1),
+        )
+    )
+
+
+def _legacy_scheduled_write_crons(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    internal_contracts = _load_control_plane_reviewed_task_contracts()
+    clock_contracts = _load_control_plane_clock_contracts()
+    r7_contracts = _load_control_plane_r7_contracts()
+    validate_control_plane_task_cutover(
+        rows,
+        contracts=internal_contracts,
+        clock_contracts=clock_contracts,
+        r7_contracts=r7_contracts,
+    )
+    present_clock_ids = {
+        row.get("id")
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id") in clock_contracts
+    }
+    clock_crons = tuple(
+        str(clock_contracts[task_id]["cron_expression"])
+        for task_id in sorted(present_clock_ids)
+    )
+    r7_crons = _validate_r7_policy(rows, contracts=r7_contracts)
+    return tuple(sorted(set((*clock_crons, *r7_crons))))
+
+
+def check_scheduled_write_window(
+    *,
+    before_minutes: int = SCHEDULED_WRITE_WINDOW_BEFORE_MINUTES,
+    after_minutes: int = SCHEDULED_WRITE_WINDOW_AFTER_MINUTES,
+    now: datetime | None = None,
+) -> int:
+    """Block release mutation near an exempt external-write schedule.
+
+    This is deliberately read-only and prints no task IDs, arguments, hashes,
+    or actor data. Contract hash verification belongs to the runtime backend;
+    release safety uses only the audited snapshot's external-write binding.
+    """
+
+    connection = None
+    try:
+        if before_minutes < 0 or after_minutes < 0:
+            raise ControlPlaneTaskCutoverPreflightError(
+                "SCHEDULED_WRITE_WINDOW_INVALID"
+            )
+        connection = _connect()
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            if _table_exists(cursor, SCHEDULED_TASK_APPROVAL_POLICY_TABLE):
+                cursor.execute(
+                    """
+                    SELECT
+                        policy.task_id,
+                        policy.mode,
+                        policy.contract_snapshot_json,
+                        task.tool_name,
+                        task.cron_expression,
+                        task.enabled
+                    FROM scheduled_task_approval_policies AS policy
+                    INNER JOIN scheduled_tasks AS task ON task.id = policy.task_id
+                    WHERE policy.mode = 'EXACT_SCHEDULE_EXEMPT'
+                    """
+                )
+                policy_crons = tuple(
+                    cron
+                    for row in cursor.fetchall()
+                    if (cron := _scheduled_write_snapshot_cron(row)) is not None
+                )
+                # A failed first control-plane release can leave additive 015
+                # tables behind while the old scheduler source is restored.
+                # In that state policy rows still default to per-run approval,
+                # but the legacy clock pair continues to execute automatically.
+                # Always include the exact reviewed pair until it is removed or
+                # replaced by a later migration; this may only over-block a
+                # release window and can never authorize execution.
+                cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
+                candidate_rows = cursor.fetchall()
+                clock_contracts = _load_control_plane_clock_contracts()
+                r7_contracts = _load_control_plane_r7_contracts()
+                _validate_clock_policy(candidate_rows, contracts=clock_contracts)
+                reviewed_r7_crons = _validate_r7_policy(
+                    candidate_rows,
+                    contracts=r7_contracts,
+                )
+                present_clock_ids = {
+                    row.get("id")
+                    for row in candidate_rows
+                    if isinstance(row, Mapping) and row.get("id") in clock_contracts
+                }
+                reviewed_clock_crons = tuple(
+                    str(clock_contracts[task_id]["cron_expression"])
+                    for task_id in sorted(present_clock_ids)
+                )
+                crons = tuple(
+                    sorted(
+                        set(
+                            (
+                                *policy_crons,
+                                *reviewed_clock_crons,
+                                *reviewed_r7_crons,
+                            )
+                        )
+                    )
+                )
+            elif not _table_exists(cursor, "scheduled_tasks"):
+                crons = ()
+            else:
+                cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
+                crons = _legacy_scheduled_write_crons(cursor.fetchall())
+
+        checked_at = now or datetime.now(tz=SCHEDULED_WRITE_TIMEZONE)
+        blocked_count = sum(
+            _is_within_daily_schedule_window(
+                checked_at,
+                cron,
+                before_minutes=before_minutes,
+                after_minutes=after_minutes,
+            )
+            for cron in crons
+        )
+        if blocked_count:
+            raise ControlPlaneTaskCutoverPreflightError(
+                "SCHEDULED_WRITE_WINDOW_ACTIVE",
+                count=blocked_count,
+            )
+    except ControlPlaneTaskCutoverPreflightError as exc:
+        print(
+            "scheduled_write_window=blocked "
+            f"reason={exc.code} count={exc.count}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception:
+        print(
+            "scheduled_write_window=blocked "
+            "reason=SCHEDULED_WRITE_WINDOW_RUNTIME_ERROR count=1",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+    print(f"scheduled_write_window=ok checked_schedules={len(crons)}")
     return 0
 
 
@@ -625,6 +1288,25 @@ def restore_control_plane_task_cutover() -> int:
                     created_at = VALUES(created_at)
                 """
             )
+            if _table_exists(cursor, CONTROL_PLANE_TASK_CUTOVER_CREATED_TABLE):
+                cursor.execute(
+                    f"""
+                    DELETE created_task
+                    FROM scheduled_tasks AS created_task
+                    INNER JOIN {CONTROL_PLANE_TASK_CUTOVER_CREATED_TABLE} AS marker
+                        ON marker.task_id = created_task.id
+                    LEFT JOIN {CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE} AS backup
+                        ON backup.id = created_task.id
+                    WHERE marker.task_id = 'finance_startup_catchup'
+                      AND backup.id IS NULL
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    DELETE FROM {CONTROL_PLANE_TASK_CUTOVER_CREATED_TABLE}
+                    WHERE task_id = 'finance_startup_catchup'
+                    """
+                )
             seed_placeholders = ", ".join("%s" for _ in seed_task_ids)
             cursor.execute(
                 f"""
@@ -705,6 +1387,21 @@ def main() -> int:
         action="store_true",
         help="Read-only validation of reviewed scheduler rows before release mutation",
     )
+    modes.add_argument(
+        "--check-scheduled-write-window",
+        action="store_true",
+        help="Block release mutation near an exempt external-write schedule",
+    )
+    parser.add_argument(
+        "--scheduled-write-window-before-minutes",
+        type=int,
+        default=SCHEDULED_WRITE_WINDOW_BEFORE_MINUTES,
+    )
+    parser.add_argument(
+        "--scheduled-write-window-after-minutes",
+        type=int,
+        default=SCHEDULED_WRITE_WINDOW_AFTER_MINUTES,
+    )
     args = parser.parse_args()
     if args.restore_control_plane_task_cutover:
         return restore_control_plane_task_cutover()
@@ -712,6 +1409,11 @@ def main() -> int:
         return report_control_plane_task_cutover_status()
     if args.preflight_control_plane_task_cutover:
         return preflight_control_plane_task_cutover()
+    if args.check_scheduled_write_window:
+        return check_scheduled_write_window(
+            before_minutes=args.scheduled_write_window_before_minutes,
+            after_minutes=args.scheduled_write_window_after_minutes,
+        )
     return run(check_only=args.check)
 
 

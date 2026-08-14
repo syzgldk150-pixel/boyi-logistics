@@ -6,15 +6,33 @@ Every unit of work disables autocommit and rolls back unless explicitly committe
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Iterable, Mapping
-from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
-from shared.redaction import redact_sensitive, redact_text
+from shared.orchestration_repository_support import (
+    ConcurrentUpdateError,
+    IdempotencyConflict,
+    InvalidStateError,
+    OrchestrationPersistenceError,
+    RepositoryBase as _RepositoryBase,
+    _canonical_json,
+    _created_flag,
+    _decode_row,
+    _json_hash,
+    _json_param,
+    _json_value,
+    _optional_text,
+    _required_text,
+    _row_dict,
+    _rows,
+    _safe_comment,
+    _safe_error,
+    _status,
+)
+from shared.orchestration_schema import REQUIRED_COLUMNS, REQUIRED_TABLES
+from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
 
 ConnectionFactory = Callable[[], Any]
 
@@ -71,168 +89,6 @@ OUTBOX_CANDIDATE_SCAN_LIMIT = 500
 TERMINAL_RUN_STATUSES = frozenset(
     {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
 )
-
-REQUIRED_TABLES = frozenset(
-    {
-        "admin_users",
-        "arrival_forecast_runs",
-        "arrival_forecast_items",
-        "arrival_stat_runs",
-        "arrival_stat_items",
-        "agent_commands",
-        "work_items",
-        "work_item_entities",
-        "agent_runs",
-        "agent_run_steps",
-        "approval_requests",
-        "approval_decisions",
-        "evidence_records",
-        "external_entity_links",
-        "domain_events",
-        "outbox_events",
-        "event_consumptions",
-        "tool_logs",
-        "waybill_problem_events",
-        "waybill_sign_events",
-        "daily_sign_ledger",
-        "daily_sign_sync_runs",
-    }
-)
-REQUIRED_COLUMNS = frozenset(
-    {
-        ("admin_users", "control_plane_role"),
-        ("agent_commands", "command_id"),
-        ("agent_commands", "idempotency_key"),
-        ("agent_commands", "correlation_id"),
-        ("agent_commands", "parameters_json"),
-        ("work_items", "work_item_id"),
-        ("work_items", "dedupe_key"),
-        ("work_items", "owner_type"),
-        ("work_items", "owner_id"),
-        ("work_items", "version"),
-        ("agent_runs", "run_id"),
-        ("agent_runs", "plan_hash"),
-        ("agent_runs", "tool_catalog_sha256"),
-        ("agent_runs", "context_fingerprint_sha256"),
-        ("agent_runs", "next_attempt_at"),
-        ("agent_runs", "worker_id"),
-        ("agent_runs", "lease_expires_at"),
-        ("agent_runs", "cancel_requested_at"),
-        ("agent_runs", "version"),
-        ("agent_run_steps", "step_id"),
-        ("agent_run_steps", "operation_type"),
-        ("agent_run_steps", "risk_level"),
-        ("agent_run_steps", "idempotency_key"),
-        ("approval_requests", "approval_id"),
-        ("approval_requests", "plan_hash"),
-        ("approval_requests", "required_role"),
-        ("approval_requests", "expires_at"),
-        ("approval_decisions", "decision_id"),
-        ("evidence_records", "evidence_id"),
-        ("evidence_records", "content_sha256"),
-        ("external_entity_links", "link_id"),
-        ("domain_events", "event_id"),
-        ("domain_events", "payload_sha256"),
-        ("outbox_events", "outbox_id"),
-        ("outbox_events", "locked_until"),
-        ("outbox_events", "attempt_count"),
-        ("event_consumptions", "consumer_name"),
-        ("event_consumptions", "event_id"),
-        ("tool_logs", "run_id"),
-        ("tool_logs", "step_id"),
-        ("tool_logs", "correlation_id"),
-    }
-)
-
-
-class OrchestrationPersistenceError(RuntimeError):
-    """Base class for control-plane persistence failures."""
-class IdempotencyConflict(OrchestrationPersistenceError):
-    """An idempotency identity was reused for different immutable input."""
-class ConcurrentUpdateError(OrchestrationPersistenceError):
-    """An optimistic state transition or leased update lost its race."""
-class InvalidStateError(OrchestrationPersistenceError):
-    """A persisted status or state transition is invalid."""
-def _required_text(value: Any, field: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError(f"{field} is required")
-    return text
-def _optional_text(value: Any) -> str | None:
-    text = str(value or "").strip()
-    return text or None
-def _status(value: Any, allowed: frozenset[str], field: str, *, default: str | None = None) -> str:
-    raw = getattr(value, "value", value)
-    normalized = str(raw or default or "").strip().upper()
-    if normalized not in allowed:
-        raise InvalidStateError(f"unsupported {field}: {normalized or '<empty>'}")
-    return normalized
-def _safe_error(value: Any) -> str | None:
-    text = redact_text(value).strip()
-    return text[:500] or None
-def _json_value(value: Any, default: Any) -> Any:
-    if value is None:
-        return default
-    if isinstance(value, (dict, list, bool, int, float)):
-        return value
-    try:
-        return json.loads(value)
-    except (TypeError, ValueError) as exc:
-        raise OrchestrationPersistenceError("persisted orchestration JSON is invalid") from exc
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        redact_sensitive(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-def _json_hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-def _json_param(value: Any, default: Any) -> str:
-    return _canonical_json(default if value is None else value)
-def _row_dict(cursor: Any, row: Any) -> dict[str, Any] | None:
-    if not row:
-        return None
-    if isinstance(row, Mapping):
-        return dict(row)
-    description = getattr(cursor, "description", None) or ()
-    return {str(column[0]): value for column, value in zip(description, row)}
-def _rows(cursor: Any) -> list[dict[str, Any]]:
-    return [item for row in (cursor.fetchall() or []) if (item := _row_dict(cursor, row))]
-def _decode_row(row: dict[str, Any] | None, json_fields: Iterable[str]) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    payload = dict(row)
-    for field in json_fields:
-        if field in payload:
-            payload[field] = _json_value(payload.get(field), None)
-    return payload
-def _created_flag(row: dict[str, Any], created: bool) -> dict[str, Any]:
-    payload = dict(row)
-    payload["_created"] = created
-    return payload
-
-
-class _RepositoryBase:
-    def __init__(self, connection: Any, cursor_factory: Any | None = None) -> None:
-        self.connection = connection
-        self.cursor_factory = cursor_factory
-
-    @contextmanager
-    def cursor(self) -> Iterator[Any]:
-        cursor = (
-            self.connection.cursor(self.cursor_factory)
-            if self.cursor_factory is not None
-            else self.connection.cursor()
-        )
-        try:
-            yield cursor
-        finally:
-            close = getattr(cursor, "close", None)
-            if callable(close):
-                close()
-
 
 class CommandRepository(_RepositoryBase):
     JSON_FIELDS = ("actor_roles_json", "entity_refs_json", "parameters_json")
@@ -335,7 +191,7 @@ class WorkItemRepository(_RepositoryBase):
                 SELECT w.*
                 FROM work_items w
                 WHERE w.command_id=%s
-                  AND w.dedupe_key LIKE 'command:%'
+                  AND w.dedupe_key LIKE 'command:%%'
                 ORDER BY w.created_at, w.work_item_id LIMIT 1{suffix}
                 """,
                 (command_id,),
@@ -2597,6 +2453,10 @@ class OrchestrationUnitOfWork:
         self.outbox = OutboxRepository(connection, self._cursor_factory)
         self.entity_links = ExternalEntityLinkRepository(connection, self._cursor_factory)
         self.pilot_sources = PilotProjectionSourceRepository(connection, self._cursor_factory)
+        self.scheduled_policies = ScheduledTaskApprovalPolicyRepository(
+            connection,
+            self._cursor_factory,
+        )
         return self
 
     def _require_active(self) -> Any:
@@ -2768,6 +2628,10 @@ class OrchestrationRepository:
     def outbox_health(self) -> dict[str, Any]:
         with self.unit_of_work() as uow:
             return uow.outbox.health()
+
+    def list_scheduled_task_policy_rows(self) -> list[dict[str, Any]]:
+        with self.unit_of_work() as uow:
+            return uow.scheduled_policies.list_with_tasks()
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self.unit_of_work() as uow:
