@@ -369,6 +369,93 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(outcome.run_status, RunStatus.FAILED_RETRYABLE)
         self.assertEqual("TRANSIENT_SOURCE_FAILURE", outcome.code)
 
+    async def test_explicit_business_no_data_status_is_success(self):
+        no_data_script = self._write_temp_script(
+            "tool-business-no-data-",
+            """
+            import json
+
+            print(json.dumps({
+                "ok": True,
+                "success": True,
+                "status": "no_data",
+                "runs": [],
+            }))
+            """,
+        )
+
+        result = await self.executor.execute(
+            {
+                "name": "business_no_data_tool",
+                "executor": os.path.relpath(no_data_script, PROJECT_ROOT),
+                "timeout": 5,
+            },
+            {},
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual("no_data", result["data"]["status"])
+        self.assertTrue(self.executor.last_tool_info()["success"])
+
+    async def test_failure_status_wins_over_contradictory_success_marker(self):
+        for status in (
+            "FAILED",
+            "ERROR",
+            "FAILURE",
+            "BLOCKED",
+            "BLOCKED_DATA",
+            "PARTIAL",
+            "PARTIAL_FAILED",
+            "PARTIAL_FAILURE",
+        ):
+            with self.subTest(status=status):
+                failure_script = self._write_temp_script(
+                    "tool-contradictory-status-",
+                    f"""
+                    import json
+
+                    print(json.dumps({{
+                        "ok": True,
+                        "success": True,
+                        "status": {status!r},
+                    }}))
+                    """,
+                )
+
+                result = await self.executor.execute(
+                    {
+                        "name": f"contradictory_{status.lower()}_tool",
+                        "executor": os.path.relpath(failure_script, PROJECT_ROOT),
+                        "timeout": 5,
+                    },
+                    {},
+                )
+
+                self.assertFalse(result["success"])
+                self.assertEqual("TOOL_REPORTED_FAILURE", result["error_code"])
+
+    async def test_unknown_business_status_requires_explicit_success(self):
+        unknown_script = self._write_temp_script(
+            "tool-unknown-status-",
+            """
+            import json
+
+            print(json.dumps({"status": "signed"}))
+            """,
+        )
+
+        result = await self.executor.execute(
+            {
+                "name": "unknown_status_tool",
+                "executor": os.path.relpath(unknown_script, PROJECT_ROOT),
+                "timeout": 5,
+            },
+            {},
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual("TOOL_REPORTED_FAILURE", result["error_code"])
+
     async def test_private_scheduler_context_reaches_only_r7_subprocess(self):
         context_script = self._write_temp_script(
             "tool-private-scheduler-context-",

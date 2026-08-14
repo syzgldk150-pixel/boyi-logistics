@@ -37,6 +37,32 @@ _TRUSTED_SCHEDULER_TOOL = "r7_arrival_checkin"
 _R7_SCHEDULED_PROFILE = APPROVED_SCHEDULED_TASK_PROFILES["r7_arrival_checkin"]
 _R7_SCHEDULED_TASK_IDS = _R7_SCHEDULED_PROFILE.approved_task_ids
 _SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_EXPLICIT_FAILURE_RESULT_STATUSES = frozenset(
+    {
+        "AUTH_PENDING_CODE",
+        "AUTH_REQUIRED",
+        "BLOCKED",
+        "CANCELED",
+        "CANCELLED",
+        "ERROR",
+        "FAIL",
+        "FAILED",
+        "FAILURE",
+        "LOGIN_REQUIRED",
+        "NEEDS_CLARIFICATION",
+        "PARTIAL",
+        "PARTIAL_FAILED",
+        "PARTIAL_FAILURE",
+        "SESSION_EXPIRED",
+    }
+)
+_EXPLICIT_FAILURE_RESULT_STATUS_PREFIXES = (
+    "BLOCKED_",
+    "ERROR_",
+    "FAILED_",
+    "FAILURE_",
+)
+_UNIFIED_RESULT_FIELDS = frozenset({"status", "data", "meta", "warnings", "error"})
 SUBPROCESS_STRIPPED_MANAGEMENT_ENV = frozenset(
     {
         "AGENT_INTERNAL_API_TOKEN",
@@ -80,6 +106,35 @@ def _redact_structured_execution_capability(value: object, capability: str) -> o
         without_capability = value.replace(token, "[REDACTED]") if token else value
         return redact_text(without_capability)
     return redact_sensitive(value)
+
+
+def _result_reports_failure(result: object) -> bool:
+    """Classify execution envelopes separately from tool business statuses.
+
+    Unified results own the ``status`` field and only ``SUCCESS`` is accepted.
+    Legacy/business payloads may use statuses such as ``no_data`` or ``signed``;
+    those are accepted only when the tool also returns an explicit boolean
+    success marker.  Explicit failure evidence always wins over contradictory
+    success markers.
+    """
+
+    if not isinstance(result, Mapping):
+        return False
+    if result.get("success") is False or result.get("ok") is False or bool(result.get("error")):
+        return True
+
+    status = str(result.get("status") or "").strip().upper()
+    if status in _EXPLICIT_FAILURE_RESULT_STATUSES or any(
+        status.startswith(prefix)
+        for prefix in _EXPLICIT_FAILURE_RESULT_STATUS_PREFIXES
+    ):
+        return True
+
+    if _UNIFIED_RESULT_FIELDS.issubset(result):
+        return status != "SUCCESS"
+
+    explicit_success = result.get("success") is True or result.get("ok") is True
+    return bool(status and status != "SUCCESS" and not explicit_success)
 
 
 def build_trusted_scheduler_context(
@@ -668,13 +723,7 @@ class ToolExecutor:
                     execution_capability,
                 )
 
-            result_reports_failure = isinstance(result, dict) and (
-                str(result.get("status") or "").upper() not in {"", "SUCCESS"}
-                or
-                result.get("success") is False
-                or result.get("ok") is False
-                or bool(result.get("error"))
-            )
+            result_reports_failure = _result_reports_failure(result)
             if result_reports_failure:
                 structured_error = result.get("error")
                 error_value = (
