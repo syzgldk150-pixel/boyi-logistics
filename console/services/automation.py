@@ -1392,10 +1392,10 @@ class AutomationServiceMixin:
             "ok": True,
             "pending": True,
             "task_id": payload["task_id"],
-            "title": "执行中",
-            "message": "命令已受理，结果会按运行状态自动更新。",
-            "status_label": "后台执行中",
-            "activity_label": "开始时间",
+            "title": "命令已受理",
+            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新；如需审批，请在事项中心处理。",
+            "status_label": "等待状态同步",
+            "activity_label": "提交时间",
             "activity_value": started_stamp,
             "duration_label": format_duration_label(0),
             "error": "",
@@ -1522,11 +1522,15 @@ class AutomationServiceMixin:
             run = data.get("run") if isinstance(data.get("run"), dict) else {}
             status = str(run.get("status") or "").upper()
             terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+            running_statuses = {"RUNNING", "VERIFYING"}
             is_terminal = status in terminal_statuses
+            awaiting_approval = status == "WAITING_APPROVAL"
             state_line = f"Run {run_id} · {status or 'UNKNOWN'}"
             payload: dict[str, Any] = {
                 "lines": [state_line] if offset <= 0 else [],
-                "running": not is_terminal,
+                "running": status in running_statuses,
+                "pending": not is_terminal,
+                "awaiting_approval": awaiting_approval,
                 "cancel_requested": bool(run.get("cancel_requested_at")),
                 "started_at": str(run.get("started_at") or run.get("created_at") or started_at),
                 "offset": 1,

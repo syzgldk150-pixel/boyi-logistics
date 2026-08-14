@@ -1181,6 +1181,8 @@
     let runTimer = null;
     let runUiState = {
       running: false,
+      awaitingApproval: false,
+      pendingRun: false,
       startedAt: "",
       cancelRequested: false,
       runId: "",
@@ -1189,14 +1191,17 @@
     function syncRunButtonVisual() {
       if (!(runBtn instanceof HTMLElement)) return;
       const isRunning = !!runUiState.running;
-      const isCancelPending = !!runUiState.running && !!runUiState.cancelRequested;
-      const iconName = isRunning ? "x-circle" : "play";
-      const labelText = isCancelPending ? "取消中" : isRunning ? "取消" : "执行";
+      const isAwaitingApproval = !!runUiState.awaitingApproval;
+      const isPendingRun = !!runUiState.pendingRun;
+      const isActive = isRunning || isAwaitingApproval || isPendingRun;
+      const isCancelPending = isActive && !!runUiState.cancelRequested;
+      const iconName = isActive ? "x-circle" : "play";
+      const labelText = isCancelPending ? "取消中" : isActive ? "取消" : "执行";
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
 
-      runBtn.dataset.runMode = isRunning ? "cancel" : "start";
-      runBtn.classList.toggle("auto-run-btn--cancel", isRunning);
+      runBtn.dataset.runMode = isActive ? "cancel" : "start";
+      runBtn.classList.toggle("auto-run-btn--cancel", isActive);
       runBtn.classList.toggle("is-pending", isCancelPending);
       runBtn.disabled = runBtn.hasAttribute("aria-busy") || isCancelPending;
       if (runLabel) {
@@ -1213,7 +1218,7 @@
         ...runUiState,
         ...next,
       };
-      if (!runUiState.running) {
+      if (!runUiState.running && !runUiState.awaitingApproval && !runUiState.pendingRun) {
         runUiState.startedAt = "";
         runUiState.cancelRequested = false;
         runUiState.runId = "";
@@ -1240,6 +1245,8 @@
       const progTimer = form.querySelector("[data-task-progress-timer]");
       setRunUiState({
         running: true,
+        awaitingApproval: false,
+        pendingRun: false,
         startedAt: startedAt || "",
         cancelRequested: runUiState.cancelRequested,
       });
@@ -1251,7 +1258,7 @@
       const parsed = startedAt ? Date.parse(String(startedAt).replace(" ", "T")) : NaN;
       const baseTs = Number.isFinite(parsed) ? parsed : Date.now();
       const tick = () => {
-        const sec = ((Date.now() - baseTs) / 1000).toFixed(1);
+        const sec = Math.max(0, (Date.now() - baseTs) / 1000).toFixed(1);
         if (progTimer) progTimer.textContent = `${sec}s`;
         const ft = form.querySelector("[data-run-feedback-timer]");
         if (ft) ft.textContent = `已运行 ${sec} 秒`;
@@ -1592,6 +1599,65 @@
         if (autoScroll && termBody) termBody.scrollTop = termBody.scrollHeight;
       }
 
+      function renderAwaitingApproval(data) {
+        const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
+        const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
+        if (startedAt) {
+          termDrawer.dataset.runStartedAt = startedAt;
+        }
+        if (runId) {
+          termDrawer.dataset.runId = runId;
+        }
+        stopRunProgress();
+        setRunUiState({
+          running: false,
+          awaitingApproval: true,
+          pendingRun: false,
+          startedAt,
+          cancelRequested: !!data.cancel_requested,
+          runId,
+        });
+        renderFeedback(form, {
+          kind: "warning",
+          title: "待审批",
+          message: "手工运行已提交，正在等待事项中心审批；审批通过后脚本才会开始执行。",
+          showTimer: false,
+          stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
+          body: "状态：WAITING_APPROVAL",
+        });
+        syncRuntimeFeedback(form, null);
+      }
+
+      function renderPendingRun(data) {
+        const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
+        const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
+        const status = String(data.status || "").toUpperCase();
+        if (startedAt) {
+          termDrawer.dataset.runStartedAt = startedAt;
+        }
+        if (runId) {
+          termDrawer.dataset.runId = runId;
+        }
+        stopRunProgress();
+        setRunUiState({
+          running: false,
+          awaitingApproval: false,
+          pendingRun: true,
+          startedAt,
+          cancelRequested: !!data.cancel_requested,
+          runId,
+        });
+        renderFeedback(form, {
+          kind: "info",
+          title: "等待状态同步",
+          message: "命令已提交，正在等待控制平面进入下一状态。",
+          showTimer: false,
+          stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
+          body: status ? `状态：${status}` : "",
+        });
+        syncRuntimeFeedback(form, null);
+      }
+
       async function pollOutput() {
         if (!toolName) return;
         try {
@@ -1602,13 +1668,18 @@
             termOffset = data.total;
             termScrollToBottom();
           }
-          if (data.running) {
+          const awaitingApproval = !!data.awaiting_approval || String(data.status || "").toUpperCase() === "WAITING_APPROVAL";
+          const pendingRun = !!data.pending && !data.running && !awaitingApproval && !data.runtime;
+          if (awaitingApproval) {
+            renderAwaitingApproval(data);
+          } else if (data.running) {
             const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
             if (startedAt) {
               termDrawer.dataset.runStartedAt = startedAt;
             }
             setRunUiState({
               running: true,
+              awaitingApproval: false,
               startedAt,
               cancelRequested: !!data.cancel_requested,
             });
@@ -1622,17 +1693,25 @@
               body: "",
             });
             syncRuntimeFeedback(form, null);
+          } else if (pendingRun) {
+            renderPendingRun(data);
           }
           if (data.runtime) {
             syncRuntimeFeedback(form, data.runtime);
             hideRunFeedback(form);
           }
-          if (!data.running) {
+          if (!data.running && !awaitingApproval && !pendingRun) {
             stopRunProgress();
-            setRunUiState({ running: false });
+            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
           }
           if (termStatus) {
-            if (data.running && data.cancel_requested) {
+            if (awaitingApproval) {
+              termStatus.textContent = "待审批";
+              termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
+            } else if (pendingRun) {
+              termStatus.textContent = "等待状态同步";
+              termStatus.className = "auto-terminal-status auto-terminal-status--running";
+            } else if (data.running && data.cancel_requested) {
               termStatus.textContent = "取消中";
               termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
             } else if (data.running) {
@@ -1660,11 +1739,11 @@
               termStatus.className = "auto-terminal-status";
             }
           }
-          // 运行中持续轮询，停止后再轮询若干次，等待 runtime 落库
-          if (data.running) {
+          // 非终态持续轮询；终态后再轮询若干次，等待 runtime 落库
+          if (data.running || awaitingApproval || pendingRun) {
             termNeedsFinalRuntimePoll = false;
             termFinalRuntimePollCount = 0;
-            termPollTimer = setTimeout(pollOutput, 1000);
+            termPollTimer = setTimeout(pollOutput, data.next_poll_after_ms || 1000);
           } else if (!data.runtime && termFinalRuntimePollCount < 10) {
             termNeedsFinalRuntimePoll = true;
             termFinalRuntimePollCount += 1;
@@ -1701,6 +1780,18 @@
         try {
           const data = await fetchOutputState({ offset: 0 });
           if (!data) return;
+          const awaitingApproval = !!data.awaiting_approval || String(data.status || "").toUpperCase() === "WAITING_APPROVAL";
+          if (awaitingApproval) {
+            renderAwaitingApproval(data);
+            startPolling(data.started_at || "");
+            return;
+          }
+          const pendingRun = !!data.pending && !data.running && !data.runtime;
+          if (pendingRun) {
+            renderPendingRun(data);
+            startPolling(data.started_at || "");
+            return;
+          }
           if (data.running) {
             const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
             if (startedAt) {
@@ -1710,6 +1801,8 @@
             syncRuntimeFeedback(form, null);
             setRunUiState({
               running: true,
+              awaitingApproval: false,
+              pendingRun: false,
               startedAt,
               cancelRequested: !!data.cancel_requested,
             });
@@ -1718,7 +1811,7 @@
             return;
           }
           if (data.runtime) {
-            setRunUiState({ running: false });
+            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
             syncRuntimeFeedback(form, data.runtime);
           }
         } catch (_) {}
@@ -1877,13 +1970,22 @@
       }
 
       setButtonLoading(runBtn, true);
-      setRunUiState({ running: true, startedAt, cancelRequested: true });
+      const wasAwaitingApproval = !!runUiState.awaitingApproval;
+      const wasPendingRun = !!runUiState.pendingRun;
+      setRunUiState({
+        running: !(wasAwaitingApproval || wasPendingRun),
+        awaitingApproval: wasAwaitingApproval,
+        pendingRun: wasPendingRun,
+        startedAt,
+        cancelRequested: true,
+        runId,
+      });
       renderFeedback(form, {
         kind: "warning",
         title: "取消中",
-        message: "已发送取消请求，正在停止脚本。",
-        showTimer: true,
-        stampText: startedAt ? `开始：${startedAt}` : "",
+        message: wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的 Run。" : wasPendingRun ? "已发送取消请求，正在取消已提交的 Run。" : "已发送取消请求，正在停止脚本。",
+        showTimer: !(wasAwaitingApproval || wasPendingRun),
+        stampText: (wasAwaitingApproval || wasPendingRun) && runId ? `Run：${runId}` : startedAt ? `开始：${startedAt}` : "",
       });
 
       try {
@@ -1907,13 +2009,20 @@
           if (termDrawer && cancelStartedAt) {
             termDrawer.dataset.runStartedAt = cancelStartedAt;
           }
-          setRunUiState({ running: true, startedAt: cancelStartedAt, cancelRequested: true, runId });
+          setRunUiState({
+            running: !(wasAwaitingApproval || wasPendingRun),
+            awaitingApproval: wasAwaitingApproval,
+            pendingRun: wasPendingRun,
+            startedAt: cancelStartedAt,
+            cancelRequested: true,
+            runId,
+          });
           renderFeedback(form, {
             kind: "warning",
             title: result.title || "取消中",
-            message: result.message || "已发送取消请求，正在停止脚本。",
-            showTimer: true,
-            stampText: cancelStartedAt ? `开始：${cancelStartedAt}` : "",
+            message: result.message || (wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的 Run。" : wasPendingRun ? "已发送取消请求，正在取消已提交的 Run。" : "已发送取消请求，正在停止脚本。"),
+            showTimer: !(wasAwaitingApproval || wasPendingRun),
+            stampText: (wasAwaitingApproval || wasPendingRun) && runId ? `Run：${runId}` : cancelStartedAt ? `开始：${cancelStartedAt}` : "",
           });
           startPolling(cancelStartedAt);
           return;
@@ -1921,13 +2030,13 @@
 
         if (result.runtime) {
           stopRunProgress();
-          setRunUiState({ running: false });
+          setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
           syncRuntimeFeedback(form, result.runtime);
           hideRunFeedback(form);
           return;
         }
 
-        setRunUiState({ running: false });
+        setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
         renderFeedback(form, {
           kind: "warning",
           title: "取消未生效",
@@ -1936,7 +2045,13 @@
           stampText: startedAt ? `开始：${startedAt}` : "",
         });
       } catch (err) {
-        setRunUiState({ running: true, startedAt, cancelRequested: false });
+        setRunUiState({
+          running: !(runUiState.awaitingApproval || runUiState.pendingRun),
+          awaitingApproval: !!runUiState.awaitingApproval,
+          pendingRun: !!runUiState.pendingRun,
+          startedAt,
+          cancelRequested: false,
+        });
         renderFeedback(form, {
           kind: "error",
           title: "取消失败",
@@ -1955,7 +2070,7 @@
     if (runBtn) {
       runBtn.addEventListener("click", async e => {
         e.preventDefault();
-        if (runUiState.running) {
+        if (runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun) {
           if (runUiState.cancelRequested || runBtn.hasAttribute("aria-busy")) return;
           await requestTaskCancel();
           return;
@@ -1972,15 +2087,15 @@
           termDrawer.dataset.clientStartedAt = stamp;
           termDrawer.dataset.runStartedAt = "";
         }
-        setRunUiState({ running: true, startedAt: stamp, cancelRequested: false });
-        startRunProgress(stamp);
+        setRunUiState({ running: false, awaitingApproval: false, pendingRun: true, startedAt: stamp, cancelRequested: false });
+        stopRunProgress();
 
         renderFeedback(form, {
           kind: "info",
-          title: "执行中",
-          message: "脚本正在运行…",
-          showTimer: true,
-          stampText: `开始：${stamp}`,
+          title: "已提交",
+          message: "命令正在提交到控制平面，后续会按 Run 状态自动更新。",
+          showTimer: false,
+          stampText: `提交于：${stamp}`,
         });
 
         try {
@@ -2011,13 +2126,14 @@
               termDrawer.dataset.runStartedAt = result.activity_value || "";
               termDrawer.dataset.runId = runId;
             }
-            setRunUiState({ running: true, startedAt, cancelRequested: false, runId });
+            setRunUiState({ running: false, awaitingApproval: false, pendingRun: true, startedAt, cancelRequested: false, runId });
+            stopRunProgress();
             renderFeedback(form, {
               kind: "info",
-              title: result.title || "脚本仍在执行",
-              message: result.message || "控制台等待结果超时，脚本仍在后台继续运行。",
-              showTimer: true,
-              stampText: `开始：${startedAt}`,
+              title: result.title || "命令已受理",
+              message: result.message || "命令已提交，正在等待控制平面返回最新 Run 状态。",
+              showTimer: false,
+              stampText: runId ? `Run：${runId}` : `提交于：${startedAt}`,
             });
             syncRuntimeFeedback(form, null);
             startPolling(result.activity_value || "");
@@ -2025,7 +2141,7 @@
           }
 
           stopRunProgress();
-          setRunUiState({ running: false });
+          setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
 
           renderFeedback(form, {
             kind: result.cancelled ? "warning" : result.ok ? "success" : "error",
@@ -2060,6 +2176,13 @@
             outputState = await fetchOutputState({ offset: 0 });
           } catch {}
 
+          const awaitingApproval = !!outputState?.awaiting_approval || String(outputState?.status || "").toUpperCase() === "WAITING_APPROVAL";
+          if (outputState && awaitingApproval) {
+            renderAwaitingApproval(outputState);
+            startPolling(outputState.started_at || "");
+            return;
+          }
+
           if (outputState && (outputState.running || (outputState.total || 0) > 0)) {
             const startedAt = outputState.started_at || stamp;
             if (termDrawer && outputState.started_at) {
@@ -2067,6 +2190,8 @@
             }
             setRunUiState({
               running: !!outputState.running,
+              awaitingApproval: false,
+              pendingRun: false,
               startedAt,
               cancelRequested: !!outputState.cancel_requested,
             });
@@ -2083,7 +2208,7 @@
           }
 
           stopRunProgress();
-          setRunUiState({ running: false });
+          setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
           syncRuntimeFeedback(form, null);
           renderFeedback(form, {
             kind: "error",
