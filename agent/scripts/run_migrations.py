@@ -34,10 +34,17 @@ SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION = "017"
 SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = (
     "scheduled_task_contract_upgrade_backup_017"
 )
+SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE = (
+    "scheduled_task_contract_upgrade_created_017"
+)
 DAILY_SIGN_SINGLE_TMS_VERSION = "016"
 DAILY_SIGN_SINGLE_TMS_BACKUP_TABLE = "daily_sign_single_tms_backup_016"
 SCHEDULED_TASK_APPROVAL_POLICY_TABLE = "scheduled_task_approval_policies"
 SCHEDULED_TASK_APPROVAL_EVENT_TABLE = "scheduled_task_approval_policy_events"
+FINANCE_STARTUP_CATCHUP_TASK_ID = "finance_startup_catchup"
+FINANCE_STARTUP_CATCHUP_NAME = "财务启动缺口扫描"
+FINANCE_STARTUP_CATCHUP_TOOL_NAME = "sync_finance_bills"
+FINANCE_STARTUP_CATCHUP_CRON = "@startup"
 CONTROL_PLANE_MIGRATION_ACTOR_ID = "system:migration:control-plane-v1"
 CONTROL_PLANE_MIGRATION_ACTOR_ROLE = "migration_authority"
 CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID = (
@@ -1951,11 +1958,124 @@ def check_running_protected_writes() -> int:
     return 0
 
 
+def _lock_and_validate_017_restore_state(
+    cursor,
+    *,
+    backup_table: str,
+    created_table: str,
+) -> None:
+    """Lock 017-owned state and require bootstrap cleanup before rollback."""
+
+    cursor.execute(
+        f"""
+        SELECT marker.task_id
+        FROM {created_table} AS marker
+        ORDER BY BINARY marker.task_id
+        FOR UPDATE
+        """
+    )
+    cursor.fetchall()
+    cursor.execute(
+        f"""
+        SELECT backup.id
+        FROM {backup_table} AS backup
+        ORDER BY BINARY backup.id
+        FOR UPDATE
+        """
+    )
+    cursor.fetchall()
+    cursor.execute(
+        f"""
+        SELECT task.id
+        FROM scheduled_tasks AS task
+        WHERE BINARY task.id = BINARY %s
+           OR EXISTS (
+                SELECT 1
+                FROM {created_table} AS marker
+                WHERE BINARY marker.task_id = BINARY task.id
+           )
+           OR EXISTS (
+                SELECT 1
+                FROM {backup_table} AS backup
+                WHERE BINARY backup.id = BINARY task.id
+           )
+        ORDER BY BINARY task.id
+        FOR UPDATE
+        """,
+        (FINANCE_STARTUP_CATCHUP_TASK_ID,),
+    )
+    cursor.fetchall()
+
+    cursor.execute(
+        f"""
+        SELECT policy.task_id
+        FROM {SCHEDULED_TASK_APPROVAL_POLICY_TABLE} AS policy
+        WHERE BINARY policy.task_id = BINARY %s
+        FOR UPDATE
+        """,
+        (FINANCE_STARTUP_CATCHUP_TASK_ID,),
+    )
+    if cursor.fetchall():
+        raise RuntimeError(
+            "017 restore requires control-plane bootstrap cleanup first: "
+            "finance startup policy remains"
+        )
+
+    cursor.execute(
+        f"""
+        SELECT event.event_id
+        FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS event
+        WHERE BINARY event.task_id = BINARY %s
+           OR BINARY event.task_id = BINARY %s
+           OR BINARY event.request_id = BINARY %s
+        ORDER BY event.event_id
+        FOR UPDATE
+        """,
+        (
+            FINANCE_STARTUP_CATCHUP_TASK_ID,
+            CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+            CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+        ),
+    )
+    if cursor.fetchall():
+        raise RuntimeError(
+            "017 restore requires control-plane bootstrap cleanup first: "
+            "finance startup audit or completion marker remains"
+        )
+
+    cursor.execute(
+        """
+        SELECT
+            domain_event.event_id,
+            outbox.outbox_id,
+            consumption.consumer_name
+        FROM domain_events AS domain_event
+        LEFT JOIN outbox_events AS outbox
+          ON BINARY outbox.event_id = BINARY domain_event.event_id
+        LEFT JOIN event_consumptions AS consumption
+          ON BINARY consumption.event_id = BINARY domain_event.event_id
+        WHERE BINARY domain_event.event_type =
+                BINARY 'scheduled_task.approval_policy_changed'
+          AND BINARY domain_event.source_system = BINARY 'agent'
+          AND BINARY domain_event.entity_type = BINARY 'scheduled_task'
+          AND BINARY domain_event.entity_id = BINARY %s
+        FOR UPDATE
+        """,
+        (FINANCE_STARTUP_CATCHUP_TASK_ID,),
+    )
+    if cursor.fetchall():
+        raise RuntimeError(
+            "017 restore requires control-plane bootstrap cleanup first: "
+            "finance startup domain or outbox state remains"
+        )
+
+
 def _restore_scheduled_task_rows_from_migration(
     *,
     version: str,
     backup_table: str,
     output_name: str,
+    created_table: str | None = None,
 ) -> int:
     connection = _connect()
     transaction_started = False
@@ -1965,45 +2085,203 @@ def _restore_scheduled_task_rows_from_migration(
             if not _migration_table_exists(cursor):
                 print(f"{output_name}=skipped reason=history_missing")
                 return 0
-            if not _table_exists(cursor, backup_table):
+            backup_exists = _table_exists(cursor, backup_table)
+            created_exists = bool(
+                created_table and _table_exists(cursor, created_table)
+            )
+            if not backup_exists and not created_exists:
                 print(f"{output_name}=skipped reason=backup_not_created")
                 return 0
+            if created_exists:
+                if not backup_exists:
+                    raise RuntimeError(
+                        "017 created-task marker table exists without its backup table"
+                    )
+                required_cleanup_tables = (
+                    SCHEDULED_TASK_APPROVAL_POLICY_TABLE,
+                    SCHEDULED_TASK_APPROVAL_EVENT_TABLE,
+                    "domain_events",
+                    "outbox_events",
+                    "event_consumptions",
+                )
+                missing_cleanup_tables = [
+                    table_name
+                    for table_name in required_cleanup_tables
+                    if not _table_exists(cursor, table_name)
+                ]
+                if missing_cleanup_tables:
+                    raise RuntimeError(
+                        "017 restore cannot prove bootstrap cleanup state: "
+                        "required tables missing"
+                    )
 
             connection.begin()
             transaction_started = True
-            cursor.execute(
-                f"""
-                INSERT INTO scheduled_tasks (
-                    id, name, tool_name, tool_params, cron_expression, enabled,
-                    last_run, last_status, last_duration_ms, last_message, created_at,
-                    configuration_version, updated_at
+            if created_exists:
+                _lock_and_validate_017_restore_state(
+                    cursor,
+                    backup_table=backup_table,
+                    created_table=created_table,
                 )
-                SELECT
-                    id, name, tool_name, tool_params, cron_expression, enabled,
-                    last_run, last_status, last_duration_ms, last_message, created_at,
-                    configuration_version, updated_at
-                FROM {backup_table}
-                WHERE TRUE
-                ON DUPLICATE KEY UPDATE
-                    name = VALUES(name),
-                    tool_name = VALUES(tool_name),
-                    tool_params = VALUES(tool_params),
-                    cron_expression = VALUES(cron_expression),
-                    enabled = VALUES(enabled),
-                    last_run = VALUES(last_run),
-                    last_status = VALUES(last_status),
-                    last_duration_ms = VALUES(last_duration_ms),
-                    last_message = VALUES(last_message),
-                    created_at = VALUES(created_at),
-                    configuration_version = VALUES(configuration_version),
-                    updated_at = VALUES(updated_at)
-                """
-            )
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) AS unsafe_count
+                    FROM {created_table} AS marker
+                    LEFT JOIN scheduled_tasks AS task
+                      ON BINARY task.id = BINARY marker.task_id
+                    LEFT JOIN {backup_table} AS backup
+                      ON BINARY backup.id = BINARY marker.task_id
+                    WHERE BINARY marker.task_id <>
+                            BINARY 'finance_startup_catchup'
+                       OR backup.id IS NOT NULL
+                       OR (
+                            task.id IS NOT NULL
+                            AND NOT (
+                                BINARY task.name = BINARY '财务启动缺口扫描'
+                                AND BINARY task.tool_name =
+                                    BINARY 'sync_finance_bills'
+                                AND BINARY task.cron_expression = BINARY '@startup'
+                                AND task.enabled = TRUE
+                                AND task.last_run IS NULL
+                                AND task.last_status IS NULL
+                                AND task.last_duration_ms IS NULL
+                                AND task.last_message IS NULL
+                                AND task.created_at = marker.task_created_at
+                                AND task.updated_at = marker.task_updated_at
+                                AND task.configuration_version =
+                                    marker.task_configuration_version
+                                AND COALESCE(
+                                    JSON_CONTAINS(
+                                        task.tool_params,
+                                        JSON_OBJECT(
+                                            'mode', 'sync',
+                                            'platform', 'ronghui',
+                                            'rescan_days', 7,
+                                            '_startup_catchup',
+                                                CAST('true' AS JSON)
+                                        )
+                                    )
+                                    AND JSON_CONTAINS(
+                                        JSON_OBJECT(
+                                            'mode', 'sync',
+                                            'platform', 'ronghui',
+                                            'rescan_days', 7,
+                                            '_startup_catchup',
+                                                CAST('true' AS JSON)
+                                        ),
+                                        task.tool_params
+                                    ),
+                                    FALSE
+                                )
+                            )
+                       )
+                    """
+                )
+                row = cursor.fetchone() or {}
+                unsafe_count = int(row.get("unsafe_count") or 0)
+                if unsafe_count:
+                    raise RuntimeError(
+                        "017 created finance startup row no longer matches its marker"
+                    )
+                cursor.execute(
+                    f"""
+                    DELETE task
+                    FROM scheduled_tasks AS task
+                    INNER JOIN {created_table} AS marker
+                      ON BINARY marker.task_id = BINARY task.id
+                    LEFT JOIN {backup_table} AS backup
+                      ON BINARY backup.id = BINARY task.id
+                    WHERE BINARY marker.task_id =
+                            BINARY 'finance_startup_catchup'
+                      AND backup.id IS NULL
+                      AND BINARY task.name = BINARY '财务启动缺口扫描'
+                      AND BINARY task.tool_name = BINARY 'sync_finance_bills'
+                      AND BINARY task.cron_expression = BINARY '@startup'
+                      AND task.enabled = TRUE
+                      AND task.last_run IS NULL
+                      AND task.last_status IS NULL
+                      AND task.last_duration_ms IS NULL
+                      AND task.last_message IS NULL
+                      AND task.created_at = marker.task_created_at
+                      AND task.updated_at = marker.task_updated_at
+                      AND task.configuration_version =
+                            marker.task_configuration_version
+                      AND JSON_CONTAINS(
+                          task.tool_params,
+                          JSON_OBJECT(
+                              'mode', 'sync',
+                              'platform', 'ronghui',
+                              'rescan_days', 7,
+                              '_startup_catchup', CAST('true' AS JSON)
+                          )
+                      )
+                      AND JSON_CONTAINS(
+                          JSON_OBJECT(
+                              'mode', 'sync',
+                              'platform', 'ronghui',
+                              'rescan_days', 7,
+                              '_startup_catchup', CAST('true' AS JSON)
+                          ),
+                          task.tool_params
+                      )
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) AS remaining_created_count
+                    FROM {created_table} AS marker
+                    LEFT JOIN scheduled_tasks AS task
+                      ON BINARY task.id = BINARY marker.task_id
+                    LEFT JOIN {backup_table} AS backup
+                      ON BINARY backup.id = BINARY marker.task_id
+                    WHERE BINARY marker.task_id <>
+                            BINARY 'finance_startup_catchup'
+                       OR backup.id IS NOT NULL
+                       OR task.id IS NOT NULL
+                    """
+                )
+                remaining_row = cursor.fetchone() or {}
+                if int(remaining_row.get("remaining_created_count") or 0):
+                    raise RuntimeError(
+                        "017 marker-owned finance startup row remained after delete"
+                    )
+            if backup_exists:
+                cursor.execute(
+                    f"""
+                    INSERT INTO scheduled_tasks (
+                        id, name, tool_name, tool_params, cron_expression, enabled,
+                        last_run, last_status, last_duration_ms, last_message, created_at,
+                        configuration_version, updated_at
+                    )
+                    SELECT
+                        id, name, tool_name, tool_params, cron_expression, enabled,
+                        last_run, last_status, last_duration_ms, last_message, created_at,
+                        configuration_version, updated_at
+                    FROM {backup_table}
+                    WHERE TRUE
+                    ON DUPLICATE KEY UPDATE
+                        name = VALUES(name),
+                        tool_name = VALUES(tool_name),
+                        tool_params = VALUES(tool_params),
+                        cron_expression = VALUES(cron_expression),
+                        enabled = VALUES(enabled),
+                        last_run = VALUES(last_run),
+                        last_status = VALUES(last_status),
+                        last_duration_ms = VALUES(last_duration_ms),
+                        last_message = VALUES(last_message),
+                        created_at = VALUES(created_at),
+                        configuration_version = VALUES(configuration_version),
+                        updated_at = VALUES(updated_at)
+                    """
+                )
             cursor.execute(
-                "DELETE FROM schema_migrations WHERE version=%s",
+                "DELETE FROM schema_migrations WHERE BINARY version=BINARY %s",
                 (version,),
             )
-            cursor.execute(f"DELETE FROM {backup_table}")
+            if backup_exists:
+                cursor.execute(f"DELETE FROM {backup_table}")
+            if created_exists:
+                cursor.execute(f"DELETE FROM {created_table}")
             connection.commit()
             transaction_started = False
             print(f"{output_name}=ok")
@@ -2033,6 +2311,7 @@ def restore_scheduled_task_contract_upgrade() -> int:
         version=SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION,
         backup_table=SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE,
         output_name="scheduled_task_contract_upgrade_restore",
+        created_table=SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE,
     )
 
 
@@ -2307,6 +2586,7 @@ def _report_migration_capture_status(
     version: str,
     backup_table: str,
     output_name: str,
+    created_table: str | None = None,
 ) -> int:
     connection = _connect()
     try:
@@ -2321,11 +2601,19 @@ def _report_migration_capture_status(
                 applied = cursor.fetchone() is not None
             if applied:
                 status = "applied"
-            elif _table_exists(cursor, backup_table):
-                cursor.execute(f"SELECT 1 FROM {backup_table} LIMIT 1")
-                status = "pending_dirty" if cursor.fetchone() is not None else "pending_clean"
             else:
-                status = "pending_clean"
+                capture_tables = (backup_table,) + (
+                    (created_table,) if created_table else ()
+                )
+                dirty = False
+                for table_name in capture_tables:
+                    if not _table_exists(cursor, table_name):
+                        continue
+                    cursor.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+                    if cursor.fetchone() is not None:
+                        dirty = True
+                        break
+                status = "pending_dirty" if dirty else "pending_clean"
             print(f"{output_name}={status}")
     finally:
         connection.close()
@@ -2345,6 +2633,7 @@ def report_scheduled_task_contract_upgrade_status() -> int:
         version=SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION,
         backup_table=SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE,
         output_name="scheduled_task_contract_upgrade_status",
+        created_table=SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE,
     )
 
 

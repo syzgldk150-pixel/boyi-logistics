@@ -369,11 +369,17 @@ class _ReleaseRestoreCursor:
         dirty_backups: set[str] | None = None,
         marker_present: bool = False,
         orphan_policy_count: int = 0,
+        unsafe_created_count: int = 0,
+        bootstrap_policy_rows: int = 0,
+        bootstrap_event_rows: int = 0,
+        bootstrap_domain_rows: int = 0,
+        remaining_created_count: int = 0,
     ) -> None:
         self.tables = tables or {
             "schema_migrations",
             "scheduled_tasks",
             "scheduled_task_contract_upgrade_backup_017",
+            "scheduled_task_contract_upgrade_created_017",
             "daily_sign_single_tms_backup_016",
             "scheduled_task_approval_policies",
             "scheduled_task_approval_policy_events",
@@ -388,8 +394,14 @@ class _ReleaseRestoreCursor:
         self.dirty_backups = dirty_backups or set()
         self.marker_present = marker_present
         self.orphan_policy_count = orphan_policy_count
+        self.unsafe_created_count = unsafe_created_count
+        self.bootstrap_policy_rows = bootstrap_policy_rows
+        self.bootstrap_event_rows = bootstrap_event_rows
+        self.bootstrap_domain_rows = bootstrap_domain_rows
+        self.remaining_created_count = remaining_created_count
         self.calls: list[tuple[str, object]] = []
         self._row = None
+        self._rows: list[dict[str, object]] = []
 
     def __enter__(self):
         return self
@@ -401,6 +413,7 @@ class _ReleaseRestoreCursor:
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
         self._row = None
+        self._rows = []
         if normalized == "SELECT VERSION() AS version":
             self._row = {"version": "8.0.44"}
         elif "FROM information_schema.TABLES" in normalized:
@@ -410,6 +423,25 @@ class _ReleaseRestoreCursor:
             self._row = {"running_count": self.running_count}
         elif normalized.startswith("SELECT COUNT(*) AS orphan_count"):
             self._row = {"orphan_count": self.orphan_policy_count}
+        elif normalized.startswith("SELECT COUNT(*) AS unsafe_count"):
+            self._row = {"unsafe_count": self.unsafe_created_count}
+        elif normalized.startswith("SELECT COUNT(*) AS remaining_created_count"):
+            self._row = {"remaining_created_count": self.remaining_created_count}
+        elif normalized.startswith("SELECT policy.task_id"):
+            self._rows = [
+                {"task_id": "finance_startup_catchup"}
+                for _ in range(self.bootstrap_policy_rows)
+            ]
+        elif normalized.startswith("SELECT event.event_id"):
+            self._rows = [
+                {"event_id": index + 1}
+                for index in range(self.bootstrap_event_rows)
+            ]
+        elif normalized.startswith("SELECT domain_event.event_id"):
+            self._rows = [
+                {"event_id": str(index + 1)}
+                for index in range(self.bootstrap_domain_rows)
+            ]
         elif normalized.startswith("SELECT 1 FROM schema_migrations WHERE version="):
             version = params[0] if params else ""
             self._row = {"exists": 1} if version in self.applied_versions else None
@@ -425,7 +457,7 @@ class _ReleaseRestoreCursor:
         return self._row
 
     def fetchall(self):
-        return []
+        return self._rows
 
 
 class MigrationRunnerMySQLVersionTests(unittest.TestCase):
@@ -564,13 +596,166 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIn("FROM scheduled_task_contract_upgrade_backup_017", restore)
         self.assertIn("configuration_version = VALUES(configuration_version)", restore)
         self.assertIn("updated_at = VALUES(updated_at)", restore)
+        lock_statements = [
+            sql
+            for sql, _ in cursor.calls
+            if sql.endswith("FOR UPDATE")
+        ]
+        self.assertTrue(
+            any(
+                sql.startswith("SELECT marker.task_id")
+                and "scheduled_task_contract_upgrade_created_017" in sql
+                for sql in lock_statements
+            )
+        )
+        self.assertTrue(
+            any(
+                sql.startswith("SELECT backup.id")
+                and "scheduled_task_contract_upgrade_backup_017" in sql
+                for sql in lock_statements
+            )
+        )
+        self.assertTrue(
+            any(
+                sql.startswith("SELECT task.id")
+                and "FROM scheduled_tasks AS task" in sql
+                for sql in lock_statements
+            )
+        )
+        unsafe_index = next(
+            index
+            for index, (sql, _) in enumerate(cursor.calls)
+            if sql.startswith("SELECT COUNT(*) AS unsafe_count")
+        )
+        for prefix in ("SELECT marker.task_id", "SELECT backup.id", "SELECT task.id"):
+            lock_index = next(
+                index
+                for index, (sql, _) in enumerate(cursor.calls)
+                if sql.startswith(prefix) and sql.endswith("FOR UPDATE")
+            )
+            self.assertLess(lock_index, unsafe_index)
+        marker_delete = next(
+            sql
+            for sql, _ in cursor.calls
+            if sql.startswith("DELETE task FROM scheduled_tasks AS task")
+        )
         self.assertIn(
-            ("DELETE FROM schema_migrations WHERE version=%s", ("017",)),
+            "INNER JOIN scheduled_task_contract_upgrade_created_017 AS marker",
+            marker_delete,
+        )
+        self.assertIn("backup.id IS NULL", marker_delete)
+        self.assertIn("BINARY task.name = BINARY '财务启动缺口扫描'", marker_delete)
+        self.assertIn(
+            "BINARY task.tool_name = BINARY 'sync_finance_bills'",
+            marker_delete,
+        )
+        self.assertIn(
+            "BINARY task.cron_expression = BINARY '@startup'",
+            marker_delete,
+        )
+        self.assertIn("task.created_at = marker.task_created_at", marker_delete)
+        self.assertIn("task.updated_at = marker.task_updated_at", marker_delete)
+        self.assertIn("task.configuration_version =", marker_delete)
+        self.assertIn("'_startup_catchup', CAST('true' AS JSON)", marker_delete)
+        self.assertIn(
+            ("DELETE FROM schema_migrations WHERE BINARY version=BINARY %s", ("017",)),
             cursor.calls,
         )
         self.assertIn(
             ("DELETE FROM scheduled_task_contract_upgrade_backup_017", None),
             cursor.calls,
+        )
+        self.assertIn(
+            ("DELETE FROM scheduled_task_contract_upgrade_created_017", None),
+            cursor.calls,
+        )
+        self.assertTrue(connection.closed)
+
+    def test_017_restore_refuses_wrong_bootstrap_cleanup_order(self):
+        cases = (
+            ({"bootstrap_policy_rows": 1}, "finance startup policy remains"),
+            ({"bootstrap_event_rows": 1}, "audit or completion marker remains"),
+            ({"bootstrap_domain_rows": 1}, "domain or outbox state remains"),
+        )
+        for cursor_options, message in cases:
+            with self.subTest(message=message):
+                cursor = _ReleaseRestoreCursor(**cursor_options)
+                connection = _RestoreConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    self.runner.restore_scheduled_task_contract_upgrade()
+
+                self.assertTrue(connection.begun)
+                self.assertFalse(connection.committed)
+                self.assertTrue(connection.rolled_back)
+                self.assertFalse(
+                    any(
+                        sql.startswith("DELETE FROM schema_migrations")
+                        or sql.startswith(
+                            "DELETE FROM scheduled_task_contract_upgrade_backup_017"
+                        )
+                        or sql.startswith(
+                            "DELETE FROM scheduled_task_contract_upgrade_created_017"
+                        )
+                        for sql, _ in cursor.calls
+                    )
+                )
+
+    def test_017_restore_refuses_concurrent_equivalent_residual_after_delete(self):
+        # A surviving row is the observable state a SELECT -> DELETE race would
+        # have produced before the marker/task/backup locking contract.
+        cursor = _ReleaseRestoreCursor(remaining_created_count=1)
+        connection = _RestoreConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            self.assertRaisesRegex(RuntimeError, "remained after delete"),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+
+        self.assertTrue(connection.begun)
+        self.assertFalse(connection.committed)
+        self.assertTrue(connection.rolled_back)
+        self.assertTrue(
+            any(
+                sql.startswith("SELECT COUNT(*) AS remaining_created_count")
+                for sql, _ in cursor.calls
+            )
+        )
+        self.assertFalse(
+            any(
+                sql.startswith("DELETE FROM schema_migrations")
+                or sql.startswith(
+                    "DELETE FROM scheduled_task_contract_upgrade_backup_017"
+                )
+                or sql.startswith(
+                    "DELETE FROM scheduled_task_contract_upgrade_created_017"
+                )
+                for sql, _ in cursor.calls
+            )
+        )
+
+    def test_017_restore_refuses_to_delete_a_changed_marker_owned_row(self):
+        cursor = _ReleaseRestoreCursor(unsafe_created_count=1)
+        connection = _RestoreConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "created finance startup row no longer matches",
+            ),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+
+        self.assertTrue(connection.begun)
+        self.assertFalse(connection.committed)
+        self.assertTrue(connection.rolled_back)
+        self.assertFalse(
+            any(
+                sql.startswith("DELETE task FROM scheduled_tasks AS task")
+                for sql, _ in cursor.calls
+            )
         )
         self.assertTrue(connection.closed)
 
@@ -600,7 +785,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         )
         self.assertIn("FROM daily_sign_single_tms_backup_016", restore)
         self.assertIn(
-            ("DELETE FROM schema_migrations WHERE version=%s", ("016",)),
+            ("DELETE FROM schema_migrations WHERE BINARY version=BINARY %s", ("016",)),
             cursor.calls,
         )
         self.assertIn(
@@ -719,6 +904,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         cases = (
             (set(), set(), "pending_clean"),
             (set(), {"scheduled_task_contract_upgrade_backup_017"}, "pending_dirty"),
+            (set(), {"scheduled_task_contract_upgrade_created_017"}, "pending_dirty"),
             ({"017"}, set(), "applied"),
         )
         for applied, dirty, expected in cases:
