@@ -511,7 +511,32 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             self.assertIn("policy_event.actor_id = %s", statement)
             self.assertIn("policy_event.reason = 'control_plane_v1_bootstrap'", statement)
             self.assertIn("domain_event.source_system = 'agent'", statement)
-            self.assertIn("domain_event.entity_id = policy_event.task_id", statement)
+            self.assertIn(
+                "BINARY domain_event.source_event_id = BINARY CONCAT(",
+                statement,
+            )
+            self.assertIn(
+                "BINARY domain_event.entity_id = BINARY policy_event.task_id",
+                statement,
+            )
+        consumption_delete = next(
+            sql
+            for sql in statements
+            if sql.startswith("DELETE consumption FROM event_consumptions")
+        )
+        self.assertIn(
+            "BINARY domain_event.event_id = BINARY consumption.event_id",
+            consumption_delete,
+        )
+        outbox_delete = next(
+            sql
+            for sql in statements
+            if sql.startswith("DELETE outbox FROM outbox_events")
+        )
+        self.assertIn(
+            "BINARY domain_event.event_id = BINARY outbox.event_id",
+            outbox_delete,
+        )
         policy_delete = next(
             sql
             for sql in statements
