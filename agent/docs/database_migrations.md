@@ -68,13 +68,20 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `daily_sign_single_tms_backup_016`；发布失败时
   `--restore-daily-sign-single-tms-account` 恢复原行并删除本次 `016` 历史，重复恢复安全。
 - `017_scheduled_task_contract_upgrade.sql`：在不可变 `014` 之后精确升级两条打卡和可选财务任务，
+  并负责恢复旧 c7 服务每次启动都会执行的 `finance_startup_catchup` 行为；该启动任务的前向修复
+  只归属 `017`，不得回写 `014`。任务缺失时由 `017` 创建启用行并写入精确删除 marker；首次失败
+  发布遗留的禁用模板只有在 `015` 文件名/校验和、创建时间窗、完整任务契约以及无审批状态均
+  精确匹配时才会被接管，管理员已有行一律阻断而不覆盖。
   清除三条到车列表中经指纹绑定的 `014` 遗留字段，并只对“`014` 备份证明原先启用、当前仍保持
   迁移停用状态且配置版本未变化”的韵达寄件任务恢复启用。迁移只接受已审核的生产过渡形状或当前
   规范形状，完整备份原行后统一到代码审阅的工具、cron 与参数契约，并递增配置版本；任何额外字段、
   类型变化、管理员后续配置版本或备份不匹配都会在更新前阻断。迁移前状态由
   `--scheduled-task-contract-upgrade-status` 报告为
   `pending_clean`、`pending_dirty` 或 `applied`；失败时
-  `--restore-scheduled-task-contract-upgrade` 恢复完整行、清除本次 `017` 历史并支持再次应用。
+  `--restore-scheduled-task-contract-upgrade` 必须在 bootstrap 清理完成后运行；它在同一事务内锁定
+  `017` marker、任务和备份，确认启动任务的当前策略、策略事件、完成 marker 及相关
+  Domain Event/Outbox 均已清理，才删除 marker-owned 行并恢复完整备份。任何漂移或残留都会回滚，
+  保留 `017` 历史、marker 与备份供人工恢复；成功后才清理恢复材料并允许再次应用。
 
 生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `014`，发布器只按
 顺序补执行 `015`、`016`、`017`。`016`/`017` 在业务行变更前各自保存完整行备份；远端发布必须在

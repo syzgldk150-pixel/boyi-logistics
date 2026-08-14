@@ -47,6 +47,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls.collation_database = f"{cls.database[:-5]}_collation_test"
         cls.compat_database = f"{cls.database[:-5]}_schedule_compat_test"
         cls.contract_chain_database = f"{cls.database[:-5]}_contract_chain_test"
+        cls.startup_contract_database = f"{cls.database[:-5]}_startup_contract_test"
         cls.policy_restore_database = f"{cls.database[:-5]}_policy_restore_test"
         cls.release_manifest_database = f"{cls.database[:-5]}_release_manifest_test"
         cls.protected_write_database = f"{cls.database[:-5]}_protected_write_test"
@@ -61,6 +62,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             *cls.databases,
             cls.compat_database,
             cls.contract_chain_database,
+            cls.startup_contract_database,
             cls.policy_restore_database,
             cls.release_manifest_database,
             cls.protected_write_database,
@@ -101,6 +103,8 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls._run_migrations(cls.protected_write_database)
         cls._apply_through(cls.compat_database, "013")
         cls._apply_through(cls.contract_chain_database, "013")
+        cls._apply_through(cls.startup_contract_database, "015")
+        cls._apply_one(cls.startup_contract_database, "016")
 
         # The shared runtime table can predate the control plane under a
         # different database/table collation. Run 015's SQL directly twice:
@@ -920,6 +924,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     if task_id == yunda_send_id
                     else "preserve exact row"
                 )
+                task_name = (
+                    "财务启动缺口扫描"
+                    if task_id == "finance_startup_catchup"
+                    else f"reviewed {task_id}"
+                )
                 cursor.execute(
                     "INSERT INTO scheduled_tasks "
                     "(id, name, tool_name, tool_params, cron_expression, enabled, "
@@ -927,7 +936,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     "VALUES (%s, %s, %s, CAST(%s AS JSON), %s, %s, %s, 17, %s)",
                     (
                         task_id,
-                        f"reviewed {task_id}",
+                        task_name,
                         tool_name,
                         json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
                         cron_expression,
@@ -1225,6 +1234,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     "clockin_daxiang_1830",
                     "clockin_daxiang_s_1833",
                     "finance_bills_0010",
+                    "finance_startup_catchup",
                     yunda_send_id,
                     *arrive_ids,
                 }
@@ -1334,6 +1344,319 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 [version for version, _ in self.runner.discover_migrations()],
                 [str(row["version"]) for row in cursor.fetchall()],
             )
+
+    def test_017_finance_startup_create_seed_restore_and_reapply_are_exact(self):
+        database = self.startup_contract_database
+        startup_id = "finance_startup_catchup"
+        startup_arguments = {
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        }
+        migration_017 = next(
+            path
+            for version, path in self.runner.discover_migrations()
+            if version == "017"
+        )
+        statements_017 = self.runner.split_sql_statements(
+            migration_017.read_text(encoding="utf-8")
+        )
+
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES ('finance_bills_0010', 'finance daily', "
+                "'sync_finance_bills', CAST(%s AS JSON), '10 0 * * *', FALSE)",
+                (json.dumps({"mode": "sync", "platform": "ronghui", "rescan_days": 7}),),
+            )
+            cursor.execute(
+                "SELECT filename, checksum, applied_at "
+                "FROM schema_migrations WHERE BINARY version=BINARY '015'"
+            )
+            migration_015 = cursor.fetchone()
+            applied_015_at = migration_015["applied_at"]
+            migration_015_filename = str(migration_015["filename"])
+            migration_015_checksum = str(migration_015["checksum"])
+
+        def apply_017() -> None:
+            self._apply_one(database, "017")
+
+        def restore_017() -> None:
+            with patch.dict(os.environ, self._environment(database), clear=False):
+                self.assertEqual(
+                    0,
+                    self.runner.restore_scheduled_task_contract_upgrade(),
+                )
+
+        def load_startup() -> dict | None:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, name, tool_name, tool_params, cron_expression, enabled, "
+                    "last_run, last_status, last_duration_ms, last_message, created_at, "
+                    "configuration_version, updated_at FROM scheduled_tasks WHERE id=%s",
+                    (startup_id,),
+                )
+                row = cursor.fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            if isinstance(result["tool_params"], str):
+                result["tool_params"] = json.loads(result["tool_params"])
+            return result
+
+        def capture_count(table: str) -> int:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT COUNT(*) AS count FROM {table} WHERE task_id=%s"
+                    if table.endswith("created_017")
+                    else f"SELECT COUNT(*) AS count FROM {table} WHERE id=%s",
+                    (startup_id,),
+                )
+                return int(cursor.fetchone()["count"])
+
+        def migration_017_count() -> int:
+            with self._connection(database) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) AS count FROM schema_migrations "
+                    "WHERE BINARY version=BINARY '017'"
+                )
+                return int(cursor.fetchone()["count"])
+
+        # Absent rows are created enabled and get the exact deletion marker.
+        apply_017()
+        created = load_startup()
+        self.assertIsNotNone(created)
+        self.assertEqual("财务启动缺口扫描", created["name"])
+        self.assertEqual("sync_finance_bills", created["tool_name"])
+        self.assertEqual(startup_arguments, created["tool_params"])
+        self.assertEqual("@startup", created["cron_expression"])
+        self.assertTrue(created["enabled"])
+        self.assertEqual(1, created["configuration_version"])
+        self.assertEqual(
+            1,
+            capture_count("scheduled_task_contract_upgrade_created_017"),
+        )
+        self.assertEqual(
+            0,
+            capture_count("scheduled_task_contract_upgrade_backup_017"),
+        )
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            for statement in statements_017:
+                cursor.execute(statement)
+        self.assertEqual(created, load_startup())
+
+        # Restore must run only after bootstrap cleanup and must preserve all
+        # recovery artifacts when it refuses the ordering.
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO scheduled_task_approval_policies (task_id, mode) "
+                "VALUES (%s, 'REQUIRE_EACH_RUN')",
+                (startup_id,),
+            )
+        with (
+            patch.dict(os.environ, self._environment(database), clear=False),
+            self.assertRaisesRegex(RuntimeError, "bootstrap cleanup first"),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+        self.assertEqual(created, load_startup())
+        self.assertEqual(1, migration_017_count())
+        self.assertEqual(
+            1,
+            capture_count("scheduled_task_contract_upgrade_created_017"),
+        )
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM scheduled_task_approval_policies "
+                "WHERE BINARY task_id=BINARY %s",
+                (startup_id,),
+            )
+            cursor.execute(
+                "INSERT INTO scheduled_task_approval_policy_events "
+                "(task_id, to_mode, actor_id, actor_role, reason, "
+                "correlation_id, request_id) "
+                "VALUES (%s, 'REQUIRE_EACH_RUN', %s, %s, "
+                "'control_plane_v1_bootstrap_complete', %s, %s)",
+                (
+                    self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
+                    self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+                    self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+                    self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                    self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
+                ),
+            )
+        with (
+            patch.dict(os.environ, self._environment(database), clear=False),
+            self.assertRaisesRegex(RuntimeError, "completion marker remains"),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+        self.assertEqual(created, load_startup())
+        self.assertEqual(1, migration_017_count())
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM scheduled_task_approval_policy_events "
+                "WHERE BINARY task_id=BINARY %s",
+                (self.runner.CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,),
+            )
+            domain_event_id = str(uuid4())
+            correlation_id = str(uuid4())
+            source_event_id = f"{startup_id}:{uuid4()}"
+            cursor.execute(
+                "INSERT INTO domain_events "
+                "(event_id, event_type, schema_version, source_system, "
+                "source_event_id, entity_type, entity_id, occurred_at, "
+                "observed_at, correlation_id, payload_json, payload_sha256) "
+                "VALUES (%s, 'scheduled_task.approval_policy_changed', 1, "
+                "'agent', %s, 'scheduled_task', %s, NOW(6), NOW(6), %s, "
+                "CAST('{}' AS JSON), SHA2('{}', 256))",
+                (domain_event_id, source_event_id, startup_id, correlation_id),
+            )
+            cursor.execute(
+                "INSERT INTO outbox_events "
+                "(event_id, consumer_name, topic, partition_key) "
+                "VALUES (%s, 'test-consumer', "
+                "'scheduled_task.approval_policy_changed', %s)",
+                (domain_event_id, startup_id),
+            )
+        with (
+            patch.dict(os.environ, self._environment(database), clear=False),
+            self.assertRaisesRegex(RuntimeError, "domain or outbox state remains"),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+        self.assertEqual(created, load_startup())
+        self.assertEqual(1, migration_017_count())
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM outbox_events WHERE BINARY event_id=BINARY %s",
+                (domain_event_id,),
+            )
+            cursor.execute(
+                "DELETE FROM domain_events WHERE BINARY event_id=BINARY %s",
+                (domain_event_id,),
+            )
+
+        # Case-only drift must not pass a case-insensitive production collation.
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE scheduled_tasks "
+                "SET tool_name='Sync_finance_bills' WHERE BINARY id=BINARY %s",
+                (startup_id,),
+            )
+        with (
+            patch.dict(os.environ, self._environment(database), clear=False),
+            self.assertRaisesRegex(RuntimeError, "no longer matches its marker"),
+        ):
+            self.runner.restore_scheduled_task_contract_upgrade()
+        self.assertEqual(1, migration_017_count())
+        self.assertEqual(
+            1,
+            capture_count("scheduled_task_contract_upgrade_created_017"),
+        )
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE scheduled_tasks "
+                "SET tool_name=%s, updated_at=%s WHERE BINARY id=BINARY %s",
+                (created["tool_name"], created["updated_at"], startup_id),
+            )
+        restore_017()
+        self.assertIsNone(load_startup())
+        apply_017()
+        restore_017()
+        self.assertIsNone(load_startup())
+
+        # The one proven failed-release seed is captured and enabled, never marked created.
+        seed_created_at = applied_015_at + timedelta(seconds=10)
+        seed_updated_at = seed_created_at + timedelta(microseconds=500_000)
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO scheduled_tasks "
+                "(id, name, tool_name, tool_params, cron_expression, enabled, "
+                "created_at, configuration_version, updated_at) "
+                "VALUES (%s, '财务启动缺口扫描', 'sync_finance_bills', CAST(%s AS JSON), "
+                "'@startup', FALSE, %s, 1, %s)",
+                (
+                    startup_id,
+                    json.dumps(startup_arguments, separators=(",", ":")),
+                    seed_created_at,
+                    seed_updated_at,
+                ),
+            )
+        seeded = load_startup()
+        for column, invalid_value, original_value in (
+            ("filename", migration_015_filename.swapcase(), migration_015_filename),
+            ("checksum", migration_015_checksum.upper(), migration_015_checksum),
+        ):
+            with self.subTest(provenance_column=column):
+                with self._connection(
+                    database,
+                    autocommit=True,
+                ) as connection, connection.cursor() as cursor:
+                    cursor.execute(
+                        f"UPDATE schema_migrations SET {column}=%s "
+                        "WHERE BINARY version=BINARY '015'",
+                        (invalid_value,),
+                    )
+                with self.assertRaises(self.pymysql.MySQLError):
+                    with self._connection(
+                        database,
+                        autocommit=True,
+                    ) as connection, connection.cursor() as cursor:
+                        for statement in statements_017:
+                            cursor.execute(statement)
+                self.assertEqual(seeded, load_startup())
+                self.assertEqual(
+                    0,
+                    capture_count("scheduled_task_contract_upgrade_backup_017"),
+                )
+                with self._connection(
+                    database,
+                    autocommit=True,
+                ) as connection, connection.cursor() as cursor:
+                    cursor.execute(
+                        f"UPDATE schema_migrations SET {column}=%s "
+                        "WHERE BINARY version=BINARY '015'",
+                        (original_value,),
+                    )
+        apply_017()
+        enabled_seed = load_startup()
+        self.assertTrue(enabled_seed["enabled"])
+        self.assertEqual(2, enabled_seed["configuration_version"])
+        self.assertEqual(
+            0,
+            capture_count("scheduled_task_contract_upgrade_created_017"),
+        )
+        self.assertEqual(
+            1,
+            capture_count("scheduled_task_contract_upgrade_backup_017"),
+        )
+        restore_017()
+        self.assertEqual(seeded, load_startup())
+        apply_017()
+        restore_017()
+        self.assertEqual(seeded, load_startup())
+
+        # A same-shape administrator row outside the release window is untouched.
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            outside = applied_015_at + timedelta(seconds=31)
+            cursor.execute(
+                "UPDATE scheduled_tasks SET created_at=%s, updated_at=%s WHERE id=%s",
+                (outside, outside + timedelta(microseconds=500_000), startup_id),
+            )
+        rejected = load_startup()
+        with self.assertRaises(self.pymysql.MySQLError):
+            with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+                for statement in statements_017:
+                    cursor.execute(statement)
+        self.assertEqual(rejected, load_startup())
+        self.assertEqual(
+            0,
+            capture_count("scheduled_task_contract_upgrade_backup_017"),
+        )
+
+        with self._connection(database, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM scheduled_tasks WHERE id=%s", (startup_id,))
+        apply_017()
 
     def test_two_workers_skip_locked_without_duplicate_claim(self):
         repository = self._repository()

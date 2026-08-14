@@ -34,10 +34,10 @@ def test_upgrade_accepts_only_exact_applied_014_or_canonical_clock_shapes() -> N
     assert "@cp017_daxiang_s_transition" in sql
     assert "@cp017_daxiang_canonical" in sql
     assert "@cp017_daxiang_s_canonical" in sql
-    assert "task.id = 'clockin_daxiang_1830'" in sql
-    assert "task.id = 'clockin_daxiang_s_1833'" in sql
-    assert "task.tool_name = 'tms_query'" in sql
-    assert "task.tool_name = 'clock_in_dual'" in sql
+    assert "BINARY task.id = BINARY 'clockin_daxiang_1830'" in sql
+    assert "BINARY task.id = BINARY 'clockin_daxiang_s_1833'" in sql
+    assert "BINARY task.tool_name = BINARY 'tms_query'" in sql
+    assert "BINARY task.tool_name = BINARY 'clock_in_dual'" in sql
     assert "task.enabled = TRUE" in sql
     assert "@cp017_clock_pair_count IN (0, 2)" in sql
     assert "information_schema.cp017_invalid_clock_contract" in sql
@@ -54,24 +54,31 @@ def test_upgrade_accepts_only_exact_applied_014_or_canonical_arrive_shapes() -> 
     assert "@cp017_arrive_list_canonical" in sql
     assert REVIEWED_ARRIVE_SITE_SHA256 in sql
     assert "@cp017_arrive_list_count IN (0, 3)" in guard
-    assert "task.tool_name = 'sync_arrive_list'" in guard
+    assert "BINARY task.tool_name = BINARY 'sync_arrive_list'" in guard
     assert "task.enabled = TRUE" in guard
     for task_id, cron_expression in (
         ("arrive_list_0830", "30 8 * * *"),
         ("arrive_list_0900", "0 9 * * *"),
         ("arrive_list_0930", "30 9 * * *"),
     ):
-        assert f"WHEN '{task_id}' THEN '{cron_expression}'" in guard
+        assert (
+            f"WHEN BINARY '{task_id}' THEN BINARY '{cron_expression}'"
+            in guard
+        )
     assert "JSON_LENGTH(task.tool_params) = 2" in guard
     assert (
-        "JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.account_id')) = 'STRING'"
+        "BINARY JSON_TYPE(\n"
+        "                      JSON_EXTRACT(task.tool_params, '$.account_id')\n"
+        "                  ) = BINARY 'STRING'"
         in guard
     )
     assert (
-        "JSON_TYPE(JSON_EXTRACT(task.tool_params, '$.site_code')) = 'STRING'"
+        "BINARY JSON_TYPE(\n"
+        "                      JSON_EXTRACT(task.tool_params, '$.site_code')\n"
+        "                  ) = BINARY 'STRING'"
         in guard
     )
-    assert ") = @cp017_arrive_site_sha256" in guard
+    assert ") = BINARY @cp017_arrive_site_sha256" in guard
     assert "information_schema.cp017_invalid_arrive_list_contract" in guard
 
 
@@ -95,12 +102,12 @@ def test_upgrade_reenables_yunda_only_with_exact_applied_014_proof() -> None:
     assert "@cp017_yunda_send_pre014" in sql
     assert APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256 in sql
     assert "@cp017_yunda_send_count IN (0, 1)" in guard
-    assert "task.id = 'yunda_send_waybills_2355'" in guard
-    assert "task.tool_name = 'sync_yunda_send_waybills'" in guard
-    assert "task.cron_expression = '55 23 * * *'" in guard
+    assert "BINARY task.id = BINARY 'yunda_send_waybills_2355'" in guard
+    assert "BINARY task.tool_name = BINARY 'sync_yunda_send_waybills'" in guard
+    assert "BINARY task.cron_expression = BINARY '55 23 * * *'" in guard
     assert "task.enabled = TRUE" in guard
     assert "task.enabled = FALSE" in guard
-    assert "task.last_status = 'disabled'" in guard
+    assert "BINARY task.last_status = BINARY 'disabled'" in guard
     assert "task.configuration_version = 1" in guard
     assert "SHA2(COALESCE(task.last_message, ''), 256)" in guard
     assert "FROM control_plane_task_cutover_backup_014 AS prior" in guard
@@ -147,6 +154,7 @@ def test_upgrade_backs_up_then_transactionally_normalizes_contracts() -> None:
     assert "INSERT IGNORE INTO scheduled_task_contract_upgrade_backup_017" in sql
     backup_rows = sql[backup:transaction]
     for task_id in (
+        "finance_startup_catchup",
         "arrive_list_0830",
         "arrive_list_0900",
         "arrive_list_0930",
@@ -160,15 +168,110 @@ def test_upgrade_backs_up_then_transactionally_normalizes_contracts() -> None:
     assert "information_schema.cp017_arrive_list_upgrade_failed" in sql
 
 
-def test_upgrade_keeps_optional_finance_state_and_never_creates_startup_task() -> None:
+def test_upgrade_preserves_daily_finance_and_restores_exact_startup_behavior() -> None:
     sql = _sql()
+    guard_start = sql.index("SET @cp017_finance_startup_count")
+    guard_end = sql.index("SET @cp017_arrive_list_count")
+    guard = sql[guard_start:guard_end]
+    transaction_start = sql.index("START TRANSACTION")
+    startup_insert = sql.index("INSERT INTO scheduled_tasks", transaction_start)
+    startup_update = sql.index(
+        "UPDATE scheduled_tasks AS task\nSET task.enabled = TRUE",
+        startup_insert,
+    )
+    first_clock_update = sql.index(
+        "UPDATE scheduled_tasks AS task\nSET task.tool_params = @cp017_daxiang_canonical"
+    )
 
     assert "@cp017_finance_transition" in sql
     assert "@cp017_finance_canonical" in sql
-    assert "task.id = 'finance_bills_0010'" in sql
+    assert "BINARY task.id = BINARY 'finance_bills_0010'" in sql
     assert "task.enabled IN (FALSE, TRUE)" in sql
-    assert "finance_startup_catchup" not in sql
-    assert "INSERT INTO scheduled_tasks" not in sql
+    assert "@cp017_finance_startup_canonical" in sql
+    assert "BINARY task.id = BINARY 'finance_startup_catchup'" in guard
+    assert "BINARY task.name = BINARY '财务启动缺口扫描'" in guard
+    assert "BINARY task.tool_name = BINARY 'sync_finance_bills'" in guard
+    assert "BINARY task.cron_expression = BINARY '@startup'" in guard
+    assert "task.configuration_version = 1" in guard
+    for runtime_field in (
+        "last_run",
+        "last_status",
+        "last_duration_ms",
+        "last_message",
+    ):
+        assert f"task.{runtime_field} IS NULL" in guard
+    assert "task.created_at > migration.applied_at" in guard
+    assert (
+        "BINARY migration.filename =\n"
+        "          BINARY '015_scheduled_task_approval_policies.sql'"
+        in guard
+    )
+    assert (
+        "BINARY migration.checksum = BINARY @cp017_approval_migration_sha256"
+        in guard
+    )
+    assert (
+        "fe91354e684013faa63a4b93f71374231ea721cdd16c4a0ec5bc19eda1a2783c"
+        in sql
+    )
+    assert (
+        "task.created_at <= DATE_ADD(migration.applied_at, INTERVAL 30 SECOND)"
+        in guard
+    )
+    assert "task.updated_at >= CAST(task.created_at AS DATETIME(6))" in guard
+    assert "scheduled_task_approval_policies AS policy" in guard
+    assert "scheduled_task_approval_policy_events AS event" in guard
+    assert "__control_plane_v1_bootstrap_complete__" in guard
+    assert (
+        "BINARY marker.actor_id =\n"
+        "                BINARY 'system:migration:control-plane-v1'"
+        in guard
+    )
+    assert "BINARY marker.actor_role = BINARY 'migration_authority'" in guard
+    assert (
+        "BINARY marker.reason =\n"
+        "                BINARY 'control_plane_v1_bootstrap_complete'"
+        in guard
+    )
+    assert "information_schema.cp017_invalid_finance_startup_contract" in guard
+    assert transaction_start < startup_insert < startup_update < first_clock_update
+    assert "'财务启动缺口扫描'" in sql
+    assert "FROM scheduled_tasks AS finance" in sql[startup_insert:startup_update]
+    assert "AND NOT EXISTS" in sql[startup_insert:startup_update]
+    assert "AND @cp017_finance_startup_seed_owned = TRUE" in sql
+    assert "information_schema.cp017_finance_startup_upgrade_failed" in sql
+
+
+def test_upgrade_marks_only_startup_rows_created_by_017() -> None:
+    sql = _sql()
+    backup = sql.index(
+        "CREATE TABLE IF NOT EXISTS scheduled_task_contract_upgrade_backup_017"
+    )
+    marker = sql.index(
+        "CREATE TABLE IF NOT EXISTS scheduled_task_contract_upgrade_created_017"
+    )
+    transaction = sql.index("START TRANSACTION")
+    marker_insert = sql.index(
+        "INSERT INTO scheduled_task_contract_upgrade_created_017",
+        transaction,
+    )
+    startup_update = sql.index(
+        "UPDATE scheduled_tasks AS task\nSET task.enabled = TRUE",
+        marker_insert,
+    )
+
+    assert backup < marker < transaction < marker_insert < startup_update
+    assert "BINARY task_id = BINARY 'finance_startup_catchup'" in sql
+    assert "task_configuration_version = 1" in sql
+    marker_sql = sql[marker_insert:startup_update]
+    assert "LEFT JOIN scheduled_task_contract_upgrade_backup_017 AS prior" in marker_sql
+    assert "AND prior.id IS NULL" in marker_sql
+    assert "task.created_at" in marker_sql
+    assert "task.updated_at" in marker_sql
+    assert "ON DUPLICATE KEY UPDATE" in marker_sql
+    assert "BINARY task.name = BINARY '财务启动缺口扫描'" in marker_sql
+    assert "BINARY task.tool_name = BINARY 'sync_finance_bills'" in marker_sql
+    assert "BINARY task.cron_expression = BINARY '@startup'" in marker_sql
 
 
 def test_upgrade_is_compatible_with_deployment_sql_splitter() -> None:
@@ -180,4 +283,4 @@ def test_upgrade_is_compatible_with_deployment_sql_splitter() -> None:
     assert sum(
         statement.startswith("UPDATE scheduled_tasks AS task")
         for statement in statements
-    ) == 5
+    ) == 6
