@@ -339,12 +339,18 @@ class ToolExecutor:
             }
 
         proc = entry.get("proc")
-        if proc is None or proc.returncode is not None:
+        if proc is not None and proc.returncode is not None:
             entry["running"] = False
             return {"ok": False, "message": "任务已结束，无需取消。", "code": "NOT_RUNNING"}
 
         entry["cancel_requested"] = True
         entry["lines"].append("[control] 已请求取消执行，正在停止子进程…")
+        if proc is None:
+            return {
+                "ok": True,
+                "message": "已发送取消请求，正在停止脚本。",
+                "started_at": entry_started_at,
+            }
         await self._terminate_process(proc, force=False)
         asyncio.create_task(self._ensure_process_stopped(proc))
         return {"ok": True, "message": "已发送取消请求，正在停止脚本。", "started_at": entry_started_at}
@@ -503,6 +509,7 @@ class ToolExecutor:
         )
 
         lock_fd = None
+        entry: dict | None = None
         execution_capability = ""
         try:
             if heavy:
@@ -544,6 +551,18 @@ class ToolExecutor:
                 start_new_session=True,
             )
             entry["proc"] = proc
+
+            if entry.get("cancel_requested"):
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                await self._terminate_process(proc, force=False)
+                await self._ensure_process_stopped(proc)
+                duration = round(time.time() - start, 2)
+                return self._cancelled_result(
+                    name=name,
+                    entry=entry,
+                    duration=duration,
+                )
 
             proc.stdin.write(input_json.encode("utf-8"))
             await proc.stdin.drain()
@@ -720,6 +739,9 @@ class ToolExecutor:
 
         except Exception as exc:
             duration = round(time.time() - start, 2)
+            if entry is not None and self._running_outputs.get(name) is entry:
+                entry["running"] = False
+                entry["proc"] = None
             safe_error = _redact_execution_capability(exc, execution_capability)
             logger.error("tool=%s | error=%s | duration=%ss", name, safe_error[:200], duration)
             return {"success": False, "error": safe_error}
