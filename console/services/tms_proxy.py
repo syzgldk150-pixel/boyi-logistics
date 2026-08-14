@@ -345,6 +345,7 @@ class TmsProxyServiceMixin:
             "/internal/v1/tms/yunda_waybill_proxy",
             payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             self._send_json(
@@ -428,6 +429,7 @@ class TmsProxyServiceMixin:
             "/internal/v1/tms/ronghui_waybill_proxy",
             payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             if str(result.get("error_code") or "") == "AUTH_REQUIRED":
@@ -532,6 +534,7 @@ class TmsProxyServiceMixin:
             "/internal/v1/tms/yunda_waybill_proxy",
             payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             self._send_json(
@@ -625,6 +628,7 @@ class TmsProxyServiceMixin:
             "/internal/v1/tms/ronghui_waybill_proxy",
             payload={"params": params, "timeout_sec": 180, **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             if str(result.get("error_code") or "") == "AUTH_REQUIRED":

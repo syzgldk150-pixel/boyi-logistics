@@ -292,6 +292,7 @@ class AutomationServiceMixin:
                 **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context),
             },
             timeout=self.settings.agent_timeout_seconds,
+            console_principal=trusted_context["_console_principal"],
         )
         if not run_result.get("ok"):
             return run_result
@@ -958,6 +959,7 @@ class AutomationServiceMixin:
             f"/internal/v1/runs/{quote(run_id, safe='')}/cancel",
             payload={"comment": "Console 自动化页面取消", **ControlPlaneServiceMixin._control_plane_agent_body_context(trusted_context)},
             timeout=10,
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             self._send_json(

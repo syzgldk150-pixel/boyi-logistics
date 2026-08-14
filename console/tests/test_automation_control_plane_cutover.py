@@ -67,6 +67,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "actor": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
             "actor_roles": ["admin"],
             "source": "console",
+            "_console_principal": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
         }
 
         result = app._start_automation_task_run(
@@ -96,6 +97,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "actor": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
             "actor_roles": ["admin"],
             "source": "console",
+            "_console_principal": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
         }
 
         app._handle_automation_task_cancel(object())

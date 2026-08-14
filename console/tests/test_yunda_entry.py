@@ -536,7 +536,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_call_yunda_entry_runtime_translates_auth_required(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -682,7 +682,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_yunda_live_proxy_returns_agent_raw_response(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -727,7 +727,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         app = self._app(repository)
         remote_body = {"info": "1", "LogisticsId": "YD777", "message": "saved"}
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -779,7 +779,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_returns_agent_raw_response(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -823,7 +823,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_forwards_redirect_headers(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -866,7 +866,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_preserves_static_cache_headers(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             return {
                 "ok": True,
                 "status": 200,
@@ -902,7 +902,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_auth_required_returns_readable_iframe_body(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -934,7 +934,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_outer_auth_required_returns_readable_iframe_body(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": False,
@@ -983,7 +983,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_allows_entry_auxiliary_paths_seen_in_live_page(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -1033,7 +1033,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         ).encode("utf-8")
         content_type = f"multipart/form-data; boundary={boundary}"
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -1070,7 +1070,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         app = self._app(repository)
         remote_body = {"success": True, "message": "保存成功"}
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
