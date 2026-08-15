@@ -11,6 +11,8 @@ import pytest
 from fastapi import HTTPException
 
 import main
+from agent.automation_plugins.execution import PluginExecutionRouter
+from agent.core import AgentCore
 from agent.automation_plugins.errors import PluginConflictError
 
 
@@ -48,6 +50,41 @@ class _PluginRuntime:
                 code="AUTOMATION_PLUGIN_RUNTIME_NOT_READY",
             )
         return {"ok": True, "generations": {"healthy": True}}
+
+
+class _HealthExecutor:
+    def last_tool_info(self) -> dict[str, Any]:
+        return {
+            "tool": "legacy-completed",
+            "time": "2026-08-15 00:00:00",
+            "success": True,
+            "duration_s": 1,
+        }
+
+    def heavy_lock_held(self) -> bool:
+        return False
+
+
+class _HealthIssuer:
+    broker_endpoint = "unix:///tmp/test-plugin-broker.sock"
+    broker_socket_path = None
+
+
+class _HealthStatusProvider:
+    @staticmethod
+    def status(*_args: object) -> str:
+        return "ok"
+
+    @staticmethod
+    def describe_status(*, validate: bool) -> dict[str, Any]:
+        assert validate is False
+        return {"status": "ok"}
+
+
+class _HealthRepository:
+    @staticmethod
+    def outbox_health() -> dict[str, Any]:
+        return {"status": "ok"}
 
 
 def _install_activation_fakes(
@@ -132,6 +169,53 @@ def test_unstable_plugin_generation_keeps_every_runtime_held(
         "scheduler-held",
     ]
     assert "marker-consumed" not in events
+
+
+def test_internal_health_accepts_plugin_execution_router_observability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_router = PluginExecutionRouter(
+        core_executor=_HealthExecutor(),
+        capability_issuer=_HealthIssuer(),
+    )
+    runtime = AgentCore.__new__(AgentCore)
+    runtime._execution_runtime = execution_router  # noqa: SLF001 - composition-root regression
+    runtime._feishu_connected = True  # noqa: SLF001 - composition-root regression
+    runtime.llm = _HealthStatusProvider()
+    runtime.memory = _HealthStatusProvider()
+    monkeypatch.setattr(main, "agent_core", runtime)
+    monkeypatch.setattr(main, "orchestration_repository", _HealthRepository())
+    monkeypatch.setattr(main, "workflow_runner", _Runner([]))
+    monkeypatch.setattr(main, "feishu_event_mode", lambda: "websocket")
+    monkeypatch.setattr(
+        main,
+        "scheduler_runtime_status",
+        lambda: {"state": "paused", "release_hold": True, "jobs": 18},
+    )
+    monkeypatch.setattr(
+        main,
+        "_automation_plugin_health",
+        lambda: {"ok": True, "generations": {"healthy": True}},
+    )
+    monkeypatch.setattr(
+        main,
+        "_automation_worker_dispatch_health",
+        lambda *, release_hold: {
+            "enabled": False,
+            "state": "disabled",
+            "release_hold": release_hold,
+            "active_jobs": 0,
+        },
+    )
+    monkeypatch.setattr(main, "scheduler_release_hold_requested", lambda: True)
+    monkeypatch.setattr(main, "get_session_broker", _HealthStatusProvider)
+    monkeypatch.setattr(main, "scheduled_task_approval_bootstrap", {})
+
+    response = asyncio.run(main.internal_health())
+
+    assert response["ok"] is True
+    assert response["data"]["last_tool_run"]["tool"] == "legacy-completed"
+    assert response["data"]["heavy_task_lock"] is False
 
 
 def test_windows_worker_is_not_mounted_or_queried_in_the_current_release_scope(
