@@ -55,6 +55,7 @@ from shared.automation_project_policy_repository import (
     validate_automation_project_bootstrap_policy_event,
     validate_automation_project_bootstrap_source_snapshot,
     validate_existing_automation_project_bootstrap,
+    validate_legacy_scheduled_grant_event,
     validate_persisted_automation_project_configuration_evidence,
 )
 from shared.orchestration_repository_support import _json_hash
@@ -366,7 +367,7 @@ def _scheduled_grant_event(row: dict, *, event_id: int) -> dict:
         "actor_display_name": "Control Plane v1 migration",
         "reason": LEGACY_SCHEDULE_GRANT_REASON,
         "comment": "preserve previously authorized production automation",
-        "correlation_id": request_id,
+        "correlation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
     }
 
 
@@ -1294,6 +1295,24 @@ class AutomationProjectLegacyPolicyEngineTests(TestCase):
 
 
 class AutomationProjectBootstrapPureContractTests(TestCase):
+    def test_legacy_grant_accepts_independent_uuid_correlation_only(self):
+        row = {
+            "id": "legacy_task",
+            "tool_name": "tms_query",
+            "tool_params": {"query": "reviewed"},
+            "cron_expression": "5 21 * * *",
+            "enabled": 1,
+            "configuration_version": CONFIGURATION_VERSION - 1,
+        }
+        event = _scheduled_grant_event(row, event_id=1)
+
+        self.assertNotEqual(event["request_id"], event["correlation_id"])
+        validate_legacy_scheduled_grant_event(event, row=row)
+
+        event["correlation_id"] = "not-a-uuid"
+        with self.assertRaises(AutomationProjectBootstrapContractError):
+            validate_legacy_scheduled_grant_event(event, row=row)
+
     def test_project_set_hash_is_canonical_and_binds_first_release(self):
         repository = _BootstrapRepository()
         service = _bootstrap_service(repository)
