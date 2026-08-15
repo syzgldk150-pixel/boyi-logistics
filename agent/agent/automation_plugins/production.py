@@ -357,7 +357,12 @@ def build_runtime_generation_snapshot(
 
 
 class ProductionRuntimeCoeffectProvider:
-    """Observe exact public account/session and closed adapter revisions."""
+    """Observe structural account, resource and closed-adapter revisions.
+
+    Authenticated sessions are deliberately not generation coeffects.  They
+    are transient execution dependencies and the core Broker revalidates the
+    exact bound account immediately before every account-backed invocation.
+    """
 
     def __init__(
         self,
@@ -370,7 +375,6 @@ class ProductionRuntimeCoeffectProvider:
         self._core_catalog = core_catalog
         self._handler_keys = frozenset((str(a), str(b)) for a, b in broker_handler_keys)
         self._account_manager = account_manager
-        self._sessions = AccountManagerSessionResolver(account_manager)
         self._bindings = binding_resolver
 
     @staticmethod
@@ -498,41 +502,6 @@ class ProductionRuntimeCoeffectProvider:
                     account_revision,
                     ready=accounts_ready,
                     reason_code=None if accounts_ready else "BLOCKED_CONFIG",
-                )
-            )
-            session_descriptors: list[Mapping[str, str]] = []
-            session_ready = accounts_ready
-            if accounts_ready:
-                try:
-                    session_descriptors = [
-                        self._sessions.require_authenticated(
-                            account_id=account_id,
-                            allowed_systems=[str(item) for item in allowed_systems],
-                        )
-                        for account_id in account_ids
-                    ]
-                except Exception:
-                    session_ready = False
-            results.append(
-                self._record(
-                    RuntimeCoeffectKind.SESSION,
-                    role_name,
-                    [
-                        {
-                            "binding_sha256": _digest(account_id),
-                            "system": str(descriptor.get("system") or ""),
-                            "authenticated": session_ready,
-                        }
-                        for account_id, descriptor in zip(
-                            account_ids,
-                            session_descriptors
-                            if session_ready
-                            else ({} for _ in account_ids),
-                            strict=True,
-                        )
-                    ],
-                    ready=session_ready,
-                    reason_code=None if session_ready else "BLOCKED_LOGIN",
                 )
             )
         resource_roles = descriptor.get("resource_roles")

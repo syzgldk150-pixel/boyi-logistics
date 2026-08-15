@@ -56,6 +56,7 @@ from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, FailClosed
 from agent.automation_plugins.release_config import load_production_plugin_release_config
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
 from agent.automation_plugins.storage import FilesystemPluginStorage, LockedVirtualEnvironmentBuilder
+from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tool_registry import ToolRegistry
 
 
@@ -555,6 +556,67 @@ def test_registered_core_adapter_revalidates_exact_bound_account(
     )
     assert result == {"count": 1}
     assert calls[0][0].account_ids == ("acct-1",)
+
+
+def test_registered_core_adapter_blocks_unauthenticated_bound_account(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = _uploaded_manifest(core_catalog)
+    role = manifest.account_roles[0]["role"]
+
+    class Manager:
+        @staticmethod
+        def require_authenticated_binding(account_id: str) -> dict[str, str]:
+            assert account_id == "acct-1"
+            raise TMSAuthStateError(
+                "AUTH_REQUIRED",
+                "The bound account session is unavailable.",
+            )
+
+    calls = []
+
+    async def handler(context, arguments):
+        calls.append((context, arguments))
+        return {"count": 1}
+
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers={("browser.invoke", "scan.fetch"): handler},
+        account_resolver=AccountManagerSessionResolver(Manager()),
+    )
+    issuer = LocalBrokerCapabilityIssuer(Path(".task_tmp") / "unused-broker.sock")
+    token = issuer.issue(
+        automation_id="instance-1",
+        plugin_version=manifest.version,
+        tool_name=manifest.tool_contract["name"],
+        ttl_seconds=60,
+        runtime_permissions=manifest.runtime_permissions,
+        account_roles=manifest.account_roles,
+        resource_roles=manifest.resource_roles,
+        account_bindings={role: "acct-1"},
+        resource_bindings={},
+    )
+    grant, binding = issuer.consume(
+        token,
+        request_id=str(uuid.uuid4()),
+        operation="browser.invoke",
+        action="scan.fetch",
+        role=role,
+    )
+
+    with pytest.raises(PluginExecutionError) as blocked:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="browser.invoke",
+                action="scan.fetch",
+                role=role,
+                binding=binding,
+                arguments={"query": "x"},
+            )
+        )
+
+    assert blocked.value.code == "BLOCKED_LOGIN"
+    assert calls == []
 
 
 def test_schedule_capability_is_closed() -> None:

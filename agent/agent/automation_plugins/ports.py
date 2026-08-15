@@ -498,7 +498,11 @@ class RuntimeCoeffectProviderPort(Protocol):
         self,
         snapshot: RuntimeGenerationSnapshot,
     ) -> Sequence[RuntimeCoeffectSnapshot]:
-        """Read current account/session/resource/device/adapter revisions."""
+        """Read stable account/resource/device/adapter generation revisions.
+
+        Transient authentication state is revalidated at invocation time and
+        must not decide whether an immutable runtime generation can commit.
+        """
 
 
 @runtime_checkable

@@ -1784,18 +1784,52 @@ import json
 import os
 import secrets
 import sys
+from enum import Enum
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from dotenv import dotenv_values
+class SmokeGate(str, Enum):
+    IDENTITY_CONFIGURATION = "identity_configuration"
+    HTTP_401 = "http_401"
+    HTTP_403 = "http_403"
+    HTTP_5XX = "http_5xx"
+    HTTP_OTHER = "http_other"
+    RESPONSE_CONTRACT = "response_contract"
+    SCHEDULER_STATE = "scheduler_state"
+    SCHEDULER_HOLD = "scheduler_hold"
+    RUNNER_STATE = "runner_state"
+    RUNNER_HOLD = "runner_hold"
+    RUNNER_ACTIVE = "runner_active"
+    PLUGIN_BROKER = "plugin_broker"
+    PLUGIN_CATALOG = "plugin_catalog"
+    PLUGIN_GENERATIONS = "plugin_generations"
+    PLUGIN_AGGREGATE = "plugin_aggregate"
+    WORKER = "worker"
+    BOOTSTRAP_SHAPE = "bootstrap_shape"
+    BOOTSTRAP_INCOMPLETE = "bootstrap_incomplete"
+    BOOTSTRAP_REJECTED = "bootstrap_rejected"
 
-sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
-from shared.service_identity import (
-    build_console_identity_headers,
-    validate_service_identity_secrets,
-)
+
+def http_failure_gate(status):
+    if status == 401:
+        return SmokeGate.HTTP_401
+    if status == 403:
+        return SmokeGate.HTTP_403
+    if isinstance(status, int) and 500 <= status <= 599:
+        return SmokeGate.HTTP_5XX
+    return SmokeGate.HTTP_OTHER
 
 
+failure_gate = SmokeGate.IDENTITY_CONFIGURATION
 try:
+    from dotenv import dotenv_values
+
+    sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+    from shared.service_identity import (
+        build_console_identity_headers,
+        validate_service_identity_secrets,
+    )
+
     values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
     internal_token = str(values.get("AGENT_INTERNAL_API_TOKEN") or "")
     signing_secret = str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or "")
@@ -1824,9 +1858,20 @@ try:
         headers=headers,
         method="GET",
     )
-    with urlopen(request, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if response.status != 200 or payload.get("ok") is not True:
+    failure_gate = SmokeGate.HTTP_OTHER
+    try:
+        with urlopen(request, timeout=10) as response:
+            response_status = response.status
+            response_body = response.read()
+    except HTTPError as exc:
+        failure_gate = http_failure_gate(exc.code)
+        raise
+    if response_status != 200:
+        failure_gate = http_failure_gate(response_status)
+        raise RuntimeError("signed health probe returned an unexpected status")
+    failure_gate = SmokeGate.RESPONSE_CONTRACT
+    payload = json.loads(response_body.decode("utf-8"))
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
         raise RuntimeError("signed health probe was rejected")
     data = payload.get("data")
     components = data.get("components") if isinstance(data, dict) else None
@@ -1840,21 +1885,44 @@ try:
     automation_workers = (
         components.get("automation_workers") if isinstance(components, dict) else None
     )
-    if (
-        not isinstance(scheduler, dict)
-        or scheduler.get("state") != "paused"
-        or scheduler.get("release_hold") is not True
-    ):
+    failure_gate = SmokeGate.SCHEDULER_STATE
+    if not isinstance(scheduler, dict) or scheduler.get("state") != "paused":
         raise RuntimeError("scheduler was not held for release validation")
-    if (
-        not isinstance(workflow_runner, dict)
-        or workflow_runner.get("state") != "held"
-        or workflow_runner.get("release_hold") is not True
-        or workflow_runner.get("active_runs") != 0
-    ):
+    failure_gate = SmokeGate.SCHEDULER_HOLD
+    if scheduler.get("release_hold") is not True:
+        raise RuntimeError("scheduler release marker was not active")
+    failure_gate = SmokeGate.RUNNER_STATE
+    if not isinstance(workflow_runner, dict) or workflow_runner.get("state") != "held":
         raise RuntimeError("workflow runner was not held for release validation")
-    if not isinstance(automation_plugins, dict) or automation_plugins.get("ok") is not True:
+    failure_gate = SmokeGate.RUNNER_HOLD
+    if workflow_runner.get("release_hold") is not True:
+        raise RuntimeError("workflow runner release hold was not active")
+    failure_gate = SmokeGate.RUNNER_ACTIVE
+    if workflow_runner.get("active_runs") != 0:
+        raise RuntimeError("workflow runner still had active Runs")
+    failure_gate = SmokeGate.PLUGIN_BROKER
+    if (
+        not isinstance(automation_plugins, dict)
+        or not isinstance(automation_plugins.get("broker"), dict)
+        or automation_plugins["broker"].get("state") != "running"
+    ):
+        raise RuntimeError("automation plugin broker is not release-ready")
+    failure_gate = SmokeGate.PLUGIN_CATALOG
+    if (
+        not isinstance(automation_plugins.get("catalog"), dict)
+        or automation_plugins["catalog"].get("ok") is not True
+    ):
+        raise RuntimeError("automation plugin catalog is not release-ready")
+    failure_gate = SmokeGate.PLUGIN_GENERATIONS
+    if (
+        not isinstance(automation_plugins.get("generations"), dict)
+        or automation_plugins["generations"].get("healthy") is not True
+    ):
+        raise RuntimeError("automation plugin generations are not release-ready")
+    failure_gate = SmokeGate.PLUGIN_AGGREGATE
+    if automation_plugins.get("ok") is not True:
         raise RuntimeError("automation plugin runtime is not release-ready")
+    failure_gate = SmokeGate.WORKER
     if (
         not isinstance(automation_workers, dict)
         or automation_workers.get("enabled") is not False
@@ -1868,6 +1936,7 @@ try:
         if isinstance(components, dict)
         else None
     )
+    failure_gate = SmokeGate.BOOTSTRAP_SHAPE
     if not isinstance(bootstrap, dict):
         raise RuntimeError("scheduled approval bootstrap health is missing")
     reviewed = int(bootstrap.get("reviewed_candidates", -1))
@@ -1878,12 +1947,17 @@ try:
     completed = int(bootstrap.get("completed", -1))
     if min(reviewed, created, existing, configured, rejected, completed) < 0:
         raise RuntimeError("scheduled approval bootstrap health is invalid")
+    failure_gate = SmokeGate.BOOTSTRAP_INCOMPLETE
     if completed != 1:
         raise RuntimeError("scheduled approval bootstrap one-time evaluation is incomplete")
+    failure_gate = SmokeGate.BOOTSTRAP_REJECTED
     if rejected != 0 or created + existing + configured != reviewed:
         raise RuntimeError("scheduled approval bootstrap did not preserve reviewed tasks")
 except Exception:
-    print("service_identity_smoke=failed reason=signed_probe_rejected", file=sys.stderr)
+    print(
+        f"service_identity_smoke=failed reason={failure_gate.value}",
+        file=sys.stderr,
+    )
     raise SystemExit(1)
 print("service_identity_smoke=ok")
 PY

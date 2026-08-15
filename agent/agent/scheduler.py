@@ -24,6 +24,7 @@ from shared.finance.sources import enabled_finance_platforms
 logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
 _automation_project_invoker: Any | None = None
+_include_startup_catchup_for_process = True
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
 EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS = 60
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
@@ -61,9 +62,11 @@ def init_scheduler(
     agent_core,
     *,
     automation_project_invoker: Any | None = None,
+    include_startup_catchup: bool = True,
 ) -> AsyncIOScheduler:
-    global _automation_project_invoker, _scheduler
+    global _automation_project_invoker, _include_startup_catchup_for_process, _scheduler
     _automation_project_invoker = automation_project_invoker
+    _include_startup_catchup_for_process = include_startup_catchup
     _scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     try:
         seeded = ensure_control_plane_schedule_tasks(agent_core)
@@ -78,13 +81,16 @@ def init_scheduler(
         )
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
-    try:
-        _add_finance_startup_catchup_job(
-            agent_core,
-            automation_project_invoker=automation_project_invoker,
-        )
-    except Exception as exc:
-        logger.warning("Finance startup catch-up initialization failed: %s", exc)
+    if _include_startup_catchup_for_process:
+        try:
+            _add_finance_startup_catchup_job(
+                agent_core,
+                automation_project_invoker=automation_project_invoker,
+            )
+        except Exception as exc:
+            logger.warning("Finance startup catch-up initialization failed: %s", exc)
+    else:
+        logger.info("Finance startup catch-up not registered for this held service start")
     return _scheduler
 
 
@@ -563,12 +569,6 @@ def begin_scheduler_release_activation(expected_release_sha: str) -> dict[str, A
         raise RuntimeError("Scheduler is paused without the active release hold")
 
     if scheduler.state == STATE_PAUSED:
-        startup_job = scheduler.get_job(FINANCE_STARTUP_TASK_ID)
-        if startup_job is not None:
-            startup_job.modify(
-                next_run_time=datetime.now(ZoneInfo("Asia/Shanghai"))
-                + timedelta(seconds=15)
-            )
         scheduler.resume()
     if scheduler.state != STATE_RUNNING:
         raise RuntimeError("Scheduler did not enter the running state")
@@ -622,13 +622,14 @@ def reload_scheduler(
         agent_core,
         automation_project_invoker=_automation_project_invoker,
     )
-    try:
-        _add_finance_startup_catchup_job(
-            agent_core,
-            automation_project_invoker=_automation_project_invoker,
-        )
-    except Exception as exc:
-        logger.warning("Finance startup catch-up initialization failed: %s", exc)
+    if _include_startup_catchup_for_process:
+        try:
+            _add_finance_startup_catchup_job(
+                agent_core,
+                automation_project_invoker=_automation_project_invoker,
+            )
+        except Exception as exc:
+            logger.warning("Finance startup catch-up initialization failed: %s", exc)
     jobs = _scheduler.get_jobs()
     return {
         "initialized": True,
