@@ -1069,7 +1069,9 @@ PREPARE cp018_add_resource_hash_stmt FROM @cp018_add_resource_hash_sql;
 EXECUTE cp018_add_resource_hash_stmt;
 DEALLOCATE PREPARE cp018_add_resource_hash_stmt;
 UPDATE workflow_resources
-SET config_sha256=SHA2(CAST(config_json AS CHAR CHARACTER SET utf8mb4), 256)
+SET
+    config_sha256=SHA2(CAST(config_json AS CHAR CHARACTER SET utf8mb4), 256),
+    updated_at = updated_at
 WHERE config_sha256 IS NULL;
 SET @cp018_resource_hash_nullable = (
     SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -1263,7 +1265,8 @@ SET
             ) AS CHAR CHARACTER SET utf8mb4
         ),
         256
-    )
+    ),
+    resource.updated_at = resource.updated_at
 WHERE JSON_EXTRACT(resource.config_json, '$.resource_kind') IS NULL;
 
 SET @cp018_invalid_reviewed_resource_count = (
