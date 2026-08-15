@@ -465,7 +465,7 @@ preflight_automation_project_scheduled_task_identities() {
     run_staged_migration_runner \
       --check-automation-project-scheduled-task-identities 2>&1
   )"; then
-    if [[ "${output}" =~ ^automation_project_scheduled_task_identities=ok\ state=(applied|pending)\ allowed_count=70$ ]]; then
+    if [[ "${output}" =~ ^automation_project_scheduled_task_identities=ok\ state=(applied|pending)\ allowed_count=71$ ]]; then
       echo "${output}"
       return 0
     fi

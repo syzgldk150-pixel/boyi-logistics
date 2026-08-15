@@ -21,6 +21,7 @@ INSERT INTO automation_project_reviewed_schedule_map_018 (
     ('finance_bills_0010', 'sync_finance_bills', 'finance_bills'),
     ('finance_startup_catchup', 'sync_finance_bills', 'finance_startup_catchup'),
     ('customer_problems_shadow', 'sync_customer_service_problems', 'customer_problems_shadow'),
+    ('r7_departure_checkin', 'r7_departure_checkin', 'r7_departure_checkin'),
     ('send_order_2359', 'sync_daily_send_orders', 'send_order'),
     ('delivery_status_0900', 'sync_delivery_status', 'delivery_status'),
     ('delivery_status_1000', 'sync_delivery_status', 'delivery_status'),
@@ -424,6 +425,14 @@ SET @cp018_invalid_account_shape_count = (
             ) AS customer_problem_keys
             WHERE BINARY customer_problem_keys.key_name LIKE BINARY '%account%'
         )
+        WHEN 'r7_departure_checkin' THEN NOT EXISTS (
+            SELECT 1
+            FROM JSON_TABLE(
+                JSON_KEYS(task.tool_params), '$[*]'
+                COLUMNS (key_name VARCHAR(128) PATH '$')
+            ) AS r7_departure_keys
+            WHERE BINARY r7_departure_keys.key_name LIKE BINARY '%account%'
+        )
         WHEN 'daily_sign' THEN (
             BINARY JSON_UNQUOTE(JSON_EXTRACT(task.tool_params, '$.account_id')) =
                 BINARY 'ronghui_daxiang_s'
@@ -688,6 +697,8 @@ DEALLOCATE PREPARE cp018_add_automation_index_stmt;
 
 -- Only code-reviewed identities are backfilled. Shared tools are split by exact
 -- task id; no clock suffix, display-name or "first match" inference is allowed.
+-- Explicitly retain updated_at so adding migration identity never rewrites a
+-- historical task's operational state timestamp.
 UPDATE scheduled_tasks
 SET automation_id = CASE
     WHEN BINARY id = BINARY 'clockin_daxiang_1830'
@@ -742,6 +753,9 @@ SET automation_id = CASE
         BINARY 'r7_arrival_checkin_1400', BINARY 'r7_arrival_checkin_1430',
         BINARY 'r7_arrival_checkin_1900'
     ) AND BINARY tool_name = BINARY 'r7_arrival_checkin' THEN 'r7_arrival_checkin'
+    WHEN BINARY id = BINARY 'r7_departure_checkin'
+         AND BINARY tool_name = BINARY 'r7_departure_checkin'
+         THEN 'r7_departure_checkin'
     WHEN BINARY id IN (
         BINARY 'arrive_list_0830', BINARY 'arrive_list_0900',
         BINARY 'arrive_list_0930'
@@ -753,7 +767,8 @@ SET automation_id = CASE
          AND BINARY tool_name = BINARY 'sync_yunda_send_waybills'
          THEN 'yunda_send_waybills'
     ELSE automation_id
-END
+END,
+updated_at = updated_at
 WHERE automation_id IS NULL;
 
 SET @cp018_unbound_schedule_count = (

@@ -223,7 +223,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         values_section = self.sql.split(
             "INSERT INTO automation_project_reviewed_schedule_map_018", 1
         )[1].split("ON DUPLICATE KEY UPDATE", 1)[0]
-        self.assertEqual(70, values_section.count("('"))
+        self.assertEqual(71, values_section.count("('"))
         self.assertIn(
             "('customer_problems_shadow', 'sync_customer_service_problems', "
             "'customer_problems_shadow')",
@@ -238,6 +238,11 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             "'finance_startup_catchup')",
             values_section,
         )
+        self.assertIn(
+            "('r7_departure_checkin', 'r7_departure_checkin', "
+            "'r7_departure_checkin')",
+            values_section,
+        )
         sql_identities = {
             task_id: (tool_name, automation_id)
             for task_id, tool_name, automation_id in re.findall(
@@ -248,8 +253,21 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         shared_identities = (
             self.schedule_identity_preflight.load_reviewed_schedule_identities()
         )
-        self.assertEqual(70, len(shared_identities))
+        self.assertEqual(71, len(shared_identities))
         self.assertEqual(sql_identities, shared_identities)
+        self.assertEqual(
+            ("r7_departure_checkin", "r7_departure_checkin"),
+            shared_identities["r7_departure_checkin"],
+        )
+        self.assertIn(
+            "WHEN BINARY id = BINARY 'r7_departure_checkin'",
+            self.sql,
+        )
+        self.assertIn(
+            "WHEN 'r7_departure_checkin' THEN NOT EXISTS",
+            self.sql,
+        )
+        self.assertIn("updated_at = updated_at", self.sql)
 
     def test_schedule_identity_authority_restores_complete_shared_namespace(self):
         before = {
@@ -612,6 +630,10 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                     "id": "customer_problems_shadow",
                     "tool_name": "sync_customer_service_problems",
                 },
+                {
+                    "id": "r7_departure_checkin",
+                    "tool_name": "r7_departure_checkin",
+                },
             )
         )
         connection = _ScheduleIdentityConnection(cursor)
@@ -625,7 +647,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertEqual(0, result)
         self.assertEqual(
             "automation_project_scheduled_task_identities=ok "
-            "state=pending allowed_count=70\n",
+            "state=pending allowed_count=71\n",
             output.getvalue(),
         )
         self.assertEqual("START TRANSACTION READ ONLY", cursor.calls[0][0])
@@ -660,7 +682,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertEqual(0, result)
         self.assertEqual(
             "automation_project_scheduled_task_identities=ok "
-            "state=applied allowed_count=70\n",
+            "state=applied allowed_count=71\n",
             output.getvalue(),
         )
         self.assertFalse(any("scheduled_tasks" in sql for sql, _ in cursor.calls))

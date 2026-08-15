@@ -69,6 +69,80 @@ REQUIRED_PROJECT_RESOURCE_CONFIGS = (
     ),
 )
 
+LEGACY_R7_DEPARTURE_TASK_ID = "r7_departure_checkin"
+LEGACY_R7_DEPARTURE_PARAMS = {
+    "do_departure_checkin": False,
+    "history_marker": "preserve-exactly",
+}
+LEGACY_R7_DEPARTURE_CREATED_AT = datetime(2025, 5, 6, 7, 8, 9)
+LEGACY_R7_DEPARTURE_UPDATED_AT = datetime(2025, 6, 7, 8, 9, 10)
+LEGACY_R7_DEPARTURE_LAST_RUN = datetime(2025, 6, 6, 21, 35, 11)
+
+
+def seed_legacy_r7_departure_task(case, database: str) -> None:
+    """Seed the exact deferred historical identity without enabling it."""
+
+    with case._connection(database, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO scheduled_tasks (
+                    id, name, tool_name, tool_params, cron_expression, enabled,
+                    last_run, last_status, last_duration_ms, last_message,
+                    created_at, configuration_version, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    LEGACY_R7_DEPARTURE_TASK_ID,
+                    "Integration deferred R7 departure history",
+                    "r7_departure_checkin",
+                    json.dumps(LEGACY_R7_DEPARTURE_PARAMS, separators=(",", ":")),
+                    "5 21 * * *",
+                    LEGACY_R7_DEPARTURE_LAST_RUN,
+                    "FAILED",
+                    9876,
+                    "integration-r7-history",
+                    LEGACY_R7_DEPARTURE_CREATED_AT,
+                    7,
+                    LEGACY_R7_DEPARTURE_UPDATED_AT,
+                ),
+            )
+
+
+def assert_legacy_r7_departure_state(case, row) -> None:
+    """Assert migration added no executable or operational state changes."""
+
+    case.assertIsNotNone(row)
+    case.assertEqual(row["id"], LEGACY_R7_DEPARTURE_TASK_ID)
+    case.assertEqual(row["name"], "Integration deferred R7 departure history")
+    case.assertEqual(row["tool_name"], "r7_departure_checkin")
+    case.assertEqual(json.loads(row["tool_params"]), LEGACY_R7_DEPARTURE_PARAMS)
+    case.assertEqual(row["cron_expression"], "5 21 * * *")
+    case.assertEqual(row["enabled"], 0)
+    case.assertEqual(row["last_run"], LEGACY_R7_DEPARTURE_LAST_RUN)
+    case.assertEqual(row["last_status"], "FAILED")
+    case.assertEqual(row["last_duration_ms"], 9876)
+    case.assertEqual(row["last_message"], "integration-r7-history")
+    case.assertEqual(row["created_at"], LEGACY_R7_DEPARTURE_CREATED_AT)
+    case.assertEqual(row["configuration_version"], 7)
+    case.assertEqual(row["updated_at"], LEGACY_R7_DEPARTURE_UPDATED_AT)
+
+
+def select_legacy_r7_departure_task(cursor, *, include_identity: bool):
+    identity_columns = ", automation_id, automation_generation" if include_identity else ""
+    cursor.execute(
+        f"""
+        SELECT
+            id, name, tool_name, tool_params, cron_expression, enabled,
+            last_run, last_status, last_duration_ms, last_message,
+            created_at, configuration_version, updated_at{identity_columns}
+        FROM scheduled_tasks
+        WHERE BINARY id = BINARY %s
+        """,
+        (LEGACY_R7_DEPARTURE_TASK_ID,),
+    )
+    return cursor.fetchone()
+
 
 def seed_required_project_resources(case, database: str) -> None:
     """Seed only the eight external resources migration 018 must not invent."""
@@ -131,6 +205,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
     }
     original_created_at = datetime(2025, 1, 2, 3, 4, 5)
     original_updated_at = datetime(2025, 2, 3, 4, 5, 6)
+    seed_legacy_r7_departure_task(case, database)
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.executemany(
@@ -153,6 +228,16 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
     case._run_migrations(database)
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
+            migrated_r7 = select_legacy_r7_departure_task(
+                cursor,
+                include_identity=True,
+            )
+            assert_legacy_r7_departure_state(case, migrated_r7)
+            case.assertEqual(
+                migrated_r7["automation_id"],
+                LEGACY_R7_DEPARTURE_TASK_ID,
+            )
+            case.assertEqual(migrated_r7["automation_generation"], 1)
             cursor.execute(
                 f"""
                 SELECT
@@ -519,6 +604,11 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
         case.assertEqual(0, case.runner.restore_automation_project_authorization())
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
+            restored_r7 = select_legacy_r7_departure_task(
+                cursor,
+                include_identity=False,
+            )
+            assert_legacy_r7_departure_state(case, restored_r7)
             cursor.execute(
                 "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
                 "WHERE TABLE_SCHEMA=%s AND TABLE_NAME='scheduled_tasks' "
@@ -575,6 +665,16 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
     case._run_migrations(database)
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
+            reapplied_r7 = select_legacy_r7_departure_task(
+                cursor,
+                include_identity=True,
+            )
+            assert_legacy_r7_departure_state(case, reapplied_r7)
+            case.assertEqual(
+                reapplied_r7["automation_id"],
+                LEGACY_R7_DEPARTURE_TASK_ID,
+            )
+            case.assertEqual(reapplied_r7["automation_generation"], 1)
             cursor.execute(
                 "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
                 "WHERE TABLE_SCHEMA=%s AND TABLE_NAME='scheduled_tasks' "
@@ -595,6 +695,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
 
 def run_test_automation_project_018_partial_rerun_is_safe(case):
     partial_database = case.project_authorization_partial_database
+    seed_legacy_r7_departure_task(case, partial_database)
     legacy_pending_key = "phase7.pending_arrivals_sheet"
     legacy_pending_config = {
         "spreadsheet_token": "integration-legacy-pending",
@@ -639,6 +740,23 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 (partial_database,),
             )
             case.assertEqual(cursor.fetchone()["n"], 0)
+            # Simulate the exact autocommitted 70-row map left by the previous
+            # release candidate. The corrected rerun must add only the missing
+            # deferred historical identity.
+            cursor.execute(
+                """
+                DELETE FROM automation_project_reviewed_schedule_map_018
+                WHERE BINARY task_id = BINARY %s
+                """,
+                (LEGACY_R7_DEPARTURE_TASK_ID,),
+            )
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM automation_project_reviewed_schedule_map_018
+                """
+            )
+            case.assertEqual(cursor.fetchone()["n"], 70)
             # Simulate the first release candidate's autocommitted 15-row map
             # after its required-resource preflight failed.
             cursor.execute(
@@ -720,6 +838,9 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 """
                 SELECT
                     (SELECT COUNT(*)
+                     FROM automation_project_reviewed_schedule_map_018)
+                        AS schedule_map_count,
+                    (SELECT COUNT(*)
                      FROM automation_project_reviewed_resource_map_018)
                         AS map_count,
                     (SELECT COUNT(*)
@@ -728,6 +849,7 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 """
             )
             partial_counts = cursor.fetchone()
+            case.assertEqual(partial_counts["schedule_map_count"], 71)
             case.assertEqual(partial_counts["map_count"], 15)
             case.assertEqual(partial_counts["backup_count"], 15)
     case._run_migrations(partial_database)
@@ -743,6 +865,9 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
             cursor.execute(
                 """
                 SELECT
+                    (SELECT COUNT(*)
+                     FROM automation_project_reviewed_schedule_map_018)
+                        AS schedule_map_count,
                     (SELECT COUNT(*)
                      FROM automation_project_reviewed_resource_map_018)
                         AS map_count,
@@ -763,15 +888,31 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 (legacy_pending_key, legacy_pending_key),
             )
             rerun_counts = cursor.fetchone()
+            case.assertEqual(rerun_counts["schedule_map_count"], 71)
             case.assertEqual(rerun_counts["map_count"], 14)
             case.assertEqual(rerun_counts["obsolete_map_count"], 0)
             case.assertEqual(rerun_counts["backup_count"], 15)
             case.assertEqual(rerun_counts["legacy_backup_count"], 1)
+            migrated_r7 = select_legacy_r7_departure_task(
+                cursor,
+                include_identity=True,
+            )
+            assert_legacy_r7_departure_state(case, migrated_r7)
+            case.assertEqual(
+                migrated_r7["automation_id"],
+                LEGACY_R7_DEPARTURE_TASK_ID,
+            )
+            case.assertEqual(migrated_r7["automation_generation"], 1)
 
     with patch.dict(os.environ, case._environment(partial_database), clear=False):
         case.assertEqual(0, case.runner.restore_automation_project_authorization())
     with case._connection(partial_database, autocommit=True) as connection:
         with connection.cursor() as cursor:
+            restored_r7 = select_legacy_r7_departure_task(
+                cursor,
+                include_identity=False,
+            )
+            assert_legacy_r7_departure_state(case, restored_r7)
             cursor.execute(
                 """
                 SELECT config_json, source, updated_at, created_at
