@@ -353,6 +353,20 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index("preflight_service_identity_configuration"),
             execution.index("backup_managed_sources"),
         )
+        self.assertIn(
+            "--check-automation-project-required-resources",
+            release,
+        )
+        self.assertLess(
+            execution.index(
+                'RELEASE_STAGE="preflight_automation_project_required_resources"'
+            ),
+            execution.index("backup_managed_sources"),
+        )
+        self.assertLess(
+            execution.index("preflight_automation_project_required_resources\n"),
+            execution.index("MUTATION_STARTED=1"),
+        )
         self.assertIn("WINDOWS_WORKER_RELEASE_ENABLED=0", release)
         self.assertIn("preflight_worker_mtls_proxy", worker_scope_guard)
         self.assertIn('echo "windows_worker_release_scope=disabled"', worker_scope_guard)
@@ -785,6 +799,69 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertIn("states=0,1,1,1,1", completed.stdout)
+
+    def test_required_resource_preflight_accepts_only_exact_success(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              [[ "$1" == "--check-automation-project-required-resources" ]] || return 92
+              echo 'automation_project_required_resources=ok count=9'
+            }
+            preflight_automation_project_required_resources
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "automation_project_required_resources=ok count=9\n",
+            completed.stdout,
+        )
+
+    def test_required_resource_preflight_preserves_safe_failure_details(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              echo 'automation_project_required_resources=blocked count=2'
+              echo 'automation_project_required_resource=phase7.site_send_sheet reason=MISSING_FIELD field=range'
+              echo 'automation_project_required_resource=phase7.pending_arrivals_sheet reason=MISSING_ROW field=resource_key'
+              return 1
+            }
+            preflight_automation_project_required_resources
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual("", completed.stdout)
+        self.assertIn(
+            "automation_project_required_resource=phase7.site_send_sheet "
+            "reason=MISSING_FIELD field=range",
+            completed.stderr,
+        )
+        self.assertIn(
+            "automation_project_required_resource=phase7.pending_arrivals_sheet "
+            "reason=MISSING_ROW field=resource_key",
+            completed.stderr,
+        )
+
+    def test_required_resource_preflight_suppresses_untrusted_failure_output(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              echo 'password=must-not-be-printed'
+              return 1
+            }
+            preflight_automation_project_required_resources
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertNotIn("must-not-be-printed", completed.stdout)
+        self.assertNotIn("must-not-be-printed", completed.stderr)
+        self.assertIn(
+            "automation_project_required_resources=blocked "
+            "reason=UNEXPECTED_PREFLIGHT_RESPONSE",
+            completed.stderr,
+        )
 
     def test_release_rejects_dirty_contract_upgrade_before_mutation(self):
         completed = _run_sourced_release_harness(

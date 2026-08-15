@@ -457,6 +457,48 @@ run_staged_migration_runner() {
   MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" "$@"
 }
 
+preflight_automation_project_required_resources() {
+  local output expected_count
+  local -a lines=()
+
+  if output="$(
+    run_staged_migration_runner \
+      --check-automation-project-required-resources 2>&1
+  )"; then
+    if [[ "${output}" == "automation_project_required_resources=ok count=9" ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+    return 1
+  fi
+
+  mapfile -t lines <<<"${output}"
+  if [[ "${#lines[@]}" -lt 2 ]]; then
+    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+    return 1
+  fi
+  if [[ "${lines[0]}" =~ ^automation_project_required_resources=blocked\ count=([1-9][0-9]*)$ ]]; then
+    expected_count="${BASH_REMATCH[1]}"
+  else
+    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+    return 1
+  fi
+  if (( ${#lines[@]} - 1 != expected_count )); then
+    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+    return 1
+  fi
+  local line
+  for line in "${lines[@]:1}"; do
+    if [[ ! "${line}" =~ ^automation_project_required_resource=phase7\.[a-z0-9_]+\ reason=(MISSING_ROW|INVALID_KIND|MISSING_FIELD|INVALID_FIELD_TYPE|EMPTY_FIELD)\ field=[a-z0-9_]+$ ]]; then
+      echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+      return 1
+    fi
+  done
+  printf '%s\n' "${lines[@]}" >&2
+  return 1
+}
+
 preflight_running_protected_writes() {
   local output
   if output="$(run_staged_migration_runner --check-running-protected-writes 2>&1)"; then
@@ -1935,6 +1977,8 @@ run_release() {
   preflight_service_identity_configuration
   RELEASE_STAGE="preflight_control_plane_task_cutover"
   preflight_control_plane_task_cutover
+  RELEASE_STAGE="preflight_automation_project_required_resources"
+  preflight_automation_project_required_resources
   RELEASE_STAGE="preflight_scheduled_write_window"
   preflight_scheduled_write_window
   RELEASE_STAGE="backup_managed_sources"
