@@ -24,26 +24,13 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
             scheduled_task_count=1,
             enabled_task_count=0,
             automation_db_warning="",
+            automation_account_warning="",
             automation_approval_policy_warning="",
+            automation_plugin_warning="",
+            automation_plugin_packages=[],
+            unsupported_automation_ids=[],
+            can_manage_plugins=True,
             can_manage_approval_policies=True,
-            tms_session_status={
-                "status": "logged_out",
-                "label": "未登录",
-                "status_tone": "neutral",
-                "last_validation_at": "",
-                "last_error_summary": "",
-                "authenticated_at": "",
-                "pending_since": "",
-                "expires_at": "",
-                "has_saved_credentials": False,
-            },
-            tms_session_credentials={
-                "username": "",
-                "password": "",
-                "phone": "",
-                "updated_at": "",
-                "has_saved_credentials": False,
-            },
         )
 
     def test_template_renders_single_run_toggle_control(self):
@@ -153,6 +140,7 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
                 "webhook_body_json": "{}",
                 "can_save": False,
                 "can_run_now": False,
+                "plugin_blocked": True,
                 "control_plane_only": True,
                 "control_plane_notice": (
                     "代码锁定的既有自动打卡任务；"
@@ -160,39 +148,14 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
                 ),
                 "approval_policy": {
                     "available": True,
-                    "task_ids": ["clockin_daxiang_s_1833"],
-                    "item_count": 1,
-                    "items": [
-                        {
-                            "task_id": "clockin_daxiang_s_1833",
-                            "schedule_label": "每天 18:33",
-                            "mode": "EXACT_SCHEDULE_EXEMPT",
-                            "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                            "effective_mode": "EXACT_SCHEDULE_EXEMPT",
-                            "effective_status": "ACTIVE",
-                            "can_exempt": True,
-                            "version": 3,
-                            "configuration_version": 7,
-                            "policy_hash_short": "ab12cd34",
-                            "approved_by": "系统管理员",
-                            "approved_at": "2026-08-14 12:00:00",
-                            "invalid_reason": "",
-                        }
-                    ],
-                    "mode": "EXACT_SCHEDULE_EXEMPT",
-                    "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_mode": "EXACT_SCHEDULE_EXEMPT",
+                    "configured_mode": "REQUIRE_EACH_RUN",
+                    "effective_mode": "REQUIRE_EACH_RUN",
                     "effective_status": "ACTIVE",
-                    "label": "固定计划自动执行",
-                    "summary": "仅 Scheduler 定时触发可免审；手工运行仍需审批。",
-                    "can_exempt": True,
-                    "mixed": False,
-                    "expected_versions": {"clockin_daxiang_s_1833": 3},
-                    "expected_configuration_versions": {"clockin_daxiang_s_1833": 7},
-                    "policy_hash_short": "ab12cd34",
-                    "approved_by": "系统管理员",
-                    "approved_at": "2026-08-14 12:00:00",
-                    "invalid_reason": "",
+                    "label": "每次运行审批",
+                    "summary": "项目已启用的全部可信入口每次运行都需要审批。",
+                    "can_full_auto": True,
+                    "policy_version": 3,
+                    "project_configuration_version": 7,
                 },
             }
         )
@@ -204,10 +167,11 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertNotIn("data-schedule-stack", task_html)
         self.assertIn("任务配置只读，但审批策略可以单独设置", task_html)
         self.assertIn("当前任务：已启用", task_html)
-        self.assertIn("固定计划自动执行", task_html)
         self.assertIn("每次运行审批", task_html)
-        self.assertIn("保存审批策略", task_html)
-        self.assertIn("手工运行仍需审批", task_html)
+        self.assertIn("保存权限", task_html)
+        self.assertIn("全部可信入口每次运行都需要审批", task_html)
+        self.assertNotIn("EXACT_SCHEDULE_EXEMPT", task_html)
+        self.assertNotIn("policy_hash", task_html)
 
     def test_missing_required_resources_render_resource_editor(self):
         html = self._render(

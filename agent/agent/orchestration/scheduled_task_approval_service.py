@@ -59,6 +59,10 @@ PROTECTED_CREDENTIAL_OPERATIONS = frozenset(
         OperationType.DESTRUCTIVE.value,
     }
 )
+PROJECT_CREDENTIAL_CHANGE_REASON = "ACCOUNT_CREDENTIAL_CHANGED"
+PROJECT_CREDENTIAL_CHANGE_COMMENT = (
+    "Project full-auto authorization revoked before bound credentials changed"
+)
 
 
 class ScheduledTaskApprovalService:
@@ -70,6 +74,7 @@ class ScheduledTaskApprovalService:
         enabled_finance_platforms: Sequence[str] = (),
         active_account_ids_provider: Callable[[], Sequence[str]] | None = None,
         implicit_account_ids_by_tool: Mapping[str, Sequence[str]] | None = None,
+        bootstrap_allowed_tool_names: Sequence[str] | None = None,
     ) -> None:
         self._repository = repository
         self._catalog = catalog
@@ -78,6 +83,17 @@ class ScheduledTaskApprovalService:
         self._implicit_account_ids_by_tool = _normalize_implicit_account_ids(
             implicit_account_ids_by_tool
         )
+        self._bootstrap_allowed_tool_names = (
+            None
+            if bootstrap_allowed_tool_names is None
+            else frozenset(
+                str(item or "").strip()
+                for item in bootstrap_allowed_tool_names
+                if str(item or "").strip()
+            )
+        )
+        if self._bootstrap_allowed_tool_names == frozenset():
+            raise ValueError("bootstrap allowed tool names cannot be empty")
         self._credential_policy_lock = threading.RLock()
         self._credential_changes_in_progress: dict[str, int] = {}
 
@@ -380,6 +396,75 @@ class ScheduledTaskApprovalService:
                         occurred_at=now,
                     )
                     revoked_task_ids.append(task_id)
+                project_rows = uow.automation_projects.list_account_binding_policy_rows(
+                    for_update=True
+                )
+                affected_projects = [
+                    row
+                    for row in project_rows
+                    if str(row.get("mode") or "") == "PROJECT_FULL_AUTO"
+                    and safe_account_id
+                    in _collect_project_account_binding_ids(
+                        row.get("account_bindings_json")
+                    )
+                ]
+                for row in affected_projects:
+                    automation_id = str(row.get("automation_id") or "").strip()
+                    event_request_id = f"{request_id}:{automation_id}"
+                    updated = uow.automation_projects.update_policy(
+                        automation_id,
+                        expected_version=int(row.get("version") or 0),
+                        mode="REQUIRE_EACH_RUN",
+                        contract_hash=None,
+                        contract_snapshot=None,
+                        tool_contract_hash=None,
+                        plugin_contract_hash=None,
+                        project_generation=int(
+                            row.get("project_generation") or 0
+                        ),
+                        project_configuration_version=int(
+                            row.get("project_configuration_version") or 0
+                        ),
+                        actor_id=ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+                        actor_role="system",
+                        actor_display_name="Account credential safety guard",
+                        comment=PROJECT_CREDENTIAL_CHANGE_COMMENT,
+                    )
+                    uow.automation_projects.append_event(
+                        {
+                            "automation_id": automation_id,
+                            "request_id": event_request_id,
+                            "from_mode": "PROJECT_FULL_AUTO",
+                            "to_mode": "REQUIRE_EACH_RUN",
+                            "contract_hash": None,
+                            "contract_snapshot_json": None,
+                            "tool_contract_hash": None,
+                            "plugin_contract_hash": None,
+                            "project_generation": int(
+                                row.get("project_generation") or 0
+                            ),
+                            "project_configuration_version": int(
+                                row.get("project_configuration_version") or 0
+                            ),
+                            "actor_id": ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+                            "actor_role": "system",
+                            "actor_display_name": "Account credential safety guard",
+                            "reason": PROJECT_CREDENTIAL_CHANGE_REASON,
+                            "comment": PROJECT_CREDENTIAL_CHANGE_COMMENT,
+                            "occurred_at": now,
+                            "correlation_id": correlation_id,
+                        }
+                    )
+                    self._append_project_domain_event(
+                        uow,
+                        automation_id=automation_id,
+                        request_id=event_request_id,
+                        correlation_id=correlation_id,
+                        mode="REQUIRE_EACH_RUN",
+                        version=int(updated["version"]),
+                        actor_id=ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
+                        occurred_at=now,
+                    )
                 uow.commit()
         except ConcurrentUpdateError as exc:
             raise OrchestrationError(
@@ -426,7 +511,57 @@ class ScheduledTaskApprovalService:
         account_ids.update(
             self._implicit_account_ids_by_tool.get(str(tool_name or "").strip(), ())
         )
+        account_ids.update(self._project_account_ids_for_tool(tool_name))
         return account_ids
+
+    def _project_account_ids_for_tool(self, tool_name: str) -> set[str]:
+        """Resolve plugin accounts from the immutable committed generation.
+
+        Plugin payload arguments deliberately contain no business-account IDs.
+        The core capability is therefore the only safe source for the account
+        execution lock and the credential-change active-Run scan.
+        """
+
+        safe_tool_name = str(tool_name or "").strip()
+        prefix = "automation."
+        suffix = ".run"
+        if not safe_tool_name.startswith(prefix) or not safe_tool_name.endswith(suffix):
+            return set()
+        automation_id = safe_tool_name[len(prefix) : -len(suffix)].strip()
+        if not automation_id:
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                "A protected project execution has an invalid tool identity",
+            )
+        try:
+            capability = self._catalog.get_capability(safe_tool_name)
+        except Exception as exc:
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                "Project account bindings could not be loaded from the committed generation",
+            ) from exc
+        runtime = (
+            capability.get("_plugin_runtime")
+            if isinstance(capability, Mapping)
+            else None
+        )
+        if (
+            not isinstance(runtime, Mapping)
+            or str(runtime.get("automation_id") or "").strip() != automation_id
+        ):
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                "Project account bindings do not match the committed generation",
+            )
+        try:
+            return _collect_project_account_binding_ids(
+                runtime.get("account_bindings")
+            )
+        except OrchestrationError as exc:
+            raise OrchestrationError(
+                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
+                "Project account bindings are invalid in the committed generation",
+            ) from exc
 
     def _reject_exact_grant_during_credentials_change(
         self,
@@ -643,6 +778,8 @@ class ScheduledTaskApprovalService:
         reviewed_task_ids = {
             task_id
             for profile in APPROVED_SCHEDULED_TASK_PROFILES.values()
+            if self._bootstrap_allowed_tool_names is None
+            or profile.tool_name in self._bootstrap_allowed_tool_names
             for task_id in profile.approved_task_ids
         }
         for row in rows:
@@ -993,6 +1130,48 @@ class ScheduledTaskApprovalService:
             ),
         )
 
+    @staticmethod
+    def _append_project_domain_event(
+        uow: Any,
+        *,
+        automation_id: str,
+        request_id: str,
+        correlation_id: str,
+        mode: str,
+        version: int,
+        actor_id: str,
+        occurred_at: datetime,
+    ) -> None:
+        uow.events.append_with_outbox(
+            {
+                "event_id": new_id(),
+                "event_type": "automation_project.approval_policy_changed",
+                "schema_version": 1,
+                "source_system": "agent",
+                "source_event_id": f"{automation_id}:{request_id}",
+                "entity_type": "automation_project",
+                "entity_id": automation_id,
+                "occurred_at": occurred_at,
+                "observed_at": occurred_at,
+                "correlation_id": correlation_id,
+                "payload": {
+                    "automation_id": automation_id,
+                    "mode": mode,
+                    "policy_version": version,
+                    "actor_id": actor_id,
+                    "reason": PROJECT_CREDENTIAL_CHANGE_REASON,
+                },
+            },
+            (
+                {
+                    "consumer_name": "orchestration.audit",
+                    "topic": "automation_project.approval_policy_changed",
+                    "partition_key": automation_id,
+                    "max_attempts": 10,
+                },
+            ),
+        )
+
 
 def _datetime_text(value: Any) -> str | None:
     if value is None:
@@ -1020,6 +1199,8 @@ def _profile_for_task_id(task_id: str):
 def _runtime_dynamic_rules(tool_name: str) -> dict[str, str]:
     if tool_name == "sync_finance_bills":
         return {"target_date": "scheduled_previous_day"}
+    if tool_name == "sync_site_send_list":
+        return {"target_date": "current_business_day"}
     return {}
 
 
@@ -1072,4 +1253,51 @@ def _collect_account_ids(value: Any, *, key: str = "") -> set[str]:
     elif isinstance(value, list):
         for item in value:
             result.update(_collect_account_ids(item, key=key))
+    return result
+
+
+def _collect_project_account_binding_ids(value: Any) -> set[str]:
+    """Collect every account-pool ID from the closed role binding structure."""
+
+    if not isinstance(value, Mapping):
+        raise OrchestrationError(
+            "ACCOUNT_POLICY_REVOCATION_FAILED",
+            "A project has invalid persisted account bindings",
+        )
+    result: set[str] = set()
+    for role, binding in value.items():
+        if not str(role or "").strip():
+            raise OrchestrationError(
+                "ACCOUNT_POLICY_REVOCATION_FAILED",
+                "A project account binding has an empty role",
+            )
+        if isinstance(binding, str):
+            account_id = binding.strip()
+            if not account_id:
+                raise OrchestrationError(
+                    "ACCOUNT_POLICY_REVOCATION_FAILED",
+                    "A project account binding is empty",
+                )
+            result.add(account_id)
+            continue
+        if isinstance(binding, list):
+            if not binding or any(
+                not isinstance(item, str) or not item.strip() for item in binding
+            ):
+                raise OrchestrationError(
+                    "ACCOUNT_POLICY_REVOCATION_FAILED",
+                    "A project collection account binding is invalid",
+                )
+            account_ids = [item.strip() for item in binding]
+            if len(account_ids) != len(set(account_ids)):
+                raise OrchestrationError(
+                    "ACCOUNT_POLICY_REVOCATION_FAILED",
+                    "A project collection account binding contains duplicates",
+                )
+            result.update(account_ids)
+            continue
+        raise OrchestrationError(
+            "ACCOUNT_POLICY_REVOCATION_FAILED",
+            "A project account binding has an unsupported value",
+        )
     return result

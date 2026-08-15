@@ -5,13 +5,18 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
+from shared.runtime_repositories import (
+    ScheduledTaskRepository,
+    WaybillRepository,
+    WorkflowResourceRepository,
+)
 
 
 class _Cursor:
     def __init__(self, rows=None, row=None):
         self.rows = list(rows or [])
         self.row = row
+        self.rowcount = 0
         self.calls = []
 
     def execute(self, sql, params=None):
@@ -40,6 +45,57 @@ class _Connection:
 
 
 class RuntimeRepositoryTests(unittest.TestCase):
+    def test_waybill_list_by_numbers_uses_bounded_binary_exact_read(self):
+        cursor = _Cursor(
+            rows=[
+                {"id": 1, "waybill_no": "WB-1"},
+                {"id": 2, "waybill_no": "WB-1"},
+                {"id": 3, "waybill_no": "wb-2"},
+            ]
+        )
+        connection = _Connection(cursor)
+        repository = WaybillRepository(lambda: connection)
+
+        rows = repository.list_by_numbers(["WB-1", "wb-2"])
+
+        self.assertEqual(["WB-1", "WB-1", "wb-2"], [row["waybill_no"] for row in rows])
+        sql, params = cursor.calls[0]
+        self.assertIn("WHERE BINARY waybill_no IN (%s, %s)", sql)
+        self.assertIn("ORDER BY BINARY waybill_no, id", sql)
+        self.assertEqual(["WB-1", "wb-2"], params)
+        self.assertNotIn("LIMIT 1", sql)
+        self.assertTrue(connection.closed)
+
+    def test_waybill_list_by_numbers_rejects_invalid_identity_sets(self):
+        repository = WaybillRepository(lambda: _Connection(_Cursor()))
+
+        for identities in ([], [""], ["WB-1", "WB-1"]):
+            with self.subTest(identities=identities), self.assertRaises(ValueError):
+                repository.list_by_numbers(identities)
+
+    def test_waybill_list_by_numbers_rejects_database_extra_identity(self):
+        cursor = _Cursor(rows=[{"id": 1, "waybill_no": "WB-EXTRA"}])
+        repository = WaybillRepository(lambda: _Connection(cursor))
+
+        with self.assertRaisesRegex(RuntimeError, "extra identity"):
+            repository.list_by_numbers(["WB-1"])
+
+    def test_waybill_status_update_uses_binary_exact_identity_match(self):
+        cursor = _Cursor()
+        cursor.rowcount = 1
+        repository = WaybillRepository(lambda: _Connection(cursor))
+
+        result = repository.update_statuses(
+            ["WB-1"],
+            "signed",
+            validate_schema=False,
+        )
+
+        sql, params = cursor.calls[0]
+        self.assertIn("WHERE BINARY waybill_no IN (%s)", sql)
+        self.assertEqual(["signed", "WB-1"], params)
+        self.assertEqual(1, result["updated"])
+
     def test_scheduled_task_list_decodes_json_and_formats_timestamps(self):
         cursor = _Cursor(
             rows=[
@@ -78,6 +134,9 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "resource_key": "phase7.source",
                 "config_json": '{"table_id":"tbl"}',
                 "source": "manual",
+                "configuration_version": 4,
+                "config_sha256": "a" * 64,
+                "computed_config_sha256": "a" * 64,
                 "updated_at": datetime(2026, 8, 8, 1, 0, 0),
                 "created_at": datetime(2026, 8, 1, 1, 0, 0),
             }
@@ -87,8 +146,26 @@ class RuntimeRepositoryTests(unittest.TestCase):
         row = repository.get_record("phase7.source")
 
         self.assertEqual({"table_id": "tbl"}, row["config"])
+        self.assertEqual(4, row["configuration_version"])
         self.assertEqual("2026-08-08 01:00:00", row["updated_at"])
         self.assertEqual(("phase7.source",), cursor.calls[0][1])
+
+    def test_workflow_resource_upsert_bumps_revision_only_for_changed_state(self):
+        cursor = _Cursor()
+        repository = WorkflowResourceRepository(lambda: _Connection(cursor))
+
+        repository.upsert(
+            "phase7.scan_webhook",
+            {"resource_kind": "webhook_route", "path": "webhook/phase7/scan"},
+            source="migration",
+        )
+
+        sql, params = cursor.calls[0]
+        self.assertIn("configuration_version = configuration_version + IF", sql)
+        self.assertIn("config_sha256 = SHA2", sql)
+        self.assertEqual("phase7.scan_webhook", params[0])
+        self.assertEqual(params[1], params[2])
+        self.assertEqual("migration", params[3])
 
     def test_scheduled_task_group_write_uses_one_connection(self):
         cursor = _Cursor()
@@ -160,6 +237,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "015",
                 "016",
                 "017",
+                "018",
             ],
             [version for version, _ in migrations],
         )

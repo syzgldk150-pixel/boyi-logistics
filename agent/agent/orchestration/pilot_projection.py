@@ -6,8 +6,11 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Any
 
+from agent.automation_plugins.first_party_handlers import customer_problem_identity
+from agent.automation_plugins.models import GenerationVerificationContext
 from agent.orchestration.models import (
     Command,
     OrchestrationError,
@@ -35,6 +38,7 @@ OPEN_ITEM_STATUSES = frozenset(
         WorkItemStatus.BLOCKED_DATA.value,
     }
 )
+_OPAQUE_CUSTOMER_PROBLEM_RE = re.compile(r"^problem:v1:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,7 @@ class PilotProjectionService:
         step: PlanStep,
         command: Command,
         result: ToolResult,
+        generation_verification: GenerationVerificationContext | None = None,
     ) -> ProjectionOutcome | None:
         if step.tool_name == DAILY_SIGN_TOOL:
             return self._project_daily_sign(
@@ -149,6 +154,7 @@ class PilotProjectionService:
                 step_row=step_row,
                 command=command,
                 result=result,
+                generation_verification=generation_verification,
             )
         return None
 
@@ -370,12 +376,22 @@ class PilotProjectionService:
         step_row: Mapping[str, Any],
         command: Command,
         result: ToolResult,
+        generation_verification: GenerationVerificationContext | None,
     ) -> ProjectionOutcome:
         if result.meta.get("pagination_complete") is not True:
             raise OrchestrationError(
                 "PAGINATION_INCOMPLETE",
                 "客服问题件未证明全部账号、全部方向和全部分页完整。",
                 details={"status": "BLOCKED_DATA"},
+            )
+        if generation_verification is not None:
+            return self._project_customer_problems_plugin(
+                uow=uow,
+                run=run,
+                step_row=step_row,
+                command=command,
+                result=result,
+                verification=generation_verification,
             )
         if str(result.meta.get("account_id") or "") != "all_configured":
             raise OrchestrationError(
@@ -622,6 +638,281 @@ class PilotProjectionService:
                 data.get("legacy_source_complete") is True
                 and not incomplete_sources
             ),
+            incomplete_sources=incomplete_sources,
+        )
+        self._persist_shadow_evidence(
+            uow,
+            run=run,
+            step_row=step_row,
+            command=command,
+            observed_at=observed_at,
+            outcome=outcome,
+            source_run_id=None,
+        )
+        return outcome
+
+    def _project_customer_problems_plugin(
+        self,
+        *,
+        uow: Any,
+        run: Mapping[str, Any],
+        step_row: Mapping[str, Any],
+        command: Command,
+        result: ToolResult,
+        verification: GenerationVerificationContext,
+    ) -> ProjectionOutcome:
+        verification = _validated_customer_generation(result, verification)
+        data = result.data
+        records = _mapping_list(data.get("records"), "records")
+        open_rows, resolved_rows = _split_plugin_customer_rows(records)
+        detail_rechecks = _opaque_detail_recheck_map(data.get("rechecks", []), verification)
+        collection_evidence = data.get("evidence")
+        if (
+            not isinstance(collection_evidence, Mapping)
+            or collection_evidence.get("configured_accounts_queried") is not True
+            or collection_evidence.get("pagination_complete") is not True
+        ):
+            raise OrchestrationError(
+                "CUSTOMER_COLLECTION_PROOF_INVALID",
+                "Signed customer collection did not prove its complete bound account set.",
+                details={"status": "BLOCKED_DATA"},
+            )
+
+        observed_at = _parse_datetime(result.meta.get("observed_at"))
+        existing = {
+            str(item["dedupe_key"]): item
+            for item in uow.work_items.list_by_type(CUSTOMER_PROBLEM_ITEM_TYPE, for_update=True)
+        }
+        existing_aliases = _customer_existing_aliases(existing)
+        seen_aliases: set[str] = set()
+        candidate_keys: set[str] = set()
+
+        for row, is_open in (
+            *((item, True) for item in open_rows),
+            *((item, False) for item in resolved_rows),
+        ):
+            identity = _opaque_problem_identity(row, verification)
+            source_key = identity["dedupe_key"]
+            if source_key in seen_aliases:
+                raise OrchestrationError(
+                    "DUPLICATE_PROBLEM_IDENTITY",
+                    f"Customer problem identity was returned more than once: {source_key}",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            seen_aliases.add(source_key)
+            existing_item = existing_aliases.get(source_key)
+            persisted_key = (
+                str(existing_item["dedupe_key"])
+                if existing_item is not None
+                else source_key
+            )
+            desired = WorkItemStatus.OPEN if is_open else WorkItemStatus.RESOLVED
+            reason_code = None if is_open else "PROBLEM_EXPLICITLY_RESOLVED"
+            reason_summary = None if is_open else "Source returned an explicit reply or terminal status."
+            if is_open:
+                candidate_keys.add(source_key)
+
+            if existing_item is None:
+                item = uow.work_items.create_or_get(
+                    {
+                        "work_item_id": new_id(),
+                        "command_id": command.command_id,
+                        "type": CUSTOMER_PROBLEM_ITEM_TYPE,
+                        "title": f"Customer problem: {identity['external_id']}",
+                        "status": desired.value,
+                        "priority": "NORMAL",
+                        "source": identity["platform"],
+                        "dedupe_key": persisted_key,
+                        "current_reason_code": reason_code,
+                        "current_reason_summary": reason_summary,
+                        "resolution_json": (
+                            {
+                                "reason": row.get("resolution_reason"),
+                                "external_id": identity["external_id"],
+                            }
+                            if desired is WorkItemStatus.RESOLVED
+                            else None
+                        ),
+                        "closed_at": observed_at if desired is WorkItemStatus.RESOLVED else None,
+                    }
+                )
+            else:
+                item = {**existing_item, "_created": False}
+
+            if desired is WorkItemStatus.RESOLVED:
+                if not item.get("_created") and str(item.get("status") or "") in OPEN_ITEM_STATUSES:
+                    item = self._transition_item(
+                        uow,
+                        item,
+                        WorkItemStatus.RESOLVED,
+                        reason_code=reason_code,
+                        reason_summary=reason_summary,
+                        resolution={
+                            "reason": row.get("resolution_reason"),
+                            "external_id": identity["external_id"],
+                        },
+                        closed_at=observed_at,
+                    )
+            else:
+                item = self._refresh_open_item(
+                    uow,
+                    item=item,
+                    desired=WorkItemStatus.OPEN,
+                    title=f"Customer problem: {identity['external_id']}",
+                    priority="NORMAL",
+                    source=identity["platform"],
+                    sla_deadline=None,
+                    reason_code=None,
+                    reason_summary=None,
+                )
+
+            uow.work_items.add_entity(
+                {
+                    "work_item_id": item["work_item_id"],
+                    "relation_type": "subject",
+                    "entity_type": "customer_problem",
+                    "entity_id": identity["external_id"],
+                    "source_system": identity["platform"],
+                    "metadata_json": {
+                        "account_id": identity["account_id"],
+                        "source_direction": str(row.get("source_direction") or "").strip().lower(),
+                        "opaque_identity": source_key,
+                    },
+                }
+            )
+            waybill = str(row.get("waybill_no") or "").strip()
+            if waybill:
+                uow.work_items.add_entity(
+                    {
+                        "work_item_id": item["work_item_id"],
+                        "relation_type": "related",
+                        "entity_type": "waybill",
+                        "entity_id": waybill,
+                        "source_system": identity["platform"],
+                        "metadata_json": {"account_id": identity["account_id"]},
+                    }
+                )
+            evidence_summary = _safe_problem_evidence(
+                {**dict(row), "account_id": identity["account_id"]}
+            )
+            uow.evidence.add(
+                {
+                    "evidence_id": new_id(),
+                    "work_item_id": item["work_item_id"],
+                    "run_id": run["run_id"],
+                    "step_id": step_row["step_id"],
+                    "source_system": identity["platform"],
+                    "account_id": identity["account_id"],
+                    "source_record_type": "customer_problem",
+                    "source_record_id": identity["external_id"],
+                    "entity_type": "customer_problem",
+                    "entity_id": identity["external_id"],
+                    "observed_at": observed_at,
+                    "completeness_status": "COMPLETE",
+                    "pagination_complete": True,
+                    "record_count": 1,
+                    "content_sha256": sha256_json(evidence_summary),
+                    "summary_json": evidence_summary,
+                    "storage_ref": f"customer-problem:{source_key}",
+                }
+            )
+            self._append_item_event(
+                uow,
+                item=item,
+                run=run,
+                step_row=step_row,
+                command=command,
+                event_type=(
+                    "customer_problem.resolved"
+                    if desired is WorkItemStatus.RESOLVED
+                    else "customer_problem.projected"
+                ),
+                observed_at=observed_at,
+                payload={
+                    "dedupe_key": source_key,
+                    "persisted_dedupe_key": persisted_key,
+                    "platform": identity["platform"],
+                    "account_id": identity["account_id"],
+                    "external_id": identity["external_id"],
+                    "status": item["status"],
+                    "account_bindings_sha256": verification.account_bindings_sha256,
+                },
+            )
+
+        disappeared = {
+            alias: item
+            for alias, item in existing_aliases.items()
+            if str(item.get("status") or "") in OPEN_ITEM_STATUSES and alias not in seen_aliases
+        }
+        unexpected_rechecks = sorted(set(detail_rechecks) - set(disappeared))
+        if unexpected_rechecks:
+            raise OrchestrationError(
+                "UNEXPECTED_PROBLEM_DETAIL_RECHECK",
+                "Exact detail results do not match the persisted open-item snapshot.",
+                details={"status": "BLOCKED_DATA", "dedupe_keys": unexpected_rechecks},
+            )
+        for alias in sorted(disappeared):
+            item = disappeared[alias]
+            item = self._refresh_open_item(
+                uow,
+                item=item,
+                desired=WorkItemStatus.BLOCKED_DATA,
+                title=str(item["title"]),
+                priority=str(item["priority"]),
+                source=str(item["source"]),
+                sla_deadline=item.get("sla_deadline"),
+                reason_code="PROBLEM_DISAPPEARED_NEEDS_DETAIL",
+                reason_summary="Problem disappeared from the complete list and requires exact detail evidence.",
+            )
+            event_type = "customer_problem.blocked_data"
+            event_reason = "disappeared_needs_exact_detail"
+            check = detail_rechecks.get(alias)
+            if check is not None:
+                item, event_type, event_reason = self._apply_problem_detail_recheck(
+                    uow,
+                    item=item,
+                    check=check,
+                    observed_at=observed_at,
+                )
+                self._add_problem_detail_evidence(
+                    uow,
+                    item=item,
+                    run=run,
+                    step_row=step_row,
+                    check=check,
+                    observed_at=observed_at,
+                )
+            self._append_item_event(
+                uow,
+                item=item,
+                run=run,
+                step_row=step_row,
+                command=command,
+                event_type=event_type,
+                observed_at=observed_at,
+                payload={"dedupe_key": alias, "reason": event_reason},
+            )
+
+        incomplete_detail_keys = sorted(
+            alias
+            for alias in disappeared
+            if alias not in detail_rechecks
+            or str(detail_rechecks[alias].get("status") or "").strip().upper()
+            != WorkItemStatus.RESOLVED.value
+        )
+        incomplete_sources = tuple(
+            sorted(
+                {
+                    "legacy_comparison:unavailable_for_account_blind_plugin",
+                    *(f"detail_recheck:{key}" for key in incomplete_detail_keys),
+                }
+            )
+        )
+        outcome = _shadow_outcome(
+            projection_type="customer_service_problem",
+            candidates=candidate_keys,
+            legacy_keys=set(),
+            source_complete=False,
             incomplete_sources=incomplete_sources,
         )
         self._persist_shadow_evidence(
@@ -1245,6 +1536,173 @@ def _daily_sign_priority(sla: Any, target_date: date) -> str:
     if due is None:
         return "HIGH"
     return "HIGH" if due.date() <= target_date else "NORMAL"
+
+
+def _validated_customer_generation(
+    result: ToolResult,
+    verification: GenerationVerificationContext,
+) -> GenerationVerificationContext:
+    if (
+        not verification.automation_id
+        or verification.generation <= 0
+        or verification.requires_write_verification
+        or not verification.account_ids
+        or len(verification.account_ids) != len(set(verification.account_ids))
+        or any(not str(account_id).strip() for account_id in verification.account_ids)
+        or not re.fullmatch(r"[0-9a-f]{64}", verification.account_bindings_sha256)
+    ):
+        raise OrchestrationError(
+            "CUSTOMER_GENERATION_PROOF_INVALID",
+            "Customer plugin generation binding proof is incomplete.",
+            details={"status": "BLOCKED_DATA"},
+        )
+    trusted_ref = f"binding-set:{verification.account_bindings_sha256}"
+    if str(result.meta.get("account_id") or "") != trusted_ref:
+        raise OrchestrationError(
+            "CUSTOMER_ACCOUNT_SCOPE_INCOMPLETE",
+            "Customer projection requires the verifier's exact account binding-set proof.",
+            details={"status": "BLOCKED_DATA"},
+        )
+    return verification
+
+
+def _split_plugin_customer_rows(
+    rows: list[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    open_rows: list[Mapping[str, Any]] = []
+    resolved_rows: list[Mapping[str, Any]] = []
+    for row in rows:
+        if "account_id" in row or "account_ids" in row:
+            raise OrchestrationError(
+                "PLUGIN_ACCOUNT_PROOF_FORGED",
+                "Plugin business rows cannot provide core account binding proof.",
+                details={"status": "BLOCKED_DATA"},
+            )
+        resolved = row.get("resolved")
+        reason = str(row.get("resolution_reason") or "").strip()
+        if resolved is True:
+            if reason not in {"explicit_reply", "explicit_terminal_status"}:
+                raise OrchestrationError(
+                    "UNPROVEN_PROBLEM_CLOSURE",
+                    "Resolved customer problem lacks an explicit source reason.",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            resolved_rows.append(row)
+        elif resolved is False:
+            if reason:
+                raise OrchestrationError(
+                    "PROBLEM_RESOLUTION_CONFLICT",
+                    "Open customer problem cannot report a resolution reason.",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            open_rows.append(row)
+        else:
+            raise OrchestrationError(
+                "INVALID_PROJECTION_RESULT",
+                "Customer problem resolved must be a boolean.",
+                details={"status": "BLOCKED_DATA"},
+            )
+    return open_rows, resolved_rows
+
+
+def _opaque_problem_identity(
+    row: Mapping[str, Any],
+    verification: GenerationVerificationContext,
+) -> dict[str, str]:
+    platform = _required_text(row.get("platform"), "platform").lower()
+    if platform not in {"ronghui", "yunda"}:
+        raise OrchestrationError(
+            "PROBLEM_IDENTITY_MISMATCH",
+            "Customer problem platform is not supported.",
+            details={"status": "BLOCKED_DATA"},
+        )
+    external_id = _required_text(row.get("external_id"), "external_id")
+    supplied = _required_text(row.get("dedupe_key"), "dedupe_key")
+    if not _OPAQUE_CUSTOMER_PROBLEM_RE.fullmatch(supplied):
+        raise OrchestrationError(
+            "PROBLEM_IDENTITY_MISMATCH",
+            "Customer problem identity is not an opaque broker identity.",
+            details={"status": "BLOCKED_DATA"},
+        )
+    matches = [
+        account_id
+        for account_id in verification.account_ids
+        if customer_problem_identity(
+            account_id=account_id,
+            platform=platform,
+            external_id=external_id,
+        )
+        == supplied
+    ]
+    if len(matches) != 1:
+        raise OrchestrationError(
+            "PROBLEM_IDENTITY_MISMATCH",
+            "Customer problem identity does not resolve uniquely inside the trusted binding set.",
+            details={"status": "BLOCKED_DATA"},
+        )
+    return {
+        "platform": platform,
+        "account_id": matches[0],
+        "external_id": external_id,
+        "dedupe_key": supplied,
+    }
+
+
+def _customer_existing_aliases(
+    existing: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    aliases: dict[str, Mapping[str, Any]] = {}
+    for persisted_key, item in existing.items():
+        if _OPAQUE_CUSTOMER_PROBLEM_RE.fullmatch(persisted_key):
+            alias = persisted_key
+        else:
+            parts = persisted_key.split(":", 3)
+            if len(parts) != 4 or parts[0] != "problem" or not all(parts[1:]):
+                raise OrchestrationError(
+                    "INVALID_PERSISTED_PROBLEM_IDENTITY",
+                    "Persisted customer problem identity cannot be migrated safely.",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            _prefix, platform, account_id, external_id = parts
+            alias = customer_problem_identity(
+                account_id=account_id,
+                platform=platform,
+                external_id=external_id,
+            )
+        previous = aliases.get(alias)
+        if previous is not None and str(previous.get("work_item_id")) != str(item.get("work_item_id")):
+            raise OrchestrationError(
+                "DUPLICATE_PROBLEM_IDENTITY",
+                "Persisted customer problem identities collide after opaque migration.",
+                details={"status": "BLOCKED_DATA"},
+            )
+        aliases[alias] = item
+    return aliases
+
+
+def _opaque_detail_recheck_map(
+    value: Any,
+    verification: GenerationVerificationContext,
+) -> dict[str, Mapping[str, Any]]:
+    rows = _mapping_list(value, "rechecks")
+    output: dict[str, Mapping[str, Any]] = {}
+    for raw in rows:
+        if "account_id" in raw or "account_ids" in raw:
+            raise OrchestrationError(
+                "PLUGIN_ACCOUNT_PROOF_FORGED",
+                "Plugin detail rows cannot provide core account binding proof.",
+                details={"status": "BLOCKED_DATA"},
+            )
+        identity = _opaque_problem_identity(raw, verification)
+        key = identity["dedupe_key"]
+        if key in output:
+            raise OrchestrationError(
+                "DUPLICATE_PROBLEM_DETAIL_RECHECK",
+                f"Exact detail result was returned more than once: {key}",
+                details={"status": "BLOCKED_DATA"},
+            )
+        output[key] = {**dict(raw), "account_id": identity["account_id"]}
+    return output
 
 
 def _problem_identity(row: Mapping[str, Any]) -> dict[str, str]:

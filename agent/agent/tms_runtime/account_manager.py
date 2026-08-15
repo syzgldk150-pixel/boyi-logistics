@@ -1028,6 +1028,32 @@ class AutomationAccountManager:
         status.pop("password", None)
         return status
 
+    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+        """Revalidate one exact account without login, fallback or secret return.
+
+        This method is intentionally narrower than ``resolve_execution_params``:
+        plugin broker calls may only use the saved instance binding and must
+        stop with ``AUTH_REQUIRED`` when that current session is unavailable.
+        """
+
+        row = self._get_account_row(account_id)
+        if not row.get("is_active", True):
+            raise TMSAuthStateError("ACCOUNT_DISABLED", "The bound account is disabled.")
+        if self._uses_tms_broker(row):
+            self._broker(row).ensure_authenticated(validate=True)
+        elif self._uses_sso_session(row):
+            status = self._describe_sso_status(row, validate=True)
+            if status.get("authenticated") is not True and status.get("status") != "authenticated":
+                raise TMSAuthStateError("AUTH_REQUIRED", "The bound account session is unavailable.")
+        else:
+            raise TMSAuthStateError("AUTH_REQUIRED", "The bound account has no authenticated session.")
+        return {
+            "account_id": str(row["account_id"]),
+            "system": str(row["system"]),
+            "account_purpose": str(row.get("account_purpose") or "general"),
+            "session_profile": self._coerce_session_profile(row),
+        }
+
     def _login_error_status(
         self,
         row: dict[str, Any],

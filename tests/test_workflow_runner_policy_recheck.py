@@ -15,6 +15,10 @@ from agent.orchestration.models import (
 )
 from agent.orchestration.policy_engine import PolicyDecision
 from agent.orchestration.workflow_runner import WorkflowRunner
+from shared.automation_project_authorization import (
+    AutomationEntrypoint,
+    AutomationProjectInvocation,
+)
 
 
 class _Commands:
@@ -387,9 +391,11 @@ class _Execution:
         self.execute_calls = 0
         self.reconcile_calls = 0
         self.reconciliation = reconciliation or {"resolution": "UNSUPPORTED"}
+        self.last_execution_context = None
 
-    async def execute_step(self, *_args, **_kwargs):
+    async def execute_step(self, *_args, **kwargs):
         self.execute_calls += 1
+        self.last_execution_context = copy.deepcopy(kwargs.get("execution_context"))
         return {"status": "SUCCESS", "data": {}, "meta": {}}
 
     async def reconcile_step(self, *_args, **_kwargs):
@@ -653,3 +659,100 @@ def test_account_start_guard_is_held_until_step_running_commit():
     )
     release_index = repository.trace.index(("account_guard_release",))
     assert acquire_index < step_start_index < step_start_commit_index < release_index
+
+
+def test_typed_project_policy_is_rechecked_under_project_uow_before_step_start():
+    invocation = AutomationProjectInvocation(
+        automation_id="instance-one",
+        automation_generation=1,
+        entrypoint=AutomationEntrypoint.CONSOLE,
+        contract_id="console",
+        contract_hash="a" * 64,
+        policy_version=1,
+        project_configuration_version=1,
+        request_id="request-one",
+    )
+    plan = Plan(
+        command_type="automation.project.invoke",
+        context_fingerprint="context",
+        tool_catalog_hash="catalog",
+        steps=(
+            PlanStep(
+                step_key="write",
+                tool_name="automation.instance-one.run",
+                tool_version="1.0.0",
+                operation_type=OperationType.EXTERNAL_WRITE,
+                arguments={"record_id": "record-1"},
+                account_id=None,
+                depends_on=(),
+                idempotency_key="step-key",
+                expected_evidence=(),
+                postconditions=(),
+                risk_level=RiskLevel.HIGH,
+            ),
+        ),
+        automation_id="instance-one",
+        automation_generation=1,
+        automation_contract_hash="a" * 64,
+    )
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.VALIDATED.value
+    repository.command.update(
+        {
+            "command_type": "automation.project.invoke",
+            "source": "console",
+            "actor_type": ActorType.CONSOLE_ADMIN.value,
+            "actor_id": "admin-one",
+            "actor_roles_json": ["admin"],
+            "parameters_json": {
+                "tool_name": "automation.instance-one.run",
+                "arguments": {"record_id": "record-1"},
+                "execution_context": {},
+            },
+            "automation_id": "instance-one",
+            "automation_generation": 1,
+            "automation_invocation_json": invocation.to_dict(),
+        }
+    )
+
+    class _ProjectPolicy:
+        def evaluate(self, *_args, project_transaction=None, **_kwargs):
+            repository.trace.append(
+                ("project_policy", project_transaction is not None)
+            )
+            requires_approval = project_transaction is not None
+            return PolicyDecision(
+                allowed=True,
+                requires_approval=requires_approval,
+                required_role="super_admin" if requires_approval else None,
+                risk_level=RiskLevel.HIGH,
+                code="APPROVAL_REQUIRED" if requires_approval else "ALLOWED",
+                reason="project policy recheck",
+            )
+
+    execution = _Execution()
+    runner = _runner(
+        repository,
+        plan,
+        execution,
+        policy=_ProjectPolicy(),
+    )
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    assert execution.execute_calls == 0
+    assert repository.run["status"] == RunStatus.WAITING_APPROVAL.value
+    locked_policy_index = repository.trace.index(("project_policy", True))
+    next_run_lock = repository.trace.index(
+        ("run_get", True, "RUNNING"),
+        locked_policy_index,
+    )
+    assert locked_policy_index < next_run_lock
+
+    repository.approval["status"] = "APPROVED"
+    claimed = repository.claim_current()
+    asyncio.run(runner._process_claimed(claimed))
+
+    assert execution.execute_calls == 1
+    assert execution.last_execution_context["_automation_project_invocation"] == (
+        invocation.to_dict()
+    )

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent.orchestration.models import OperationType, OrchestrationError, PlanStep, sha256_json
+from agent.automation_plugins.models import GenerationBoundResult
 from agent.execution_boundary import execution_capability_scope
 from agent.tool_executor import build_trusted_scheduler_context
 from shared.redaction import redact_sensitive, redact_text
@@ -62,7 +63,27 @@ class RegisteredToolExecutionAdapter:
                     step.tool_name,
                     execution_context,
                 )
-                if trusted_context is None:
+                is_plugin = isinstance(capability.get("_plugin_runtime"), Mapping)
+                if is_plugin:
+                    project_invocation = execution_context.get(
+                        "_automation_project_invocation"
+                    )
+                    if not isinstance(project_invocation, Mapping):
+                        raise OrchestrationError(
+                            "PROJECT_INVOCATION_REQUIRED",
+                            "Automation plugin execution requires a trusted project invocation",
+                        )
+                    process_result = await self._executor.execute(
+                        capability,
+                        dict(step.arguments),
+                        trusted_scheduler_context=trusted_context,
+                        trusted_invocation_context={
+                            "run_id": run_id,
+                            "step_id": step_id,
+                            "_automation_project_invocation": dict(project_invocation),
+                        },
+                    )
+                elif trusted_context is None:
                     process_result = await self._executor.execute(capability, dict(step.arguments))
                 else:
                     process_result = await self._executor.execute(
@@ -86,13 +107,31 @@ class RegisteredToolExecutionAdapter:
             }
         finally:
             self._step_to_tool.pop((run_id, step_id), None)
-        return self._normalize_process_result(step, capability, execution_context, process_result)
+        normalized = self._normalize_process_result(
+            step,
+            capability,
+            execution_context,
+            process_result,
+        )
+        verification = getattr(process_result, "generation_verification", None)
+        if verification is not None:
+            return GenerationBoundResult(normalized, verification=verification)
+        return normalized
 
     async def cancel_step(self, *, run_id: str, step_id: str) -> Mapping[str, Any]:
         identity = self._step_to_tool.get((run_id, step_id))
         if identity is None:
             return {"ok": False, "code": "NOT_RUNNING", "message": "The step is not running"}
         tool_name, started_at = identity
+        cancel_bound = getattr(self._executor, "cancel_bound_run", None)
+        if callable(cancel_bound):
+            bound_result = await cancel_bound(
+                tool_name=tool_name,
+                run_id=run_id,
+                step_id=step_id,
+            )
+            if bound_result.get("code") != "NOT_RUNNING":
+                return bound_result
         return await self._executor.cancel_tool(tool_name, started_at=started_at)
 
     async def reconcile_step(

@@ -10,7 +10,7 @@ import hashlib
 import json
 import uuid
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from tools.daily_sign_rules import (
     MANUAL_POSTPONE_TYPES,
@@ -60,6 +60,25 @@ LEDGER_FIELDS = (
     "data_quality_flags",
     "calculation_trace",
 )
+_LEDGER_BOOLEAN_FIELDS = frozenset({"r13_current", "tms_signed"})
+_LEDGER_INTEGER_FIELDS = frozenset({"expected_quantity", "arrived_quantity"})
+_LEDGER_JSON_FIELDS = frozenset({"data_quality_flags", "calculation_trace"})
+_LEDGER_TEMPORAL_FIELDS = frozenset(
+    {
+        "r13_plan_sign_at",
+        "r13_sign_at",
+        "first_seen_r13_at",
+        "last_seen_r13_at",
+        "first_arrival_date",
+        "completion_date",
+        "system_sign_due_at",
+        "tms_signed_at",
+    }
+)
+
+
+class DailySignPersistenceReadbackError(RuntimeError):
+    """A daily-sign persistence terminal state cannot be proven."""
 
 
 def _json(value: Any) -> str:
@@ -83,6 +102,188 @@ def _daily_sign_connect():
 def snapshot_fingerprint(rows: Iterable[dict[str, Any]]) -> str:
     material = sorted(_json(row) for row in rows)
     return hashlib.sha256("\n".join(material).encode("utf-8")).hexdigest()
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise DailySignPersistenceReadbackError(
+                "daily-sign JSON readback is invalid"
+            ) from exc
+    return value
+
+
+def _temporal_value(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def _canonical_ledger_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for field in LEDGER_FIELDS:
+        value = row.get(field)
+        if field in _LEDGER_JSON_FIELDS:
+            output[field] = _json_value(value)
+        elif field in _LEDGER_BOOLEAN_FIELDS:
+            output[field] = _canonical_bool(value)
+        elif field in _LEDGER_INTEGER_FIELDS:
+            output[field] = to_int(value)
+        elif field in _LEDGER_TEMPORAL_FIELDS:
+            output[field] = _temporal_value(value)
+        else:
+            output[field] = None if value is None else str(value).strip()
+    if not output["tracking_number"]:
+        raise DailySignPersistenceReadbackError(
+            "daily-sign ledger readback identity is missing"
+        )
+    return output
+
+
+def _canonical_json_object(value: Any) -> dict[str, Any]:
+    decoded = _json_value(value)
+    if not isinstance(decoded, dict):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign run readback diagnostics are invalid"
+        )
+    return json.loads(_json(decoded))
+
+
+def _canonical_payload(row: Mapping[str, Any]) -> Any:
+    if "payload_json" in row:
+        value = row.get("payload_json")
+    else:
+        value = row.get("payload") or dict(row)
+    return json.loads(_json(_json_value(value)))
+
+
+def _canonical_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    parsed = to_int(value)
+    if parsed not in (0, 1):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign boolean readback is invalid"
+        )
+    return bool(parsed)
+
+
+def _problem_event_material(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source": clean_text(row.get("source")),
+            "external_id": clean_text(row.get("external_id")),
+            "tracking_number": clean_text(row.get("tracking_number")),
+            "problem_type": clean_text(row.get("problem_type")),
+            "registered_at": _temporal_value(row.get("registered_at")),
+            "registered_site": clean_text(row.get("registered_site")),
+            "upload_complete": _canonical_bool(row.get("upload_complete")),
+            "before_cutoff": _canonical_bool(row.get("before_cutoff")),
+            "postpones_sign": _canonical_bool(row.get("postpones_sign")),
+            "payload": _canonical_payload(row),
+        }
+        for row in rows
+    ]
+
+
+def _sign_event_material(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source": clean_text(row.get("source")),
+            "external_id": clean_text(row.get("external_id")),
+            "tracking_number": clean_text(row.get("tracking_number")),
+            "scan_code": clean_text(row.get("scan_code")),
+            "scan_type": clean_text(row.get("scan_type")),
+            "scanned_at": _temporal_value(row.get("scanned_at")),
+            "scan_site": clean_text(row.get("scan_site")),
+            "is_main_waybill": _canonical_bool(row.get("is_main_waybill")),
+            "payload": _canonical_payload(row),
+        }
+        for row in rows
+    ]
+
+
+def _verification_material(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "tracking_number": clean_text(row.get("tracking_number")),
+            "last_checked_at": _temporal_value(row.get("last_checked_at")),
+            "last_result": clean_text(row.get("last_result")),
+            "next_check_at": _temporal_value(row.get("next_check_at")),
+            "consecutive_not_signed": to_int(row.get("consecutive_not_signed")),
+            "last_error": clean_text(row.get("last_error")) or None,
+        }
+        for row in rows
+    ]
+
+
+def build_daily_sign_persistence_marker(
+    *,
+    problem_events: Iterable[dict[str, Any]],
+    sign_events: Iterable[dict[str, Any]],
+    ledger_rows: Iterable[dict[str, Any]],
+    sign_verification_states: Iterable[dict[str, Any]],
+    publication_rows: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind one atomic persistence transaction to every intended row set."""
+
+    normalized_problems = _normalize_problem_events(problem_events)
+    normalized_signs = _normalize_sign_events(sign_events)
+    normalized_ledger = _dedupe_records(
+        ledger_rows,
+        identity_fields=("tracking_number",),
+        label="每日应签账本",
+    )
+    normalized_verifications = _normalize_sign_verification_states(
+        sign_verification_states
+    )
+    publication = _dedupe_records(
+        publication_rows,
+        identity_fields=("tracking_number",),
+        label="每日应签发布集合",
+    )
+    canonical_publication = [_canonical_ledger_row(row) for row in publication]
+    if any(row["tms_signed"] for row in canonical_publication):
+        raise ValueError("每日应签发布集合不得包含已签收主单")
+    material = {
+        "schema_version": 1,
+        "problem_events": {
+            "count": len(normalized_problems),
+            "sha256": snapshot_fingerprint(
+                _problem_event_material(normalized_problems)
+            ),
+        },
+        "sign_events": {
+            "count": len(normalized_signs),
+            "sha256": snapshot_fingerprint(_sign_event_material(normalized_signs)),
+        },
+        "sign_verification_states": {
+            "count": len(normalized_verifications),
+            "sha256": snapshot_fingerprint(
+                _verification_material(normalized_verifications)
+            ),
+        },
+        "ledger_rows": {
+            "count": len(normalized_ledger),
+            "sha256": snapshot_fingerprint(
+                [_canonical_ledger_row(row) for row in normalized_ledger]
+            ),
+        },
+        "publication_rows": {
+            "count": len(canonical_publication),
+            "sha256": snapshot_fingerprint(canonical_publication),
+        },
+    }
+    return {
+        **material,
+        "marker_sha256": snapshot_fingerprint([material]),
+    }
 
 
 def ensure_daily_sign_tables() -> None:
@@ -849,6 +1050,9 @@ def persist_daily_sign_snapshot(
     sign_events: list[dict[str, Any]],
     ledger_rows: list[dict[str, Any]],
     sign_verification_states: list[dict[str, Any]] | None = None,
+    publication_rows: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
+    persistence_marker: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_problems = _normalize_problem_events(problem_events)
     normalized_signs = _normalize_sign_events(sign_events)
@@ -860,6 +1064,21 @@ def persist_daily_sign_snapshot(
     normalized_verifications = _normalize_sign_verification_states(
         sign_verification_states or []
     )
+    marker: dict[str, Any] | None = None
+    if any(value is not None for value in (publication_rows, run_id, persistence_marker)):
+        if publication_rows is None or not clean_text(run_id) or persistence_marker is None:
+            raise ValueError(
+                "daily-sign authoritative persistence marker arguments are incomplete"
+            )
+        marker = build_daily_sign_persistence_marker(
+            problem_events=normalized_problems,
+            sign_events=normalized_signs,
+            ledger_rows=normalized_ledger,
+            sign_verification_states=normalized_verifications,
+            publication_rows=publication_rows,
+        )
+        if marker != dict(persistence_marker):
+            raise ValueError("daily-sign authoritative persistence marker changed")
     ensure_daily_sign_tables()
     connection = _daily_sign_connect()
     try:
@@ -868,6 +1087,22 @@ def persist_daily_sign_snapshot(
             _upsert_sign_events(cursor, normalized_signs)
             _upsert_sign_verification_states(cursor, normalized_verifications)
             _upsert_ledger_rows(cursor, normalized_ledger)
+            if marker is not None:
+                cursor.execute(
+                    """
+                    UPDATE daily_sign_sync_runs
+                    SET diagnostics_json = %s
+                    WHERE run_id = %s AND status = 'running'
+                    """,
+                    (
+                        _json({"persistence_commit": marker}),
+                        clean_text(run_id),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(
+                        "daily-sign sync run is missing before persistence commit"
+                    )
         connection.commit()
     except Exception:
         connection.rollback()
@@ -881,6 +1116,364 @@ def persist_daily_sign_snapshot(
         "sign_verification_states": len(normalized_verifications),
         "ledger_rows": len(normalized_ledger),
         "fingerprint": snapshot_fingerprint(normalized_ledger),
+        "persistence_marker": marker,
+    }
+
+
+def _select_exact_identity_rows(
+    cursor: Any,
+    *,
+    table: str,
+    fields: tuple[str, ...],
+    identity_fields: tuple[str, ...],
+    identities: list[tuple[str, ...]],
+) -> list[dict[str, Any]]:
+    if not identities:
+        return []
+    placeholders = ", ".join(
+        "(" + ", ".join(["%s"] * len(identity_fields)) + ")"
+        for _identity in identities
+    )
+    cursor.execute(
+        f"SELECT {', '.join(fields)} FROM {table} "
+        f"WHERE ({', '.join(identity_fields)}) IN ({placeholders})",
+        tuple(value for identity in identities for value in identity),
+    )
+    return list(cursor.fetchall() or [])
+
+
+def _verify_row_set(
+    *,
+    label: str,
+    expected: list[dict[str, Any]],
+    observed: list[dict[str, Any]],
+    marker: Any,
+    identity_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    key = lambda row: tuple(clean_text(row.get(field)) for field in identity_fields)
+    expected_rows = sorted(expected, key=key)
+    observed_rows = sorted(observed, key=key)
+    observed_identities = [key(row) for row in observed_rows]
+    if (
+        any(not all(identity) for identity in observed_identities)
+        or len(set(observed_identities)) != len(observed_identities)
+        or observed_rows != expected_rows
+    ):
+        raise DailySignPersistenceReadbackError(
+            f"daily-sign {label} fresh readback changed"
+        )
+    observed_sha256 = snapshot_fingerprint(observed_rows)
+    if (
+        not isinstance(marker, dict)
+        or marker.get("count") != len(observed_rows)
+        or marker.get("sha256") != observed_sha256
+    ):
+        raise DailySignPersistenceReadbackError(
+            f"daily-sign {label} marker does not bind the fresh readback"
+        )
+    return {
+        "record_count": len(observed_rows),
+        "sha256": observed_sha256,
+        "identities_sha256": snapshot_fingerprint(
+            [dict(zip(identity_fields, identity)) for identity in observed_identities]
+        ),
+    }
+
+
+def verify_daily_sign_persistence(
+    *,
+    run_id: str,
+    problem_events: list[dict[str, Any]],
+    sign_events: list[dict[str, Any]],
+    ledger_rows: list[dict[str, Any]],
+    sign_verification_states: list[dict[str, Any]],
+    publication_rows: list[dict[str, Any]],
+    persistence_marker: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Freshly prove every event, ledger, verification, and publication row."""
+
+    normalized_problems = _normalize_problem_events(problem_events)
+    normalized_signs = _normalize_sign_events(sign_events)
+    normalized_ledger = _dedupe_records(
+        ledger_rows,
+        identity_fields=("tracking_number",),
+        label="每日应签账本",
+    )
+    normalized_verifications = _normalize_sign_verification_states(
+        sign_verification_states
+    )
+    normalized_publication = _dedupe_records(
+        publication_rows,
+        identity_fields=("tracking_number",),
+        label="每日应签发布集合",
+    )
+    expected_marker = build_daily_sign_persistence_marker(
+        problem_events=normalized_problems,
+        sign_events=normalized_signs,
+        ledger_rows=normalized_ledger,
+        sign_verification_states=normalized_verifications,
+        publication_rows=normalized_publication,
+    )
+    if expected_marker != json.loads(_json(dict(persistence_marker))):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign persistence marker does not bind the expected row sets"
+        )
+    expected_problems = _problem_event_material(normalized_problems)
+    expected_signs = _sign_event_material(normalized_signs)
+    expected_verifications = _verification_material(normalized_verifications)
+    expected_ledger = [_canonical_ledger_row(row) for row in normalized_ledger]
+    expected_publication = [
+        _canonical_ledger_row(row) for row in normalized_publication
+    ]
+    ensure_daily_sign_tables()
+    connection = _daily_sign_connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, diagnostics_json
+                FROM daily_sign_sync_runs
+                WHERE run_id = %s
+                """,
+                (clean_text(run_id),),
+            )
+            run_rows = list(cursor.fetchall() or [])
+            raw_problems = _select_exact_identity_rows(
+                cursor,
+                table="waybill_problem_events",
+                fields=(
+                    "source",
+                    "external_id",
+                    "tracking_number",
+                    "problem_type",
+                    "registered_at",
+                    "registered_site",
+                    "upload_complete",
+                    "before_cutoff",
+                    "postpones_sign",
+                    "payload_json",
+                ),
+                identity_fields=("source", "external_id"),
+                identities=[
+                    (row["source"], row["external_id"])
+                    for row in expected_problems
+                ],
+            )
+            raw_signs = _select_exact_identity_rows(
+                cursor,
+                table="waybill_sign_events",
+                fields=(
+                    "source",
+                    "external_id",
+                    "tracking_number",
+                    "scan_code",
+                    "scan_type",
+                    "scanned_at",
+                    "scan_site",
+                    "is_main_waybill",
+                    "payload_json",
+                ),
+                identity_fields=("source", "external_id"),
+                identities=[
+                    (row["source"], row["external_id"])
+                    for row in expected_signs
+                ],
+            )
+            raw_verifications = _select_exact_identity_rows(
+                cursor,
+                table="waybill_sign_verification_state",
+                fields=(
+                    "tracking_number",
+                    "last_checked_at",
+                    "last_result",
+                    "next_check_at",
+                    "consecutive_not_signed",
+                    "last_error",
+                ),
+                identity_fields=("tracking_number",),
+                identities=[
+                    (row["tracking_number"],) for row in expected_verifications
+                ],
+            )
+            cursor.execute(
+                f"SELECT {', '.join(LEDGER_FIELDS)} FROM daily_sign_ledger "
+                "ORDER BY tracking_number"
+            )
+            raw_ledger = list(cursor.fetchall() or [])
+    finally:
+        connection.rollback()
+        connection.close()
+    if len(run_rows) != 1 or clean_text(run_rows[0].get("status")) != "running":
+        raise DailySignPersistenceReadbackError(
+            "daily-sign persistence run marker is missing or not unique"
+        )
+    diagnostics = _canonical_json_object(run_rows[0].get("diagnostics_json"))
+    if diagnostics != {"persistence_commit": expected_marker}:
+        raise DailySignPersistenceReadbackError(
+            "daily-sign persistence run marker changed"
+        )
+    problem_proof = _verify_row_set(
+        label="problem events",
+        expected=expected_problems,
+        observed=_problem_event_material(raw_problems),
+        marker=expected_marker.get("problem_events"),
+        identity_fields=("source", "external_id"),
+    )
+    sign_proof = _verify_row_set(
+        label="sign events",
+        expected=expected_signs,
+        observed=_sign_event_material(raw_signs),
+        marker=expected_marker.get("sign_events"),
+        identity_fields=("source", "external_id"),
+    )
+    verification_proof = _verify_row_set(
+        label="sign verification states",
+        expected=expected_verifications,
+        observed=_verification_material(raw_verifications),
+        marker=expected_marker.get("sign_verification_states"),
+        identity_fields=("tracking_number",),
+    )
+    observed_ledger = [_canonical_ledger_row(row) for row in raw_ledger]
+    publication_proof = _verify_row_set(
+        label="publication rows",
+        expected=expected_publication,
+        observed=[row for row in observed_ledger if not row["tms_signed"]],
+        marker=expected_marker.get("publication_rows"),
+        identity_fields=("tracking_number",),
+    )
+    ledger_proof = _verify_row_set(
+        label="ledger rows",
+        expected=expected_ledger,
+        observed=observed_ledger,
+        marker=expected_marker.get("ledger_rows"),
+        identity_fields=("tracking_number",),
+    )
+    marker_sha256 = expected_marker.get("marker_sha256")
+    marker_material = {
+        key: expected_marker[key]
+        for key in (
+            "schema_version",
+            "problem_events",
+            "sign_events",
+            "sign_verification_states",
+            "ledger_rows",
+            "publication_rows",
+        )
+    }
+    if (
+        not isinstance(marker_sha256, str)
+        or len(marker_sha256) != 64
+        or marker_sha256 != snapshot_fingerprint([marker_material])
+    ):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign persistence marker hash is invalid"
+        )
+    return {
+        "verified": True,
+        "record_count": ledger_proof["record_count"],
+        "problem_events": problem_proof,
+        "sign_events": sign_proof,
+        "sign_verification_states": verification_proof,
+        "ledger_rows": ledger_proof,
+        "publication_rows": publication_proof,
+        "ledger_sha256": ledger_proof["sha256"],
+        "publication_sha256": publication_proof["sha256"],
+        "persistence_sha256": marker_sha256,
+    }
+
+
+def verify_daily_sign_completed_run(
+    *,
+    run_id: str,
+    expected_values: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Freshly prove the final successful run row and its bound diagnostics."""
+
+    ensure_daily_sign_tables()
+    connection = _daily_sign_connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, degraded, r13_complete, problems_complete,
+                       signs_complete, r13_rows, arrival_rows, problem_rows,
+                       sign_rows, candidate_rows, published_rows, unmatched_rows,
+                       fingerprint, diagnostics_json, error_summary
+                FROM daily_sign_sync_runs
+                WHERE run_id = %s
+                """,
+                (clean_text(run_id),),
+            )
+            rows = list(cursor.fetchall() or [])
+    finally:
+        connection.rollback()
+        connection.close()
+    if len(rows) != 1:
+        raise DailySignPersistenceReadbackError(
+            "daily-sign completed run is missing or not unique"
+        )
+    row = rows[0]
+    boolean_fields = (
+        "degraded",
+        "r13_complete",
+        "problems_complete",
+        "signs_complete",
+    )
+    integer_fields = (
+        "r13_rows",
+        "arrival_rows",
+        "problem_rows",
+        "sign_rows",
+        "candidate_rows",
+        "published_rows",
+        "unmatched_rows",
+    )
+    if clean_text(row.get("status")) != clean_text(expected_values.get("status")):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign completed run status changed"
+        )
+    if any(
+        bool(row.get(field)) != bool(expected_values.get(field))
+        for field in boolean_fields
+    ) or any(
+        to_int(row.get(field)) != to_int(expected_values.get(field))
+        for field in integer_fields
+    ):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign completed run counts changed"
+        )
+    if (
+        clean_text(row.get("fingerprint"))
+        != clean_text(expected_values.get("fingerprint"))
+        or row.get("error_summary") != expected_values.get("error_summary")
+        or _canonical_json_object(row.get("diagnostics_json"))
+        != _canonical_json_object(expected_values.get("diagnostics_json"))
+    ):
+        raise DailySignPersistenceReadbackError(
+            "daily-sign completed run evidence changed"
+        )
+    diagnostics = _canonical_json_object(row.get("diagnostics_json"))
+    marker = diagnostics.get("persistence_commit")
+    marker_sha256 = marker.get("marker_sha256") if isinstance(marker, dict) else None
+    if clean_text(row.get("status")) == "success":
+        publication = (
+            marker.get("publication_rows") if isinstance(marker, dict) else None
+        )
+        if (
+            not isinstance(publication, dict)
+            or publication.get("count") != to_int(row.get("published_rows"))
+            or publication.get("sha256") != clean_text(row.get("fingerprint"))
+            or not isinstance(marker_sha256, str)
+            or len(marker_sha256) != 64
+        ):
+            raise DailySignPersistenceReadbackError(
+                "daily-sign completed run is not bound to the published row set"
+            )
+    return {
+        "verified": True,
+        "record_count": to_int(row.get("published_rows")) or 0,
+        "publication_sha256": clean_text(row.get("fingerprint")),
+        "persistence_sha256": marker_sha256 or "",
     }
 
 

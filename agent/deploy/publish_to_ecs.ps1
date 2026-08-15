@@ -4,6 +4,8 @@ param(
     [string]$Target = "auto",
     [string]$RemoteHost = "123.57.106.70",
     [string]$SshKeyPath = "C:\Users\DENG\.ssh\codex_ecs_ed25519",
+    [string]$AutomationPluginArtifactRoot,
+    [string]$AutomationPluginTrustRoot,
     [switch]$SkipRestart,
     [switch]$SkipHealthCheck
 )
@@ -19,6 +21,7 @@ $RepoRoot = Split-Path -Parent $AgentRoot
 $StateDir = Join-Path $ScriptDir "state"
 $StateFile = Join-Path $StateDir "publish_state.json"
 $TaskTempRoot = Join-Path $RepoRoot ".task_tmp"
+$ReleaseScopeHelper = Join-Path $AgentRoot "scripts/first_party_release_scope.py"
 $remoteSpec = "${RemoteUser}@${RemoteHost}"
 $sshArgs = @(
     "-i", $SshKeyPath,
@@ -41,8 +44,8 @@ $AgentFiles = @(
     "dev_local_tunnel.sh"
 )
 $AgentDirs = @(
-    "agent", "deploy", "docs", "feishu", "knowledge", "prompts", "tms_docs",
-    "tools", "price_scripts", "migrations", "scripts"
+    "agent", "deploy", "docs", "feishu", "first_party_automation_plugins", "knowledge", "prompts", "tms_docs",
+    "tools", "price_scripts", "plugin_core_adapters", "migrations", "scripts"
 )
 $ConsoleFiles = @(
     "AGENTS.md", "CLAUDE.md", "README.md", "app.py", "app_support.py", "check_syntax.py", "config.py",
@@ -55,11 +58,12 @@ $ConsoleDirs = @("config", "routes", "services", "static", "templates")
 $BlockedDirNames = @(
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache", "logs", "runtime",
     "state", "sessions", "cache", "temp", "tmp", "uploads", "downloads", "output",
-    "outputs", "reports", "metadata", "data"
+    "outputs", "reports", "metadata", "data", "windows_worker"
 )
 $BlockedFileNames = @(
     ".env", "config.json", "cookies.json", "credentials.json", "feishu_ws.lock",
-    "pending_actions.json", "session_meta.json", "storage_state.json"
+    "pending_actions.json", "session_meta.json", "storage_state.json",
+    "windows_worker_host.py", "windows_worker_requirements.txt", "windows_worker_requirements.lock"
 )
 $BlockedExtensions = @(
     ".log", ".pyc", ".xlsx", ".xls", ".xlsm", ".csv", ".tsv", ".pdf", ".parquet",
@@ -76,6 +80,69 @@ function Assert-Command([string]$Name) {
 function Assert-PathExists([string]$PathValue) {
     if (-not (Test-Path -LiteralPath $PathValue)) {
         throw "Path not found: $PathValue"
+    }
+}
+
+function Copy-AutomationPluginReleaseInputs(
+    [string]$ArtifactRoot,
+    [string]$TrustRoot,
+    [string]$ExpectedReleaseSha,
+    [string]$DestinationRoot
+) {
+    if ([string]::IsNullOrWhiteSpace($ArtifactRoot) -or [string]::IsNullOrWhiteSpace($TrustRoot)) {
+        throw "Agent releases require -AutomationPluginArtifactRoot and -AutomationPluginTrustRoot."
+    }
+    foreach ($pathValue in @($ArtifactRoot, $TrustRoot)) {
+        if (-not (Test-Path -LiteralPath $pathValue -PathType Container)) {
+            throw "Automation plugin release input is not a directory: $pathValue"
+        }
+        $rootItem = Get-Item -LiteralPath $pathValue -Force
+        if ($rootItem.LinkType) {
+            throw "Automation plugin release input cannot be a symbolic link: $pathValue"
+        }
+    }
+
+    $artifactItems = @(Get-ChildItem -LiteralPath $ArtifactRoot -Force)
+    $zipItems = @($artifactItems | Where-Object { -not $_.PSIsContainer -and $_.Extension -ceq ".zip" })
+    $indexItems = @($artifactItems | Where-Object { -not $_.PSIsContainer -and $_.Name -ceq "release-index.json" })
+    if ($indexItems.Count -ne 1 -or $zipItems.Count -lt 1 -or $artifactItems.Count -ne ($zipItems.Count + 1)) {
+        throw "Signed first-party artifact root must contain one release-index.json and only its ZIP packages."
+    }
+    if (@($artifactItems | Where-Object { $_.PSIsContainer -or $_.LinkType }).Count -ne 0) {
+        throw "Signed first-party artifact root cannot contain directories or symbolic links."
+    }
+    foreach ($zip in $zipItems) {
+        if ($zip.Length -le 0 -or $zip.Length -gt 268435456) {
+            throw "Signed first-party package size is invalid: $($zip.Name)"
+        }
+    }
+    $releaseIndex = Get-Content -Raw -Encoding utf8 -LiteralPath $indexItems[0].FullName | ConvertFrom-Json
+    if ([string]$releaseIndex.release_sha -cne $ExpectedReleaseSha) {
+        throw "Signed first-party release index does not match the committed release SHA."
+    }
+    $indexedPluginCount = @($releaseIndex.plugins.PSObject.Properties).Count
+    if ($indexedPluginCount -ne $zipItems.Count) {
+        throw "Signed first-party release index and ZIP package counts differ."
+    }
+
+    $trustItems = @(Get-ChildItem -LiteralPath $TrustRoot -Force)
+    if ($trustItems.Count -lt 1 -or @(
+        $trustItems | Where-Object {
+            $_.PSIsContainer -or $_.LinkType -or $_.Extension -cne ".pub" -or $_.Length -le 0
+        }
+    ).Count -ne 0) {
+        throw "Automation plugin trust root must contain only non-empty Ed25519 .pub files."
+    }
+
+    $artifactDestination = Join-Path $DestinationRoot "_plugin_artifacts"
+    $trustDestination = Join-Path $DestinationRoot "_plugin_trust"
+    New-Item -ItemType Directory -Path $artifactDestination -Force | Out-Null
+    New-Item -ItemType Directory -Path $trustDestination -Force | Out-Null
+    foreach ($item in $artifactItems) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $artifactDestination $item.Name)
+    }
+    foreach ($item in $trustItems) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $trustDestination $item.Name)
     }
 }
 
@@ -158,6 +225,72 @@ function Test-AllowedRelativePath(
     return $false
 }
 
+function Convert-ToWslUbuntuPath([string]$PathValue) {
+    $normalized = $PathValue.Replace("/", "\")
+    foreach ($prefix in @("\\wsl.localhost\Ubuntu\", "\\wsl$\Ubuntu\")) {
+        if ($normalized.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            return "/" + $normalized.Substring($prefix.Length).Replace("\", "/")
+        }
+    }
+    throw "Release scope paths must remain inside the configured Ubuntu workspace."
+}
+
+function Invoke-ReleaseScopeHelper(
+    [string]$RepositoryRoot,
+    [string[]]$Arguments
+) {
+    $linuxHelper = Convert-ToWslUbuntuPath $ReleaseScopeHelper
+    $linuxRoot = Convert-ToWslUbuntuPath $RepositoryRoot
+    $output = @(
+        & wsl.exe -d Ubuntu --exec /usr/bin/python3 `
+            $linuxHelper --repository-root $linuxRoot @Arguments
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "First-party release scope validation failed."
+    }
+    return $output
+}
+
+function Get-ReleaseFirstPartyPluginIds() {
+    Assert-PathExists $ReleaseScopeHelper
+    $values = @(Invoke-ReleaseScopeHelper $RepoRoot @("plugin-ids"))
+    $selected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($value in $values) {
+        $pluginId = ([string]$value).Trim()
+        if ($pluginId -notmatch '^[a-z][a-z0-9_]{1,63}$' -or -not $selected.Add($pluginId)) {
+            throw "First-party release scope returned an invalid or duplicate plugin ID."
+        }
+    }
+    if ($selected.Count -lt 1) {
+        throw "First-party release scope is empty."
+    }
+    return @($selected | Sort-Object)
+}
+
+function Test-ReleaseScopedFirstPartyPath(
+    [string]$AgentRelativePath,
+    [string[]]$ReleasePluginIds
+) {
+    $normalized = $AgentRelativePath.Replace("\", "/").TrimStart("/")
+    $prefix = "first_party_automation_plugins/"
+    if (-not $normalized.StartsWith($prefix, [StringComparison]::Ordinal)) {
+        return $true
+    }
+    $tail = $normalized.Substring($prefix.Length)
+    if ($tail -in @("README.md", "MIGRATION_MATRIX.md", "digests.json")) {
+        return $true
+    }
+    if ($tail -in @("_runtime/main.py", "_runtime/result.py")) {
+        return $true
+    }
+    $separator = $tail.IndexOf("/", [StringComparison]::Ordinal)
+    if ($separator -le 0) {
+        return $false
+    }
+    $pluginId = $tail.Substring(0, $separator)
+    return $ReleasePluginIds -ccontains $pluginId
+}
+
 function Test-BlockedPublishPath([string]$RepoRelativePath) {
     $normalized = $RepoRelativePath.Replace("\", "/")
     $parts = @($normalized -split "/" | Where-Object { $_ })
@@ -227,6 +360,7 @@ function Write-Utf8NoBomLines([string]$PathValue, [string[]]$Lines) {
 }
 
 function Build-Payload([string]$PayloadRoot) {
+    $releasePluginIds = Get-ReleaseFirstPartyPluginIds
     $manifestEntries = @{
         agent = [Collections.Generic.List[string]]::new()
         console = [Collections.Generic.List[string]]::new()
@@ -241,7 +375,10 @@ function Build-Payload([string]$PayloadRoot) {
         $repoPath = ([string]$repoPathRaw).Replace("\", "/")
         if ($repoPath.StartsWith("agent/", [StringComparison]::Ordinal)) {
             $relative = $repoPath.Substring(6)
-            if (Test-AllowedRelativePath $relative $AgentFiles $AgentDirs) {
+            if (
+                (Test-AllowedRelativePath $relative $AgentFiles $AgentDirs) -and
+                (Test-ReleaseScopedFirstPartyPath $relative $releasePluginIds)
+            ) {
                 Copy-TrackedFile $repoPath "agent" $relative $PayloadRoot $manifestEntries
             }
         }
@@ -263,6 +400,13 @@ function Build-Payload([string]$PayloadRoot) {
             throw "Publish whitelist produced an empty scope: $scope"
         }
         Write-Utf8NoBomLines (Join-Path $PayloadRoot "_manifests/$scope.txt") $entries
+    }
+
+    $scopeResult = @(
+        Invoke-ReleaseScopeHelper $PayloadRoot @("verify-staged")
+    )
+    if ($scopeResult.Count -ne 1 -or $scopeResult[0] -cne "first_party_release_source_scope=ok") {
+        throw "Staged first-party source returned an invalid validation result."
     }
 }
 
@@ -327,6 +471,7 @@ function Resolve-Targets([hashtable]$State, [hashtable]$Fingerprints) {
 }
 
 Assert-Command "git"
+Assert-Command "wsl.exe"
 Assert-Command "ssh"
 Assert-Command "scp"
 Assert-Command "ssh-keygen"
@@ -358,6 +503,13 @@ try {
     if ($targetsToPublish.Count -eq 0) {
         Write-Host "No changed source scope detected. Nothing to publish."
         exit 0
+    }
+    if ($targetsToPublish -contains "agent") {
+        Copy-AutomationPluginReleaseInputs `
+            $AutomationPluginArtifactRoot `
+            $AutomationPluginTrustRoot `
+            $releaseSha `
+            $PayloadRoot
     }
 
     Invoke-Remote "test `"`$(id -un)`" = boyce && test -d /home/boyce && mkdir -p '$RemoteDeployRoot'"

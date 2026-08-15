@@ -94,5 +94,14 @@ def test_single_account_schedule_registry_requires_explicit_top_level_account() 
             "required": True,
             "allow_implicit_default": False,
         }
-        assert tool["input_schema"]["required"] == ["account_id"]
+        expected_required = (
+            ["account_id", "dest_brch"]
+            if name == "sync_yunda_dispatch_forecast"
+            else (
+                ["account_id", "target_date"]
+                if name == "sync_site_send_list"
+                else ["account_id"]
+            )
+        )
+        assert tool["input_schema"]["required"] == expected_required
         assert tool["input_schema"]["properties"]["account_id"]["minLength"] == 1

@@ -15,6 +15,15 @@ from typing import Any, Callable, Mapping, Sequence
 _DAILY_CRON_RE = re.compile(r"^(?P<minute>\d{1,2}) (?P<hour>\d{1,2}) \* \* \*$")
 _TIME_SUFFIX_RE = re.compile(r"^(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)$")
 
+# Code-owned dynamic arguments do not belong in persisted task configuration,
+# but the registry schema still validates the fully compiled invocation.  These
+# values are validation-only witnesses for the declared resolver output shape:
+# they are never returned, persisted, or executed.
+_DYNAMIC_SCHEMA_VALIDATION_VALUES: Mapping[str, Any] = {
+    "current_business_day": "2000-01-01",
+    "scheduled_previous_day": "2000-01-01",
+}
+
 
 @dataclass(frozen=True)
 class ScheduledTaskProfile:
@@ -198,7 +207,7 @@ APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
         tool_name="sync_site_send_list",
         tool_version="1.0.0",
         approved_arguments={"account_id": "ronghui_default"},
-        dynamic_argument_rules={},
+        dynamic_argument_rules={"target_date": "current_business_day"},
         approved_task_ids=_SITE_SEND_TASK_IDS,
     ),
     "arrive_list": ScheduledTaskProfile(
@@ -211,7 +220,7 @@ APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
     "arrival_stats": ScheduledTaskProfile(
         tool_name="sync_arrival_stats",
         tool_version="1.0.0",
-        approved_arguments={"account_id": "ronghui_default", "trigger_flow": False},
+        approved_arguments={"account_id": "ronghui_default"},
         dynamic_argument_rules={},
     ),
     "yunda_dispatch_forecast": ScheduledTaskProfile(
@@ -335,8 +344,12 @@ def validate_persisted_scheduled_task(
     if not isinstance(raw_arguments, dict):
         raise ScheduledTaskContractError("INVALID_TOOL_ARGUMENTS")
     arguments = dict(raw_arguments)
+    validation_arguments = _arguments_for_schema_validation(
+        arguments,
+        profile.dynamic_argument_rules,
+    )
     try:
-        validate_arguments(tool_name, arguments)
+        validate_arguments(tool_name, validation_arguments)
     except Exception as exc:
         raise ScheduledTaskContractError("ARGUMENT_SCHEMA_MISMATCH") from exc
 
@@ -361,6 +374,19 @@ def validate_persisted_scheduled_task(
         cron_expression=cron_expression,
         dynamic_argument_rules=dict(profile.dynamic_argument_rules),
     )
+
+
+def _arguments_for_schema_validation(
+    arguments: Mapping[str, Any],
+    dynamic_argument_rules: Mapping[str, str],
+) -> dict[str, Any]:
+    validation_arguments = dict(arguments)
+    for field_name, resolver_name in dynamic_argument_rules.items():
+        witness = _DYNAMIC_SCHEMA_VALIDATION_VALUES.get(resolver_name)
+        if witness is None:
+            raise ScheduledTaskContractError("DYNAMIC_ARGUMENT_RULE_NOT_SUPPORTED")
+        validation_arguments.setdefault(field_name, witness)
+    return validation_arguments
 
 
 def _resolve_task_group(task_id: str) -> tuple[str | None, tuple[int, int] | None]:

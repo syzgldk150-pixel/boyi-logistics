@@ -22,6 +22,7 @@ from tools.daily_sign_rules import (
     parse_datetime,
 )
 from tools.daily_sign_store import (
+    build_daily_sign_persistence_marker,
     finish_sync_run,
     latest_successful_sync_at,
     load_daily_sign_state,
@@ -32,6 +33,14 @@ from tools.daily_sign_store import (
     upsert_problem_events,
     upsert_sign_events,
     upsert_sign_verification_states,
+    verify_daily_sign_completed_run,
+    verify_daily_sign_persistence,
+)
+from tools.daily_sign_readback import (
+    DailySignReadbackError,
+    verify_bitable_schema,
+    verify_bitable_snapshot,
+    verify_sheet_snapshot,
 )
 from tools.phase7_sync_common import (
     build_range_from_template,
@@ -105,6 +114,14 @@ FORBIDDEN_R13_REQUEST_KEYS = frozenset(
         "r13AccountId",
     }
 )
+
+
+def _write_outcome_unknown(message: str, **details: Any) -> dict[str, Any]:
+    return {
+        "error": clean_text(message) or "每日应签写入结果无法核验。",
+        "error_code": "WRITE_OUTCOME_UNKNOWN",
+        **details,
+    }
 
 
 def _has_value(value: Any) -> bool:
@@ -1212,7 +1229,7 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             },
         )
         if write_result.get("error"):
-            return {"error": f"写入应签明细失败: {write_result.get('error')}", "write_result": write_result}
+            return _write_outcome_unknown("写入应签明细后的终态未知。")
     old_end_row = max(info["end_row"], 2)
     tail_start = 2 + len(sheet_values)
     clear_result: dict[str, Any] = {"ok": True, "skipped": True}
@@ -1227,8 +1244,35 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             },
         )
         if clear_result.get("error"):
-            return {"error": f"清理应签明细旧行失败: {clear_result.get('error')}", "write_result": write_result, "clear_result": clear_result}
-    return {"ok": True, "rows": len(sheet_values), "write_result": write_result, "clear_result": clear_result}
+            return _write_outcome_unknown("清理应签明细旧行后的终态未知。")
+    readback_end = max(old_end_row, 1 + len(sheet_values))
+    readback_range = f"{info['sheet']}!A2:I{readback_end}"
+    readback_result = feishu_operation(
+        "read_sheet",
+        {
+            "spreadsheet_token": spreadsheet_token,
+            "range": readback_range,
+            "as": params.get("as", "bot"),
+        },
+    )
+    if readback_result.get("error"):
+        return _write_outcome_unknown("每日应签电子表格新鲜回读不可用。")
+    try:
+        readback = verify_sheet_snapshot(
+            sheet_values,
+            _sheet_values(readback_result),
+            observed_row_capacity=readback_end - 1,
+            columns=DAILY_SIGN_SHEET_COL_COUNT,
+        )
+    except DailySignReadbackError:
+        return _write_outcome_unknown("每日应签电子表格新鲜回读不匹配。")
+    return {
+        "ok": True,
+        "rows": len(sheet_values),
+        "write_result": write_result,
+        "clear_result": clear_result,
+        "readback": readback,
+    }
 
 
 def _field_items(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1244,6 +1288,7 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
         return {"error": result["error"]}
     by_name = {clean_text(item.get("field_name")): item for item in _field_items(result)}
     old = by_name.get("应签收时间")
+    schema_changed = False
     if old and "R13应签收时间" not in by_name:
         rename = feishu_operation(
             "update_field",
@@ -1258,7 +1303,8 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
             },
         )
         if rename.get("error"):
-            return {"error": f"旧应签收时间字段重命名失败: {rename.get('error')}"}
+            return _write_outcome_unknown("每日应签多维表字段重命名后的终态未知。")
+        schema_changed = True
         by_name["R13应签收时间"] = {**old, "field_name": "R13应签收时间"}
     date_type = _to_int((by_name.get("R13应签收时间") or {}).get("type")) or 1
     required_types = {
@@ -1289,8 +1335,34 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
             },
         )
         if created.get("error"):
-            return {"error": f"创建多维表字段失败: {name}: {created.get('error')}"}
-    return {"ok": True, "fields": required_types}
+            return _write_outcome_unknown("每日应签多维表字段创建后的终态未知。")
+        schema_changed = True
+    fresh_result = feishu_operation(
+        "list_fields",
+        {
+            "base_token": base_token,
+            "table_id": table_id,
+            "as": params.get("as", "bot"),
+        },
+    )
+    if fresh_result.get("error"):
+        code = "WRITE_OUTCOME_UNKNOWN" if schema_changed else "PROJECTION_READ_FAILED"
+        return {
+            "error": "每日应签多维表字段新鲜回读不可用。",
+            "error_code": code,
+        }
+    try:
+        readback = verify_bitable_schema(
+            required_types,
+            _field_items(fresh_result),
+        )
+    except DailySignReadbackError:
+        code = "WRITE_OUTCOME_UNKNOWN" if schema_changed else "PROJECTION_READ_FAILED"
+        return {
+            "error": "每日应签多维表字段新鲜回读不匹配。",
+            "error_code": code,
+        }
+    return {"ok": True, "fields": required_types, "readback": readback}
 
 
 def _record_items(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1347,7 +1419,7 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
             },
         )
         if write_result.get("error") or write_result.get("errors"):
-            return {"error": "多维表差异写入失败", "write_result": write_result}
+            return _write_outcome_unknown("每日应签多维表差异写入后的终态未知。")
     delete_ids = [
         clean_text(item.get("record_id"))
         for code, item in existing_by_code.items()
@@ -1366,8 +1438,34 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
             },
         )
         if delete_result.get("error") or delete_result.get("errors"):
-            return {"error": "多维表旧记录清理失败", "write_result": write_result, "delete_result": delete_result}
-    return {"ok": True, "written": len(writes), "unchanged": unchanged, "deleted": len(delete_ids), "schema_result": schema_result}
+            return _write_outcome_unknown("每日应签多维表旧记录清理后的终态未知。")
+    readback_result = feishu_operation(
+        "list_records",
+        {
+            "base_token": base_token,
+            "table_id": table_id,
+            "limit": max(len(target_records) + 1, 1),
+            "as": params.get("as", "bot"),
+        },
+    )
+    if readback_result.get("error"):
+        return _write_outcome_unknown("每日应签多维表新鲜回读不可用。")
+    try:
+        readback = verify_bitable_snapshot(
+            target_records,
+            readback_result,
+            identity_field="运单编号",
+        )
+    except DailySignReadbackError:
+        return _write_outcome_unknown("每日应签多维表新鲜回读不匹配。")
+    return {
+        "ok": True,
+        "written": len(writes),
+        "unchanged": unchanged,
+        "deleted": len(delete_ids),
+        "schema_result": schema_result,
+        "readback": readback,
+    }
 
 
 
@@ -1406,7 +1504,14 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         r13_account_id = _required_pipeline_account_id(params, "r13_account_id")
         account_id = _required_pipeline_account_id(params, "account_id")
 
-        run_id, started_at = start_sync_run()
+        try:
+            run_id, started_at = start_sync_run()
+        except Exception as exc:
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签运行记录创建后的终态未知。",
+                retryable=False,
+            ) from exc
         observed_at = started_at
         diagnostics["run_id"] = run_id
         state = load_daily_sign_state()
@@ -1555,29 +1660,136 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             if row["tracking_number"] in by_code:
                 row["recipient_address"] = by_code[row["tracking_number"]].get("recipient_address")
         all_sign_events = bulk_sign_events + exact_sign_events + historical_sign_events
-        ledger_result = persist_daily_sign_snapshot(
+        persistence_marker = build_daily_sign_persistence_marker(
             problem_events=problem_events,
             sign_events=all_sign_events,
             ledger_rows=ledger_rows,
             sign_verification_states=verification_rows,
+            publication_rows=open_rows,
+        )
+        try:
+            ledger_result = persist_daily_sign_snapshot(
+                problem_events=problem_events,
+                sign_events=all_sign_events,
+                ledger_rows=ledger_rows,
+                sign_verification_states=verification_rows,
+                publication_rows=open_rows,
+                run_id=run_id,
+                persistence_marker=persistence_marker,
+            )
+        except Exception as exc:
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签权威事件与账本提交后的终态未知。",
+                retryable=False,
+            ) from exc
+        if ledger_result.get("persistence_marker") != persistence_marker:
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签权威事件与账本提交缺少完整证明。",
+                retryable=False,
+            )
+        try:
+            persistence_readback = verify_daily_sign_persistence(
+                run_id=run_id,
+                problem_events=problem_events,
+                sign_events=all_sign_events,
+                ledger_rows=ledger_rows,
+                sign_verification_states=verification_rows,
+                publication_rows=open_rows,
+                persistence_marker=persistence_marker,
+            )
+        except Exception as exc:
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签权威事件、账本或发布集合的新鲜回读不匹配。",
+                retryable=False,
+            ) from exc
+        if (
+            persistence_readback.get("verified") is not True
+            or persistence_readback.get("record_count") != len(ledger_rows)
+            or persistence_readback.get("publication_rows", {}).get("record_count")
+            != len(open_rows)
+            or persistence_readback.get("persistence_sha256")
+            != persistence_marker.get("marker_sha256")
+        ):
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签权威持久化的新鲜回读证明不完整。",
+                retryable=False,
+            )
+        diagnostics.update(
+            {
+                "persistence_commit": persistence_marker,
+                "persistence_readback": persistence_readback,
+            }
         )
 
         bitable_result = _sync_bitable(open_rows, params)
         if bitable_result.get("error"):
+            error_code = clean_text(bitable_result.get("error_code"))
             raise DailySignSyncError(
-                "PROJECTION_WRITE_FAILED",
+                error_code or "PROJECTION_WRITE_FAILED",
                 clean_text(bitable_result.get("error")) or "每日应签多维表写入失败。",
-                retryable=True,
+                retryable=False,
             )
+        bitable_readback = bitable_result.get("readback")
+        if (
+            not isinstance(bitable_readback, dict)
+            or bitable_readback.get("verified") is not True
+            or bitable_readback.get("record_count") != len(open_rows)
+            or len(clean_text(bitable_readback.get("snapshot_sha256"))) != 64
+        ):
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签多维表缺少完整的新鲜回读证明。",
+                retryable=False,
+            )
+        diagnostics.update(
+            {
+                "bitable_written": bitable_result.get("written", 0),
+                "bitable_readback": bitable_readback,
+            }
+        )
         sheet_result = _sync_sheet(open_rows, params)
         if sheet_result.get("error"):
+            error_code = clean_text(sheet_result.get("error_code"))
             raise DailySignSyncError(
-                "PROJECTION_WRITE_FAILED",
+                error_code or "PROJECTION_WRITE_FAILED",
                 clean_text(sheet_result.get("error")) or "每日应签电子表格写入失败。",
-                retryable=True,
+                retryable=False,
             )
+        sheet_readback = sheet_result.get("readback")
+        if (
+            not isinstance(sheet_readback, dict)
+            or sheet_readback.get("verified") is not True
+            or sheet_readback.get("record_count") != len(open_rows)
+            or len(clean_text(sheet_readback.get("snapshot_sha256"))) != 64
+        ):
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签电子表格缺少完整的新鲜回读证明。",
+                retryable=False,
+            )
+        diagnostics.update(
+            {
+                "sheet_rows": sheet_result.get("rows", len(open_rows)),
+                "sheet_readback": sheet_readback,
+            }
+        )
 
-        fingerprint = snapshot_fingerprint(open_rows)
+        fingerprint = clean_text(
+            persistence_marker.get("publication_rows", {}).get("sha256")
+        )
+        if (
+            len(fingerprint) != 64
+            or persistence_readback.get("publication_sha256") != fingerprint
+        ):
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签发布集合与权威账本绑定不一致。",
+                retryable=False,
+            )
         state_counts = Counter(clean_text(row.get("arrival_status")) or "unknown" for row in ledger_rows)
         quality_flag_counts = Counter(
             clean_text(flag)
@@ -1604,8 +1816,6 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 },
                 "ledger_result": ledger_result,
                 "address_enrichment": address_result,
-                "bitable_written": bitable_result.get("written", 0),
-                "sheet_rows": sheet_result.get("rows", len(open_rows)),
             }
         )
         legacy_keys = _legacy_candidate_keys(r13_rows, observed_at)
@@ -1617,26 +1827,54 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         )
-        finish_sync_run(
-            run_id,
-            {
-                "status": "success",
-                "degraded": False,
-                "r13_complete": True,
-                "problems_complete": True,
-                "signs_complete": True,
-                "r13_rows": len(r13_rows),
-                "arrival_rows": diagnostics["arrival_rows"],
-                "problem_rows": len(problem_events),
-                "sign_rows": len(signs_by_code),
-                "candidate_rows": len(candidate_codes),
-                "published_rows": len(open_rows),
-                "unmatched_rows": diagnostics["unmatched_rows"],
-                "fingerprint": fingerprint,
-                "diagnostics_json": diagnostics,
-                "error_summary": None,
-            },
-        )
+        completion_values = {
+            "status": "success",
+            "degraded": False,
+            "r13_complete": True,
+            "problems_complete": True,
+            "signs_complete": True,
+            "r13_rows": len(r13_rows),
+            "arrival_rows": diagnostics["arrival_rows"],
+            "problem_rows": len(problem_events),
+            "sign_rows": len(signs_by_code),
+            "candidate_rows": len(candidate_codes),
+            "published_rows": len(open_rows),
+            "unmatched_rows": diagnostics["unmatched_rows"],
+            "fingerprint": fingerprint,
+            "diagnostics_json": diagnostics,
+            "error_summary": None,
+        }
+        try:
+            finish_sync_run(run_id, completion_values)
+        except Exception as exc:
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签成功运行记录提交后的终态未知。",
+                retryable=False,
+            ) from exc
+        try:
+            completion_readback = verify_daily_sign_completed_run(
+                run_id=run_id,
+                expected_values=completion_values,
+            )
+        except Exception as exc:
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签成功运行记录的新鲜回读不匹配。",
+                retryable=False,
+            ) from exc
+        if (
+            completion_readback.get("verified") is not True
+            or completion_readback.get("record_count") != len(open_rows)
+            or completion_readback.get("publication_sha256") != fingerprint
+            or completion_readback.get("persistence_sha256")
+            != persistence_marker.get("marker_sha256")
+        ):
+            raise DailySignSyncError(
+                "WRITE_OUTCOME_UNKNOWN",
+                "每日应签成功运行记录缺少完整的新鲜回读证明。",
+                retryable=False,
+            )
         evidence_refs = sorted(
             set(state.get("source_refs", []))
             | {
@@ -1644,10 +1882,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 f"r13:complete:{snapshot_fingerprint(r13_rows)}",
                 f"ronghui_problems:complete:{snapshot_fingerprint(problem_events)}",
                 f"ronghui_signs:complete:{snapshot_fingerprint(all_sign_events)}",
-                f"mysql:daily_sign_ledger:{ledger_result['fingerprint']}",
+                f"mysql:daily_sign_persistence:{persistence_marker['marker_sha256']}",
+                f"mysql:daily_sign_ledger:{persistence_readback['ledger_sha256']}",
+                f"feishu:daily_sign_bitable:{bitable_readback['snapshot_sha256']}",
+                f"feishu:daily_sign_sheet:{sheet_readback['snapshot_sha256']}",
             }
         )
-        return _unified_success(
+        result = _unified_success(
             run_id=run_id,
             observed_at=observed_at,
             ledger_rows=ledger_rows,
@@ -1655,17 +1896,49 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             diagnostics=diagnostics,
             evidence_refs=evidence_refs,
         )
+        result["meta"]["postcondition_evidence"]["0"].update(
+            {
+                "condition": "authoritative_snapshot_and_projections_verified",
+                "details": {
+                    "source_run_id": run_id,
+                    "persistence_sha256": persistence_marker["marker_sha256"],
+                    "bitable_snapshot_sha256": bitable_readback[
+                        "snapshot_sha256"
+                    ],
+                    "sheet_snapshot_sha256": sheet_readback["snapshot_sha256"],
+                },
+            }
+        )
+        return result
     except DailySignSyncError as exc:
+        if exc.code == "WRITE_OUTCOME_UNKNOWN":
+            return _unified_failure(
+                code="WRITE_OUTCOME_UNKNOWN",
+                message=str(exc),
+                observed_at=observed_at,
+                run_id=run_id,
+                retryable=False,
+            )
         if run_id:
             try:
-                _finish_failed_run(run_id, diagnostics, message=str(exc))
+                failed_values = _finish_failed_run(
+                    run_id,
+                    diagnostics,
+                    message=str(exc),
+                )
+                failed_readback = verify_daily_sign_completed_run(
+                    run_id=run_id,
+                    expected_values=failed_values,
+                )
+                if failed_readback.get("verified") is not True:
+                    raise RuntimeError("daily-sign failed run proof is incomplete")
             except Exception:
                 return _unified_failure(
-                    code="SYNC_RUN_PERSIST_FAILED",
-                    message="每日应签同步失败，且同步运行状态无法持久化。",
+                    code="WRITE_OUTCOME_UNKNOWN",
+                    message="每日应签失败运行记录提交后的终态未知。",
                     observed_at=observed_at,
                     run_id=run_id,
-                    retryable=True,
+                    retryable=False,
                 )
         return _unified_failure(
             code=exc.code,
@@ -1677,16 +1950,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         safe_message = f"每日应签同步发生未分类错误：{type(exc).__name__}。"
         if run_id:
-            try:
-                _finish_failed_run(run_id, diagnostics, message=safe_message)
-            except Exception:
-                return _unified_failure(
-                    code="SYNC_RUN_PERSIST_FAILED",
-                    message="每日应签同步失败，且同步运行状态无法持久化。",
-                    observed_at=observed_at,
-                    run_id=run_id,
-                    retryable=True,
-                )
+            return _unified_failure(
+                code="WRITE_OUTCOME_UNKNOWN",
+                message=safe_message,
+                observed_at=observed_at,
+                run_id=run_id,
+                retryable=False,
+            )
         return _unified_failure(
             code="DAILY_SIGN_SYNC_FAILED",
             message=safe_message,

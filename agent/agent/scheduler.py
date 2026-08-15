@@ -23,6 +23,7 @@ from shared.finance.sources import enabled_finance_platforms
 
 logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
+_automation_project_invoker: Any | None = None
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
 EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS = 60
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
@@ -56,8 +57,13 @@ def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime
     return latest
 
 
-def init_scheduler(agent_core) -> AsyncIOScheduler:
-    global _scheduler
+def init_scheduler(
+    agent_core,
+    *,
+    automation_project_invoker: Any | None = None,
+) -> AsyncIOScheduler:
+    global _automation_project_invoker, _scheduler
+    _automation_project_invoker = automation_project_invoker
     _scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     try:
         seeded = ensure_control_plane_schedule_tasks(agent_core)
@@ -66,11 +72,17 @@ def init_scheduler(agent_core) -> AsyncIOScheduler:
     except Exception as exc:
         logger.warning("Control-plane schedule initialization failed: %s", exc)
     try:
-        _load_tasks_from_db(agent_core)
+        _load_tasks_from_db(
+            agent_core,
+            automation_project_invoker=automation_project_invoker,
+        )
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
     try:
-        _add_finance_startup_catchup_job(agent_core)
+        _add_finance_startup_catchup_job(
+            agent_core,
+            automation_project_invoker=automation_project_invoker,
+        )
     except Exception as exc:
         logger.warning("Finance startup catch-up initialization failed: %s", exc)
     return _scheduler
@@ -136,7 +148,11 @@ def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[s
     return tuple(seeded)
 
 
-def _add_finance_startup_catchup_job(agent_core) -> None:
+def _add_finance_startup_catchup_job(
+    agent_core,
+    *,
+    automation_project_invoker: Any | None = None,
+) -> None:
     """Perform the bounded startup gap scan through the same control plane."""
 
     startup_task = _finance_startup_schedule_task(agent_core)
@@ -158,11 +174,14 @@ def _add_finance_startup_catchup_job(agent_core) -> None:
             result = await _execute_scheduled_tool(
                 agent_core,
                 task_id=FINANCE_STARTUP_TASK_ID,
-                tool_name="sync_finance_bills",
+                tool_name=str(startup_task.get("tool_name") or ""),
                 arguments=copy.deepcopy(startup_task.get("tool_params") or {}),
                 scheduled_for=scheduled_for,
                 cron_expression="@startup",
                 configuration_version=int(startup_task.get("configuration_version") or 1),
+                automation_id=startup_task.get("automation_id"),
+                automation_generation=startup_task.get("automation_generation"),
+                automation_project_invoker=automation_project_invoker,
             )
             if not isinstance(result, dict) or not result.get("success"):
                 logger.error("Startup finance catch-up did not complete: %s", _result_error(result))
@@ -196,17 +215,32 @@ def _finance_startup_schedule_task(agent_core) -> dict[str, Any] | None:
         enabled = row.get("enabled")
         if not (enabled is True or type(enabled) is int and enabled == 1):
             return None
-        if (
-            str(row.get("tool_name") or "") != "sync_finance_bills"
-            or str(row.get("cron_expression") or "") != "@startup"
-        ):
+        automation_id = str(row.get("automation_id") or "").strip()
+        expected_tool = (
+            f"automation.{automation_id}.run"
+            if automation_id
+            else "sync_finance_bills"
+        )
+        if str(row.get("tool_name") or "") != expected_tool or str(
+            row.get("cron_expression") or ""
+        ) != "@startup":
             logger.error("Finance startup task has an invalid persisted binding")
+            return None
+        if automation_id and (
+            type(row.get("automation_generation")) is not int
+            or int(row["automation_generation"]) <= 0
+        ):
+            logger.error("Finance startup task has no committed project generation")
             return None
         return row
     return None
 
 
-def _load_tasks_from_db(agent_core) -> None:
+def _load_tasks_from_db(
+    agent_core,
+    *,
+    automation_project_invoker: Any | None = None,
+) -> None:
     for task in agent_core.memory.list_enabled_scheduled_tasks():
         if str(task.get("id") or "") == FINANCE_STARTUP_TASK_ID:
             # ``@startup`` is a persisted special occurrence, not a cron
@@ -218,6 +252,9 @@ def _load_tasks_from_db(agent_core) -> None:
             tool_name=task["tool_name"],
             tool_params=task.get("tool_params") or {},
             configuration_version=int(task.get("configuration_version") or 1),
+            automation_id=task.get("automation_id"),
+            automation_generation=task.get("automation_generation"),
+            automation_project_invoker=automation_project_invoker,
             agent_core=agent_core,
         )
         logger.info(
@@ -236,6 +273,9 @@ def _add_job(
     agent_core,
     *,
     configuration_version: int = 1,
+    automation_id: str | None = None,
+    automation_generation: int | None = None,
+    automation_project_invoker: Any | None = None,
 ) -> None:
     parts = str(cron_expr or "").split()
     if len(parts) != 5:
@@ -257,6 +297,8 @@ def _add_job(
         tid: str = task_id,
         cron: str = cron_expr,
         config_version: int = configuration_version,
+        project_id: str | None = automation_id,
+        project_generation: int | None = automation_generation,
     ) -> None:
         logger.info("Scheduled task fired: %s -> %s", tid, tn)
         try:
@@ -264,7 +306,7 @@ def _add_job(
             if scheduled_for is None:
                 raise RuntimeError("Unable to determine a stable scheduled fire time")
             arguments = copy.deepcopy(tp or {})
-            if tn == "sync_finance_bills":
+            if not project_id and tn == "sync_finance_bills":
                 for key, value in _enabled_finance_platform_filter().items():
                     arguments.setdefault(key, value)
                 arguments["target_date"] = (
@@ -278,6 +320,9 @@ def _add_job(
                 scheduled_for=scheduled_for,
                 cron_expression=cron,
                 configuration_version=config_version,
+                automation_id=project_id,
+                automation_generation=project_generation,
+                automation_project_invoker=automation_project_invoker,
             )
             status = "success" if isinstance(result, dict) and result.get("success") else "error"
             if status != "success":
@@ -299,7 +344,7 @@ def _add_job(
         if isinstance(capability, dict)
         else ""
     )
-    if operation_type == "external_write":
+    if automation_id or operation_type == "external_write":
         # External writes are never replayed concurrently.  A missed in-memory
         # occurrence gets only a short grace window; durable Command
         # idempotency still protects duplicate submissions for the same exact
@@ -309,7 +354,10 @@ def _add_job(
             "coalesce": True,
             "misfire_grace_time": EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS,
         }
-    if tool_name == "sync_finance_bills":
+    if tool_name == "sync_finance_bills" or automation_id in {
+        "finance_bills",
+        "finance_startup_catchup",
+    }:
         options = {
             "max_instances": 1,
             "coalesce": True,
@@ -329,6 +377,9 @@ async def _execute_scheduled_tool(
     scheduled_for: datetime,
     cron_expression: str,
     configuration_version: int | None = None,
+    automation_id: str | None = None,
+    automation_generation: int | None = None,
+    automation_project_invoker: Any | None = None,
 ):
     """Submit one deterministic scheduler occurrence."""
 
@@ -353,6 +404,39 @@ async def _execute_scheduled_tool(
         # newly governed occurrence.
         idempotency_key = (
             f"scheduler:{task_id}:v{configuration_version}:{scheduled_iso}"
+        )
+    project_id = str(automation_id or "").strip()
+    if project_id:
+        expected_tool = f"automation.{project_id}.run"
+        if tool_name != expected_tool:
+            raise RuntimeError(
+                "Scheduled automation tool identity does not match its project"
+            )
+        if type(automation_generation) is not int or automation_generation <= 0:
+            raise RuntimeError(
+                "Scheduled automation project has no committed generation"
+            )
+        invoker = automation_project_invoker or _automation_project_invoker
+        if invoker is None or not hasattr(invoker, "invoke_trusted_and_wait"):
+            raise RuntimeError("Scheduled automation project invoker is unavailable")
+        return await invoker.invoke_trusted_and_wait(
+            project_id,
+            entrypoint="scheduler",
+            request_id=idempotency_key,
+            actor=Actor(
+                ActorType.SCHEDULER,
+                task_id,
+                roles=("system",),
+                authenticated_by="apscheduler",
+            ),
+            trusted_context=execution_context,
+            idempotency_key=idempotency_key,
+            expected_automation_generation=automation_generation,
+            expected_project_configuration_version=configuration_version,
+        )
+    if str(tool_name or "").startswith("automation."):
+        raise RuntimeError(
+            "Scheduled automation command is missing an explicit project identity"
         )
     return await agent_core.execute_tool(
         tool_name,
@@ -522,14 +606,27 @@ def consume_scheduler_release_hold(expected_release_sha: str) -> dict[str, Any]:
     return scheduler_runtime_status()
 
 
-def reload_scheduler(agent_core) -> dict[str, Any]:
+def reload_scheduler(
+    agent_core,
+    *,
+    automation_project_invoker: Any | None = None,
+) -> dict[str, Any]:
+    global _automation_project_invoker
+    if automation_project_invoker is not None:
+        _automation_project_invoker = automation_project_invoker
     if _scheduler is None:
         return {"initialized": False, "jobs": 0, "job_ids": []}
     for job in list(_scheduler.get_jobs()):
         _scheduler.remove_job(job.id)
-    _load_tasks_from_db(agent_core)
+    _load_tasks_from_db(
+        agent_core,
+        automation_project_invoker=_automation_project_invoker,
+    )
     try:
-        _add_finance_startup_catchup_job(agent_core)
+        _add_finance_startup_catchup_job(
+            agent_core,
+            automation_project_invoker=_automation_project_invoker,
+        )
     except Exception as exc:
         logger.warning("Finance startup catch-up initialization failed: %s", exc)
     jobs = _scheduler.get_jobs()

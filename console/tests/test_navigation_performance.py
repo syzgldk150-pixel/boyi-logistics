@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import types
 import unittest
 from pathlib import Path
@@ -7,6 +9,19 @@ from app import LocalDocFlowApp
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _node_host_path(path: Path, node_binary: str) -> str:
+    text = str(path)
+    if not node_binary.lower().endswith(".exe") or not text.startswith("/"):
+        return text
+    converted = subprocess.run(
+        ["wslpath", "-w", text],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return converted.stdout.strip()
 
 
 class _Handler:
@@ -70,16 +85,16 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=cal-console-20260814-policy1", template)
+        self.assertIn("/static/style.css?v=cal-console-20260815-project-plugin3", template)
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260812-perf1", template)
-        self.assertIn("/static/style.css?v=cal-console-20260814-policy1", login_template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260815-tabs2", template)
+        self.assertIn("/static/style.css?v=cal-console-20260815-project-plugin3", login_template)
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", login_template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", login_template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", login_template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260812-perf1", login_template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260815-tabs2", login_template)
         self.assertNotIn("unpkg.com", template)
         self.assertNotIn("unpkg.com", login_template)
         self.assertNotIn("api.dicebear.com", template)
@@ -258,7 +273,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertNotIn(".top-header-actions--page { flex-basis: auto; min-width: 0; }", stylesheet)
         self.assertIn(".automation-toolbar-field { display: inline-flex;", stylesheet)
         self.assertIn("white-space: nowrap", stylesheet)
-        self.assertIn(".tms-dot-wrap { position: relative; display: inline-flex; flex: 0 0 auto;", stylesheet)
+        self.assertNotIn(".tms-dot-wrap", stylesheet)
         self.assertIn(".automation-account-add-btn { display: inline-flex;", stylesheet)
         self.assertIn("line-height: 1", stylesheet)
 
@@ -272,6 +287,61 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn('pinned: tabKey === "/"', script)
         self.assertIn("closeButton.hidden = Boolean(tab.pinned)", script)
         self.assertNotIn("hideSingleHomeTab", script)
+
+    def test_direct_refresh_bootstraps_pinned_overview_before_active_module(self):
+        script = (CONSOLE_DIR / "static" / "console_ui.js").read_text(encoding="utf-8")
+        base = (CONSOLE_DIR / "templates" / "base.html").read_text(encoding="utf-8")
+        helper = script[
+            script.index("function ensureOverviewPlaceholder"):
+            script.index("function ensureInitialTab")
+        ]
+        self.assertIn('if (currentKey === "/" || openTabs.has("/"))', helper)
+        self.assertIn('openTabs.set("/", {', helper)
+        self.assertIn('key: "/"', helper)
+        self.assertIn("pinned: true", helper)
+        self.assertIn("placeholder: true", helper)
+        self.assertIn("main: null", helper)
+        for path in ("/modules/finance", "/automations"):
+            with self.subTest(path=path):
+                # Both direct module URLs take the non-overview branch, so the
+                # fixed placeholder is inserted before ensureInitialTab adds
+                # and activates the current module.
+                self.assertNotEqual("/", path)
+                projected_tabs = ["/", path]
+                self.assertEqual("/", projected_tabs[0])
+                self.assertEqual(path, projected_tabs[1])
+                self.assertEqual(path, projected_tabs[-1])
+
+        self.assertIn('const tabs = homeTab ? [homeTab, ...otherTabs] : otherTabs', script)
+        self.assertIn("activateTab(key, { pushState: false, skipScroll: true })", script)
+        self.assertIn("if (tab.placeholder)", script)
+        self.assertIn("void ensureModuleTab(tab.url, { reload: true", script)
+        self.assertIn("window.addEventListener(\"popstate\"", script)
+        self.assertIn("(tab.pinned && !options.force)", script)
+        self.assertIn("closeButton.hidden = Boolean(tab.pinned)", script)
+        self.assertIn("data-console-tab-close", base)
+
+    def test_finance_deep_link_executes_with_pinned_overview_and_active_module(self):
+        node_binary = shutil.which("node") or shutil.which("node.exe")
+        if node_binary is None:
+            self.skipTest("Node.js is required for the executable Console DOM regression")
+        dom_test = Path(__file__).with_name("console_ui_deeplink_dom.test.cjs")
+        console_ui = CONSOLE_DIR / "static" / "console_ui.js"
+        completed = subprocess.run(
+            [
+                node_binary,
+                _node_host_path(dom_test, node_binary),
+                _node_host_path(console_ui, node_binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            0,
+            completed.returncode,
+            msg=f"{completed.stdout}\n{completed.stderr}",
+        )
 
     def test_start_backend_health_check_uses_home_entry(self):
         script = (CONSOLE_DIR / "start_backend.sh").read_text(encoding="utf-8")

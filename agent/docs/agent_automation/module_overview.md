@@ -4,9 +4,10 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-13
+updated: 2026-08-15
 ---
 
+> 2026-08-15: 已插件化的飞书确定性指令不再把工具名和账号参数交给通用命令入口。文本、菜单及 pending 确认只提交由服务端构造的项目调用；项目实例通过 committed generation 中唯一的 `feishu_route.route_key` 精确解析，多实例别名冲突时显式拒绝。账号只来自该实例绑定的业务账号池，消息体或旧 pending 中出现 `account_id/account_ids` 等覆盖字段会失效并要求重新发起。自提、分批和 R7 多车牌仍保留“预览/选择/确认”状态机，日期、车牌和预览指纹由代码拥有的 resolver 闭合；Webhook 与 WebSocket 对同一真实 `event_id` 使用同一幂等身份。单号查询和报价等只读兼容能力继续走原通用 Command 链路。
 > 2026-08-13: 融辉发件扫描会把任务所选账号的精确 `session_profile` 同时传给浏览器 storage state 和共享登录校验，避免账号已登录但扫描误用默认会话。写表前等待发件扫描同源 iframe/父页/顶层页的 `$Z.user.getUserInfo()` 就绪，只使用真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`；多个可用来源必须完全一致，不一致时显式报 `ambiguous_login_context`，不从页头文字、用户名或硬编码网点补值。上下文不可用、字段缺失或 `SCAN_MAN_CODE` 超过数据库 20 字节限制时显式失败并返回具体状态。站点必须唯一精确匹配并包含真实编码，录单和上传失败不再切换到第二条操作路径。`sync_scan_codes` 任一批次失败后立即停止、不触发后续流程，并向控制台返回失败而不是“已完成”；`dry_run` 不写扫描索引、不调用 `/scan_next`，显式批次/条数限制会返回未排入数量。
 > 2026-08-13: 融辉图片验证码登录改为直接点击真实登录页的 `newLogin()` 按钮，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调，不再用 requests POST 将重定向误判为完整登录。共享会话会保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 和过期属性，并自动把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，主页、菜单和扫描 API 即使可访问也不得显示 authenticated，必须进入重新登录流程。
 > 2026-08-13: 后台 `/automations` 的“获取并扫描数据”和 `arrive-list` 卡片新增独立“指定日期”控件。日期留空时不写入日期覆盖参数，继续使用各脚本的执行当日；选择日期时按 `target_date=YYYY-MM-DD` 拉取指定单日。扫描同步会在调用融辉 `/get_scan` 前转换为原页使用的 `YYYY/MM/DD` 日期格式，并拒绝同时设置 `target_date` 与高级请求体中的 `date/start/end`，避免日期来源歧义。
@@ -45,7 +46,7 @@ updated: 2026-08-13
 
 ## 模块定位
 
-把"内部运维操作"以确定性指令的方式挂到飞书机器人上，由 Agent 直接调度对应的工具/同步链路，**不经过 LLM**，避免兜底翻译失败导致命令无法执行。
+把“内部运维操作”以确定性指令的方式挂到飞书机器人上。已插件化写操作通过注入的 `AutomationProjectEntrypoints` 提交绑定 committed generation 的项目调用，**不经过 LLM**；只读兼容能力仍通过通用 Command 门面提交，入口本身不直接执行工具或脚本。
 
 > 当前飞书机器人承载的全部能力都归属本模块。AI客服模块（面向客户的对话能力）尚未启动开发，待开发后会把客户对话相关的能力从这里剥离过去。
 
@@ -53,7 +54,7 @@ updated: 2026-08-13
 
 ### 1. 飞书文本直达指令
 
-固定文本触发，命中 → 直接执行工具 → 用专门的 formatter 回复结果。
+固定文本触发，命中 → 精确解析 committed `feishu_route` → 提交 typed project invocation → 用专门的 formatter 回复结果。只有非插件只读兼容指令继续走通用工具 Command。
 
 兜底规则：用户文本如果没有命中直达指令，且本轮 LLM 没有产生真实工具调用，`agent/core.py` 统一回复 `没有匹配到可执行脚本，我不知道该执行哪个任务。`，禁止 LLM 自由聊天、自行描述“已执行”或猜测后台结果。LLM 产生工具调用后，最终回复也必须来自工具结果 formatter，不能采用 LLM 对工具结果的自由总结。
 
@@ -173,6 +174,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 关注点 | 文件 |
 |---|---|
 | 文本路由 | `agent/direct_tool_router.py` |
+| 插件项目飞书入口与精确路由 | `agent/orchestration/automation_project_entrypoints.py` + `feishu/message_handler.py` |
 | 自动化 Profile 状态 | `agent/automation_profile.py` |
 | pending 存储 | `agent/pending_actions.py` |
 | 消息状态机（三态 pending） | `feishu/message_handler.py` 的 `_process_and_reply` |
@@ -209,9 +211,9 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | type | 用途 | 数据 |
 |---|---|---|
 | `confirm_action` | 通用先预览后确认（如自提到货问题件） | `{tool_name, params, description}` |
-| `split_pending_selection` | 分批 dry-run 后等待“确认”全量执行，或数字/多选/区间部分选择 | `{candidates, preview_fingerprint, account_id}` |
-| `split_pending_confirmation` | 分批选择回显后等待确认 | `{selected_bill_codes, preview_fingerprint, account_id}` |
-| `r7_departure_plate_choice` | 飞书发车打卡多车牌选择；只接受完整车牌号，不接受纯序号 | `{tool_name, params, plate_numbers}` |
+| `split_pending_selection` | 分批 dry-run 后等待“确认”全量执行，或数字/多选/区间部分选择 | `{automation_route_key, candidates, preview_fingerprint, dynamic_inputs}`；不保存账号字段 |
+| `split_pending_confirmation` | 分批选择回显后等待确认 | `{automation_route_key, selected_bill_codes, preview_fingerprint, dynamic_inputs}`；不保存账号字段 |
+| `r7_departure_plate_choice` | 飞书发车打卡多车牌选择；只接受完整车牌号，不接受纯序号 | `{automation_route_key, plate_numbers, dynamic_inputs}`；车牌必须来自 committed 项目配置 |
 | `confirm_login_for_resume` | 登录态过期，等用户决定是否重登 | `{resume_tool, resume_params}` |
 | `waiting_code_for_resume` | 已发码，等用户回验证码；主动登录时 `resume_tool` 为空，仅完成登录校验 | `{resume_tool, resume_params}` |
 

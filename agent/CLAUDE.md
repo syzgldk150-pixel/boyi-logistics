@@ -12,6 +12,7 @@
 - 这个脚本是标准发布入口，默认 `auto` 模式会自动判断发布 `agent`、`console` 或两者一起发布，并执行远端健康检查。
 - 只有在用户明确要求 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等特殊参数时，才偏离这条默认命令。
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
+- 当前 Linux/ECS 发行明确不包含 Windows Worker/Tray：Agent 不装载其签名密钥、transport 或路由，发布器不以 Worker mTLS、服务端身份或 dispatcher readiness 阻断其余服务端插件。版本化 `deploy/nginx/boyi-worker-mtls.conf` 仅保留为未来重新启用时的安全合同；重新启用必须在同一受审提交中恢复精确 mTLS location、身份验证、发布预检和健康门禁，不得通过环境变量旁路打开。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
 - Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的精确材料恢复旧环境和源码；成功时也必须保留当次远端回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
@@ -41,6 +42,14 @@
 
 - `main.py` 是唯一组合根，负责注入 `CommandGateway`、Context/Planner/Validator/Policy、Approval、WorkflowRunner、ResultVerifier、Outbox Dispatcher、真实仓储和执行 adapter，并按 Runner -> Outbox 的顺序停机。
 - `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；通用仓储原语、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
+- 自动化插件的通用清单、签名校验、代际租约、Broker、安装/卸载与 subprocess 路由位于 `agent/automation_plugins/`；首方闭合 handler 门面位于 `agent/automation_plugins/first_party_handlers.py`，通用参数校验、脱敏与不透明证据编解码集中在 `agent/automation_plugins/first_party_handler_common.py`，不得在动作 handler 中复制；首方动作源码和提取状态位于 `first_party_automation_plugins/`，真实账号会话、浏览器、投影和飞书等闭合底层端口只可放在 `plugin_core_adapters/`。签名 payload 不得导入 `agent`、`shared` 或旧 whole-tool 入口，只能调用清单精确声明的 `(operation, action)`；账号 ID 只留在 Python 代际 side-channel，JSON 结果统一使用 binding-set proof。版本切换只把新租约原子指向新 generation，旧租约排空后才删除旧字节；缺少真实页面、独立写后验证或字段来源证据的动作必须保持 fail closed，当前逐动作状态以 `first_party_automation_plugins/MIGRATION_MATRIX.md` 为准。
+- 自动化插件的签名工件、desired/committed generation、Windows Service/Tray、两阶段卸载和发布健康门禁详见 `docs/automation_plugin_platform.md`；首方生产集合必须由 `scripts/build_first_party_plugin_release.py` 从同一提交一次性构建并完整预检。当前只打包迁移矩阵标为 `RUNNABLE` 且同时进入代码 allowlist 的 Linux/ECS 动作；`BLOCKED` 动作即使存在 payload 也不得进入 bootstrap、Catalog、Broker 或健康计数。本轮还精确排除两个 R7 打卡动作，排除项不得阻断其余服务端插件。
+- `scripts/first_party_release_scope.py` 以 AST 读取上述代码 allowlist，不导入 payload；本地发布只复制 allowlist 包，远端编译前重验 staged 包集合。CI 只以该集合的首方源码/源码测试阻断当前发行，`BLOCKED` 包进入独立非阻断审计；release-scope、签名、Catalog/Broker 禁入与共享核心测试仍是阻断门禁，禁止 whole-tool 或旧源码回退。
+- Windows Worker/Tray 的未来设计源码位于 `windows_worker_host.py` 和 `agent/windows_worker/{tray_host.py,tray_ipc.py,installer.py,manage_installation.ps1}`，但整套运行面当前发行禁用且不参与健康门禁。重新启用后，安装仍不得启动进程、读取密钥或联网；卸载先正常停机并在其他 active job/未知写时拒绝，且不自动删除本地 state/package/DPAPI 材料。未注入闭合 action adapter 时必须返回 `TRAY_ACTION_ADAPTER_UNAVAILABLE`，禁止任意 subprocess/旧 whole-tool 回退。
+- 自动化插件管理面位于 `agent/automation_plugins/management_api.py`、`management.py`、`management_repository.py` 与 `binding_resolver.py`：浏览器 DTO 必须闭合且身份只取签名 Console principal，生命周期/配置写只允许 `super_admin`；账号、资源和命名设备只精确匹配，不用默认或首项兜底。原始签名 ZIP 必须以 `0600` 常规文件复制进不可变 installed 版本目录，Worker 仅按 plugin/version/digest 安全读取；升级必须以 request UUID 在同一 UoW 注册目标版本、推进 desired generation、撤销旧授权，旧 committed generation 保持执行至新代原子切换，严禁覆盖当前版本或靠重启清场。
+- Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
+- 插件包只安装动作并声明支持的调度能力，不携带 cron 或实际执行时刻。定时由安装后的项目实例在系统自动化设置中配置，并与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源、定时和权限。
+- 飞书插件直达入口由 `agent/orchestration/automation_project_entrypoints.py` 提供，并在 `feishu/message_handler.py` 通过组合根注入：文本、菜单与 pending 只能按 committed generation 中唯一的 `feishu_route.route_key` 构造 typed invocation，重复别名、多候选、账号覆盖或缺少稳定事件 ID 均 fail closed。账号只来自项目实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入，通用 Command/LLM 不得伪造项目上下文。
 - Run/Work Item 状态转换必须走模型允许表和版本 CAS。登录恢复、补充信息恢复原 Run；`PARTIAL` 或终态失败创建关联新 Run。第三方/财务写的未知结果必须 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，除非存在精确读后 reconciliation。
 - Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
 - 计划固定 Schema v1，计划哈希必须覆盖上下文、目录哈希、工具版本、完整参数/账号、实际影响、Evidence 与写后条件。审批 15 分钟过期，执行前重算；变化时使旧审批失效并生成新轮次。
@@ -49,7 +58,7 @@
 - 生产已应用的 `014_control_plane_task_cutover.sql` 按线上校验和保持字节不可变；后续合同修正只能通过 `016`/`017` 前向迁移。首次切换要求 67 个既有启用任务全部为当前有效的精确免审；后续发布允许管理员逐任务启停或改回逐次审批，但启用项必须具有当前有效的精确策略或有审计依据的安全降权。
 - 账号凭据保存/清除前必须原子撤销所有显式引用、以及财务同步等代码声明的隐式账号依赖对应的精确定时免审并写审计/Outbox；账号级 MySQL 执行锁必须让凭据变更与全部非终态受保护写 Run 串行化，活动 Run 检查、锁获取或撤权失败时禁止改凭据。每个受保护写步骤在同一账号锁内重新评估当前策略并提交 `RUNNING`；免审已失效时原子回到 `WAITING_APPROVAL`，已开始的写只 reconcile，未知结果不重放。人工 terminal retry 只允许原计划全为 read/compute；任何写计划必须重新提交 Command 并重新策略评估/审批，不得复制 Scheduler 身份或豁免重放。
 - 发布器必须在 mutation 前捕获 `014`/`016`/`017` 与 bootstrap marker 原状态，停服务前后阻断 `RUNNING`/`VERIFYING` 的受保护写；失败仅按本次发布状态逆序恢复 bootstrap、`017`、`016`、`014`。新 Agent 必须带发布标记以 paused 状态装载 Scheduler，并让 WorkflowRunner 保持 held、不领取 Run；identity smoke、69-task manifest 和依赖记录全部通过后，签名接口才先恢复并确认两者均可运行，最后删除匹配本次 SHA 的 marker。marker 删除是发布提交点；删除前异常/进程退出保留 marker，下次启动继续 hold，响应丢失后的重复激活必须幂等完成。激活请求发出后不得自动回滚可能已经启动的任务。
-- 打卡的 `clock_in_dual` 为 v1.1 精确账号/会话配置的外部写：不安全结果不重试，ACK 证据不是独立读后验证，未知写结果必须阻塞。财务启动只继承已持久化的财务任务策略，不得以启动补拉绕过审批。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
+- 打卡的 `clock_in_dual` 为 v1.1 精确账号/会话配置的外部写：每次提交 ACK 后必须通过 `FIND_REACH_OR_LEAVE_PORT_DETNEW` 做独立新鲜读回，并唯一匹配网点、操作类型、结果类别、时间与 GUID/ROW_ID；零条、多条、不完整或不可达均记为未知写且禁止重试。财务启动只继承已持久化的财务任务策略，不得以启动补拉绕过审批。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
 - 每日应签与客服问题件只读试点通过 `pilot_projection.py` 投影；每次采集（包括来源不完整或详情复核失败）都必须保存 COMPLETE/INCOMPLETE 影子 Evidence。客服旧口径集合必须从现有账号选择与站点过滤规则独立计算，不能从新集合反推。首页保持旧口径，直至连续三个完整业务日影子集合、来源完整性和差异证据满足切换标准。
 
 ## 快速定位入口
@@ -67,6 +76,7 @@
 | OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
 | 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
+| 自动化插件平台 | `agent/automation_plugins/`、`first_party_automation_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/` | `docs/automation_plugin_platform.md`、`first_party_automation_plugins/README.md`、`first_party_automation_plugins/MIGRATION_MATRIX.md` | 当前发行仅启用矩阵与代码 allowlist 双重许可的 Linux/ECS 动作；Windows Worker/Tray 与 R7 打卡延后 |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
 | 通用规范 | — | `docs/common/` | 活跃 |
 

@@ -121,6 +121,45 @@ class ToolRegistryValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unsupported fields.*minLenght"):
                 validate_registry({"tools": [misspelled_constraint]}, project_root=Path(root))
 
+    def test_string_pattern_is_compiled_and_enforced_at_runtime(self):
+        with self._project_root() as root:
+            patterned = _tool()
+            patterned["input_schema"]["properties"]["value"].update(
+                {
+                    "minLength": 64,
+                    "maxLength": 64,
+                    "pattern": "^[0-9a-f]{64}$",
+                }
+            )
+            registry_path = self._write_registry(Path(root), [patterned])
+            registry = ToolRegistry(registry_path=registry_path, project_root=Path(root))
+            registry.validate_arguments("valid", {"value": "a" * 64})
+            with self.assertRaisesRegex(ValueError, "declared pattern"):
+                registry.validate_arguments("valid", {"value": "A" * 64})
+
+            invalid_pattern = _tool()
+            invalid_pattern["input_schema"]["properties"]["value"]["pattern"] = "["
+            with self.assertRaisesRegex(ValueError, "pattern is invalid"):
+                validate_registry(
+                    {"tools": [invalid_pattern]},
+                    project_root=Path(root),
+                )
+
+    def test_project_full_auto_governance_ceiling_is_optional_but_fail_closed(self):
+        with self._project_root() as root:
+            implicit = validate_registry({"tools": [_tool()]}, project_root=Path(root))
+            self.assertIs(implicit[0]["project_full_auto_allowed"], False)
+
+            explicit = _tool()
+            explicit["project_full_auto_allowed"] = True
+            validated = validate_registry({"tools": [explicit]}, project_root=Path(root))
+            self.assertIs(validated[0]["project_full_auto_allowed"], True)
+
+            invalid = _tool()
+            invalid["project_full_auto_allowed"] = "true"
+            with self.assertRaisesRegex(ValueError, "project_full_auto_allowed must be boolean"):
+                validate_registry({"tools": [invalid]}, project_root=Path(root))
+
     def test_enforces_write_and_extreme_destructive_policies(self):
         with self._project_root() as root:
             missing_approval_role = _tool(
@@ -367,7 +406,10 @@ class ToolRegistryValidationTests(unittest.TestCase):
             capability["evidence"]["required_fields"],
             ["pagination_complete", "account", "source"],
         )
-        self.assertEqual(capability["input_schema"]["required"], ["direction"])
+        self.assertEqual(
+            capability["input_schema"]["required"],
+            ["direction", "account_ids"],
+        )
         self.assertNotIn(
             "sync_customer_service_problems",
             [item["function"]["name"] for item in registry.get_llm_tools()],

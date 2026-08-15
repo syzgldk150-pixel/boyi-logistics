@@ -72,6 +72,38 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("[]", payload["schedule_times_json"])
         self.assertIn("arrive_list", override)
 
+    def test_plugin_submission_discards_browser_tool_params_accounts_and_tool_name(self):
+        app = self._make_app(
+            {
+                "task_id": "finance_action_east",
+                "task_mode": "manual",
+                "name": "华东财务同步",
+                "tool_name": "browser.supplied.tool",
+                "cron_expression": "* * * * *",
+                "schedule_times_json": '["00:01"]',
+                "tool_params_json": '{"token":"browser-secret","account_id":"legacy"}',
+                "account_role__account_id": "legacy",
+                "plugin_account_role__finance_quote_source": "browser-account",
+                "project_plugin_instance": "true",
+                "enabled": "on",
+            }
+        )
+
+        payload, _override, error_message = app._collect_automation_task_submission(
+            None,
+            allow_missing_schedule=True,
+        )
+
+        self.assertEqual("", error_message)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertTrue(payload["project_plugin_instance"])
+        self.assertEqual("automation.finance_action_east.run", payload["tool_name"])
+        self.assertEqual({}, payload["tool_params"])
+        self.assertEqual("{}", payload["tool_params_json"])
+        self.assertEqual([], payload["schedule_times"])
+        self.assertEqual([], payload["cron_expressions"])
+
     def test_save_still_requires_schedule_for_scheduled_task(self):
         app = self._make_app(
             {
@@ -331,7 +363,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
         self.assertEqual({"r13_account_id", "account_id"}, set(roles))
 
-    def test_self_pickup_problem_upload_exposes_two_account_roles(self):
+    def test_uninstalled_legacy_task_exposes_roles_without_implicit_account_defaults(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         tasks = [
             {
@@ -369,9 +401,13 @@ class AutomationSubmissionTests(unittest.TestCase):
 
         roles = {item["field"]: item for item in tasks[0]["account_role_bindings"]}
         self.assertEqual("自提部账号", roles["account_id"]["label"])
-        self.assertEqual("ronghui_self_pickup_problem", roles["account_id"]["selected_account_id"])
+        self.assertEqual("", roles["account_id"]["selected_account_id"])
         self.assertEqual("大祥S站账号", roles["daxiang_s_account_id"]["label"])
-        self.assertEqual("ronghui_daxiang_s", roles["daxiang_s_account_id"]["selected_account_id"])
+        self.assertEqual("", roles["daxiang_s_account_id"]["selected_account_id"])
+        self.assertEqual(
+            {"ronghui_default", "ronghui_self_pickup_problem", "ronghui_daxiang_s"},
+            {item["account_id"] for item in roles["account_id"]["options"]},
+        )
 
     def test_fetch_accounts_marks_authenticated_session_without_credentials(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)

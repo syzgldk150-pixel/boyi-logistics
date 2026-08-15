@@ -19,12 +19,10 @@ logger = logging.getLogger("agent")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PROJECT_ROOT / "tools" / "registry.yaml"
 
-_JSON_SCHEMA_TYPES = frozenset(
-    {"string", "integer", "number", "boolean", "array", "object", "null"}
-)
+_JSON_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean", "array", "object", "null"})
 _COMMON_SCHEMA_FIELDS = frozenset({"type", "description", "enum"})
 _SCHEMA_FIELDS_BY_TYPE = {
-    "string": _COMMON_SCHEMA_FIELDS | {"minLength", "maxLength"},
+    "string": _COMMON_SCHEMA_FIELDS | {"minLength", "maxLength", "pattern"},
     "integer": _COMMON_SCHEMA_FIELDS | {"minimum", "maximum"},
     "number": _COMMON_SCHEMA_FIELDS | {"minimum", "maximum"},
     "boolean": _COMMON_SCHEMA_FIELDS,
@@ -47,9 +45,7 @@ _APPROVAL_MODES = frozenset({"none", "required", "schedule_allowlist", "disabled
 _APPROVAL_ROLES = frozenset({"admin", "super_admin"})
 _IDEMPOTENCY_MODES = frozenset({"none", "key", "parameters"})
 _LLM_OPERATION_TYPES = frozenset({"read", "compute"})
-_WRITE_OPERATION_TYPES = frozenset(
-    {"internal_projection_write", "external_write", "financial_write"}
-)
+_WRITE_OPERATION_TYPES = frozenset({"internal_projection_write", "external_write", "financial_write"})
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -75,7 +71,7 @@ _REQUIRED_TOOL_FIELDS = frozenset(
         "heavy",
     }
 )
-_OPTIONAL_TOOL_FIELDS = frozenset({"queue_timeout"})
+_OPTIONAL_TOOL_FIELDS = frozenset({"queue_timeout", "project_full_auto_allowed"})
 
 
 def _validation_error(index: int, message: str) -> ValueError:
@@ -167,6 +163,18 @@ def _validate_schema_definition(
     enum_values = schema.get("enum")
     if enum_values is not None and (not isinstance(enum_values, list) or not enum_values):
         raise _validation_error(index, f"{path}.enum must be a non-empty list")
+
+    if schema_type == "string" and "pattern" in schema:
+        pattern = schema["pattern"]
+        if not isinstance(pattern, str) or not pattern or len(pattern) > 512:
+            raise _validation_error(
+                index,
+                f"{path}.pattern must be a non-empty string of at most 512 characters",
+            )
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise _validation_error(index, f"{path}.pattern is invalid") from exc
 
     if schema_type == "object":
         properties = schema.get("properties", {})
@@ -293,6 +301,7 @@ def _validate_governance(index: int, tool: dict[str, Any]) -> None:
             "none",
             "optional",
             "single",
+            "explicit_set",
             "all_configured",
             "single_or_all_configured",
         }:
@@ -390,8 +399,7 @@ def _validate_governance(index: int, tool: dict[str, Any]) -> None:
                 "internal projection writes must require approval or use the schedule allowlist",
             )
         if risk_level == "high" and (
-            approval.get("required_role") != "super_admin"
-            or "super_admin" not in required_roles
+            approval.get("required_role") != "super_admin" or "super_admin" not in required_roles
         ):
             raise _validation_error(
                 index,
@@ -479,6 +487,12 @@ def validate_registry(data: Any, *, project_root: Path = PROJECT_ROOT) -> list[d
             raise _validation_error(index, "timeout must be a positive integer")
         if not isinstance(tool["heavy"], bool):
             raise _validation_error(index, "heavy must be boolean")
+        # Project-scoped full-auto is a separate governance ceiling.  It does
+        # not alter the generic tool approval policy and is fail-closed for
+        # every existing or third-party tool that omits the declaration.
+        tool.setdefault("project_full_auto_allowed", False)
+        if not isinstance(tool["project_full_auto_allowed"], bool):
+            raise _validation_error(index, "project_full_auto_allowed must be boolean")
         if "queue_timeout" in tool:
             queue_timeout = tool["queue_timeout"]
             if isinstance(queue_timeout, bool) or not isinstance(queue_timeout, (int, float)) or queue_timeout < 0:
@@ -559,6 +573,8 @@ def _validate_instance(tool_name: str, value: Any, schema: dict[str, Any], path:
             raise _input_error(tool_name, path, f"must contain at least {schema['minLength']} characters")
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             raise _input_error(tool_name, path, f"must contain at most {schema['maxLength']} characters")
+        if "pattern" in schema and re.search(schema["pattern"], value) is None:
+            raise _input_error(tool_name, path, "must match the declared pattern")
     elif schema_type == "boolean":
         if not isinstance(value, bool):
             raise _input_error(tool_name, path, "must be boolean")

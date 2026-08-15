@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from agent.direct_tool_router import (
+    FIRST_PARTY_FEISHU_ROUTE_KEYS,
     direct_tool_request_from_text,
     format_tool_reply,
     format_tool_reply_messages,
@@ -26,8 +27,11 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
     parse_verify_code,
 )
+from agent.orchestration.automation_project_entrypoints import (
+    AutomationProjectEntrypoints,
+)
 from agent.pending_actions import clear_pending, get_pending, set_pending
-from agent.orchestration.models import Actor, ActorType
+from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from feishu.notify import remember_chat_id
 from shared.redaction import redact_text
@@ -60,6 +64,21 @@ SPLIT_PREVIEW_TOOL_NAME = "preview_split_pending_problems"
 FEISHU_SAFE_TEXT_BYTES = 3500
 ACCOUNT_AUTH_SESSION_PREFIX = "account:"
 ADMIN_REQUEST_TIMEOUT = 90.0
+_FEISHU_ROUTE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$")
+
+
+_AUTOMATION_PROJECT_ENTRYPOINTS: AutomationProjectEntrypoints | None = None
+
+
+def bind_automation_project_entrypoints(
+    service: AutomationProjectEntrypoints | None,
+) -> None:
+    """Bind the sole trusted project invocation adapter for Feishu events."""
+
+    global _AUTOMATION_PROJECT_ENTRYPOINTS
+    if service is not None and not isinstance(service, AutomationProjectEntrypoints):
+        raise TypeError("service must be AutomationProjectEntrypoints or None")
+    _AUTOMATION_PROJECT_ENTRYPOINTS = service
 
 
 @dataclass(frozen=True)
@@ -200,13 +219,143 @@ def _split_selected_lines(selected: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _split_execution_params(pending: dict[str, Any], selected_bill_codes: list[str]) -> dict[str, Any]:
+def _split_execution_inputs(
+    pending: dict[str, Any],
+    selected_bill_codes: list[str],
+) -> dict[str, Any]:
     return {
         "dry_run": False,
-        "account_id": pending.get("account_id") or "ronghui_default",
         "selected_bill_codes": selected_bill_codes,
         "preview_fingerprint": str(pending.get("preview_fingerprint") or ""),
     }
+
+
+def _account_field_name(value: Any) -> bool:
+    field_name = str(value or "").strip().lower()
+    return (
+        field_name in {"account_id", "account_ids"}
+        or field_name.endswith(("_account_id", "_account_ids"))
+    )
+
+
+def _contains_account_override(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            _account_field_name(key) or _contains_account_override(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_account_override(item) for item in value)
+    return False
+
+
+def _automation_entrypoints() -> AutomationProjectEntrypoints:
+    service = _AUTOMATION_PROJECT_ENTRYPOINTS
+    if service is None:
+        raise OrchestrationError(
+            "PROJECT_INVOKE_UNAVAILABLE",
+            "Automation project entrypoints are not initialized",
+        )
+    return service
+
+
+def _safe_feishu_route_key(value: Any) -> str:
+    route_key = str(value or "").strip()
+    if not _FEISHU_ROUTE_KEY_RE.fullmatch(route_key):
+        raise OrchestrationError(
+            "PROJECT_ROUTE_INVALID",
+            "Automation project route key is invalid",
+        )
+    return route_key
+
+
+def _project_preview_params(route_key: str, tool_name: str) -> dict[str, Any]:
+    service = _automation_entrypoints()
+    roles = (
+        ("account_id", "daxiang_s_account_id")
+        if tool_name == "preview_self_pickup_problems"
+        else ("account_id",)
+    )
+    bindings = service.require_feishu_account_bindings(route_key, *roles)
+    params: dict[str, Any] = {}
+    for role in roles:
+        binding = bindings[role]
+        if not isinstance(binding, str):
+            raise OrchestrationError(
+                "PROJECT_ACCOUNT_BINDING_INVALID",
+                "Preview requires one exact Business Account for each role",
+            )
+        params[role] = binding
+    return params
+
+
+async def _invoke_automation_project_and_reply(
+    *,
+    route_key: str,
+    dynamic_inputs: dict[str, Any] | None,
+    receive_id: str,
+    receive_id_type: str = "chat_id",
+) -> dict[str, Any] | None:
+    """Invoke one exact committed project from a verified Feishu event."""
+
+    context = _COMMAND_CONTEXT.get()
+    try:
+        safe_route_key = _safe_feishu_route_key(route_key)
+        if context is None or not context.event_id:
+            raise OrchestrationError(
+                "STABLE_EVENT_ID_REQUIRED",
+                "A stable verified Feishu event id is required",
+            )
+        inputs = dict(dynamic_inputs or {})
+        if _contains_account_override(inputs):
+            raise OrchestrationError(
+                "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN",
+                "Feishu cannot override project account bindings",
+            )
+        result = await _automation_entrypoints().invoke_feishu(
+            route_key=safe_route_key,
+            event_id=context.event_id,
+            sender_id=context.actor_id,
+            chat_id=context.chat_id,
+            envelope={"body": inputs, "query": {}},
+        )
+    except OrchestrationError as exc:
+        logger.warning(
+            "trusted Feishu automation rejected | route=%s | code=%s",
+            str(route_key or "")[:191],
+            exc.code,
+        )
+        await _reply_text(
+            receive_id,
+            f"自动化任务未提交（{exc.code}），请检查项目设置后重试。",
+            receive_id_type=receive_id_type,
+            reply_type="automation_project_rejected",
+        )
+        return None
+
+    status = str(result.get("status") or "").strip().upper()
+    run_id = str(result.get("run_id") or "").strip()
+    if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
+        reply = "自动化任务已提交，正在等待审批。"
+        reply_type = "automation_project_waiting_approval"
+    elif status == "COMPLETED":
+        reply = "自动化任务已完成。"
+        reply_type = "automation_project_completed"
+    elif status == "BLOCKED_LOGIN":
+        reply = "自动化任务已阻塞：绑定的业务账号需要恢复登录。"
+        reply_type = "automation_project_blocked_login"
+    else:
+        reply = f"自动化任务当前状态：{status or 'UNKNOWN'}。"
+        reply_type = "automation_project_status"
+    if run_id:
+        reply = f"{reply}\nRun：{run_id}"
+    await _reply_text(
+        receive_id,
+        reply,
+        receive_id_type=receive_id_type,
+        reply_type=reply_type,
+    )
+    return result
 
 
 async def _execute_split_formal(
@@ -217,16 +366,22 @@ async def _execute_split_formal(
     *,
     running_message: str,
 ) -> None:
-    if _running_tool_info(agent, SPLIT_TOOL_NAME).get("running"):
-        await _reply_text(chat_id, running_message, reply_type="split_confirmation_running")
+    del agent, running_message
+    if _contains_account_override(pending):
+        clear_pending(chat_id)
+        await _reply_text(
+            chat_id,
+            "旧版确认状态已失效，请重新发送“分批”。",
+            reply_type="split_confirmation_stale",
+        )
         return
+    route_key = str(pending.get("automation_route_key") or "").strip()
+    dynamic_inputs = _split_execution_inputs(pending, selected_bill_codes)
     clear_pending(chat_id)
-    await _reply_text(chat_id, "程序正在执行：分批差错及问题件")
-    await _execute_and_reply(
-        agent,
-        chat_id,
-        SPLIT_TOOL_NAME,
-        _split_execution_params(pending, selected_bill_codes),
+    await _invoke_automation_project_and_reply(
+        route_key=route_key,
+        dynamic_inputs=dynamic_inputs,
+        receive_id=chat_id,
     )
 
 
@@ -254,7 +409,22 @@ def _normalize_plate_numbers(value: Any, *, default: str = R7_DEPARTURE_DEFAULT_
             continue
         seen.add(plate)
         plates.append(plate)
-    return plates or [default]
+    return plates or ([default] if default else [])
+
+
+def _committed_r7_departure_config(route_key: str) -> tuple[list[str], dict[str, Any]]:
+    route = _automation_entrypoints().describe_feishu_route(route_key)
+    config = dict(route.project_config)
+    raw_plates = config.get("plate_numbers")
+    if raw_plates in (None, ""):
+        raw_plates = config.get("plate_number")
+    plate_numbers = _normalize_plate_numbers(raw_plates, default="")
+    if not plate_numbers:
+        raise OrchestrationError(
+            "PROJECT_CONFIGURATION_INVALID",
+            "R7 departure project has no configured plate number",
+        )
+    return plate_numbers, config
 
 
 def _r7_departure_saved_params(agent: Any) -> dict[str, Any]:
@@ -1214,6 +1384,13 @@ async def _execute_and_reply(
     tool_name: str,
     params: dict[str, Any],
 ) -> None:
+    if tool_name in FIRST_PARTY_FEISHU_ROUTE_KEYS:
+        await _reply_text(
+            chat_id,
+            "旧版自动化确认已失效，请重新发起该任务。",
+            reply_type="automation_legacy_execution_rejected",
+        )
+        return
     if await _reply_if_tool_running(agent, chat_id, tool_name):
         return
     try:
@@ -1240,12 +1417,19 @@ async def _execute_and_reply(
     await _reply_tool_result(chat_id, tool_name, result)
 
 
-async def _handle_r7_departure_direct(agent: Any, chat_id: str, tool_name: str) -> None:
-    params = _r7_departure_saved_params(agent)
-    plate_numbers = _normalize_plate_numbers(
-        params.get("plate_numbers") if params.get("plate_numbers") not in (None, "") else params.get("plate_number")
-    )
-    params["_feishu"] = True
+async def _handle_r7_departure_direct(
+    chat_id: str,
+    route_key: str,
+) -> None:
+    try:
+        plate_numbers, config = _committed_r7_departure_config(route_key)
+    except OrchestrationError as exc:
+        await _reply_text(
+            chat_id,
+            f"R7 发车项目配置不可用（{exc.code}），请在自动化设置中检查。",
+            reply_type="r7_departure_project_rejected",
+        )
+        return
 
     if len(plate_numbers) > 1:
         clear_pending(chat_id)
@@ -1253,20 +1437,22 @@ async def _handle_r7_departure_direct(agent: Any, chat_id: str, tool_name: str) 
             chat_id,
             {
                 "type": "r7_departure_plate_choice",
-                "tool_name": tool_name,
-                "params": params,
+                "automation_route_key": route_key,
                 "plate_numbers": plate_numbers,
             },
             ttl_sec=R7_DEPARTURE_PENDING_TTL,
         )
-        await _reply_text(chat_id, _format_r7_departure_plate_choice(plate_numbers, params))
+        await _reply_text(
+            chat_id,
+            _format_r7_departure_plate_choice(plate_numbers, config),
+        )
         return
 
-    params["plate_numbers"] = plate_numbers
-    if await _reply_if_tool_running(agent, chat_id, tool_name):
-        return
-    await _reply_text(chat_id, "程序正在执行")
-    await _execute_and_reply(agent, chat_id, tool_name, params)
+    await _invoke_automation_project_and_reply(
+        route_key=route_key,
+        dynamic_inputs={"plate_numbers": plate_numbers},
+        receive_id=chat_id,
+    )
 
 
 def _event_id_from_sdk_event(event: Any, *, fallback: str = "") -> str:
@@ -1458,6 +1644,16 @@ async def _handle_menu_action_inner(
         logger.warning("未识别的机器人菜单 event_key: %s", event_key)
         return
 
+    route_key = str(menu_action.get("automation_route_key") or "").strip()
+    if route_key:
+        await _invoke_automation_project_and_reply(
+            route_key=route_key,
+            dynamic_inputs=dict(menu_action.get("dynamic_inputs") or {}),
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+        )
+        return
+
     await _run_deferred_tool(
         tool_name=menu_action["tool_name"],
         params=menu_action["params"],
@@ -1530,6 +1726,16 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 clear_pending(chat_id)
                 await _reply_text(chat_id, "已取消：分批差错及问题件")
                 return
+            if _contains_account_override(pending) or not str(
+                pending.get("automation_route_key") or ""
+            ).strip():
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "旧版分批预览已失效，请重新发送“分批”。",
+                    reply_type="split_preview_stale",
+                )
+                return
             candidates = pending.get("candidates") if isinstance(pending.get("candidates"), list) else []
             if is_confirm_text(text):
                 selected_codes = [str(item.get("bill_code") or "").strip() for item in candidates]
@@ -1567,9 +1773,9 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 {
                     "type": "split_pending_confirmation",
                     "tool_name": SPLIT_TOOL_NAME,
+                    "automation_route_key": pending.get("automation_route_key"),
                     "selected_bill_codes": selected_codes,
                     "preview_fingerprint": pending.get("preview_fingerprint"),
-                    "account_id": pending.get("account_id") or "ronghui_default",
                     "selected": selected,
                 },
                 ttl_sec=SPLIT_SELECTION_TTL,
@@ -1602,15 +1808,34 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
         if ptype == "confirm_action":
             if is_confirm_text(text):
+                route_key = str(pending.get("automation_route_key") or "").strip()
+                dynamic_inputs = dict(pending.get("dynamic_inputs") or {})
+                legacy_tool_name = str(pending.get("tool_name") or "").strip()
+                legacy_params = dict(pending.get("params") or {})
+                has_account_override = _contains_account_override(pending)
                 clear_pending(chat_id)
-                if await _reply_if_tool_running(agent, chat_id, pending["tool_name"]):
+                if route_key:
+                    if has_account_override:
+                        await _reply_text(
+                            chat_id,
+                            "旧版确认状态已失效，请重新发起自动化任务。",
+                            reply_type="automation_confirmation_stale",
+                        )
+                        return
+                    await _invoke_automation_project_and_reply(
+                        route_key=route_key,
+                        dynamic_inputs=dynamic_inputs,
+                        receive_id=chat_id,
+                    )
+                    return
+                if await _reply_if_tool_running(agent, chat_id, legacy_tool_name):
                     return
                 await _reply_text(chat_id, "程序正在执行")
                 await _execute_and_reply(
                     agent,
                     chat_id,
-                    pending["tool_name"],
-                    pending.get("params") or {},
+                    legacy_tool_name,
+                    legacy_params,
                 )
                 return
             if is_cancel_text(text):
@@ -1657,25 +1882,46 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 clear_pending(chat_id)
                 await _reply_text(chat_id, "已取消：R7 发车打卡")
                 return
-            plate_numbers = _normalize_plate_numbers(pending.get("plate_numbers"))
+            route_key = str(pending.get("automation_route_key") or "").strip()
+            if _contains_account_override(pending) or not route_key:
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "旧版车牌选择状态已失效，请重新发送 R7 发车打卡指令。",
+                )
+                return
+            try:
+                plate_numbers, config = _committed_r7_departure_config(route_key)
+            except OrchestrationError as exc:
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    f"R7 发车项目配置已变化（{exc.code}），请重新发起。",
+                )
+                return
+            if plate_numbers != _normalize_plate_numbers(
+                pending.get("plate_numbers"),
+                default="",
+            ):
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "R7 发车项目的车牌配置已变化，请重新发起。",
+                )
+                return
             selected_plate = _resolve_r7_departure_plate_choice(text, plate_numbers)
             if selected_plate:
                 clear_pending(chat_id)
-                params = dict(pending.get("params") or {})
-                params["_feishu"] = True
-                params["plate_numbers"] = [selected_plate]
-                tool_name = pending.get("tool_name") or R7_DEPARTURE_TASK_ID
-                if await _reply_if_tool_running(agent, chat_id, tool_name):
-                    return
-                await _reply_text(chat_id, f"程序正在执行：{selected_plate}")
-                await _execute_and_reply(
-                    agent,
-                    chat_id,
-                    tool_name,
-                    params,
+                await _invoke_automation_project_and_reply(
+                    route_key=route_key,
+                    dynamic_inputs={"plate_numbers": [selected_plate]},
+                    receive_id=chat_id,
                 )
                 return
-            await _reply_text(chat_id, _format_r7_departure_plate_choice(plate_numbers, pending.get("params") or {}))
+            await _reply_text(
+                chat_id,
+                _format_r7_departure_plate_choice(plate_numbers, config),
+            )
             return
 
         elif ptype == "confirm_login_for_resume":
@@ -1771,6 +2017,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         tool_name = direct_request["tool_name"]
         params = direct_request["params"]
         mode = direct_request["mode"]
+        automation_route_key = str(
+            direct_request.get("automation_route_key") or ""
+        ).strip()
+        dynamic_inputs = direct_request.get("dynamic_inputs")
+        if not isinstance(dynamic_inputs, dict):
+            dynamic_inputs = {}
         confirm_intent = direct_request.get("confirm_intent")
         selection_intent = direct_request.get("selection_intent")
         local_result = direct_request.get("local_result")
@@ -1781,8 +2033,27 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         if mode == "r7_departure_choice":
-            await _handle_r7_departure_direct(agent, chat_id, tool_name)
+            await _handle_r7_departure_direct(chat_id, automation_route_key)
             return
+
+        if mode == "automation_project":
+            await _invoke_automation_project_and_reply(
+                route_key=automation_route_key,
+                dynamic_inputs=dynamic_inputs,
+                receive_id=chat_id,
+            )
+            return
+
+        if mode == "automation_preview":
+            try:
+                params = _project_preview_params(automation_route_key, tool_name)
+            except OrchestrationError as exc:
+                await _reply_text(
+                    chat_id,
+                    f"自动化预览不可用（{exc.code}），请检查项目账号绑定。",
+                    reply_type="automation_preview_rejected",
+                )
+                return
 
         if mode == "deferred":
             if await _reply_if_tool_running(agent, chat_id, tool_name):
@@ -1823,7 +2094,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 {
                     "type": "confirm_action",
                     "tool_name": tool_name,
-                    "params": confirm_intent.get("execute_params") or {},
+                    "automation_route_key": automation_route_key,
+                    "dynamic_inputs": confirm_intent.get("dynamic_inputs") or {},
                     "description": confirm_intent.get("description") or tool_name,
                 },
             )
@@ -1837,9 +2109,9 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     {
                         "type": "split_pending_selection",
                         "tool_name": SPLIT_TOOL_NAME,
+                        "automation_route_key": automation_route_key,
                         "candidates": candidates,
                         "preview_fingerprint": fingerprint,
-                        "account_id": params.get("account_id") or "ronghui_default",
                     },
                     ttl_sec=SPLIT_SELECTION_TTL,
                 )
@@ -1902,6 +2174,16 @@ async def _run_deferred_tool(
 ):
     from feishu.bot import get_agent_core
 
+    if tool_name in FIRST_PARTY_FEISHU_ROUTE_KEYS:
+        if receive_id:
+            await _reply_text(
+                receive_id,
+                "自动化菜单入口缺少可信项目路由，任务未提交。",
+                receive_id_type=receive_id_type,
+                reply_type="automation_menu_route_required",
+            )
+        return
+
     agent = get_agent_core()
     if not agent:
         if receive_id:
@@ -1956,6 +2238,17 @@ def _menu_action_from_key(event_key: str) -> dict[str, Any] | None:
     key = str(event_key or "").strip()
     if not key:
         return None
+    if key.startswith("automation:"):
+        route_key = key.removeprefix("automation:").strip()
+        if not _FEISHU_ROUTE_KEY_RE.fullmatch(route_key):
+            return None
+        return {
+            "tool_name": "automation_project",
+            "params": {},
+            "mode": "automation_project",
+            "automation_route_key": route_key,
+            "dynamic_inputs": {},
+        }
     aliased_text = MENU_KEY_ALIASES.get(key.lower(), key)
     request = direct_tool_request_from_text(aliased_text)
     if not request:
@@ -1963,6 +2256,9 @@ def _menu_action_from_key(event_key: str) -> dict[str, Any] | None:
     return {
         "tool_name": request["tool_name"],
         "params": request.get("params") or {},
+        "mode": request.get("mode") or "reply",
+        "automation_route_key": request.get("automation_route_key") or "",
+        "dynamic_inputs": request.get("dynamic_inputs") or {},
     }
 
 

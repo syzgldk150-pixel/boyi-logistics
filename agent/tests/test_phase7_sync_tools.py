@@ -13,6 +13,74 @@ def _yunda_params(**values):
     return {"account_id": "configured-yunda-test", **values}
 
 
+def _daily_persisted_snapshot_proof(**kwargs):
+    return {
+        "ok": True,
+        "ledger_rows": len(kwargs["ledger_rows"]),
+        "publication_rows": len(kwargs["publication_rows"]),
+        "persistence_marker": kwargs["persistence_marker"],
+    }
+
+
+def _daily_persistence_readback_proof(**kwargs):
+    marker = kwargs["persistence_marker"]
+
+    def row_set(name):
+        return {
+            "verified": True,
+            "record_count": marker[name]["count"],
+            "sha256": marker[name]["sha256"],
+        }
+
+    return {
+        "verified": True,
+        "record_count": len(kwargs["ledger_rows"]),
+        "problem_events": row_set("problem_events"),
+        "sign_events": row_set("sign_events"),
+        "sign_verification_states": row_set("sign_verification_states"),
+        "ledger_rows": row_set("ledger_rows"),
+        "publication_rows": row_set("publication_rows"),
+        "ledger_sha256": marker["ledger_rows"]["sha256"],
+        "publication_sha256": marker["publication_rows"]["sha256"],
+        "persistence_sha256": marker["marker_sha256"],
+    }
+
+
+def _daily_projection_readback_proof(rows, *, digest_char):
+    return {
+        "verified": True,
+        "record_count": len(rows),
+        "snapshot_sha256": digest_char * 64,
+    }
+
+
+def _daily_completed_run_readback_proof(*, expected_values, **_kwargs):
+    diagnostics = expected_values.get("diagnostics_json")
+    marker = (
+        diagnostics.get("persistence_commit")
+        if isinstance(diagnostics, dict)
+        else None
+    )
+    return {
+        "verified": True,
+        "record_count": expected_values.get("published_rows", 0),
+        "publication_sha256": expected_values.get("fingerprint") or "",
+        "persistence_sha256": (
+            marker.get("marker_sha256") if isinstance(marker, dict) else ""
+        ),
+    }
+
+
+def _daily_failed_run_values(_run_id, diagnostics, *, message):
+    return {
+        "status": "failed",
+        "published_rows": 0,
+        "fingerprint": diagnostics.get("fingerprint"),
+        "diagnostics_json": diagnostics,
+        "error_summary": message,
+    }
+
+
 class Phase7SyncToolTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(
@@ -1746,7 +1814,7 @@ class Phase7SyncToolTests(unittest.TestCase):
 
     def test_scan_sync_handles_malformed_fetch_response(self):
         with patch("tools.scan_sync_tool.call_http_service", return_value={"unexpected": True}):
-            result = scan_sync_tool.run_scan_sync({})
+            result = scan_sync_tool.run_scan_sync({"account_id": "ronghui_default"})
         self.assertIn("get_scan 返回格式异常", result["error"])
 
     def test_scan_sync_passes_target_date_and_dry_run_does_not_write_or_scan(self):
@@ -1783,7 +1851,7 @@ class Phase7SyncToolTests(unittest.TestCase):
     def test_scan_sync_rejects_conflicting_target_date_params(self):
         with self.assertRaisesRegex(ValueError, "target_date 不能与"):
             scan_sync_tool._resolve_get_scan_request_params(
-                {"target_date": "2026-08-12"},
+                {"target_date": "2026-08-12", "account_id": "ronghui_default"},
                 {"params": {"date": "2026/08/13"}},
             )
 
@@ -1817,7 +1885,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             ),
             patch("tools.scan_sync_tool._trigger_scan_flow") as trigger_flow,
         ):
-            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "trigger_flow": True})
+            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "trigger_flow": True, "account_id": "ronghui_default"})
 
         self.assertFalse(result["ok"])
         self.assertEqual("SCAN_NEXT_BATCH_FAILED", result["error_code"])
@@ -1849,7 +1917,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 return_value={"ok": True, "replaced": 1},
             ),
         ):
-            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "max_batches": 1})
+            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "max_batches": 1, "account_id": "ronghui_default"})
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["truncated"])
@@ -1874,7 +1942,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             side_effect=fake_call_http_service,
         ):
             result = scan_sync_tool.run_scan_sync(
-                {"target_date": "2026-05-04", "dry_run": True}
+                {"target_date": "2026-05-04", "dry_run": True, "account_id": "ronghui_default"}
             )
 
         self.assertTrue(result["ok"])
@@ -1892,7 +1960,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             "tools.scan_sync_tool.call_http_service",
             side_effect=fake_call_http_service,
         ):
-            result = scan_sync_tool.run_scan_sync({"target_date": "", "dry_run": True})
+            result = scan_sync_tool.run_scan_sync({"target_date": "", "dry_run": True, "account_id": "ronghui_default"})
 
         self.assertTrue(result["ok"])
         self.assertNotIn("date", captured_request["params"])
@@ -1904,6 +1972,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                     "target_date": "2026-05-04",
                     "request_body": {"params": {"date": "2026/05/03"}},
                     "dry_run": True,
+                    "account_id": "ronghui_default",
                 }
             )
 
@@ -1979,7 +2048,11 @@ class Phase7SyncToolTests(unittest.TestCase):
                 return_value=("source-run", datetime(2026, 8, 13, 9, 0, 0)),
             ),
             patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
-            patch("tools.daily_sign_pipeline.finish_sync_run"),
+            patch("tools.daily_sign_pipeline.finish_sync_run") as finish_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=_daily_completed_run_readback_proof,
+            ) as verify_completed,
             patch(
                 "tools.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
@@ -2003,6 +2076,8 @@ class Phase7SyncToolTests(unittest.TestCase):
 
         self.assertEqual("FAILED", result["status"])
         self.assertEqual("AUTH_REQUIRED", result["error"]["code"])
+        finish_mock.assert_called_once()
+        verify_completed.assert_called_once()
 
     def test_daily_sign_sync_rejects_implicit_accounts_before_source_calls(self):
         with (
@@ -2088,11 +2163,39 @@ class Phase7SyncToolTests(unittest.TestCase):
             ),
             patch(
                 "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
-                return_value={"ok": True, "ledger_rows": 1, "fingerprint": "ledger-hash"},
+                side_effect=_daily_persisted_snapshot_proof,
             ) as persist_mock,
-            patch("tools.daily_sign_sync_tool._sync_bitable", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool._sync_sheet", return_value={"ok": True, "rows": 1}),
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                side_effect=_daily_persistence_readback_proof,
+            ) as verify_persistence,
+            patch(
+                "tools.daily_sign_sync_tool._sync_bitable",
+                side_effect=lambda rows, _params: {
+                    "ok": True,
+                    "written": len(rows),
+                    "readback": _daily_projection_readback_proof(
+                        rows,
+                        digest_char="b",
+                    ),
+                },
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_sheet",
+                side_effect=lambda rows, _params: {
+                    "ok": True,
+                    "rows": len(rows),
+                    "readback": _daily_projection_readback_proof(
+                        rows,
+                        digest_char="s",
+                    ),
+                },
+            ),
             patch("tools.daily_sign_sync_tool.finish_sync_run") as finish_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=_daily_completed_run_readback_proof,
+            ) as verify_completed,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
@@ -2107,10 +2210,22 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("source-run", result["data"]["source_run_id"])
         self.assertEqual(["daily_sign:R1"], result["data"]["legacy_candidate_keys"])
         self.assertTrue(result["meta"]["pagination_complete"])
-        self.assertIn("mysql:daily_sign_ledger:ledger-hash", result["meta"]["evidence_refs"])
         persist_kwargs = persist_mock.call_args.kwargs
+        marker = persist_kwargs["persistence_marker"]
+        self.assertIn(
+            f"mysql:daily_sign_ledger:{marker['ledger_rows']['sha256']}",
+            result["meta"]["evidence_refs"],
+        )
         self.assertEqual(1, len(persist_kwargs["ledger_rows"]))
         self.assertEqual([], persist_kwargs["sign_verification_states"])
+        self.assertEqual(0, marker["problem_events"]["count"])
+        self.assertEqual(0, marker["sign_events"]["count"])
+        self.assertEqual(0, marker["sign_verification_states"]["count"])
+        self.assertEqual(1, marker["ledger_rows"]["count"])
+        self.assertEqual(1, marker["publication_rows"]["count"])
+        self.assertEqual(64, len(marker["marker_sha256"]))
+        verify_persistence.assert_called_once()
+        verify_completed.assert_called_once()
         exact_mock.assert_called_once_with(
             ANY,
             {"R1": r13_rows[0]},
@@ -2186,7 +2301,14 @@ class Phase7SyncToolTests(unittest.TestCase):
                     },
                 ),
             ),
-            patch("tools.daily_sign_pipeline._finish_failed_run") as failed_run_mock,
+            patch(
+                "tools.daily_sign_pipeline._finish_failed_run",
+                side_effect=_daily_failed_run_values,
+            ) as failed_run_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=_daily_completed_run_readback_proof,
+            ) as verify_completed,
             patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist_mock,
             patch("tools.daily_sign_sync_tool._sync_bitable") as bitable_mock,
             patch("tools.daily_sign_sync_tool._sync_sheet") as sheet_mock,
@@ -2203,6 +2325,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("INCOMPLETE_SOURCE_EVIDENCE", result["error"]["code"])
         self.assertTrue(result["error"]["retryable"])
         failed_run_mock.assert_called_once()
+        verify_completed.assert_called_once()
         persist_mock.assert_not_called()
         bitable_mock.assert_not_called()
         sheet_mock.assert_not_called()

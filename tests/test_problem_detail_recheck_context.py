@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent.automation_plugins.first_party_handlers import customer_problem_identity
 from agent.orchestration.control_plane_service import _customer_problem_open_refs
 from agent.orchestration.models import Actor, ActorType, Command, ContextSnapshot
 from agent.orchestration.planner import DeterministicPlanner
@@ -71,11 +72,15 @@ class _Uow:
 
 
 def test_open_problem_context_uses_exact_persisted_source_identity() -> None:
+    opaque_key = customer_problem_identity(
+        account_id="account-1",
+        platform="yunda",
+        external_id="external-1",
+    )
     assert _customer_problem_open_refs(_Uow()) == [
         {
-            "dedupe_key": "problem:yunda:account-1:external-1",
+            "dedupe_key": opaque_key,
             "platform": "yunda",
-            "account_id": "account-1",
             "external_id": "external-1",
             "source_direction": "received",
             "waybill_no": "430000000001",
@@ -117,4 +122,5 @@ def test_planner_overwrites_caller_rechecks_with_authoritative_context() -> None
     plan = DeterministicPlanner(_Catalog()).plan(command, context)
 
     assert plan.steps[0].arguments["recheck_items"] == trusted_refs
+    assert "account_id" not in plan.steps[0].arguments["recheck_items"][0]
     assert plan.steps[0].operation_type.value == "read"

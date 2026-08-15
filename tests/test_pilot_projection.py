@@ -4,6 +4,8 @@ from copy import deepcopy
 
 import pytest
 
+from agent.automation_plugins.first_party_handlers import customer_problem_identity
+from agent.automation_plugins.models import GenerationVerificationContext
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -252,6 +254,127 @@ def _existing_item(dedupe_key: str, item_type: str, *, status: str = "OPEN") -> 
         "sla_deadline": None,
         "version": 1,
     }
+
+
+def _plugin_customer_verification() -> GenerationVerificationContext:
+    return GenerationVerificationContext(
+        automation_id="customer-project",
+        generation=2,
+        lease_id="00000000-0000-4000-8000-000000000001",
+        account_ids=("account-1",),
+        account_bindings_sha256="a" * 64,
+        requires_write_verification=False,
+    )
+
+
+def _plugin_customer_result(*, external_id: str = "opaque-1") -> ToolResult:
+    opaque_key = customer_problem_identity(
+        account_id="account-1",
+        platform="yunda",
+        external_id=external_id,
+    )
+    return ToolResult(
+        status="SUCCESS",
+        data={
+            "records": [
+                {
+                    "dedupe_key": opaque_key,
+                    "platform": "yunda",
+                    "source_direction": "query",
+                    "external_id": external_id,
+                    "waybill_no": "430000000009",
+                    "status": "待处理",
+                    "reply_text": "",
+                    "resolved": False,
+                    "resolution_reason": "",
+                }
+            ],
+            "rechecks": [],
+            "evidence": {
+                "configured_accounts_queried": True,
+                "pagination_complete": True,
+                "page_count": 1,
+                "record_count": 1,
+            },
+        },
+        meta={
+            "observed_at": "2026-08-13T01:00:00Z",
+            "pagination_complete": True,
+            "account_id": "binding-set:" + "a" * 64,
+        },
+    )
+
+
+def test_plugin_customer_projection_resolves_opaque_identity_from_trusted_side_channel() -> None:
+    result = _plugin_customer_result()
+    opaque_key = str(result.data["records"][0]["dedupe_key"])
+    uow = FakeUow()
+
+    outcome = PilotProjectionService().project_successful_step(
+        uow=uow,
+        run=_run(),
+        step_row=_step_row(),
+        step=_step("sync_customer_service_problems"),
+        command=_command(),
+        result=result,
+        generation_verification=_plugin_customer_verification(),
+    )
+
+    assert opaque_key in uow.work_items.items
+    assert uow.work_items.items[opaque_key]["status"] == "OPEN"
+    customer_evidence = next(
+        row for row in uow.evidence.rows if row["source_record_type"] == "customer_problem"
+    )
+    assert customer_evidence["account_id"] == "account-1"
+    assert "account_id" not in result.data["records"][0]
+    assert outcome is not None
+    assert outcome.candidate_keys == (opaque_key,)
+
+
+def test_plugin_customer_projection_reuses_legacy_item_without_exposing_account() -> None:
+    external_id = "legacy-1"
+    legacy_key = f"problem:yunda:account-1:{external_id}"
+    uow = FakeUow(
+        [_existing_item(legacy_key, "CUSTOMER_SERVICE_PROBLEM")]
+    )
+    result = _plugin_customer_result(external_id=external_id)
+
+    PilotProjectionService().project_successful_step(
+        uow=uow,
+        run=_run(),
+        step_row=_step_row(),
+        step=_step("sync_customer_service_problems"),
+        command=_command(),
+        result=result,
+        generation_verification=_plugin_customer_verification(),
+    )
+
+    assert list(uow.work_items.items) == [legacy_key]
+    assert "account_id" not in result.data["records"][0]
+
+
+def test_plugin_customer_projection_rejects_binding_set_mismatch_before_mutation() -> None:
+    result = _plugin_customer_result()
+    result = ToolResult(
+        status=result.status,
+        data=result.data,
+        meta={**result.meta, "account_id": "binding-set:" + "b" * 64},
+    )
+    uow = FakeUow()
+
+    with pytest.raises(OrchestrationError) as exc_info:
+        PilotProjectionService().project_successful_step(
+            uow=uow,
+            run=_run(),
+            step_row=_step_row(),
+            step=_step("sync_customer_service_problems"),
+            command=_command(),
+            result=result,
+            generation_verification=_plugin_customer_verification(),
+        )
+
+    assert exc_info.value.code == "CUSTOMER_ACCOUNT_SCOPE_INCOMPLETE"
+    assert uow.work_items.items == {}
 
 
 def test_daily_sign_requires_main_waybill_sign_evidence() -> None:

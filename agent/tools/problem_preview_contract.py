@@ -17,25 +17,36 @@ def run_read_only_preview(
     *,
     tool_name: str,
     runner: PreviewRunner,
+    account_fields: tuple[str, ...] = ("account_id",),
 ) -> dict[str, Any]:
     """Force the legacy implementation into dry-run and emit the governed result contract."""
 
-    if set(arguments) != {"account_id"}:
+    if (
+        not account_fields
+        or len(account_fields) != len(set(account_fields))
+        or set(arguments) != set(account_fields)
+    ):
         return _failed(
             account_id="",
             code="INVALID_ARGUMENTS",
-            message="Only an explicit account_id is accepted by this preview tool.",
+            message="Only the explicit project account bindings are accepted by this preview tool.",
         )
-    account_id = str(arguments.get("account_id") or "").strip()
-    if not account_id or len(account_id) > 128 or any(ord(char) < 32 for char in account_id):
-        return _failed(
-            account_id="",
-            code="INVALID_ACCOUNT_ID",
-            message="account_id is required and must be at most 128 characters.",
-        )
+    account_bindings: dict[str, str] = {}
+    for field_name in account_fields:
+        account_id = str(arguments.get(field_name) or "").strip()
+        if not account_id or len(account_id) > 128 or any(
+            ord(char) < 32 for char in account_id
+        ):
+            return _failed(
+                account_id="",
+                code="INVALID_ACCOUNT_ID",
+                message=f"{field_name} is required and must be at most 128 characters.",
+            )
+        account_bindings[field_name] = account_id
+    account_id = account_bindings["account_id"]
 
     try:
-        raw = runner({"account_id": account_id, "dry_run": True})
+        raw = runner({**account_bindings, "dry_run": True})
     except Exception as exc:
         return _failed(
             account_id=account_id,
@@ -80,6 +91,7 @@ def run_read_only_preview(
         "meta": {
             "source_system": "feishu",
             "account_id": account_id,
+            "account_bindings": account_bindings,
             "observed_at": _now(),
             "record_count": candidate_count,
             "pagination_complete": True,

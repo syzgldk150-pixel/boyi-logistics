@@ -31,8 +31,11 @@ from shared.orchestration_repository_support import (
     _safe_error,
     _status,
 )
-from shared.orchestration_schema import REQUIRED_COLUMNS, REQUIRED_TABLES
+from shared.orchestration_schema import orchestration_schema_requirements
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
+from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
+from shared.automation_plugin_repository import AutomationPluginRepository
+from shared.automation_project_authorization import AutomationProjectInvocation
 from shared.account_execution_locks import (
     AccountExecutionLockLease,
     AccountExecutionLockUnavailable,
@@ -98,7 +101,12 @@ TERMINAL_RUN_STATUSES = frozenset(
 
 
 class CommandRepository(_RepositoryBase):
-    JSON_FIELDS = ("actor_roles_json", "entity_refs_json", "parameters_json")
+    JSON_FIELDS = (
+        "actor_roles_json",
+        "entity_refs_json",
+        "parameters_json",
+        "automation_invocation_json",
+    )
 
     def get(self, command_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
         suffix = " FOR UPDATE" if for_update else ""
@@ -130,6 +138,42 @@ class CommandRepository(_RepositoryBase):
         roles = row.get("actor_roles_json", row.get("actor_roles", []))
         entity_refs = row.get("entity_refs_json", row.get("entity_refs", []))
         parameters = row.get("parameters_json", row.get("parameters", {}))
+        automation_id = _optional_text(row.get("automation_id"))
+        automation_invocation = row.get(
+            "automation_invocation_json",
+            row.get("automation_invocation"),
+        )
+        raw_automation_generation = row.get("automation_generation")
+        if raw_automation_generation is None:
+            automation_generation = None
+        elif type(raw_automation_generation) is int and raw_automation_generation > 0:
+            automation_generation = raw_automation_generation
+        else:
+            raise ValueError("automation_generation must be a positive integer")
+        if automation_id is None:
+            if automation_generation is not None or automation_invocation is not None:
+                raise ValueError(
+                    "generic commands cannot carry automation project context"
+                )
+        else:
+            if automation_generation is None or not isinstance(
+                automation_invocation,
+                Mapping,
+            ):
+                raise ValueError(
+                    "automation project commands require a closed invocation"
+                )
+            parsed_invocation = AutomationProjectInvocation.from_mapping(
+                automation_invocation
+            )
+            if (
+                parsed_invocation.automation_id != automation_id
+                or parsed_invocation.automation_generation != automation_generation
+            ):
+                raise ValueError(
+                    "automation project command identity does not match its invocation"
+                )
+            automation_invocation = parsed_invocation.to_dict()
         idempotency_key = _required_text(row.get("idempotency_key"), "idempotency_key")
         correlation_id = _required_text(row.get("correlation_id"), "correlation_id")
         requested_at = row.get("requested_at") or datetime.now()
@@ -137,12 +181,17 @@ class CommandRepository(_RepositoryBase):
         params = (
             command_id,
             command_type,
+            automation_id,
+            automation_generation,
             source,
             actor_type,
             actor_id,
             _json_param(roles, []),
             _json_param(entity_refs, []),
             _json_param(parameters, {}),
+            _json_param(automation_invocation, {})
+            if automation_invocation is not None
+            else None,
             idempotency_key,
             correlation_id,
             status,
@@ -154,11 +203,16 @@ class CommandRepository(_RepositoryBase):
             cursor.execute(
                 """
                 INSERT INTO agent_commands (
-                    command_id, command_type, source, actor_type, actor_id,
+                    command_id, command_type, automation_id, automation_generation,
+                    source, actor_type, actor_id,
                     actor_roles_json, entity_refs_json, parameters_json,
+                    automation_invocation_json,
                     idempotency_key, correlation_id, status, rejection_code,
                     rejection_summary, requested_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
                 ON DUPLICATE KEY UPDATE command_id = command_id
                 """,
                 params,
@@ -175,6 +229,10 @@ class CommandRepository(_RepositoryBase):
             and _canonical_json(persisted.get("actor_roles_json")) == _canonical_json(roles)
             and _canonical_json(persisted.get("entity_refs_json")) == _canonical_json(entity_refs)
             and _canonical_json(persisted.get("parameters_json")) == _canonical_json(parameters)
+            and _optional_text(persisted.get("automation_id")) == automation_id
+            and persisted.get("automation_generation") == automation_generation
+            and _canonical_json(persisted.get("automation_invocation_json"))
+            == _canonical_json(automation_invocation)
         )
         if not immutable_matches:
             raise IdempotencyConflict("command idempotency key was reused with different immutable input")
@@ -749,20 +807,30 @@ class AgentRunRepository(_RepositoryBase):
             cursor.execute(
                 """
                 INSERT INTO agent_commands (
-                    command_id, command_type, source, actor_type, actor_id,
+                    command_id, command_type, automation_id, automation_generation,
+                    source, actor_type, actor_id,
                     actor_roles_json, entity_refs_json, parameters_json,
+                    automation_invocation_json,
                     idempotency_key, correlation_id, status, requested_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'RECEIVED', %s)
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, 'RECEIVED', %s
+                )
                 """,
                 (
                     retry_command_id,
                     _required_text(source_command.get("command_type"), "source command_type"),
+                    _optional_text(source_command.get("automation_id")),
+                    source_command.get("automation_generation"),
                     _required_text(source_command.get("source"), "source command source"),
                     _required_text(source_command.get("actor_type"), "source actor_type"),
                     _optional_text(source_command.get("actor_id")),
                     _json_param(source_command.get("actor_roles_json"), []),
                     _json_param(source_command.get("entity_refs_json"), []),
                     _json_param(source_command.get("parameters_json"), {}),
+                    _json_param(source_command.get("automation_invocation_json"), {})
+                    if source_command.get("automation_invocation_json") is not None
+                    else None,
                     retry_idempotency_key,
                     _required_text(source.get("correlation_id"), "source correlation_id"),
                     effective_now,
@@ -2499,6 +2567,14 @@ class OrchestrationUnitOfWork:
             connection,
             self._cursor_factory,
         )
+        self.automation_projects = AutomationProjectPolicyRepository(
+            connection,
+            self._cursor_factory,
+        )
+        self.automation_plugins = AutomationPluginRepository(
+            connection,
+            self._cursor_factory,
+        )
         return self
 
     def _require_active(self) -> Any:
@@ -2518,8 +2594,11 @@ class OrchestrationUnitOfWork:
         connection.rollback()
         self._completed = True
 
-    def validate_schema(self) -> None:
+    def validate_schema(self, *, include_windows_worker: bool = True) -> None:
         self._require_active()
+        required_tables, required_columns = orchestration_schema_requirements(
+            include_windows_worker=include_windows_worker
+        )
         with self.commands.cursor() as cursor:
             cursor.execute(
                 "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()"
@@ -2528,13 +2607,13 @@ class OrchestrationUnitOfWork:
                 str(item.get("TABLE_NAME") or "")
                 for item in _rows(cursor)
             }
-        missing = sorted(REQUIRED_TABLES - present)
+        missing = sorted(required_tables - present)
         if missing:
             raise RuntimeError(
                 "orchestration schema is not migrated; run deployment migrations first: "
                 + ", ".join(missing)
             )
-        table_names = sorted({table for table, _ in REQUIRED_COLUMNS})
+        table_names = sorted({table for table, _ in required_columns})
         placeholders = ", ".join("%s" for _ in table_names)
         with self.commands.cursor() as cursor:
             cursor.execute(
@@ -2549,7 +2628,9 @@ class OrchestrationUnitOfWork:
                 (str(item.get("TABLE_NAME") or ""), str(item.get("COLUMN_NAME") or ""))
                 for item in _rows(cursor)
             }
-        missing_columns = sorted(f"{table}.{column}" for table, column in REQUIRED_COLUMNS - columns)
+        missing_columns = sorted(
+            f"{table}.{column}" for table, column in required_columns - columns
+        )
         if missing_columns:
             raise RuntimeError(
                 "orchestration schema is not migrated; run deployment migrations first: "
@@ -2636,295 +2717,10 @@ class OrchestrationUnitOfWork:
         return False
 
 
-class OrchestrationRepository:
+from shared.orchestration_repository_facade import (
+    OrchestrationRepositoryFacadeMixin,
+)  # noqa: E402
+
+
+class OrchestrationRepository(OrchestrationRepositoryFacadeMixin):
     """Stable facade for orchestration transactions and read models."""
-
-    def __init__(self, connection_factory: ConnectionFactory, cursor_factory: Any | None = None) -> None:
-        if not callable(connection_factory):
-            raise TypeError("connection_factory must be callable")
-        self._connection_factory = connection_factory
-        self._cursor_factory = cursor_factory
-
-    def unit_of_work(self) -> OrchestrationUnitOfWork:
-        return OrchestrationUnitOfWork(self._connection_factory, self._cursor_factory)
-
-    def validate_mysql8(self) -> str:
-        """Require real MySQL 8+ because worker claims use SKIP LOCKED."""
-
-        with self.unit_of_work() as uow:
-            with uow.commands.cursor() as cursor:
-                cursor.execute("SELECT VERSION() AS version")
-                row = _row_dict(cursor, cursor.fetchone()) or {}
-        version = str(row.get("version") or row.get("VERSION()") or "").strip()
-        if "mariadb" in version.lower():
-            raise RuntimeError(f"orchestration persistence requires MySQL 8+, found {version or 'unknown'}")
-        match = re.match(r"^(\d+)\.", version)
-        if match is None or int(match.group(1)) < 8:
-            raise RuntimeError(f"orchestration persistence requires MySQL 8+, found {version or 'unknown'}")
-        return version
-
-    def validate_schema(self) -> None:
-        with self.unit_of_work() as uow:
-            uow.validate_schema()
-
-    def outbox_health(self) -> dict[str, Any]:
-        with self.unit_of_work() as uow:
-            return uow.outbox.health()
-
-    def list_scheduled_task_policy_rows(self) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.scheduled_policies.list_with_tasks()
-
-    def acquire_account_execution_locks(
-        self,
-        account_ids: Iterable[str],
-        *,
-        timeout_seconds: int = 0,
-    ) -> AccountExecutionLockLease:
-        """Acquire sorted MySQL named locks on a dedicated connection.
-
-        The lease is connection-scoped and deliberately independent of a Unit
-        of Work, so callers may commit short database transactions before a
-        credential file or broker is changed without losing serialization.
-        """
-
-        return _acquire_account_execution_locks(
-            self._connection_factory,
-            self._cursor_factory,
-            account_ids,
-            timeout_seconds=timeout_seconds,
-        )
-
-    def list_nonterminal_runs_with_commands(self) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.runs.list_nonterminal_with_commands()
-
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
-        with self.unit_of_work() as uow:
-            run = uow.runs.get(run_id)
-            if run is not None:
-                run["steps"] = uow.steps.list_for_run(run_id)
-            return run
-
-    def list_runs_for_work_item(
-        self,
-        work_item_id: str,
-        *,
-        limit: int = 500,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.runs.list_for_work_item(work_item_id, limit=limit, offset=offset)
-
-    def create_linked_retry_run(
-        self,
-        source_run_id: str,
-        *,
-        new_run_id: str,
-        new_command_id: str,
-        expected_statuses: Iterable[str] = ("PARTIAL", "FAILED_TERMINAL"),
-        now: Any = None,
-    ) -> dict[str, Any]:
-        with self.unit_of_work() as uow:
-            retry = uow.runs.create_linked_retry(
-                source_run_id,
-                new_run_id=new_run_id,
-                new_command_id=new_command_id,
-                expected_statuses=expected_statuses,
-                now=now,
-            )
-            uow.commit()
-            return retry
-
-    def list_blocked_login_for_account(
-        self,
-        account_id: str,
-        *,
-        limit: int = 500,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.runs.list_blocked_login_for_account(
-                account_id,
-                limit=limit,
-                offset=offset,
-            )
-
-    def page_blocked_login_runs_for_account(
-        self,
-        account_id: str,
-        *,
-        limit: int = 500,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        with self.unit_of_work() as uow:
-            return uow.runs.page_blocked_login_for_account(
-                account_id,
-                limit=limit,
-                offset=offset,
-            )
-
-    def list_runnable_runs(
-        self,
-        *,
-        statuses: Iterable[str],
-        limit: int = 100,
-        now: Any = None,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.runs.list_runnable(statuses=statuses, limit=limit, now=now)
-
-    def claim_runs(
-        self,
-        worker_id: str,
-        statuses: Iterable[str],
-        *,
-        limit: int = 20,
-        lease_seconds: int = 60,
-        now: Any = None,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            claimed = uow.runs.claim(
-                worker_id,
-                statuses,
-                limit=limit,
-                lease_seconds=lease_seconds,
-                now=now,
-            )
-            uow.commit()
-            return claimed
-
-    def claim_cancel_requested_runs(
-        self,
-        worker_id: str,
-        *,
-        limit: int = 20,
-        lease_seconds: int = 60,
-        now: Any = None,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            claimed = uow.runs.claim_cancel_requested(
-                worker_id,
-                limit=limit,
-                lease_seconds=lease_seconds,
-                now=now,
-            )
-            uow.commit()
-            return claimed
-
-    def renew_run_lease(
-        self,
-        run_id: str,
-        *,
-        worker_id: str,
-        lease_seconds: int = 60,
-        now: Any = None,
-    ) -> dict[str, Any]:
-        with self.unit_of_work() as uow:
-            run = uow.runs.renew_lease(
-                run_id,
-                worker_id=worker_id,
-                lease_seconds=lease_seconds,
-                now=now,
-            )
-            uow.commit()
-            return run
-
-    def request_run_cancel(
-        self,
-        run_id: str,
-        *,
-        requested_by_type: str,
-        requested_by_id: str | None = None,
-        reason: str | None = None,
-        requested_at: Any = None,
-    ) -> dict[str, Any]:
-        with self.unit_of_work() as uow:
-            run = uow.runs.request_cancel(
-                run_id,
-                requested_by_type=requested_by_type,
-                requested_by_id=requested_by_id,
-                reason=reason,
-                requested_at=requested_at,
-            )
-            uow.commit()
-            return run
-
-    def list_work_items(
-        self,
-        *,
-        status: str | None = None,
-        item_type: str | None = None,
-        priority: str | None = None,
-        source: str | None = None,
-        query: str | None = None,
-        owner_type: str | None = None,
-        owner_id: str | None = None,
-        sla_from: datetime | None = None,
-        sla_before: datetime | None = None,
-        sla_missing: bool | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.work_items.list(
-                status=status,
-                item_type=item_type,
-                priority=priority,
-                source=source,
-                query=query,
-                owner_type=owner_type,
-                owner_id=owner_id,
-                sla_from=sla_from,
-                sla_before=sla_before,
-                sla_missing=sla_missing,
-                limit=limit,
-                offset=offset,
-            )
-
-    def get_work_item(self, work_item_id: str) -> dict[str, Any] | None:
-        with self.unit_of_work() as uow:
-            item = uow.work_items.get(work_item_id)
-            if item is not None:
-                item["entities"] = uow.work_items.list_entities(work_item_id)
-            return item
-
-    def assign_work_item(
-        self,
-        work_item_id: str,
-        *,
-        expected_version: int,
-        owner_type: str,
-        owner_id: str,
-    ) -> dict[str, Any]:
-        with self.unit_of_work() as uow:
-            item = uow.work_items.assign(
-                work_item_id,
-                expected_version,
-                owner_type,
-                owner_id,
-            )
-            uow.commit()
-            return item
-
-    def get_timeline(self, work_item_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.events.list_for_work_item(work_item_id, limit=limit)
-
-    def list_evidence(
-        self,
-        work_item_id: str,
-        *,
-        run_id: str | None = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        with self.unit_of_work() as uow:
-            return uow.evidence.list(work_item_id, run_id=run_id, limit=limit)
-
-    def get_approval(self, approval_id: str) -> dict[str, Any] | None:
-        with self.unit_of_work() as uow:
-            return uow.approvals.get(approval_id)
-
-    def get_current_approval(self, run_id: str) -> dict[str, Any] | None:
-        with self.unit_of_work() as uow:
-            return uow.approvals.get_current_by_run(run_id)

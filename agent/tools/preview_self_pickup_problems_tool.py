@@ -20,6 +20,7 @@ def preview_self_pickup_problems(
         arguments,
         tool_name="preview_self_pickup_problems",
         runner=runner,
+        account_fields=("account_id", "daxiang_s_account_id"),
     )
 
 

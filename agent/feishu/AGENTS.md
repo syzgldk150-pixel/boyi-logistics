@@ -6,7 +6,8 @@
 
 ## 控制平面边界
 
-- 文本、菜单和 pending 确认只能通过注入的 `AgentCore` 命令门面提交，禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
+- 非插件只读/兼容文本通过注入的 `AgentCore` 命令门面提交；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
+- 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
 - 每个生产命令使用飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键；缺少稳定事件 ID 的写命令必须显式拒绝，不能用消息内容、时间戳或随机值代替。
 - 飞书 actor 只从真实事件发送者构造，角色固定为空；飞书可以提交高风险计划，但首期不能在飞书批准。
 - 登录和验证码流程仍由账号管理接口处理。登录成功只发布 `account.session_restored` 并恢复原 `BLOCKED_LOGIN` Run，不得重新提交或盲目重跑原工具。

@@ -1217,7 +1217,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertIsNotNone(request)
         self.assertEqual("r7_arrival_checkin", request["tool_name"])
         self.assertEqual({}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_arrive_list_command_to_sync_tool(self):
         for text in ("执行一次arrivelist脚本", "同步到货清单", "拉取预到达清单", "arrive-list"):
@@ -1227,7 +1227,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 self.assertIsNotNone(request)
                 self.assertEqual("sync_arrive_list", request["tool_name"])
                 self.assertEqual({}, request["params"])
-                self.assertEqual("deferred", request["mode"])
+                self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_self_pickup_problem_command_to_preview(self):
         for text in (
@@ -1242,14 +1242,11 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
                 self.assertIsNotNone(request)
                 self.assertEqual("preview_self_pickup_problems", request["tool_name"])
+                self.assertEqual({}, request["params"])
+                self.assertEqual("automation_preview", request["mode"])
                 self.assertEqual(
-                    {"account_id": "ronghui_self_pickup_problem"},
-                    request["params"],
-                )
-                self.assertEqual("reply", request["mode"])
-                self.assertEqual(
-                    {"dry_run": False, "account_id": "ronghui_self_pickup_problem"},
-                    request["confirm_intent"]["execute_params"],
+                    {"dry_run": False},
+                    request["confirm_intent"]["dynamic_inputs"],
                 )
 
     def test_self_pickup_problem_preview_reply_hides_account_and_session_names(self):
@@ -1345,25 +1342,28 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertIsNotNone(request)
         self.assertEqual("sync_yunda_dispatch_forecast", request["tool_name"])
-        self.assertEqual({"session_profile": "yunda"}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual({}, request["dynamic_inputs"])
+        self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_yunda_send_waybills_command(self):
         request = direct_tool_router.direct_tool_request_from_text("韵达寄件运单管理")
 
         self.assertIsNotNone(request)
         self.assertEqual("sync_yunda_send_waybills", request["tool_name"])
-        self.assertEqual({"session_profile": "yunda"}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual({}, request["dynamic_inputs"])
+        self.assertEqual("automation_project", request["mode"])
 
         range_request = direct_tool_router.direct_tool_request_from_text(
             "韵达寄件运单同步从2026年5月6日到2026年5月16日"
         )
         self.assertIsNotNone(range_request)
         self.assertEqual("sync_yunda_send_waybills", range_request["tool_name"])
+        self.assertEqual({}, range_request["params"])
         self.assertEqual(
-            {"session_profile": "yunda", "start_date": "2026-05-06", "end_date": "2026-05-16"},
-            range_request["params"],
+            {"start_date": "2026-05-06", "end_date": "2026-05-16"},
+            range_request["dynamic_inputs"],
         )
 
     def test_direct_router_maps_send_order_range_command(self):
@@ -1373,8 +1373,12 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertIsNotNone(request)
         self.assertEqual("sync_daily_send_orders", request["tool_name"])
-        self.assertEqual({"start_date": "2026-05-06", "end_date": "2026-05-16"}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual(
+            {"start_date": "2026-05-06", "end_date": "2026-05-16"},
+            request["dynamic_inputs"],
+        )
+        self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_tracking_commands(self):
         checks = [
@@ -2158,4 +2162,4 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 self.assertIsNotNone(request)
                 self.assertEqual("sync_scan_codes", request["tool_name"])
                 self.assertEqual({}, request["params"])
-                self.assertEqual("deferred", request["mode"])
+                self.assertEqual("automation_project", request["mode"])

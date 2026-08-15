@@ -37,6 +37,53 @@ SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = (
 SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE = (
     "scheduled_task_contract_upgrade_created_017"
 )
+AUTOMATION_PROJECT_AUTHORIZATION_VERSION = "018"
+AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE = (
+    "scheduled_task_automation_identity_backup_018"
+)
+AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE = (
+    "automation_project_migration_capture_018"
+)
+AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE = (
+    "automation_project_reviewed_schedule_map_018"
+)
+AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE = (
+    "automation_project_reviewed_resource_map_018"
+)
+AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE = (
+    "automation_project_resource_backup_018"
+)
+AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = (
+    "automation_plugin_purge_journal",
+    "automation_worker_cleanup_directives",
+    "automation_worker_job_messages",
+    "automation_worker_jobs",
+    "automation_worker_pairing_events",
+    "automation_worker_devices",
+    "automation_project_generation_leases",
+    "automation_project_generation_effects",
+    "automation_project_generation_coeffects",
+    "automation_project_generations",
+    "automation_project_approval_batches",
+    "automation_project_policy_events",
+    "automation_project_policies",
+    "automation_project_events",
+    "automation_plugin_package_events",
+    "automation_project_configs",
+    "automation_projects",
+    "automation_plugin_versions",
+    "automation_plugin_packages",
+    "automation_project_bootstrap_marker_018",
+    "automation_project_bootstrap_items_018",
+    AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE,
+    AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE,
+)
+AUTOMATION_PROJECT_AUTHORIZATION_AGENT_COMMAND_INDEX = (
+    "idx_agent_commands_automation_requested"
+)
+AUTOMATION_PROJECT_AUTHORIZATION_SCHEDULE_INDEX = (
+    "idx_scheduled_tasks_automation"
+)
 DAILY_SIGN_SINGLE_TMS_VERSION = "016"
 DAILY_SIGN_SINGLE_TMS_BACKUP_TABLE = "daily_sign_single_tms_backup_016"
 SCHEDULED_TASK_APPROVAL_POLICY_TABLE = "scheduled_task_approval_policies"
@@ -256,6 +303,34 @@ def _table_exists(cursor, table_name: str) -> bool:
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
         """,
         (table_name,),
+    )
+    return cursor.fetchone() is not None
+
+
+def _column_exists(cursor, table_name: str, column_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+        """,
+        (table_name, column_name),
+    )
+    return cursor.fetchone() is not None
+
+
+def _index_exists(cursor, table_name: str, index_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        """,
+        (table_name, index_name),
     )
     return cursor.fetchone() is not None
 
@@ -2315,6 +2390,41 @@ def restore_scheduled_task_contract_upgrade() -> int:
     )
 
 
+
+
+
+
+
+
+def _load_automation_project_authorization_helper():
+    path = Path(__file__).with_name("migration_018_authorization.py")
+    spec = importlib.util.spec_from_file_location("migration_018_authorization", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load migration 018 helper")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_MIGRATION_018_HELPER = _load_automation_project_authorization_helper()
+
+
+def _automation_project_authorization_artifacts(cursor) -> set[str]:
+    return _MIGRATION_018_HELPER._automation_project_authorization_artifacts(
+        globals(), cursor
+    )
+
+
+def _validate_automation_project_authorization_restore(cursor) -> bool:
+    return _MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
+        globals(), cursor
+    )
+
+
+def restore_automation_project_authorization() -> int:
+    return _MIGRATION_018_HELPER.restore_automation_project_authorization(globals())
+
+
 def restore_control_plane_policy_bootstrap() -> int:
     """Remove only migration-owned bootstrap state after a failed first release."""
 
@@ -2637,6 +2747,34 @@ def report_scheduled_task_contract_upgrade_status() -> int:
     )
 
 
+def report_automation_project_authorization_status() -> int:
+    """Report applied/clean/partial state without exposing project data."""
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            applied = False
+            if _migration_table_exists(cursor):
+                cursor.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version=%s",
+                    (AUTOMATION_PROJECT_AUTHORIZATION_VERSION,),
+                )
+                applied = cursor.fetchone() is not None
+            if applied:
+                status = "applied"
+            else:
+                status = (
+                    "pending_dirty"
+                    if _automation_project_authorization_artifacts(cursor)
+                    else "pending_clean"
+                )
+            print(f"automation_project_authorization_status={status}")
+    finally:
+        connection.close()
+    return 0
+
+
 def report_control_plane_policy_bootstrap_marker_status() -> int:
     connection = _connect()
     try:
@@ -2714,6 +2852,11 @@ def main() -> int:
         help="Restore the exact scheduler rows backed up by migration 017",
     )
     modes.add_argument(
+        "--restore-automation-project-authorization",
+        action="store_true",
+        help="Remove only migration-owned 018 state and restore its schema changes",
+    )
+    modes.add_argument(
         "--restore-daily-sign-single-tms-account",
         action="store_true",
         help="Restore the exact daily-sign rows backed up by migration 016",
@@ -2737,6 +2880,11 @@ def main() -> int:
         "--scheduled-task-contract-upgrade-status",
         action="store_true",
         help="Report applied, pending_clean, or pending_dirty for migration 017",
+    )
+    modes.add_argument(
+        "--automation-project-authorization-status",
+        action="store_true",
+        help="Report applied, pending_clean, or pending_dirty for migration 018",
     )
     modes.add_argument(
         "--control-plane-policy-bootstrap-marker-status",
@@ -2791,6 +2939,8 @@ def main() -> int:
         return restore_control_plane_task_cutover()
     if args.restore_scheduled_task_contract_upgrade:
         return restore_scheduled_task_contract_upgrade()
+    if args.restore_automation_project_authorization:
+        return restore_automation_project_authorization()
     if args.restore_daily_sign_single_tms_account:
         return restore_daily_sign_single_tms_account()
     if args.restore_control_plane_policy_bootstrap:
@@ -2801,6 +2951,8 @@ def main() -> int:
         return report_daily_sign_single_tms_status()
     if args.scheduled_task_contract_upgrade_status:
         return report_scheduled_task_contract_upgrade_status()
+    if args.automation_project_authorization_status:
+        return report_automation_project_authorization_status()
     if args.control_plane_policy_bootstrap_marker_status:
         return report_control_plane_policy_bootstrap_marker_status()
     if args.preflight_control_plane_task_cutover:

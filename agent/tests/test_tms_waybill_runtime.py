@@ -2479,7 +2479,11 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 "tools.arrive_list_sync_tool.call_http_service",
                 {"account_id": "ronghui-test"},
             ),
-            (scan_sync_tool.run_scan_sync, "tools.scan_sync_tool.call_http_service", {}),
+            (
+                scan_sync_tool.run_scan_sync,
+                "tools.scan_sync_tool.call_http_service",
+                {"account_id": "ronghui-test"},
+            ),
             (
                 site_send_list_sync_tool.run_site_send_list_sync,
                 "tools.site_send_list_sync_tool.call_http_service",

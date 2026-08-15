@@ -12,13 +12,6 @@ DEFAULT_MOBILE_BOTTOM_NAV = ("/tracking", "/receipts", "/automations")
 
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = (
     {"route": "/", "label": "概览", "mobile_label": "首页", "icon": "grid", "section": "primary"},
-    {
-        "route": "/work-items",
-        "label": "事项中心",
-        "mobile_label": "事项",
-        "icon": "inbox",
-        "section": "primary",
-    },
     {"route": "/ocr", "label": "运单录入", "mobile_label": "录单", "icon": "file-text", "section": "primary"},
     {"route": "/waybills", "label": "寄件运单查询", "mobile_label": "运单", "icon": "list", "section": "primary"},
     {"route": "/tracking", "label": "物流跟踪", "mobile_label": "跟踪", "icon": "search", "section": "primary"},
@@ -29,8 +22,15 @@ CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = (
     {"route": "/line-haul-contacts", "label": "专线分流", "mobile_label": "专线", "icon": "map", "section": "primary"},
     {"route": "/automations", "label": "自动化", "mobile_label": "自动化", "icon": "sliders", "section": "primary"},
     {"route": "/automation-accounts", "label": "业务账号", "mobile_label": "账号", "icon": "users", "section": "primary"},
-    {"route": "/settings/accounts", "label": "系统管理", "mobile_label": "设置", "icon": "settings", "section": "system"},
     {"route": "/settings/llm", "label": "智能模型", "mobile_label": "模型", "icon": "cpu", "section": "system"},
+    {
+        "route": "/work-items",
+        "label": "事项中心",
+        "mobile_label": "事项",
+        "icon": "inbox",
+        "section": "system",
+    },
+    {"route": "/settings/accounts", "label": "系统管理", "mobile_label": "设置", "icon": "settings", "section": "system"},
 )
 
 NAVIGATION_BY_ROUTE = {item["route"]: item for item in CONSOLE_NAVIGATION}

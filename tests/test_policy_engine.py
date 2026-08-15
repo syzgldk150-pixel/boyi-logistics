@@ -12,8 +12,16 @@ from agent.orchestration.models import (
 )
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
-from agent.orchestration.policy_engine import PolicyEngine, ScheduledAllowlistEntry
+from agent.orchestration.policy_engine import (
+    PolicyEngine,
+    ProjectPolicyEvaluation,
+    ScheduledAllowlistEntry,
+)
 from agent.tool_registry import ToolRegistry
+from shared.automation_project_authorization import (
+    AutomationEntrypoint,
+    AutomationProjectInvocation,
+)
 from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
 
@@ -89,6 +97,44 @@ def test_legacy_read_requires_the_governed_tool_role() -> None:
     assert denied.code == "TOOL_PERMISSION_DENIED"
     assert allowed.allowed is True
     assert allowed.requires_approval is False
+
+
+def test_current_business_day_allowlist_matches_exact_shanghai_occurrence() -> None:
+    entry = ScheduledAllowlistEntry.from_arguments(
+        task_id="site_send_0500",
+        tool_name="sync_site_send_list",
+        tool_version="1.0.0",
+        arguments={"account_id": "ronghui_default"},
+        dynamic_argument_rules={"target_date": "current_business_day"},
+        cron_expression="0 5 * * *",
+    )
+    context = {
+        "scheduled_for": "2026-08-14T21:00:00+00:00",
+        "cron_expression": "0 5 * * *",
+    }
+
+    assert entry.matches(
+        step=_plan(
+            OperationType.INTERNAL_PROJECTION_WRITE,
+            arguments={
+                "account_id": "ronghui_default",
+                "target_date": "2026-08-15",
+            },
+            tool_name="sync_site_send_list",
+        ).steps[0],
+        execution_context=context,
+    )
+    assert not entry.matches(
+        step=_plan(
+            OperationType.INTERNAL_PROJECTION_WRITE,
+            arguments={
+                "account_id": "ronghui_default",
+                "target_date": "2026-08-14",
+            },
+            tool_name="sync_site_send_list",
+        ).steps[0],
+        execution_context=context,
+    )
 
 
 def test_super_admin_inherits_admin_read_permission() -> None:
@@ -551,3 +597,110 @@ def test_scheduler_allowlist_requires_exact_persisted_arguments_hash() -> None:
     )
 
     assert decision.requires_approval is True
+
+
+def _project_invocation() -> AutomationProjectInvocation:
+    return AutomationProjectInvocation(
+        automation_id="instance-one",
+        automation_generation=1,
+        entrypoint=AutomationEntrypoint.CONSOLE,
+        contract_id="console",
+        contract_hash="a" * 64,
+        policy_version=1,
+        project_configuration_version=1,
+        request_id="request-one",
+    )
+
+
+def _project_plan(operation_type: OperationType) -> Plan:
+    base = _plan(operation_type)
+    return Plan(
+        command_type="automation.project.invoke",
+        context_fingerprint=base.context_fingerprint,
+        tool_catalog_hash=base.tool_catalog_hash,
+        steps=base.steps,
+        automation_id="instance-one",
+        automation_generation=1,
+        automation_contract_hash="a" * 64,
+    )
+
+
+def test_project_require_each_run_forces_approval_even_for_read_none() -> None:
+    engine = PolicyEngine(
+        _Catalog(_capability(OperationType.READ, roles=["admin"])),
+        project_policy_provider=lambda *_args: ProjectPolicyEvaluation(
+            allowed=True,
+            requires_approval=True,
+            code="PROJECT_APPROVAL_REQUIRED",
+            reason="project requires approval",
+        ),
+    )
+    decision = engine.evaluate(
+        _project_plan(OperationType.READ),
+        Actor(ActorType.CONSOLE_ADMIN, "admin-one", roles=("admin",)),
+        source="console",
+        automation_invocation=_project_invocation(),
+    )
+    assert decision.allowed is True
+    assert decision.requires_approval is True
+    assert decision.required_role == "super_admin"
+
+
+def test_project_full_auto_can_remove_required_approval_below_the_safety_ceiling() -> None:
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.EXTERNAL_WRITE,
+                roles=["super_admin"],
+                approval={"mode": "required", "required_role": "super_admin"},
+            )
+        ),
+        project_policy_provider=lambda *_args: ProjectPolicyEvaluation(
+            allowed=True,
+            requires_approval=False,
+            code="PROJECT_FULL_AUTO",
+            reason="exact committed project contract",
+        ),
+    )
+    decision = engine.evaluate(
+        _project_plan(OperationType.EXTERNAL_WRITE),
+        Actor(ActorType.CONSOLE_ADMIN, "admin-one", roles=("admin",)),
+        source="console",
+        automation_invocation=_project_invocation(),
+    )
+    assert decision.allowed is True
+    assert decision.requires_approval is False
+
+
+def test_project_full_auto_cannot_override_destructive_or_extreme_ceiling() -> None:
+    calls = 0
+
+    def project_policy(*_args):
+        nonlocal calls
+        calls += 1
+        return ProjectPolicyEvaluation(
+            allowed=True,
+            requires_approval=False,
+            code="PROJECT_FULL_AUTO",
+            reason="not reachable",
+        )
+
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.DESTRUCTIVE,
+                roles=["super_admin"],
+                approval={"mode": "required", "required_role": "super_admin"},
+            )
+        ),
+        project_policy_provider=project_policy,
+    )
+    decision = engine.evaluate(
+        _project_plan(OperationType.DESTRUCTIVE),
+        Actor(ActorType.CONSOLE_ADMIN, "admin-one", roles=("super_admin",)),
+        source="console",
+        automation_invocation=_project_invocation(),
+    )
+    assert decision.allowed is False
+    assert decision.code == "OPERATION_DISABLED"
+    assert calls == 0

@@ -7,7 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.orchestration.models import Actor, ActorType, OrchestrationError
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    OperationType,
+    OrchestrationError,
+    PlanStep,
+)
 from agent.orchestration.scheduled_task_approval_service import (
     ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
     ACCOUNT_CREDENTIAL_CHANGE_REASON,
@@ -144,10 +150,41 @@ class _CredentialDomainEvents:
         self._repository.domain_events.append((dict(event), tuple(deliveries)))
 
 
+class _CredentialProjectPolicyStore:
+    def __init__(self, repository):
+        self._repository = repository
+
+    def list_account_binding_policy_rows(self, *, for_update=False):
+        assert for_update is True
+        return self._repository.project_rows
+
+    def update_policy(self, automation_id, *, expected_version, **changes):
+        row = next(
+            item
+            for item in self._repository.project_rows
+            if item["automation_id"] == automation_id
+        )
+        assert row["version"] == expected_version
+        row.update(
+            mode=changes["mode"],
+            contract_hash=changes["contract_hash"],
+            contract_snapshot_json=changes["contract_snapshot"],
+            tool_contract_hash=changes["tool_contract_hash"],
+            plugin_contract_hash=changes["plugin_contract_hash"],
+        )
+        row["version"] = expected_version + 1
+        return {**changes, "version": row["version"]}
+
+    def append_event(self, event):
+        self._repository.project_policy_events.append(dict(event))
+        return event
+
+
 class _CredentialUow:
     def __init__(self, repository):
         self._repository = repository
         self.scheduled_policies = _CredentialPolicyStore(repository)
+        self.automation_projects = _CredentialProjectPolicyStore(repository)
         self.events = _CredentialDomainEvents(repository)
 
     def __enter__(self):
@@ -173,10 +210,12 @@ class _CredentialRepo:
             self._released = True
             self._repository.released_account_locks.append(self._account_ids)
 
-    def __init__(self, rows, *, active_runs=()):
+    def __init__(self, rows, *, active_runs=(), project_rows=()):
         self.rows = list(rows)
+        self.project_rows = list(project_rows)
         self.active_runs = list(active_runs)
         self.policy_events = []
+        self.project_policy_events = []
         self.domain_events = []
         self.commits = 0
         self.fail_next_uow = False
@@ -197,6 +236,25 @@ class _CredentialRepo:
             self.fail_next_uow = False
             raise RuntimeError("synthetic policy repository failure")
         return _CredentialUow(self)
+
+
+class _ProjectAccountCatalog:
+    def __init__(self):
+        self._core = ToolRegistry()
+
+    def get_capability(self, tool_name):
+        if tool_name == "automation.customer-sync-east.run":
+            return {
+                "name": tool_name,
+                "operation_type": "external_write",
+                "_plugin_runtime": {
+                    "automation_id": "customer-sync-east",
+                    "account_bindings": {
+                        "source_accounts": ["ronghui-east", "ronghui-west"]
+                    },
+                },
+            }
+        return self._core.get_capability(tool_name)
 
 
 def test_contract_is_privacy_safe_stable_and_display_name_independent():
@@ -409,8 +467,15 @@ def test_account_credential_change_atomically_revokes_only_referencing_exact_pol
         def append_with_outbox(event, deliveries):
             domain_events.append((dict(event), tuple(deliveries)))
 
+    class _Projects:
+        @staticmethod
+        def list_account_binding_policy_rows(*, for_update=False):
+            assert for_update is True
+            return []
+
     class _Uow:
         scheduled_policies = _Policies()
+        automation_projects = _Projects()
         events = _Events()
         commits = 0
 
@@ -539,6 +604,66 @@ def test_unrelated_account_does_not_revoke_implicit_finance_exact_policy():
     assert repository.domain_events == []
 
 
+def test_credentials_change_revokes_all_full_auto_projects_bound_to_account():
+    def project(automation_id, bindings, *, mode="PROJECT_FULL_AUTO"):
+        return {
+            "automation_id": automation_id,
+            "mode": mode,
+            "version": 3,
+            "project_configuration_version": 7,
+            "contract_hash": f"contract-{automation_id}",
+            "contract_snapshot_json": {"automation_id": automation_id},
+            "tool_contract_hash": f"tool-{automation_id}",
+            "plugin_contract_hash": f"plugin-{automation_id}",
+            "account_bindings_json": bindings,
+        }
+
+    repository = _CredentialRepo(
+        [],
+        project_rows=[
+            project("single", {"primary": "target-account"}),
+            project("collection", {"sources": ["other", "target-account"]}),
+            project(
+                "finance",
+                {
+                    "finance_quote_source": "price_default",
+                    "finance_daxiang_s_source": "target-account",
+                    "finance_self_pickup_source": "self_pickup",
+                },
+            ),
+            project("unrelated", {"primary": "another-account"}),
+            project(
+                "already-requires",
+                {"primary": "target-account"},
+                mode="REQUIRE_EACH_RUN",
+            ),
+        ],
+    )
+
+    result = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+    ).revoke_exact_policies_for_account("target-account")
+
+    assert result == {
+        "account_id": "target-account",
+        "revoked_count": 0,
+        "task_ids": [],
+    }
+    by_id = {row["automation_id"]: row for row in repository.project_rows}
+    assert {
+        automation_id
+        for automation_id, row in by_id.items()
+        if row["mode"] == "REQUIRE_EACH_RUN"
+    } == {"single", "collection", "finance", "already-requires"}
+    assert by_id["unrelated"]["mode"] == "PROJECT_FULL_AUTO"
+    assert len(repository.project_policy_events) == 3
+    assert {
+        event["event_type"]
+        for event, _deliveries in repository.domain_events
+    } == {"automation_project.approval_policy_changed"}
+
+
 def test_credentials_change_rejects_explicit_nonterminal_protected_run():
     policy_row = _task(
         mode="EXACT_SCHEDULE_EXEMPT",
@@ -615,6 +740,70 @@ def test_credentials_change_rejects_implicit_finance_internal_projection_run():
     assert error.value.code == "ACCOUNT_CREDENTIAL_ACTIVE_RUN"
     assert error.value.details == {"run_ids": ["run-finance-sync"]}
     assert repository.released_account_locks == [("price_default",)]
+
+
+def test_credentials_change_rejects_account_blind_plugin_run_from_committed_bindings():
+    repository = _CredentialRepo(
+        [],
+        active_runs=(
+            {
+                "run_id": "run-project-write",
+                "status": "WAITING_APPROVAL",
+                "plan_json": {
+                    "automation_id": "customer-sync-east",
+                    "automation_generation": 4,
+                    "steps": [
+                        {
+                            "tool_name": "automation.customer-sync-east.run",
+                            "operation_type": "external_write",
+                            "account_id": None,
+                            "arguments": {},
+                        }
+                    ],
+                },
+                "command_parameters_json": {
+                    "tool_name": "automation.customer-sync-east.run",
+                    "arguments": {},
+                },
+            },
+        ),
+    )
+    service = ScheduledTaskApprovalService(repository, _ProjectAccountCatalog())
+
+    with pytest.raises(OrchestrationError) as error:
+        service.begin_credentials_change("ronghui-west")
+
+    assert error.value.code == "ACCOUNT_CREDENTIAL_ACTIVE_RUN"
+    assert error.value.details == {"run_ids": ["run-project-write"]}
+    assert repository.released_account_locks == [("ronghui-west",)]
+
+
+def test_plugin_step_start_locks_every_committed_account_binding():
+    repository = _CredentialRepo([])
+    service = ScheduledTaskApprovalService(repository, _ProjectAccountCatalog())
+    step = PlanStep(
+        step_key="project-action",
+        tool_name="automation.customer-sync-east.run",
+        tool_version="1.0.0",
+        operation_type=OperationType.EXTERNAL_WRITE,
+        arguments={},
+        account_id=None,
+        depends_on=(),
+        idempotency_key="project-action:1",
+        expected_evidence=({"type": "project_result"},),
+        postconditions=({"type": "project_verified"},),
+    )
+
+    finish = service.begin_protected_step_start(step)
+
+    assert repository.acquired_account_locks == [
+        ("ronghui-east", "ronghui-west")
+    ]
+    assert repository.released_account_locks == []
+    finish()
+    assert repository.released_account_locks == [
+        ("ronghui-east", "ronghui-west")
+    ]
 
 
 def test_read_run_does_not_block_credentials_change_and_lease_spans_finish():
@@ -986,6 +1175,36 @@ def test_bootstrap_marker_seals_absent_or_disabled_reviewed_task(monkeypatch, in
 
     assert restarted.bootstrap_reviewed_policies()["completed"] == 1
     assert repository.rows[0]["mode"] == "REQUIRE_EACH_RUN"
+
+
+def test_bootstrap_release_scope_seals_deferred_reviewed_tasks_without_evaluating(
+    monkeypatch,
+):
+    repository = _BootstrapRepo([_task()])
+    service = ScheduledTaskApprovalService(
+        repository,
+        ToolRegistry(),
+        bootstrap_allowed_tool_names=("sync_arrive_list",),
+    )
+    monkeypatch.setattr(
+        service,
+        "_contract_for_task",
+        lambda *_args, **_kwargs: pytest.fail("deferred tools must not be evaluated"),
+    )
+
+    assert service.bootstrap_reviewed_policies() == {
+        "reviewed_candidates": 0,
+        "created": 0,
+        "already_present": 0,
+        "explicitly_configured": 0,
+        "rejected": 0,
+        "completed": 1,
+    }
+    assert repository.rows[0].get("mode") != "EXACT_SCHEDULE_EXEMPT"
+    assert (
+        BOOTSTRAP_COMPLETION_TASK_ID,
+        BOOTSTRAP_COMPLETION_REQUEST_ID,
+    ) in repository.events
 
 
 def test_bootstrap_respects_explicit_require_each_run_policy(monkeypatch):

@@ -37,11 +37,20 @@ def test_self_pickup_preview_forces_dry_run_and_emits_evidence():
         return _preview_payload(params["account_id"])
 
     result = preview_self_pickup_problems(
-        {"account_id": "ronghui_self_pickup_problem"},
+        {
+            "account_id": "ronghui_self_pickup_problem",
+            "daxiang_s_account_id": "ronghui_daxiang_s",
+        },
         runner=runner,
     )
 
-    assert calls == [{"account_id": "ronghui_self_pickup_problem", "dry_run": True}]
+    assert calls == [
+        {
+            "account_id": "ronghui_self_pickup_problem",
+            "daxiang_s_account_id": "ronghui_daxiang_s",
+            "dry_run": True,
+        }
+    ]
     assert result["status"] == "SUCCESS"
     assert result["data"]["stage"] == "dry_run"
 
@@ -61,7 +70,10 @@ def test_preview_rejects_extra_write_arguments_without_calling_runner():
 
 def test_preview_rejects_non_dry_run_underlying_contract():
     result = preview_self_pickup_problems(
-        {"account_id": "ronghui_self_pickup_problem"},
+        {
+            "account_id": "ronghui_self_pickup_problem",
+            "daxiang_s_account_id": "ronghui_daxiang_s",
+        },
         runner=lambda _params: {
             **_preview_payload("ronghui_self_pickup_problem"),
             "stage": "done",

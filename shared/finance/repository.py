@@ -802,6 +802,128 @@ class FinanceRepository(FinanceEvolutionMixin):
             )
             return status
 
+    def read_batch_commit_proof(self, batch_id: int) -> dict[str, Any]:
+        """Freshly read one batch identity and its terminal run counts.
+
+        Callers use this from a new repository connection after create/finalize;
+        the write response itself is never accepted as completion evidence.
+        """
+
+        with self._connection() as connection, _managed_cursor(connection) as cursor:
+            cursor.execute(
+                """
+                SELECT id, trigger_type, requested_start_date, requested_end_date,
+                       rescan_days, status, earliest_date_status, requested_by
+                FROM finance_sync_batches
+                WHERE id = %s
+                """,
+                (int(batch_id),),
+            )
+            row = _fetchone(cursor)
+            if row is None:
+                raise FinanceNotFoundError("sync batch does not exist")
+            cursor.execute(
+                """
+                SELECT status, COUNT(*) AS total
+                FROM finance_sync_runs
+                WHERE batch_id = %s
+                GROUP BY status
+                """,
+                (int(batch_id),),
+            )
+            run_counts = {
+                str(item["status"]): _integer_count(item.get("total"), "run total")
+                for item in _fetchall(cursor)
+            }
+        return {
+            "batch_id": int(row["id"]),
+            "trigger_type": str(row.get("trigger_type") or ""),
+            "start_date": _date(row.get("requested_start_date"), "start_date").isoformat(),
+            "end_date": _date(row.get("requested_end_date"), "end_date").isoformat(),
+            "rescan_days": _integer_count(row.get("rescan_days"), "rescan_days"),
+            "status": str(row.get("status") or ""),
+            "earliest_date_status": (
+                str(row.get("earliest_date_status"))
+                if row.get("earliest_date_status") is not None
+                else None
+            ),
+            "requested_by": str(row.get("requested_by") or ""),
+            "run_counts": run_counts,
+        }
+
+    def read_run_commit_proof(self, run_id: int) -> dict[str, Any]:
+        """Freshly read one persisted run plus independent row/amount totals."""
+
+        with self._connection() as connection, _managed_cursor(connection) as cursor:
+            cursor.execute(
+                """
+                SELECT id, batch_id, platform, account_id, target_date, status,
+                       remote_total, unique_row_count, written_row_count
+                FROM finance_sync_runs
+                WHERE id = %s
+                """,
+                (int(run_id),),
+            )
+            row = _fetchone(cursor)
+            if row is None:
+                raise FinanceNotFoundError("sync run does not exist")
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS transaction_count,
+                       COUNT(DISTINCT BINARY source_record_key) AS transaction_unique_count,
+                       COALESCE(SUM(income), 0) AS transaction_income,
+                       COALESCE(SUM(expense), 0) AS transaction_expense
+                FROM finance_transactions
+                WHERE run_id = %s
+                """,
+                (int(run_id),),
+            )
+            transaction_totals = _fetchone(cursor) or {}
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS summary_count,
+                       COALESCE(SUM(income), 0) AS summary_income,
+                       COALESCE(SUM(expense), 0) AS summary_expense
+                FROM finance_summary_snapshots
+                WHERE run_id = %s
+                """,
+                (int(run_id),),
+            )
+            summary_totals = _fetchone(cursor) or {}
+        return {
+            "run_id": int(row["id"]),
+            "batch_id": int(row["batch_id"]),
+            "platform": str(row.get("platform") or ""),
+            "account_id": str(row.get("account_id") or ""),
+            "target_date": _date(row.get("target_date"), "target_date").isoformat(),
+            "status": str(row.get("status") or ""),
+            "remote_total": _integer_count(row.get("remote_total"), "remote_total"),
+            "unique_row_count": _integer_count(
+                row.get("unique_row_count"),
+                "unique_row_count",
+            ),
+            "written_row_count": _integer_count(
+                row.get("written_row_count"),
+                "written_row_count",
+            ),
+            "transaction_count": _integer_count(
+                transaction_totals.get("transaction_count"),
+                "transaction_count",
+            ),
+            "transaction_unique_count": _integer_count(
+                transaction_totals.get("transaction_unique_count"),
+                "transaction_unique_count",
+            ),
+            "transaction_income": transaction_totals.get("transaction_income", 0),
+            "transaction_expense": transaction_totals.get("transaction_expense", 0),
+            "summary_count": _integer_count(
+                summary_totals.get("summary_count"),
+                "summary_count",
+            ),
+            "summary_income": summary_totals.get("summary_income", 0),
+            "summary_expense": summary_totals.get("summary_expense", 0),
+        }
+
     def list_missing_dates(
         self,
         *,

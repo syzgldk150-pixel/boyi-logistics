@@ -5,35 +5,49 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import main
-from agent.tool_registry import ToolRegistry
+from agent.orchestration.models import OrchestrationError
 
 
-class _GatewayFacade:
+class _EntrypointsFacade:
     def __init__(self) -> None:
-        self.registry = ToolRegistry()
-        self.calls: list[tuple[str, dict, dict]] = []
+        self.calls: list[dict] = []
 
-    async def execute_tool(self, tool_name: str, arguments: dict, **trusted_context):
-        self.calls.append((tool_name, dict(arguments), dict(trusted_context)))
+    async def invoke_webhook(self, **request):
+        call = dict(request)
+        call["envelope"] = {
+            "body": dict(request["envelope"]["body"]),
+            "query": dict(request["envelope"]["query"]),
+        }
+        self.calls.append(call)
+        if call["route_key"] not in {
+            "webhook/sign-status",
+            "webhook/phase7/scan",
+            "webhook/phase7/stats",
+        }:
+            raise OrchestrationError(
+                "PROJECT_ROUTE_NOT_FOUND",
+                "Automation project route is unavailable",
+            )
+        supplied = set(call["envelope"]["body"]) | set(call["envelope"]["query"])
+        if "account_id" in supplied or "account_ids" in supplied:
+            raise OrchestrationError(
+                "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN",
+                "Transport callers cannot override project account bindings",
+            )
         return {
             "success": False,
             "status": "WAITING_APPROVAL",
-            "run_id": f"run-{tool_name}",
+            "run_id": f"run-{len(self.calls)}",
         }
 
 
-def test_delivery_scan_and_arrival_webhooks_submit_schema_mapped_gateway_commands() -> None:
-    runtime = _GatewayFacade()
-    resources = {
-        "phase7.scan_webhook": {"path": "webhook/phase7/scan"},
-        "phase7.stats_webhook": {"path": "webhook/phase7/stats"},
-    }
+def test_delivery_scan_and_arrival_webhooks_use_only_typed_project_routes() -> None:
+    entrypoints = _EntrypointsFacade()
     client = TestClient(main.app)
 
     with (
-        patch.object(main, "agent_core", runtime),
+        patch.object(main, "automation_project_entrypoints", entrypoints),
         patch.object(main, "_webhook_token", return_value="test-webhook-token"),
-        patch.object(main, "get_workflow_resource", side_effect=lambda key: resources.get(key)),
     ):
         headers = {main.WEBHOOK_TOKEN_HEADER: "test-webhook-token"}
         delivery = client.post(
@@ -60,52 +74,29 @@ def test_delivery_scan_and_arrival_webhooks_submit_schema_mapped_gateway_command
         )
 
     assert [response.status_code for response in (delivery, scan, arrival)] == [200, 200, 200]
-    assert [(name, arguments) for name, arguments, _context in runtime.calls] == [
-        (
-            "sync_delivery_status",
-            {
-                "account_id": "ronghui_default",
-                "BILL_CODE": "R001",
-                "RECORD_ID": "rec-1",
-            },
-        ),
-        ("sync_scan_codes", {"trigger_flow": False}),
-        (
-            "sync_arrival_stats",
-            {
-                "account_id": "ronghui_default",
-                "target_date": "2026-08-13",
-                "dry_run": True,
-            },
-        ),
+    assert [call["route_key"] for call in entrypoints.calls] == [
+        "webhook/sign-status",
+        "webhook/phase7/scan",
+        "webhook/phase7/stats",
     ]
-    expected = [
-        ("webhook:sign-status:delivery-1", "delivery-1"),
-        ("webhook:phase7/scan:scan-1", "scan-1"),
-        ("webhook:phase7/stats:arrival-1", "arrival-1"),
+    assert [call["source_event_id"] for call in entrypoints.calls] == [
+        "delivery-1",
+        "scan-1",
+        "arrival-1",
     ]
-    for (_name, arguments, context), (idempotency_key, event_id) in zip(
-        runtime.calls,
-        expected,
-        strict=True,
-    ):
-        assert context["source"] == "webhook"
-        assert context["idempotency_key"] == idempotency_key
-        assert context["execution_context"]["source_event_id"] == event_id
-        assert not {"source_event_id", "event_id", "id"}.intersection(arguments)
+    assert entrypoints.calls[0]["envelope"]["body"]["RECORD_ID"] == "rec-1"
+    assert entrypoints.calls[1]["envelope"]["body"]["trigger_flow"] is False
+    assert entrypoints.calls[2]["envelope"]["body"]["target_date"] == "2026-08-13"
+    assert all(call["webhook_path"] == call["route_key"] for call in entrypoints.calls)
 
 
-def test_arrival_webhook_binds_the_code_approved_account_when_legacy_payload_omits_it() -> None:
-    runtime = _GatewayFacade()
-    resources = {
-        "phase7.stats_webhook": {"path": "webhook/phase7/stats"},
-    }
+def test_arrival_webhook_does_not_inject_a_default_account() -> None:
+    entrypoints = _EntrypointsFacade()
     client = TestClient(main.app)
 
     with (
-        patch.object(main, "agent_core", runtime),
+        patch.object(main, "automation_project_entrypoints", entrypoints),
         patch.object(main, "_webhook_token", return_value="test-webhook-token"),
-        patch.object(main, "get_workflow_resource", side_effect=lambda key: resources.get(key)),
     ):
         response = client.post(
             "/webhook/phase7/stats?id=arrival-no-account",
@@ -114,21 +105,17 @@ def test_arrival_webhook_binds_the_code_approved_account_when_legacy_payload_omi
         )
 
     assert response.status_code == 200
-    assert runtime.calls[0][0] == "sync_arrival_stats"
-    assert runtime.calls[0][1]["account_id"] == "ronghui_default"
+    assert "account_id" not in entrypoints.calls[0]["envelope"]["body"]
+    assert "account_id" not in entrypoints.calls[0]["envelope"]["query"]
 
 
 def test_arrival_webhook_rejects_account_override() -> None:
-    runtime = _GatewayFacade()
-    resources = {
-        "phase7.stats_webhook": {"path": "webhook/phase7/stats"},
-    }
+    entrypoints = _EntrypointsFacade()
     client = TestClient(main.app)
 
     with (
-        patch.object(main, "agent_core", runtime),
+        patch.object(main, "automation_project_entrypoints", entrypoints),
         patch.object(main, "_webhook_token", return_value="test-webhook-token"),
-        patch.object(main, "get_workflow_resource", side_effect=lambda key: resources.get(key)),
     ):
         response = client.post(
             "/webhook/phase7/stats?id=arrival-account-override",
@@ -141,5 +128,24 @@ def test_arrival_webhook_rejects_account_override() -> None:
         )
 
     assert response.status_code == 422
-    assert "cannot override" in response.json()["detail"]
-    assert runtime.calls == []
+    assert response.json()["error"]["code"] == "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN"
+    assert "cannot override" in response.json()["error"]["message"]
+    assert len(entrypoints.calls) == 1
+
+
+def test_unbound_webhook_route_fails_closed_instead_of_returning_placeholder() -> None:
+    entrypoints = _EntrypointsFacade()
+    client = TestClient(main.app)
+
+    with (
+        patch.object(main, "automation_project_entrypoints", entrypoints),
+        patch.object(main, "_webhook_token", return_value="test-webhook-token"),
+    ):
+        response = client.post(
+            "/webhook/not-installed?id=unknown-route-1",
+            headers={main.WEBHOOK_TOKEN_HEADER: "test-webhook-token"},
+            json={},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_ROUTE_NOT_FOUND"
