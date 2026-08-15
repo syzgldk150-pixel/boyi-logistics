@@ -1318,6 +1318,33 @@ def test_arrival_stats_payload_owns_union_counting_and_commit_order(manifests) -
         manifests["sync_arrival_stats"].tool_contract["output_schema"],
     )
 
+    calls.clear()
+    disabled_result = action.run_action(
+        {
+            "target_date": "2026-08-15",
+            "pending_sheet_disabled": True,
+        },
+        broker,
+    )
+
+    assert calls == [
+        "ronghui.arrive_list.read_page",
+        "ronghui.scan.read_page",
+        "arrival.snapshot.completed_before",
+        "scan.snapshot.replace",
+        "scan.snapshot.read",
+        "scan.snapshot.cleanup",
+        "waybill.snapshot.replace",
+        "feishu.sheet.replace",
+        "feishu.sheet.replace",
+        "feishu.sheet.add",
+        "split_pending.snapshot.refresh",
+        "feishu.sheet.replace",
+        "arrival.snapshot.replace",
+    ]
+    assert disabled_result["status"] == "SUCCESS"
+    assert disabled_result["warnings"] == []
+
 
 def test_every_first_party_zip_contains_action_bytes_not_core_bridge(manifests) -> None:
     for plugin_id, manifest in manifests.items():

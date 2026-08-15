@@ -165,7 +165,7 @@ updated: 2026-08-15
 - 2026-05-18：`sync_arrival_stats` 会把 `20055750680002` 这类融辉纯数字子单归并到主单 `2005575068`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。
 - `scan_codes` 表按 `raw_code` 主键 UPSERT 累积；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
-- `sync_arrival_stats` 现额外输出「未齐货物」清单到 `phase7.pending_arrivals_sheet`，由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除；如未在 `workflow_resources` 中配置该资源，写入步骤会被自动跳过。
+- `sync_arrival_stats` 的「未齐货物」飞书清单是可选输出。迁移生成的签名插件实例默认使用 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不要求存在 `phase7.pending_arrivals_sheet`；只有先在 `workflow_resources` 配置并显式绑定该资源，再把开关改为 false 才会写入。清单仍由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除。
 - `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
 - 2026-05-22: `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。

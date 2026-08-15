@@ -209,12 +209,6 @@ INSERT INTO automation_project_reviewed_resource_map_018 (
         NULL
     ),
     (
-        'phase7.pending_arrivals_sheet',
-        'feishu_sheet',
-        FALSE,
-        NULL
-    ),
-    (
         'phase7.stats_archive_sheet',
         'feishu_sheet',
         FALSE,
@@ -237,11 +231,18 @@ ON DUPLICATE KEY UPDATE
     materialize_missing = VALUES(materialize_missing),
     default_config_json = VALUES(default_config_json);
 
+-- The first release candidate included this optional compatibility target in
+-- the reviewed set. A failed MySQL pass can have autocommitted that old map
+-- row before the 15-row guard failed. Remove only that obsolete identity so a
+-- rerun converges to the current fourteen-resource contract.
+DELETE FROM automation_project_reviewed_resource_map_018
+WHERE BINARY resource_key = BINARY 'phase7.pending_arrivals_sheet';
+
 SET @cp018_reviewed_resource_count = (
     SELECT COUNT(*) FROM automation_project_reviewed_resource_map_018
 );
 SET @cp018_reviewed_resource_guard_sql = IF(
-    @cp018_reviewed_resource_count = 15,
+    @cp018_reviewed_resource_count = 14,
     'SELECT 1',
     'SELECT * FROM information_schema.cp018_reviewed_resource_map_changed'
 );
@@ -323,39 +324,6 @@ SET @cp018_required_existing_resource_invalid_count = (
                 AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
                     resource.config_json, '$.range'
                 ))) <> ''
-                AND JSON_TYPE(JSON_EXTRACT(
-                    resource.config_json, '$.clear_range'
-                )) = 'STRING'
-                AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                    resource.config_json, '$.clear_range'
-                ))) <> ''
-            WHEN BINARY reviewed.resource_key =
-                 BINARY 'phase7.pending_arrivals_sheet'
-            THEN
-                JSON_TYPE(JSON_EXTRACT(
-                    resource.config_json, '$.spreadsheet_token'
-                )) = 'STRING'
-                AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                    resource.config_json, '$.spreadsheet_token'
-                ))) <> ''
-                AND (
-                    (
-                        JSON_TYPE(JSON_EXTRACT(
-                            resource.config_json, '$.snapshot_range'
-                        )) = 'STRING'
-                        AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                            resource.config_json, '$.snapshot_range'
-                        ))) <> ''
-                    )
-                    OR (
-                        JSON_TYPE(JSON_EXTRACT(
-                            resource.config_json, '$.range'
-                        )) = 'STRING'
-                        AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                            resource.config_json, '$.range'
-                        ))) <> ''
-                    )
-                )
                 AND JSON_TYPE(JSON_EXTRACT(
                     resource.config_json, '$.clear_range'
                 )) = 'STRING'
@@ -563,14 +531,83 @@ LEFT JOIN workflow_resources AS resource
 SET @cp018_resource_backup_count = (
     SELECT COUNT(*) FROM automation_project_resource_backup_018
 );
+SET @cp018_legacy_pending_backup_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018
+    WHERE BINARY resource_key = BINARY 'phase7.pending_arrivals_sheet'
+);
 SET @cp018_resource_backup_guard_sql = IF(
-    @cp018_resource_backup_count = 15,
+    @cp018_resource_backup_count = 14
+    OR (
+        @cp018_resource_backup_count = 15
+        AND @cp018_legacy_pending_backup_count = 1
+    ),
     'SELECT 1',
     'SELECT * FROM information_schema.cp018_resource_backup_incomplete'
 );
 PREPARE cp018_resource_backup_guard_stmt FROM @cp018_resource_backup_guard_sql;
 EXECUTE cp018_resource_backup_guard_stmt;
 DEALLOCATE PREPARE cp018_resource_backup_guard_stmt;
+
+-- A later failed pass can also have captured the obsolete fifteenth row. It
+-- was never materialized by 018, so accept it only as an exact pre-existing
+-- row, its sole migration normalization (resource_kind), or its already
+-- captured post-state. This preserves exact restore ownership without making
+-- the optional resource part of the current reviewed contract.
+SET @cp018_legacy_pending_backup_drift_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018 AS backup
+    LEFT JOIN workflow_resources AS resource
+      ON BINARY resource.resource_key = BINARY backup.resource_key
+    WHERE BINARY backup.resource_key =
+          BINARY 'phase7.pending_arrivals_sheet'
+      AND NOT (
+          backup.existed_before = TRUE
+          AND resource.resource_key IS NOT NULL
+          AND BINARY resource.source <=> BINARY backup.source
+          AND (
+              (
+                  backup.migration_config_sha256 IS NOT NULL
+                  AND BINARY SHA2(
+                      CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                      256
+                  ) = BINARY backup.migration_config_sha256
+              )
+              OR (
+                  backup.migration_config_sha256 IS NULL
+                  AND (
+                      BINARY SHA2(
+                          CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                          256
+                      ) = BINARY SHA2(
+                          CAST(backup.config_json AS CHAR CHARACTER SET utf8mb4),
+                          256
+                      )
+                      OR BINARY SHA2(
+                          CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                          256
+                      ) = BINARY SHA2(
+                          CAST(JSON_SET(
+                              backup.config_json,
+                              '$.resource_kind',
+                              'feishu_sheet'
+                          ) AS CHAR CHARACTER SET utf8mb4),
+                          256
+                      )
+                  )
+              )
+          )
+      )
+);
+SET @cp018_legacy_pending_backup_guard_sql = IF(
+    @cp018_legacy_pending_backup_drift_count = 0,
+    'SELECT 1',
+    'SELECT * FROM information_schema.cp018_legacy_pending_backup_drift'
+);
+PREPARE cp018_legacy_pending_backup_guard_stmt
+    FROM @cp018_legacy_pending_backup_guard_sql;
+EXECUTE cp018_legacy_pending_backup_guard_stmt;
+DEALLOCATE PREPARE cp018_legacy_pending_backup_guard_stmt;
 
 INSERT IGNORE INTO automation_project_migration_capture_018 (
     marker_id, capture_state, source_row_count, captured_at
@@ -911,8 +948,51 @@ SET @cp018_resource_partial_drift_count = (
         )
     )
 );
+SET @cp018_legacy_pending_partial_drift_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018 AS backup
+    LEFT JOIN workflow_resources AS resource
+      ON BINARY resource.resource_key = BINARY backup.resource_key
+    WHERE BINARY backup.resource_key =
+          BINARY 'phase7.pending_arrivals_sheet'
+      AND NOT (
+          backup.existed_before = TRUE
+          AND resource.resource_key IS NOT NULL
+          AND resource.configuration_version = 1
+          AND BINARY resource.source <=> BINARY backup.source
+          AND BINARY resource.config_sha256 = BINARY SHA2(
+              CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+              256
+          )
+          AND (
+              (
+                  backup.migration_config_sha256 IS NOT NULL
+                  AND BINARY resource.config_sha256 =
+                      BINARY backup.migration_config_sha256
+              )
+              OR (
+                  backup.migration_config_sha256 IS NULL
+                  AND (
+                      BINARY resource.config_sha256 = BINARY SHA2(
+                          CAST(backup.config_json AS CHAR CHARACTER SET utf8mb4),
+                          256
+                      )
+                      OR BINARY resource.config_sha256 = BINARY SHA2(
+                          CAST(JSON_SET(
+                              backup.config_json,
+                              '$.resource_kind',
+                              'feishu_sheet'
+                          ) AS CHAR CHARACTER SET utf8mb4),
+                          256
+                      )
+                  )
+              )
+          )
+      )
+);
 SET @cp018_resource_partial_drift_guard_sql = IF(
-    @cp018_resource_partial_drift_count = 0,
+    @cp018_resource_partial_drift_count = 0
+    AND @cp018_legacy_pending_partial_drift_count = 0,
     'SELECT 1',
     'SELECT * FROM information_schema.cp018_reviewed_resource_partial_drift'
 );
@@ -923,7 +1003,7 @@ DEALLOCATE PREPARE cp018_resource_partial_drift_guard_stmt;
 
 -- Materialize missing reviewed rows without overwriting an existing target.
 -- An existing exact row may predate resource-kind governance; only that absent
--- discriminator is added. All routing is by the fifteen BINARY resource ids.
+-- discriminator is added. All routing is by the fourteen BINARY resource ids.
 INSERT INTO workflow_resources (
     resource_key, config_json, config_sha256, source, configuration_version
 )
@@ -1117,39 +1197,6 @@ SET @cp018_invalid_reviewed_resource_count = (
                 AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
                     resource.config_json, '$.range'
                 ))) <> ''
-                AND JSON_TYPE(JSON_EXTRACT(
-                    resource.config_json, '$.clear_range'
-                )) = 'STRING'
-                AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                    resource.config_json, '$.clear_range'
-                ))) <> ''
-            WHEN BINARY reviewed.resource_key =
-                 BINARY 'phase7.pending_arrivals_sheet'
-            THEN
-                JSON_TYPE(JSON_EXTRACT(
-                    resource.config_json, '$.spreadsheet_token'
-                )) = 'STRING'
-                AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                    resource.config_json, '$.spreadsheet_token'
-                ))) <> ''
-                AND (
-                    (
-                        JSON_TYPE(JSON_EXTRACT(
-                            resource.config_json, '$.snapshot_range'
-                        )) = 'STRING'
-                        AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                            resource.config_json, '$.snapshot_range'
-                        ))) <> ''
-                    )
-                    OR (
-                        JSON_TYPE(JSON_EXTRACT(
-                            resource.config_json, '$.range'
-                        )) = 'STRING'
-                        AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
-                            resource.config_json, '$.range'
-                        ))) <> ''
-                    )
-                )
                 AND JSON_TYPE(JSON_EXTRACT(
                     resource.config_json, '$.clear_range'
                 )) = 'STRING'

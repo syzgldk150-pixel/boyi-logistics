@@ -206,7 +206,6 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             "phase7.send_order_bitable": "feishu_bitable",
             "phase7.arrive_primary_sheet": "feishu_sheet",
             "phase7.arrive_secondary_sheet": "feishu_sheet",
-            "phase7.pending_arrivals_sheet": "feishu_sheet",
             "phase7.stats_archive_sheet": "feishu_sheet",
             "phase7.daily_sign_bitable": "feishu_bitable",
             "phase7.daily_sign_sheet": "feishu_sheet",
@@ -263,7 +262,6 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         ):
             self.assertIn(required_field, resource_map)
         for required_existing_field in (
-            "$.snapshot_range",
             "$.default_write_range",
             "$.source_snapshot_range",
         ):
@@ -289,14 +287,28 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertIn("cp018_resource_partial_drift_guard_stmt", self.sql)
         self.assertIn("cp018_reviewed_resource_shape_guard_stmt", self.sql)
         self.assertIn("cp018_resource_capture_guard_stmt", self.sql)
-        self.assertIn("@cp018_reviewed_resource_count = 15", self.sql)
+        self.assertIn("@cp018_reviewed_resource_count = 14", self.sql)
+        self.assertIn("@cp018_resource_backup_count = 14", self.sql)
+        obsolete_delete = (
+            "DELETE FROM automation_project_reviewed_resource_map_018\n"
+            "WHERE BINARY resource_key = BINARY "
+            "'phase7.pending_arrivals_sheet'"
+        )
+        self.assertIn(obsolete_delete, self.sql)
+        self.assertLess(
+            self.sql.index(obsolete_delete),
+            self.sql.index("SET @cp018_reviewed_resource_count"),
+        )
         self.assertIn("@cp018_resource_backup_count = 15", self.sql)
+        self.assertIn("@cp018_legacy_pending_backup_count = 1", self.sql)
+        self.assertIn("cp018_legacy_pending_backup_guard_stmt", self.sql)
+        self.assertIn("cp018_legacy_pending_partial_drift_count", self.sql)
 
     def test_required_resource_diagnostic_spec_matches_018_sql_guard(self):
         specs = (
             self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
         )
-        self.assertEqual(9, len(specs))
+        self.assertEqual(8, len(specs))
 
         resource_map = self.sql.split(
             "INSERT INTO automation_project_reviewed_resource_map_018", 1
@@ -371,7 +383,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
 
         self.assertEqual(0, result)
         self.assertEqual(
-            "automation_project_required_resources=ok count=9\n",
+            "automation_project_required_resources=ok count=8\n",
             output.getvalue(),
         )
         self.assertEqual(1, connection.rollback_count)
@@ -383,7 +395,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         resource_queries = [
             call for call in cursor.calls if "workflow_resources" in call[0]
         ]
-        self.assertEqual(9, len(resource_queries))
+        self.assertEqual(8, len(resource_queries))
         self.assertEqual(
             [(spec.expected_kind, spec.resource_key) for spec in specs],
             [params for _sql, params in resource_queries],
@@ -412,7 +424,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             spec.resource_key: _valid_diagnostic_row(self.resource_preflight, spec)
             for spec in specs
         }
-        rows.pop("phase7.pending_arrivals_sheet")
+        rows.pop("phase7.daily_sign_sheet")
         rows["phase7.site_send_bitable"].update(
             {
                 "resource_kind_present": 1,
@@ -456,7 +468,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             lines,
         )
         self.assertIn(
-            "automation_project_required_resource=phase7.pending_arrivals_sheet "
+            "automation_project_required_resource=phase7.daily_sign_sheet "
             "reason=MISSING_ROW field=resource_key",
             lines,
         )
@@ -587,7 +599,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertIn("WHERE backup.existed_before = FALSE", calls[1][0])
         self.assertIn("SET migration_config_sha256 = NULL", calls[2][0])
 
-    def test_restore_validation_accepts_complete_fifteen_resource_capture(self):
+    def test_restore_validation_accepts_complete_fourteen_resource_capture(self):
         class Cursor:
             def __init__(self) -> None:
                 self._row = None
@@ -595,7 +607,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             def execute(self, sql, params=None):
                 normalized = " ".join(str(sql).split())
                 if "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
-                    self._row = {"row_count": 15, "captured_count": 15}
+                    self._row = {"row_count": 14, "captured_count": 14}
                 elif "AS changed_count" in normalized:
                     self._row = {"changed_count": 0}
                 else:
@@ -631,6 +643,96 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                 Cursor(),
             )
         )
+
+    def test_restore_validation_accepts_only_exact_legacy_fifteenth_capture(self):
+        class Cursor:
+            def __init__(
+                self,
+                *,
+                pending_count=1,
+                pending_existed_count=1,
+                pending_changed_count=0,
+            ) -> None:
+                self.pending_count = pending_count
+                self.pending_existed_count = pending_existed_count
+                self.pending_changed_count = pending_changed_count
+                self._row = None
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(str(sql).split())
+                if "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
+                    self._row = {
+                        "row_count": 15,
+                        "captured_count": 0,
+                        "legacy_pending_count": self.pending_count,
+                        "legacy_pending_existed_count": (
+                            self.pending_existed_count
+                        ),
+                    }
+                elif (
+                    "AS changed_count" in normalized
+                    and "phase7.pending_arrivals_sheet" in normalized
+                ):
+                    self._row = {
+                        "changed_count": self.pending_changed_count
+                    }
+                elif "AS changed_count" in normalized:
+                    self._row = {"changed_count": 0}
+                else:
+                    self._row = None
+
+            def fetchone(self):
+                return self._row
+
+        resource_backup_table = "automation_project_resource_backup_018"
+        reviewed_map_table = "automation_project_reviewed_resource_map_018"
+        runtime = {
+            "AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE": (
+                "scheduled_tasks_backup_018"
+            ),
+            "AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE": (
+                "scheduled_tasks_capture_018"
+            ),
+            "AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE": (
+                resource_backup_table
+            ),
+            "AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE": (
+                reviewed_map_table
+            ),
+            "_table_exists": lambda _cursor, table: table in {
+                resource_backup_table,
+                reviewed_map_table,
+            },
+            "_column_exists": lambda _cursor, _table, _column: False,
+        }
+
+        self.assertFalse(
+            self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
+                runtime,
+                Cursor(),
+            )
+        )
+        for pending_count, pending_existed_count in ((0, 0), (1, 0)):
+            with self.subTest(
+                pending_count=pending_count,
+                pending_existed_count=pending_existed_count,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "backup is incomplete"):
+                    self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
+                        runtime,
+                        Cursor(
+                            pending_count=pending_count,
+                            pending_existed_count=pending_existed_count,
+                        ),
+                    )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "dirty legacy pending resource",
+        ):
+            self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
+                runtime,
+                Cursor(pending_changed_count=1),
+            )
 
     def test_restore_validation_empty_resource_backup_state_matrix(self):
         class Cursor:
@@ -724,7 +826,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             def execute(self, sql, params=None):
                 normalized = " ".join(str(sql).split())
                 if "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
-                    self._row = {"row_count": 15, "captured_count": 0}
+                    self._row = {"row_count": 14, "captured_count": 0}
                 elif "AS changed_count" in normalized:
                     self._row = {"changed_count": 0}
                 else:

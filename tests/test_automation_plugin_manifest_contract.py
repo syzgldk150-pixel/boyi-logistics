@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from unittest.mock import patch
 
 import pytest
 
@@ -9,8 +10,14 @@ from agent.automation_plugins.first_party import resolve_first_party_manifests
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.mysql_repository import (
+    MySQLAutomationPluginRepositoryAdapter,
     _legacy_project_config,
     _transient_entry,
+)
+from agent.automation_plugins.models import (
+    FirstPartyInstanceSeed,
+    PluginTrustSource,
+    PluginVersionRecord,
 )
 from agent.tool_registry import ToolRegistry
 from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
@@ -86,9 +93,10 @@ def test_scan_contract_keeps_ingress_routes_but_removes_unverifiable_outbound_fl
 
 
 def test_arrival_contract_uses_instance_sheet_roles_and_no_outbound_flow() -> None:
-    source = resolve_first_party_manifests(ToolRegistry())[
+    manifest = resolve_first_party_manifests(ToolRegistry())[
         "sync_arrival_stats"
-    ].to_mapping()
+    ]
+    source = manifest.to_mapping()
 
     roles = {item["role"]: item for item in source["resource_roles"]}
     for role, required in {
@@ -108,8 +116,20 @@ def test_arrival_contract_uses_instance_sheet_roles_and_no_outbound_flow() -> No
     assert "trigger_flow" not in source["tool_contract"]["input_schema"][
         "properties"
     ]
+    assert source["config_schema"]["properties"]["pending_sheet_disabled"] == {
+        "type": "boolean",
+        "description": "是否跳过写入「未齐货物」飞书表",
+    }
     assert all(
         "trigger_flow" not in contract["argument_template"]
+        for contract in source["invocation_contracts"].values()
+    )
+    assert all(
+        contract["argument_template"]["pending_sheet_disabled"]
+        == {
+            "source": "project_config",
+            "key": "pending_sheet_disabled",
+        }
         for contract in source["invocation_contracts"].values()
     )
     broker = {
@@ -128,15 +148,137 @@ def test_arrival_contract_uses_instance_sheet_roles_and_no_outbound_flow() -> No
     assert ("network.request", "feishu.webhook.invoke") not in broker
     migration = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
     assert "trigger_flow" not in migration.legacy_arguments
+    assert migration.legacy_arguments == {
+        "account_id": "ronghui_default",
+        "pending_sheet_disabled": True,
+    }
     assert migration.resource_bindings == {
         "webhook_route": "phase7.stats_webhook",
         "feishu_route": "automation.feishu_route.arrival_stats",
         "arrival_stats_primary_sheet": "phase7.arrive_primary_sheet",
         "arrival_stats_secondary_sheet": "phase7.arrive_secondary_sheet",
-        "arrival_stats_pending_sheet": "phase7.pending_arrivals_sheet",
         "arrival_stats_archive_sheet": "phase7.stats_archive_sheet",
         "arrival_stats_split_pending_sheet": "phase7.split_pending_target_sheet",
     }
+    migrated_config = _legacy_project_config(migration, manifest)
+    assert migrated_config == {"pending_sheet_disabled": True}
+    compiled = compile_instance_arguments(
+        _transient_entry(migration.automation_id, manifest),
+        config=migrated_config,
+        account_bindings=migration.legacy_account_bindings,
+        resource_bindings=dict(migration.resource_bindings),
+        entrypoint="console",
+        resolve_dynamic=False,
+    )
+    assert compiled.arguments["pending_sheet_disabled"] is True
+    assert "arrival_stats_pending_sheet" not in compiled.resource_bindings
+
+
+def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())[
+        "sync_arrival_stats"
+    ]
+    template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
+
+    class AutomationPlugins:
+        def __init__(self) -> None:
+            self.project = None
+            self.saved = None
+
+        def get_project(self, _automation_id, *, for_update):
+            assert for_update is True
+            return self.project
+
+        def install_project_instance(self, row):
+            self.project = {**row, "record_version": 1}
+            return self.project
+
+        def initialize_project_config(self, _automation_id, *, enabled_entrypoints):
+            assert tuple(enabled_entrypoints) == tuple(template.allowed_entrypoints)
+            return {"config_version": 1}
+
+        def get_project_config(self, _automation_id, *, for_update):
+            assert for_update is True
+            return {
+                "config_version": 1,
+                "committed_schedule": {
+                    "kind": "none",
+                    "times": [],
+                    "enabled": False,
+                },
+            }
+
+        def save_project_config(self, _automation_id, **payload):
+            self.saved = copy.deepcopy(payload)
+
+        def set_project_enabled(
+            self,
+            _automation_id,
+            *,
+            enabled,
+            expected_record_version,
+        ):
+            assert enabled is True
+            assert expected_record_version == 1
+
+    class UnitOfWork:
+        def __init__(self) -> None:
+            self.automation_plugins = AutomationPlugins()
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def commit(self):
+            self.committed = True
+
+    class Orchestration:
+        def __init__(self) -> None:
+            self.uow = UnitOfWork()
+
+        def unit_of_work(self):
+            return self.uow
+
+    orchestration = Orchestration()
+    repository = MySQLAutomationPluginRepositoryAdapter(orchestration)
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+    )
+    seed = FirstPartyInstanceSeed(
+        automation_id=template.automation_id,
+        plugin_id=template.tool_name,
+        version=manifest.version,
+        display_name=template.automation_id,
+        allowed_entrypoints=tuple(template.allowed_entrypoints),
+    )
+
+    with patch.object(repository, "_register"):
+        result = repository.bootstrap_missing(
+            (version,),
+            (seed,),
+            release_sha="bootstrap-test-release",
+        )
+
+    assert result.created == ("arrival_stats",)
+    assert orchestration.uow.committed is True
+    saved = orchestration.uow.automation_plugins.saved
+    assert saved is not None
+    assert saved["config"] == {"pending_sheet_disabled": True}
+    assert "arrival_stats_pending_sheet" not in saved["resource_bindings"]
+    assert saved["compiled_invocations"]
+    assert all(
+        invocation["arguments"]["pending_sheet_disabled"] is True
+        for invocation in saved["compiled_invocations"].values()
+    )
 
 
 def test_arrive_list_contract_uses_two_exact_instance_sheet_roles() -> None:

@@ -13,7 +13,7 @@ class RequiredExistingResourceSpec(NamedTuple):
     alternative_field_groups: tuple[tuple[str, ...], ...] = ()
 
 
-# These are the nine installation-specific rows that migration 018 deliberately
+# These are the eight installation-specific rows that migration 018 deliberately
 # refuses to guess or materialize. A static migration test keeps this closed
 # diagnostic contract aligned with the SQL guard.
 AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS = (
@@ -43,12 +43,6 @@ AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS = (
         ("spreadsheet_token", "range", "clear_range"),
     ),
     RequiredExistingResourceSpec(
-        "phase7.pending_arrivals_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token", "clear_range"),
-        (("snapshot_range", "range"),),
-    ),
-    RequiredExistingResourceSpec(
         "phase7.stats_archive_sheet",
         "feishu_sheet",
         ("spreadsheet_token",),
@@ -73,7 +67,6 @@ AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES = (
     "spreadsheet_token",
     "range",
     "clear_range",
-    "snapshot_range",
     "default_write_range",
     "source_snapshot_range",
 )
@@ -191,7 +184,7 @@ def _required_resource_findings(cursor: Any) -> list[tuple[str, str, str]]:
 def check_automation_project_required_resources(
     connect: Callable[[], Any],
 ) -> int:
-    """Validate the nine pre-018 resource shapes without exposing config."""
+    """Validate the eight pre-018 resource shapes without exposing config."""
 
     connection = connect()
     try:
