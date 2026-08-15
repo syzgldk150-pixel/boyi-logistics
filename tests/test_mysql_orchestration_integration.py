@@ -14,6 +14,8 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from shared.scheduled_task_contracts import _arguments_for_schema_validation
+
 
 RUN_MYSQL = os.getenv("RUN_MYSQL_INTEGRATION") == "1"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -443,7 +445,13 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
                     profile = profile_by_task_id[task_id]
                     capability = registry.get_capability(task["tool_name"])
-                    registry.validate_arguments(task["tool_name"], arguments)
+                    registry.validate_arguments(
+                        task["tool_name"],
+                        _arguments_for_schema_validation(
+                            arguments,
+                            profile.dynamic_argument_rules,
+                        ),
+                    )
                     exact = approval.build_scheduled_task_contract(
                         task,
                         capability,
