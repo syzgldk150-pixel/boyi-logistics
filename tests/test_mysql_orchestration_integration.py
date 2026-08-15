@@ -148,7 +148,10 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls._run_migrations(cls.partial_database)
         cls._run_migrations(cls.rollback_database)
         cls._run_migrations(cls.policy_restore_database)
-        cls._run_migrations(cls.release_manifest_database)
+        # This dedicated database exercises the legacy manifest validator.
+        # Keep it immediately before 018 so the dispatcher cannot silently
+        # substitute the post-018 71-row project contract for that boundary.
+        cls._apply_through(cls.release_manifest_database, "017")
         cls._run_migrations(cls.protected_write_database)
         cls._apply_through(cls.project_authorization_database, "017")
         cls._apply_through(cls.project_authorization_partial_database, "017")
@@ -2741,7 +2744,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self.runner.restore_control_plane_policy_bootstrap()
         self.assertEqual(before_failed_restore, table_counts())
 
-    def test_database_backed_release_manifest_initial_and_later_policy_gates(self):
+    def test_database_backed_pre_018_release_manifest_initial_and_later_policy_gates(
+        self,
+    ):
         database = self.release_manifest_database
         exact_contracts = self._seed_release_manifest(database)
 
