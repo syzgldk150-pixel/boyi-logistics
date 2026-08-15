@@ -635,6 +635,44 @@ class AutomationPluginRepositoryTests(TestCase):
             startup,
         )
 
+    def test_reviewed_customer_shadow_interval_expands_to_closed_daily_times(self):
+        schedule = _schedule_from_rows(
+            [{"cron_expression": "*/15 * * * *", "enabled": True}]
+        )
+        self.assertEqual(schedule["kind"], "daily_times")
+        self.assertTrue(schedule["enabled"])
+        self.assertEqual(len(schedule["times"]), 96)
+        self.assertEqual(schedule["times"][:4], ["00:00", "00:15", "00:30", "00:45"])
+        self.assertEqual(schedule["times"][-1], "23:45")
+        self.assertEqual(_schedule_expressions(schedule), ("*/15 * * * *",))
+        self.assertEqual(
+            _schedule_from_rows(
+                [
+                    {"cron_expression": expression, "enabled": True}
+                    for expression in _schedule_expressions(schedule)
+                ]
+            ),
+            schedule,
+        )
+
+        with self.assertRaisesRegex(
+            OrchestrationPersistenceError,
+            "non-canonical system cron",
+        ):
+            _schedule_from_rows(
+                [{"cron_expression": "*/10 * * * *", "enabled": True}]
+            )
+        with self.assertRaisesRegex(
+            OrchestrationPersistenceError,
+            "cannot be mixed",
+        ):
+            _schedule_from_rows(
+                [
+                    {"cron_expression": "*/15 * * * *", "enabled": True},
+                    {"cron_expression": "7 0 * * *", "enabled": True},
+                ]
+            )
+
     def test_grouped_approval_idempotency_binds_actor_comment_and_decided_set(self):
         persisted = {
             "decision": "APPROVED",

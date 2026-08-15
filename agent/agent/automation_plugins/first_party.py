@@ -1100,7 +1100,13 @@ def resolve_first_party_manifests(
                 "scheduling": {
                     "supported": "scheduler" in entrypoints,
                     "allowed_kinds": schedule_kinds,
-                    "max_daily_times": 32 if "scheduler" in entrypoints else 0,
+                    "max_daily_times": (
+                        96
+                        if plugin_id == "sync_customer_service_problems"
+                        else 32
+                    )
+                    if "scheduler" in entrypoints
+                    else 0,
                 },
                 "allowed_entrypoints": entrypoints,
                 "invocation_contracts": {

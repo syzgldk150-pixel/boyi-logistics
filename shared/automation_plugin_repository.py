@@ -182,6 +182,13 @@ def _normalized_project_schedule(value: Mapping[str, Any]) -> dict[str, Any]:
     return {"kind": "daily_times", "times": normalized_times, "enabled": enabled}
 
 
+_QUARTER_HOUR_DAILY_TIMES = tuple(
+    f"{hour:02d}:{minute:02d}"
+    for hour in range(24)
+    for minute in (0, 15, 30, 45)
+)
+
+
 def _schedule_from_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {"kind": "none", "times": [], "enabled": False}
@@ -192,6 +199,19 @@ def _schedule_from_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     expressions = [str(row.get("cron_expression") or "").strip() for row in rows]
     if expressions == ["@startup"]:
         return {"kind": "startup", "times": [], "enabled": enabled}
+    # ``customer_problems_shadow`` predates project-owned schedules and is
+    # the sole reviewed interval cron in the migration inventory.  Expand
+    # only that exact single-row expression to the equivalent closed DTO.
+    if "*/15 * * * *" in expressions:
+        if expressions != ["*/15 * * * *"]:
+            raise OrchestrationPersistenceError(
+                "reviewed interval cron cannot be mixed with other schedule rows"
+            )
+        return {
+            "kind": "daily_times",
+            "times": list(_QUARTER_HOUR_DAILY_TIMES),
+            "enabled": enabled,
+        }
     times: list[str] = []
     for expression in expressions:
         fields = expression.split()
@@ -218,6 +238,11 @@ def _schedule_expressions(schedule: Mapping[str, Any]) -> tuple[str, ...]:
         return ()
     if kind == "startup":
         return ("@startup",)
+    if tuple(schedule["times"]) == _QUARTER_HOUR_DAILY_TIMES:
+        # Preserve the exact reviewed legacy row identity and its approval
+        # history when the migration generation commits.  This is the inverse
+        # of the single accepted interval expansion in ``_schedule_from_rows``.
+        return ("*/15 * * * *",)
     return tuple(
         f"{int(item[3:])} {int(item[:2])} * * *"
         for item in schedule["times"]

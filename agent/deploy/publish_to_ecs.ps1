@@ -544,7 +544,7 @@ finally {
     if ($remoteStageCreated -and $remoteStage.StartsWith("/home/boyce/.boyi-deploy/release-")) {
         # remote_release.sh owns successful cleanup and complete rollback cleanup.
         # If SSH or rollback fails, this stage may contain the only recovery bundle.
-        Write-Warning "Remote release stage preserved for recovery: $remoteStage"
+        Write-Warning "Remote release failed; verify whether recovery material remains at: $remoteStage"
     }
     if (Test-Path -LiteralPath $TaskTempDir) {
         $resolvedTemp = (Resolve-Path -LiteralPath $TaskTempDir).ProviderPath

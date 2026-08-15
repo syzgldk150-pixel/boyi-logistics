@@ -1342,12 +1342,20 @@ restore_automation_plugin_installations() {
     echo "Automation plugin rollback found an invalid path" >&2
     return 1
   }
-  comm -23 "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${missing_inventory}"
+  if ! LC_ALL=C comm --check-order -23 \
+    "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${missing_inventory}"; then
+    echo "Automation plugin rollback inventory comparison failed" >&2
+    return 1
+  fi
   if [[ -s "${missing_inventory}" ]]; then
     echo "A pre-release automation plugin installation disappeared" >&2
     return 1
   fi
-  comm -13 "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${new_inventory}"
+  if ! LC_ALL=C comm --check-order -13 \
+    "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${new_inventory}"; then
+    echo "Automation plugin rollback inventory comparison failed" >&2
+    return 1
+  fi
 
   # Services are stopped and migration 018 has already been restored. Move only
   # release-created immutable version/staging directories out of the live root;

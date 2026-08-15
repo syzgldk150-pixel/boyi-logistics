@@ -832,7 +832,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
         publisher_finally = publisher.split("\nfinally {", 1)[1]
         self.assertNotIn("rm -rf", publisher_finally)
-        self.assertIn("Remote release stage preserved for recovery", publisher_finally)
+        self.assertIn(
+            "Remote release failed; verify whether recovery material remains at",
+            publisher_finally,
+        )
         blocked_extensions = publisher[
             publisher.index("$BlockedExtensions = @(") : publisher.index("function Assert-Command")
         ]
@@ -1345,6 +1348,41 @@ class ReleaseBoundaryTests(unittest.TestCase):
             """
         )
 
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_plugin_install_rollback_uses_c_locale_and_checks_comm_order(self):
+        release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
+            encoding="utf-8"
+        )
+        restore = release.split("restore_automation_plugin_installations() {", 1)[1].split(
+            "\n}\n\nwrite_automation_plugin_runtime_environment() {",
+            1,
+        )[0]
+        self.assertEqual(restore.count("LC_ALL=C comm --check-order"), 2)
+        self.assertNotIn("\n  comm -", restore)
+        self.assertEqual(
+            restore.count("Automation plugin rollback inventory comparison failed"),
+            2,
+        )
+
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
+            capture_automation_plugin_installation_state
+            mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/1.0.0-222222222222/package"
+            comm() {
+              [[ "${LC_ALL:-}" == "C" ]] || return 97
+              command comm "$@"
+            }
+            restore_automation_plugin_installations
+            [[ -d "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111" ]]
+            [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action" ]]
+            """
+        )
         self.assertEqual(0, completed.returncode, completed.stderr)
 
     def test_plugin_install_rollback_refuses_to_hide_missing_preexisting_version(self):

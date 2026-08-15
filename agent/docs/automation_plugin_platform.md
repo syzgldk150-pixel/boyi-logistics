@@ -28,6 +28,8 @@ Evidence、写后条件和 Worker 要求。清单不能声明 cron，也不能�
 插件只安装动作；清单最多声明平台允许的调度类型，不携带实际时刻。`none/daily_times/startup`
 等定时在安装后由系统项目配置保存，并与实例的账号、资源、入口和授权共同受版本 CAS 约束。
 因此重复安装同一包时，每个 `automation_id` 都能独立绑定账号/资源并设置定时与权限，互不继承。
+迁移时唯一受审的历史间隔计划 `customer_problems_shadow`（每 15 分钟）会被精确展开为等价的
+96 个 `daily_times`；任意其他通配 Cron 仍然 fail closed，插件与浏览器均不会接收原始 Cron。
 
 首方动作源码位于 `first_party_automation_plugins/`。`digests.json` 锁定确定性清单和包摘要，
 `MIGRATION_MATRIX.md` 是动作提取、底层原语和独立写后验证的当前权威状态。每日应签只做动作包裹，
