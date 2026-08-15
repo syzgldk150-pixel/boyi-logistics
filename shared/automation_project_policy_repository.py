@@ -1882,8 +1882,7 @@ def validate_legacy_scheduled_grant_event(
         or str(event.get("reason") or "") != LEGACY_SCHEDULE_GRANT_REASON
         or str(event.get("comment") or "")
         != "preserve previously authorized production automation"
-        or str(event.get("correlation_id") or "")
-        != legacy_scheduled_policy_grant_request_id(task_id)
+        or not _bootstrap_is_uuid(event.get("correlation_id"))
         or not isinstance(snapshot, Mapping)
         or set(snapshot)
         != {
