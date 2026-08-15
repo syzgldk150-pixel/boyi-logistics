@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -52,79 +52,6 @@ AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE = (
 )
 AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE = (
     "automation_project_resource_backup_018"
-)
-
-
-class RequiredExistingResourceSpec(NamedTuple):
-    resource_key: str
-    expected_kind: str
-    required_fields: tuple[str, ...]
-    alternative_field_groups: tuple[tuple[str, ...], ...] = ()
-
-
-# These are the nine installation-specific rows that migration 018 deliberately
-# refuses to guess or materialize.  A static migration test keeps this closed
-# diagnostic contract aligned with the SQL guard.
-AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS = (
-    RequiredExistingResourceSpec(
-        "phase7.site_send_bitable",
-        "feishu_bitable",
-        ("base_token", "table_id"),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.site_send_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token", "range"),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.send_order_bitable",
-        "feishu_bitable",
-        ("base_token", "table_id"),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.arrive_primary_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token", "range", "clear_range"),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.arrive_secondary_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token", "range", "clear_range"),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.pending_arrivals_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token", "clear_range"),
-        (("snapshot_range", "range"),),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.stats_archive_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token",),
-        (("default_write_range", "source_snapshot_range"),),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.daily_sign_bitable",
-        "feishu_bitable",
-        ("base_token", "table_id"),
-    ),
-    RequiredExistingResourceSpec(
-        "phase7.daily_sign_sheet",
-        "feishu_sheet",
-        ("spreadsheet_token", "range"),
-    ),
-)
-
-_AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES = (
-    "resource_kind",
-    "base_token",
-    "table_id",
-    "spreadsheet_token",
-    "range",
-    "clear_range",
-    "snapshot_range",
-    "default_write_range",
-    "source_snapshot_range",
 )
 AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = (
     "automation_plugin_purge_journal",
@@ -2463,7 +2390,6 @@ def _restore_scheduled_task_rows_from_migration(
 
 def restore_daily_sign_single_tms_account() -> int:
     """Restore exact pre-016 daily-sign rows and make 016 re-applicable."""
-
     return _restore_scheduled_task_rows_from_migration(
         version=DAILY_SIGN_SINGLE_TMS_VERSION,
         backup_table=DAILY_SIGN_SINGLE_TMS_BACKUP_TABLE,
@@ -2473,7 +2399,6 @@ def restore_daily_sign_single_tms_account() -> int:
 
 def restore_scheduled_task_contract_upgrade() -> int:
     """Restore exact pre-017 scheduler rows and make 017 safely re-applicable."""
-
     return _restore_scheduled_task_rows_from_migration(
         version=SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION,
         backup_table=SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE,
@@ -2482,23 +2407,20 @@ def restore_scheduled_task_contract_upgrade() -> int:
     )
 
 
-
-
-
-
-
-
-def _load_automation_project_authorization_helper():
-    path = Path(__file__).with_name("migration_018_authorization.py")
-    spec = importlib.util.spec_from_file_location("migration_018_authorization", path)
+def _load_script_helper(filename: str):
+    path = Path(__file__).with_name(filename)
+    module_name = f"boyi_agent_scripts_{path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load migration 018 helper")
+        raise RuntimeError(f"cannot load script helper: {filename}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-_MIGRATION_018_HELPER = _load_automation_project_authorization_helper()
+_MIGRATION_018_HELPER = _load_script_helper("migration_018_authorization.py")
+_RESOURCE_PREFLIGHT = _load_script_helper("automation_project_resource_preflight.py")
+check_automation_project_required_resources = _RESOURCE_PREFLIGHT.check_automation_project_required_resources
 
 
 def _automation_project_authorization_artifacts(cursor) -> set[str]:
@@ -2839,145 +2761,6 @@ def report_scheduled_task_contract_upgrade_status() -> int:
     )
 
 
-def _required_resource_projection_sql() -> str:
-    projections = ["resource_key"]
-    for field_name in _AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES:
-        json_path = f"$.{field_name}"
-        projections.extend(
-            (
-                f"JSON_CONTAINS_PATH(config_json, 'one', '{json_path}') "
-                f"AS {field_name}_present",
-                f"JSON_TYPE(JSON_EXTRACT(config_json, '{json_path}')) "
-                f"AS {field_name}_type",
-                "COALESCE("
-                f"JSON_TYPE(JSON_EXTRACT(config_json, '{json_path}')) = "
-                "'STRING' AND "
-                f"TRIM(JSON_UNQUOTE(JSON_EXTRACT(config_json, '{json_path}'))) "
-                f"<> '', FALSE) AS {field_name}_nonempty",
-            )
-        )
-    projections.append(
-        "COALESCE("
-        "JSON_TYPE(JSON_EXTRACT(config_json, '$.resource_kind')) = 'STRING' "
-        "AND BINARY JSON_UNQUOTE(JSON_EXTRACT(config_json, '$.resource_kind')) "
-        "= BINARY %s, FALSE) AS resource_kind_matches"
-    )
-    return (
-        "SELECT\n    "
-        + ",\n    ".join(projections)
-        + "\nFROM workflow_resources "
-        "WHERE BINARY resource_key = BINARY %s"
-    )
-
-
-_AUTOMATION_PROJECT_REQUIRED_RESOURCE_PROJECTION_SQL = (
-    _required_resource_projection_sql()
-)
-
-
-def _database_flag(value: object) -> bool:
-    return value is True or value == 1
-
-
-def _required_string_field_problem(
-    row: Mapping[str, object],
-    field_name: str,
-) -> str | None:
-    if not _database_flag(row.get(f"{field_name}_present")):
-        return "MISSING_FIELD"
-    if str(row.get(f"{field_name}_type") or "").upper() != "STRING":
-        return "INVALID_FIELD_TYPE"
-    if not _database_flag(row.get(f"{field_name}_nonempty")):
-        return "EMPTY_FIELD"
-    return None
-
-
-def _alternative_field_group_problem(
-    row: Mapping[str, object],
-    field_names: tuple[str, ...],
-) -> str | None:
-    problems = tuple(
-        _required_string_field_problem(row, field_name)
-        for field_name in field_names
-    )
-    if any(problem is None for problem in problems):
-        return None
-    if all(problem == "MISSING_FIELD" for problem in problems):
-        return "MISSING_FIELD"
-    if "INVALID_FIELD_TYPE" in problems:
-        return "INVALID_FIELD_TYPE"
-    return "EMPTY_FIELD"
-
-
-def _required_resource_findings(
-    cursor: Any,
-) -> list[tuple[str, str, str]]:
-    findings: list[tuple[str, str, str]] = []
-    for spec in AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS:
-        cursor.execute(
-            _AUTOMATION_PROJECT_REQUIRED_RESOURCE_PROJECTION_SQL,
-            (spec.expected_kind, spec.resource_key),
-        )
-        row = cursor.fetchone()
-        if not isinstance(row, Mapping):
-            findings.append((spec.resource_key, "MISSING_ROW", "resource_key"))
-            continue
-
-        if _database_flag(row.get("resource_kind_present")):
-            kind_problem = _required_string_field_problem(row, "resource_kind")
-            if kind_problem is not None:
-                findings.append((spec.resource_key, kind_problem, "resource_kind"))
-            elif not _database_flag(row.get("resource_kind_matches")):
-                findings.append(
-                    (spec.resource_key, "INVALID_KIND", "resource_kind")
-                )
-
-        for field_name in spec.required_fields:
-            problem = _required_string_field_problem(row, field_name)
-            if problem is not None:
-                findings.append((spec.resource_key, problem, field_name))
-
-        for field_names in spec.alternative_field_groups:
-            problem = _alternative_field_group_problem(row, field_names)
-            if problem is not None:
-                findings.append(
-                    (
-                        spec.resource_key,
-                        problem,
-                        "_or_".join(field_names),
-                    )
-                )
-    return findings
-
-
-def check_automation_project_required_resources() -> int:
-    """Validate the nine pre-018 resource shapes without exposing config."""
-
-    connection = _connect()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("START TRANSACTION READ ONLY")
-            findings = _required_resource_findings(cursor)
-    finally:
-        try:
-            connection.rollback()
-        finally:
-            connection.close()
-
-    expected_count = len(AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS)
-    if not findings:
-        print(f"automation_project_required_resources=ok count={expected_count}")
-        return 0
-
-    print(f"automation_project_required_resources=blocked count={len(findings)}")
-    for resource_key, reason, field_name in findings:
-        print(
-            "automation_project_required_resource="
-            f"{resource_key} reason={reason} field={field_name}"
-        )
-    return 1
-
-
 def report_automation_project_authorization_status() -> int:
     """Report applied/clean/partial state without exposing project data."""
 
@@ -3193,7 +2976,7 @@ def main() -> int:
     if args.automation_project_authorization_status:
         return report_automation_project_authorization_status()
     if args.check_automation_project_required_resources:
-        return check_automation_project_required_resources()
+        return check_automation_project_required_resources(_connect)
     if args.control_plane_policy_bootstrap_marker_status:
         return report_control_plane_policy_bootstrap_marker_status()
     if args.preflight_control_plane_task_cutover:

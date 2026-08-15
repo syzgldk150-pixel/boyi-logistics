@@ -15,6 +15,7 @@
 - 当前 Linux/ECS 发行明确不包含 Windows Worker/Tray：Agent 不装载其签名密钥、transport 或路由，发布器不以 Worker mTLS、服务端身份或 dispatcher readiness 阻断其余服务端插件。版本化 `deploy/nginx/boyi-worker-mtls.conf` 仅保留为未来重新启用时的安全合同；重新启用必须在同一受审提交中恢复精确 mTLS location、身份验证、发布预检和健康门禁，不得通过环境变量旁路打开。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
+- `scripts/automation_project_resource_preflight.py` 封装迁移 018 的九项 required-existing 资源只读前检；`run_migrations.py` 仅通过脚本同目录 exact-path loader 绑定其公开检查函数，禁止裸导入或修改全局 `sys.path`。
 - Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的精确材料恢复旧环境和源码；成功时也必须保留当次远端回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
 
 ## 本地 WSL 与 ECS 运行隔离
