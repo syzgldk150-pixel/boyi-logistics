@@ -13,11 +13,25 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "agent" / "migrations" / "018_automation_project_authorization.sql"
 RUNNER_PATH = ROOT / "agent" / "scripts" / "run_migrations.py"
+RESOURCE_PREFLIGHT_PATH = (
+    ROOT / "agent" / "scripts" / "automation_project_resource_preflight.py"
+)
 MIGRATION_HELPER_PATH = ROOT / "agent" / "scripts" / "migration_018_authorization.py"
 
 
 def _load_runner():
     spec = importlib.util.spec_from_file_location("migration_runner_018_test", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_resource_preflight():
+    spec = importlib.util.spec_from_file_location(
+        "automation_project_resource_preflight_test",
+        RESOURCE_PREFLIGHT_PATH,
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -108,9 +122,11 @@ class _ResourceDiagnosticConnection:
         self.closed = True
 
 
-def _valid_diagnostic_row(runner, spec):
+def _valid_diagnostic_row(resource_preflight, spec):
     row = {"resource_key": spec.resource_key}
-    for field_name in runner._AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES:
+    for field_name in (
+        resource_preflight.AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES
+    ):
         row[f"{field_name}_present"] = 0
         row[f"{field_name}_type"] = None
         row[f"{field_name}_nonempty"] = 0
@@ -128,6 +144,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.runner = _load_runner()
+        cls.resource_preflight = _load_resource_preflight()
         cls.sql = MIGRATION.read_text(encoding="utf-8")
 
     def test_sql_splits_and_reviewed_map_is_exact_and_complete(self):
@@ -276,7 +293,9 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertIn("@cp018_resource_backup_count = 15", self.sql)
 
     def test_required_resource_diagnostic_spec_matches_018_sql_guard(self):
-        specs = self.runner.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        specs = (
+            self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        )
         self.assertEqual(9, len(specs))
 
         resource_map = self.sql.split(
@@ -332,20 +351,23 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             self.assertEqual(expected_fields, actual_fields, spec.resource_key)
 
     def test_required_resource_diagnostic_is_read_only_and_closed_on_success(self):
-        specs = self.runner.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        specs = (
+            self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        )
         rows = {
-            spec.resource_key: _valid_diagnostic_row(self.runner, spec)
+            spec.resource_key: _valid_diagnostic_row(self.resource_preflight, spec)
             for spec in specs
         }
         cursor = _ResourceDiagnosticCursor(rows)
         connection = _ResourceDiagnosticConnection(cursor)
         output = io.StringIO()
 
-        with (
-            patch.object(self.runner, "_connect", return_value=connection),
-            redirect_stdout(output),
-        ):
-            result = self.runner.check_automation_project_required_resources()
+        with redirect_stdout(output):
+            result = (
+                self.resource_preflight.check_automation_project_required_resources(
+                    lambda: connection
+                )
+            )
 
         self.assertEqual(0, result)
         self.assertEqual(
@@ -368,7 +390,9 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         )
         allowed_aliases = {
             f"{field_name}_{suffix}"
-            for field_name in self.runner._AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES
+            for field_name in (
+                self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES
+            )
             for suffix in ("present", "type", "nonempty")
         }
         allowed_aliases.add("resource_kind_matches")
@@ -381,9 +405,11 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             self.assertNotIn("SELECT resource_key, config_json", projection)
 
     def test_required_resource_diagnostic_reports_only_keys_reasons_and_fields(self):
-        specs = self.runner.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        specs = (
+            self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        )
         rows = {
-            spec.resource_key: _valid_diagnostic_row(self.runner, spec)
+            spec.resource_key: _valid_diagnostic_row(self.resource_preflight, spec)
             for spec in specs
         }
         rows.pop("phase7.pending_arrivals_sheet")
@@ -409,11 +435,12 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         connection = _ResourceDiagnosticConnection(cursor)
         output = io.StringIO()
 
-        with (
-            patch.object(self.runner, "_connect", return_value=connection),
-            redirect_stdout(output),
-        ):
-            result = self.runner.check_automation_project_required_resources()
+        with redirect_stdout(output):
+            result = (
+                self.resource_preflight.check_automation_project_required_resources(
+                    lambda: connection
+                )
+            )
 
         self.assertEqual(1, result)
         lines = output.getvalue().splitlines()
@@ -444,9 +471,11 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertTrue(connection.closed)
 
     def test_required_resource_diagnostic_rolls_back_when_read_fails(self):
-        specs = self.runner.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        specs = (
+            self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
+        )
         rows = {
-            spec.resource_key: _valid_diagnostic_row(self.runner, spec)
+            spec.resource_key: _valid_diagnostic_row(self.resource_preflight, spec)
             for spec in specs
         }
         cursor = _ResourceDiagnosticCursor(
@@ -455,11 +484,10 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         )
         connection = _ResourceDiagnosticConnection(cursor)
 
-        with (
-            patch.object(self.runner, "_connect", return_value=connection),
-            self.assertRaisesRegex(RuntimeError, "simulated read failure"),
-        ):
-            self.runner.check_automation_project_required_resources()
+        with self.assertRaisesRegex(RuntimeError, "simulated read failure"):
+            self.resource_preflight.check_automation_project_required_resources(
+                lambda: connection
+            )
 
         self.assertEqual(1, connection.rollback_count)
         self.assertTrue(connection.closed)
