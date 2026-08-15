@@ -29,6 +29,7 @@ def _path_for_bash(path: Path) -> str:
 def _run_rollback_fault_harness(
     *,
     fail_agent_restart: bool,
+    fail_stage_cleanup: bool = False,
     cutover_pending: bool = True,
     daily_sign_pending: bool = False,
     contract_upgrade_pending: bool = False,
@@ -45,9 +46,11 @@ def _run_rollback_fault_harness(
     try:
         temporary = tempfile.TemporaryDirectory(dir=task_tmp_root)
         temp_root = Path(temporary.name)
-        stage_root = temp_root / "stage"
+        stage_root = temp_root / "release-aaaaaaaaaaaa-20260815192447"
         backup_root = stage_root / "_rollback"
         backup_root.mkdir(parents=True)
+        (stage_root / "partial-delete-me").touch()
+        (stage_root / "preserve-after-partial-delete").touch()
         (backup_root / "release_sha.absent").touch()
         (backup_root / "automation_plugin_release.env.absent").touch()
         events_path = temp_root / "events.log"
@@ -70,14 +73,15 @@ def _run_rollback_fault_harness(
             release_script="$1"
             temp_root="$2"
             fail_agent_restart="$3"
-            cutover_pending="$4"
-            daily_sign_pending="$5"
-            contract_upgrade_pending="$6"
-            automation_project_pending="$7"
-            bootstrap_absent="$8"
-            migrations_attempted="$9"
-            runtime_start_attempted="${10}"
-            stage_root="${temp_root}/stage"
+            fail_stage_cleanup="$4"
+            cutover_pending="$5"
+            daily_sign_pending="$6"
+            contract_upgrade_pending="$7"
+            automation_project_pending="$8"
+            bootstrap_absent="$9"
+            migrations_attempted="${10}"
+            runtime_start_attempted="${11}"
+            stage_root="${temp_root}/release-aaaaaaaaaaaa-20260815192447"
             events_path="${temp_root}/events.log"
             source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
 
@@ -93,6 +97,7 @@ def _run_rollback_fault_harness(
             REQUESTED_TARGETS=()
             BACKUP_DIR="${stage_root}/_rollback"
             BACKUP_TREE="${BACKUP_DIR}/tree"
+            DEPLOY_ROOT="${temp_root}"
             VENV_ROOT="${temp_root}/venvs"
             RELEASE_VENV="${VENV_ROOT}/runtime-deps-new"
             CREATED_VENV="${fail_agent_restart}"
@@ -150,6 +155,16 @@ def _run_rollback_fault_harness(
               return 1
             }
 
+            rm() {
+              if [[ "${fail_stage_cleanup}" == "1" && "$#" == "3" && \
+                "$1" == "-rf" && "$2" == "--" && "$3" == "${stage_root}" ]]; then
+                command rm -f -- "${stage_root}/partial-delete-me"
+                printf 'cleanup-partial\n' >>"${events_path}"
+                return 1
+              fi
+              command rm "$@"
+            }
+
             restore_control_plane_task_cutover_data() {
               printf 'restore-014\n' >>"${events_path}"
               return 0
@@ -189,6 +204,7 @@ def _run_rollback_fault_harness(
             _path_for_bash(release_script),
             _path_for_bash(temp_root),
             "1" if fail_agent_restart else "0",
+            "1" if fail_stage_cleanup else "0",
             "1" if cutover_pending else "0",
             "1" if daily_sign_pending else "0",
             "1" if contract_upgrade_pending else "0",
@@ -611,8 +627,26 @@ class ReleaseBoundaryTests(unittest.TestCase):
             rollback_function.index("restore_managed_release_state"),
         )
         self.assertIn("restart_runtime_services_for_rollback", rollback_function)
+        self.assertLess(
+            rollback_function.index("restart_runtime_services_for_rollback"),
+            rollback_function.index("cleanup_failed_release_stage"),
+        )
+        self.assertLess(
+            rollback_function.index("remove_new_virtualenvs"),
+            rollback_function.index("cleanup_failed_release_stage"),
+        )
         self.assertIn("rollback_incomplete", rollback_function)
         self.assertIn("recovery_material_preserved=1", rollback_function)
+        self.assertIn(
+            "rollback_cleanup_incomplete stage_root=${STAGE_ROOT} "
+            "recovery_material_state=unknown verify_required=1",
+            rollback_function,
+        )
+        self.assertIn(
+            "release_cleanup_incomplete stage_root=${STAGE_ROOT} "
+            "recovery_material_state=unknown verify_required=1",
+            rollback_function,
+        )
         self.assertIn("dotenv_values", release)
         self.assertIn("build_console_identity_headers", release)
         self.assertIn('request_target = "/internal/v1/health"', release)
@@ -787,6 +821,53 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertTrue(new_venv_exists)
         self.assertIn("restart:agent.service", events)
         self.assertIn("restart:console.service", events)
+
+    def test_partial_stage_cleanup_failure_reports_unknown_recovery_material_state(self):
+        completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
+            fail_agent_restart=False,
+            fail_stage_cleanup=True,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("cleanup-partial", events)
+        self.assertTrue(stage_exists)
+        self.assertIn("rollback_cleanup_incomplete", completed.stderr)
+        self.assertIn("recovery_material_state=unknown", completed.stderr)
+        self.assertIn("verify_required=1", completed.stderr)
+        self.assertNotIn("recovery_material_preserved=1", completed.stderr)
+
+    def test_nonmutating_partial_stage_cleanup_failure_reports_unknown_state(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            DEPLOY_ROOT="$(dirname "${stage_root}")/deploy"
+            STAGE_ROOT="${DEPLOY_ROOT}/release-aaaaaaaaaaaa-20260815192447"
+            BACKUP_DIR="${STAGE_ROOT}/_rollback"
+            mkdir -p "${BACKUP_DIR}"
+            printf 'delete\n' >"${STAGE_ROOT}/partial-delete-me"
+            printf 'preserve\n' >"${STAGE_ROOT}/preserve-after-partial-delete"
+            MUTATION_STARTED=0
+            RELEASE_STAGE="preflight"
+            clear_scheduler_release_hold_for_rollback() { return 0; }
+            remove_new_virtualenvs() { return 0; }
+            rm() {
+              if [[ "$#" == "3" && "$1" == "-rf" && "$2" == "--" && \
+                "$3" == "${STAGE_ROOT}" ]]; then
+                command rm -f -- "${STAGE_ROOT}/partial-delete-me"
+                return 1
+              fi
+              command rm "$@"
+            }
+            set +e
+            false
+            rollback
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("release_cleanup_incomplete", completed.stderr)
+        self.assertIn("recovery_material_state=unknown", completed.stderr)
+        self.assertIn("verify_required=1", completed.stderr)
+        self.assertNotIn("recovery_material_preserved=1", completed.stderr)
 
     def test_rollback_does_not_revert_cutover_applied_before_this_release(self):
         completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
@@ -1425,6 +1506,161 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_failed_release_cleanup_removes_immutable_plugin_quarantine(self):
+        release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
+            encoding="utf-8"
+        )
+        cleanup = release.split(
+            "prepare_retired_automation_plugins_for_stage_cleanup() {", 1
+        )[1].split("\n}\n\nwrite_automation_plugin_runtime_environment() {", 1)[0]
+        self.assertIn('chmod u+rwx -- "${path}"', cleanup)
+        self.assertNotIn("sudo", cleanup)
+        self.assertNotIn("chown", cleanup)
+
+        completed = _run_sourced_release_harness(
+            r"""
+            DEPLOY_ROOT="$(dirname "${stage_root}")/deploy"
+            STAGE_ROOT="${DEPLOY_ROOT}/release-aaaaaaaaaaaa-20260815192447"
+            BACKUP_DIR="${STAGE_ROOT}/_rollback"
+            quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
+            outside="${DEPLOY_ROOT}/outside-readonly"
+            mkdir -p \
+              "${quarantine}/new_action/1.0.0-222222222222/package/payload" \
+              "${outside}"
+            printf 'immutable\n' \
+              >"${quarantine}/new_action/1.0.0-222222222222/package/payload/action.py"
+            chmod 0444 \
+              "${quarantine}/new_action/1.0.0-222222222222/package/payload/action.py"
+            chmod 0555 \
+              "${quarantine}/new_action/1.0.0-222222222222/package" \
+              "${quarantine}/new_action/1.0.0-222222222222/package/payload" \
+              "${outside}"
+
+            cleanup_failed_release_stage
+            [[ ! -e "${STAGE_ROOT}" && ! -L "${STAGE_ROOT}" ]]
+            [[ "$(stat -c '%a' -- "${outside}")" == "555" ]]
+            chmod 0755 "${outside}"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_failed_release_cleanup_rejects_quarantine_symlink(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            DEPLOY_ROOT="$(dirname "${stage_root}")/deploy"
+            STAGE_ROOT="${DEPLOY_ROOT}/release-aaaaaaaaaaaa-20260815192447"
+            BACKUP_DIR="${STAGE_ROOT}/_rollback"
+            quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
+            outside="$(dirname "${stage_root}")/outside"
+            mkdir -p "${quarantine}" "${outside}"
+            ln -s "${outside}" "${quarantine}/escape"
+
+            if cleanup_failed_release_stage; then
+              exit 91
+            fi
+            [[ -L "${quarantine}/escape" && -d "${STAGE_ROOT}" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "cleanup inventory contains an unsafe entry",
+            completed.stderr,
+        )
+
+    def test_failed_release_cleanup_rejects_owner_change_before_chmod(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            DEPLOY_ROOT="$(dirname "${stage_root}")/deploy"
+            STAGE_ROOT="${DEPLOY_ROOT}/release-aaaaaaaaaaaa-20260815192447"
+            BACKUP_DIR="${STAGE_ROOT}/_rollback"
+            quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
+            package="${quarantine}/new_action/1.0.0-222222222222/package"
+            mkdir -p "${package}"
+            printf 'foreign\n' >"${package}/foreign-owner"
+            chmod 0555 "${package}"
+            stat() {
+              local last="${*: -1}"
+              if [[ "$1" == "-c" && "$2" == "%u" && \
+                "${last}" == "${package}/foreign-owner" ]]; then
+                printf '999999\n'
+                return 0
+              fi
+              command stat "$@"
+            }
+
+            if cleanup_failed_release_stage; then
+              exit 91
+            fi
+            [[ "$(command stat -c '%a' -- "${package}")" == "555" ]]
+            command chmod 0755 "${package}"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "cleanup inventory ownership or device changed",
+            completed.stderr,
+        )
+
+    def test_failed_release_cleanup_rejects_device_change_before_chmod(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            DEPLOY_ROOT="$(dirname "${stage_root}")/deploy"
+            STAGE_ROOT="${DEPLOY_ROOT}/release-aaaaaaaaaaaa-20260815192447"
+            BACKUP_DIR="${STAGE_ROOT}/_rollback"
+            quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
+            package="${quarantine}/new_action/1.0.0-222222222222/package"
+            mkdir -p "${package}"
+            printf 'foreign\n' >"${package}/foreign-device"
+            chmod 0555 "${package}"
+            stat() {
+              local last="${*: -1}"
+              if [[ "$1" == "-c" && "$2" == "%d" && \
+                "${last}" == "${package}/foreign-device" ]]; then
+                printf '999999\n'
+                return 0
+              fi
+              command stat "$@"
+            }
+
+            if cleanup_failed_release_stage; then
+              exit 91
+            fi
+            [[ "$(command stat -c '%a' -- "${package}")" == "555" ]]
+            command chmod 0755 "${package}"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "cleanup inventory ownership or device changed",
+            completed.stderr,
+        )
+
+    def test_failed_release_cleanup_rejects_escaped_quarantine_target(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            DEPLOY_ROOT="$(dirname "${stage_root}")/deploy"
+            STAGE_ROOT="${DEPLOY_ROOT}/release-aaaaaaaaaaaa-20260815192447"
+            BACKUP_DIR="$(dirname "${stage_root}")/escaped-rollback"
+            quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
+            mkdir -p "${STAGE_ROOT}" "${quarantine}"
+
+            if cleanup_failed_release_stage; then
+              exit 91
+            fi
+            [[ -d "${STAGE_ROOT}" && -d "${quarantine}" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "cleanup path escaped the current release stage",
+            completed.stderr,
+        )
 
     def test_release_manifest_uses_bootstrap_prestate_to_select_initial_gate(self):
         completed = _run_sourced_release_harness(

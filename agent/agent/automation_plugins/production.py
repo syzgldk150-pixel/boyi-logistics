@@ -744,16 +744,7 @@ class ProductionRuntimeEffectDriver:
         return replace(
             effect,
             state=RuntimeEffectState.APPLIED,
-            payload={
-                **dict(plan.payload),
-                "effect_contract_sha256": _digest(
-                    {
-                        "kind": plan.kind.value,
-                        "effect_key": plan.effect_key,
-                        "payload": dict(plan.payload),
-                    }
-                ),
-            },
+            payload=dict(plan.payload),
         )
 
     def dispose(self, effect: RuntimeEffectRecord) -> None:

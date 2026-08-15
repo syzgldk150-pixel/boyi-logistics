@@ -1389,6 +1389,97 @@ restore_automation_plugin_installations() {
   fi
 }
 
+prepare_retired_automation_plugins_for_stage_cleanup() {
+  local quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
+  local expected_quarantine="${STAGE_ROOT}/_rollback/retired/automation_plugin_installed"
+  local inventory path path_device path_uid stage_device expected_uid
+  local -a cleanup_paths=()
+
+  [[ "${BACKUP_DIR}" == "${STAGE_ROOT}/_rollback" && \
+    "${quarantine}" == "${expected_quarantine}" ]] || {
+    echo "Retired automation plugin cleanup path escaped the current release stage" >&2
+    return 1
+  }
+  if [[ ! -e "${quarantine}" && ! -L "${quarantine}" ]]; then
+    return 0
+  fi
+  [[ -d "${quarantine}" && ! -L "${quarantine}" ]] || {
+    echo "Retired automation plugin cleanup root is unsafe" >&2
+    return 1
+  }
+  [[ "$(readlink -e -- "${quarantine}")" == "${expected_quarantine}" ]] || {
+    echo "Retired automation plugin cleanup root resolved outside the current release stage" >&2
+    return 1
+  }
+
+  stage_device="$(stat -c '%d' -- "${STAGE_ROOT}")" || return 1
+  expected_uid="$(id -u)" || return 1
+  inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_cleanup.inventory.XXXXXX")" || return 1
+  if ! find "${quarantine}" -xdev -print0 >"${inventory}"; then
+    rm -f -- "${inventory}"
+    echo "Could not inventory retired automation plugins for cleanup" >&2
+    return 1
+  fi
+  mapfile -d '' -t cleanup_paths <"${inventory}"
+  rm -f -- "${inventory}" || return 1
+
+  for path in "${cleanup_paths[@]}"; do
+    [[ "${path}" == "${quarantine}" || "${path}" == "${quarantine}/"* ]] || {
+      echo "Retired automation plugin cleanup inventory escaped its root" >&2
+      return 1
+    }
+    [[ ! -L "${path}" && ( -d "${path}" || -f "${path}" ) ]] || {
+      echo "Retired automation plugin cleanup inventory contains an unsafe entry" >&2
+      return 1
+    }
+    path_device="$(stat -c '%d' -- "${path}")" || return 1
+    path_uid="$(stat -c '%u' -- "${path}")" || return 1
+    [[ "${path_device}" == "${stage_device}" && "${path_uid}" == "${expected_uid}" ]] || {
+      echo "Retired automation plugin cleanup inventory ownership or device changed" >&2
+      return 1
+    }
+  done
+
+  # Signed package directories are intentionally 0555. Only make directories in
+  # this already-quarantined, fully validated tree owner-writable so the release
+  # stage can be removed; immutable files remain unchanged.
+  for path in "${cleanup_paths[@]}"; do
+    [[ -d "${path}" ]] || continue
+    chmod u+rwx -- "${path}" || return 1
+  done
+}
+
+cleanup_failed_release_stage() {
+  local deploy_resolved stage_name stage_resolved expected_uid
+
+  [[ -d "${DEPLOY_ROOT}" && ! -L "${DEPLOY_ROOT}" && \
+    -d "${STAGE_ROOT}" && ! -L "${STAGE_ROOT}" ]] || {
+    echo "Release stage cleanup target is missing or unsafe" >&2
+    return 1
+  }
+  stage_name="$(basename -- "${STAGE_ROOT}")"
+  [[ "${stage_name}" =~ ^release-${RELEASE_SHA:0:12}-[0-9]{14}$ ]] || {
+    echo "Release stage cleanup target has an unexpected identity" >&2
+    return 1
+  }
+  deploy_resolved="$(readlink -e -- "${DEPLOY_ROOT}")" || return 1
+  stage_resolved="$(readlink -e -- "${STAGE_ROOT}")" || return 1
+  [[ "${stage_resolved}" == "${STAGE_ROOT}" && \
+    "${stage_resolved}" == "${deploy_resolved}/${stage_name}" ]] || {
+    echo "Release stage cleanup target escaped the deployment root" >&2
+    return 1
+  }
+  expected_uid="$(id -u)" || return 1
+  [[ "$(stat -c '%u' -- "${STAGE_ROOT}")" == "${expected_uid}" && \
+    "$(stat -c '%d' -- "${STAGE_ROOT}")" == "$(stat -c '%d' -- "${DEPLOY_ROOT}")" ]] || {
+    echo "Release stage cleanup target ownership or device changed" >&2
+    return 1
+  }
+
+  prepare_retired_automation_plugins_for_stage_cleanup || return 1
+  rm -rf -- "${STAGE_ROOT}"
+}
+
 write_automation_plugin_runtime_environment() {
   local runtime_dir temp_path
   runtime_dir="$(dirname "${PLUGIN_RUNTIME_ENV_FILE}")"
@@ -2040,8 +2131,8 @@ rollback() {
       echo "rollback_incomplete stage_root=${STAGE_ROOT} recovery_material_preserved=1" >&2
       exit "${exit_code:-1}"
     fi
-    rm -rf -- "${STAGE_ROOT}" || {
-      echo "rollback_incomplete stage_root=${STAGE_ROOT} recovery_material_preserved=1" >&2
+    cleanup_failed_release_stage || {
+      echo "rollback_cleanup_incomplete stage_root=${STAGE_ROOT} recovery_material_state=unknown verify_required=1" >&2
       exit "${exit_code:-1}"
     }
   else
@@ -2053,8 +2144,8 @@ rollback() {
       echo "release_cleanup_incomplete stage_root=${STAGE_ROOT}" >&2
       exit "${exit_code:-1}"
     fi
-    rm -rf -- "${STAGE_ROOT}" || {
-      echo "release_cleanup_incomplete stage_root=${STAGE_ROOT}" >&2
+    cleanup_failed_release_stage || {
+      echo "release_cleanup_incomplete stage_root=${STAGE_ROOT} recovery_material_state=unknown verify_required=1" >&2
       exit "${exit_code:-1}"
     }
   fi
