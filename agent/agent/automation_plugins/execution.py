@@ -121,6 +121,11 @@ class PluginExecutionRouter:
         self._running: dict[str, dict[str, Any]] = {}
 
     @staticmethod
+    def _is_live_plugin_invocation(current: Mapping[str, Any]) -> bool:
+        proc = current.get("proc")
+        return proc is not None and proc.returncode is None
+
+    @staticmethod
     def _minimal_environment(
         *,
         capability: str,
@@ -628,6 +633,7 @@ class PluginExecutionRouter:
             (invocation_id, current)
             for invocation_id, current in self._running.items()
             if current.get("action_name") == tool_name
+            and self._is_live_plugin_invocation(current)
         ]
         if len(matches) > 1:
             return {
@@ -655,6 +661,93 @@ class PluginExecutionRouter:
                 "cancel_requested": False,
             }
         return self._core.running_tool_info(tool_name)
+
+    def get_running_output(
+        self,
+        tool_name: str,
+        offset: int = 0,
+        started_at: str = "",
+    ) -> dict[str, Any]:
+        """Expose a ToolExecutor-compatible, payload-free plugin status view."""
+
+        matches = [
+            (invocation_id, current)
+            for invocation_id, current in self._running.items()
+            if current.get("action_name") == tool_name
+        ]
+        if started_at.startswith("invocation:"):
+            requested = started_at.removeprefix("invocation:")
+            matches = [item for item in matches if item[0] == requested]
+        else:
+            matches = [
+                item
+                for item in matches
+                if self._is_live_plugin_invocation(item[1])
+            ]
+        if not matches:
+            return dict(
+                self._core.get_running_output(
+                    tool_name,
+                    offset=offset,
+                    started_at=started_at,
+                )
+            )
+        if len(matches) > 1:
+            return {
+                "lines": [],
+                "running": True,
+                "ambiguous": True,
+                "active_invocations": len(matches),
+                "offset": offset,
+                "total": 0,
+                "started_at": "",
+                "cancel_requested": False,
+            }
+        invocation_id, current = matches[0]
+        core_tool_name = str(current.get("core_tool_name") or "")
+        if core_tool_name:
+            return dict(
+                self._core.get_running_output(
+                    core_tool_name,
+                    offset=offset,
+                    started_at=started_at,
+                )
+            )
+        proc = current.get("proc")
+        return {
+            "lines": [],
+            "running": bool(proc is not None and proc.returncode is None),
+            "offset": offset,
+            "total": 0,
+            "started_at": f"invocation:{invocation_id}",
+            "invocation_id": invocation_id,
+            "run_id": str(current.get("run_id") or ""),
+            "step_id": str(current.get("step_id") or ""),
+            "cancel_requested": False,
+        }
+
+    def is_tool_running(self, tool_name: str) -> bool:
+        return bool(self.running_tool_info(tool_name).get("running"))
+
+    def running_tools(self) -> list[str]:
+        plugin_tools = {
+            str(current.get("action_name") or "")
+            for current in self._running.values()
+            if current.get("action_name")
+            and self._is_live_plugin_invocation(current)
+        }
+        return sorted(plugin_tools | {str(name) for name in self._core.running_tools()})
+
+    def last_tool_info(self) -> dict[str, Any] | None:
+        return self._core.last_tool_info()
+
+    def heavy_lock_held(self) -> bool:
+        core_held = bool(self._core.heavy_lock_held())
+        plugin_running = any(
+            self._is_live_plugin_invocation(current)
+            for current in self._running.values()
+        )
+        return plugin_running or core_held
 
     async def cancel_tool(self, tool_name: str, started_at: str = "") -> Mapping[str, Any]:
         matches = [

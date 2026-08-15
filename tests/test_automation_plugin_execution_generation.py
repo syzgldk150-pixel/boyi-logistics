@@ -303,11 +303,47 @@ class _Integrity:
 
 
 class _Core:
+    def __init__(self) -> None:
+        self.last_info = {
+            "tool": "legacy-completed",
+            "time": "2026-08-15 00:00:00",
+            "success": True,
+            "duration_s": 1,
+        }
+        self.heavy_held = False
+
     async def execute(self, *_: object, **__: object) -> Mapping[str, Any]:
         raise AssertionError("plugin action must not fall back to core ToolExecutor")
 
+    def get_running_output(
+        self,
+        tool_name: str,
+        offset: int = 0,
+        started_at: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "lines": [tool_name],
+            "running": tool_name == "legacy-running",
+            "offset": offset,
+            "total": 1,
+            "started_at": started_at,
+            "cancel_requested": False,
+        }
+
+    def is_tool_running(self, tool_name: str) -> bool:
+        return tool_name == "legacy-running"
+
     def running_tool_info(self, tool_name: str) -> dict[str, Any]:
-        return {"running": False, "tool": tool_name}
+        return {"running": tool_name == "legacy-running", "tool": tool_name}
+
+    def running_tools(self) -> list[str]:
+        return ["legacy-running"]
+
+    def last_tool_info(self) -> dict[str, Any]:
+        return self.last_info
+
+    def heavy_lock_held(self) -> bool:
+        return self.heavy_held
 
     async def cancel_tool(self, tool_name: str, started_at: str = "") -> Mapping[str, Any]:
         return {"ok": False, "code": "NOT_RUNNING", "tool": tool_name, "started_at": started_at}
@@ -344,6 +380,14 @@ class _SleepSandbox:
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
+
+
+class _RunningProcess:
+    returncode = None
+
+
+class _FinishedProcess:
+    returncode = 0
 
 
 class _Catalog:
@@ -549,6 +593,120 @@ def test_plugin_catalog_never_exposes_project_actions_to_llm() -> None:
             raise AssertionError("LLM projection must not inspect installed action contracts")
 
     assert PluginCatalog(_Repository()).list_llm_capabilities() == []
+
+
+def test_router_observability_bridges_core_and_active_plugin_invocations() -> None:
+    core = _Core()
+    router = PluginExecutionRouter(
+        core_executor=core,
+        capability_issuer=_Issuer(),
+    )
+    router._running["plugin-invocation"] = {  # noqa: SLF001 - observability boundary
+        "proc": _RunningProcess(),
+        "started_at": "2026-08-15 00:01:00",
+        "core_tool_name": "",
+        "action_name": "automation.project-a.run",
+        "automation_id": "project-a",
+        "generation": 1,
+        "run_id": "run-1",
+        "step_id": "step-1",
+    }
+
+    assert router.last_tool_info() == core.last_info
+    assert router.heavy_lock_held() is True
+    assert router.is_tool_running("automation.project-a.run") is True
+    assert router.is_tool_running("legacy-running") is True
+    assert router.running_tools() == ["automation.project-a.run", "legacy-running"]
+    assert router.get_running_output("automation.project-a.run") == {
+        "lines": [],
+        "running": True,
+        "offset": 0,
+        "total": 0,
+        "started_at": "invocation:plugin-invocation",
+        "invocation_id": "plugin-invocation",
+        "run_id": "run-1",
+        "step_id": "step-1",
+        "cancel_requested": False,
+    }
+    assert router.get_running_output("legacy-running")["lines"] == ["legacy-running"]
+
+
+def test_router_observability_excludes_finished_plugins_and_deduplicates_names() -> None:
+    core = _Core()
+    router = PluginExecutionRouter(
+        core_executor=core,
+        capability_issuer=_Issuer(),
+    )
+    router._running.update(  # noqa: SLF001 - observability boundary
+        {
+            "finished": {
+                "proc": _FinishedProcess(),
+                "action_name": "finished-action",
+            },
+            "finished-duplicate": {
+                "proc": _FinishedProcess(),
+                "action_name": "legacy-running",
+            },
+            "plugin-a": {
+                "proc": _RunningProcess(),
+                "action_name": "legacy-running",
+            },
+        }
+    )
+
+    assert router.running_tools() == ["legacy-running"]
+    assert router.heavy_lock_held() is True
+    assert router.get_running_output("finished-action")["lines"] == ["finished-action"]
+    finished = router.get_running_output(
+        "finished-action",
+        started_at="invocation:finished",
+    )
+    assert finished["running"] is False
+    assert finished["invocation_id"] == "finished"
+    mixed = router.get_running_output("legacy-running")
+    assert mixed.get("ambiguous") is None
+    assert mixed["invocation_id"] == "plugin-a"
+    router._running["plugin-b"] = {  # noqa: SLF001 - ambiguity boundary
+        "proc": _RunningProcess(),
+        "action_name": "legacy-running",
+    }
+    ambiguous = router.get_running_output("legacy-running")
+    assert ambiguous["ambiguous"] is True
+    assert ambiguous["active_invocations"] == 2
+
+    router._running = {  # noqa: SLF001 - observability boundary
+        "finished": {
+            "proc": _FinishedProcess(),
+            "action_name": "finished-action",
+        }
+    }
+    assert router.heavy_lock_held() is False
+    assert "finished-action" not in router.running_tools()
+    core.heavy_held = True
+    assert router.heavy_lock_held() is True
+
+
+def test_router_observability_does_not_swallow_core_failures() -> None:
+    class _BrokenCore(_Core):
+        def last_tool_info(self) -> dict[str, Any]:
+            raise RuntimeError("last tool status unavailable")
+
+        def heavy_lock_held(self) -> bool:
+            raise RuntimeError("heavy lock status unavailable")
+
+    router = PluginExecutionRouter(
+        core_executor=_BrokenCore(),
+        capability_issuer=_Issuer(),
+    )
+    router._running["plugin-invocation"] = {  # noqa: SLF001 - fail-closed boundary
+        "proc": _RunningProcess(),
+        "action_name": "automation.project-a.run",
+    }
+
+    with pytest.raises(RuntimeError, match="last tool status unavailable"):
+        router.last_tool_info()
+    with pytest.raises(RuntimeError, match="heavy lock status unavailable"):
+        router.heavy_lock_held()
 
 
 def test_bubblewrap_outer_process_always_starts_new_session(
