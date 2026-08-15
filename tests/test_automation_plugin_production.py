@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,12 +32,15 @@ from agent.automation_plugins.production import (
     build_runtime_generation_snapshot,
     production_cursor_secret,
 )
+from agent.automation_plugins.runtime_repository import snapshot_to_row
 from agent.automation_plugins.first_party import (
     resolve_first_party_manifests,
     resolve_release_first_party_manifests,
 )
 from agent.automation_plugins.manifest import AutomationPluginManifest, canonical_json_bytes
 from agent.tool_registry import ToolRegistry
+from shared.automation_plugin_repository import AutomationPluginRepository
+from shared.orchestration_repository_support import IdempotencyConflict, _json_hash
 
 
 def _sha(value: Any) -> str:
@@ -87,6 +91,34 @@ class _AccountManager:
             "system": "ronghui",
             "account_purpose": "general",
         }
+
+
+class _ScriptedGenerationCursor:
+    def __init__(self, actions: list[tuple[str, object, int]]) -> None:
+        self._actions = list(actions)
+        self._row: object = None
+        self.rowcount = 0
+
+    def execute(self, sql: object, _params: object = None) -> None:
+        if not self._actions:
+            raise AssertionError(f"unexpected SQL: {sql}")
+        marker, self._row, self.rowcount = self._actions.pop(0)
+        normalized = " ".join(str(sql).split())
+        assert marker in normalized
+
+    def fetchone(self) -> object:
+        return self._row
+
+    def close(self) -> None:
+        return None
+
+
+class _ScriptedGenerationConnection:
+    def __init__(self, actions: list[tuple[str, object, int]]) -> None:
+        self._cursor = _ScriptedGenerationCursor(actions)
+
+    def cursor(self) -> _ScriptedGenerationCursor:
+        return self._cursor
 
 
 def _entry_and_row(
@@ -529,6 +561,7 @@ def test_effect_plan_and_driver_are_reversible_and_integrity_bound(
         )
         applied = driver.ensure_applied(snapshot=snapshot, plan=plan, effect=planned)
         assert applied.state == RuntimeEffectState.APPLIED
+        assert applied.payload == plan.payload
         driver.dispose(applied)
 
     payload = tmp_path / "plugin" / "package" / "payload" / "main.py"
@@ -549,6 +582,112 @@ def test_effect_plan_and_driver_are_reversible_and_integrity_bound(
                 payload=plans[0].payload,
             ),
         )
+
+
+def test_effect_ack_round_trips_exact_reserved_payload_and_rejects_drift(
+    tmp_path: Path,
+) -> None:
+    core, entry, row, policy = _entry_and_row(tmp_path)
+    snapshot = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+    plan = ProductionRuntimeEffectPlanner().plan(snapshot)[0]
+    payload = dict(plan.payload)
+    effect_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "boyi:automation-effect:"
+            f"{snapshot.automation_id}:{snapshot.generation}:1:{plan.effect_key}",
+        )
+    )
+    planned_row = {
+        "effect_id": effect_id,
+        "automation_id": snapshot.automation_id,
+        "generation": snapshot.generation,
+        "effect_sequence": 1,
+        "effect_kind": plan.kind.value,
+        "effect_key": plan.effect_key,
+        "reversible": True,
+        "state": RuntimeEffectState.PLANNED.value,
+        "evidence_json": payload,
+        "evidence_sha256": _json_hash(payload),
+    }
+    applied_row = {**planned_row, "state": RuntimeEffectState.APPLIED.value}
+    repository = AutomationPluginRepository(
+        _ScriptedGenerationConnection(
+            [
+                ("SELECT state FROM automation_project_generations", {"state": "PREPARING"}, 0),
+                ("SELECT COUNT(*) AS unavailable_count", {"unavailable_count": 0}, 0),
+                ("INSERT INTO automation_project_generation_effects", None, 1),
+                ("SELECT * FROM automation_project_generation_effects", planned_row, 0),
+                ("SELECT * FROM automation_project_generation_effects", planned_row, 0),
+                ("UPDATE automation_project_generation_effects", None, 1),
+                ("SELECT * FROM automation_project_generation_effects", applied_row, 0),
+            ]
+        )
+    )
+    reserved = repository.reserve_generation_effect_row(
+        snapshot_to_row(snapshot),
+        plan={
+            "kind": plan.kind.value,
+            "effect_key": plan.effect_key,
+            "payload": payload,
+            "reversible": plan.reversible,
+        },
+        sequence=1,
+    )
+    planned = RuntimeEffectRecord(
+        effect_id=str(reserved["effect_id"]),
+        automation_id=str(reserved["automation_id"]),
+        generation=int(reserved["generation"]),
+        sequence=int(reserved["effect_sequence"]),
+        kind=RuntimeEffectKind(str(reserved["effect_kind"])),
+        state=RuntimeEffectState(str(reserved["state"])),
+        reversible=bool(reserved["reversible"]),
+        effect_key=str(reserved["effect_key"]),
+        payload=dict(reserved["evidence_json"]),
+    )
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=[
+            (item["operation"], item["action"])
+            for item in entry.runtime_permissions["broker_operations"]
+        ]
+    )
+    applied = driver.ensure_applied(snapshot=snapshot, plan=plan, effect=planned)
+    ack = {
+        "effect_id": applied.effect_id,
+        "automation_id": applied.automation_id,
+        "generation": applied.generation,
+        "sequence": applied.sequence,
+        "kind": applied.kind.value,
+        "reversible": applied.reversible,
+        "effect_key": applied.effect_key,
+        "payload": dict(applied.payload),
+    }
+
+    persisted = repository.mark_generation_effect_applied_row(ack)
+
+    assert persisted["state"] == RuntimeEffectState.APPLIED.value
+    assert applied.payload == plan.payload == persisted["evidence_json"]
+    drifted_payloads = (
+        {**payload, "effect_contract_sha256": "f" * 64},
+        {**payload, next(iter(payload)): "0" * 64},
+        {key: value for key, value in payload.items() if key != next(iter(payload))},
+    )
+    for drifted_payload in drifted_payloads:
+        drift_repository = AutomationPluginRepository(
+            _ScriptedGenerationConnection(
+                [("SELECT * FROM automation_project_generation_effects", applied_row, 0)]
+            )
+        )
+        with pytest.raises(IdempotencyConflict, match="does not match"):
+            drift_repository.mark_generation_effect_applied_row(
+                {**ack, "payload": drifted_payload}
+            )
 
 
 def test_generation_prepare_rejects_interpreter_symlink_escape(tmp_path: Path) -> None:

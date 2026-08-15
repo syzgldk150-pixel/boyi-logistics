@@ -78,7 +78,7 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 9. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
 10. 先执行全部版本化迁移，再安装新 systemd unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后，发布器创建仅属于本次 SHA 的固定 release hold，再按 Agent、Console 顺序启动；Agent 只注册任务，Scheduler 保持 paused，WorkflowRunner 保持 held 且不领取既存或新 Run，任何自动任务都不得在发布门禁完成前执行。发现遗留 marker 时新发布必须失败关闭，不得覆盖。
 11. Agent `/health` 必须返回本次 Git SHA，Console 必须可访问；签名内部健康探针还必须确认 Scheduler paused、WorkflowRunner held 且 active Run 为零。随后完成 Agent/Console 签名身份联通、首次或后续控制平面 manifest、依赖哈希与数据库状态检查，最后才由签名 Console 管理员请求调用激活端点。端点先恢复并确认 WorkflowRunner 与 Scheduler 均可运行，再删除匹配本次 SHA 的 marker，并把财务启动补偿推迟 15 秒；marker 删除是发布提交点。
-12. 激活提交点之前任一步失败，发布器保持 Scheduler 与 WorkflowRunner hold，按 018、bootstrap、017、016、014 的本次变更范围逆序恢复，再恢复旧虚拟环境、源码、unit 与发布清单并重启旧版本。激活期间异常或进程退出必须保留 marker，使下一次启动继续 hold；响应丢失可用新签名 nonce 幂等重试。激活请求一旦发出便不得自动回滚，因为任务可能已经开始；此时必须保留远端暂存树并报告 `release_activation_incomplete`，由人工核验 Scheduler、WorkflowRunner 和业务状态。数据库 DDL 不随普通源码回滚，发布前必须另行完成可恢复数据库快照并保留到业务验收结束。
+12. 激活提交点之前任一步失败，发布器保持 Scheduler 与 WorkflowRunner hold，按 018、bootstrap、017、016、014 的本次变更范围逆序恢复，再恢复旧虚拟环境、源码、unit 与发布清单并重启旧版本。回滚产生的签名插件隔离树继续保持文件只读；最终删除失败发布 stage 前，发布器只对精确位于本次 `_rollback/retired/automation_plugin_installed` 下、无符号链接、同设备且属于当前 `boyce` 发布用户的目录恢复 owner 写权限。删除开始前任一验证失败都保留完整 stage；`rm` 开始后若失败则必须报告 `recovery_material_state=unknown verify_required=1`，不得声称恢复材料完整，须人工核验 stage。禁止 `sudo rm`、`chown` 或放宽仓库及线上插件目录。激活期间异常或进程退出必须保留 marker，使下一次启动继续 hold；响应丢失可用新签名 nonce 幂等重试。激活请求一旦发出便不得自动回滚，因为任务可能已经开始；此时必须保留远端暂存树并报告 `release_activation_incomplete`，由人工核验 Scheduler、WorkflowRunner 和业务状态。数据库 DDL 不随普通源码回滚，发布前必须另行完成可恢复数据库快照并保留到业务验收结束。
 13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到事项中心、定时自动化、财务、每日应签与客服影子投影完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
 
 业务代码频繁提交但锁文件未变时，发布仍会同步受管源码并重启受影响服务，但不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化时才承担完整依赖安装成本。
@@ -102,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 
 `-SkipRestart` 和 `-SkipHealthCheck` 仅用于用户明确授权的维护场景。常规生产发布不得跳过重启或健康检查。
 
-本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地上传临时目录在完成后清理；远端当次暂存目录及其 `_rollback` 精确恢复材料在成功发布后保留到业务验收结束。若回滚不完整，发布器也必须保留该目录并输出 `rollback_incomplete`，不得销毁唯一恢复材料。
+本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地上传临时目录在完成后清理；远端当次暂存目录及其 `_rollback` 精确恢复材料在成功发布后保留到业务验收结束。删除 stage 之前发生的回滚失败必须保留该目录并输出 `rollback_incomplete ... recovery_material_preserved=1`；若最终 stage 删除已经开始后失败，则输出 `rollback_cleanup_incomplete ... recovery_material_state=unknown verify_required=1`，不得未经核验声称唯一恢复材料仍完整。
 
 ## Nginx 边界
 

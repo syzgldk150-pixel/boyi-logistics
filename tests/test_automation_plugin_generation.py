@@ -817,3 +817,9 @@ def test_crash_after_effect_apply_before_ack_reuses_durable_planned_owner() -> N
     assert recovered[0].committed_generation == 1
     assert driver.ensure_calls.count("package:1.0.0") == 2
     assert driver.applied.count("package:1.0.0") == 1
+    assert repository.generations[1].state == RuntimeGenerationState.COMMITTED
+    assert all(
+        effect.state == RuntimeEffectState.APPLIED
+        for effect in repository.generations[1].effects
+    )
+    assert repository.runtime and repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
