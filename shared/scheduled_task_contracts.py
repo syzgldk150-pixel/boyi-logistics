@@ -220,7 +220,10 @@ APPROVED_SCHEDULED_TASK_PROFILES: Mapping[str, ScheduledTaskProfile] = {
     "arrival_stats": ScheduledTaskProfile(
         tool_name="sync_arrival_stats",
         tool_version="1.0.0",
-        approved_arguments={"account_id": "ronghui_default"},
+        approved_arguments={
+            "account_id": "ronghui_default",
+            "pending_sheet_disabled": True,
+        },
         dynamic_argument_rules={},
     ),
     "yunda_dispatch_forecast": ScheduledTaskProfile(

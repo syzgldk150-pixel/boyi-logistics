@@ -62,12 +62,30 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
         raise RuntimeError('018 reviewed-resource backup is missing after migration start')
     if resource_backup_exists:
         cursor.execute(
-            f'''\n            SELECT\n                COUNT(*) AS row_count,\n                SUM(migration_config_sha256 IS NOT NULL) AS captured_count\n            FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]}\n            FOR UPDATE\n            '''
+            f'''\n            SELECT\n                COUNT(*) AS row_count,\n                SUM(migration_config_sha256 IS NOT NULL) AS captured_count,\n                SUM(\n                    BINARY resource_key =\n                    BINARY 'phase7.pending_arrivals_sheet'\n                ) AS legacy_pending_count,\n                SUM(\n                    BINARY resource_key =\n                    BINARY 'phase7.pending_arrivals_sheet'\n                    AND existed_before = TRUE\n                ) AS legacy_pending_existed_count\n            FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]}\n            FOR UPDATE\n            '''
         )
         resource_capture = cursor.fetchone() or {}
         resource_backup_count = int(resource_capture.get('row_count') or 0)
         resource_hash_count = int(resource_capture.get('captured_count') or 0)
-        if resource_backup_count not in {0, 15}:
+        legacy_pending_count = int(
+            resource_capture.get('legacy_pending_count') or 0
+        )
+        legacy_pending_existed_count = int(
+            resource_capture.get('legacy_pending_existed_count') or 0
+        )
+        valid_resource_backup_layout = (
+            resource_backup_count == 0
+            or (
+                resource_backup_count == 14
+                and legacy_pending_count == 0
+            )
+            or (
+                resource_backup_count == 15
+                and legacy_pending_count == 1
+                and legacy_pending_existed_count == 1
+            )
+        )
+        if not valid_resource_backup_layout:
             raise RuntimeError('018 reviewed-resource backup is incomplete')
         if resource_hash_count not in {0, resource_backup_count}:
             raise RuntimeError('018 reviewed-resource capture is incomplete')
@@ -198,6 +216,51 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                     raise RuntimeError(
                         '018 restore refuses dirty partial reviewed resources'
                     )
+                if legacy_pending_count:
+                    cursor.execute(
+                        f"""
+                        SELECT COUNT(*) AS changed_count
+                        FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]} AS backup
+                        LEFT JOIN workflow_resources AS resource
+                          ON BINARY resource.resource_key = BINARY backup.resource_key
+                        WHERE BINARY backup.resource_key =
+                              BINARY 'phase7.pending_arrivals_sheet'
+                          AND NOT (
+                              backup.existed_before = TRUE
+                              AND resource.resource_key IS NOT NULL
+                              AND BINARY resource.source <=> BINARY backup.source
+                              AND (
+                                  BINARY SHA2(
+                                      CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                                      256
+                                  ) = BINARY SHA2(
+                                      CAST(backup.config_json AS CHAR CHARACTER SET utf8mb4),
+                                      256
+                                  )
+                                  OR BINARY SHA2(
+                                      CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                                      256
+                                  ) = BINARY SHA2(
+                                      CAST(JSON_SET(
+                                          backup.config_json,
+                                          '$.resource_kind',
+                                          'feishu_sheet'
+                                      ) AS CHAR CHARACTER SET utf8mb4),
+                                      256
+                                  )
+                              )
+                              {version_guard}
+                              {hash_guard}
+                          )
+                        FOR UPDATE
+                        """
+                    )
+                    if int(
+                        (cursor.fetchone() or {}).get('changed_count') or 0
+                    ):
+                        raise RuntimeError(
+                            '018 restore refuses dirty legacy pending resource'
+                        )
             else:
                 cursor.execute(
                     f'''\n                    SELECT COUNT(*) AS changed_count\n                    FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]} AS backup\n                    LEFT JOIN workflow_resources AS resource\n                      ON BINARY resource.resource_key = BINARY backup.resource_key\n                    WHERE NOT (\n                        (\n                            backup.existed_before = TRUE\n                            AND resource.resource_key IS NOT NULL\n                            AND BINARY resource.source <=> BINARY backup.source\n                            AND BINARY CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4) =\n                                BINARY CAST(backup.config_json AS CHAR CHARACTER SET utf8mb4)\n                        )\n                        OR (\n                            backup.existed_before = FALSE\n                            AND resource.resource_key IS NULL\n                        )\n                    )\n                    FOR UPDATE\n                    '''

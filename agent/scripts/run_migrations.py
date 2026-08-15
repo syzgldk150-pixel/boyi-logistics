@@ -2904,7 +2904,7 @@ def main() -> int:
         "--check-automation-project-required-resources",
         action="store_true",
         help=(
-            "Read-only validation of the nine installation-specific resources "
+            "Read-only validation of the eight installation-specific resources "
             "required by migration 018"
         ),
     )

@@ -213,7 +213,10 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
     "arrival_stats": FirstPartyMigrationInstanceTemplate(
         automation_id="arrival_stats",
         tool_name="sync_arrival_stats",
-        legacy_arguments={"account_id": "ronghui_default"},
+        legacy_arguments={
+            "account_id": "ronghui_default",
+            "pending_sheet_disabled": True,
+        },
         allowed_entrypoints=_CONSOLE_FEISHU_WEBHOOK,
         legacy_account_bindings={"account_id": "ronghui_default"},
         resource_bindings={
@@ -221,7 +224,6 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
             "feishu_route": "automation.feishu_route.arrival_stats",
             "arrival_stats_primary_sheet": "phase7.arrive_primary_sheet",
             "arrival_stats_secondary_sheet": "phase7.arrive_secondary_sheet",
-            "arrival_stats_pending_sheet": "phase7.pending_arrivals_sheet",
             "arrival_stats_archive_sheet": "phase7.stats_archive_sheet",
             "arrival_stats_split_pending_sheet": (
                 "phase7.split_pending_target_sheet"

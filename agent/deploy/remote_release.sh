@@ -465,7 +465,7 @@ preflight_automation_project_required_resources() {
     run_staged_migration_runner \
       --check-automation-project-required-resources 2>&1
   )"; then
-    if [[ "${output}" == "automation_project_required_resources=ok count=9" ]]; then
+    if [[ "${output}" == "automation_project_required_resources=ok count=8" ]]; then
       echo "${output}"
       return 0
     fi

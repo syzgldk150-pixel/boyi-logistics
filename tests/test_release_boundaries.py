@@ -805,7 +805,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             r"""
             run_staged_migration_runner() {
               [[ "$1" == "--check-automation-project-required-resources" ]] || return 92
-              echo 'automation_project_required_resources=ok count=9'
+              echo 'automation_project_required_resources=ok count=8'
             }
             preflight_automation_project_required_resources
             """
@@ -813,7 +813,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(
-            "automation_project_required_resources=ok count=9\n",
+            "automation_project_required_resources=ok count=8\n",
             completed.stdout,
         )
 
@@ -823,7 +823,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             run_staged_migration_runner() {
               echo 'automation_project_required_resources=blocked count=2'
               echo 'automation_project_required_resource=phase7.site_send_sheet reason=MISSING_FIELD field=range'
-              echo 'automation_project_required_resource=phase7.pending_arrivals_sheet reason=MISSING_ROW field=resource_key'
+              echo 'automation_project_required_resource=phase7.daily_sign_sheet reason=MISSING_ROW field=resource_key'
               return 1
             }
             preflight_automation_project_required_resources
@@ -838,7 +838,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             completed.stderr,
         )
         self.assertIn(
-            "automation_project_required_resource=phase7.pending_arrivals_sheet "
+            "automation_project_required_resource=phase7.daily_sign_sheet "
             "reason=MISSING_ROW field=resource_key",
             completed.stderr,
         )
