@@ -457,6 +457,58 @@ run_staged_migration_runner() {
   MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" "$@"
 }
 
+preflight_automation_project_scheduled_task_identities() {
+  local output expected_count reason field_name
+  local -a lines=()
+
+  if output="$(
+    run_staged_migration_runner \
+      --check-automation-project-scheduled-task-identities 2>&1
+  )"; then
+    if [[ "${output}" =~ ^automation_project_scheduled_task_identities=ok\ state=(applied|pending)\ allowed_count=70$ ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+
+  mapfile -t lines <<<"${output}"
+  if [[ "${#lines[@]}" -eq 1 && "${lines[0]}" =~ ^automation_project_scheduled_task_identities=blocked\ reason=(AUTOMATION_PROJECT_IDENTITY_MODULE_MISSING|AUTOMATION_PROJECT_IDENTITY_MODULE_INVALID|AUTOMATION_PROJECT_IDENTITY_SET_INVALID|AUTOMATION_PROJECT_IDENTITY_RESULT_INVALID|AUTOMATION_PROJECT_IDENTITY_PREFLIGHT_RUNTIME_ERROR)\ count=1$ ]]; then
+    echo "${lines[0]}" >&2
+    return 1
+  fi
+  if [[ "${#lines[@]}" -lt 2 || ! "${lines[0]}" =~ ^automation_project_scheduled_task_identities=blocked\ count=([1-9][0-9]*)$ ]]; then
+    echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+  expected_count="${BASH_REMATCH[1]}"
+  if (( ${#lines[@]} - 1 != expected_count )); then
+    echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+
+  local line
+  for line in "${lines[@]:1}"; do
+    if [[ "${line}" =~ ^automation_project_scheduled_task_identity\ task_id_hex=([0-9a-f]{0,1024})\ tool_name_hex=([0-9a-f]{0,1024})\ reason=(UNKNOWN_TASK_ID|TOOL_NAME_MISMATCH)\ field=(id|tool_name)$ ]]; then
+      reason="${BASH_REMATCH[3]}"
+      field_name="${BASH_REMATCH[4]}"
+      if [[ "${reason}:${field_name}" != "UNKNOWN_TASK_ID:id" && \
+            "${reason}:${field_name}" != "TOOL_NAME_MISMATCH:tool_name" ]]; then
+        echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+        return 1
+      fi
+    elif [[ "${line}" =~ ^automation_project_scheduled_task_identity_sha256=([0-9a-f]{64})\ reason=INVALID_IDENTITY\ field=(id|tool_name)$ ]]; then
+      :
+    else
+      echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+      return 1
+    fi
+  done
+  printf '%s\n' "${lines[@]}" >&2
+  return 1
+}
+
 preflight_automation_project_required_resources() {
   local output expected_count
   local -a lines=()
@@ -1977,6 +2029,8 @@ run_release() {
   preflight_service_identity_configuration
   RELEASE_STAGE="preflight_control_plane_task_cutover"
   preflight_control_plane_task_cutover
+  RELEASE_STAGE="preflight_automation_project_scheduled_task_identities"
+  preflight_automation_project_scheduled_task_identities
   RELEASE_STAGE="preflight_automation_project_required_resources"
   preflight_automation_project_required_resources
   RELEASE_STAGE="preflight_scheduled_write_window"

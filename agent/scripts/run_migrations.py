@@ -2419,9 +2419,8 @@ def _load_script_helper(filename: str):
 
 
 _MIGRATION_018_HELPER = _load_script_helper("migration_018_authorization.py")
-_RESOURCE_PREFLIGHT = _load_script_helper("automation_project_resource_preflight.py")
-check_automation_project_required_resources = _RESOURCE_PREFLIGHT.check_automation_project_required_resources
-
+check_automation_project_required_resources = _load_script_helper("automation_project_resource_preflight.py").check_automation_project_required_resources
+check_automation_project_scheduled_task_identities = _load_script_helper("automation_project_schedule_identity_preflight.py").check_automation_project_scheduled_task_identities
 
 def _automation_project_authorization_artifacts(cursor) -> set[str]:
     return _MIGRATION_018_HELPER._automation_project_authorization_artifacts(
@@ -2908,6 +2907,7 @@ def main() -> int:
             "required by migration 018"
         ),
     )
+    modes.add_argument("--check-automation-project-scheduled-task-identities", action="store_true", help="Read-only validation of pre-018 scheduled task IDs and tools")
     modes.add_argument(
         "--control-plane-policy-bootstrap-marker-status",
         action="store_true",
@@ -2977,6 +2977,7 @@ def main() -> int:
         return report_automation_project_authorization_status()
     if args.check_automation_project_required_resources:
         return check_automation_project_required_resources(_connect)
+    if args.check_automation_project_scheduled_task_identities: return check_automation_project_scheduled_task_identities(_connect)
     if args.control_plane_policy_bootstrap_marker_status:
         return report_control_plane_policy_bootstrap_marker_status()
     if args.preflight_control_plane_task_cutover:
