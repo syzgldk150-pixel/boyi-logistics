@@ -4,10 +4,22 @@ import copy
 import importlib.util
 import sys
 import types
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from shared.automation_project_policy_repository import (
+    AUTOMATION_PROJECT_BOOTSTRAP_COMPLETED_BY,
+    AutomationProjectBootstrapContractError,
+    automation_project_bootstrap_initial_mode,
+    automation_project_bootstrap_project_set_sha256,
+    automation_project_bootstrap_source_snapshot_sha256,
+    build_automation_project_bootstrap_source_snapshot,
+    legacy_scheduled_policy_grant_request_id,
+    validate_existing_automation_project_bootstrap,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -206,7 +218,10 @@ def _valid_world(preflight):
     for task_id in sorted(contract["deferred_tasks"]):
         automation_id = contract["task_to_automation"][task_id]
         template = contract["templates"][automation_id]
-        arguments = copy.deepcopy(template["legacy_arguments"])
+        arguments = preflight._deferred_code_owned_legacy_arguments(
+            contract,
+            automation_id,
+        )
         row = {
             "id": task_id,
             "automation_id": automation_id,
@@ -242,6 +257,122 @@ def _valid_world(preflight):
         == 13
     )
     return contract, schedules, backups, projects
+
+
+def _persisted_nine_seven_bootstrap_artifacts():
+    release_sha = "d" * 40
+    automation_ids = tuple(f"project-{index:02d}" for index in range(16))
+    items = []
+    for index, automation_id in enumerate(automation_ids):
+        configuration_request_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"test:project-config:{automation_id}",
+            )
+        )
+        scheduled_tasks = []
+        if index < 9:
+            task_id = f"{automation_id}-task"
+            scheduled_tasks.append(
+                {
+                    "task_id": task_id,
+                    "tool_name": f"automation.{automation_id}.run",
+                    "automation_generation": 1,
+                    "configuration_version": 2,
+                    "enabled": True,
+                    "cron_expression_hash": "a" * 64,
+                    "arguments_hash": "b" * 64,
+                    "source_policy_mode": "REQUIRE_EACH_RUN",
+                    "source_policy_version": 3,
+                    "legacy_authorized": True,
+                    "legacy_grant_request_id": (
+                        legacy_scheduled_policy_grant_request_id(task_id)
+                    ),
+                    "legacy_grant_contract_hash": "c" * 64,
+                    "legacy_grant_tool_contract_hash": "e" * 64,
+                    "retirement_kind": "CONFIGURATION_MIGRATION",
+                    "retirement_request_id": configuration_request_id,
+                }
+            )
+        source_snapshot = build_automation_project_bootstrap_source_snapshot(
+            automation_id=automation_id,
+            automation_generation=1,
+            project_configuration_version=2,
+            contract_hash="f" * 64,
+            configuration_request_id=configuration_request_id,
+            configuration_event_metadata_sha256="9" * 64,
+            scheduled_tasks=scheduled_tasks,
+        )
+        initial_mode = automation_project_bootstrap_initial_mode(
+            source_snapshot
+        )
+        items.append(
+            {
+                "automation_id": automation_id,
+                "initial_mode": initial_mode,
+                "source_set_sha256": (
+                    automation_project_bootstrap_source_snapshot_sha256(
+                        source_snapshot
+                    )
+                ),
+                "source_snapshot_json": source_snapshot,
+                "policy_version": 2 if initial_mode == "LEGACY_SCHEDULE_ONLY" else 1,
+            }
+        )
+    marker = {
+        "marker_id": 1,
+        "release_sha": release_sha,
+        "project_set_sha256": automation_project_bootstrap_project_set_sha256(
+            release_sha,
+            items,
+        ),
+        "completed_by": AUTOMATION_PROJECT_BOOTSTRAP_COMPLETED_BY,
+    }
+    return marker, items, automation_ids
+
+
+@pytest.mark.parametrize("expect_initial_production_manifest", (True, False))
+def test_initial_and_later_accept_persisted_nine_seven_distribution(
+    preflight,
+    expect_initial_production_manifest,
+):
+    marker, items, automation_ids = _persisted_nine_seven_bootstrap_artifacts()
+    summary = validate_existing_automation_project_bootstrap(
+        marker,
+        items,
+        expected_automation_ids=automation_ids,
+    )
+
+    assert expect_initial_production_manifest in {True, False}
+    assert summary["project_count"] == 16
+    assert summary["legacy_schedule_only"] == 9
+    assert summary["require_each_run"] == 7
+    preflight._validate_bootstrap_marker_summary(summary)
+
+
+@pytest.mark.parametrize("tamper_kind", ("fake_legacy", "unknown_id", "marker"))
+def test_persisted_bootstrap_artifact_drift_fails_closed(tamper_kind):
+    marker, items, automation_ids = _persisted_nine_seven_bootstrap_artifacts()
+    tampered_marker = copy.deepcopy(marker)
+    tampered_items = copy.deepcopy(items)
+    if tamper_kind == "fake_legacy":
+        require_item = next(
+            item
+            for item in tampered_items
+            if item["initial_mode"] == "REQUIRE_EACH_RUN"
+        )
+        require_item["initial_mode"] = "LEGACY_SCHEDULE_ONLY"
+    elif tamper_kind == "unknown_id":
+        tampered_items[-1]["automation_id"] = "unknown-project"
+    else:
+        tampered_marker["project_set_sha256"] = "0" * 64
+
+    with pytest.raises(AutomationProjectBootstrapContractError):
+        validate_existing_automation_project_bootstrap(
+            tampered_marker,
+            tampered_items,
+            expected_automation_ids=automation_ids,
+        )
 
 
 def test_contract_set_is_exact_and_release_scoped(preflight):
@@ -719,6 +850,81 @@ def test_deferred_r7_legacy_arguments_drift_fails_closed(preflight):
     contract, schedules, backups, _projects = _valid_world(preflight)
     task_id = next(iter(contract["deferred_tasks"]))
     schedules[task_id]["tool_params"] = {"unexpected": True}
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_deferred_rows(
+            contract,
+            schedules=schedules,
+            backups=backups,
+        )
+
+    assert error.value.code == "DEFERRED_R7_LEGACY_STATE_MISMATCH"
+
+
+def test_deferred_departure_preimage_omits_only_bound_account(preflight):
+    contract, schedules, backups, _projects = _valid_world(preflight)
+    task_id = "r7_departure_checkin"
+
+    assert "account_id" not in schedules[task_id]["tool_params"]
+    assert schedules[task_id]["tool_params"] == backups[task_id]["tool_params"]
+    preflight._validate_deferred_rows(
+        contract,
+        schedules=schedules,
+        backups=backups,
+    )
+
+
+@pytest.mark.parametrize(
+    ("task_id", "mutation"),
+    (
+        (
+            "r7_departure_checkin",
+            lambda arguments: arguments.update(account_id="r7_default"),
+        ),
+        (
+            "r7_departure_checkin",
+            lambda arguments: arguments.pop("status_text"),
+        ),
+        (
+            "r7_departure_checkin",
+            lambda arguments: arguments.update(status_text="unexpected"),
+        ),
+        (
+            "r7_arrival_checkin_0900",
+            lambda arguments: arguments.pop("account_id"),
+        ),
+        (
+            "r7_arrival_checkin_0900",
+            lambda arguments: arguments.update(account_id="unexpected"),
+        ),
+    ),
+)
+def test_deferred_code_preimage_drift_fails_even_when_backup_matches(
+    preflight,
+    task_id,
+    mutation,
+):
+    contract, schedules, backups, _projects = _valid_world(preflight)
+    mutation(schedules[task_id]["tool_params"])
+    backups[task_id]["tool_params"] = copy.deepcopy(
+        schedules[task_id]["tool_params"]
+    )
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_deferred_rows(
+            contract,
+            schedules=schedules,
+            backups=backups,
+        )
+
+    assert error.value.code == "DEFERRED_R7_LEGACY_STATE_MISMATCH"
+
+
+def test_deferred_departure_current_backup_account_drift_fails(preflight):
+    contract, schedules, backups, _projects = _valid_world(preflight)
+    schedules["r7_departure_checkin"]["tool_params"]["account_id"] = (
+        "r7_default"
+    )
 
     with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
         preflight._validate_deferred_rows(

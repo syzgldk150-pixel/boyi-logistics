@@ -54,6 +54,65 @@ _VALID_RESOURCE_BACKUP_LAYOUTS = frozenset(
     }
 )
 
+# This is the immutable project scope admitted by migration 018.  It must not
+# follow later release manifests: restore is allowed to remove only the exact
+# one-time bootstrap that 018 could have written.
+_BOOTSTRAP_PROJECT_IDS_018 = frozenset(
+    {
+        "arrival_stats",
+        "arrive_list",
+        "clockin_daxiang",
+        "clockin_daxiang_s",
+        "customer_problems_shadow",
+        "daily_sign",
+        "delivery_status",
+        "finance_bills",
+        "finance_startup_catchup",
+        "scan_codes",
+        "self_pickup_problem_upload",
+        "send_order",
+        "site_send",
+        "split_pending_problem_upload",
+        "yunda_dispatch_forecast",
+        "yunda_send_waybills",
+    }
+)
+_BOOTSTRAP_COMPLETED_BY = "system:automation-project-bootstrap-018"
+_BOOTSTRAP_RESTORE_IN_PROGRESS = (
+    "system:automation-project-bootstrap-018:restore-in-progress"
+)
+_BOOTSTRAP_SOURCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "automation_id",
+        "automation_generation",
+        "project_configuration_version",
+        "contract_hash",
+        "configuration_request_id",
+        "configuration_event_metadata_sha256",
+        "scheduled_tasks",
+    }
+)
+_BOOTSTRAP_SOURCE_TASK_FIELDS = frozenset(
+    {
+        "task_id",
+        "tool_name",
+        "automation_generation",
+        "configuration_version",
+        "enabled",
+        "cron_expression_hash",
+        "arguments_hash",
+        "source_policy_mode",
+        "source_policy_version",
+        "legacy_authorized",
+        "legacy_grant_request_id",
+        "legacy_grant_contract_hash",
+        "legacy_grant_tool_contract_hash",
+        "retirement_kind",
+        "retirement_request_id",
+    }
+)
+
 
 def _database_flag(value: object) -> bool:
     return value is True or value == 1
@@ -87,6 +146,144 @@ def _bootstrap_json_sha256(runtime, value) -> str:
         raise RuntimeError(
             "018 project policy bootstrap evidence is invalid"
         ) from exc
+
+
+def _bootstrap_is_sha256(value: object) -> bool:
+    normalized = str(value or "")
+    return len(normalized) == 64 and all(
+        character in "0123456789abcdef" for character in normalized
+    )
+
+
+def _bootstrap_uuid5(runtime, name: str) -> str:
+    return str(runtime["uuid"].uuid5(runtime["uuid"].NAMESPACE_URL, name))
+
+
+def _validate_bootstrap_source_snapshot(
+    runtime,
+    snapshot,
+    *,
+    release_sha: str,
+) -> str:
+    """Validate retained 018 evidence and derive its only safe policy mode."""
+
+    if (
+        set(snapshot) != _BOOTSTRAP_SOURCE_FIELDS
+        or type(snapshot.get("schema_version")) is not int
+        or snapshot.get("schema_version") != 1
+        or str(snapshot.get("automation_id") or "")
+        not in _BOOTSTRAP_PROJECT_IDS_018
+        or type(snapshot.get("automation_generation")) is not int
+        or snapshot.get("automation_generation") <= 0
+        or type(snapshot.get("project_configuration_version")) is not int
+        or snapshot.get("project_configuration_version") <= 0
+        or not _bootstrap_is_sha256(snapshot.get("contract_hash"))
+        or not _bootstrap_is_sha256(
+            snapshot.get("configuration_event_metadata_sha256")
+        )
+        or snapshot.get("configuration_request_id")
+        != _bootstrap_uuid5(
+            runtime,
+            "boyi:first-party-plugin-config:"
+            f"{release_sha}:{snapshot.get('automation_id')}",
+        )
+        or not isinstance(snapshot.get("scheduled_tasks"), list)
+    ):
+        raise RuntimeError("018 project policy bootstrap items are invalid")
+
+    generation = snapshot["automation_generation"]
+    configuration_version = snapshot["project_configuration_version"]
+    configuration_request_id = snapshot["configuration_request_id"]
+    task_ids = []
+    all_legacy_authorized = bool(snapshot["scheduled_tasks"])
+    for task in snapshot["scheduled_tasks"]:
+        if not isinstance(task, dict) or set(task) != _BOOTSTRAP_SOURCE_TASK_FIELDS:
+            raise RuntimeError("018 project policy bootstrap items are invalid")
+        task_id = str(task.get("task_id") or "")
+        grant_request_id = str(task.get("legacy_grant_request_id") or "")
+        grant_contract_hash = str(
+            task.get("legacy_grant_contract_hash") or ""
+        )
+        grant_tool_hash = str(
+            task.get("legacy_grant_tool_contract_hash") or ""
+        )
+        retirement_kind = str(task.get("retirement_kind") or "")
+        retirement_request_id = str(task.get("retirement_request_id") or "")
+        legacy_authorized = task.get("legacy_authorized")
+        if (
+            not task_id
+            or not str(task.get("tool_name") or "")
+            or task.get("automation_generation") != generation
+            or task.get("configuration_version") != configuration_version
+            or type(task.get("enabled")) is not bool
+            or not _bootstrap_is_sha256(task.get("cron_expression_hash"))
+            or not _bootstrap_is_sha256(task.get("arguments_hash"))
+            or task.get("source_policy_mode") != "REQUIRE_EACH_RUN"
+            or type(task.get("source_policy_version")) is not int
+            or task.get("source_policy_version") <= 0
+            or type(legacy_authorized) is not bool
+        ):
+            raise RuntimeError("018 project policy bootstrap items are invalid")
+        if grant_request_id:
+            if (
+                grant_request_id
+                != _bootstrap_uuid5(
+                    runtime,
+                    f"boyi:control-plane-v1:{task_id}",
+                )
+                or not _bootstrap_is_sha256(grant_contract_hash)
+                or not _bootstrap_is_sha256(grant_tool_hash)
+            ):
+                raise RuntimeError("018 project policy bootstrap items are invalid")
+        elif grant_contract_hash or grant_tool_hash:
+            raise RuntimeError("018 project policy bootstrap items are invalid")
+        if retirement_kind == "CONFIGURATION_MIGRATION":
+            if retirement_request_id != configuration_request_id:
+                raise RuntimeError("018 project policy bootstrap items are invalid")
+        elif retirement_kind == "NONE":
+            if retirement_request_id:
+                raise RuntimeError("018 project policy bootstrap items are invalid")
+        else:
+            raise RuntimeError("018 project policy bootstrap items are invalid")
+        if legacy_authorized and (
+            task.get("enabled") is not True
+            or not grant_request_id
+            or retirement_kind != "CONFIGURATION_MIGRATION"
+        ):
+            raise RuntimeError("018 project policy bootstrap items are invalid")
+        task_ids.append(task_id)
+        all_legacy_authorized = all_legacy_authorized and legacy_authorized
+    if task_ids != sorted(task_ids) or len(task_ids) != len(set(task_ids)):
+        raise RuntimeError("018 project policy bootstrap items are invalid")
+    return (
+        "LEGACY_SCHEDULE_ONLY"
+        if all_legacy_authorized
+        else "REQUIRE_EACH_RUN"
+    )
+
+
+def _bootstrap_restore_table_state(runtime, cursor) -> tuple[bool, ...]:
+    return tuple(
+        runtime["_table_exists"](cursor, table_name)
+        for table_name in runtime["AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE"]
+    )
+
+
+def _bootstrap_restore_prefix_is_removed(table_state: tuple[bool, ...]) -> bool:
+    """True for a zero-or-more removed prefix followed by intact tables.
+
+    MySQL commits the in-progress marker before attempting the first DDL.  The
+    DROP itself can fail after that implicit commit, so an intact table set is
+    one valid retry state once (and only once) the marker carries the sentinel.
+    """
+
+    first_present = next(
+        (index for index, present in enumerate(table_state) if present),
+        len(table_state),
+    )
+    return table_state == (
+        (False,) * first_present + (True,) * (len(table_state) - first_present)
+    )
 
 
 def _validated_resource_backup_layout(rows):
@@ -143,8 +340,19 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
     events_exist = runtime["_table_exists"](cursor, event_table)
     if not marker_exists and not items_exist:
         return False
-    if not (marker_exists and items_exist):
+    if items_exist and not marker_exists:
         raise RuntimeError("018 project policy bootstrap is incomplete")
+
+    reverse_tables = tuple(
+        runtime["AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE"]
+    )
+    if (
+        not reverse_tables
+        or reverse_tables[-2:] != (item_table, marker_table)
+        or event_table not in reverse_tables
+    ):
+        raise RuntimeError("018 project policy bootstrap restore order is invalid")
+    table_state = _bootstrap_restore_table_state(runtime, cursor)
 
     cursor.execute(
         f"""
@@ -155,19 +363,20 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
     )
     markers = tuple(cursor.fetchall() or ())
     if not markers:
+        if not items_exist:
+            return False
         cursor.execute(
             f"SELECT automation_id FROM {item_table} LIMIT 1 FOR UPDATE"
         )
         if cursor.fetchone() is None:
             return False
         raise RuntimeError("018 project policy bootstrap is incomplete")
-    if not events_exist:
-        raise RuntimeError("018 project policy bootstrap is incomplete")
     if len(markers) != 1:
         raise RuntimeError("018 project policy bootstrap marker is invalid")
     marker = markers[0]
     release_sha = str(marker.get("release_sha") or "")
     project_set_sha256 = str(marker.get("project_set_sha256") or "")
+    completed_by = str(marker.get("completed_by") or "")
     if (
         marker.get("marker_id") != 1
         or len(release_sha) != 40
@@ -177,10 +386,29 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
             character not in "0123456789abcdef"
             for character in project_set_sha256
         )
-        or str(marker.get("completed_by") or "")
-        != "system:automation-project-bootstrap-018"
+        or completed_by
+        not in {_BOOTSTRAP_COMPLETED_BY, _BOOTSTRAP_RESTORE_IN_PROGRESS}
     ):
         raise RuntimeError("018 project policy bootstrap marker is invalid")
+    if completed_by == _BOOTSTRAP_COMPLETED_BY:
+        if not all(table_state):
+            raise RuntimeError("018 project policy bootstrap is incomplete")
+    elif not _bootstrap_restore_prefix_is_removed(table_state):
+        raise RuntimeError("018 project policy bootstrap is incomplete")
+
+    if not items_exist:
+        # Items are deliberately penultimate and the in-progress marker is
+        # deliberately last.  This is the only evidence-safe marker-only
+        # state possible after a MySQL DDL auto-commit interruption.
+        if table_state != (False,) * (len(table_state) - 1) + (True,):
+            raise RuntimeError("018 project policy bootstrap is incomplete")
+        return True
+    if not events_exist and completed_by != _BOOTSTRAP_RESTORE_IN_PROGRESS:
+        raise RuntimeError("018 project policy bootstrap is incomplete")
+    if not events_exist:
+        event_index = reverse_tables.index(event_table)
+        if any(table_state[: event_index + 1]):
+            raise RuntimeError("018 project policy bootstrap is incomplete")
 
     cursor.execute(
         f"""
@@ -202,24 +430,16 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
     )
     items = tuple(cursor.fetchall() or ())
     item_ids = tuple(str(item.get("automation_id") or "") for item in items)
-    modes = tuple(str(item.get("initial_mode") or "") for item in items)
     project_hash_items = []
     for item in items:
         snapshot = _bootstrap_json_object(
             runtime,
             item.get("source_snapshot_json"),
         )
-        scheduled_tasks = snapshot.get("scheduled_tasks")
-        derived_mode = (
-            "LEGACY_SCHEDULE_ONLY"
-            if isinstance(scheduled_tasks, list)
-            and scheduled_tasks
-            and all(
-                isinstance(task, dict)
-                and task.get("legacy_authorized") is True
-                for task in scheduled_tasks
-            )
-            else "REQUIRE_EACH_RUN"
+        derived_mode = _validate_bootstrap_source_snapshot(
+            runtime,
+            snapshot,
+            release_sha=release_sha,
         )
         if (
             str(snapshot.get("automation_id") or "")
@@ -242,10 +462,8 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
             }
         )
     if (
-        len(items) != 16
-        or len(set(item_ids)) != 16
-        or modes.count("LEGACY_SCHEDULE_ONLY") != 10
-        or modes.count("REQUIRE_EACH_RUN") != 6
+        frozenset(item_ids) != _BOOTSTRAP_PROJECT_IDS_018
+        or len(item_ids) != len(_BOOTSTRAP_PROJECT_IDS_018)
         or any(
             not automation_id
             or str(item.get("source_automation_id") or "") != automation_id
@@ -277,10 +495,13 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
     )
     if expected_project_set_sha256 != project_set_sha256:
         raise RuntimeError("018 project policy bootstrap marker is invalid")
+    if not events_exist:
+        return True
 
     cursor.execute(
         f"""
-        SELECT event.automation_id, event.request_id, event.from_mode,
+        SELECT event.event_id, event.automation_id, event.request_id,
+               event.from_mode,
                event.to_mode, event.contract_hash,
                event.contract_snapshot_json, event.tool_contract_hash,
                event.plugin_contract_hash,
@@ -318,6 +539,11 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
         raise RuntimeError("018 project policy bootstrap events are invalid")
     for event in bootstrap_events:
         mode = str(event.get("initial_mode") or "")
+        automation_id = str(event.get("automation_id") or "")
+        expected_request_id = _bootstrap_uuid5(
+            runtime,
+            f"boyi:automation-project-bootstrap-018:{automation_id}",
+        )
         contract_snapshot = event.get("contract_snapshot_json")
         if isinstance(contract_snapshot, str):
             contract_snapshot = _bootstrap_json_object(
@@ -331,19 +557,23 @@ def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
             event.get("plugin_contract_hash"),
         )
         if (
-            event.get("from_mode") != "REQUIRE_EACH_RUN"
+            type(event.get("event_id")) is not int
+            or event.get("event_id") <= 0
+            or event.get("request_id") != expected_request_id
+            or event.get("from_mode") != "REQUIRE_EACH_RUN"
             or event.get("to_mode") != mode
             or event.get("project_generation")
             != event.get("source_generation")
             or event.get("project_configuration_version")
             != event.get("source_configuration_version")
+            or event.get("actor_id") != _BOOTSTRAP_COMPLETED_BY
             or event.get("actor_role") != "system"
             or event.get("actor_display_name")
             != "Automation project bootstrap 018"
             or event.get("reason") != "AUTOMATION_PROJECT_BOOTSTRAP_018"
             or event.get("comment")
             != "Release-held one-time policy bootstrap"
-            or event.get("request_id") != event.get("correlation_id")
+            or event.get("correlation_id") != expected_request_id
             or (
                 mode == "LEGACY_SCHEDULE_ONLY"
                 and (
@@ -778,6 +1008,26 @@ def restore_automation_project_authorization(runtime) -> int:
             connection.begin()
             transaction_started = True
             restore_scheduler = runtime["_validate_automation_project_authorization_restore"](cursor)
+            if runtime["_table_exists"](
+                cursor,
+                "automation_project_bootstrap_marker_018",
+            ):
+                # The first following DDL auto-commits this transition.  A
+                # retry may then accept only the exact sequential table-drop
+                # prefix and can safely finish with the marker as the final
+                # durable witness.
+                cursor.execute(
+                    """
+                    UPDATE automation_project_bootstrap_marker_018
+                    SET completed_by=%s
+                    WHERE marker_id=1 AND completed_by IN (%s, %s)
+                    """,
+                    (
+                        _BOOTSTRAP_RESTORE_IN_PROGRESS,
+                        _BOOTSTRAP_COMPLETED_BY,
+                        _BOOTSTRAP_RESTORE_IN_PROGRESS,
+                    ),
+                )
             _restore_automation_project_resources(runtime, cursor)
             for table_name in runtime["AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE"]:
                 if runtime["_table_exists"](cursor, table_name):

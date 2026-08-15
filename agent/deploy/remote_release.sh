@@ -2222,11 +2222,15 @@ rollback() {
       fi
       restore_managed_release_state || rollback_status=1
       verify_runtime_virtualenvs || rollback_status=1
-      if clear_scheduler_release_hold_for_rollback; then
-        restart_runtime_services_for_rollback || rollback_status=1
+      if [[ "${rollback_status}" == "0" ]]; then
+        if clear_scheduler_release_hold_for_rollback; then
+          restart_runtime_services_for_rollback || rollback_status=1
+        else
+          rollback_status=1
+          echo "Rollback restart skipped because the scheduler release hold could not be cleared" >&2
+        fi
       else
-        rollback_status=1
-        echo "Rollback restart skipped because the scheduler release hold could not be cleared" >&2
+        echo "Rollback activation skipped because managed state restore did not complete" >&2
       fi
     else
       echo "Rollback restore skipped because a runtime service could not be stopped" >&2

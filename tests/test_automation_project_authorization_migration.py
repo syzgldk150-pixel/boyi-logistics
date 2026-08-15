@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import uuid
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -1377,6 +1378,20 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         helper = _load_migration_helper()
         helper_source = MIGRATION_HELPER_PATH.read_text(encoding="utf-8")
         self.assertEqual(4, helper_source.count("AS UNSIGNED) AS source_"))
+        runner_source = RUNNER_PATH.read_text(encoding="utf-8")
+        reverse_start = runner_source.index(
+            "AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = ("
+        )
+        reverse_end = runner_source.index("\n)", reverse_start)
+        reverse_block = runner_source[reverse_start:reverse_end]
+        self.assertLess(
+            reverse_block.rindex('"automation_project_bootstrap_items_018"'),
+            reverse_block.rindex('"automation_project_bootstrap_marker_018"'),
+        )
+        self.assertIn(
+            "SET completed_by=%s",
+            helper_source,
+        )
 
         class BootstrapCursor:
             def __init__(self, *, marker, items, events):
@@ -1419,111 +1434,261 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             "_table_exists": lambda _cursor, table_name: table_name in tables,
             "hashlib": hashlib,
             "json": json,
+            "uuid": uuid,
+            "AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE": (
+                "automation_project_policy_events",
+                "automation_project_bootstrap_items_018",
+                "automation_project_bootstrap_marker_018",
+            ),
         }
-        items = []
-        events = []
-        for index in range(16):
-            automation_id = f"project-{index:02d}"
-            mode = "LEGACY_SCHEDULE_ONLY" if index < 10 else "REQUIRE_EACH_RUN"
-            contract_snapshot = {"automation_id": automation_id}
-            source_contract_hash = hashlib.sha256(
+        release_sha = "d" * 40
+
+        def sha(value):
+            return hashlib.sha256(
                 json.dumps(
-                    contract_snapshot,
+                    value,
                     sort_keys=True,
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
-            source_snapshot = {
-                "schema_version": 1,
-                "automation_id": automation_id,
-                "automation_generation": 1,
-                "project_configuration_version": 2,
-                "contract_hash": source_contract_hash,
-                "configuration_request_id": (
-                    f"10000000-0000-0000-0000-{index:012d}"
-                ),
-                "configuration_event_metadata_sha256": "f" * 64,
-                "scheduled_tasks": (
-                    [{"legacy_authorized": True}] if index < 10 else []
-                ),
-            }
-            source_set_sha256 = hashlib.sha256(
-                json.dumps(
-                    source_snapshot,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            items.append(
+
+        def marker_for(items, *, completed_by=None):
+            return [
                 {
-                    "automation_id": automation_id,
-                    "initial_mode": mode,
-                    "source_set_sha256": source_set_sha256,
-                    "source_snapshot_json": source_snapshot,
-                    "policy_version": 2 if index < 10 else 1,
-                    "source_automation_id": automation_id,
-                    "source_generation": 1,
-                    "source_configuration_version": 2,
-                }
-            )
-            request_id = f"00000000-0000-0000-0000-{index:012d}"
-            legacy = mode == "LEGACY_SCHEDULE_ONLY"
-            events.append(
-                {
-                    "automation_id": automation_id,
-                    "request_id": request_id,
-                    "correlation_id": request_id,
-                    "from_mode": "REQUIRE_EACH_RUN",
-                    "to_mode": mode,
-                    "contract_hash": source_contract_hash if legacy else None,
-                    "contract_snapshot_json": contract_snapshot if legacy else None,
-                    "tool_contract_hash": "b" * 64 if legacy else None,
-                    "plugin_contract_hash": "c" * 64 if legacy else None,
-                    "project_configuration_version": 2,
-                    "project_generation": 1,
-                    "actor_id": "system:automation-project-bootstrap-018",
-                    "actor_role": "system",
-                    "actor_display_name": "Automation project bootstrap 018",
-                    "reason": "AUTOMATION_PROJECT_BOOTSTRAP_018",
-                    "comment": "Release-held one-time policy bootstrap",
-                    "initial_mode": mode,
-                    "source_contract_hash": source_contract_hash,
-                    "source_generation": 1,
-                    "source_configuration_version": 2,
-                }
-            )
-        project_set_sha256 = hashlib.sha256(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "release_sha": "d" * 40,
-                    "projects": [
+                    "marker_id": 1,
+                    "release_sha": release_sha,
+                    "project_set_sha256": sha(
                         {
-                            "automation_id": item["automation_id"],
-                            "initial_mode": item["initial_mode"],
-                            "source_set_sha256": item["source_set_sha256"],
-                            "policy_version": item["policy_version"],
+                            "schema_version": 1,
+                            "release_sha": release_sha,
+                            "projects": sorted(
+                                [
+                                    {
+                                        "automation_id": item["automation_id"],
+                                        "initial_mode": item["initial_mode"],
+                                        "source_set_sha256": item[
+                                            "source_set_sha256"
+                                        ],
+                                        "policy_version": item["policy_version"],
+                                    }
+                                    for item in items
+                                ],
+                                key=lambda value: value["automation_id"],
+                            ),
                         }
-                        for item in items
-                    ],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        marker = [
-            {
-                "marker_id": 1,
-                "release_sha": "d" * 40,
-                "project_set_sha256": project_set_sha256,
-                "completed_by": "system:automation-project-bootstrap-018",
-            }
-        ]
+                    ),
+                    "completed_by": completed_by
+                    or "system:automation-project-bootstrap-018",
+                }
+            ]
+
+        def build_bootstrap(*, finance_enabled):
+            items = []
+            events = []
+            disabled_task_ids = {"yunda_dispatch_forecast_1700"}
+            if not finance_enabled:
+                disabled_task_ids.add("finance_bills_0010")
+            for event_id, automation_id in enumerate(
+                sorted(helper._BOOTSTRAP_PROJECT_IDS_018),
+                start=1,
+            ):
+                definition = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[
+                    automation_id
+                ]
+                configuration_request_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        "boyi:first-party-plugin-config:"
+                        f"{release_sha}:{automation_id}",
+                    )
+                )
+                source_tasks = []
+                for task_id in sorted(definition.scheduled_task_ids):
+                    enabled = task_id not in disabled_task_ids
+                    has_legacy_grant = task_id != "customer_problems_shadow"
+                    legacy_authorized = enabled and has_legacy_grant
+                    source_tasks.append(
+                        {
+                            "task_id": task_id,
+                            "tool_name": definition.tool_name,
+                            "automation_generation": 1,
+                            "configuration_version": 2,
+                            "enabled": enabled,
+                            "cron_expression_hash": sha(
+                                {"cron": task_id}
+                            ),
+                            "arguments_hash": sha(
+                                {"arguments": automation_id}
+                            ),
+                            "source_policy_mode": "REQUIRE_EACH_RUN",
+                            "source_policy_version": 2,
+                            "legacy_authorized": legacy_authorized,
+                            "legacy_grant_request_id": (
+                                str(
+                                    uuid.uuid5(
+                                        uuid.NAMESPACE_URL,
+                                        f"boyi:control-plane-v1:{task_id}",
+                                    )
+                                )
+                                if has_legacy_grant
+                                else ""
+                            ),
+                            "legacy_grant_contract_hash": (
+                                sha({"legacy": task_id})
+                                if has_legacy_grant
+                                else ""
+                            ),
+                            "legacy_grant_tool_contract_hash": (
+                                sha({"tool": definition.tool_name})
+                                if has_legacy_grant
+                                else ""
+                            ),
+                            "retirement_kind": (
+                                "CONFIGURATION_MIGRATION"
+                                if has_legacy_grant
+                                else "NONE"
+                            ),
+                            "retirement_request_id": (
+                                configuration_request_id
+                                if has_legacy_grant
+                                else ""
+                            ),
+                        }
+                    )
+                mode = (
+                    "LEGACY_SCHEDULE_ONLY"
+                    if source_tasks
+                    and all(
+                        task["legacy_authorized"] is True
+                        for task in source_tasks
+                    )
+                    else "REQUIRE_EACH_RUN"
+                )
+                contract_snapshot = {"automation_id": automation_id}
+                source_contract_hash = sha(contract_snapshot)
+                source_snapshot = {
+                    "schema_version": 1,
+                    "automation_id": automation_id,
+                    "automation_generation": 1,
+                    "project_configuration_version": 2,
+                    "contract_hash": source_contract_hash,
+                    "configuration_request_id": configuration_request_id,
+                    "configuration_event_metadata_sha256": sha(
+                        {"configuration": automation_id}
+                    ),
+                    "scheduled_tasks": source_tasks,
+                }
+                source_set_sha256 = sha(source_snapshot)
+                items.append(
+                    {
+                        "automation_id": automation_id,
+                        "initial_mode": mode,
+                        "source_set_sha256": source_set_sha256,
+                        "source_snapshot_json": source_snapshot,
+                        "policy_version": 2 if mode == "LEGACY_SCHEDULE_ONLY" else 1,
+                        "source_automation_id": automation_id,
+                        "source_generation": 1,
+                        "source_configuration_version": 2,
+                    }
+                )
+                request_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        "boyi:automation-project-bootstrap-018:"
+                        f"{automation_id}",
+                    )
+                )
+                legacy = mode == "LEGACY_SCHEDULE_ONLY"
+                events.append(
+                    {
+                        "event_id": event_id,
+                        "automation_id": automation_id,
+                        "request_id": request_id,
+                        "correlation_id": request_id,
+                        "from_mode": "REQUIRE_EACH_RUN",
+                        "to_mode": mode,
+                        "contract_hash": (
+                            source_contract_hash if legacy else None
+                        ),
+                        "contract_snapshot_json": (
+                            contract_snapshot if legacy else None
+                        ),
+                        "tool_contract_hash": "b" * 64 if legacy else None,
+                        "plugin_contract_hash": "c" * 64 if legacy else None,
+                        "project_configuration_version": 2,
+                        "project_generation": 1,
+                        "actor_id": "system:automation-project-bootstrap-018",
+                        "actor_role": "system",
+                        "actor_display_name": "Automation project bootstrap 018",
+                        "reason": "AUTOMATION_PROJECT_BOOTSTRAP_018",
+                        "comment": "Release-held one-time policy bootstrap",
+                        "initial_mode": mode,
+                        "source_contract_hash": source_contract_hash,
+                        "source_generation": 1,
+                        "source_configuration_version": 2,
+                    }
+                )
+            return items, events, marker_for(items)
+
+        items, events, marker = build_bootstrap(finance_enabled=True)
+        self.assertEqual(
+            (10, 6, 55),
+            (
+                sum(
+                    item["initial_mode"] == "LEGACY_SCHEDULE_ONLY"
+                    for item in items
+                ),
+                sum(
+                    item["initial_mode"] == "REQUIRE_EACH_RUN"
+                    for item in items
+                ),
+                sum(
+                    task["legacy_authorized"]
+                    for item in items
+                    for task in item["source_snapshot_json"]["scheduled_tasks"]
+                ),
+            ),
+        )
 
         self.assertTrue(
             helper._validate_project_policy_bootstrap_restore(
                 runtime,
                 BootstrapCursor(marker=marker, items=items, events=events),
+            )
+        )
+
+        # Incident regression: disabled finance and dispatch schedules retain
+        # their exact grant/retirement evidence but safely force their projects
+        # to REQUIRE_EACH_RUN.  The restore identity is not a fixed mode count.
+        incident_items, incident_events, incident_marker = build_bootstrap(
+            finance_enabled=False
+        )
+        self.assertEqual(
+            (9, 7, 54),
+            (
+                sum(
+                    item["initial_mode"] == "LEGACY_SCHEDULE_ONLY"
+                    for item in incident_items
+                ),
+                sum(
+                    item["initial_mode"] == "REQUIRE_EACH_RUN"
+                    for item in incident_items
+                ),
+                sum(
+                    task["legacy_authorized"]
+                    for item in incident_items
+                    for task in item["source_snapshot_json"]["scheduled_tasks"]
+                ),
+            ),
+        )
+        self.assertTrue(
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=incident_marker,
+                    items=incident_items,
+                    events=incident_events,
+                ),
             )
         )
 
@@ -1559,6 +1724,108 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                     events=events,
                 ),
             )
+
+        forged_items = [dict(item) for item in items]
+        forged_items[0] = dict(forged_items[0])
+        forged_snapshot = dict(forged_items[0]["source_snapshot_json"])
+        forged_snapshot["automation_id"] = "unknown-project"
+        forged_snapshot["configuration_request_id"] = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "boyi:first-party-plugin-config:"
+                f"{release_sha}:unknown-project",
+            )
+        )
+        forged_items[0].update(
+            {
+                "automation_id": "unknown-project",
+                "source_automation_id": "unknown-project",
+                "source_snapshot_json": forged_snapshot,
+                "source_set_sha256": sha(forged_snapshot),
+            }
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "project policy bootstrap items are invalid",
+        ):
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=marker_for(forged_items),
+                    items=forged_items,
+                    events=events,
+                ),
+            )
+
+        forged_mode_items = [dict(item) for item in items]
+        require_index = next(
+            index
+            for index, item in enumerate(forged_mode_items)
+            if not item["source_snapshot_json"]["scheduled_tasks"]
+        )
+        forged_mode_items[require_index] = dict(forged_mode_items[require_index])
+        forged_mode_items[require_index]["initial_mode"] = "LEGACY_SCHEDULE_ONLY"
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "project policy bootstrap items are invalid",
+        ):
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=marker_for(forged_mode_items),
+                    items=forged_mode_items,
+                    events=events,
+                ),
+            )
+
+        # A committed restore sentinel is valid both before the first DROP and
+        # after any exact sequential prefix.  A hole in that prefix is rejected.
+        restore_marker = marker_for(
+            incident_items,
+            completed_by=(
+                "system:automation-project-bootstrap-018:restore-in-progress"
+            ),
+        )
+        self.assertTrue(
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=restore_marker,
+                    items=incident_items,
+                    events=incident_events,
+                ),
+            )
+        )
+        tables.remove("automation_project_policy_events")
+        self.assertTrue(
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=restore_marker,
+                    items=incident_items,
+                    events=(),
+                ),
+            )
+        )
+        tables.remove("automation_project_bootstrap_items_018")
+        self.assertTrue(
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(marker=restore_marker, items=(), events=()),
+            )
+        )
+        tables.add("automation_project_policy_events")
+        with self.assertRaisesRegex(RuntimeError, "bootstrap is incomplete"):
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(marker=restore_marker, items=(), events=()),
+            )
+        tables.update(
+            {
+                "automation_project_bootstrap_items_018",
+                "automation_project_policy_events",
+            }
+        )
 
         self.assertFalse(
             helper._validate_project_policy_bootstrap_restore(

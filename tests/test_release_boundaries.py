@@ -176,6 +176,7 @@ def _run_rollback_fault_harness(
     *,
     fail_agent_restart: bool,
     fail_stage_cleanup: bool = False,
+    automation_project_restore_failure: str = "none",
     cutover_pending: bool = True,
     daily_sign_pending: bool = False,
     contract_upgrade_pending: bool = False,
@@ -183,7 +184,9 @@ def _run_rollback_fault_harness(
     bootstrap_absent: bool = False,
     migrations_attempted: bool = False,
     runtime_start_attempted: bool = False,
-) -> tuple[subprocess.CompletedProcess[str], list[str], bool, bool]:
+) -> tuple[subprocess.CompletedProcess[str], list[str], bool, bool, bool]:
+    if automation_project_restore_failure not in {"none", "first", "partial"}:
+        raise ValueError("unsupported automation project restore failure mode")
     release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
     task_tmp_preexisting = task_tmp_root.exists()
@@ -227,6 +230,7 @@ def _run_rollback_fault_harness(
             bootstrap_absent="$9"
             migrations_attempted="${10}"
             runtime_start_attempted="${11}"
+            automation_project_restore_failure="${12}"
             stage_root="${temp_root}/release-aaaaaaaaaaaa-20260815192447"
             events_path="${temp_root}/events.log"
             source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
@@ -258,6 +262,9 @@ def _run_rollback_fault_harness(
             MIGRATIONS_ATTEMPTED="${migrations_attempted}"
             NEW_RUNTIME_START_ATTEMPTED="${runtime_start_attempted}"
             RELEASE_STAGE="check_health"
+            SCHEDULER_RELEASE_HOLD_FILE="${stage_root}/scheduler-release.pause"
+            printf '%s\n' "${RELEASE_SHA}" >"${SCHEDULER_RELEASE_HOLD_FILE}"
+            SCHEDULER_RELEASE_HOLD_CREATED=1
             declare -A ACTIVE_STATE=(
               [agent.service]=1
               [console.service]=1
@@ -302,6 +309,10 @@ def _run_rollback_fault_harness(
             }
 
             rm() {
+              if [[ "$#" == "2" && "$1" == "--" && \
+                "$2" == "${SCHEDULER_RELEASE_HOLD_FILE}" ]]; then
+                printf 'hold-cleared\n' >>"${events_path}"
+              fi
               if [[ "${fail_stage_cleanup}" == "1" && "$#" == "3" && \
                 "$1" == "-rf" && "$2" == "--" && "$3" == "${stage_root}" ]]; then
                 command rm -f -- "${stage_root}/partial-delete-me"
@@ -327,8 +338,20 @@ def _run_rollback_fault_harness(
             }
 
             restore_automation_project_authorization_data() {
-              printf 'restore-018\n' >>"${events_path}"
-              return 0
+              case "${automation_project_restore_failure}" in
+                first)
+                  printf 'restore-018:first-failed\n' >>"${events_path}"
+                  return 1
+                  ;;
+                partial)
+                  printf 'restore-018:partial-failed\n' >>"${events_path}"
+                  return 1
+                  ;;
+                *)
+                  printf 'restore-018\n' >>"${events_path}"
+                  return 0
+                  ;;
+              esac
             }
 
             restore_control_plane_policy_bootstrap_data() {
@@ -358,6 +381,7 @@ def _run_rollback_fault_harness(
             "1" if bootstrap_absent else "0",
             "1" if migrations_attempted else "0",
             "1" if runtime_start_attempted else "0",
+            automation_project_restore_failure,
         ]
         if os.name == "nt":
             harness_args = ["wsl.exe", "-d", "Ubuntu", "--", *harness_args]
@@ -380,6 +404,7 @@ def _run_rollback_fault_harness(
             events,
             stage_root.exists(),
             (new_venv / "preserve-marker").exists(),
+            (stage_root / "scheduler-release.pause").exists(),
         )
         return result
     finally:
@@ -1018,6 +1043,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             rollback_function.index("clear_scheduler_release_hold_for_rollback"),
             rollback_function.index("restart_runtime_services_for_rollback"),
         )
+        self.assertLess(
+            rollback_function.index('[[ "${rollback_status}" == "0" ]]'),
+            rollback_function.index("clear_scheduler_release_hold_for_rollback"),
+        )
         self.assertGreaterEqual(
             rollback_function.count("clear_scheduler_release_hold_for_rollback"),
             2,
@@ -1086,14 +1115,15 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("scheduler_release_hold_path().unlink()", consume_hold)
 
     def test_health_failure_with_reused_venv_stops_and_recovers_both_services(self):
-        completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
-            fail_agent_restart=False
+        completed, events, stage_exists, _new_venv_exists, hold_exists = (
+            _run_rollback_fault_harness(fail_agent_restart=False)
         )
 
         self.assertNotEqual(0, completed.returncode)
         self.assertIn("release_error stage=check_health", completed.stderr)
         self.assertNotIn("rollback_incomplete", completed.stderr)
         self.assertFalse(stage_exists)
+        self.assertFalse(hold_exists)
         self.assertEqual(["stop:agent.service", "stop:console.service"], events[:2])
         self.assertIn("venv:agent", events)
         self.assertIn("venv:console", events)
@@ -1101,8 +1131,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(events.index("restart:agent.service"), events.index("restart:console.service"))
 
     def test_incomplete_rollback_attempts_both_restarts_and_preserves_recovery_material(self):
-        completed, events, stage_exists, new_venv_exists = _run_rollback_fault_harness(
-            fail_agent_restart=True
+        completed, events, stage_exists, new_venv_exists, _hold_exists = (
+            _run_rollback_fault_harness(fail_agent_restart=True)
         )
 
         self.assertNotEqual(0, completed.returncode)
@@ -1114,9 +1144,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("restart:console.service", events)
 
     def test_partial_stage_cleanup_failure_reports_unknown_recovery_material_state(self):
-        completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
-            fail_agent_restart=False,
-            fail_stage_cleanup=True,
+        completed, events, stage_exists, _new_venv_exists, _hold_exists = (
+            _run_rollback_fault_harness(
+                fail_agent_restart=False,
+                fail_stage_cleanup=True,
+            )
         )
 
         self.assertNotEqual(0, completed.returncode)
@@ -1161,32 +1193,38 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertNotIn("recovery_material_preserved=1", completed.stderr)
 
     def test_rollback_does_not_revert_cutover_applied_before_this_release(self):
-        completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
-            fail_agent_restart=False,
-            cutover_pending=False,
+        completed, events, stage_exists, _new_venv_exists, hold_exists = (
+            _run_rollback_fault_harness(
+                fail_agent_restart=False,
+                cutover_pending=False,
+            )
         )
 
         self.assertNotEqual(0, completed.returncode)
         self.assertNotIn("rollback_incomplete", completed.stderr)
         self.assertNotIn("restore-014", events)
         self.assertFalse(stage_exists)
+        self.assertFalse(hold_exists)
         self.assertIn("restart:agent.service", events)
         self.assertIn("restart:console.service", events)
 
     def test_rollback_restores_only_current_release_database_state_in_reverse_order(self):
-        completed, events, stage_exists, _new_venv_exists = _run_rollback_fault_harness(
-            fail_agent_restart=False,
-            cutover_pending=True,
-            daily_sign_pending=True,
-            contract_upgrade_pending=True,
-            automation_project_pending=True,
-            bootstrap_absent=True,
-            migrations_attempted=True,
-            runtime_start_attempted=True,
+        completed, events, stage_exists, _new_venv_exists, hold_exists = (
+            _run_rollback_fault_harness(
+                fail_agent_restart=False,
+                cutover_pending=True,
+                daily_sign_pending=True,
+                contract_upgrade_pending=True,
+                automation_project_pending=True,
+                bootstrap_absent=True,
+                migrations_attempted=True,
+                runtime_start_attempted=True,
+            )
         )
 
         self.assertNotEqual(0, completed.returncode)
         self.assertFalse(stage_exists)
+        self.assertFalse(hold_exists)
         restore_events = [event for event in events if event.startswith("restore-")]
         self.assertEqual(
             [
@@ -1199,6 +1237,40 @@ class ReleaseBoundaryTests(unittest.TestCase):
             restore_events,
         )
         self.assertLess(events.index("restore-014"), events.index("venv:agent"))
+
+    def test_restore_018_failure_keeps_runtime_stopped_and_recovery_material(
+        self,
+    ):
+        for failure_mode in ("first", "partial"):
+            with self.subTest(failure_mode=failure_mode):
+                completed, events, stage_exists, _new_venv_exists, hold_exists = (
+                    _run_rollback_fault_harness(
+                        fail_agent_restart=False,
+                        automation_project_restore_failure=failure_mode,
+                        automation_project_pending=True,
+                        migrations_attempted=True,
+                    )
+                )
+
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn("rollback_incomplete", completed.stderr)
+                self.assertIn("recovery_material_preserved=1", completed.stderr)
+                self.assertIn(
+                    "Rollback activation skipped because managed state restore "
+                    "did not complete",
+                    completed.stderr,
+                )
+                self.assertTrue(stage_exists)
+                self.assertTrue(hold_exists)
+                self.assertEqual(
+                    ["stop:agent.service", "stop:console.service"],
+                    events[:2],
+                )
+                self.assertIn(f"restore-018:{failure_mode}-failed", events)
+                self.assertNotIn("hold-cleared", events)
+                self.assertFalse(
+                    any(event.startswith("restart:") for event in events)
+                )
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")
