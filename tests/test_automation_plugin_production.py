@@ -70,15 +70,23 @@ class _ConfigurationRepository:
 
 
 class _AccountManager:
-    def __init__(self, *, authenticated: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        authenticated: bool = True,
+        active: bool = True,
+        system: str = "ronghui",
+    ) -> None:
         self.authenticated = authenticated
+        self.active = active
+        self.system = system
 
     def list_accounts(self, **_: object) -> list[dict[str, Any]]:
         return [
             {
                 "account_id": "ronghui-a",
-                "system": "ronghui",
-                "is_active": True,
+                "system": self.system,
+                "is_active": self.active,
             }
         ]
 
@@ -88,7 +96,7 @@ class _AccountManager:
         assert account_id == "ronghui-a"
         return {
             "account_id": account_id,
-            "system": "ronghui",
+            "system": self.system,
             "account_purpose": "general",
         }
 
@@ -416,7 +424,7 @@ def test_policy_must_target_exact_generation(tmp_path: Path) -> None:
         )
 
 
-def test_coeffects_require_all_typed_handlers_and_current_session(
+def test_coeffects_require_structural_account_and_all_typed_handlers(
     tmp_path: Path,
 ) -> None:
     core, entry, row, policy = _entry_and_row(tmp_path)
@@ -441,7 +449,6 @@ def test_coeffects_require_all_typed_handlers_and_current_session(
     assert {item.kind for item in ready} == {
         RuntimeCoeffectKind.CORE_ADAPTER,
         RuntimeCoeffectKind.ACCOUNT,
-        RuntimeCoeffectKind.SESSION,
     }
 
     blocked = ProductionRuntimeCoeffectProvider(
@@ -450,7 +457,21 @@ def test_coeffects_require_all_typed_handlers_and_current_session(
         account_manager=_AccountManager(authenticated=False),
     ).observe(snapshot)
     reasons = {item.reason_code for item in blocked if not item.ready}
-    assert reasons == {"CORE_ADAPTER_ACTION_UNAVAILABLE", "BLOCKED_LOGIN"}
+    assert reasons == {"CORE_ADAPTER_ACTION_UNAVAILABLE"}
+    assert all(item.kind is not RuntimeCoeffectKind.SESSION for item in blocked)
+
+    for manager in (
+        _AccountManager(active=False),
+        _AccountManager(system="r7"),
+    ):
+        account_blocked = ProductionRuntimeCoeffectProvider(
+            core_catalog=core,
+            broker_handler_keys=required,
+            account_manager=manager,
+        ).observe(snapshot)
+        assert {
+            item.reason_code for item in account_blocked if not item.ready
+        } == {"BLOCKED_CONFIG"}
 
 
 def test_resource_coeffect_binds_exact_managed_resource_revision(
@@ -522,6 +543,14 @@ def test_resource_coeffect_binds_exact_managed_resource_revision(
     )
     assert second_resource.ready is True
     assert second_resource.revision != first_resource.revision
+
+    resource["_meta"].pop("config_sha256")
+    blocked = provider.observe(snapshot)
+    blocked_resource = next(
+        item for item in blocked if item.kind is RuntimeCoeffectKind.RESOURCE
+    )
+    assert blocked_resource.ready is False
+    assert blocked_resource.reason_code == "PLUGIN_RESOURCE_REVISION_INVALID"
 
 
 def test_effect_plan_and_driver_are_reversible_and_integrity_bound(

@@ -123,8 +123,10 @@ class _SeedCore:
 class _ReleaseStartupJob:
     def __init__(self):
         self.next_run_time = None
+        self.modify_calls = 0
 
     def modify(self, *, next_run_time):
+        self.modify_calls += 1
         self.next_run_time = next_run_time
 
 
@@ -157,7 +159,7 @@ class _ReleaseScheduler:
 
 
 class FinanceSchedulerRegistrationTests(unittest.TestCase):
-    def test_release_hold_is_consumed_only_after_running_confirmation(self):
+    def test_release_activation_never_reschedules_startup_catchup(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -189,7 +191,8 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual("running", status["state"])
         self.assertFalse(status["release_hold"])
         self.assertEqual(1, scheduler.resume_calls)
-        self.assertIsNotNone(startup_job.next_run_time)
+        self.assertEqual(0, startup_job.modify_calls)
+        self.assertIsNone(startup_job.next_run_time)
 
     def test_release_activation_rejects_a_marker_for_another_release(self):
         if not HAS_APSCHEDULER:
@@ -310,13 +313,60 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             task["tool_params"],
         )
 
-    def test_startup_scheduler_registers_gap_only_catchup(self):
+    def test_held_scheduler_never_registers_or_runs_startup_catchup(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        async def exercise_held_startup(marker: Path, release_sha: str) -> None:
+            core = _AgentCore()
+            scheduler = init_scheduler(core, include_startup_catchup=False)
+            self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+
+            reloaded = scheduler_module.reload_scheduler(core)
+            self.assertNotIn("finance_startup_catchup", reloaded["job_ids"])
+            self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+
+            scheduler.start(paused=True)
+            try:
+                resumed = scheduler_module.begin_scheduler_release_activation(release_sha)
+                self.assertEqual("running", resumed["state"])
+                self.assertTrue(marker.exists())
+                await asyncio.sleep(0)
+                self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+                self.assertEqual([], core.calls)
+
+                scheduler_module.consume_scheduler_release_hold(release_sha)
+                await asyncio.sleep(0)
+                self.assertFalse(marker.exists())
+                self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+                self.assertEqual([], core.calls)
+            finally:
+                scheduler.shutdown(wait=False)
+
+        release_sha = "a" * 40
+        with tempfile.TemporaryDirectory() as temp_root:
+            marker = Path(temp_root) / "scheduler-release.pause"
+            marker.write_text(release_sha + "\n", encoding="utf-8")
+            previous_scheduler = scheduler_module._scheduler
+            previous_include = scheduler_module._include_startup_catchup_for_process
+            try:
+                with patch.dict(
+                    os.environ,
+                    {scheduler_module.SCHEDULER_RELEASE_HOLD_ENV: str(marker)},
+                ):
+                    asyncio.run(exercise_held_startup(marker, release_sha))
+            finally:
+                scheduler_module._scheduler = previous_scheduler
+                scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_unheld_startup_scheduler_registers_gap_only_catchup(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
 
         core = _AgentCore()
-        scheduler = init_scheduler(core)
+        scheduler = init_scheduler(core, include_startup_catchup=True)
         job = scheduler.get_job("finance_startup_catchup")
         self.assertIsNotNone(job)
         asyncio.run(job.func())

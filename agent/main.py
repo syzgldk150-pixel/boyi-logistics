@@ -1203,6 +1203,7 @@ async def lifespan(app: FastAPI):
     scheduler = init_scheduler(
         runtime,
         automation_project_invoker=project_policy_service,
+        include_startup_catchup=not release_hold,
     )
     scheduler.start(paused=release_hold)
     logger.info(

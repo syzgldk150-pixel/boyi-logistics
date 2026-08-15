@@ -71,9 +71,11 @@ updated: 2026-08-15
   停止服务前还会阻断正在 `RUNNING`/`VERIFYING` 的外部写、财务写或 destructive step。这些都是
   上线门禁，不是对某两个打卡任务的永久硬编码。
 - 新 Agent 在发布 health/identity/69-task manifest/依赖记录全部通过前，以 release hold 同时保持 Scheduler
-  paused 和 WorkflowRunner held（零领取、零 active Run）。签名管理接口先恢复并确认两者均可运行，再删除
-  匹配本次 SHA 的 marker；删除前崩溃会让下一次启动继续 hold，响应丢失可幂等重试。财务启动补拉会再延后
-  15 秒。该激活请求是发布提交点，发送后不再自动回滚可能已开始的业务动作。
+  paused 和 WorkflowRunner held（零领取、零 active Run）。该 held 进程不注册
+  `finance_startup_catchup` DateTrigger，reload 与发布激活也不补建、改期或强制执行；只有未来未处于 hold 的
+  正常服务启动才按持久化任务的启用状态注册启动补拉。签名管理接口先恢复并确认两者均可运行，再删除匹配
+  本次 SHA 的 marker；删除前崩溃会让下一次启动继续 hold，响应丢失可幂等重试。该激活请求是发布提交点，
+  发送后不再自动回滚可能已开始的业务动作。
 - 保存或清除自动化账号凭据会先用账号级 MySQL 执行锁阻断显式或财务同步隐式引用账号的全部非终态受保护
   Run，再原子撤销精确定时免审并保留策略/Outbox 审计；锁、活动 Run 检查或撤权失败时凭据保持不变。
   每个受保护步骤在同一账号锁内重查当前策略并提交 `RUNNING`，旧免审失效时回到审批，已开始写只 reconcile。人工 terminal retry

@@ -29,6 +29,7 @@ from agent.automation_plugins.models import (
     RuntimeReconcileState,
 )
 from agent.automation_plugins.ports import RuntimeEffectPlan
+from agent.automation_plugins.production import ProductionRuntimeCoeffectProvider
 
 
 def _digest(value: str) -> str:
@@ -474,6 +475,93 @@ def test_unready_coeffect_never_applies_or_commits() -> None:
     assert result.waiting_coeffects == ("CORE_ADAPTER_NOT_READY",)
     assert result.committed_generation is None
     assert driver.applied == []
+
+
+def test_unauthenticated_session_does_not_block_structural_generation_commit() -> None:
+    snapshot = _snapshot(1, "1.0.0")
+    anchor = {"name": "action-a", "version": "1.0.0"}
+    metadata = dict(snapshot.execution_metadata)
+    metadata.update(
+        {
+            "account_bindings": {"source": "acct-1"},
+            "resource_bindings": {},
+            "governance_anchor": anchor,
+            "runtime_descriptor": {
+                **dict(metadata["runtime_descriptor"]),
+                "runtime_permissions": {
+                    "broker_operations": [
+                        {
+                            "operation": "browser.invoke",
+                            "action": "fetch",
+                            "roles": ["source"],
+                        }
+                    ]
+                },
+                "account_roles": [
+                    {
+                        "role": "source",
+                        "allowed_systems": ["ronghui"],
+                        "required": True,
+                    }
+                ],
+                "resource_roles": [],
+            },
+        }
+    )
+    snapshot = replace(snapshot, execution_metadata=metadata)
+
+    class _CoreCatalog:
+        @staticmethod
+        def get_capability(name: str) -> Mapping[str, str] | None:
+            return anchor if name == "action-a" else None
+
+    class _UnauthenticatedAccountManager:
+        def __init__(self) -> None:
+            self.session_checks = 0
+
+        @staticmethod
+        def list_accounts(**_: object) -> list[dict[str, object]]:
+            return [
+                {
+                    "account_id": "acct-1",
+                    "system": "ronghui",
+                    "is_active": True,
+                }
+            ]
+
+        def require_authenticated_binding(self, _account_id: str) -> Mapping[str, str]:
+            self.session_checks += 1
+            raise RuntimeError("not authenticated")
+
+    account_manager = _UnauthenticatedAccountManager()
+    repository = _MemoryGenerationRepository()
+    reconciler, driver = _reconciler(
+        repository,
+        coeffects=ProductionRuntimeCoeffectProvider(
+            core_catalog=_CoreCatalog(),
+            broker_handler_keys=(("browser.invoke", "fetch"),),
+            account_manager=account_manager,
+        ),
+    )
+
+    result = reconciler.reconcile(
+        snapshot,
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    health = runtime_generation_health(
+        repository,
+        expected_automation_ids={snapshot.automation_id},
+    )
+
+    assert result.waiting_coeffects == ()
+    assert result.committed_generation == 1
+    assert repository.runtime
+    assert repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
+    assert repository.generations[1].state == RuntimeGenerationState.COMMITTED
+    assert driver.applied == ["package:1.0.0", "broker:1"]
+    assert account_manager.session_checks == 0
+    assert health.healthy is True
 
 
 def test_upgrade_waiting_dependency_keeps_committed_a_and_never_routes_b() -> None:

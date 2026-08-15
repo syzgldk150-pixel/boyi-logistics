@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -24,6 +26,143 @@ def _path_for_bash(path: Path) -> str:
             encoding="utf-8",
         ).strip()
     return raw
+
+
+def _service_identity_smoke_source() -> str:
+    release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
+        encoding="utf-8"
+    )
+    function = release.split("check_service_identity_smoke() {", 1)[1].split(
+        "\n}\n\nactivate_scheduler_after_release() {",
+        1,
+    )[0]
+    marker = '"${console_python}" - <<\'PY\'\n'
+    return function.split(marker, 1)[1].rsplit("\nPY", 1)[0]
+
+
+def _healthy_service_identity_payload() -> dict[str, object]:
+    return {
+        "ok": True,
+        "probe_marker": "SMOKE_BODY_MUST_NOT_APPEAR",
+        "data": {
+            "components": {
+                "scheduler": {
+                    "state": "paused",
+                    "release_hold": True,
+                },
+                "workflow_runner": {
+                    "state": "held",
+                    "release_hold": True,
+                    "active_runs": 0,
+                },
+                "automation_plugins": {
+                    "ok": True,
+                    "broker": {"state": "running"},
+                    "catalog": {"ok": True},
+                    "generations": {"healthy": True},
+                },
+                "automation_workers": {
+                    "enabled": False,
+                    "state": "disabled",
+                    "release_hold": False,
+                    "active_jobs": 0,
+                },
+                "scheduled_task_approval_bootstrap": {
+                    "reviewed_candidates": 0,
+                    "created": 0,
+                    "already_present": 0,
+                    "explicitly_configured": 0,
+                    "rejected": 0,
+                    "completed": 1,
+                },
+            }
+        },
+    }
+
+
+def _run_service_identity_smoke(
+    payload: object,
+    *,
+    response_status: int = 200,
+    service_identity_source: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
+    task_tmp_preexisting = task_tmp_root.exists()
+    task_tmp_root.mkdir(exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=task_tmp_root) as temporary:
+            temp_root = Path(temporary)
+            (temp_root / "shared").mkdir()
+            (temp_root / "shared" / "__init__.py").write_text("", encoding="utf-8")
+            (temp_root / "dotenv.py").write_text(
+                "def dotenv_values(_path):\n"
+                "    return {\n"
+                "        'AGENT_INTERNAL_API_TOKEN': 'test-internal-token',\n"
+                "        'CONSOLE_AGENT_SIGNING_SECRET': 'test-signing-secret',\n"
+                "    }\n",
+                encoding="utf-8",
+            )
+            (temp_root / "shared" / "service_identity.py").write_text(
+                service_identity_source
+                or (
+                    "def build_console_identity_headers(**_kwargs):\n"
+                    "    return {}\n\n"
+                    "def validate_service_identity_secrets(**_kwargs):\n"
+                    "    return None\n"
+                ),
+                encoding="utf-8",
+            )
+            (temp_root / "sitecustomize.py").write_text(
+                "import json\n"
+                "import os\n"
+                "from urllib.error import HTTPError\n"
+                "import urllib.request\n\n"
+                "class _Response:\n"
+                "    def __init__(self, status, payload):\n"
+                "        self.status = status\n"
+                "        self._payload = payload\n"
+                "    def __enter__(self):\n"
+                "        return self\n"
+                "    def __exit__(self, *_args):\n"
+                "        return False\n"
+                "    def read(self):\n"
+                "        return self._payload.encode('utf-8')\n\n"
+                "def _urlopen(request, timeout):\n"
+                "    del timeout\n"
+                "    status = int(os.environ['SMOKE_TEST_STATUS'])\n"
+                "    if status != 200:\n"
+                "        raise HTTPError(request.full_url, status, 'closed fixture', None, None)\n"
+                "    return _Response(status, os.environ['SMOKE_TEST_PAYLOAD'])\n\n"
+                "urllib.request.urlopen = _urlopen\n",
+                encoding="utf-8",
+            )
+            identity_file = temp_root / "identity.env"
+            identity_file.touch()
+            environment = {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": str(temp_root),
+                "BOYI_IDENTITY_ENV_FILE": str(identity_file),
+                "BOYI_DEPLOYED_ROOT": str(temp_root),
+                "SMOKE_TEST_STATUS": str(response_status),
+                "SMOKE_TEST_PAYLOAD": json.dumps(payload),
+            }
+            for name in ("SYSTEMROOT", "WINDIR"):
+                if os.environ.get(name):
+                    environment[name] = os.environ[name]
+            return subprocess.run(
+                [sys.executable, "-c", _service_identity_smoke_source()],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+    finally:
+        if not task_tmp_preexisting:
+            try:
+                task_tmp_root.rmdir()
+            except OSError:
+                pass
 
 
 def _run_rollback_fault_harness(
@@ -372,6 +511,102 @@ def _locked_versions(path: Path) -> dict[str, str]:
 
 
 class ReleaseBoundaryTests(unittest.TestCase):
+    def test_service_identity_smoke_closes_project_import_failure(self):
+        sensitive_marker = "SENSITIVE_SERVICE_IDENTITY_IMPORT_MARKER"
+        completed = _run_service_identity_smoke(
+            _healthy_service_identity_payload(),
+            service_identity_source=(
+                f"raise RuntimeError({sensitive_marker!r})\n"
+            ),
+        )
+
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual("", completed.stdout)
+        self.assertEqual(
+            "service_identity_smoke=failed reason=identity_configuration\n",
+            completed.stderr,
+        )
+        self.assertNotIn(sensitive_marker, completed.stdout)
+        self.assertNotIn(sensitive_marker, completed.stderr)
+
+    def test_service_identity_smoke_reports_closed_http_gates(self):
+        for status, expected in (
+            (401, "http_401"),
+            (403, "http_403"),
+            (503, "http_5xx"),
+            (429, "http_other"),
+        ):
+            with self.subTest(status=status):
+                completed = _run_service_identity_smoke(
+                    _healthy_service_identity_payload(),
+                    response_status=status,
+                )
+                self.assertEqual(1, completed.returncode)
+                self.assertEqual(
+                    f"service_identity_smoke=failed reason={expected}",
+                    completed.stderr.strip(),
+                )
+                self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stdout)
+                self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stderr)
+
+    def test_service_identity_smoke_reports_closed_component_gates(self):
+        cases = (
+            ("response_contract", ("ok",), False),
+            ("scheduler_state", ("scheduler", "state"), "running"),
+            ("scheduler_hold", ("scheduler", "release_hold"), False),
+            ("runner_state", ("workflow_runner", "state"), "running"),
+            ("runner_hold", ("workflow_runner", "release_hold"), False),
+            ("runner_active", ("workflow_runner", "active_runs"), 1),
+            ("plugin_broker", ("automation_plugins", "broker", "state"), "stopped"),
+            ("plugin_catalog", ("automation_plugins", "catalog", "ok"), False),
+            (
+                "plugin_generations",
+                ("automation_plugins", "generations", "healthy"),
+                False,
+            ),
+            ("plugin_aggregate", ("automation_plugins", "ok"), False),
+            ("worker", ("automation_workers", "enabled"), True),
+            (
+                "bootstrap_shape",
+                ("scheduled_task_approval_bootstrap",),
+                None,
+            ),
+            (
+                "bootstrap_incomplete",
+                ("scheduled_task_approval_bootstrap", "completed"),
+                0,
+            ),
+            (
+                "bootstrap_rejected",
+                ("scheduled_task_approval_bootstrap", "rejected"),
+                1,
+            ),
+        )
+        for expected, path, value in cases:
+            with self.subTest(gate=expected):
+                payload = _healthy_service_identity_payload()
+                target = payload
+                if path[0] != "ok":
+                    target = payload["data"]["components"]
+                for field in path[:-1]:
+                    target = target[field]
+                target[path[-1]] = value
+                completed = _run_service_identity_smoke(payload)
+                self.assertEqual(1, completed.returncode)
+                self.assertEqual(
+                    f"service_identity_smoke=failed reason={expected}",
+                    completed.stderr.strip(),
+                )
+                self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stdout)
+                self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stderr)
+
+    def test_service_identity_smoke_success_contract_is_unchanged(self):
+        completed = _run_service_identity_smoke(_healthy_service_identity_payload())
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual("service_identity_smoke=ok", completed.stdout.strip())
+        self.assertEqual("", completed.stderr)
+
     def test_direct_dependencies_are_covered_by_exact_locks(self):
         for service in ("agent", "console"):
             direct = _requirement_names(REPOSITORY_ROOT / service / "requirements.txt")

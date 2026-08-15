@@ -4,7 +4,7 @@ type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
 status: active
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # Agent 统一控制平面 v1
@@ -318,12 +318,13 @@ actor、execution context 或精确免审复制到关联 Run 以重放写操作�
 和已部署工具目录重算仍 ACTIVE 的精确免审。bootstrap marker 已存在的后续发布仍要求 69 条任务完整
 且参数 canonical，但允许管理员合法启停或改为逐次审批；每个启用项必须有当前有效的精确策略，或
 有明确 super_admin/账号凭据安全降权事件的 `REQUIRE_EACH_RUN`。新 Agent 启动前由部署器创建固定 release
-hold；APScheduler 只装载任务并保持 paused，WorkflowRunner 进入 held 且不领取任何既存或新 Run，签名
-identity smoke 必须同时确认两者状态和零 active Run。manifest、身份和依赖记录全部通过后，部署器才调用
-签名管理接口：先恢复并确认 Scheduler 与 WorkflowRunner 均可运行，最后删除匹配本次 SHA 的 marker；财务
-启动补拉延后 15 秒。删除 marker 是发布提交点；此前任意异常或进程退出都保留 marker，使下次启动重新进入
-hold。激活响应丢失时可用新 nonce 幂等重试；请求发出后不得自动回滚可能已经开始的任务，而应保留 stage
-并进行显式恢复。
+hold；APScheduler 装载常规定时任务并保持 paused，但该 held 进程不注册 `finance_startup_catchup`
+DateTrigger，后续 reload 或发布激活也不得补建、改期或强制执行它；只有未来未处于 hold 的正常服务启动才按
+该持久化任务的启用状态注册启动补拉。WorkflowRunner 进入 held 且不领取任何既存或新 Run，签名 identity
+smoke 必须同时确认两者状态和零 active Run。manifest、身份和依赖记录全部通过后，部署器才调用签名管理
+接口：先恢复并确认 Scheduler 与 WorkflowRunner 均可运行，最后删除匹配本次 SHA 的 marker。删除 marker
+是发布提交点；此前任意异常或进程退出都保留 marker，使下次启动重新进入 hold。激活响应丢失时可用新 nonce
+幂等重试；请求发出后不得自动回滚可能已经开始的任务，而应保留 stage 并进行显式恢复。
 
 CI 必须覆盖 Ruff、Python 3.10 编译、工具注册表、导入/执行边界、内部 API、空库迁移、
 从 `010` 升级、部分迁移重跑、真实 MySQL JSON/外键/唯一约束/事务/`SKIP LOCKED`，以及
