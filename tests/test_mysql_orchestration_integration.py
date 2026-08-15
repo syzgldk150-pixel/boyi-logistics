@@ -411,7 +411,6 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     enabled = task_id not in self.runner.CONTROL_PLANE_REVIEWED_DISABLED_IDS
                     task = {
                         "id": task_id,
-                        "automation_id": f"integration_manifest_{task_id}",
                         "tool_name": reviewed["tool_name"],
                         "tool_params": arguments,
                         "cron_expression": reviewed["cron_expression"],
@@ -420,12 +419,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     }
                     cursor.execute(
                         "INSERT INTO scheduled_tasks "
-                        "(id, automation_id, name, tool_name, tool_params, cron_expression, "
-                        "enabled, configuration_version) VALUES (%s, %s, %s, %s, "
+                        "(id, name, tool_name, tool_params, cron_expression, enabled, "
+                        "configuration_version) VALUES (%s, %s, %s, "
                         "CAST(%s AS JSON), %s, %s, %s)",
                         (
                             task_id,
-                            task["automation_id"],
                             f"release manifest {task_id}",
                             task["tool_name"],
                             json.dumps(
