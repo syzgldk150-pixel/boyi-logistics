@@ -7,7 +7,7 @@ related:
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-15
+updated: 2026-08-16
 ---
 
 # 自动化插件平台
@@ -120,6 +120,15 @@ Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resou
 一致，否则迁移阻断；delivery status 多维表则必须具备运行时实际读取的
 `base_token/table_id/view_id/view_name` 四字段。这样 generation 可在结构资源就绪时稳定提交，同时
 Broker 仍在每次调用时独立重验账号登录态和精确绑定，缺失时 fail closed。
+
+018 首次项目化会把当前发行的 57 条计划写成 `automation.<automation_id>.run`，账号只保留在 generation
+side-channel，typed 参数不得再带 `account_id/account_ids/_account_*`。配置保存会把旧任务级
+`EXACT_SCHEDULE_EXEMPT` 安全退休为 `REQUIRE_EACH_RUN`；只有 release hold 下的一次性策略 bootstrap
+能从 018 pre-image、原 grant、同一配置请求的退休事件、committed snapshot 与当前 typed 行恢复项目级
+`LEGACY_SCHEDULE_ONLY`。首次证据分布固定为 16 个项目、57 条 typed schedule、10 个 LEGACY、6 个
+REQUIRE 和 55 条已启用旧授权；证据 item 只保存哈希与身份，不保存账号参数、cron 明文或凭据。后续
+release SHA 不会重做 bootstrap，而是按 marker 中的首次 SHA 和不可变证据复核；配置/代际/合同变更令
+旧授权 stale 时，PolicyEngine 按逐次审批处理。
 
 当前 018 仓储的低层 `pair_device` 没有 request UUID 审计合同，因此管理员配对入口固定返回
 `PLUGIN_WORKER_PAIRING_AUDIT_UNAVAILABLE`，不会旁路调用无审计写。只有前向迁移提供原子且幂等的
@@ -267,7 +276,10 @@ escaped client certificate 头后代理到回环 Agent，并清空 internal toke
 
 新进程先在 release hold 下启动。当前只有 allowlist 中的签名包完整、其对应已安装实例具有稳定
 committed generation、没有 `PREPARING/SWITCHING/DRAINING/BLOCKED/UNKNOWN`，且 Scheduler 与
-WorkflowRunner 已确认运行后，服务端才最后消费匹配 release SHA 的 marker。精确延后的 R7 项目即使
+WorkflowRunner 已确认运行后，服务端才最后消费匹配 release SHA 的 marker。首次 018 切换还必须由
+独立只读 post-018 validator 精确核验 71 条历史身份、68 条启用、16 个策略、项目 bootstrap marker/items、
+旧任务 grant/退休事件和 generation snapshot；后续切换改按当前 committed schedule 与原始 marker 证据
+闭合，不把合法新增 schedule 误当初始 71 行。精确延后的 R7 项目即使
 数据库仍有旧记录，也从 Catalog 和健康计数中排除；其他未知或未入围的 persisted 项目仍失败关闭。
 Windows Worker 当前只投影固定的 `enabled=false/state=disabled/release_hold=false/active_jobs=0`，不读取
 Worker 仓储，也不是本轮发布门禁。任一步失败都保留 marker 和 hold。健康接口不得把入围动作的缺失

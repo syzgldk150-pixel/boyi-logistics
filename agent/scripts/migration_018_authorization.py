@@ -59,6 +59,36 @@ def _database_flag(value: object) -> bool:
     return value is True or value == 1
 
 
+def _bootstrap_json_object(runtime, value):
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        try:
+            value = runtime["json"].loads(value)
+        except Exception as exc:
+            raise RuntimeError(
+                "018 project policy bootstrap evidence is invalid"
+            ) from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("018 project policy bootstrap evidence is invalid")
+    return value
+
+
+def _bootstrap_json_sha256(runtime, value) -> str:
+    try:
+        encoded = runtime["json"].dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return runtime["hashlib"].sha256(encoded).hexdigest()
+    except Exception as exc:
+        raise RuntimeError(
+            "018 project policy bootstrap evidence is invalid"
+        ) from exc
+
+
 def _validated_resource_backup_layout(rows):
     """Return exact backup/hash identities for the four owned 018 layouts."""
 
@@ -100,6 +130,248 @@ def _automation_project_authorization_artifacts(runtime, cursor) -> set[str]:
         if runtime["_column_exists"](cursor, table_name, column_name):
             artifacts.add(f'{table_name}.{column_name}')
     return artifacts
+
+
+def _validate_project_policy_bootstrap_restore(runtime, cursor) -> bool:
+    """Allow deletion only for the exact release-owned 018 policy bootstrap."""
+
+    marker_table = "automation_project_bootstrap_marker_018"
+    item_table = "automation_project_bootstrap_items_018"
+    event_table = "automation_project_policy_events"
+    marker_exists = runtime["_table_exists"](cursor, marker_table)
+    items_exist = runtime["_table_exists"](cursor, item_table)
+    events_exist = runtime["_table_exists"](cursor, event_table)
+    if not marker_exists and not items_exist:
+        return False
+    if not (marker_exists and items_exist):
+        raise RuntimeError("018 project policy bootstrap is incomplete")
+
+    cursor.execute(
+        f"""
+        SELECT marker_id, release_sha, project_set_sha256, completed_by
+        FROM {marker_table}
+        FOR UPDATE
+        """
+    )
+    markers = tuple(cursor.fetchall() or ())
+    if not markers:
+        cursor.execute(
+            f"SELECT automation_id FROM {item_table} LIMIT 1 FOR UPDATE"
+        )
+        if cursor.fetchone() is None:
+            return False
+        raise RuntimeError("018 project policy bootstrap is incomplete")
+    if not events_exist:
+        raise RuntimeError("018 project policy bootstrap is incomplete")
+    if len(markers) != 1:
+        raise RuntimeError("018 project policy bootstrap marker is invalid")
+    marker = markers[0]
+    release_sha = str(marker.get("release_sha") or "")
+    project_set_sha256 = str(marker.get("project_set_sha256") or "")
+    if (
+        marker.get("marker_id") != 1
+        or len(release_sha) != 40
+        or any(character not in "0123456789abcdef" for character in release_sha)
+        or len(project_set_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in project_set_sha256
+        )
+        or str(marker.get("completed_by") or "")
+        != "system:automation-project-bootstrap-018"
+    ):
+        raise RuntimeError("018 project policy bootstrap marker is invalid")
+
+    cursor.execute(
+        f"""
+        SELECT automation_id, initial_mode, source_set_sha256,
+               source_snapshot_json, policy_version,
+               JSON_UNQUOTE(JSON_EXTRACT(
+                   source_snapshot_json, '$.automation_id'
+               )) AS source_automation_id,
+               CAST(JSON_UNQUOTE(JSON_EXTRACT(
+                   source_snapshot_json, '$.automation_generation'
+               )) AS UNSIGNED) AS source_generation,
+               CAST(JSON_UNQUOTE(JSON_EXTRACT(
+                   source_snapshot_json, '$.project_configuration_version'
+               )) AS UNSIGNED) AS source_configuration_version
+        FROM {item_table}
+        ORDER BY BINARY automation_id
+        FOR UPDATE
+        """
+    )
+    items = tuple(cursor.fetchall() or ())
+    item_ids = tuple(str(item.get("automation_id") or "") for item in items)
+    modes = tuple(str(item.get("initial_mode") or "") for item in items)
+    project_hash_items = []
+    for item in items:
+        snapshot = _bootstrap_json_object(
+            runtime,
+            item.get("source_snapshot_json"),
+        )
+        scheduled_tasks = snapshot.get("scheduled_tasks")
+        derived_mode = (
+            "LEGACY_SCHEDULE_ONLY"
+            if isinstance(scheduled_tasks, list)
+            and scheduled_tasks
+            and all(
+                isinstance(task, dict)
+                and task.get("legacy_authorized") is True
+                for task in scheduled_tasks
+            )
+            else "REQUIRE_EACH_RUN"
+        )
+        if (
+            str(snapshot.get("automation_id") or "")
+            != str(item.get("automation_id") or "")
+            or snapshot.get("automation_generation")
+            != item.get("source_generation")
+            or snapshot.get("project_configuration_version")
+            != item.get("source_configuration_version")
+            or derived_mode != str(item.get("initial_mode") or "")
+            or _bootstrap_json_sha256(runtime, snapshot)
+            != str(item.get("source_set_sha256") or "")
+        ):
+            raise RuntimeError("018 project policy bootstrap items are invalid")
+        project_hash_items.append(
+            {
+                "automation_id": str(item.get("automation_id") or ""),
+                "initial_mode": str(item.get("initial_mode") or ""),
+                "source_set_sha256": str(item.get("source_set_sha256") or ""),
+                "policy_version": item.get("policy_version"),
+            }
+        )
+    if (
+        len(items) != 16
+        or len(set(item_ids)) != 16
+        or modes.count("LEGACY_SCHEDULE_ONLY") != 10
+        or modes.count("REQUIRE_EACH_RUN") != 6
+        or any(
+            not automation_id
+            or str(item.get("source_automation_id") or "") != automation_id
+            or type(item.get("policy_version")) is not int
+            or item.get("policy_version") <= 0
+            or type(item.get("source_generation")) is not int
+            or item.get("source_generation") <= 0
+            or type(item.get("source_configuration_version")) is not int
+            or item.get("source_configuration_version") <= 0
+            or len(str(item.get("source_set_sha256") or "")) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in str(item.get("source_set_sha256") or "")
+            )
+            for automation_id, item in zip(item_ids, items, strict=True)
+        )
+    ):
+        raise RuntimeError("018 project policy bootstrap items are invalid")
+    expected_project_set_sha256 = _bootstrap_json_sha256(
+        runtime,
+        {
+            "schema_version": 1,
+            "release_sha": release_sha,
+            "projects": sorted(
+                project_hash_items,
+                key=lambda item: item["automation_id"],
+            ),
+        },
+    )
+    if expected_project_set_sha256 != project_set_sha256:
+        raise RuntimeError("018 project policy bootstrap marker is invalid")
+
+    cursor.execute(
+        f"""
+        SELECT event.automation_id, event.request_id, event.from_mode,
+               event.to_mode, event.contract_hash,
+               event.contract_snapshot_json, event.tool_contract_hash,
+               event.plugin_contract_hash,
+               event.project_configuration_version,
+               event.project_generation, event.actor_id, event.actor_role,
+               event.actor_display_name, event.reason, event.comment,
+               event.correlation_id,
+               item.initial_mode,
+               JSON_UNQUOTE(JSON_EXTRACT(
+                   item.source_snapshot_json, '$.contract_hash'
+               )) AS source_contract_hash,
+               CAST(JSON_UNQUOTE(JSON_EXTRACT(
+                   item.source_snapshot_json, '$.automation_generation'
+               )) AS UNSIGNED) AS source_generation,
+               CAST(JSON_UNQUOTE(JSON_EXTRACT(
+                   item.source_snapshot_json,
+                   '$.project_configuration_version'
+               )) AS UNSIGNED) AS source_configuration_version
+        FROM {event_table} AS event
+        LEFT JOIN {item_table} AS item
+          ON BINARY item.automation_id = BINARY event.automation_id
+        WHERE BINARY event.actor_id =
+              BINARY 'system:automation-project-bootstrap-018'
+        ORDER BY event.event_id
+        FOR UPDATE
+        """
+    )
+    bootstrap_events = tuple(cursor.fetchall() or ())
+    if len(bootstrap_events) != len(items):
+        raise RuntimeError("018 project policy bootstrap events are invalid")
+    event_ids = tuple(
+        str(event.get("automation_id") or "") for event in bootstrap_events
+    )
+    if len(set(event_ids)) != len(items) or set(event_ids) != set(item_ids):
+        raise RuntimeError("018 project policy bootstrap events are invalid")
+    for event in bootstrap_events:
+        mode = str(event.get("initial_mode") or "")
+        contract_snapshot = event.get("contract_snapshot_json")
+        if isinstance(contract_snapshot, str):
+            contract_snapshot = _bootstrap_json_object(
+                runtime,
+                contract_snapshot,
+            )
+        contract_fields = (
+            event.get("contract_hash"),
+            contract_snapshot,
+            event.get("tool_contract_hash"),
+            event.get("plugin_contract_hash"),
+        )
+        if (
+            event.get("from_mode") != "REQUIRE_EACH_RUN"
+            or event.get("to_mode") != mode
+            or event.get("project_generation")
+            != event.get("source_generation")
+            or event.get("project_configuration_version")
+            != event.get("source_configuration_version")
+            or event.get("actor_role") != "system"
+            or event.get("actor_display_name")
+            != "Automation project bootstrap 018"
+            or event.get("reason") != "AUTOMATION_PROJECT_BOOTSTRAP_018"
+            or event.get("comment")
+            != "Release-held one-time policy bootstrap"
+            or event.get("request_id") != event.get("correlation_id")
+            or (
+                mode == "LEGACY_SCHEDULE_ONLY"
+                and (
+                    any(value is None for value in contract_fields)
+                    or event.get("contract_hash")
+                    != event.get("source_contract_hash")
+                    or _bootstrap_json_sha256(runtime, contract_snapshot)
+                    != event.get("source_contract_hash")
+                    or any(
+                        len(str(value or "")) != 64
+                        or any(
+                            character not in "0123456789abcdef"
+                            for character in str(value or "")
+                        )
+                        for value in (
+                            event.get("tool_contract_hash"),
+                            event.get("plugin_contract_hash"),
+                        )
+                    )
+                )
+            )
+            or (
+                mode == "REQUIRE_EACH_RUN"
+                and any(value is not None for value in contract_fields)
+            )
+        ):
+            raise RuntimeError("018 project policy bootstrap events are invalid")
+    return True
 
 
 def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
@@ -403,10 +675,28 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
         cursor.execute('SELECT COUNT(*) AS decision_count FROM automation_project_approval_batches FOR UPDATE')
         if int((cursor.fetchone() or {}).get('decision_count') or 0):
             raise RuntimeError('018 restore refuses to delete project approval decisions')
+    project_policy_bootstrap_present = _validate_project_policy_bootstrap_restore(
+        runtime,
+        cursor,
+    )
     for table_name in ('automation_project_events', 'automation_project_policy_events', 'automation_plugin_package_events', 'automation_worker_pairing_events'):
         if not runtime["_table_exists"](cursor, table_name):
             continue
-        cursor.execute(f'SELECT COUNT(*) AS user_event_count FROM {table_name} WHERE actor_role <> %s FOR UPDATE', (runtime["CONTROL_PLANE_MIGRATION_ACTOR_ROLE"],))
+        if (
+            table_name == 'automation_project_policy_events'
+            and project_policy_bootstrap_present
+        ):
+            cursor.execute(
+                f'''SELECT COUNT(*) AS user_event_count
+                    FROM {table_name}
+                    WHERE actor_role <> %s
+                      AND BINARY actor_id <>
+                          BINARY 'system:automation-project-bootstrap-018'
+                    FOR UPDATE''',
+                (runtime["CONTROL_PLANE_MIGRATION_ACTOR_ROLE"],),
+            )
+        else:
+            cursor.execute(f'SELECT COUNT(*) AS user_event_count FROM {table_name} WHERE actor_role <> %s FOR UPDATE', (runtime["CONTROL_PLANE_MIGRATION_ACTOR_ROLE"],))
         if int((cursor.fetchone() or {}).get('user_event_count') or 0):
             raise RuntimeError('018 restore refuses to delete non-migration audit events')
     return captured

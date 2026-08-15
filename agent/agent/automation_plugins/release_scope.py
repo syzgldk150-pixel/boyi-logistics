@@ -35,6 +35,11 @@ DEFERRED_R7_PLUGIN_IDS = frozenset(
     }
 )
 
+# Migration 018 assigns the new non-null schedule-generation column this
+# value before any plugin generation is committed.  Only the exact reviewed
+# R7 migration identities may retain it while their actions remain deferred.
+DEFERRED_R7_LEGACY_SCHEDULE_GENERATION = 1
+
 # Windows Service/Tray, public Worker transport and its release prerequisites
 # are intentionally outside this release.  Enabling them is a reviewed code
 # change, not an environment fallback.
@@ -42,6 +47,7 @@ WINDOWS_WORKER_RELEASE_ENABLED = False
 
 
 __all__ = [
+    "DEFERRED_R7_LEGACY_SCHEDULE_GENERATION",
     "DEFERRED_R7_PLUGIN_IDS",
     "RUNNABLE_SERVER_FIRST_PARTY_PLUGIN_IDS",
     "WINDOWS_WORKER_RELEASE_ENABLED",

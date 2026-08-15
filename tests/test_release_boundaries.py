@@ -1953,16 +1953,20 @@ class ReleaseBoundaryTests(unittest.TestCase):
             completed.stderr,
         )
 
-    def test_release_manifest_uses_bootstrap_prestate_to_select_initial_gate(self):
+    def test_release_manifest_uses_018_prestate_to_select_initial_gate(self):
         completed = _run_sourced_release_harness(
             r"""
             run_staged_migration_runner() {
               if [[ "$*" == *'--expect-initial-production-manifest'* ]]; then
-                echo 'control_plane_release_manifest=ok reviewed_rows=69 enabled_rows=67 policies=69 marker=1 initial=1'
+                echo 'control_plane_release_manifest=ok reviewed_rows=71 enabled_rows=68 policies=16 marker=1 initial=1'
               else
-                echo 'control_plane_release_manifest=ok reviewed_rows=69 enabled_rows=61 policies=69 marker=1 initial=0'
+                echo 'control_plane_release_manifest=ok reviewed_rows=71 enabled_rows=67 policies=16 marker=1 initial=0'
               fi
             }
+            AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=1
+            CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
+            check_control_plane_release_manifest
+            AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
             CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=1
             check_control_plane_release_manifest
             CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
@@ -1971,8 +1975,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("enabled_rows=67", completed.stdout)
-        self.assertIn("enabled_rows=61", completed.stdout)
+        self.assertEqual(1, completed.stdout.count("enabled_rows=68"))
+        self.assertEqual(2, completed.stdout.count("enabled_rows=67"))
 
     def test_shared_runtime_uses_headless_opencv_for_both_services(self):
         agent_lock = (REPOSITORY_ROOT / "agent" / "requirements.lock").read_text(encoding="utf-8")

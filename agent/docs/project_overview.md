@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-15
+updated: 2026-08-16
 ---
 
 # 物流 Agent 项目总览
@@ -57,20 +57,21 @@ updated: 2026-08-15
   治理字段、postconditions、动态规则和配置版本。任务显示名称不是行为，故不进入哈希；任何其他
   受绑定配置或工具治理变更使原豁免 stale 并恢复逐次审批。
 - 生产已执行的 `014_control_plane_task_cutover.sql` 按生产迁移历史校验和保持字节不可变；后续安全
-  修正由 `015` 至 `017` 前向迁移完成。`015` 保存任务配置版本、当前策略及不可变策略审计；
+  修正由 `015` 至 `018` 前向迁移完成。`015` 保存任务配置版本、当前策略及不可变策略审计；
   `016` 把每日应签收敛为独立 R13 来源账号加唯一的邵阳大祥站 TMS 账号；`017` 精确升级两条
-  打卡和财务任务契约。`016`/`017` 都先完整备份业务行，并提供可重入的恢复与重应用入口。
-- 代码内共有 69 个精确审阅合同（54 个内部投影、15 个外部写）；首次生产 bootstrap 预期 67 项
-  启用，且首次门禁要求 67 项全部为按当前任务/工具契约重算仍 ACTIVE 的精确策略。完成 marker
-  已存在后，管理员可以合法启停每项任务；后续发布不固定启用数量，但每个当前
-  启用任务仍必须具有绑定当前任务/工具契约的有效精确策略，或具有明确审计事件的逐次审批策略。
+  打卡和财务任务契约；`018` 建立项目、配置、代际、26 项资源闭包和授权证据。各迁移先完整备份
+  业务行，并提供可重入的恢复与重应用入口。
+- 首次 post-018 bootstrap 精确核验 71 条历史身份（57 typed +14 deferred R7）、68 条启用和 16 个
+  项目策略；项目分布固定为 10 个 LEGACY、6 个 REQUIRE，并由 55 条已启用旧任务的 grant/退休事件
+  证明。marker 已存在后管理员可合法启停、改 schedule 或策略；后续发布不固定 typed 行数，但当前
+  committed 项目与首次 marker/source snapshot 必须分别闭合，stale 授权只按逐次审批解释。
 - 两项打卡使用 `clock_in_dual` v1.1，绑定精确账号/会话。外部写的安全契约是：不盲目重试、ACK
   只是执行证据而非独立读后验证、未知结果转为阻塞。财务启动补拉使用独立持久化任务
   `finance_startup_catchup` 的有效策略，不存在静态免审旁路。
 - 发布在迁移和重启前根据有效外部写策略快照计算动态静默窗口；若将与外部写任务相撞，发布停止。
   停止服务前还会阻断正在 `RUNNING`/`VERIFYING` 的外部写、财务写或 destructive step。这些都是
   上线门禁，不是对某两个打卡任务的永久硬编码。
-- 新 Agent 在发布 health/identity/69-task manifest/依赖记录全部通过前，以 release hold 同时保持 Scheduler
+- 新 Agent 在发布 health/identity/post-018 project manifest/依赖记录全部通过前，以 release hold 同时保持 Scheduler
   paused 和 WorkflowRunner held（零领取、零 active Run）。该 held 进程不注册
   `finance_startup_catchup` DateTrigger，reload 与发布激活也不补建、改期或强制执行；只有未来未处于 hold 的
   正常服务启动才按持久化任务的启用状态注册启动补拉。签名管理接口先恢复并确认两者均可运行，再删除匹配

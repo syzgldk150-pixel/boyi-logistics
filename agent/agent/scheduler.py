@@ -16,8 +16,13 @@ from apscheduler.schedulers.base import STATE_PAUSED, STATE_RUNNING, STATE_STOPP
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
+from agent.automation_plugins.release_scope import (
+    DEFERRED_R7_LEGACY_SCHEDULE_GENERATION,
+    DEFERRED_R7_PLUGIN_IDS,
+)
 from agent.orchestration.models import Actor, ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
+from shared.automation_project_manifest import get_first_party_automation_project
 from shared.finance.sources import enabled_finance_platforms
 
 
@@ -33,6 +38,23 @@ SCHEDULER_RELEASE_HOLD_ENV = "BOYI_SCHEDULER_RELEASE_HOLD_FILE"
 SCHEDULER_RELEASE_HOLD_NAME = "scheduler-release.pause"
 
 
+class DeferredR7ScheduleIdentityError(RuntimeError):
+    """A persisted R7 row no longer matches the reviewed migration identity."""
+
+
+def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
+    task_ids: set[str] = set()
+    for automation_id in DEFERRED_R7_PLUGIN_IDS:
+        definition = get_first_party_automation_project(automation_id)
+        if definition is None or definition.tool_name not in DEFERRED_R7_PLUGIN_IDS:
+            raise RuntimeError("Deferred R7 release scope has no reviewed migration template")
+        task_ids.update(definition.scheduled_task_ids)
+    return frozenset(task_ids)
+
+
+DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS = _deferred_r7_legacy_schedule_task_ids()
+
+
 def _enabled_finance_platform_filter() -> dict[str, str]:
     """Narrow scheduled calls when exactly one production platform is live."""
 
@@ -42,6 +64,55 @@ def _enabled_finance_platform_filter() -> dict[str, str]:
     if len(platforms) == 1:
         return {"platform": platforms[0]}
     return {}
+
+
+def _is_deferred_r7_legacy_schedule(
+    *,
+    task_id: str,
+    tool_name: str,
+    automation_id: str,
+    automation_generation: int | None,
+) -> bool:
+    """Recognize only the code-reviewed migration-018 R7 legacy identity."""
+
+    if automation_id not in DEFERRED_R7_PLUGIN_IDS:
+        return False
+    definition = get_first_party_automation_project(automation_id)
+    if definition is None or definition.tool_name not in DEFERRED_R7_PLUGIN_IDS:
+        return False
+    return (
+        task_id in definition.scheduled_task_ids
+        and tool_name == definition.tool_name
+        and type(automation_generation) is int
+        and automation_generation == DEFERRED_R7_LEGACY_SCHEDULE_GENERATION
+    )
+
+
+def _deferred_r7_schedule_must_not_register(task: dict[str, Any]) -> bool:
+    """Return true for an exact deferred row; reject every related drift."""
+
+    task_id = str(task.get("id") or "")
+    normalized_task_id = task_id.strip()
+    tool_name = str(task.get("tool_name") or "")
+    persisted_project_id = str(task.get("automation_id") or "")
+    project_id = persisted_project_id.strip()
+    normalized_tool_name = tool_name.strip()
+    if (
+        normalized_task_id not in DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS
+        and project_id not in DEFERRED_R7_PLUGIN_IDS
+        and normalized_tool_name not in DEFERRED_R7_PLUGIN_IDS
+    ):
+        return False
+    if _is_deferred_r7_legacy_schedule(
+        task_id=task_id,
+        tool_name=tool_name,
+        automation_id=persisted_project_id,
+        automation_generation=task.get("automation_generation"),
+    ):
+        return True
+    raise DeferredR7ScheduleIdentityError(
+        "Deferred R7 scheduled task does not match its reviewed migration identity"
+    )
 
 
 def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime | None:
@@ -79,6 +150,8 @@ def init_scheduler(
             agent_core,
             automation_project_invoker=automation_project_invoker,
         )
+    except DeferredR7ScheduleIdentityError:
+        raise
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
     if _include_startup_catchup_for_process:
@@ -247,7 +320,25 @@ def _load_tasks_from_db(
     *,
     automation_project_invoker: Any | None = None,
 ) -> None:
+    classified_tasks: list[tuple[dict[str, Any], bool]] = []
     for task in agent_core.memory.list_enabled_scheduled_tasks():
+        classified_tasks.append(
+            (task, _deferred_r7_schedule_must_not_register(task))
+        )
+    deferred_task_ids = [
+        str(task.get("id") or "")
+        for task, is_deferred in classified_tasks
+        if is_deferred
+    ]
+    if deferred_task_ids:
+        logger.warning(
+            "Deferred R7 scheduled tasks were not registered: %s",
+            ", ".join(sorted(deferred_task_ids)),
+        )
+
+    for task, is_deferred in classified_tasks:
+        if is_deferred:
+            continue
         if str(task.get("id") or "") == FINANCE_STARTUP_TASK_ID:
             # ``@startup`` is a persisted special occurrence, not a cron
             # expression.  Its dedicated DateTrigger is registered below.

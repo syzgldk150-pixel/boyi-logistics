@@ -91,6 +91,44 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_project_policy_repository_reads_exact_018_identity_backups(self):
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM scheduled_task_automation_identity_backup_018",
+                    [
+                        {
+                            "id": "task-a",
+                            "name": "Task A",
+                            "tool_name": "legacy-tool",
+                            "tool_params": '{"account_id":"account-a"}',
+                            "cron_expression": "0 9 * * *",
+                            "enabled": 1,
+                            "configuration_version": 1,
+                            "updated_at": datetime(2026, 8, 15),
+                        }
+                    ],
+                    0,
+                )
+            ]
+        )
+        repository = AutomationProjectPolicyRepository(connection)
+
+        rows = repository.list_automation_identity_backup_rows_018(
+            ("task-a",),
+            for_update=True,
+        )
+
+        self.assertEqual({"account_id": "account-a"}, rows[0]["tool_params"])
+        sql, params = connection.cursor_instance.executions[0]
+        self.assertIn("WHERE BINARY id IN (%s)", " ".join(sql.split()))
+        self.assertIn("FOR UPDATE", sql)
+        self.assertEqual(("task-a",), params)
+        with self.assertRaises(OrchestrationPersistenceError):
+            repository.list_automation_identity_backup_rows_018(
+                ("task-a", "task-a")
+            )
+
     def test_worker_pairing_is_request_audited_and_identity_immutable(self):
         request_id = str(uuid.uuid4())
         public_key = b"p" * 32

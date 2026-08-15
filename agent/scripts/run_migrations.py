@@ -1827,180 +1827,10 @@ def check_control_plane_release_manifest(
     *,
     expect_initial_production_manifest: bool = False,
 ) -> int:
-    """Validate the post-start control-plane manifest without requiring exemptions.
-
-    The one-time bootstrap must have evaluated every enabled reviewed task. On
-    later releases administrators may legitimately switch any task back to
-    per-run approval, so this check validates explainable policy state rather
-    than requiring every reviewed task to remain exempt.
-    """
-
-    connection = None
-    try:
-        expected_ids = _load_control_plane_reviewed_manifest_ids()
-        registry = _load_control_plane_tool_registry()
-        approval_contracts = _load_scheduled_task_approval_contract_module()
-        scheduled_task_contracts = _load_control_plane_scheduled_task_contract_module()
-        profiles = scheduled_task_contracts.APPROVED_SCHEDULED_TASK_PROFILES
-        profile_by_task_id = {
-            task_id: profile
-            for profile in profiles.values()
-            for task_id in profile.approved_task_ids
-        }
-        connection = _connect()
-        with connection.cursor() as cursor:
-            _require_mysql8(cursor)
-            for table_name in (
-                "scheduled_tasks",
-                SCHEDULED_TASK_APPROVAL_POLICY_TABLE,
-                SCHEDULED_TASK_APPROVAL_EVENT_TABLE,
-            ):
-                if not _table_exists(cursor, table_name):
-                    raise ControlPlaneTaskCutoverPreflightError(
-                        "CONTROL_PLANE_MANIFEST_TABLE_MISSING"
-                    )
-
-            cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
-            rows = cursor.fetchall()
-            task_ids = {
-                str(row.get("id") or "")
-                for row in rows
-                if isinstance(row, Mapping)
-            }
-            if task_ids != expected_ids or len(rows) != len(expected_ids):
-                raise ControlPlaneTaskCutoverPreflightError(
-                    "REVIEWED_MANIFEST_TASK_SET_MISMATCH",
-                    count=max(len(expected_ids - task_ids) + len(task_ids - expected_ids), 1),
-                )
-
-            summary = validate_control_plane_task_cutover(
-                rows,
-                contracts=_load_control_plane_reviewed_task_contracts(),
-                optional_contracts=_load_control_plane_optional_task_contracts(),
-                clock_contracts=_load_control_plane_clock_contracts(),
-                r7_contracts=_load_control_plane_r7_contracts(),
-                allow_reviewed_disabled=not expect_initial_production_manifest,
-            )
-            enabled_ids = {
-                str(row["id"])
-                for row in rows
-                if row.get("enabled") in {True, 1}
-            }
-            expected_reviewed_count = (
-                CONTROL_PLANE_REVIEWED_ENABLED_COUNT
-                if expect_initial_production_manifest
-                else CONTROL_PLANE_REVIEWED_MANIFEST_COUNT
-            )
-            initial_state_mismatch = expect_initial_production_manifest and (
-                len(enabled_ids) != CONTROL_PLANE_REVIEWED_ENABLED_COUNT
-                or expected_ids - enabled_ids != CONTROL_PLANE_REVIEWED_DISABLED_IDS
-            )
-            if initial_state_mismatch or summary != {
-                "reviewed_rows": expected_reviewed_count,
-                "canonical_rows": expected_reviewed_count,
-                "legacy_rows": 0,
-            }:
-                raise ControlPlaneTaskCutoverPreflightError(
-                    "REVIEWED_MANIFEST_STATE_MISMATCH"
-                )
-
-            cursor.execute(
-                f"""
-                SELECT 1
-                FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE}
-                WHERE task_id=%s
-                  AND request_id=%s
-                  AND actor_id=%s
-                  AND actor_role=%s
-                  AND reason='control_plane_v1_bootstrap_complete'
-                LIMIT 1
-                """,
-                (
-                    CONTROL_PLANE_BOOTSTRAP_COMPLETION_TASK_ID,
-                    CONTROL_PLANE_BOOTSTRAP_COMPLETION_REQUEST_ID,
-                    CONTROL_PLANE_MIGRATION_ACTOR_ID,
-                    CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
-                ),
-            )
-            if cursor.fetchone() is None:
-                raise ControlPlaneTaskCutoverPreflightError(
-                    "CONTROL_PLANE_BOOTSTRAP_MARKER_MISSING"
-                )
-
-            placeholders = ", ".join("%s" for _ in expected_ids)
-            cursor.execute(
-                f"""
-                SELECT
-                    policy.task_id,
-                    policy.mode,
-                    policy.contract_hash,
-                    policy.contract_snapshot_json,
-                    policy.tool_contract_hash,
-                    policy.approved_by_actor_id,
-                    policy.approved_by_actor_role,
-                    policy.version,
-                    task.tool_name,
-                    task.tool_params,
-                    task.cron_expression,
-                    task.enabled,
-                    task.configuration_version,
-                    (
-                        latest_event.event_id IS NOT NULL
-                        AND latest_event.to_mode = policy.mode
-                        AND latest_event.actor_id = policy.approved_by_actor_id
-                        AND latest_event.actor_role = policy.approved_by_actor_role
-                        AND latest_event.contract_hash <=> policy.contract_hash
-                    ) AS has_explaining_event,
-                    latest_event.reason AS latest_event_reason
-                FROM {SCHEDULED_TASK_APPROVAL_POLICY_TABLE} AS policy
-                INNER JOIN scheduled_tasks AS task ON task.id = policy.task_id
-                LEFT JOIN {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS latest_event
-                  ON latest_event.event_id = (
-                      SELECT MAX(candidate.event_id)
-                      FROM {SCHEDULED_TASK_APPROVAL_EVENT_TABLE} AS candidate
-                      WHERE candidate.task_id = policy.task_id
-                  )
-                WHERE policy.task_id IN ({placeholders})
-                """,
-                tuple(sorted(expected_ids)),
-            )
-            policies = cursor.fetchall()
-            _validate_control_plane_policy_states(
-                policies,
-                enabled_ids=enabled_ids,
-                registry=registry,
-                approval_contracts=approval_contracts,
-                profile_by_task_id=profile_by_task_id,
-                arguments_for_schema_validation=(
-                    scheduled_task_contracts._arguments_for_schema_validation
-                ),
-                require_enabled_exact=expect_initial_production_manifest,
-            )
-    except ControlPlaneTaskCutoverPreflightError as exc:
-        print(
-            "control_plane_release_manifest=blocked "
-            f"reason={exc.code} count={exc.count}",
-            file=sys.stderr,
-        )
-        return 1
-    except Exception:
-        print(
-            "control_plane_release_manifest=blocked "
-            "reason=CONTROL_PLANE_MANIFEST_RUNTIME_ERROR count=1",
-            file=sys.stderr,
-        )
-        return 1
-    finally:
-        if connection is not None:
-            connection.close()
-
-    print(
-        "control_plane_release_manifest=ok "
-        f"reviewed_rows={len(expected_ids)} "
-        f"enabled_rows={len(enabled_ids)} policies={len(policies)} marker=1 "
-        f"initial={int(expect_initial_production_manifest)}"
+    return _AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER.check_control_plane_release_manifest(
+        globals(),
+        expect_initial_production_manifest=expect_initial_production_manifest,
     )
-    return 0
 
 
 def check_running_protected_writes() -> int:
@@ -2419,6 +2249,9 @@ def _load_script_helper(filename: str):
 
 
 _MIGRATION_018_HELPER = _load_script_helper("migration_018_authorization.py")
+_AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER = _load_script_helper(
+    "automation_project_release_manifest_preflight.py"
+)
 check_automation_project_required_resources = _load_script_helper("automation_project_resource_preflight.py").check_automation_project_required_resources
 check_automation_project_scheduled_task_identities = _load_script_helper("automation_project_schedule_identity_preflight.py").check_automation_project_scheduled_task_identities
 
@@ -2926,7 +2759,7 @@ def main() -> int:
     modes.add_argument(
         "--check-control-plane-release-manifest",
         action="store_true",
-        help="Validate the post-start 69-task manifest and explainable policies",
+        help="Validate the legacy or post-018 project release manifest",
     )
     modes.add_argument(
         "--check-running-protected-writes",
@@ -2936,7 +2769,7 @@ def main() -> int:
     parser.add_argument(
         "--expect-initial-production-manifest",
         action="store_true",
-        help="Require the one-time 69 reviewed / 67 enabled production shape",
+        help="Require the one-time post-018 71 reviewed / 68 enabled shape",
     )
     parser.add_argument(
         "--scheduled-write-window-before-minutes",
