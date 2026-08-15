@@ -7,6 +7,93 @@ the deployment runner keep one authoritative runtime boundary.
 from __future__ import annotations
 
 
+_LEGACY_PENDING_RESOURCE_KEY = "phase7.pending_arrivals_sheet"
+_OLD_REVIEWED_RESOURCE_KEYS = frozenset(
+    {
+        "phase7.yunda_dispatch_forecast_bitable",
+        "phase7.yunda_send_waybills_bitable",
+        "phase7.yunda_send_waybills_sheet",
+        "phase7.self_pickup_source_sheet",
+        "phase7.split_pending_source_sheet",
+        "phase7.split_pending_target_sheet",
+        "phase7.site_send_bitable",
+        "phase7.site_send_sheet",
+        "phase7.send_order_bitable",
+        "phase7.arrive_primary_sheet",
+        "phase7.arrive_secondary_sheet",
+        "phase7.stats_archive_sheet",
+        "phase7.daily_sign_bitable",
+        "phase7.daily_sign_sheet",
+    }
+)
+_EXPANDED_CODE_OWNED_RESOURCE_KEYS = frozenset(
+    {
+        "phase7.delivery_status_bitable",
+        "phase7.delivery_status_webhook",
+        "phase7.scan_webhook",
+        "phase7.stats_webhook",
+        "automation.feishu_route.arrive_list",
+        "automation.feishu_route.send_order",
+        "automation.feishu_route.yunda_dispatch_forecast",
+        "automation.feishu_route.yunda_send_waybills",
+        "automation.feishu_route.scan_codes",
+        "automation.feishu_route.arrival_stats",
+        "automation.feishu_route.self_pickup_problem_upload",
+        "automation.feishu_route.split_pending_problem_upload",
+    }
+)
+_CURRENT_REVIEWED_RESOURCE_KEYS = (
+    _OLD_REVIEWED_RESOURCE_KEYS | _EXPANDED_CODE_OWNED_RESOURCE_KEYS
+)
+_VALID_RESOURCE_BACKUP_LAYOUTS = frozenset(
+    {
+        _OLD_REVIEWED_RESOURCE_KEYS,
+        _OLD_REVIEWED_RESOURCE_KEYS | {_LEGACY_PENDING_RESOURCE_KEY},
+        _CURRENT_REVIEWED_RESOURCE_KEYS,
+        _CURRENT_REVIEWED_RESOURCE_KEYS | {_LEGACY_PENDING_RESOURCE_KEY},
+    }
+)
+
+
+def _database_flag(value: object) -> bool:
+    return value is True or value == 1
+
+
+def _validated_resource_backup_layout(rows):
+    """Return exact backup/hash identities for the four owned 018 layouts."""
+
+    resource_rows = tuple(rows or ())
+    resource_keys = tuple(str(row.get("resource_key") or "") for row in resource_rows)
+    resource_key_set = frozenset(resource_keys)
+    if len(resource_keys) != len(resource_key_set):
+        raise RuntimeError("018 reviewed-resource backup is incomplete")
+    if resource_key_set and resource_key_set not in _VALID_RESOURCE_BACKUP_LAYOUTS:
+        raise RuntimeError("018 reviewed-resource backup is incomplete")
+    if _LEGACY_PENDING_RESOURCE_KEY in resource_key_set:
+        pending_row = next(
+            row
+            for row in resource_rows
+            if row.get("resource_key") == _LEGACY_PENDING_RESOURCE_KEY
+        )
+        if not _database_flag(pending_row.get("existed_before")):
+            raise RuntimeError("018 reviewed-resource backup is incomplete")
+
+    captured_keys = frozenset(
+        str(row.get("resource_key") or "")
+        for row in resource_rows
+        if _database_flag(row.get("captured"))
+    )
+    valid_captured_layouts = {frozenset(), resource_key_set}
+    if _EXPANDED_CODE_OWNED_RESOURCE_KEYS <= resource_key_set:
+        valid_captured_layouts.add(
+            _OLD_REVIEWED_RESOURCE_KEYS
+            | (resource_key_set & {_LEGACY_PENDING_RESOURCE_KEY})
+        )
+    if captured_keys not in valid_captured_layouts:
+        raise RuntimeError("018 reviewed-resource capture is incomplete")
+    return resource_key_set, captured_keys
+
+
 def _automation_project_authorization_artifacts(runtime, cursor) -> set[str]:
     artifacts = {table_name for table_name in (runtime["AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE"], runtime["AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE"], runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"], *runtime["AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE"]) if runtime["_table_exists"](cursor, table_name)}
     for table_name, column_name in (('scheduled_tasks', 'automation_id'), ('scheduled_tasks', 'automation_generation'), ('workflow_resources', 'configuration_version'), ('workflow_resources', 'config_sha256'), ('agent_commands', 'automation_id'), ('agent_commands', 'automation_generation'), ('agent_commands', 'automation_invocation_json')):
@@ -62,33 +149,24 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
         raise RuntimeError('018 reviewed-resource backup is missing after migration start')
     if resource_backup_exists:
         cursor.execute(
-            f'''\n            SELECT\n                COUNT(*) AS row_count,\n                SUM(migration_config_sha256 IS NOT NULL) AS captured_count,\n                SUM(\n                    BINARY resource_key =\n                    BINARY 'phase7.pending_arrivals_sheet'\n                ) AS legacy_pending_count,\n                SUM(\n                    BINARY resource_key =\n                    BINARY 'phase7.pending_arrivals_sheet'\n                    AND existed_before = TRUE\n                ) AS legacy_pending_existed_count\n            FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]}\n            FOR UPDATE\n            '''
+            f"""
+            SELECT
+                resource_key,
+                existed_before,
+                migration_config_sha256 IS NOT NULL AS captured
+            FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]}
+            ORDER BY BINARY resource_key
+            FOR UPDATE
+            """
         )
-        resource_capture = cursor.fetchone() or {}
-        resource_backup_count = int(resource_capture.get('row_count') or 0)
-        resource_hash_count = int(resource_capture.get('captured_count') or 0)
+        resource_keys, resource_hash_keys = _validated_resource_backup_layout(
+            cursor.fetchall()
+        )
+        resource_backup_count = len(resource_keys)
+        resource_hash_count = len(resource_hash_keys)
         legacy_pending_count = int(
-            resource_capture.get('legacy_pending_count') or 0
+            _LEGACY_PENDING_RESOURCE_KEY in resource_keys
         )
-        legacy_pending_existed_count = int(
-            resource_capture.get('legacy_pending_existed_count') or 0
-        )
-        valid_resource_backup_layout = (
-            resource_backup_count == 0
-            or (
-                resource_backup_count == 14
-                and legacy_pending_count == 0
-            )
-            or (
-                resource_backup_count == 15
-                and legacy_pending_count == 1
-                and legacy_pending_existed_count == 1
-            )
-        )
-        if not valid_resource_backup_layout:
-            raise RuntimeError('018 reviewed-resource backup is incomplete')
-        if resource_hash_count not in {0, resource_backup_count}:
-            raise RuntimeError('018 reviewed-resource capture is incomplete')
         if resource_backup_count == 0 and (
             capture_started
             or schedule_column_exists
@@ -110,26 +188,29 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                     FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]} AS backup
                     LEFT JOIN workflow_resources AS resource
                       ON BINARY resource.resource_key = BINARY backup.resource_key
-                    WHERE resource.resource_key IS NULL
-                       OR resource.configuration_version <> 1
-                       OR BINARY resource.config_sha256 <>
-                          BINARY backup.migration_config_sha256
-                       OR BINARY resource.config_sha256 <> BINARY SHA2(
-                            CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
-                            256
-                       )
-                       OR (
-                            backup.existed_before = TRUE
-                            AND NOT (
-                                BINARY resource.source <=>
-                                BINARY backup.source
-                            )
-                       )
-                       OR (
-                            backup.existed_before = FALSE
-                            AND BINARY resource.source <>
-                                BINARY 'migration-018-reviewed-builtin'
-                       )
+                    WHERE backup.migration_config_sha256 IS NOT NULL
+                      AND (
+                        resource.resource_key IS NULL
+                        OR resource.configuration_version <> 1
+                        OR BINARY resource.config_sha256 <>
+                           BINARY backup.migration_config_sha256
+                        OR BINARY resource.config_sha256 <> BINARY SHA2(
+                             CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                             256
+                        )
+                        OR (
+                             backup.existed_before = TRUE
+                             AND NOT (
+                                 BINARY resource.source <=>
+                                 BINARY backup.source
+                             )
+                        )
+                        OR (
+                             backup.existed_before = FALSE
+                             AND BINARY resource.source <>
+                                 BINARY 'migration-018-reviewed-builtin'
+                        )
+                      )
                     FOR UPDATE
                     """
                 )
@@ -137,7 +218,7 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                     raise RuntimeError(
                         '018 restore refuses changed reviewed resources'
                     )
-            elif runtime["_table_exists"](
+            if resource_hash_count < resource_backup_count and runtime["_table_exists"](
                 cursor,
                 runtime[
                     "AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE"
@@ -161,7 +242,8 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                       ON BINARY reviewed.resource_key = BINARY backup.resource_key
                     LEFT JOIN workflow_resources AS resource
                       ON BINARY resource.resource_key = BINARY backup.resource_key
-                    WHERE NOT (
+                    WHERE backup.migration_config_sha256 IS NULL
+                      AND NOT (
                         (
                             backup.existed_before = TRUE
                             AND resource.resource_key IS NOT NULL
@@ -225,6 +307,7 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                           ON BINARY resource.resource_key = BINARY backup.resource_key
                         WHERE BINARY backup.resource_key =
                               BINARY 'phase7.pending_arrivals_sheet'
+                          AND backup.migration_config_sha256 IS NULL
                           AND NOT (
                               backup.existed_before = TRUE
                               AND resource.resource_key IS NOT NULL
@@ -261,9 +344,9 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                         raise RuntimeError(
                             '018 restore refuses dirty legacy pending resource'
                         )
-            else:
+            elif resource_hash_count < resource_backup_count:
                 cursor.execute(
-                    f'''\n                    SELECT COUNT(*) AS changed_count\n                    FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]} AS backup\n                    LEFT JOIN workflow_resources AS resource\n                      ON BINARY resource.resource_key = BINARY backup.resource_key\n                    WHERE NOT (\n                        (\n                            backup.existed_before = TRUE\n                            AND resource.resource_key IS NOT NULL\n                            AND BINARY resource.source <=> BINARY backup.source\n                            AND BINARY CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4) =\n                                BINARY CAST(backup.config_json AS CHAR CHARACTER SET utf8mb4)\n                        )\n                        OR (\n                            backup.existed_before = FALSE\n                            AND resource.resource_key IS NULL\n                        )\n                    )\n                    FOR UPDATE\n                    '''
+                    f'''\n                    SELECT COUNT(*) AS changed_count\n                    FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]} AS backup\n                    LEFT JOIN workflow_resources AS resource\n                      ON BINARY resource.resource_key = BINARY backup.resource_key\n                    WHERE backup.migration_config_sha256 IS NULL\n                      AND NOT (\n                        (\n                            backup.existed_before = TRUE\n                            AND resource.resource_key IS NOT NULL\n                            AND BINARY resource.source <=> BINARY backup.source\n                            AND BINARY CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4) =\n                                BINARY CAST(backup.config_json AS CHAR CHARACTER SET utf8mb4)\n                        )\n                        OR (\n                            backup.existed_before = FALSE\n                            AND resource.resource_key IS NULL\n                        )\n                    )\n                    FOR UPDATE\n                    '''
                 )
                 if int((cursor.fetchone() or {}).get('changed_count') or 0):
                     raise RuntimeError(

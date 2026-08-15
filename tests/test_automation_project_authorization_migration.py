@@ -10,6 +10,10 @@ import sys
 from unittest import TestCase
 from unittest.mock import patch
 
+from agent.automation_plugins.first_party import release_first_party_automation_ids
+from agent.phase7_resource_import import BUILTIN_RESOURCES
+from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "agent" / "migrations" / "018_automation_project_authorization.sql"
@@ -307,13 +311,18 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         resource_map = self.sql.split(
             "INSERT INTO automation_project_reviewed_resource_map_018", 1
         )[1].split("ON DUPLICATE KEY UPDATE", 1)[0]
+        materialized_configs = {
+            resource_key: config
+            for resource_key, config in BUILTIN_RESOURCES.items()
+            if resource_key
+            not in {
+                "automation.feishu_route.r7_arrival_checkin",
+                "automation.feishu_route.r7_departure_checkin",
+            }
+        }
         materialized = {
-            "phase7.yunda_dispatch_forecast_bitable": "feishu_bitable",
-            "phase7.yunda_send_waybills_bitable": "feishu_bitable",
-            "phase7.yunda_send_waybills_sheet": "feishu_sheet",
-            "phase7.self_pickup_source_sheet": "feishu_sheet",
-            "phase7.split_pending_source_sheet": "feishu_sheet",
-            "phase7.split_pending_target_sheet": "feishu_sheet",
+            resource_key: str(config["resource_kind"])
+            for resource_key, config in materialized_configs.items()
         }
         required_existing = {
             "phase7.site_send_bitable": "feishu_bitable",
@@ -328,8 +337,9 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         reviewed_rows = {
             resource_key: (resource_kind, should_materialize == "TRUE")
             for resource_key, resource_kind, should_materialize in re.findall(
-                r"\(\s*'(phase7\.[^']+)'\s*,\s*"
-                r"'(feishu_(?:bitable|sheet))'\s*,\s*(TRUE|FALSE)\s*,",
+                r"\(\s*'((?:phase7|automation)\.[^']+)'\s*,\s*"
+                r"'((?:feishu_(?:bitable|sheet|route)|webhook_route))'"
+                r"\s*,\s*(TRUE|FALSE)\s*,",
                 resource_map,
             )
         }
@@ -340,15 +350,39 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                 **{key: (kind, False) for key, kind in required_existing.items()},
             },
         )
+        release_automation_ids = release_first_party_automation_ids()
+        template_resource_keys: set[str] = set()
+        for automation_id in release_automation_ids:
+            template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[automation_id]
+            for binding in template.resource_bindings.values():
+                if isinstance(binding, tuple):
+                    template_resource_keys.update(binding)
+                else:
+                    template_resource_keys.add(binding)
+        self.assertEqual(len(release_automation_ids), 16)
+        self.assertEqual(template_resource_keys, set(reviewed_rows))
+        self.assertTrue(
+            {
+                "automation.feishu_route.r7_arrival_checkin",
+                "automation.feishu_route.r7_departure_checkin",
+            }.isdisjoint(template_resource_keys)
+        )
         for resource_key, resource_kind in materialized.items():
-            self.assertRegex(
+            match = re.search(
+                rf"\(\s*'{re.escape(resource_key)}'\s*,\s*"
+                rf"'{resource_kind}'\s*,\s*TRUE\s*,\s*JSON_OBJECT\("
+                rf"(?P<body>.*?)\)\s*\)",
                 resource_map,
-                re.compile(
-                    rf"\(\s*'{re.escape(resource_key)}'\s*,\s*"
-                    rf"'{resource_kind}'\s*,\s*TRUE\s*,\s*JSON_OBJECT\(",
-                    re.DOTALL,
-                ),
+                re.DOTALL,
             )
+            self.assertIsNotNone(match, resource_key)
+            sql_config = dict(
+                re.findall(
+                    r"'([^']+)'\s*,\s*'([^']*)'",
+                    match.group("body"),
+                )
+            )
+            self.assertEqual(sql_config, materialized_configs[resource_key])
         for resource_key, resource_kind in required_existing.items():
             self.assertRegex(
                 resource_map,
@@ -402,8 +436,20 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertIn("cp018_resource_partial_drift_guard_stmt", self.sql)
         self.assertIn("cp018_reviewed_resource_shape_guard_stmt", self.sql)
         self.assertIn("cp018_resource_capture_guard_stmt", self.sql)
-        self.assertIn("@cp018_reviewed_resource_count = 14", self.sql)
-        self.assertIn("@cp018_resource_backup_count = 14", self.sql)
+        self.assertEqual(
+            set(materialized),
+            set(
+                self.resource_preflight.AUTOMATION_PROJECT_CODE_OWNED_RESOURCE_KEYS
+            ),
+        )
+        self.assertEqual(len(materialized), 18)
+        self.assertEqual(len(required_existing), 8)
+        self.assertIn("@cp018_reviewed_resource_count = 26", self.sql)
+        self.assertIn(
+            "@cp018_resource_backup_count = 26 + "
+            "@cp018_legacy_pending_backup_count",
+            self.sql,
+        )
         obsolete_delete = (
             "DELETE FROM automation_project_reviewed_resource_map_018\n"
             "WHERE BINARY resource_key = BINARY "
@@ -414,10 +460,57 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             self.sql.index(obsolete_delete),
             self.sql.index("SET @cp018_reviewed_resource_count"),
         )
-        self.assertIn("@cp018_resource_backup_count = 15", self.sql)
-        self.assertIn("@cp018_legacy_pending_backup_count = 1", self.sql)
+        self.assertIn(
+            "@cp018_legacy_pending_backup_count IN (0, 1)",
+            self.sql,
+        )
         self.assertIn("cp018_legacy_pending_backup_guard_stmt", self.sql)
         self.assertIn("cp018_legacy_pending_partial_drift_count", self.sql)
+        self.assertIn("cp018_resource_backup_missing_reviewed_count", self.sql)
+        self.assertIn("cp018_resource_backup_unexpected_count", self.sql)
+        self.assertIn(
+            "cp018_resource_backup_hash_layout_guard_stmt",
+            self.sql,
+        )
+        self.assertIn(
+            "14 + @cp018_legacy_pending_backup_count",
+            self.sql,
+        )
+        delivery_shape = post_materialization_guard.split(
+            "BINARY 'phase7.delivery_status_bitable'",
+            1,
+        )[1].split(
+            "BINARY 'phase7.yunda_dispatch_forecast_bitable'",
+            1,
+        )[0]
+        self.assertIn("$.base_token", delivery_shape)
+        self.assertIn("$.table_id", delivery_shape)
+        self.assertIn("$.view_name", delivery_shape)
+        self.assertIn("$.view_id", delivery_shape)
+        self.assertIn(
+            "TRIM(BOTH '/' FROM TRIM(JSON_UNQUOTE(JSON_EXTRACT(",
+            post_materialization_guard,
+        )
+        webhook_shape = post_materialization_guard.split(
+            "BINARY 'phase7.delivery_status_webhook'",
+            1,
+        )[1].split(
+            "BINARY 'automation.feishu_route.arrive_list'",
+            1,
+        )[0]
+        feishu_route_shape = post_materialization_guard.split(
+            "BINARY 'automation.feishu_route.arrive_list'",
+            1,
+        )[1].split(
+            "BINARY 'phase7.site_send_bitable'",
+            1,
+        )[0]
+        self.assertIn("reviewed.default_config_json", webhook_shape)
+        self.assertIn("reviewed.default_config_json", feishu_route_shape)
+        self.assertGreaterEqual(
+            post_materialization_guard.count("BETWEEN 1 AND 191"),
+            2,
+        )
 
     def test_required_resource_diagnostic_spec_matches_018_sql_guard(self):
         specs = (
@@ -881,76 +974,42 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertIn("WHERE backup.existed_before = FALSE", calls[1][0])
         self.assertIn("SET migration_config_sha256 = NULL", calls[2][0])
 
-    def test_restore_validation_accepts_complete_fourteen_resource_capture(self):
-        class Cursor:
-            def __init__(self) -> None:
-                self._row = None
-
-            def execute(self, sql, params=None):
-                normalized = " ".join(str(sql).split())
-                if "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
-                    self._row = {"row_count": 14, "captured_count": 14}
-                elif "AS changed_count" in normalized:
-                    self._row = {"changed_count": 0}
-                else:
-                    self._row = None
-
-            def fetchone(self):
-                return self._row
-
-        resource_backup_table = "automation_project_resource_backup_018"
-        runtime = {
-            "AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE": (
-                "scheduled_tasks_backup_018"
-            ),
-            "AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE": (
-                "scheduled_tasks_capture_018"
-            ),
-            "AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE": (
-                resource_backup_table
-            ),
-            "AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE": (
-                "automation_project_reviewed_resource_map_018"
-            ),
-            "_table_exists": lambda _cursor, table: table == resource_backup_table,
-            "_column_exists": lambda _cursor, table, column: (
-                table == "workflow_resources"
-                and column in {"configuration_version", "config_sha256"}
-            ),
-        }
-
-        self.assertFalse(
-            self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
-                runtime,
-                Cursor(),
-            )
-        )
-
-    def test_restore_validation_accepts_only_exact_legacy_fifteenth_capture(self):
+    def test_restore_validation_accepts_only_four_exact_resource_layouts(self):
         class Cursor:
             def __init__(
                 self,
                 *,
-                pending_count=1,
-                pending_existed_count=1,
+                resource_keys,
+                captured_keys=frozenset(),
+                pending_existed=True,
                 pending_changed_count=0,
             ) -> None:
-                self.pending_count = pending_count
-                self.pending_existed_count = pending_existed_count
+                self.resource_keys = frozenset(resource_keys)
+                self.captured_keys = frozenset(captured_keys)
+                self.pending_existed = pending_existed
                 self.pending_changed_count = pending_changed_count
                 self._row = None
+                self._rows = []
 
             def execute(self, sql, params=None):
                 normalized = " ".join(str(sql).split())
-                if "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
-                    self._row = {
-                        "row_count": 15,
-                        "captured_count": 0,
-                        "legacy_pending_count": self.pending_count,
-                        "legacy_pending_existed_count": (
-                            self.pending_existed_count
-                        ),
-                    }
+                if (
+                    "SELECT resource_key, existed_before," in normalized
+                    and "ORDER BY BINARY resource_key" in normalized
+                ):
+                    self._rows = [
+                        {
+                            "resource_key": resource_key,
+                            "existed_before": (
+                                self.pending_existed
+                                if resource_key == "phase7.pending_arrivals_sheet"
+                                else True
+                            ),
+                            "captured": resource_key in self.captured_keys,
+                        }
+                        for resource_key in sorted(self.resource_keys)
+                    ]
+                    self._row = None
                 elif (
                     "AS changed_count" in normalized
                     and "phase7.pending_arrivals_sheet" in normalized
@@ -962,9 +1021,13 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                     self._row = {"changed_count": 0}
                 else:
                     self._row = None
+                    self._rows = []
 
             def fetchone(self):
                 return self._row
+
+            def fetchall(self):
+                return self._rows
 
         resource_backup_table = "automation_project_resource_backup_018"
         reviewed_map_table = "automation_project_reviewed_resource_map_018"
@@ -985,35 +1048,75 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                 resource_backup_table,
                 reviewed_map_table,
             },
-            "_column_exists": lambda _cursor, _table, _column: False,
+            "_column_exists": lambda _cursor, table, column: (
+                table == "workflow_resources"
+                and column in {"configuration_version", "config_sha256"}
+            ),
         }
 
-        self.assertFalse(
-            self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
-                runtime,
-                Cursor(),
-            )
+        helper = self.runner._MIGRATION_018_HELPER
+        old = helper._OLD_REVIEWED_RESOURCE_KEYS
+        current = helper._CURRENT_REVIEWED_RESOURCE_KEYS
+        pending = {helper._LEGACY_PENDING_RESOURCE_KEY}
+        valid_cases = (
+            ("old14_empty", old, frozenset()),
+            ("old14_captured", old, old),
+            ("old_legacy15_empty", old | pending, frozenset()),
+            ("old_legacy15_captured", old | pending, old | pending),
+            ("current26_empty", current, frozenset()),
+            ("current26_transition", current, old),
+            ("current26_captured", current, current),
+            ("current_legacy27_empty", current | pending, frozenset()),
+            ("current_legacy27_transition", current | pending, old | pending),
+            ("current_legacy27_captured", current | pending, current | pending),
         )
-        for pending_count, pending_existed_count in ((0, 0), (1, 0)):
-            with self.subTest(
-                pending_count=pending_count,
-                pending_existed_count=pending_existed_count,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "backup is incomplete"):
-                    self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
+        for name, resource_keys, captured_keys in valid_cases:
+            with self.subTest(name=name):
+                self.assertFalse(
+                    helper._validate_automation_project_authorization_restore(
                         runtime,
                         Cursor(
-                            pending_count=pending_count,
-                            pending_existed_count=pending_existed_count,
+                            resource_keys=resource_keys,
+                            captured_keys=captured_keys,
+                        ),
+                    )
+                )
+
+        same_count_fake = (current - {next(iter(current))}) | {
+            "phase7.same_count_fake"
+        }
+        invalid_transition = (old - {next(iter(old))}) | {
+            next(iter(helper._EXPANDED_CODE_OWNED_RESOURCE_KEYS))
+        }
+        invalid_cases = (
+            ("same_count_fake", same_count_fake, frozenset(), True),
+            ("legacy_pending_created", old | pending, frozenset(), False),
+            ("wrong_hash_subset", current, invalid_transition, True),
+        )
+        for name, resource_keys, captured_keys, pending_existed in invalid_cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "backup is incomplete|capture is incomplete",
+                ):
+                    helper._validate_automation_project_authorization_restore(
+                        runtime,
+                        Cursor(
+                            resource_keys=resource_keys,
+                            captured_keys=captured_keys,
+                            pending_existed=pending_existed,
                         ),
                     )
         with self.assertRaisesRegex(
             RuntimeError,
             "dirty legacy pending resource",
         ):
-            self.runner._MIGRATION_018_HELPER._validate_automation_project_authorization_restore(
+            helper._validate_automation_project_authorization_restore(
                 runtime,
-                Cursor(pending_changed_count=1),
+                Cursor(
+                    resource_keys=old | pending,
+                    pending_changed_count=1,
+                ),
             )
 
     def test_restore_validation_empty_resource_backup_state_matrix(self):
@@ -1021,6 +1124,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             def __init__(self, capture_state: str | None) -> None:
                 self.capture_state = capture_state
                 self._row = None
+                self._rows = []
 
             def execute(self, sql, params=None):
                 normalized = " ".join(str(sql).split())
@@ -1033,13 +1137,21 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                         if self.capture_state
                         else None
                     )
-                elif "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
-                    self._row = {"row_count": 0, "captured_count": 0}
+                elif (
+                    "SELECT resource_key, existed_before," in normalized
+                    and "ORDER BY BINARY resource_key" in normalized
+                ):
+                    self._row = None
+                    self._rows = []
                 else:
                     self._row = None
+                    self._rows = []
 
             def fetchone(self):
                 return self._row
+
+            def fetchall(self):
+                return self._rows
 
         cases = (
             ("not_started", None, set(), None),
@@ -1101,21 +1213,41 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                         )
 
     def test_restore_accepts_post_restore_resource_backup_residue(self):
+        helper = self.runner._MIGRATION_018_HELPER
+
         class Cursor:
             def __init__(self) -> None:
                 self._row = None
+                self._rows = []
 
             def execute(self, sql, params=None):
                 normalized = " ".join(str(sql).split())
-                if "SUM(migration_config_sha256 IS NOT NULL)" in normalized:
-                    self._row = {"row_count": 14, "captured_count": 0}
+                if (
+                    "SELECT resource_key, existed_before," in normalized
+                    and "ORDER BY BINARY resource_key" in normalized
+                ):
+                    self._rows = [
+                        {
+                            "resource_key": resource_key,
+                            "existed_before": True,
+                            "captured": False,
+                        }
+                        for resource_key in sorted(
+                            helper._CURRENT_REVIEWED_RESOURCE_KEYS
+                        )
+                    ]
+                    self._row = None
                 elif "AS changed_count" in normalized:
                     self._row = {"changed_count": 0}
                 else:
                     self._row = None
+                    self._rows = []
 
             def fetchone(self):
                 return self._row
+
+            def fetchall(self):
+                return self._rows
 
         resource_backup_table = "automation_project_resource_backup_018"
         runtime = {

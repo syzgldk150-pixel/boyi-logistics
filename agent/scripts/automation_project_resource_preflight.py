@@ -1,4 +1,8 @@
-"""Read-only preflight for migration 018 required-existing resources."""
+"""Read-only preflight for migration 018 required-existing resources.
+
+The companion code-owned identity set is exported for static migration checks;
+those rows have exact reviewed defaults and therefore are not queried here.
+"""
 
 from __future__ import annotations
 
@@ -58,6 +62,31 @@ AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS = (
         "feishu_sheet",
         ("spreadsheet_token", "range"),
     ),
+)
+
+# Exact migration-owned rows materialized from the reviewed built-in resource
+# catalog. The two deferred R7 route resources are intentionally absent.
+AUTOMATION_PROJECT_CODE_OWNED_RESOURCE_KEYS = frozenset(
+    {
+        "phase7.delivery_status_bitable",
+        "phase7.yunda_dispatch_forecast_bitable",
+        "phase7.yunda_send_waybills_bitable",
+        "phase7.yunda_send_waybills_sheet",
+        "phase7.delivery_status_webhook",
+        "phase7.scan_webhook",
+        "phase7.stats_webhook",
+        "automation.feishu_route.arrive_list",
+        "automation.feishu_route.send_order",
+        "automation.feishu_route.yunda_dispatch_forecast",
+        "automation.feishu_route.yunda_send_waybills",
+        "automation.feishu_route.scan_codes",
+        "automation.feishu_route.arrival_stats",
+        "automation.feishu_route.self_pickup_problem_upload",
+        "automation.feishu_route.split_pending_problem_upload",
+        "phase7.self_pickup_source_sheet",
+        "phase7.split_pending_source_sheet",
+        "phase7.split_pending_target_sheet",
+    }
 )
 
 AUTOMATION_PROJECT_REQUIRED_RESOURCE_FIELD_NAMES = (

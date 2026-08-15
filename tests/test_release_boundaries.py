@@ -58,7 +58,14 @@ def _healthy_service_identity_payload() -> dict[str, object]:
                 "automation_plugins": {
                     "ok": True,
                     "broker": {"state": "running"},
-                    "catalog": {"ok": True},
+                    "catalog": {
+                        "ok": True,
+                        "unsupported_automation_ids": [],
+                        "enabled_builtin_release": [],
+                        "invalid_enabled_trust": [],
+                        "unstable_generations": [],
+                        "invalid_enabled_runtime": [],
+                    },
                     "generations": {"healthy": True},
                 },
                 "automation_workers": {
@@ -558,7 +565,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
             ("runner_hold", ("workflow_runner", "release_hold"), False),
             ("runner_active", ("workflow_runner", "active_runs"), 1),
             ("plugin_broker", ("automation_plugins", "broker", "state"), "stopped"),
-            ("plugin_catalog", ("automation_plugins", "catalog", "ok"), False),
+            (
+                "plugin_catalog_aggregate_or_shape",
+                ("automation_plugins", "catalog", "ok"),
+                False,
+            ),
             (
                 "plugin_generations",
                 ("automation_plugins", "generations", "healthy"),
@@ -599,6 +610,51 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 )
                 self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stdout)
                 self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stderr)
+
+    def test_service_identity_smoke_reports_closed_plugin_catalog_subgates(self):
+        sensitive_marker = "SENSITIVE_PLUGIN_CATALOG_MARKER"
+        cases = (
+            ("plugin_catalog_unsupported", "unsupported_automation_ids"),
+            ("plugin_catalog_enabled_builtin", "enabled_builtin_release"),
+            ("plugin_catalog_invalid_trust", "invalid_enabled_trust"),
+            ("plugin_catalog_unstable_generations", "unstable_generations"),
+            ("plugin_catalog_invalid_runtime", "invalid_enabled_runtime"),
+        )
+        for expected, field_name in cases:
+            with self.subTest(gate=expected):
+                payload = _healthy_service_identity_payload()
+                catalog = payload["data"]["components"]["automation_plugins"]["catalog"]
+                catalog[field_name] = [sensitive_marker]
+                completed = _run_service_identity_smoke(payload)
+
+                self.assertEqual(1, completed.returncode)
+                self.assertEqual("", completed.stdout)
+                self.assertEqual(
+                    f"service_identity_smoke=failed reason={expected}\n",
+                    completed.stderr,
+                )
+                self.assertNotIn(sensitive_marker, completed.stdout)
+                self.assertNotIn(sensitive_marker, completed.stderr)
+
+    def test_service_identity_smoke_closes_plugin_catalog_shape_without_leakage(self):
+        sensitive_marker = "SENSITIVE_PLUGIN_CATALOG_SHAPE_MARKER"
+        payload = _healthy_service_identity_payload()
+        payload["data"]["components"]["automation_plugins"]["catalog"] = {
+            "ok": False,
+            "diagnostic": sensitive_marker,
+        }
+
+        completed = _run_service_identity_smoke(payload)
+
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual("", completed.stdout)
+        self.assertEqual(
+            "service_identity_smoke=failed "
+            "reason=plugin_catalog_aggregate_or_shape\n",
+            completed.stderr,
+        )
+        self.assertNotIn(sensitive_marker, completed.stdout)
+        self.assertNotIn(sensitive_marker, completed.stderr)
 
     def test_service_identity_smoke_success_contract_is_unchanged(self):
         completed = _run_service_identity_smoke(_healthy_service_identity_payload())

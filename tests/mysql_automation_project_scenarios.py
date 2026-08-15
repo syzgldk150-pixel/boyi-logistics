@@ -69,6 +69,61 @@ REQUIRED_PROJECT_RESOURCE_CONFIGS = (
     ),
 )
 
+REQUIRED_PROJECT_RESOURCE_KINDS = {
+    "phase7.site_send_bitable": "feishu_bitable",
+    "phase7.site_send_sheet": "feishu_sheet",
+    "phase7.send_order_bitable": "feishu_bitable",
+    "phase7.arrive_primary_sheet": "feishu_sheet",
+    "phase7.arrive_secondary_sheet": "feishu_sheet",
+    "phase7.stats_archive_sheet": "feishu_sheet",
+    "phase7.daily_sign_bitable": "feishu_bitable",
+    "phase7.daily_sign_sheet": "feishu_sheet",
+}
+
+DEFERRED_R7_RESOURCE_KEYS = frozenset(
+    {
+        "automation.feishu_route.r7_arrival_checkin",
+        "automation.feishu_route.r7_departure_checkin",
+    }
+)
+OLD_CODE_OWNED_RESOURCE_KEYS = frozenset(
+    {
+        "phase7.yunda_dispatch_forecast_bitable",
+        "phase7.yunda_send_waybills_bitable",
+        "phase7.yunda_send_waybills_sheet",
+        "phase7.self_pickup_source_sheet",
+        "phase7.split_pending_source_sheet",
+        "phase7.split_pending_target_sheet",
+    }
+)
+
+
+def _project_resource_contract():
+    """Return the exact 018 reviewed sets from the authoritative defaults."""
+
+    from agent.phase7_resource_import import BUILTIN_RESOURCES
+
+    code_owned = {
+        resource_key: dict(config)
+        for resource_key, config in BUILTIN_RESOURCES.items()
+        if resource_key not in DEFERRED_R7_RESOURCE_KEYS
+    }
+    required_existing = {
+        resource_key: dict(config)
+        for resource_key, config in REQUIRED_PROJECT_RESOURCE_CONFIGS
+    }
+    if set(required_existing) != set(REQUIRED_PROJECT_RESOURCE_KINDS):
+        raise AssertionError("required resource kind fixture is incomplete")
+    reviewed_keys = tuple(sorted({*code_owned, *required_existing}))
+    old_reviewed_keys = frozenset(
+        {*OLD_CODE_OWNED_RESOURCE_KEYS, *required_existing}
+    )
+    if len(code_owned) != 18 or len(required_existing) != 8:
+        raise AssertionError("integration fixture drifted from migration 018")
+    if len(reviewed_keys) != 26 or len(old_reviewed_keys) != 14:
+        raise AssertionError("migration 018 reviewed identity set is not exact")
+    return code_owned, required_existing, reviewed_keys, old_reviewed_keys
+
 LEGACY_R7_DEPARTURE_TASK_ID = "r7_departure_checkin"
 LEGACY_R7_DEPARTURE_PARAMS = {
     "do_departure_checkin": False,
@@ -174,34 +229,33 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
     from shared.automation_plugin_repository import AutomationPluginRepository
 
     database = case.project_authorization_database
-    reviewed_resource_keys = (
-        "phase7.yunda_dispatch_forecast_bitable",
-        "phase7.yunda_send_waybills_bitable",
-        "phase7.yunda_send_waybills_sheet",
-        "phase7.site_send_bitable",
-        "phase7.site_send_sheet",
-        "phase7.send_order_bitable",
-        "phase7.arrive_primary_sheet",
-        "phase7.arrive_secondary_sheet",
-        "phase7.stats_archive_sheet",
-        "phase7.daily_sign_bitable",
-        "phase7.daily_sign_sheet",
-        "phase7.self_pickup_source_sheet",
-        "phase7.split_pending_source_sheet",
-        "phase7.split_pending_target_sheet",
-    )
+    (
+        code_owned_resource_configs,
+        required_existing_resource_configs,
+        reviewed_resource_keys,
+        _old_reviewed_resource_keys,
+    ) = _project_resource_contract()
     reviewed_resource_placeholders = ", ".join(
         "%s" for _resource_key in reviewed_resource_keys
     )
     original_resource_configs = {
-        reviewed_resource_keys[0]: {
+        "phase7.yunda_dispatch_forecast_bitable": {
             "base_token": "integration-custom-base",
             "table_id": "integration-custom-table",
         },
-        **{
-            resource_key: dict(config)
-            for resource_key, config in REQUIRED_PROJECT_RESOURCE_CONFIGS
+        "phase7.delivery_status_bitable": {
+            "base_token": "integration-delivery-base",
+            "table_id": "integration-delivery-table",
+            "view_id": "integration-delivery-view-id",
+            "view_name": "integration-delivery-view-name",
         },
+        "phase7.delivery_status_webhook": dict(
+            code_owned_resource_configs["phase7.delivery_status_webhook"]
+        ),
+        "automation.feishu_route.send_order": dict(
+            code_owned_resource_configs["automation.feishu_route.send_order"]
+        ),
+        **required_existing_resource_configs,
     }
     original_created_at = datetime(2025, 1, 2, 3, 4, 5)
     original_updated_at = datetime(2025, 2, 3, 4, 5, 6)
@@ -244,6 +298,8 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                     resource_key,
                     config_json,
                     source,
+                    updated_at,
+                    created_at,
                     configuration_version,
                     BINARY config_sha256 = BINARY SHA2(
                         CAST(config_json AS CHAR CHARACTER SET utf8mb4),
@@ -259,98 +315,33 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 row["resource_key"]: row for row in cursor.fetchall()
             }
             case.assertEqual(set(reviewed_resources), set(reviewed_resource_keys))
-            for row in reviewed_resources.values():
+            for resource_key, row in reviewed_resources.items():
                 case.assertEqual(row["configuration_version"], 1)
                 case.assertEqual(row["hash_valid"], 1)
-            migrated_existing_config = json.loads(
-                reviewed_resources[reviewed_resource_keys[0]]["config_json"]
-            )
-            case.assertEqual(
-                migrated_existing_config,
-                {
-                    **original_resource_configs[reviewed_resource_keys[0]],
-                    "resource_kind": "feishu_bitable",
-                },
-            )
-            case.assertEqual(
-                reviewed_resources[reviewed_resource_keys[0]]["source"],
-                "integration-preexisting",
-            )
-            case.assertEqual(
-                json.loads(reviewed_resources[reviewed_resource_keys[1]]["config_json"]),
-                {
-                    "base_token": "Fcm8b2H7wayK1UsYLjlcFmWhnMh",
-                    "resource_kind": "feishu_bitable",
-                    "table_id": "tblNHfIVVeaTBB7Y",
-                },
-            )
-            case.assertEqual(
-                json.loads(reviewed_resources[reviewed_resource_keys[2]]["config_json"]),
-                {
-                    "clear_range": "Sheet1!A2:Y5000",
-                    "resource_kind": "feishu_sheet",
-                    "sheet_id": "Sheet1",
-                    "sheet_range": "Sheet1!A2:A2",
-                    "spreadsheet_token": "GILYss6KhhBBuRt9FPWcXbben7c",
-                },
-            )
-            case.assertEqual(
-                json.loads(reviewed_resources[reviewed_resource_keys[3]]["config_json"]),
-                {
-                    **original_resource_configs[reviewed_resource_keys[3]],
-                    "resource_kind": "feishu_bitable",
-                },
-            )
-            case.assertEqual(
-                json.loads(reviewed_resources[reviewed_resource_keys[4]]["config_json"]),
-                {
-                    **original_resource_configs[reviewed_resource_keys[4]],
-                    "resource_kind": "feishu_sheet",
-                },
-            )
-            for resource_key in reviewed_resource_keys[5:11]:
-                expected_kind = (
-                    "feishu_bitable"
-                    if resource_key in {
-                        reviewed_resource_keys[5],
-                        reviewed_resource_keys[9],
-                    }
-                    else "feishu_sheet"
-                )
-                case.assertEqual(
-                    json.loads(reviewed_resources[resource_key]["config_json"]),
-                    {
-                        **original_resource_configs[resource_key],
-                        "resource_kind": expected_kind,
-                    },
-                )
-                case.assertEqual(
-                    reviewed_resources[resource_key]["source"],
-                    "integration-preexisting",
-                )
-            for resource_key in reviewed_resource_keys[11:13]:
-                config = json.loads(reviewed_resources[resource_key]["config_json"])
-                case.assertEqual(config["resource_kind"], "feishu_sheet")
-                for required_field in ("spreadsheet_token", "sheet_id", "range"):
-                    case.assertIsInstance(config[required_field], str)
-                    case.assertTrue(config[required_field].strip())
-            split_target_config = json.loads(
-                reviewed_resources[reviewed_resource_keys[13]]["config_json"]
-            )
-            case.assertEqual(split_target_config["resource_kind"], "feishu_sheet")
-            for required_field in (
-                "spreadsheet_token",
-                "sheet_id",
-                "range",
-                "clear_range",
-            ):
-                case.assertIsInstance(split_target_config[required_field], str)
-                case.assertTrue(split_target_config[required_field].strip())
+                if resource_key in original_resource_configs:
+                    expected_config = dict(original_resource_configs[resource_key])
+                    expected_kind = (
+                        code_owned_resource_configs.get(resource_key, {}).get(
+                            "resource_kind"
+                        )
+                        or REQUIRED_PROJECT_RESOURCE_KINDS[resource_key]
+                    )
+                    expected_config.setdefault("resource_kind", expected_kind)
+                    expected_source = "integration-preexisting"
+                    case.assertEqual(row["updated_at"], original_updated_at)
+                    case.assertEqual(row["created_at"], original_created_at)
+                else:
+                    expected_config = code_owned_resource_configs[resource_key]
+                    expected_source = "migration-018-reviewed-builtin"
+                case.assertEqual(json.loads(row["config_json"]), expected_config)
+                case.assertEqual(row["source"], expected_source)
             cursor.execute(
                 """
                 SELECT
                     resource_key,
                     existed_before,
+                    config_json,
+                    source,
                     migration_config_sha256 IS NOT NULL AS captured
                 FROM automation_project_resource_backup_018
                 ORDER BY BINARY resource_key
@@ -360,27 +351,42 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 row["resource_key"]: row for row in cursor.fetchall()
             }
             case.assertEqual(set(resource_backups), set(reviewed_resource_keys))
-            case.assertEqual(
-                resource_backups[reviewed_resource_keys[0]]["existed_before"],
-                1,
-            )
-            for resource_key in reviewed_resource_keys[3:11]:
+            for resource_key, row in resource_backups.items():
+                expected_existed = resource_key in original_resource_configs
                 case.assertEqual(
-                    resource_backups[resource_key]["existed_before"],
-                    1,
+                    bool(row["existed_before"]),
+                    expected_existed,
                 )
-            for resource_key in (
-                reviewed_resource_keys[1],
-                reviewed_resource_keys[2],
-                *reviewed_resource_keys[11:],
-            ):
-                case.assertEqual(
-                    resource_backups[resource_key]["existed_before"],
-                    0,
-                )
-            case.assertTrue(
-                all(row["captured"] == 1 for row in resource_backups.values())
+                case.assertEqual(row["captured"], 1)
+                if expected_existed:
+                    case.assertEqual(
+                        json.loads(row["config_json"]),
+                        original_resource_configs[resource_key],
+                    )
+                    case.assertEqual(row["source"], "integration-preexisting")
+                else:
+                    case.assertIsNone(row["config_json"])
+                    case.assertIsNone(row["source"])
+            cursor.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM automation_project_reviewed_resource_map_018)
+                        AS map_count,
+                    (SELECT COUNT(*)
+                     FROM automation_project_resource_backup_018)
+                        AS backup_count,
+                    (SELECT COUNT(*)
+                     FROM workflow_resources
+                     WHERE BINARY resource_key IN (%s, %s))
+                        AS deferred_r7_count
+                """,
+                tuple(sorted(DEFERRED_R7_RESOURCE_KEYS)),
             )
+            resource_counts = cursor.fetchone()
+            case.assertEqual(resource_counts["map_count"], 26)
+            case.assertEqual(resource_counts["backup_count"], 26)
+            case.assertEqual(resource_counts["deferred_r7_count"], 0)
     with case._connection(database) as connection:
         repository = AutomationPluginRepository(
             connection,
@@ -616,6 +622,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 (database,),
             )
             case.assertEqual(cursor.fetchone()["n"], 0)
+
             cursor.execute(
                 f"""
                 SELECT resource_key, config_json, source, updated_at, created_at
@@ -684,17 +691,59 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             case.assertEqual(cursor.fetchone()["n"], 1)
             cursor.execute(
                 f"""
-                SELECT COUNT(*) AS n
-                FROM workflow_resources
-                WHERE BINARY resource_key IN ({reviewed_resource_placeholders})
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM workflow_resources
+                     WHERE BINARY resource_key IN ({reviewed_resource_placeholders}))
+                        AS n,
+                    (SELECT COUNT(*)
+                     FROM workflow_resources
+                     WHERE BINARY resource_key IN (%s, %s))
+                        AS deferred_r7_count
                 """,
-                reviewed_resource_keys,
+                (*reviewed_resource_keys, *tuple(sorted(DEFERRED_R7_RESOURCE_KEYS))),
             )
-            case.assertEqual(cursor.fetchone()["n"], 14)
+            reapplied_counts = cursor.fetchone()
+            case.assertEqual(reapplied_counts["n"], 26)
+            case.assertEqual(reapplied_counts["deferred_r7_count"], 0)
+            cursor.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM automation_project_reviewed_resource_map_018)
+                        AS map_count,
+                    (SELECT COUNT(*)
+                     FROM automation_project_resource_backup_018)
+                        AS backup_count,
+                    (SELECT COUNT(*)
+                     FROM automation_project_resource_backup_018
+                     WHERE migration_config_sha256 IS NOT NULL)
+                        AS hashed_backup_count
+                """
+            )
+            reapplied_backup_counts = cursor.fetchone()
+            case.assertEqual(reapplied_backup_counts["map_count"], 26)
+            case.assertEqual(reapplied_backup_counts["backup_count"], 26)
+            case.assertEqual(reapplied_backup_counts["hashed_backup_count"], 26)
 
 
 def run_test_automation_project_018_partial_rerun_is_safe(case):
     partial_database = case.project_authorization_partial_database
+    (
+        code_owned_resource_configs,
+        required_existing_resource_configs,
+        reviewed_resource_keys,
+        old_reviewed_resource_keys,
+    ) = _project_resource_contract()
+    expanded_resource_keys = tuple(
+        sorted(set(reviewed_resource_keys) - old_reviewed_resource_keys)
+    )
+    expanded_resource_placeholders = ", ".join(
+        "%s" for _resource_key in expanded_resource_keys
+    )
+    reviewed_resource_placeholders = ", ".join(
+        "%s" for _resource_key in reviewed_resource_keys
+    )
     seed_legacy_r7_departure_task(case, partial_database)
     legacy_pending_key = "phase7.pending_arrivals_sheet"
     legacy_pending_config = {
@@ -760,6 +809,14 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
             # Simulate the first release candidate's autocommitted 15-row map
             # after its required-resource preflight failed.
             cursor.execute(
+                f"""
+                DELETE FROM automation_project_reviewed_resource_map_018
+                WHERE BINARY resource_key IN ({expanded_resource_placeholders})
+                """,
+                expanded_resource_keys,
+            )
+            case.assertEqual(cursor.rowcount, 12)
+            cursor.execute(
                 """
                 INSERT INTO automation_project_reviewed_resource_map_018 (
                     resource_key, expected_kind, materialize_missing,
@@ -796,9 +853,11 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 cursor.execute(statement)
                 if "DEALLOCATE PREPARE cp018_add_automation_id_stmt" in statement:
                     break
-            # Simulate a still later crash from that candidate: the optional
-            # row was captured as the fifteenth backup and normalized, while
-            # the obsolete map row survived for the next rerun.
+            # Simulate the legacy candidate completing its old fourteen-row
+            # resource pass before a later crash. The new migration has
+            # already extended the backup to current26, so hashing exactly the
+            # old14 plus the legacy pending row creates the only accepted
+            # legacy15 -> current27 transition: old hashes set, new12 NULL.
             cursor.execute(
                 """
                 INSERT INTO automation_project_resource_backup_018 (
@@ -813,18 +872,45 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 """,
                 (legacy_pending_key,),
             )
-            cursor.execute(
+            cursor.executemany(
                 """
-                UPDATE workflow_resources
-                SET config_json = JSON_SET(
-                    config_json,
-                    '$.resource_kind',
-                    'feishu_sheet'
-                )
-                WHERE BINARY resource_key = BINARY %s
+                INSERT INTO workflow_resources (
+                    resource_key, config_json, source
+                ) VALUES (%s, %s, 'migration-018-reviewed-builtin')
                 """,
-                (legacy_pending_key,),
+                tuple(
+                    (
+                        resource_key,
+                        json.dumps(
+                            code_owned_resource_configs[resource_key],
+                            separators=(",", ":"),
+                        ),
+                    )
+                    for resource_key in sorted(OLD_CODE_OWNED_RESOURCE_KEYS)
+                ),
             )
+            old_expected_kinds = {
+                **{
+                    resource_key: config["resource_kind"]
+                    for resource_key, config in code_owned_resource_configs.items()
+                    if resource_key in OLD_CODE_OWNED_RESOURCE_KEYS
+                },
+                **REQUIRED_PROJECT_RESOURCE_KINDS,
+                legacy_pending_key: "feishu_sheet",
+            }
+            for resource_key, expected_kind in old_expected_kinds.items():
+                cursor.execute(
+                    """
+                    UPDATE workflow_resources
+                    SET config_json = JSON_SET(
+                        config_json,
+                        '$.resource_kind',
+                        %s
+                    )
+                    WHERE BINARY resource_key = BINARY %s
+                    """,
+                    (expected_kind, resource_key),
+                )
             cursor.execute(
                 """
                 INSERT INTO automation_project_reviewed_resource_map_018 (
@@ -834,6 +920,28 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 """,
                 (legacy_pending_key,),
             )
+            legacy_hashed_resource_keys = tuple(
+                sorted({*old_reviewed_resource_keys, legacy_pending_key})
+            )
+            legacy_hashed_placeholders = ", ".join(
+                "%s" for _resource_key in legacy_hashed_resource_keys
+            )
+            cursor.execute(
+                f"""
+                UPDATE automation_project_resource_backup_018 AS backup
+                INNER JOIN workflow_resources AS resource
+                  ON BINARY resource.resource_key = BINARY backup.resource_key
+                SET backup.migration_config_sha256 = SHA2(
+                    CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                    256
+                )
+                WHERE BINARY backup.resource_key IN (
+                    {legacy_hashed_placeholders}
+                )
+                """,
+                legacy_hashed_resource_keys,
+            )
+            case.assertEqual(cursor.rowcount, 15)
             cursor.execute(
                 """
                 SELECT
@@ -845,13 +953,37 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                         AS map_count,
                     (SELECT COUNT(*)
                      FROM automation_project_resource_backup_018)
-                        AS backup_count
+                        AS backup_count,
+                    (SELECT COUNT(*)
+                     FROM automation_project_resource_backup_018
+                     WHERE migration_config_sha256 IS NOT NULL)
+                        AS hashed_backup_count,
+                    (SELECT COUNT(*)
+                     FROM automation_project_resource_backup_018
+                     WHERE migration_config_sha256 IS NULL)
+                        AS unhashed_backup_count
                 """
             )
             partial_counts = cursor.fetchone()
             case.assertEqual(partial_counts["schedule_map_count"], 71)
-            case.assertEqual(partial_counts["map_count"], 15)
-            case.assertEqual(partial_counts["backup_count"], 15)
+            case.assertEqual(partial_counts["map_count"], 27)
+            case.assertEqual(partial_counts["backup_count"], 27)
+            case.assertEqual(partial_counts["hashed_backup_count"], 15)
+            case.assertEqual(partial_counts["unhashed_backup_count"], 12)
+            cursor.execute(
+                f"""
+                SELECT resource_key
+                FROM automation_project_resource_backup_018
+                WHERE migration_config_sha256 IS NULL
+                  AND BINARY resource_key IN ({expanded_resource_placeholders})
+                ORDER BY BINARY resource_key
+                """,
+                expanded_resource_keys,
+            )
+            case.assertEqual(
+                tuple(row["resource_key"] for row in cursor.fetchall()),
+                expanded_resource_keys,
+            )
     case._run_migrations(partial_database)
     with case._connection(partial_database, autocommit=True) as connection:
         with connection.cursor() as cursor:
@@ -883,16 +1015,66 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                      WHERE BINARY resource_key = BINARY %s
                        AND existed_before = TRUE
                        AND migration_config_sha256 IS NOT NULL)
-                        AS legacy_backup_count
+                        AS legacy_backup_count,
+                    (SELECT COUNT(*)
+                     FROM automation_project_resource_backup_018
+                     WHERE migration_config_sha256 IS NOT NULL)
+                        AS hashed_backup_count,
+                    (SELECT COUNT(*)
+                     FROM workflow_resources
+                     WHERE BINARY resource_key IN (%s, %s))
+                        AS deferred_r7_count
                 """,
-                (legacy_pending_key, legacy_pending_key),
+                (
+                    legacy_pending_key,
+                    legacy_pending_key,
+                    *tuple(sorted(DEFERRED_R7_RESOURCE_KEYS)),
+                ),
             )
             rerun_counts = cursor.fetchone()
             case.assertEqual(rerun_counts["schedule_map_count"], 71)
-            case.assertEqual(rerun_counts["map_count"], 14)
+            case.assertEqual(rerun_counts["map_count"], 26)
             case.assertEqual(rerun_counts["obsolete_map_count"], 0)
-            case.assertEqual(rerun_counts["backup_count"], 15)
+            case.assertEqual(rerun_counts["backup_count"], 27)
             case.assertEqual(rerun_counts["legacy_backup_count"], 1)
+            case.assertEqual(rerun_counts["hashed_backup_count"], 27)
+            case.assertEqual(rerun_counts["deferred_r7_count"], 0)
+            cursor.execute(
+                f"""
+                SELECT resource_key, config_json, source
+                FROM workflow_resources
+                WHERE BINARY resource_key IN ({reviewed_resource_placeholders})
+                ORDER BY BINARY resource_key
+                """,
+                reviewed_resource_keys,
+            )
+            rerun_resources = {
+                row["resource_key"]: row for row in cursor.fetchall()
+            }
+            case.assertEqual(set(rerun_resources), set(reviewed_resource_keys))
+            for resource_key in code_owned_resource_configs:
+                case.assertEqual(
+                    json.loads(rerun_resources[resource_key]["config_json"]),
+                    code_owned_resource_configs[resource_key],
+                )
+                case.assertEqual(
+                    rerun_resources[resource_key]["source"],
+                    "migration-018-reviewed-builtin",
+                )
+            for resource_key, config in required_existing_resource_configs.items():
+                case.assertEqual(
+                    json.loads(rerun_resources[resource_key]["config_json"]),
+                    {
+                        **config,
+                        "resource_kind": REQUIRED_PROJECT_RESOURCE_KINDS[
+                            resource_key
+                        ],
+                    },
+                )
+                case.assertEqual(
+                    rerun_resources[resource_key]["source"],
+                    "integration-required-resource",
+                )
             migrated_r7 = select_legacy_r7_departure_task(
                 cursor,
                 include_identity=True,
@@ -937,6 +1119,40 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 legacy_pending_created_at,
             )
             cursor.execute(
+                f"""
+                SELECT resource_key, config_json, source
+                FROM workflow_resources
+                WHERE BINARY resource_key IN ({reviewed_resource_placeholders})
+                ORDER BY BINARY resource_key
+                """,
+                reviewed_resource_keys,
+            )
+            restored_reviewed = {
+                row["resource_key"]: row for row in cursor.fetchall()
+            }
+            case.assertEqual(
+                set(restored_reviewed),
+                set(required_existing_resource_configs),
+            )
+            for resource_key, config in required_existing_resource_configs.items():
+                case.assertEqual(
+                    json.loads(restored_reviewed[resource_key]["config_json"]),
+                    config,
+                )
+                case.assertEqual(
+                    restored_reviewed[resource_key]["source"],
+                    "integration-required-resource",
+                )
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM workflow_resources
+                WHERE BINARY resource_key IN (%s, %s)
+                """,
+                tuple(sorted(DEFERRED_R7_RESOURCE_KEYS)),
+            )
+            case.assertEqual(cursor.fetchone()["n"], 0)
+            cursor.execute(
                 """
                 SELECT COUNT(*) AS n
                 FROM information_schema.TABLES
@@ -947,6 +1163,55 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                   )
                 """,
                 (partial_database,),
+            )
+            case.assertEqual(cursor.fetchone()["n"], 0)
+
+
+    # A pre-existing route remains owned by its source, but it must match the
+    # reviewed trusted entrypoint exactly. A valid-looking wrong route is not
+    # overwritten and the migration fails closed before recording 018.
+    mismatched_route_key = "automation.feishu_route.send_order"
+    mismatched_route_config = {
+        "resource_kind": "feishu_route",
+        "route_key": "builtin.scan_codes",
+    }
+    with case._connection(partial_database, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO workflow_resources (
+                    resource_key, config_json, source, updated_at, created_at
+                ) VALUES (%s, %s, 'integration-route-mismatch', %s, %s)
+                """,
+                (
+                    mismatched_route_key,
+                    json.dumps(mismatched_route_config, separators=(",", ":")),
+                    legacy_pending_updated_at,
+                    legacy_pending_created_at,
+                ),
+            )
+    with case.assertRaises(Exception):
+        case._run_migrations(partial_database)
+    with case._connection(partial_database, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT config_json, source, updated_at, created_at
+                FROM workflow_resources
+                WHERE BINARY resource_key = BINARY %s
+                """,
+                (mismatched_route_key,),
+            )
+            rejected_route = cursor.fetchone()
+            case.assertEqual(
+                json.loads(rejected_route["config_json"]),
+                mismatched_route_config,
+            )
+            case.assertEqual(rejected_route["source"], "integration-route-mismatch")
+            case.assertEqual(rejected_route["updated_at"], legacy_pending_updated_at)
+            case.assertEqual(rejected_route["created_at"], legacy_pending_created_at)
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM schema_migrations WHERE version='018'"
             )
             case.assertEqual(cursor.fetchone()["n"], 0)
 

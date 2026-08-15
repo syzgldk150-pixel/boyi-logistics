@@ -113,6 +113,14 @@ Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resou
 不会默认选中第一项；已保存 ID 也必须重新核验状态与类型。provider 不可用、descriptor 字段多/缺、
 必填绑定缺失、资源停用或类型漂移时，目录投影标记资源池不可用，项目配置与执行 fail closed。
 
+迁移 `018` 的资源闭包由当前 16 个可发布首方实例模板反向校验：模板绑定的并集必须精确等于 26 个
+审阅身份。其中 18 个代码内置身份由 `phase7_resource_import.BUILTIN_RESOURCES` 提供精确配置，另 8 个
+外部文档身份只能预先配置、不得猜测物化；延期 R7 的两个 Feishu 路由既不在该并集，也不进入健康
+计数。已有 route/webhook 行保持原来源和时间戳，但规范化 `route_key/path` 必须与内置可信入口精确
+一致，否则迁移阻断；delivery status 多维表则必须具备运行时实际读取的
+`base_token/table_id/view_id/view_name` 四字段。这样 generation 可在结构资源就绪时稳定提交，同时
+Broker 仍在每次调用时独立重验账号登录态和精确绑定，缺失时 fail closed。
+
 当前 018 仓储的低层 `pair_device` 没有 request UUID 审计合同，因此管理员配对入口固定返回
 `PLUGIN_WORKER_PAIRING_AUDIT_UNAVAILABLE`，不会旁路调用无审计写。只有前向迁移提供原子且幂等的
 `pair_device_with_audit` 聚合后才能开放；请求只接收 Ed25519 公钥和 TLS 客户端证书 SHA-256，绝不

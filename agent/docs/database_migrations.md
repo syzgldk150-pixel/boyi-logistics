@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # 数据库迁移
@@ -82,10 +82,19 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `017` marker、任务和备份，确认启动任务的当前策略、策略事件、完成 marker 及相关
   Domain Event/Outbox 均已清理，才删除 marker-owned 行并恢复完整备份。任何漂移或残留都会回滚，
   保留 `017` 历史、marker 与备份供人工恢复；成功后才清理恢复材料并允许再次应用。
+- `018_automation_project_authorization.sql`：为 71 条已审阅历史任务写入精确
+  `automation_id`，并建立插件项目、配置、代际、设备和作业持久化结构。资源迁移只接受模板实际引用的
+  26 个身份：18 个代码审阅资源可按 `phase7_resource_import.BUILTIN_RESOURCES` 物化，8 个外部目标必须
+  预先存在且形状完整；延期的两个 R7 路由不进入映射。已有 Feishu/Webhook 路由不覆盖，但规范化入口
+  必须与代码默认精确相等；delivery status 多维表必须同时包含 `base_token/table_id/view_id/view_name`。
+  资源备份按身份而非计数验证，兼容旧 14、旧含 pending 的 15、新 26 和新含 pending 的 27 四种精确
+  布局；旧 14/15 已哈希而新增 12 行未哈希是唯一允许的升级中间态，完成后必须全部收敛为已哈希。
+  恢复只撤销迁移创建行并原样恢复既有行，身份、形状、来源或哈希漂移均 fail closed。
 
 生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `014`，发布器只按
-顺序补执行 `015`、`016`、`017`。`016`/`017` 在业务行变更前各自保存完整行备份；远端发布必须在
-变更前捕获两项迁移状态和 bootstrap marker 状态，`pending_dirty` 直接阻断，回滚只撤销本次从
+顺序补执行尚未记录的 `015`、`016`、`017`、`018`。`016`/`017`/`018` 在业务行变更前各自保存
+完整行备份；远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
+直接阻断，回滚只撤销本次从
 pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
 策略；其失败或不完整匹配不能使任何写任务获得免审。
 
@@ -102,7 +111,7 @@ pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成
 `SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
-CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整 `014 -> 015 -> 016 -> 017` 升级、
-部分历史、`017` 恢复后重应用、
+CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整
+`014 -> 015 -> 016 -> 017 -> 018` 升级、部分历史、`017`/`018` 恢复后重应用、
 `--check`、JSON、外键、唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码
 只接受显式 CI 环境变量，不读取项目 `.env`。
