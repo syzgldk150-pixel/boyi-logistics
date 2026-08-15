@@ -230,6 +230,11 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     customer = manifests["sync_customer_service_problems"]
     assert customer.account_roles[0]["collection"] is True
     assert customer.account_roles[0]["argument_field"] is None
+    assert customer.scheduling == {
+        "supported": True,
+        "allowed_kinds": ["daily_times"],
+        "max_daily_times": 96,
+    }
 
 
 def test_first_party_digest_lock_is_canonical_and_current(core_catalog: ToolRegistry) -> None:

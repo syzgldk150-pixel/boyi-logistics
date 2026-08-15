@@ -17,6 +17,7 @@
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
 - `scripts/automation_project_resource_preflight.py` 封装迁移 018 的八项 required-existing 资源只读前检；`scripts/automation_project_schedule_identity_preflight.py` 从共享迁移清单构造 71 项历史计划任务身份并仅在 018 待执行时做只读前检，其中 R7 发车身份只供迁移审计且不进入当前发行或执行面；`run_migrations.py` 仅通过脚本同目录 exact-path loader 绑定这些公开检查函数，禁止裸导入或修改全局 `sys.path`。
 - 标准发布器的紧急计划窗口覆盖只能由本地显式 `-EmergencyUserAuthorizedScheduledWindowOverride` 开关发起，远端仅接受代码内固定授权参数；该覆盖只跳过两次计划任务临近时间检查，必须额外先证明 protected writes 为 0，且不得旁路其余预检、备份、服务静默、回滚或健康门禁。首次升级前的旧 scheduler 不会动态读取 release hold，因此紧急路径必须记录 `residual_race_user_authorized=true`，在最终 running=0 检查后不夹入其他工作、立即停服务，并在停后再次检查；该 hold 只保证新进程以 held 状态启动，不能宣称动态暂停旧进程。
+- 插件安装目录的回滚清单固定以 `LC_ALL=C` 排序并用同一 locale 的 `comm --check-order` 比较；比较异常必须令 rollback incomplete 并保留恢复材料。发布器本地异常提示只能要求复核远端 stage，不能在未读取远端状态时声称恢复目录仍然存在。
 - Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的精确材料恢复旧环境和源码；成功时也必须保留当次远端回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
 
 ## 本地 WSL 与 ECS 运行隔离
