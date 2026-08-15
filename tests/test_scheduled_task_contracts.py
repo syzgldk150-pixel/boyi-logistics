@@ -149,6 +149,7 @@ def test_only_reviewed_production_task_ids_are_code_approved() -> None:
     assert not APPROVED_SCHEDULED_TASK_PROFILES["finance_bills"].seed_governed_template
     assert not APPROVED_SCHEDULED_TASK_PROFILES["finance_startup_catchup"].seed_governed_template
     assert not APPROVED_SCHEDULED_TASK_PROFILES["r7_arrival_checkin"].seed_governed_template
+    assert "r7_departure_checkin" not in APPROVED_SCHEDULED_TASK_PROFILES
 
 
 def test_only_two_complete_clock_contracts_are_code_approved() -> None:
@@ -333,6 +334,7 @@ def test_schema_valid_argument_change_never_becomes_its_own_allowlist_baseline(
         ("clockin_daxiang_1831", "clock_in_dual"),
         ("clockin_daxiang_s_1830", "clock_in_dual"),
         ("r7_arrival_checkin", "r7_arrival_checkin"),
+        ("r7_departure_checkin", "r7_departure_checkin"),
     ),
 )
 def test_unreviewed_task_id_is_never_eligible(

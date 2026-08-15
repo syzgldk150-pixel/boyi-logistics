@@ -823,7 +823,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
                     f"""
                     run_staged_migration_runner() {{
                       [[ "$1" == "--check-automation-project-scheduled-task-identities" ]] || return 92
-                      echo 'automation_project_scheduled_task_identities=ok state={state} allowed_count=70'
+                      echo 'automation_project_scheduled_task_identities=ok state={state} allowed_count=71'
                     }}
                     preflight_automation_project_scheduled_task_identities
                     """
@@ -832,7 +832,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 self.assertEqual(0, completed.returncode, completed.stderr)
                 self.assertEqual(
                     "automation_project_scheduled_task_identities=ok "
-                    f"state={state} allowed_count=70\n",
+                    f"state={state} allowed_count=71\n",
                     completed.stdout,
                 )
 
@@ -862,7 +862,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
               echo 'automation_project_scheduled_task_identity task_id_hex=61 tool_name_hex=62 reason=TOOL_NAME_MISMATCH field=id'
               return 1
             """,
-            """echo 'automation_project_scheduled_task_identities=ok state=pending allowed_count=69'""",
+            """echo 'automation_project_scheduled_task_identities=ok state=pending allowed_count=70'""",
         )
         for body in cases:
             with self.subTest(body=body):

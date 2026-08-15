@@ -85,6 +85,8 @@ def test_only_release_scoped_plugins_can_be_packaged_bootstrapped_or_brokered() 
     assert set(manifests) == release_first_party_plugin_ids()
     assert {seed.plugin_id for seed in seeds} <= release_first_party_plugin_ids()
     assert {seed.automation_id for seed in seeds} == release_first_party_automation_ids()
+    assert "r7_departure_checkin" not in manifests
+    assert all(seed.automation_id != "r7_departure_checkin" for seed in seeds)
     assert all(manifest.execution_platform == "server" for manifest in manifests.values())
     assert all(
         manifest.worker_requirement.get("required") is False
@@ -168,17 +170,18 @@ def test_deferred_first_party_tools_are_absent_from_the_production_core_catalog(
     )
 
     planner = DeterministicPlanner(production_catalog)
-    for source, actor_type in (
-        ("legacy_api", ActorType.LEGACY_API),
-        ("scheduler", ActorType.SCHEDULER),
-    ):
-        command = Command(
-            command_type="tool.execute",
-            source=source,
-            actor=Actor(actor_type, f"{source}-caller"),
-            parameters={"tool_name": "r7_arrival_checkin", "arguments": {}},
-            idempotency_key=f"deferred-r7:{source}",
-        )
-        with pytest.raises(OrchestrationError) as raised:
-            planner.plan(command, ContextSnapshot(values={}))
-        assert raised.value.code == "UNKNOWN_TOOL"
+    for tool_name in sorted(DEFERRED_R7_PLUGIN_IDS):
+        for source, actor_type in (
+            ("legacy_api", ActorType.LEGACY_API),
+            ("scheduler", ActorType.SCHEDULER),
+        ):
+            command = Command(
+                command_type="tool.execute",
+                source=source,
+                actor=Actor(actor_type, f"{source}-caller"),
+                parameters={"tool_name": tool_name, "arguments": {}},
+                idempotency_key=f"deferred-r7:{tool_name}:{source}",
+            )
+            with pytest.raises(OrchestrationError) as raised:
+                planner.plan(command, ContextSnapshot(values={}))
+            assert raised.value.code == "UNKNOWN_TOOL"

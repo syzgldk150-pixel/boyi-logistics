@@ -166,6 +166,7 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
         },
         allowed_entrypoints=_SCHEDULER_CONSOLE_FEISHU,
         legacy_account_bindings={"account_id": "r7_default"},
+        scheduled_task_ids=frozenset({"r7_departure_checkin"}),
         resource_bindings={
             "feishu_route": "automation.feishu_route.r7_departure_checkin",
         },
