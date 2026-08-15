@@ -27,8 +27,6 @@ EXPECTED_RELEASE_SCHEDULE_COUNT = 57
 EXPECTED_DEFERRED_PROJECT_COUNT = 2
 EXPECTED_DEFERRED_SCHEDULE_COUNT = 14
 EXPECTED_REVIEWED_SCHEDULE_COUNT = 71
-EXPECTED_LEGACY_PROJECT_POLICY_COUNT = 10
-EXPECTED_REQUIRE_PROJECT_POLICY_COUNT = 6
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _QUARTER_HOUR_DAILY_TIMES = tuple(
     f"{hour:02d}:{minute:02d}"
@@ -259,6 +257,11 @@ def _load_release_contract() -> dict[str, Any]:
             tool_name = getattr(template, "tool_name", None)
             task_ids = getattr(template, "scheduled_task_ids", None)
             legacy_arguments = getattr(template, "legacy_arguments", None)
+            legacy_account_bindings = getattr(
+                template,
+                "legacy_account_bindings",
+                None,
+            )
             if (
                 type(template_key) is not str
                 or type(automation_id) is not str
@@ -266,6 +269,7 @@ def _load_release_contract() -> dict[str, Any]:
                 or type(tool_name) is not str
                 or not isinstance(task_ids, (set, frozenset))
                 or not isinstance(legacy_arguments, Mapping)
+                or not isinstance(legacy_account_bindings, Mapping)
             ):
                 raise RuntimeError("migration template is invalid")
             normalized_task_ids: set[str] = set()
@@ -279,6 +283,9 @@ def _load_release_contract() -> dict[str, Any]:
                 "tool_name": tool_name,
                 "task_ids": frozenset(normalized_task_ids),
                 "legacy_arguments": copy.deepcopy(dict(legacy_arguments)),
+                "legacy_account_bindings": copy.deepcopy(
+                    dict(legacy_account_bindings)
+                ),
             }
     except AutomationProjectReleaseManifestError:
         raise
@@ -1202,6 +1209,32 @@ def _validate_release_projects_and_tasks(
             )
 
 
+def _deferred_code_owned_legacy_arguments(
+    contract: Mapping[str, Any],
+    automation_id: str,
+) -> dict[str, Any]:
+    template = contract["templates"][automation_id]
+    expected = copy.deepcopy(dict(template["legacy_arguments"]))
+    if automation_id != "r7_departure_checkin":
+        return expected
+
+    account_bindings = template["legacy_account_bindings"]
+    if (
+        template["tool_name"] != "r7_departure_checkin"
+        or template["task_ids"] != frozenset({"r7_departure_checkin"})
+        or set(account_bindings) != {"account_id"}
+        or type(account_bindings.get("account_id")) is not str
+        or not account_bindings["account_id"].strip()
+        or expected.get("account_id") != account_bindings["account_id"]
+    ):
+        raise AutomationProjectReleaseManifestError(
+            "AUTOMATION_PROJECT_RELEASE_CONTRACT_INVALID"
+        )
+    for field_name in account_bindings:
+        expected.pop(field_name)
+    return expected
+
+
 def _validate_deferred_rows(
     contract: Mapping[str, Any],
     *,
@@ -1240,9 +1273,13 @@ def _validate_deferred_rows(
             backup.get("tool_params"),
             code="DEFERRED_R7_BACKUP_ARGUMENTS_INVALID",
         )
+        expected_arguments = _deferred_code_owned_legacy_arguments(
+            contract,
+            automation_id,
+        )
         if (
             not _strict_json_equal(arguments, backup_arguments)
-            or not _strict_json_equal(arguments, template["legacy_arguments"])
+            or not _strict_json_equal(arguments, expected_arguments)
         ):
             raise AutomationProjectReleaseManifestError(
                 "DEFERRED_R7_LEGACY_STATE_MISMATCH"
@@ -1813,6 +1850,28 @@ def _validate_later_project_policy_chain(
             )
 
 
+def _validate_bootstrap_marker_summary(summary: Any) -> None:
+    if not isinstance(summary, Mapping):
+        raise AutomationProjectReleaseManifestError(
+            "AUTOMATION_PROJECT_BOOTSTRAP_POLICY_DISTRIBUTION_MISMATCH"
+        )
+    legacy_count = summary.get("legacy_schedule_only")
+    require_count = summary.get("require_each_run")
+    if (
+        summary.get("project_count") != EXPECTED_RELEASE_PROJECT_COUNT
+        or isinstance(legacy_count, bool)
+        or not isinstance(legacy_count, int)
+        or legacy_count < 0
+        or isinstance(require_count, bool)
+        or not isinstance(require_count, int)
+        or require_count < 0
+        or legacy_count + require_count != EXPECTED_RELEASE_PROJECT_COUNT
+    ):
+        raise AutomationProjectReleaseManifestError(
+            "AUTOMATION_PROJECT_BOOTSTRAP_POLICY_DISTRIBUTION_MISMATCH"
+        )
+
+
 def _validate_bootstrap_and_policy_state(
     cursor: Any,
     *,
@@ -1837,16 +1896,7 @@ def _validate_bootstrap_and_policy_state(
         raise AutomationProjectReleaseManifestError(
             "AUTOMATION_PROJECT_BOOTSTRAP_MARKER_INVALID"
         ) from exc
-    if (
-        marker_summary.get("project_count") != EXPECTED_RELEASE_PROJECT_COUNT
-        or marker_summary.get("legacy_schedule_only")
-        != EXPECTED_LEGACY_PROJECT_POLICY_COUNT
-        or marker_summary.get("require_each_run")
-        != EXPECTED_REQUIRE_PROJECT_POLICY_COUNT
-    ):
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_BOOTSTRAP_POLICY_DISTRIBUTION_MISMATCH"
-        )
+    _validate_bootstrap_marker_summary(marker_summary)
 
     source_snapshots: dict[str, Mapping[str, Any]] = {}
     source_task_ids: set[str] = set()

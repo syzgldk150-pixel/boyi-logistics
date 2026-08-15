@@ -73,10 +73,13 @@ AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = (
     "automation_projects",
     "automation_plugin_versions",
     "automation_plugin_packages",
-    "automation_project_bootstrap_marker_018",
-    "automation_project_bootstrap_items_018",
     AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE,
     AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE,
+    # The validated items and restore-in-progress marker are the durable
+    # witnesses for a restart after MySQL DDL auto-commit.  Delete them last,
+    # in this order, so an interruption can never leave unverifiable items.
+    "automation_project_bootstrap_items_018",
+    "automation_project_bootstrap_marker_018",
 )
 AUTOMATION_PROJECT_AUTHORIZATION_AGENT_COMMAND_INDEX = (
     "idx_agent_commands_automation_requested"
