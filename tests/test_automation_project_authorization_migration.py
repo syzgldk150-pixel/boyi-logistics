@@ -512,6 +512,23 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             2,
         )
 
+    def test_resource_normalization_preserves_existing_updated_at(self):
+        hash_backfill = self.sql.split(
+            "UPDATE workflow_resources\nSET", 1
+        )[1].split("WHERE config_sha256 IS NULL;", 1)[0]
+        self.assertIn("updated_at = updated_at", hash_backfill)
+
+        resource_kind_normalization = self.sql.split(
+            "UPDATE workflow_resources AS resource", 1
+        )[1].split(
+            "WHERE JSON_EXTRACT(resource.config_json, '$.resource_kind') IS NULL;",
+            1,
+        )[0]
+        self.assertIn(
+            "resource.updated_at = resource.updated_at",
+            resource_kind_normalization,
+        )
+
     def test_required_resource_diagnostic_spec_matches_018_sql_guard(self):
         specs = (
             self.resource_preflight.AUTOMATION_PROJECT_REQUIRED_EXISTING_RESOURCE_SPECS
