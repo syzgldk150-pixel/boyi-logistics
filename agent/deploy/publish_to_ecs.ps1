@@ -7,7 +7,8 @@ param(
     [string]$AutomationPluginArtifactRoot,
     [string]$AutomationPluginTrustRoot,
     [switch]$SkipRestart,
-    [switch]$SkipHealthCheck
+    [switch]$SkipHealthCheck,
+    [switch]$EmergencyUserAuthorizedScheduledWindowOverride
 )
 
 $ErrorActionPreference = "Stop"
@@ -522,7 +523,12 @@ try {
     $skipRestartValue = if ($SkipRestart) { "1" } else { "0" }
     $skipHealthValue = if ($SkipHealthCheck) { "1" } else { "0" }
     $targetCsv = $targetsToPublish -join ","
-    Invoke-Remote "bash '$remoteStage/agent/deploy/remote_release.sh' '$remoteStage' '$releaseSha' '$targetCsv' '$skipRestartValue' '$skipHealthValue'"
+    $remoteReleaseCommand = "bash '$remoteStage/agent/deploy/remote_release.sh' '$remoteStage' '$releaseSha' '$targetCsv' '$skipRestartValue' '$skipHealthValue'"
+    if ($EmergencyUserAuthorizedScheduledWindowOverride) {
+        Write-Warning "Emergency scheduled-window override requested: emergency_user_authorized=true"
+        $remoteReleaseCommand += " '--emergency-scheduled-window-override=emergency_user_authorized'"
+    }
+    Invoke-Remote $remoteReleaseCommand
     $remoteStageCreated = $false
 
     foreach ($name in $targetsToPublish) {
