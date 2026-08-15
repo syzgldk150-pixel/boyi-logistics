@@ -466,7 +466,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         app, captured = self._app()
         app._parse_multipart_form = lambda _handler: form
         forwarded = {}
-        with tempfile.TemporaryDirectory(dir=CONSOLE_DIR.parent / "tmp") as runtime_dir:
+        with tempfile.TemporaryDirectory(dir=CONSOLE_DIR.parent) as runtime_dir:
             app.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
 
             def forward(endpoint, *, package_path, fields, console_principal):
