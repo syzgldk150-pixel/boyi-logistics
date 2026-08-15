@@ -227,7 +227,11 @@ def _run_rollback_fault_harness(
             task_tmp_root.rmdir()
 
 
-def _run_sourced_release_harness(body: str) -> subprocess.CompletedProcess[str]:
+def _run_sourced_release_harness(
+    body: str,
+    *,
+    emergency_override: bool = False,
+) -> subprocess.CompletedProcess[str]:
     release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
     task_tmp_preexisting = task_tmp_root.exists()
@@ -239,12 +243,17 @@ def _run_sourced_release_harness(body: str) -> subprocess.CompletedProcess[str]:
         stage_root = temp_root / "stage"
         (stage_root / "agent" / "migrations").mkdir(parents=True)
         harness_path = temp_root / "release_function_harness.sh"
+        emergency_argument = (
+            " '--emergency-scheduled-window-override=emergency_user_authorized'"
+            if emergency_override
+            else ""
+        )
         harness_path.write_text(
             textwrap.dedent(
                 f"""
                 release_script="$1"
                 stage_root="$2"
-                source "${{release_script}}" "${{stage_root}}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
+                source "${{release_script}}" "${{stage_root}}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0{emergency_argument}
                 {body}
                 """
             ),
@@ -256,6 +265,50 @@ def _run_sourced_release_harness(body: str) -> subprocess.CompletedProcess[str]:
             _path_for_bash(harness_path),
             _path_for_bash(release_script),
             _path_for_bash(stage_root),
+        ]
+        if os.name == "nt":
+            command = ["wsl.exe", "-d", "Ubuntu", "--", *command]
+        return subprocess.run(
+            command,
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+        if not task_tmp_preexisting and task_tmp_root.exists():
+            task_tmp_root.rmdir()
+
+
+def _run_remote_release_argument_harness(
+    *remote_args: str,
+) -> subprocess.CompletedProcess[str]:
+    release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
+    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
+    task_tmp_preexisting = task_tmp_root.exists()
+    task_tmp_root.mkdir(exist_ok=True)
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        temporary = tempfile.TemporaryDirectory(dir=task_tmp_root)
+        stage_root = Path(temporary.name) / "stage"
+        stage_root.mkdir()
+        command = [
+            "bash",
+            "-c",
+            (
+                'release_script="$1"; stage_root="$2"; shift 2; '
+                'source "${release_script}" "${stage_root}" '
+                '"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0 "$@"; '
+                'printf "override=%s\\n" "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}"'
+            ),
+            "bash",
+            _path_for_bash(release_script),
+            _path_for_bash(stage_root),
+            *remote_args,
         ]
         if os.name == "nt":
             command = ["wsl.exe", "-d", "Ubuntu", "--", *command]
@@ -395,14 +448,49 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index('RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"'),
             execution.index("MUTATION_STARTED=1"),
         )
-        self.assertEqual(2, execution.count("preflight_running_protected_writes\n"))
-        self.assertLess(
-            execution.index('RELEASE_STAGE="preflight_running_protected_writes"'),
-            execution.index('RELEASE_STAGE="capture_control_plane_release_state"'),
+        self.assertEqual(4, execution.count("preflight_running_protected_writes\n"))
+        pre_mutation = execution.split(
+            'RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"', 1
+        )[1]
+        emergency_and_later = pre_mutation.split(
+            'if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then', 1
+        )[1]
+        emergency_branch, normal_and_later = emergency_and_later.split(
+            "\n  else", 1
+        )
+        normal_branch, after_preflight_branch = normal_and_later.split(
+            "\n  fi", 1
         )
         self.assertLess(
-            execution.index('RELEASE_STAGE="capture_control_plane_release_state"'),
-            execution.index("MUTATION_STARTED=1"),
+            emergency_branch.index('RELEASE_STAGE="capture_control_plane_release_state"'),
+            emergency_branch.index(
+                'RELEASE_STAGE="create_emergency_scheduler_release_hold"'
+            ),
+        )
+        self.assertLess(
+            emergency_branch.index(
+                'RELEASE_STAGE="create_emergency_scheduler_release_hold"'
+            ),
+            emergency_branch.index(
+                'RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"'
+            ),
+        )
+        self.assertTrue(
+            emergency_branch.rstrip().endswith("preflight_running_protected_writes")
+        )
+        self.assertLess(
+            normal_branch.index('RELEASE_STAGE="preflight_running_protected_writes"'),
+            normal_branch.index('RELEASE_STAGE="capture_control_plane_release_state"'),
+        )
+        self.assertTrue(normal_branch.rstrip().endswith("capture_control_plane_release_state"))
+        self.assertTrue(
+            after_preflight_branch.lstrip().startswith(
+                "MUTATION_STARTED=1\n  "
+                'RELEASE_STAGE="quiesce_runtime_services"\n  '
+                "quiesce_runtime_services\n  "
+                'RELEASE_STAGE="verify_protected_writes_quiesced"\n  '
+                "preflight_running_protected_writes"
+            )
         )
         self.assertLess(execution.index("build_release_virtualenvs"), execution.index("MUTATION_STARTED=1"))
         self.assertLess(
@@ -573,6 +661,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index('RELEASE_STAGE="create_scheduler_release_hold"'),
             execution.index('RELEASE_STAGE="restart_services"'),
         )
+        self.assertIn("ensure_scheduler_release_hold", execution)
         self.assertLess(
             execution.index('RELEASE_STAGE="record_dependency_hashes"'),
             execution.index('RELEASE_STAGE="activate_scheduler_after_release"'),
@@ -603,6 +692,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(
             rollback_function.index("clear_scheduler_release_hold_for_rollback"),
             rollback_function.index("restart_runtime_services_for_rollback"),
+        )
+        self.assertGreaterEqual(
+            rollback_function.count("clear_scheduler_release_hold_for_rollback"),
+            2,
         )
         self.assertIn("--expect-initial-production-manifest", release)
         self.assertIn("--check-control-plane-release-manifest", release)
@@ -763,6 +856,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("[string]$AutomationPluginArtifactRoot", publisher)
         self.assertIn("[string]$AutomationPluginTrustRoot", publisher)
         self.assertIn("function Copy-AutomationPluginReleaseInputs", publisher)
+        self.assertIn(
+            "[switch]$EmergencyUserAuthorizedScheduledWindowOverride",
+            publisher,
+        )
+        self.assertIn(
+            "--emergency-scheduled-window-override=emergency_user_authorized",
+            publisher,
+        )
         self.assertIn("one release-index.json and only its ZIP packages", publisher)
         self.assertIn('$_.Extension -cne ".pub"', publisher)
         self.assertIn('Join-Path $DestinationRoot "_plugin_artifacts"', publisher)
@@ -778,6 +879,139 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn(
             "EnvironmentFile=/home/boyce/agent/runtime/automation_plugin_release.env",
             agent_unit,
+        )
+
+    def test_emergency_scheduled_window_override_requires_exact_remote_argument(self):
+        without_override = _run_remote_release_argument_harness()
+        exact_override = _run_remote_release_argument_harness(
+            "--emergency-scheduled-window-override=emergency_user_authorized"
+        )
+
+        self.assertEqual(0, without_override.returncode, without_override.stderr)
+        self.assertEqual("override=0\n", without_override.stdout)
+        self.assertEqual(0, exact_override.returncode, exact_override.stderr)
+        self.assertEqual("override=1\n", exact_override.stdout)
+
+        invalid_arguments = (
+            "--emergency-scheduled-window-override=",
+            "--emergency-scheduled-window-override=not_authorized",
+            "--emergency-scheduled-window-override=emergency_user_authorized\n"
+            "forged_log=true",
+        )
+        for invalid_argument in invalid_arguments:
+            with self.subTest(invalid_argument=invalid_argument):
+                completed = _run_remote_release_argument_harness(invalid_argument)
+
+                self.assertEqual(2, completed.returncode)
+                self.assertEqual("", completed.stdout)
+                self.assertEqual(
+                    "emergency_scheduled_window_override=blocked "
+                    "reason=INVALID_AUTHORIZATION_ARGUMENT\n",
+                    completed.stderr,
+                )
+                self.assertNotIn(invalid_argument, completed.stderr)
+
+        unexpected_extra = _run_remote_release_argument_harness(
+            "--emergency-scheduled-window-override=emergency_user_authorized",
+            "extra",
+        )
+        self.assertEqual(2, unexpected_extra.returncode)
+        self.assertEqual("", unexpected_extra.stdout)
+        self.assertEqual(
+            "emergency_scheduled_window_override=blocked "
+            "reason=UNEXPECTED_ARGUMENT_COUNT\n",
+            unexpected_extra.stderr,
+        )
+
+    def test_emergency_scheduled_window_override_audits_both_skipped_checks(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            RELEASE_STAGE="preflight_scheduled_write_window"
+            preflight_scheduled_write_window
+            RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
+            preflight_scheduled_write_window
+            """,
+            emergency_override=True,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "scheduled_write_window=skipped emergency_user_authorized=true "
+            "stage=preflight_scheduled_write_window\n"
+            "scheduled_write_window=skipped emergency_user_authorized=true "
+            "stage=preflight_scheduled_write_window_before_mutation\n",
+            completed.stdout,
+        )
+        self.assertEqual("", completed.stderr)
+
+    def test_scheduled_window_without_emergency_override_remains_fail_closed(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            RELEASE_STAGE="preflight_scheduled_write_window"
+            preflight_scheduled_write_window
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertNotIn("scheduled_write_window=skipped", completed.stdout)
+        self.assertIn(
+            "scheduled_write_window=blocked reason=PREFLIGHT_RUNNER_MISSING count=1",
+            completed.stderr,
+        )
+
+    def test_scheduler_release_hold_reuses_and_cleans_only_current_sha(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            SCHEDULER_RELEASE_HOLD_FILE="${stage_root}/scheduler-release.pause"
+            SCHEDULER_RELEASE_HOLD_CREATED=0
+            create_scheduler_release_hold
+            ensure_scheduler_release_hold
+            [[ "$(tr -d '[:space:]' <"${SCHEDULER_RELEASE_HOLD_FILE}")" == "${RELEASE_SHA}" ]]
+            clear_scheduler_release_hold_for_rollback
+            [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" ]]
+            [[ "${SCHEDULER_RELEASE_HOLD_CREATED}" == "0" ]]
+            echo "scheduler_release_hold_cleanup=ok"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "scheduler_release_hold=created\n"
+            "scheduler_release_hold=retained\n"
+            "scheduler_release_hold_cleanup=ok\n",
+            completed.stdout,
+        )
+        self.assertEqual("", completed.stderr)
+
+    def test_scheduler_release_hold_preserves_owner_mismatch(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            SCHEDULER_RELEASE_HOLD_FILE="${stage_root}/scheduler-release.pause"
+            SCHEDULER_RELEASE_HOLD_CREATED=0
+            create_scheduler_release_hold
+            printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >"${SCHEDULER_RELEASE_HOLD_FILE}"
+            if ensure_scheduler_release_hold; then
+              exit 91
+            fi
+            if clear_scheduler_release_hold_for_rollback; then
+              exit 92
+            fi
+            [[ -f "${SCHEDULER_RELEASE_HOLD_FILE}" ]]
+            echo "scheduler_release_hold_owner_mismatch=preserved"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "scheduler_release_hold=created\n"
+            "scheduler_release_hold_owner_mismatch=preserved\n",
+            completed.stdout,
+        )
+        self.assertEqual(
+            "scheduler_release_hold=blocked "
+            "reason=CURRENT_RELEASE_HOLD_OWNER_MISMATCH\n"
+            "Current release scheduler hold has an unexpected owner\n",
+            completed.stderr,
         )
 
     def test_release_captures_every_database_prestate_before_mutation(self):

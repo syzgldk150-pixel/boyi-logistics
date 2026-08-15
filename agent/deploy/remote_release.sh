@@ -6,6 +6,22 @@ RELEASE_SHA="${2:?release SHA is required}"
 TARGETS_CSV="${3:?target list is required}"
 SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
+EMERGENCY_SCHEDULED_WINDOW_ARGUMENT="--emergency-scheduled-window-override=emergency_user_authorized"
+EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
+if (( $# > 6 )); then
+  echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
+  exit 2
+fi
+case "${6:-}" in
+  "") ;;
+  "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}")
+    EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=1
+    ;;
+  *)
+    echo "emergency_scheduled_window_override=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
+    exit 2
+    ;;
+esac
 # Current production scope is server-only. Windows Worker transport, signer,
 # Nginx mTLS prerequisites and dispatcher health are deliberately excluded.
 WINDOWS_WORKER_RELEASE_ENABLED=0
@@ -119,6 +135,22 @@ create_scheduler_release_hold() {
   )
   SCHEDULER_RELEASE_HOLD_CREATED=1
   echo "scheduler_release_hold=created"
+}
+
+ensure_scheduler_release_hold() {
+  if [[ "${SCHEDULER_RELEASE_HOLD_CREATED}" == "0" ]]; then
+    create_scheduler_release_hold
+    return
+  fi
+  [[ -f "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
+    echo "scheduler_release_hold=blocked reason=CURRENT_RELEASE_HOLD_MISSING_OR_UNSAFE" >&2
+    return 1
+  }
+  [[ "$(tr -d '[:space:]' <"${SCHEDULER_RELEASE_HOLD_FILE}")" == "${RELEASE_SHA}" ]] || {
+    echo "scheduler_release_hold=blocked reason=CURRENT_RELEASE_HOLD_OWNER_MISMATCH" >&2
+    return 1
+  }
+  echo "scheduler_release_hold=retained"
 }
 
 clear_scheduler_release_hold_for_rollback() {
@@ -410,6 +442,10 @@ preflight_scheduled_write_window() {
   # Database/source rollback cannot undo a third-party write that already
   # happened.  Ask the staged, read-only checker about every currently exempt
   # external-write schedule instead of hard-coding particular task IDs/times.
+  if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
+    echo "scheduled_write_window=skipped emergency_user_authorized=true stage=${RELEASE_STAGE}"
+    return 0
+  fi
   local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
   local migration_python="${PYTHON_BINS[agent]}"
   local output
@@ -2001,6 +2037,10 @@ rollback() {
       exit "${exit_code:-1}"
     }
   else
+    if ! clear_scheduler_release_hold_for_rollback; then
+      echo "rollback_incomplete stage_root=${STAGE_ROOT} recovery_material_preserved=1" >&2
+      exit "${exit_code:-1}"
+    fi
     if ! remove_new_virtualenvs; then
       echo "release_cleanup_incomplete stage_root=${STAGE_ROOT}" >&2
       exit "${exit_code:-1}"
@@ -2033,6 +2073,11 @@ run_release() {
   preflight_automation_project_scheduled_task_identities
   RELEASE_STAGE="preflight_automation_project_required_resources"
   preflight_automation_project_required_resources
+  if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
+    echo "emergency_scheduled_window_override=authorized emergency_user_authorized=true scope=scheduled_write_window_proximity_only residual_race_user_authorized=true"
+    RELEASE_STAGE="preflight_running_protected_writes_before_emergency_window_override"
+    preflight_running_protected_writes
+  fi
   RELEASE_STAGE="preflight_scheduled_write_window"
   preflight_scheduled_write_window
   RELEASE_STAGE="backup_managed_sources"
@@ -2049,15 +2094,27 @@ run_release() {
     preflight_worker_server_identity
   fi
 
-  # Static checks and dependency builds can take long enough to cross into an
-  # exempt external-write schedule. Recheck immediately before any mutation or
-  # service quiesce so a third-party action is never straddled by the release.
+  # Static checks and dependency builds can cross into an external-write
+  # schedule. Normal releases recheck the window; the explicitly authorized
+  # emergency path below minimizes and audits its old-scheduler residual race.
   RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
   preflight_scheduled_write_window
-  RELEASE_STAGE="preflight_running_protected_writes"
-  preflight_running_protected_writes
-  RELEASE_STAGE="capture_control_plane_release_state"
-  capture_control_plane_release_state
+  if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
+    # The old scheduler does not observe this marker dynamically. Capture all
+    # read-only database state before creating the marker, then make the final
+    # running-write check the immediately preceding operation to quiescence.
+    RELEASE_STAGE="capture_control_plane_release_state"
+    capture_control_plane_release_state
+    RELEASE_STAGE="create_emergency_scheduler_release_hold"
+    create_scheduler_release_hold
+    RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"
+    preflight_running_protected_writes
+  else
+    RELEASE_STAGE="preflight_running_protected_writes"
+    preflight_running_protected_writes
+    RELEASE_STAGE="capture_control_plane_release_state"
+    capture_control_plane_release_state
+  fi
   MUTATION_STARTED=1
   RELEASE_STAGE="quiesce_runtime_services"
   quiesce_runtime_services
@@ -2087,7 +2144,7 @@ run_release() {
   RELEASE_STAGE="write_automation_plugin_runtime_environment"
   write_automation_plugin_runtime_environment
   RELEASE_STAGE="create_scheduler_release_hold"
-  create_scheduler_release_hold
+  ensure_scheduler_release_hold
   RELEASE_STAGE="restart_services"
   NEW_RUNTIME_START_ATTEMPTED=1
   restart_services
