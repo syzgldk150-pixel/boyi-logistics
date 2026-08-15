@@ -609,7 +609,7 @@ check_control_plane_release_manifest() {
   local expected_initial="0"
   local output pattern
   local -a args=(--check-control-plane-release-manifest)
-  if [[ "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1" ]]; then
+  if [[ "${AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" == "1" ]]; then
     args+=(--expect-initial-production-manifest)
     expected_initial="1"
   fi

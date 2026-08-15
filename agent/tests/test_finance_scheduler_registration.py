@@ -23,6 +23,7 @@ from shared.finance.sources import (
     enabled_finance_account_ids,
     enabled_finance_platforms,
 )
+from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
 
 HAS_APSCHEDULER = importlib.util.find_spec("apscheduler") is not None
 if HAS_APSCHEDULER:
@@ -528,6 +529,158 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             "scheduler:scan_0700:2026-08-15T07:00:00+08:00",
             trusted["idempotency_key"],
         )
+
+    def test_enabled_deferred_r7_migration_rows_register_no_jobs(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+        from agent.automation_plugins.release_scope import (
+            DEFERRED_R7_LEGACY_SCHEDULE_GENERATION,
+            DEFERRED_R7_PLUGIN_IDS,
+        )
+
+        reviewed_rows = []
+        for automation_id in sorted(DEFERRED_R7_PLUGIN_IDS):
+            definition = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[automation_id]
+            reviewed_rows.extend(
+                (
+                    task_id,
+                    automation_id,
+                    definition.tool_name,
+                    dict(definition.legacy_arguments),
+                )
+                for task_id in sorted(definition.scheduled_task_ids)
+            )
+        self.assertEqual(14, len(reviewed_rows))
+        self.assertEqual(
+            {task_id for task_id, *_rest in reviewed_rows},
+            set(scheduler_module.DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS),
+        )
+        for task_id, automation_id, tool_name, _legacy_arguments in reviewed_rows:
+            with self.subTest(reviewed_identity=task_id):
+                self.assertTrue(
+                    scheduler_module._deferred_r7_schedule_must_not_register(
+                        {
+                            "id": task_id,
+                            "tool_name": tool_name,
+                            "automation_id": automation_id,
+                            "automation_generation": (
+                                DEFERRED_R7_LEGACY_SCHEDULE_GENERATION
+                            ),
+                        }
+                    )
+                )
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": task_id,
+                "name": task_id,
+                "tool_name": tool_name,
+                "tool_params": legacy_arguments,
+                "cron_expression": "0 9 * * *",
+                "enabled": automation_id == "r7_arrival_checkin",
+                "configuration_version": 1,
+                "automation_id": automation_id,
+                "automation_generation": DEFERRED_R7_LEGACY_SCHEDULE_GENERATION,
+            }
+            for task_id, automation_id, tool_name, legacy_arguments in reviewed_rows
+        ]
+        self.assertEqual(
+            13,
+            sum(bool(row["enabled"]) for row in core.memory.rows),
+        )
+        invoker = _ProjectInvoker()
+        previous_scheduler = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )
+        try:
+            with self.assertLogs("agent", level="WARNING") as captured:
+                scheduler_module._load_tasks_from_db(
+                    core,
+                    automation_project_invoker=invoker,
+                )
+            self.assertEqual(0, len(scheduler_module._scheduler.get_jobs()))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+
+        self.assertIn(
+            "Deferred R7 scheduled tasks were not registered",
+            "\n".join(captured.output),
+        )
+        self.assertEqual([], core.calls)
+        self.assertEqual([], invoker.calls)
+
+    def test_deferred_r7_schedule_drift_blocks_loading_and_startup(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        valid = {
+            "id": "r7_arrival_checkin_0900",
+            "name": "R7 arrival",
+            "tool_name": "r7_arrival_checkin",
+            "tool_params": {},
+            "cron_expression": "0 9 * * *",
+            "enabled": True,
+            "configuration_version": 1,
+            "automation_id": "r7_arrival_checkin",
+            "automation_generation": (
+                scheduler_module.DEFERRED_R7_LEGACY_SCHEDULE_GENERATION
+            ),
+        }
+        invalid_overrides = (
+            {"id": "r7_arrival_checkin_0915"},
+            {"tool_name": "r7_departure_checkin"},
+            {"tool_name": "automation.r7_arrival_checkin.run"},
+            {
+                "tool_name": "automation.scan_codes.run",
+                "automation_id": "scan_codes",
+                "automation_generation": 4,
+            },
+            {"automation_id": "r7_departure_checkin"},
+            {"automation_id": " r7_arrival_checkin "},
+            {"automation_id": None},
+            {"automation_generation": 2},
+            {"automation_generation": None},
+            {"automation_generation": True},
+        )
+        previous_scheduler = scheduler_module._scheduler
+        try:
+            for override in invalid_overrides:
+                core = _AgentCore()
+                core.memory.rows = [{**valid, **override}]
+                invoker = _ProjectInvoker()
+                scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+                    timezone="Asia/Shanghai"
+                )
+                with self.subTest(override=override), self.assertRaisesRegex(
+                    scheduler_module.DeferredR7ScheduleIdentityError,
+                    "reviewed migration identity",
+                ):
+                    scheduler_module._load_tasks_from_db(
+                        core,
+                        automation_project_invoker=invoker,
+                    )
+                self.assertEqual(0, len(scheduler_module._scheduler.get_jobs()))
+                self.assertEqual([], core.calls)
+                self.assertEqual([], invoker.calls)
+
+            startup_core = _AgentCore()
+            startup_core.memory.rows = [
+                {**valid, "automation_generation": 2}
+            ]
+            with patch(
+                "agent.scheduler.ensure_control_plane_schedule_tasks",
+                return_value=(),
+            ), self.assertRaises(scheduler_module.DeferredR7ScheduleIdentityError):
+                scheduler_module.init_scheduler(
+                    startup_core,
+                    include_startup_catchup=False,
+                )
+        finally:
+            scheduler_module._scheduler = previous_scheduler
 
     def test_plugin_schedule_fails_closed_without_explicit_project_identity(self):
         if not HAS_APSCHEDULER:

@@ -984,9 +984,79 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 tuple(row["resource_key"] for row in cursor.fetchall()),
                 expanded_resource_keys,
             )
+    # Simulate an autocommitted older 018 candidate that created the bootstrap
+    # item table before retained source snapshots existed. Persisted items make
+    # that evidence impossible to recover and must stop the rerun before ALTER.
+    with case._connection(partial_database, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE automation_project_bootstrap_items_018 (
+                    automation_id VARCHAR(128) NOT NULL,
+                    initial_mode VARCHAR(32) NOT NULL,
+                    source_set_sha256 CHAR(64) NOT NULL,
+                    policy_version INT UNSIGNED NOT NULL,
+                    completed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                    PRIMARY KEY (automation_id),
+                    CONSTRAINT chk_automation_project_bootstrap_mode CHECK (
+                        initial_mode IN (
+                            'REQUIRE_EACH_RUN', 'LEGACY_SCHEDULE_ONLY'
+                        )
+                    )
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                  COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO automation_project_bootstrap_items_018 (
+                    automation_id, initial_mode, source_set_sha256,
+                    policy_version
+                ) VALUES ('unrecoverable_partial', 'REQUIRE_EACH_RUN', %s, 1)
+                """,
+                ("0" * 64,),
+            )
+    with case.assertRaises(Exception):
+        case._run_migrations(partial_database)
+    with case._connection(partial_database, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=%s "
+                "AND TABLE_NAME='automation_project_bootstrap_items_018' "
+                "AND COLUMN_NAME='source_snapshot_json'",
+                (partial_database,),
+            )
+            case.assertEqual(cursor.fetchone()["n"], 0)
+            cursor.execute(
+                "DELETE FROM automation_project_bootstrap_items_018 "
+                "WHERE automation_id='unrecoverable_partial'"
+            )
+
+    # Once the old partial table is proven empty, the rerun may add the JSON
+    # evidence column, make it required, and install its object-shape check.
     case._run_migrations(partial_database)
     with case._connection(partial_database, autocommit=True) as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=%s "
+                "AND TABLE_NAME='automation_project_bootstrap_items_018' "
+                "AND COLUMN_NAME='source_snapshot_json' "
+                "AND DATA_TYPE='json' AND IS_NULLABLE='NO'",
+                (partial_database,),
+            )
+            case.assertEqual(cursor.fetchone()["n"], 1)
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM information_schema.TABLE_CONSTRAINTS "
+                "WHERE TABLE_SCHEMA=%s "
+                "AND TABLE_NAME='automation_project_bootstrap_items_018' "
+                "AND CONSTRAINT_NAME="
+                "'chk_automation_project_bootstrap_source_snapshot' "
+                "AND CONSTRAINT_TYPE='CHECK'",
+                (partial_database,),
+            )
+            case.assertEqual(cursor.fetchone()["n"], 1)
             cursor.execute(
                 "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
                 "WHERE TABLE_SCHEMA=%s AND TABLE_NAME='scheduled_tasks' "

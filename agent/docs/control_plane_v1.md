@@ -4,7 +4,7 @@ type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
 status: active
-updated: 2026-08-15
+updated: 2026-08-16
 ---
 
 # Agent 统一控制平面 v1
@@ -83,12 +83,14 @@ Worker 通过 MySQL 8 `FOR UPDATE SKIP LOCKED` 和租约领取。执行中续租
 不属于行为哈希。任一受绑定任务配置或工具治理契约改变，策略立即为 stale，运行时的有效模式退回
 `REQUIRE_EACH_RUN`，不得读取时写回或继续使用旧授权。
 
-迁移 `014` 仅把经代码审阅的历史任务行规范化到当前闭合契约（包括内部投影、财务启动补拉、
-13 条 R7 到达任务与两条 `clock_in_dual` v1.1 任务），不授予免审。迁移 `015` 维护
-`scheduled_tasks.configuration_version`、当前策略和不可变策略事件。代码内共有 69 个精确审阅合同：
-54 个内部投影与 15 个外部写。部署期一次可审计 bootstrap 只为部署时已启用、仍完整命中且此前未被
-管理员显式配置的既有任务保留原调度行为；当前生产预期 67 项。禁用项、新任务和任何校验失败项均
-保持 `REQUIRE_EACH_RUN`，bootstrap 或运行时校验失败都不会默许写操作。
+迁移 `014` 仅把经代码审阅的历史任务行规范化到当时闭合契约，不授予免审；`015` 保存任务级策略与
+不可变事件，`016`/`017` 前向升级账号和任务合同。`018` 再把当前发行的 57 条计划改写为
+`automation.<automation_id>.run`，另保留 14 条延期 R7 历史身份供审计。配置保存会把旧任务级 EXACT
+安全退休为 REQUIRE；release hold 下的一次性项目策略 bootstrap 只有在 018 pre-image、原 grant、同一
+配置请求的退休事件、typed committed generation 和当前任务行全部一致时，才建立项目级
+`LEGACY_SCHEDULE_ONLY`。首次门禁固定为 71 条历史身份、68 条启用、16 个项目策略，其中 10 个
+LEGACY、6 个 REQUIRE，并绑定 55 条已启用旧授权。禁用项、证据缺失或任何漂移都保持逐次审批；14 条
+R7 只验证身份，Scheduler 不注册、不执行。
 
 Agent 启动和 seed API 的空库补种都只插入缺失行，所有新行默认停用；已有行的管理员
 `enabled`、cron 和参数保持原样。日常财务、韵达派件预测和客服问题件影子采集只保留为默认停用的

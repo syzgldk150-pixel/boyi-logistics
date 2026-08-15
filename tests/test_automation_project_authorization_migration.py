@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import re
 import sys
@@ -53,6 +54,17 @@ def _load_schedule_identity_preflight():
     spec = importlib.util.spec_from_file_location(
         "automation_project_schedule_identity_preflight_test",
         SCHEDULE_IDENTITY_PREFLIGHT_PATH,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_migration_helper():
+    spec = importlib.util.spec_from_file_location(
+        "automation_project_authorization_migration_helper_test",
+        MIGRATION_HELPER_PATH,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -931,6 +943,47 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         ):
             self.assertIn(required, self.sql)
 
+    def test_bootstrap_source_snapshot_schema_repairs_only_empty_old_partial(self):
+        create_items = self.sql.split(
+            "CREATE TABLE IF NOT EXISTS automation_project_bootstrap_items_018",
+            1,
+        )[1].split(
+            "CREATE TABLE IF NOT EXISTS automation_project_bootstrap_marker_018",
+            1,
+        )[0]
+        self.assertIn("source_snapshot_json JSON NOT NULL", create_items)
+        self.assertIn(
+            "chk_automation_project_bootstrap_source_snapshot",
+            create_items,
+        )
+        guard = self.sql.index(
+            "cp018_bootstrap_evidence_missing_guard_stmt"
+        )
+        add_column = self.sql.index(
+            "cp018_add_bootstrap_source_snapshot_stmt"
+        )
+        require_column = self.sql.index(
+            "cp018_require_bootstrap_source_snapshot_stmt"
+        )
+        self.assertLess(guard, add_column)
+        self.assertLess(add_column, require_column)
+        self.assertIn(
+            "cp018_bootstrap_evidence_unrecoverable",
+            self.sql,
+        )
+        self.assertIn(
+            "ADD COLUMN source_snapshot_json JSON NULL",
+            self.sql,
+        )
+        self.assertIn(
+            "MODIFY COLUMN source_snapshot_json JSON NOT NULL",
+            self.sql,
+        )
+        self.assertIn(
+            "cp018_bootstrap_source_snapshot_final_check_count = 1",
+            self.sql,
+        )
+
     def test_status_distinguishes_clean_dirty_and_applied_without_row_data(self):
         cases = (
             (False, set(), "pending_clean"),
@@ -1318,6 +1371,200 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertEqual(
             "4b447a7c139980369c61eb9c2c5e250a974452b8c80036a1bce0f04a95a4fcdf",
             digest,
+        )
+
+    def test_restore_accepts_only_exact_release_owned_project_policy_bootstrap(self):
+        helper = _load_migration_helper()
+        helper_source = MIGRATION_HELPER_PATH.read_text(encoding="utf-8")
+        self.assertEqual(4, helper_source.count("AS UNSIGNED) AS source_"))
+
+        class BootstrapCursor:
+            def __init__(self, *, marker, items, events):
+                self.marker = marker
+                self.items = items
+                self.events = events
+                self._rows = ()
+                self._row = None
+
+            def execute(self, sql, _params=None):
+                normalized = " ".join(str(sql).split())
+                self._row = None
+                if "FROM automation_project_bootstrap_marker_018" in normalized:
+                    self._rows = tuple(self.marker)
+                elif (
+                    "FROM automation_project_bootstrap_items_018" in normalized
+                    and "LIMIT 1" in normalized
+                ):
+                    self._rows = ()
+                    self._row = self.items[0] if self.items else None
+                elif "FROM automation_project_bootstrap_items_018" in normalized:
+                    self._rows = tuple(self.items)
+                elif "FROM automation_project_policy_events AS event" in normalized:
+                    self._rows = tuple(self.events)
+                else:
+                    raise AssertionError(f"unexpected bootstrap restore SQL: {normalized}")
+
+            def fetchall(self):
+                return self._rows
+
+            def fetchone(self):
+                return self._row
+
+        tables = {
+            "automation_project_bootstrap_marker_018",
+            "automation_project_bootstrap_items_018",
+            "automation_project_policy_events",
+        }
+        runtime = {
+            "_table_exists": lambda _cursor, table_name: table_name in tables,
+            "hashlib": hashlib,
+            "json": json,
+        }
+        items = []
+        events = []
+        for index in range(16):
+            automation_id = f"project-{index:02d}"
+            mode = "LEGACY_SCHEDULE_ONLY" if index < 10 else "REQUIRE_EACH_RUN"
+            contract_snapshot = {"automation_id": automation_id}
+            source_contract_hash = hashlib.sha256(
+                json.dumps(
+                    contract_snapshot,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            source_snapshot = {
+                "schema_version": 1,
+                "automation_id": automation_id,
+                "automation_generation": 1,
+                "project_configuration_version": 2,
+                "contract_hash": source_contract_hash,
+                "configuration_request_id": (
+                    f"10000000-0000-0000-0000-{index:012d}"
+                ),
+                "configuration_event_metadata_sha256": "f" * 64,
+                "scheduled_tasks": (
+                    [{"legacy_authorized": True}] if index < 10 else []
+                ),
+            }
+            source_set_sha256 = hashlib.sha256(
+                json.dumps(
+                    source_snapshot,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            items.append(
+                {
+                    "automation_id": automation_id,
+                    "initial_mode": mode,
+                    "source_set_sha256": source_set_sha256,
+                    "source_snapshot_json": source_snapshot,
+                    "policy_version": 2 if index < 10 else 1,
+                    "source_automation_id": automation_id,
+                    "source_generation": 1,
+                    "source_configuration_version": 2,
+                }
+            )
+            request_id = f"00000000-0000-0000-0000-{index:012d}"
+            legacy = mode == "LEGACY_SCHEDULE_ONLY"
+            events.append(
+                {
+                    "automation_id": automation_id,
+                    "request_id": request_id,
+                    "correlation_id": request_id,
+                    "from_mode": "REQUIRE_EACH_RUN",
+                    "to_mode": mode,
+                    "contract_hash": source_contract_hash if legacy else None,
+                    "contract_snapshot_json": contract_snapshot if legacy else None,
+                    "tool_contract_hash": "b" * 64 if legacy else None,
+                    "plugin_contract_hash": "c" * 64 if legacy else None,
+                    "project_configuration_version": 2,
+                    "project_generation": 1,
+                    "actor_id": "system:automation-project-bootstrap-018",
+                    "actor_role": "system",
+                    "actor_display_name": "Automation project bootstrap 018",
+                    "reason": "AUTOMATION_PROJECT_BOOTSTRAP_018",
+                    "comment": "Release-held one-time policy bootstrap",
+                    "initial_mode": mode,
+                    "source_contract_hash": source_contract_hash,
+                    "source_generation": 1,
+                    "source_configuration_version": 2,
+                }
+            )
+        project_set_sha256 = hashlib.sha256(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "release_sha": "d" * 40,
+                    "projects": [
+                        {
+                            "automation_id": item["automation_id"],
+                            "initial_mode": item["initial_mode"],
+                            "source_set_sha256": item["source_set_sha256"],
+                            "policy_version": item["policy_version"],
+                        }
+                        for item in items
+                    ],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        marker = [
+            {
+                "marker_id": 1,
+                "release_sha": "d" * 40,
+                "project_set_sha256": project_set_sha256,
+                "completed_by": "system:automation-project-bootstrap-018",
+            }
+        ]
+
+        self.assertTrue(
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(marker=marker, items=items, events=events),
+            )
+        )
+
+        tampered_events = [dict(event) for event in events]
+        tampered_events[-1]["comment"] = "user supplied"
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "project policy bootstrap events are invalid",
+        ):
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=marker,
+                    items=items,
+                    events=tampered_events,
+                ),
+            )
+
+        tampered_items = [dict(item) for item in items]
+        tampered_items[0]["source_snapshot_json"] = dict(
+            tampered_items[0]["source_snapshot_json"]
+        )
+        tampered_items[0]["source_snapshot_json"]["automation_generation"] = 2
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "project policy bootstrap items are invalid",
+        ):
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(
+                    marker=marker,
+                    items=tampered_items,
+                    events=events,
+                ),
+            )
+
+        self.assertFalse(
+            helper._validate_project_policy_bootstrap_restore(
+                runtime,
+                BootstrapCursor(marker=(), items=(), events=()),
+            )
         )
 
 

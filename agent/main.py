@@ -128,6 +128,7 @@ from agent.automation_plugins.production import (
     production_cursor_secret,
 )
 from agent.automation_plugins.first_party import (
+    release_first_party_automation_ids,
     release_first_party_broker_action_keys,
     release_first_party_plugin_ids,
 )
@@ -1108,6 +1109,25 @@ async def lifespan(app: FastAPI):
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
         release_hold_provider=scheduler_release_hold_requested,
     )
+    if scheduler_release_hold_requested():
+        bootstrap_automation_ids = release_first_party_automation_ids()
+        if len(bootstrap_automation_ids) != 16:
+            raise RuntimeError(
+                "automation project bootstrap release scope must contain exactly 16 instances"
+            )
+        project_policy_bootstrap = await asyncio.to_thread(
+            project_policy_service.bootstrap_legacy_project_policies,
+            expected_automation_ids=tuple(sorted(bootstrap_automation_ids)),
+            release_sha=_release_sha(),
+        )
+        logger.info(
+            "Automation project policy bootstrap status=%s projects=%d legacy=%d require_each=%d retired_exact=%d",
+            project_policy_bootstrap.get("status", "unknown"),
+            project_policy_bootstrap.get("project_count", 0),
+            project_policy_bootstrap.get("legacy_schedule_only", 0),
+            project_policy_bootstrap.get("require_each_run", 0),
+            project_policy_bootstrap.get("retired_scheduled_exact", 0),
+        )
     automation_project_policy_service = project_policy_service
     automation_project_entrypoints = AutomationProjectEntrypoints(
         project_policy_service,

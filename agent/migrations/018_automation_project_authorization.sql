@@ -2061,11 +2061,15 @@ CREATE TABLE IF NOT EXISTS automation_project_bootstrap_items_018 (
     automation_id VARCHAR(128) NOT NULL,
     initial_mode VARCHAR(32) NOT NULL,
     source_set_sha256 CHAR(64) NOT NULL,
+    source_snapshot_json JSON NOT NULL,
     policy_version INT UNSIGNED NOT NULL,
     completed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (automation_id),
     CONSTRAINT chk_automation_project_bootstrap_mode CHECK (
         initial_mode IN ('REQUIRE_EACH_RUN', 'LEGACY_SCHEDULE_ONLY')
+    ),
+    CONSTRAINT chk_automation_project_bootstrap_source_snapshot CHECK (
+        JSON_TYPE(source_snapshot_json) = 'OBJECT'
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -2078,6 +2082,143 @@ CREATE TABLE IF NOT EXISTS automation_project_bootstrap_marker_018 (
     PRIMARY KEY (marker_id),
     CONSTRAINT chk_automation_project_bootstrap_marker_id CHECK (marker_id = 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ``bootstrap_items`` was introduced by this still-pending migration, but a
+-- failed prior attempt may already have created the old empty table without
+-- the retained evidence column. Repair only that empty layout. Once an item
+-- or marker exists, missing evidence cannot be reconstructed safely and the
+-- rerun must fail closed instead of manufacturing an authorization source.
+SET @cp018_bootstrap_source_snapshot_column_count = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA=DATABASE()
+      AND TABLE_NAME='automation_project_bootstrap_items_018'
+      AND COLUMN_NAME='source_snapshot_json'
+);
+SET @cp018_bootstrap_source_snapshot_wrong_type_count = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA=DATABASE()
+      AND TABLE_NAME='automation_project_bootstrap_items_018'
+      AND COLUMN_NAME='source_snapshot_json'
+      AND DATA_TYPE <> 'json'
+);
+SET @cp018_bootstrap_source_snapshot_shape_guard_sql = IF(
+    @cp018_bootstrap_source_snapshot_column_count IN (0, 1)
+    AND @cp018_bootstrap_source_snapshot_wrong_type_count = 0,
+    'SELECT 1',
+    'SELECT * FROM information_schema.cp018_bootstrap_source_snapshot_shape_invalid'
+);
+PREPARE cp018_bootstrap_source_snapshot_shape_guard_stmt
+    FROM @cp018_bootstrap_source_snapshot_shape_guard_sql;
+EXECUTE cp018_bootstrap_source_snapshot_shape_guard_stmt;
+DEALLOCATE PREPARE cp018_bootstrap_source_snapshot_shape_guard_stmt;
+
+SET @cp018_bootstrap_evidence_missing_persisted_count = IF(
+    @cp018_bootstrap_source_snapshot_column_count = 0,
+    (SELECT COUNT(*) FROM automation_project_bootstrap_items_018)
+        + (SELECT COUNT(*) FROM automation_project_bootstrap_marker_018),
+    0
+);
+SET @cp018_bootstrap_evidence_missing_guard_sql = IF(
+    @cp018_bootstrap_evidence_missing_persisted_count = 0,
+    'SELECT 1',
+    'SELECT * FROM information_schema.cp018_bootstrap_evidence_unrecoverable'
+);
+PREPARE cp018_bootstrap_evidence_missing_guard_stmt
+    FROM @cp018_bootstrap_evidence_missing_guard_sql;
+EXECUTE cp018_bootstrap_evidence_missing_guard_stmt;
+DEALLOCATE PREPARE cp018_bootstrap_evidence_missing_guard_stmt;
+
+SET @cp018_add_bootstrap_source_snapshot_sql = IF(
+    @cp018_bootstrap_source_snapshot_column_count = 0,
+    'ALTER TABLE automation_project_bootstrap_items_018 ADD COLUMN source_snapshot_json JSON NULL AFTER source_set_sha256',
+    'SELECT 1'
+);
+PREPARE cp018_add_bootstrap_source_snapshot_stmt
+    FROM @cp018_add_bootstrap_source_snapshot_sql;
+EXECUTE cp018_add_bootstrap_source_snapshot_stmt;
+DEALLOCATE PREPARE cp018_add_bootstrap_source_snapshot_stmt;
+
+SET @cp018_bootstrap_source_snapshot_null_count = (
+    SELECT COUNT(*)
+    FROM automation_project_bootstrap_items_018
+    WHERE source_snapshot_json IS NULL
+);
+SET @cp018_bootstrap_source_snapshot_null_guard_sql = IF(
+    @cp018_bootstrap_source_snapshot_null_count = 0,
+    'SELECT 1',
+    'SELECT * FROM information_schema.cp018_bootstrap_source_snapshot_missing'
+);
+PREPARE cp018_bootstrap_source_snapshot_null_guard_stmt
+    FROM @cp018_bootstrap_source_snapshot_null_guard_sql;
+EXECUTE cp018_bootstrap_source_snapshot_null_guard_stmt;
+DEALLOCATE PREPARE cp018_bootstrap_source_snapshot_null_guard_stmt;
+
+SET @cp018_bootstrap_source_snapshot_nullable_count = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA=DATABASE()
+      AND TABLE_NAME='automation_project_bootstrap_items_018'
+      AND COLUMN_NAME='source_snapshot_json'
+      AND IS_NULLABLE='YES'
+);
+SET @cp018_require_bootstrap_source_snapshot_sql = IF(
+    @cp018_bootstrap_source_snapshot_nullable_count = 1,
+    'ALTER TABLE automation_project_bootstrap_items_018 MODIFY COLUMN source_snapshot_json JSON NOT NULL AFTER source_set_sha256',
+    'SELECT 1'
+);
+PREPARE cp018_require_bootstrap_source_snapshot_stmt
+    FROM @cp018_require_bootstrap_source_snapshot_sql;
+EXECUTE cp018_require_bootstrap_source_snapshot_stmt;
+DEALLOCATE PREPARE cp018_require_bootstrap_source_snapshot_stmt;
+
+SET @cp018_bootstrap_source_snapshot_check_count = (
+    SELECT COUNT(*)
+    FROM information_schema.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA=DATABASE()
+      AND TABLE_NAME='automation_project_bootstrap_items_018'
+      AND CONSTRAINT_NAME='chk_automation_project_bootstrap_source_snapshot'
+      AND CONSTRAINT_TYPE='CHECK'
+);
+SET @cp018_add_bootstrap_source_snapshot_check_sql = IF(
+    @cp018_bootstrap_source_snapshot_check_count = 0,
+    'ALTER TABLE automation_project_bootstrap_items_018 ADD CONSTRAINT chk_automation_project_bootstrap_source_snapshot CHECK (JSON_TYPE(source_snapshot_json) = ''OBJECT'')',
+    'SELECT 1'
+);
+PREPARE cp018_add_bootstrap_source_snapshot_check_stmt
+    FROM @cp018_add_bootstrap_source_snapshot_check_sql;
+EXECUTE cp018_add_bootstrap_source_snapshot_check_stmt;
+DEALLOCATE PREPARE cp018_add_bootstrap_source_snapshot_check_stmt;
+
+SET @cp018_bootstrap_source_snapshot_final_check_count = (
+    SELECT COUNT(*)
+    FROM information_schema.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA=DATABASE()
+      AND TABLE_NAME='automation_project_bootstrap_items_018'
+      AND CONSTRAINT_NAME='chk_automation_project_bootstrap_source_snapshot'
+      AND CONSTRAINT_TYPE='CHECK'
+);
+
+SET @cp018_bootstrap_source_snapshot_final_shape_count = (
+    SELECT COUNT(*)
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA=DATABASE()
+      AND TABLE_NAME='automation_project_bootstrap_items_018'
+      AND COLUMN_NAME='source_snapshot_json'
+      AND DATA_TYPE='json'
+      AND IS_NULLABLE='NO'
+);
+SET @cp018_bootstrap_source_snapshot_final_guard_sql = IF(
+    @cp018_bootstrap_source_snapshot_final_shape_count = 1
+    AND @cp018_bootstrap_source_snapshot_final_check_count = 1,
+    'SELECT 1',
+    'SELECT * FROM information_schema.cp018_bootstrap_source_snapshot_final_invalid'
+);
+PREPARE cp018_bootstrap_source_snapshot_final_guard_stmt
+    FROM @cp018_bootstrap_source_snapshot_final_guard_sql;
+EXECUTE cp018_bootstrap_source_snapshot_final_guard_stmt;
+DEALLOCATE PREPARE cp018_bootstrap_source_snapshot_final_guard_stmt;
 
 CREATE TABLE IF NOT EXISTS automation_worker_devices (
     device_id VARCHAR(128) NOT NULL,

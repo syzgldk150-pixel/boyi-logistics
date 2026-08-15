@@ -42,6 +42,26 @@ from shared.automation_project_authorization import (
     compile_automation_project_contract,
 )
 from shared.automation_project_manifest import AutomationProjectInstanceDefinition
+from shared.automation_project_policy_repository import (
+    AUTOMATION_PROJECT_BOOTSTRAP_ACTOR_ID as _PROJECT_BOOTSTRAP_ACTOR_ID,
+    AUTOMATION_PROJECT_BOOTSTRAP_ACTOR_ROLE as _PROJECT_BOOTSTRAP_ACTOR_ROLE,
+    AUTOMATION_PROJECT_BOOTSTRAP_COMPLETED_BY as _PROJECT_BOOTSTRAP_COMPLETED_BY,
+    AUTOMATION_PROJECT_BOOTSTRAP_EVENT_COMMENT as _PROJECT_BOOTSTRAP_EVENT_COMMENT,
+    AUTOMATION_PROJECT_BOOTSTRAP_POLICY_COMMENT as _PROJECT_BOOTSTRAP_POLICY_COMMENT,
+    AUTOMATION_PROJECT_BOOTSTRAP_REASON as _PROJECT_BOOTSTRAP_REASON,
+    AutomationProjectBootstrapContractError,
+    SUPER_ADMIN_PROJECT_POLICY_REASON,
+    automation_project_bootstrap_project_set_sha256 as _bootstrap_project_set_sha256,
+    automation_project_bootstrap_release_sha as _bootstrap_release_sha,
+    automation_project_bootstrap_source_snapshot_sha256,
+    automation_project_policy_bootstrap_request_id,
+    derive_automation_project_bootstrap_source_snapshot,
+    validate_automation_project_configuration_evidence,
+    validate_automation_project_bootstrap_policy_event,
+    validate_existing_automation_project_bootstrap as _validate_existing_bootstrap,
+    validate_initial_automation_project_bootstrap_policy,
+    validate_unconfigured_automation_project_policy,
+)
 from shared.orchestration_repository import (
     AccountExecutionLockUnavailable,
     ConcurrentUpdateError,
@@ -112,8 +132,6 @@ _SERVER_CONTEXT_FIELDS = frozenset(
         "roles",
     }
 )
-
-
 class AutomationProjectPolicyService:
     """One authorization authority for every trusted project entrypoint."""
 
@@ -161,6 +179,304 @@ class AutomationProjectPolicyService:
         with self._repository.unit_of_work() as uow:
             policy = uow.automation_projects.get_policy(safe_id)
         return self._describe_entry(entry, policy)
+
+    def bootstrap_legacy_project_policies(
+        self,
+        *,
+        expected_automation_ids: Sequence[str],
+        release_sha: str,
+    ) -> dict[str, Any]:
+        """Transfer only proven legacy schedule grants into project policy.
+
+        The first-party configuration bootstrap has already retired the old
+        per-task EXACT rows before generations commit.  Authorization is
+        therefore derived only from the immutable original grant plus the
+        exact migration-owned retirement event associated with the committed
+        project configuration.  The whole 018 marker is one transaction.
+        """
+
+        self._require_release_held()
+        automation_ids = _bootstrap_automation_ids(expected_automation_ids)
+        try:
+            safe_release_sha = _bootstrap_release_sha(release_sha)
+        except AutomationProjectBootstrapContractError as exc:
+            raise OrchestrationError(
+                exc.code,
+                "Automation project bootstrap requires a full release digest",
+            ) from exc
+        entries: dict[str, PluginCatalogEntry] = {}
+        try:
+            for automation_id in automation_ids:
+                entry = self._plugin_catalog.require(automation_id)
+                if entry.automation_id != automation_id:
+                    raise ValueError("catalog identity mismatch")
+                entries[automation_id] = entry
+        except Exception as exc:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
+                "Automation project bootstrap release scope is unavailable",
+            ) from exc
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bootstrap_actor = Actor(
+            actor_type=ActorType.SYSTEM,
+            actor_id=_PROJECT_BOOTSTRAP_ACTOR_ID,
+            roles=("system",),
+            display_name="Automation project bootstrap 018",
+            authenticated_by="release_hold",
+        )
+        created_items: list[dict[str, Any]] = []
+        retired_exact_count = 0
+        try:
+            with self._repository.unit_of_work() as uow:
+                marker = uow.automation_projects.get_bootstrap_marker_018(
+                    for_update=True
+                )
+                existing_items = uow.automation_projects.list_bootstrap_items_018(
+                    for_update=True
+                )
+                if marker is not None:
+                    result = _validate_existing_bootstrap(
+                        marker,
+                        existing_items,
+                        expected_automation_ids=automation_ids,
+                    )
+                    uow.commit()
+                    return result
+                if existing_items:
+                    raise OrchestrationError(
+                        "PROJECT_POLICY_BOOTSTRAP_PARTIAL",
+                        "Automation project bootstrap is partially persisted",
+                    )
+
+                for automation_id in automation_ids:
+                    entry = entries[automation_id]
+                    project = uow.automation_plugins.get_project(
+                        automation_id,
+                        for_update=True,
+                    )
+                    if not _bootstrap_project_is_stable(project):
+                        raise OrchestrationError(
+                            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+                            "Automation project generation is not a stable migration project",
+                        )
+                    contract, config = self._lock_and_compile_contract(
+                        uow,
+                        entry,
+                        require_enabled=True,
+                        lock_rows=True,
+                    )
+                    rows = uow.automation_projects.list_configuration_rows(
+                        automation_id,
+                        for_update=True,
+                    )
+                    legacy_rows = (
+                        uow.automation_projects.list_automation_identity_backup_rows_018(
+                            tuple(str(row.get("id") or "") for row in rows),
+                            for_update=True,
+                        )
+                    )
+                    _validate_bootstrap_schedule_set(entry, contract, rows)
+                    policy = uow.automation_projects.get_policy(
+                        automation_id,
+                        for_update=True,
+                    )
+                    validate_unconfigured_automation_project_policy(
+                        policy,
+                        automation_generation=contract.automation_generation,
+                        project_configuration_version=(
+                            contract.project_configuration_version
+                        ),
+                    )
+                    policy_events = uow.automation_projects.list_policy_events(
+                        automation_id,
+                        for_update=True,
+                    )
+                    configuration_evidence = (
+                        uow.automation_projects.list_configuration_event_evidence(
+                            automation_id,
+                            project_configuration_version=(
+                                contract.project_configuration_version
+                            ),
+                            for_update=True,
+                        )
+                    )
+                    configuration_evidence_binding = (
+                        validate_automation_project_configuration_evidence(
+                        automation_id=automation_id,
+                        release_sha=safe_release_sha,
+                        config=config,
+                        automation_generation=contract.automation_generation,
+                        project_configuration_version=(
+                            contract.project_configuration_version
+                        ),
+                        scheduled_task_count=len(rows),
+                        policy_events=policy_events,
+                        evidence_rows=configuration_evidence,
+                    )
+                    )
+                    configuration_request_id = configuration_evidence_binding[
+                        "request_id"
+                    ]
+                    scheduled_events = (
+                        uow.automation_projects.list_scheduled_policy_events(
+                            automation_id,
+                            for_update=True,
+                        )
+                    )
+                    (
+                        source_snapshot,
+                        legacy_authorized,
+                        project_retired_count,
+                    ) = derive_automation_project_bootstrap_source_snapshot(
+                            automation_id=automation_id,
+                            automation_generation=contract.automation_generation,
+                            project_configuration_version=(
+                                contract.project_configuration_version
+                            ),
+                            contract_hash=contract.contract_hash,
+                            configuration_request_id=configuration_request_id,
+                            configuration_event_metadata_sha256=(
+                                configuration_evidence_binding["metadata_sha256"]
+                            ),
+                            rows=rows,
+                            legacy_rows=legacy_rows,
+                            scheduled_events=scheduled_events,
+                    )
+                    retired_exact_count += project_retired_count
+                    initial_mode = (
+                        AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
+                        if rows and legacy_authorized
+                        else AutomationProjectPolicyMode.REQUIRE_EACH_RUN.value
+                    )
+                    source_set_sha256 = (
+                        automation_project_bootstrap_source_snapshot_sha256(
+                            source_snapshot
+                        )
+                    )
+                    project_request_id = (
+                        automation_project_policy_bootstrap_request_id(
+                            automation_id
+                        )
+                    )
+                    if uow.automation_projects.get_event_by_request(
+                        automation_id,
+                        project_request_id,
+                        for_update=True,
+                    ) is not None:
+                        raise OrchestrationError(
+                            "PROJECT_POLICY_BOOTSTRAP_PARTIAL",
+                            "Automation project bootstrap event exists without its marker",
+                        )
+                    correlation_id = project_request_id
+                    if initial_mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
+                        updated = uow.automation_projects.update_policy(
+                            automation_id,
+                            expected_version=int(policy["version"]),
+                            mode=initial_mode,
+                            contract_hash=contract.contract_hash,
+                            contract_snapshot=contract.snapshot,
+                            tool_contract_hash=contract.tool_contract_hash,
+                            plugin_contract_hash=contract.plugin_contract_hash,
+                            project_generation=contract.automation_generation,
+                            project_configuration_version=(
+                                contract.project_configuration_version
+                            ),
+                            actor_id=_PROJECT_BOOTSTRAP_ACTOR_ID,
+                            actor_role=_PROJECT_BOOTSTRAP_ACTOR_ROLE,
+                            actor_display_name=bootstrap_actor.display_name,
+                            comment=_PROJECT_BOOTSTRAP_POLICY_COMMENT,
+                        )
+                        event_contract_hash: str | None = contract.contract_hash
+                        event_contract_snapshot: Mapping[str, Any] | None = (
+                            contract.snapshot
+                        )
+                        event_tool_hash: str | None = contract.tool_contract_hash
+                        event_plugin_hash: str | None = contract.plugin_contract_hash
+                    else:
+                        updated = policy
+                        event_contract_hash = None
+                        event_contract_snapshot = None
+                        event_tool_hash = None
+                        event_plugin_hash = None
+                    bootstrap_event = uow.automation_projects.append_event(
+                        {
+                            "automation_id": automation_id,
+                            "request_id": project_request_id,
+                            "from_mode": policy.get("mode"),
+                            "to_mode": initial_mode,
+                            "contract_hash": event_contract_hash,
+                            "contract_snapshot_json": event_contract_snapshot,
+                            "tool_contract_hash": event_tool_hash,
+                            "plugin_contract_hash": event_plugin_hash,
+                            "project_generation": contract.automation_generation,
+                            "project_configuration_version": (
+                                contract.project_configuration_version
+                            ),
+                            "actor_id": _PROJECT_BOOTSTRAP_ACTOR_ID,
+                            "actor_role": _PROJECT_BOOTSTRAP_ACTOR_ROLE,
+                            "actor_display_name": bootstrap_actor.display_name,
+                            "reason": _PROJECT_BOOTSTRAP_REASON,
+                            "comment": _PROJECT_BOOTSTRAP_EVENT_COMMENT,
+                            "correlation_id": correlation_id,
+                            "occurred_at": now,
+                        }
+                    )
+                    item = uow.automation_projects.create_bootstrap_item_018(
+                        automation_id=automation_id,
+                        initial_mode=initial_mode,
+                        source_set_sha256=source_set_sha256,
+                        source_snapshot=source_snapshot,
+                        policy_version=int(updated["version"]),
+                    )
+                    validate_automation_project_bootstrap_policy_event(
+                        bootstrap_event,
+                        item=item,
+                    )
+                    validate_initial_automation_project_bootstrap_policy(
+                        updated,
+                        item=item,
+                        bootstrap_event=bootstrap_event,
+                    )
+                    created_items.append(dict(item))
+
+                project_set_sha256 = _bootstrap_project_set_sha256(
+                    safe_release_sha,
+                    created_items,
+                )
+                uow.automation_projects.create_bootstrap_marker_018(
+                    release_sha=safe_release_sha,
+                    project_set_sha256=project_set_sha256,
+                    completed_by=_PROJECT_BOOTSTRAP_COMPLETED_BY,
+                )
+                uow.commit()
+        except AutomationProjectBootstrapContractError as exc:
+            raise OrchestrationError(
+                exc.code,
+                "Automation project bootstrap evidence is inconsistent",
+            ) from exc
+        except ConcurrentUpdateError as exc:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_CONCURRENT_UPDATE",
+                "Automation project bootstrap changed concurrently",
+            ) from exc
+        legacy_count = sum(
+            1
+            for item in created_items
+            if item.get("initial_mode")
+            == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
+        )
+        return {
+            "status": "created",
+            "project_count": len(created_items),
+            "legacy_schedule_only": legacy_count,
+            "require_each_run": len(created_items) - legacy_count,
+            "retired_scheduled_exact": retired_exact_count,
+            "project_set_sha256": _bootstrap_project_set_sha256(
+                safe_release_sha,
+                created_items,
+            ),
+        }
 
     def update_policy(
         self,
@@ -355,7 +671,7 @@ class AutomationProjectPolicyService:
                         "actor_id": actor.actor_id,
                         "actor_role": "super_admin",
                         "actor_display_name": actor.display_name or None,
-                        "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
+                        "reason": SUPER_ADMIN_PROJECT_POLICY_REASON,
                         "comment": safe_comment,
                         "correlation_id": correlation_id,
                         "occurred_at": now,
@@ -881,11 +1197,22 @@ class AutomationProjectPolicyService:
             )
         mode = str(policy.get("mode") or "")
         if mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
+            legacy_active = self._legacy_schedule_active(policy, contract)
             return ProjectPolicyEvaluation(
                 allowed=True,
-                requires_approval=None if source == "scheduler" else True,
-                code="LEGACY_SCHEDULE_ONLY",
-                reason="Legacy schedule policy remains internal to scheduler",
+                requires_approval=(
+                    False if source == "scheduler" and legacy_active else True
+                ),
+                code=(
+                    "LEGACY_SCHEDULE_ONLY"
+                    if legacy_active
+                    else "PROJECT_APPROVAL_REQUIRED"
+                ),
+                reason=(
+                    "Current compiled legacy schedule contract is automatic"
+                    if source == "scheduler" and legacy_active
+                    else "Legacy project contract is stale or not a scheduler invocation"
+                ),
             )
         if mode == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value and self._full_auto_active(
             policy,
@@ -1092,8 +1419,15 @@ class AutomationProjectPolicyService:
         )
         can_full_auto = bool(contract and contract.can_full_auto and stable)
         if configured == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
-            effective = AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
-            status = "LEGACY_SCHEDULE_ONLY"
+            if (
+                contract is not None
+                and self._legacy_schedule_active(policy or {}, contract)
+                and stable
+            ):
+                effective = AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
+                status = "LEGACY_SCHEDULE_ONLY"
+            else:
+                status = "STALE" if contract is not None else "UNSUPPORTED"
         elif configured == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
             if contract is not None and self._full_auto_active(policy or {}, contract) and stable:
                 effective = AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
@@ -1143,6 +1477,23 @@ class AutomationProjectPolicyService:
         return bool(
             contract.can_full_auto
             and str(policy.get("contract_hash") or "") == contract.contract_hash
+            and str(policy.get("tool_contract_hash") or "")
+            == contract.tool_contract_hash
+            and str(policy.get("plugin_contract_hash") or "")
+            == str(contract.plugin_contract_hash or "")
+            and int(policy.get("project_generation") or 0)
+            == contract.automation_generation
+            and int(policy.get("project_configuration_version") or 0)
+            == contract.project_configuration_version
+        )
+
+    @staticmethod
+    def _legacy_schedule_active(
+        policy: Mapping[str, Any],
+        contract: CompiledAutomationProjectContract,
+    ) -> bool:
+        return bool(
+            str(policy.get("contract_hash") or "") == contract.contract_hash
             and str(policy.get("tool_contract_hash") or "")
             == contract.tool_contract_hash
             and str(policy.get("plugin_contract_hash") or "")
@@ -1498,6 +1849,25 @@ class AutomationProjectPolicyService:
                 "Automation project changes are disabled during release activation",
             )
 
+    def _require_release_held(self) -> None:
+        if self._release_hold_provider is None:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_HOLD_REQUIRED",
+                "Automation project bootstrap requires a release hold",
+            )
+        try:
+            release_held = self._release_hold_provider()
+        except Exception as exc:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_HOLD_UNAVAILABLE",
+                "Automation project bootstrap could not verify the release hold",
+            ) from exc
+        if release_held is not True:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_HOLD_REQUIRED",
+                "Automation project bootstrap requires a release hold",
+            )
+
     @classmethod
     def _require_super_admin(cls, actor: Actor) -> None:
         if not cls._is_super_admin(actor):
@@ -1554,6 +1924,167 @@ class AutomationProjectPolicyService:
                 "TRUSTED_ENTRYPOINT_REQUIRED",
                 "Automation invocation did not originate from its trusted adapter",
             )
+
+
+def _bootstrap_automation_ids(values: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise OrchestrationError(
+            "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
+            "Automation project bootstrap scope must be an identity list",
+        )
+    normalized = tuple(sorted(_automation_id(value) for value in values))
+    if not normalized or len(normalized) != len(set(normalized)):
+        raise OrchestrationError(
+            "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
+            "Automation project bootstrap scope is empty or duplicated",
+        )
+    return normalized
+
+
+def _bootstrap_project_is_stable(project: Mapping[str, Any] | None) -> bool:
+    if not isinstance(project, Mapping):
+        return False
+    target = project.get("target_generation")
+    committed = project.get("committed_generation")
+    return bool(
+        project.get("migration_authority") in {True, 1}
+        and project.get("enabled") in {True, 1}
+        and str(project.get("state") or "") == "ENABLED"
+        and type(target) is int
+        and type(committed) is int
+        and target > 0
+        and target == committed
+        and str(project.get("reconcile_state") or "") == "STABLE"
+    )
+
+
+def _validate_bootstrap_schedule_set(
+    entry: PluginCatalogEntry,
+    contract: CompiledAutomationProjectContract,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    snapshot = entry.committed_snapshot
+    metadata = snapshot.execution_metadata if snapshot is not None else None
+    schedule = metadata.get("schedule") if isinstance(metadata, Mapping) else None
+    if not isinstance(schedule, Mapping) or set(schedule) != {
+        "kind",
+        "times",
+        "enabled",
+    }:
+        raise OrchestrationError(
+            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+            "Committed project schedule is invalid",
+        )
+    kind = schedule.get("kind")
+    times = schedule.get("times")
+    enabled = schedule.get("enabled")
+    if (
+        kind not in {"none", "daily_times", "startup"}
+        or type(enabled) is not bool
+        or not isinstance(times, list)
+        or any(type(item) is not str for item in times)
+    ):
+        raise OrchestrationError(
+            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+            "Committed project schedule is invalid",
+        )
+    if kind == "none":
+        expected_expressions: tuple[str, ...] = ()
+        if times or enabled:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+                "Committed none schedule is invalid",
+            )
+    elif kind == "startup":
+        expected_expressions = ("@startup",)
+        if times:
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+                "Committed startup schedule is invalid",
+            )
+    else:
+        canonical_times = tuple(sorted(times))
+        if (
+            not canonical_times
+            or tuple(times) != canonical_times
+            or len(canonical_times) != len(set(canonical_times))
+            or any(
+                len(item) != 5
+                or item[2] != ":"
+                or not item[:2].isdigit()
+                or not item[3:].isdigit()
+                or not 0 <= int(item[:2]) <= 23
+                or not 0 <= int(item[3:]) <= 59
+                for item in canonical_times
+            )
+        ):
+            raise OrchestrationError(
+                "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+                "Committed daily schedule is invalid",
+            )
+        quarter_hour_times = tuple(
+            f"{hour:02d}:{minute:02d}"
+            for hour in range(24)
+            for minute in (0, 15, 30, 45)
+        )
+        expected_expressions = (
+            ("*/15 * * * *",)
+            if canonical_times == quarter_hour_times
+            else tuple(
+                f"{int(item[3:])} {int(item[:2])} * * *"
+                for item in canonical_times
+            )
+        )
+    actual_expressions = tuple(
+        str(row.get("cron_expression") or "")
+        for row in sorted(rows, key=lambda item: str(item.get("cron_expression") or ""))
+    )
+    if (
+        actual_expressions != tuple(sorted(expected_expressions))
+        or len(actual_expressions) != len(set(actual_expressions))
+        or any(bool(row.get("enabled")) is not enabled for row in rows)
+    ):
+        raise OrchestrationError(
+            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+            "Committed project task set differs from its schedule",
+        )
+    task_ids = [str(row.get("id") or "").strip() for row in rows]
+    scheduled_snapshot = contract.snapshot.get("scheduled_configurations")
+    if (
+        any(not task_id for task_id in task_ids)
+        or len(task_ids) != len(set(task_ids))
+            or any(
+                str(row.get("automation_id") or "") != contract.automation_id
+                or row.get("automation_generation") != contract.automation_generation
+                or row.get("configuration_version")
+                != contract.project_configuration_version
+                or str(row.get("tool_name") or "")
+                != f"automation.{contract.automation_id}.run"
+                or not isinstance(row.get("tool_params"), Mapping)
+                or f"scheduler:{str(row.get('id') or '')}"
+                not in contract.invocation_contracts
+                or dict(row.get("tool_params") or {})
+                != dict(
+                    contract.invocation_contracts[
+                        f"scheduler:{str(row.get('id') or '')}"
+                    ].expected_arguments
+                )
+                for row in rows
+            )
+        or not isinstance(scheduled_snapshot, list)
+        or {str(item.get("task_id") or "") for item in scheduled_snapshot}
+        != set(task_ids)
+        or {
+            key
+            for key in contract.invocation_contracts
+            if key.startswith("scheduler:")
+        }
+        != {f"scheduler:{task_id}" for task_id in task_ids}
+    ):
+        raise OrchestrationError(
+            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
+            "Compiled project task identities are incomplete",
+        )
 
 
 def _pending_set_hash(rows: Sequence[Mapping[str, Any]]) -> str:

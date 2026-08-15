@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-15
+updated: 2026-08-16
 ---
 
 # 数据库迁移
@@ -89,7 +89,10 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   必须与代码默认精确相等；delivery status 多维表必须同时包含 `base_token/table_id/view_id/view_name`。
   资源备份按身份而非计数验证，兼容旧 14、旧含 pending 的 15、新 26 和新含 pending 的 27 四种精确
   布局；旧 14/15 已哈希而新增 12 行未哈希是唯一允许的升级中间态，完成后必须全部收敛为已哈希。
-  恢复只撤销迁移创建行并原样恢复既有行，身份、形状、来源或哈希漂移均 fail closed。
+  恢复只撤销迁移创建行并原样恢复既有行，身份、形状、来源或哈希漂移均 fail closed。迁移同时创建
+  `automation_project_bootstrap_items_018/marker_018`；item 的 `source_snapshot_json` 绑定初始 committed
+  generation、配置事件元数据哈希、57 条 typed schedule 与对应旧 grant/退休事件。旧失败尝试留下的空表
+  可幂等补列；已有 item/marker 却缺证据列时不可重构授权来源，必须在任何后续写前阻断。
 
 生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `014`，发布器只按
 顺序补执行尚未记录的 `015`、`016`、`017`、`018`。`016`/`017`/`018` 在业务行变更前各自保存
@@ -98,13 +101,15 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
 策略；其失败或不完整匹配不能使任何写任务获得免审。
 
-首次生产切换在启动健康后使用
-`--check-control-plane-release-manifest --expect-initial-production-manifest`，精确要求 69 条已审阅任务、
-67 条启用，且仅财务日任务和韵达预测任务禁用；67 条启用任务必须全部是按当前任务行和已暂存
-工具目录重算仍为 ACTIVE 的 `EXACT_SCHEDULE_EXEMPT`。marker 已存在的后续发布使用不带额外 flag 的
-`--check-control-plane-release-manifest`：仍要求 69 个任务全部存在且参数规范，但允许管理员合法启停；
-每个当前启用任务必须具有仍绑定当前任务行和工具目录的有效精确免审，或具有明确管理员/凭据变更
-审计事件的逐次审批策略。停止服务前还必须执行 `--check-running-protected-writes`，在任何
+首次应用 018 的生产切换在启动健康后使用
+`--check-control-plane-release-manifest --expect-initial-production-manifest`。门禁只读重算 71 条历史身份：
+57 条当前发行 typed schedule 加 14 条延期 R7；精确要求 68 条启用（55 条 typed 加 13 条 R7 arrival）、
+16 个项目策略、10 个 `LEGACY_SCHEDULE_ONLY` 和 6 个 `REQUIRE_EACH_RUN`。LEGACY 只能来自完整的旧
+任务级 EXACT grant、018 pre-image、配置退休事件、committed generation 和 typed 当前行；R7 14 条只核验
+原身份/参数/启停，Scheduler 不注册。marker 已存在的后续发布使用不带额外 flag 的同一命令：允许管理员
+合法调整项目 schedule/策略，但仍验证原 marker/source snapshot/历史事件不可篡改、当前 committed 项目
+闭合，以及任何有效 FULL_AUTO 或 LEGACY 绑定；stale 授权只按逐次审批解释。停止服务前还必须执行
+`--check-running-protected-writes`，在任何
 `RUNNING`/`VERIFYING` 的外部写、财务写或 destructive step 存在时阻断 quiesce。
 
 控制平面要求 MySQL 8.0.16 或更高版本。部署预检必须验证服务端版本、必需表列和
