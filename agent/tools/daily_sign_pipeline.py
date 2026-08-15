@@ -656,27 +656,26 @@ def _finish_failed_run(
     diagnostics: dict[str, Any],
     *,
     message: str,
-) -> None:
-    finish_sync_run(
-        run_id,
-        {
-            "status": "failed",
-            "degraded": False,
-            "r13_complete": bool(diagnostics.get("r13_complete")),
-            "problems_complete": bool(diagnostics.get("problems_complete")),
-            "signs_complete": bool(diagnostics.get("signs_complete")),
-            "r13_rows": diagnostics.get("r13_rows", 0),
-            "arrival_rows": diagnostics.get("arrival_rows", 0),
-            "problem_rows": diagnostics.get("problem_rows", 0),
-            "sign_rows": diagnostics.get("sign_rows", 0),
-            "candidate_rows": diagnostics.get("candidate_rows", 0),
-            "published_rows": 0,
-            "unmatched_rows": diagnostics.get("unmatched_rows", 0),
-            "fingerprint": diagnostics.get("fingerprint"),
-            "diagnostics_json": diagnostics,
-            "error_summary": clean_text(message)[:500],
-        },
-    )
+) -> dict[str, Any]:
+    values = {
+        "status": "failed",
+        "degraded": False,
+        "r13_complete": bool(diagnostics.get("r13_complete")),
+        "problems_complete": bool(diagnostics.get("problems_complete")),
+        "signs_complete": bool(diagnostics.get("signs_complete")),
+        "r13_rows": diagnostics.get("r13_rows", 0),
+        "arrival_rows": diagnostics.get("arrival_rows", 0),
+        "problem_rows": diagnostics.get("problem_rows", 0),
+        "sign_rows": diagnostics.get("sign_rows", 0),
+        "candidate_rows": diagnostics.get("candidate_rows", 0),
+        "published_rows": 0,
+        "unmatched_rows": diagnostics.get("unmatched_rows", 0),
+        "fingerprint": diagnostics.get("fingerprint"),
+        "diagnostics_json": diagnostics,
+        "error_summary": clean_text(message)[:500],
+    }
+    finish_sync_run(run_id, values)
+    return values
 
 
 def run_authoritative_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:

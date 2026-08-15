@@ -1,8 +1,8 @@
 """Read-only, all-page customer-service problem collector.
 
-The collector queries both "published to me" and "published by me" views for
-the explicitly selected accounts, or every active configured Ronghui/Yunda
-account when ``account_ids`` is omitted. It never writes or marks source rows.
+The collector queries both "published to me" and "published by me" views only
+for the project instance's explicit account binding. It never falls back to all
+configured accounts and never writes or marks source rows.
 """
 
 from __future__ import annotations
@@ -51,6 +51,11 @@ class ProblemSyncError(RuntimeError):
 
 
 def _public_accounts(account_ids: list[str] | None) -> list[dict[str, Any]]:
+    if account_ids is None:
+        raise ProblemSyncError(
+            "ACCOUNT_BINDINGS_REQUIRED",
+            "account_ids 必须由项目实例明确绑定，禁止隐式查询全部账号。",
+        )
     rows = get_account_manager().list_accounts(include_status=False, validate=False)
     by_id: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -66,18 +71,15 @@ def _public_accounts(account_ids: list[str] | None) -> list[dict[str, Any]]:
             raise ProblemSyncError("DUPLICATE_ACCOUNT", f"账号配置重复：{account_id}")
         by_id[account_id] = dict(row)
 
-    if account_ids is None:
-        selected = list(by_id.values())
-    else:
-        requested = [str(value or "").strip() for value in account_ids]
-        if not requested or any(not value for value in requested):
-            raise ProblemSyncError("INVALID_ACCOUNT_IDS", "account_ids 必须是非空账号 ID 数组。")
-        if len(requested) != len(set(requested)):
-            raise ProblemSyncError("DUPLICATE_ACCOUNT_IDS", "account_ids 不能包含重复值。")
-        unknown = sorted(set(requested) - set(by_id))
-        if unknown:
-            raise ProblemSyncError("ACCOUNT_NOT_FOUND", f"未找到或未启用的账号：{', '.join(unknown)}")
-        selected = [by_id[account_id] for account_id in requested]
+    requested = [str(value or "").strip() for value in account_ids]
+    if not requested or any(not value for value in requested):
+        raise ProblemSyncError("INVALID_ACCOUNT_IDS", "account_ids 必须是非空账号 ID 数组。")
+    if len(requested) != len(set(requested)):
+        raise ProblemSyncError("DUPLICATE_ACCOUNT_IDS", "account_ids 不能包含重复值。")
+    unknown = sorted(set(requested) - set(by_id))
+    if unknown:
+        raise ProblemSyncError("ACCOUNT_NOT_FOUND", f"未找到或未启用的账号：{', '.join(unknown)}")
+    selected = [by_id[account_id] for account_id in requested]
 
     if not selected:
         raise ProblemSyncError("NO_CONFIGURED_ACCOUNTS", "没有可查询的融辉或韵达账号。")
@@ -478,7 +480,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     if direction not in DIRECTIONS:
         raise ProblemSyncError("INVALID_DIRECTION", "direction 必须是 received、published 或 both。")
     account_ids_value = params.get("account_ids")
-    if account_ids_value is not None and not isinstance(account_ids_value, list):
+    if not isinstance(account_ids_value, list):
         raise ProblemSyncError("INVALID_ACCOUNT_IDS", "account_ids 必须是数组。")
     accounts = _public_accounts(account_ids_value)
     recheck_items = _normalize_recheck_items(params.get("recheck_items"))

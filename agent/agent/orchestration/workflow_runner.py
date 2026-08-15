@@ -33,6 +33,10 @@ from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.pilot_projection import PilotProjectionService
 from agent.orchestration.policy_engine import PolicyEngine
 from agent.orchestration.result_verifier import ResultVerifier
+from shared.automation_project_authorization import (
+    AutomationProjectContractError,
+    AutomationProjectInvocation,
+)
 from shared.redaction import redact_text
 
 
@@ -255,24 +259,14 @@ class WorkflowRunner:
 
             if status is RunStatus.PLANNED:
                 self._validator.validate(plan, context, llm_selected=bool(command.parameters.get("llm_selected")))
-                decision = self._policy.evaluate(
-                    plan,
-                    command.actor,
-                    source=command.source,
-                    execution_context=dict(command.parameters.get("execution_context") or {}),
-                )
+                decision = self._evaluate_policy(plan, command)
                 if not decision.allowed:
                     raise OrchestrationError(decision.code, decision.reason)
                 plan = _annotate_approval(plan, decision.requires_approval)
                 run = self._transition(run, RunStatus.VALIDATED, plan=plan.to_dict())
                 status = RunStatus.VALIDATED
             else:
-                decision = self._policy.evaluate(
-                    plan,
-                    command.actor,
-                    source=command.source,
-                    execution_context=dict(command.parameters.get("execution_context") or {}),
-                )
+                decision = self._evaluate_policy(plan, command)
             if not decision.allowed:
                 raise OrchestrationError(decision.code, decision.reason)
             if status is RunStatus.VALIDATED and decision.requires_approval:
@@ -298,12 +292,7 @@ class WorkflowRunner:
                 )
                 self._validator.validate(fresh_plan, fresh_context, llm_selected=bool(command.parameters.get("llm_selected")))
                 if fresh_plan.plan_hash != plan.plan_hash:
-                    fresh_decision = self._policy.evaluate(
-                        fresh_plan,
-                        command.actor,
-                        source=command.source,
-                        execution_context=dict(command.parameters.get("execution_context") or {}),
-                    )
+                    fresh_decision = self._evaluate_policy(fresh_plan, command)
                     if not fresh_decision.allowed:
                         raise OrchestrationError(fresh_decision.code, fresh_decision.reason)
                     fresh_plan = _annotate_approval(fresh_plan, fresh_decision.requires_approval)
@@ -433,6 +422,35 @@ class WorkflowRunner:
                 OrchestrationError(type(exc).__name__.upper(), redact_text(exc)[:500]),
             )
 
+    def _evaluate_policy(
+        self,
+        plan: Plan,
+        command: Command,
+        *,
+        project_transaction: Any | None = None,
+    ):
+        return self._policy.evaluate(
+            plan,
+            command.actor,
+            source=command.source,
+            execution_context=dict(command.parameters.get("execution_context") or {}),
+            automation_invocation=command.automation_invocation,
+            project_transaction=project_transaction,
+        )
+
+    @staticmethod
+    def _trusted_execution_context(command: Command) -> dict[str, Any]:
+        context = {
+            **dict(command.parameters.get("execution_context") or {}),
+            "source": command.source,
+            "actor": command.actor.to_dict(),
+        }
+        if command.automation_invocation is not None:
+            context["_automation_project_invocation"] = (
+                command.automation_invocation.to_dict()
+            )
+        return context
+
     def _consume_approved_plan(
         self,
         run_id: str,
@@ -516,42 +534,53 @@ class WorkflowRunner:
                     "Run lease changed while rechecking execution approval",
                     details={"status": RunStatus.BLOCKED_DATA.value},
                 )
-
-            step_operations = {
-                step.step_key: step.operation_type for step in plan.steps
-            }
-            persisted_steps = uow.steps.list_for_run(str(run["run_id"]))
-            if any(
-                _is_started_write_step(step_row, step_operations)
-                for step_row in persisted_steps
-            ):
+            updated = self._defer_locked_unstarted_running_plan_for_approval(
+                uow,
+                locked_run=locked_run,
+                plan=annotated_plan,
+            )
+            if updated is None:
                 return None
-
-            assert_run_transition(RunStatus.RUNNING, RunStatus.WAITING_APPROVAL)
-            updated = uow.runs.transition(
-                str(run["run_id"]),
-                expected_version=int(locked_run["version"]),
-                expected_statuses=(RunStatus.RUNNING.value,),
-                status=RunStatus.WAITING_APPROVAL.value,
-                plan=annotated_plan.to_dict(),
-            )
-            self._sync_work_item_status(
-                uow,
-                updated,
-                RunStatus.WAITING_APPROVAL,
-            )
-            self._append_event(
-                uow,
-                event_type="agent.run.status_changed",
-                run=updated,
-                payload={
-                    "from": RunStatus.RUNNING.value,
-                    "to": RunStatus.WAITING_APPROVAL.value,
-                    "reason_code": "FRESH_POLICY_REQUIRES_APPROVAL",
-                    "plan_hash": plan.plan_hash,
-                },
-            )
             uow.commit()
+        return updated
+
+    def _defer_locked_unstarted_running_plan_for_approval(
+        self,
+        uow: Any,
+        *,
+        locked_run: Mapping[str, Any],
+        plan: Plan,
+    ) -> dict[str, Any] | None:
+        """Move an unstarted locked run to approval inside the caller's UoW."""
+
+        step_operations = {step.step_key: step.operation_type for step in plan.steps}
+        persisted_steps = uow.steps.list_for_run(str(locked_run["run_id"]))
+        if any(
+            _is_started_write_step(step_row, step_operations)
+            for step_row in persisted_steps
+        ):
+            return None
+        annotated_plan = _annotate_approval(plan, True)
+        assert_run_transition(RunStatus.RUNNING, RunStatus.WAITING_APPROVAL)
+        updated = uow.runs.transition(
+            str(locked_run["run_id"]),
+            expected_version=int(locked_run["version"]),
+            expected_statuses=(RunStatus.RUNNING.value,),
+            status=RunStatus.WAITING_APPROVAL.value,
+            plan=annotated_plan.to_dict(),
+        )
+        self._sync_work_item_status(uow, updated, RunStatus.WAITING_APPROVAL)
+        self._append_event(
+            uow,
+            event_type="agent.run.status_changed",
+            run=updated,
+            payload={
+                "from": RunStatus.RUNNING.value,
+                "to": RunStatus.WAITING_APPROVAL.value,
+                "reason_code": "FRESH_POLICY_REQUIRES_APPROVAL",
+                "plan_hash": plan.plan_hash,
+            },
+        )
         return updated
 
     async def _reconcile_started_steps_for_policy_recheck(
@@ -692,15 +721,11 @@ class WorkflowRunner:
                 step
             )
             try:
-                if getattr(self, "_protected_step_start_guard", None) is not None:
-                    fresh_decision = self._policy.evaluate(
-                        plan,
-                        command.actor,
-                        source=command.source,
-                        execution_context=dict(
-                            command.parameters.get("execution_context") or {}
-                        ),
-                    )
+                if (
+                    getattr(self, "_protected_step_start_guard", None) is not None
+                    and command.automation_invocation is None
+                ):
+                    fresh_decision = self._evaluate_policy(plan, command)
                     if not fresh_decision.allowed:
                         raise OrchestrationError(
                             fresh_decision.code,
@@ -730,7 +755,23 @@ class WorkflowRunner:
                                 run["run_id"],
                             )
                         return waiting_run
+                project_waiting: tuple[dict[str, Any], Any] | None = None
                 with self._repository.unit_of_work() as uow:
+                    project_decision = None
+                    if command.automation_invocation is not None:
+                        # Project state is locked before the Run row.  Policy
+                        # changes, grouped approval, generation switch and
+                        # uninstall use the same project serialization lock.
+                        project_decision = self._evaluate_policy(
+                            plan,
+                            command,
+                            project_transaction=uow,
+                        )
+                        if not project_decision.allowed:
+                            raise OrchestrationError(
+                                project_decision.code,
+                                project_decision.reason,
+                            )
                     locked_run = uow.runs.get(str(run["run_id"]), for_update=True)
                     if locked_run is None:
                         raise OrchestrationError(
@@ -746,15 +787,48 @@ class WorkflowRunner:
                             "Run is no longer owned for tool execution",
                             details={"status": RunStatus.BLOCKED_DATA.value},
                         )
-                    started_step = uow.steps.transition(
-                        str(step_row["step_id"]),
-                        expected_version=int(step_row["version"]),
-                        expected_statuses=("PENDING", "FAILED_RETRYABLE"),
-                        status="RUNNING",
-                        increment_attempt=True,
-                        started_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                    )
+                    if (
+                        project_decision is not None
+                        and project_decision.requires_approval
+                        and not step.requires_approval
+                    ):
+                        waiting_run = self._defer_locked_unstarted_running_plan_for_approval(
+                            uow,
+                            locked_run=locked_run,
+                            plan=plan,
+                        )
+                        if waiting_run is None:
+                            raise OrchestrationError(
+                                "PROJECT_POLICY_RECHECK_UNSAFE",
+                                "A project write already started before its policy recheck",
+                                details={"status": RunStatus.BLOCKED_DATA.value},
+                            )
+                        project_waiting = (waiting_run, project_decision)
+                    else:
+                        started_step = uow.steps.transition(
+                            str(step_row["step_id"]),
+                            expected_version=int(step_row["version"]),
+                            expected_statuses=("PENDING", "FAILED_RETRYABLE"),
+                            status="RUNNING",
+                            increment_attempt=True,
+                            started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        )
                     uow.commit()
+                if project_waiting is not None:
+                    waiting_run, project_decision = project_waiting
+                    try:
+                        self._approval_service.request(
+                            run=waiting_run,
+                            plan=_annotate_approval(plan, True),
+                            policy_decision=project_decision,
+                            requested_by=command.actor,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Approval request persistence failed after project policy recheck run_id=%s",
+                            run["run_id"],
+                        )
+                    return waiting_run
             finally:
                 finish_protected_step_start()
             execution_task = asyncio.create_task(
@@ -762,11 +836,7 @@ class WorkflowRunner:
                     step,
                     run_id=str(run["run_id"]),
                     step_id=str(step_row["step_id"]),
-                    execution_context={
-                        **dict(command.parameters.get("execution_context") or {}),
-                        "source": command.source,
-                        "actor": command.actor.to_dict(),
-                    },
+                    execution_context=self._trusted_execution_context(command),
                 )
             )
             self._active[str(run["run_id"])] = (str(step_row["step_id"]), execution_task)
@@ -803,6 +873,7 @@ class WorkflowRunner:
                                     step=step,
                                     command=command,
                                     result=outcome.result,
+                                    generation_verification=outcome.generation_verification,
                                 )
                             except OrchestrationError as exc:
                                 projection_error = exc
@@ -1075,11 +1146,7 @@ class WorkflowRunner:
                 run_id=str(run["run_id"]),
                 step_id=str(step_row["step_id"]),
                 persisted_step=dict(step_row),
-                execution_context={
-                    **dict(command.parameters.get("execution_context") or {}),
-                    "source": command.source,
-                    "actor": command.actor.to_dict(),
-                },
+                execution_context=self._trusted_execution_context(command),
             )
         )
         reconciliation = await self._await_with_lease_heartbeat(
@@ -1113,6 +1180,7 @@ class WorkflowRunner:
                                 step=step,
                                 command=command,
                                 result=outcome.result,
+                                generation_verification=outcome.generation_verification,
                             )
                         self._append_event(
                             uow,
@@ -1291,6 +1359,27 @@ class WorkflowRunner:
                 )
                 for item in (row.get("entity_refs_json") or [])
             )
+            raw_invocation = row.get("automation_invocation_json")
+            invocation = (
+                None
+                if raw_invocation is None
+                else AutomationProjectInvocation.from_mapping(raw_invocation)
+            )
+            persisted_automation_id = row.get("automation_id")
+            persisted_generation = row.get("automation_generation")
+            if invocation is None:
+                if persisted_automation_id is not None or persisted_generation is not None:
+                    raise AutomationProjectContractError(
+                        "AUTOMATION_INVOCATION_REQUIRED"
+                    )
+            elif (
+                persisted_automation_id != invocation.automation_id
+                or type(persisted_generation) is not int
+                or persisted_generation != invocation.automation_generation
+            ):
+                raise AutomationProjectContractError(
+                    "AUTOMATION_INVOCATION_IDENTITY_MISMATCH"
+                )
             return Command(
                 command_id=str(row["command_id"]),
                 command_type=str(row["command_type"]),
@@ -1299,10 +1388,16 @@ class WorkflowRunner:
                 parameters=dict(row.get("parameters_json") or {}),
                 idempotency_key=str(row["idempotency_key"]),
                 entity_refs=refs,
+                automation_invocation=invocation,
                 correlation_id=str(row["correlation_id"]),
                 requested_at=_parse_datetime(row["requested_at"]).replace(tzinfo=timezone.utc),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (
+            AutomationProjectContractError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise OrchestrationError("INVALID_PERSISTED_COMMAND", "Persisted command is invalid") from exc
 
     @staticmethod
@@ -1334,6 +1429,9 @@ class WorkflowRunner:
                 tool_catalog_hash=str(raw["tool_catalog_hash"]),
                 steps=steps,
                 impact=dict(raw.get("impact") or {}),
+                automation_id=raw.get("automation_id"),
+                automation_generation=raw.get("automation_generation"),
+                automation_contract_hash=raw.get("automation_contract_hash"),
                 schema_version=int(raw.get("schema_version") or 1),
             )
         except (KeyError, TypeError, ValueError) as exc:

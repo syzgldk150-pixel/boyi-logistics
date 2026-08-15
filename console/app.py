@@ -276,16 +276,6 @@ class LocalDocFlowApp(
         if path == "/settings/accounts":
             self._render_admin_accounts(handler, query)
             return
-        if path == "/automations/session-context":
-            self._handle_automation_session_context(handler, query)
-            return
-        session_route = self._automation_session_route(path)
-        if session_route and session_route[1] == "/status":
-            self._handle_tms_session_status(handler, profile=session_route[0], query=query)
-            return
-        if path == "/automations/tms-session/status":
-            self._handle_tms_session_status(handler, query=query)
-            return
         if path == "/templates/new":
             self._render_template_editor(handler, None, query)
             return
@@ -458,70 +448,6 @@ class LocalDocFlowApp(
             return
         if path == "/automations/tasks/cancel":
             self._handle_automation_task_cancel(handler)
-            return
-        session_route = self._automation_session_route(path)
-        if session_route and self._handle_automation_session_post(handler, session_route[0], session_route[1]):
-            return
-        if path == "/automations/tms-session/send-code":
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/send-code",
-                payload={},
-                success_message="TMS融辉登录已提交；如出现图片验证码，请按图输入后提交。",
-                timeout=90,
-            )
-            return
-        if path == "/automations/tms-session/save-credentials":
-            values = self._parse_urlencoded_form(handler)
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/credentials",
-                payload={
-                    "username": str(values.get("username", "") or "").strip(),
-                    "password": str(values.get("password", "") or ""),
-                    "phone": str(values.get("phone", "") or "").strip(),
-                },
-                success_message="TMS 默认登录配置已保存。",
-                timeout=20,
-            )
-            return
-        if path == "/automations/tms-session/clear-credentials":
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/credentials/clear",
-                payload={},
-                success_message="TMS 默认登录配置已清空。",
-                timeout=20,
-            )
-            return
-        if path == "/automations/tms-session/submit-code":
-            values = self._parse_urlencoded_form(handler)
-            sms_code = str(values.get("code", "") or "").strip()
-            if not sms_code:
-                self._respond_tms_action(
-                    handler,
-                    ok=False,
-                    message="验证码不能为空。",
-                    kind="warning",
-                    http_status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/submit-code",
-                payload={"code": sms_code},
-                success_message="TMS 登录成功，共享登录态已更新。",
-                timeout=45,
-            )
-            return
-        if path == "/automations/tms-session/clear":
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/clear",
-                payload={},
-                success_message="TMS 已退出登录，自动登录与断线提醒已关闭。",
-                timeout=20,
-            )
             return
         if path == "/automations/admin/import-phase7-resources":
             self._handle_automation_admin_action(

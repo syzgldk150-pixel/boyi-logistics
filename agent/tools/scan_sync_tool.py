@@ -14,7 +14,11 @@ if hasattr(sys.stdout, "reconfigure"):
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import child_items_from_scan_rows, normalize_scan_rows, replace_scan_codes
-from tools.phase7_sync_common import tms_auth_error_result
+from tools.phase7_sync_common import (
+    bind_explicit_account_id,
+    normalize_explicit_account_params,
+    tms_auth_error_result,
+)
 from tools.tms_tool import call_http_service
 
 
@@ -72,10 +76,11 @@ def _resolve_get_scan_request_params(params: dict, request_body: dict) -> dict[s
             raise ValueError("target_date 必须是 YYYY-MM-DD 格式") from exc
         request_params["date"] = parsed_date.strftime("%Y/%m/%d")
 
-    for key in ("session_profile", "account_id", "accountId"):
-        if params.get(key) not in (None, "") and key not in request_params:
-            request_params[key] = params[key]
-    return request_params
+    return bind_explicit_account_id(
+        request_params,
+        str(params["account_id"]),
+        label="扫描同步 get_scan 请求",
+    )
 
 
 def _coerce_code_set(value: Any) -> set[str]:
@@ -93,9 +98,11 @@ def _scan_next_payload(items: list[dict[str, str]], params: dict) -> dict:
     request_body = dict(params.get("scan_next_request_body") or {})
     request_params = dict(request_body.get("params") or {})
     request_params["items"] = items
-    for key in ("session_profile", "account_id", "accountId"):
-        if params.get(key) not in (None, "") and key not in request_params:
-            request_params[key] = params[key]
+    request_params = bind_explicit_account_id(
+        request_params,
+        str(params["account_id"]),
+        label="扫描同步 scan_next 请求",
+    )
     return {
         "params": request_params,
         "timeout_sec": int(request_body.get("timeout_sec") or params.get("scan_next_timeout_sec") or 3600),
@@ -151,6 +158,7 @@ def _trigger_scan_flow(params: dict) -> dict:
 
 
 def run_scan_sync(params: dict) -> dict:
+    params = normalize_explicit_account_params(dict(params), label="扫描同步")
     _emit_progress("开始获取扫描数据")
     request_body = dict(params.get("request_body") or {})
     request_params = _resolve_get_scan_request_params(params, request_body)

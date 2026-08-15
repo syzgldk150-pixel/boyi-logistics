@@ -93,6 +93,15 @@ class _AgentCore:
         return {"success": True}
 
 
+class _ProjectInvoker:
+    def __init__(self):
+        self.calls = []
+
+    async def invoke_trusted_and_wait(self, automation_id, **kwargs):
+        self.calls.append((automation_id, kwargs))
+        return {"success": True, "status": "COMPLETED", "run_id": "run-project"}
+
+
 class _SeedMemory:
     def __init__(self, rows=None):
         self.rows = list(rows or [])
@@ -432,6 +441,66 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             trusted["idempotency_key"],
         )
 
+    def test_plugin_schedule_uses_typed_instance_route_without_legacy_arguments(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        invoker = _ProjectInvoker()
+        scheduled_for = datetime.fromisoformat("2026-08-15T07:00:00+08:00")
+        result = asyncio.run(
+            scheduler_module._execute_scheduled_tool(
+                core,
+                task_id="scan_0700",
+                tool_name="automation.scan_project.run",
+                arguments={"account_id": "must-not-cross-boundary"},
+                scheduled_for=scheduled_for,
+                cron_expression="0 7 * * *",
+                configuration_version=3,
+                automation_id="scan_project",
+                automation_generation=4,
+                automation_project_invoker=invoker,
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual([], core.calls)
+        self.assertEqual(1, len(invoker.calls))
+        automation_id, trusted = invoker.calls[0]
+        self.assertEqual("scan_project", automation_id)
+        self.assertNotIn("arguments", trusted)
+        self.assertEqual("scheduler", trusted["entrypoint"])
+        self.assertEqual(4, trusted["expected_automation_generation"])
+        self.assertEqual(3, trusted["expected_project_configuration_version"])
+        self.assertEqual("apscheduler", trusted["actor"].authenticated_by)
+        self.assertEqual(
+            "scheduler:scan_0700:2026-08-15T07:00:00+08:00",
+            trusted["idempotency_key"],
+        )
+
+    def test_plugin_schedule_fails_closed_without_explicit_project_identity(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        with self.assertRaisesRegex(RuntimeError, "explicit project identity"):
+            asyncio.run(
+                scheduler_module._execute_scheduled_tool(
+                    core,
+                    task_id="scan_0700",
+                    tool_name="automation.scan_project.run",
+                    arguments={},
+                    scheduled_for=datetime.fromisoformat(
+                        "2026-08-15T07:00:00+08:00"
+                    ),
+                    cron_expression="0 7 * * *",
+                    configuration_version=3,
+                )
+            )
+        self.assertEqual([], core.calls)
+
     def test_startup_seeds_only_missing_finance_schedule(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
@@ -674,7 +743,9 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         )
         properties = finance_tool["input_schema"]["properties"]
         self.assertEqual(list(enabled_finance_platforms()), properties["platform"]["enum"])
-        self.assertEqual(list(enabled_finance_account_ids()), properties["account_id"]["enum"])
+        self.assertEqual("string", properties["account_id"]["type"])
+        self.assertNotIn("enum", properties["account_id"])
+        self.assertEqual([], finance_tool["input_schema"]["required"])
         self.assertEqual("boolean", properties["_startup_catchup"]["type"])
 
     def test_finance_source_contract_keeps_yunda_declared_but_not_enabled(self):

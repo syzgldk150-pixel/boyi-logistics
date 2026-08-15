@@ -5,6 +5,12 @@
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
 
 {% block page_actions %}
+{% if can_manage_plugins %}
+<button class="primary-btn automation-install-trigger" type="button" data-plugin-install-toggle aria-expanded="false" aria-controls="automation-plugin-install-panel">
+  <i data-feather="plus"></i>
+  安装自动化
+</button>
+{% endif %}
 <label class="automation-toolbar-field">
   <span>排序</span>
   <select class="automation-sort-select" data-automation-sort>
@@ -14,112 +20,6 @@
   </select>
 </label>
 
-{% set tms = tms_session_status %}
-{% set creds = tms_session_credentials %}
-<div class="tms-dot-wrap">
-  <div
-    class="tms-dot"
-    data-tms-dot
-    data-status="{{ tms.status }}"
-    data-status-tone="{{ tms.status_tone }}"
-    data-label="{{ tms.label }}"
-    data-profile="ronghui"
-    data-profile-label="TMS融辉"
-    data-dot-label="TMS融辉"
-    data-has-saved-credentials="{{ 'true' if creds.has_saved_credentials else 'false' }}"
-    data-status-url="/automations/tms-session/status"
-    data-context-url="/automations/session-context"
-    data-poll-interval-ms="5000"
-    tabindex="0"
-    role="button"
-    aria-haspopup="dialog"
-    aria-expanded="false"
-    aria-label="TMS融辉 {{ tms.label }}"
-  >
-    <span class="tms-dot-pulse" aria-hidden="true"></span>
-    <span class="tms-dot-core" aria-hidden="true"></span>
-    <span class="tms-dot-label" data-tms-dot-label>TMS融辉</span>
-  </div>
-
-  {# ── TMS 状态 popover（hover/focus dot 时显示；展开账号设置后进入 sticky 模式） ── #}
-  <aside class="tms-popover" data-tms-popover hidden role="dialog" aria-label="登录状态详情">
-    <div class="tms-popover-head">
-      <span class="tms-popover-state" data-tms-popover-state>{{ tms.label }}</span>
-    </div>
-    <dl class="tms-popover-meta">
-      <div>
-        <dt>有效至</dt>
-        <dd data-tms-expires-at>{{ tms.expires_at or '—' }}</dd>
-      </div>
-      <div>
-        <dt>最近校验</dt>
-        <dd data-tms-last-validation>{{ tms.last_validation_at or '—' }}</dd>
-      </div>
-      <div>
-        <dt>凭据来源</dt>
-        <dd data-tms-credential-source>{% if creds.credential_source == 'saved' %}后台保存{% elif creds.credential_source == 'env' %}环境变量{% else %}未配置{% endif %}</dd>
-      </div>
-    </dl>
-    <div class="tms-popover-actions">
-      <button
-        type="button"
-        class="tms-popover-link tms-popover-toggle"
-        data-tms-toggle-settings
-        aria-expanded="false"
-        aria-controls="tms-popover-settings"
-      >
-        <span>账号设置</span>
-        <i data-feather="chevron-down" class="tms-popover-caret"></i>
-      </button>
-      <a class="tms-popover-link" href="/automation-accounts">
-        <span>账号管理</span>
-      </a>
-      <button type="button" class="tms-popover-link tms-popover-link--icon" data-tms-refresh aria-label="刷新状态">
-        <i data-feather="refresh-cw"></i>
-      </button>
-    </div>
-    <section
-      class="tms-popover-settings"
-      id="tms-popover-settings"
-      data-tms-settings-panel
-      hidden
-    >
-      <form
-        method="post"
-        action="/automations/tms-session/save-credentials"
-        class="tms-action-creds"
-        data-tms-settings-form
-        data-session-action="save-credentials"
-      >
-        <span hidden>默认登录配置</span>
-        <label class="tms-action-field">
-          <span>账号</span>
-          <input class="review-input compact-input" type="text" name="username" value="{{ creds.username }}" autocomplete="username" placeholder="TMS融辉 登录账号">
-        </label>
-        <label class="tms-action-field">
-          <span>密码</span>
-          <div class="tms-action-password">
-            <input class="review-input compact-input" type="password" name="password" value="{{ creds.password }}" autocomplete="current-password" placeholder="TMS融辉 登录密码" data-tms-password-input>
-            <button type="button" class="tms-action-password-toggle" data-tms-password-toggle aria-label="显示密码">
-              <i data-feather="eye"></i>
-            </button>
-          </div>
-        </label>
-        <label class="tms-action-field" data-session-phone-field>
-          <span>手机号</span>
-          <input class="review-input compact-input" type="text" name="phone" value="{{ creds.phone }}" inputmode="tel" autocomplete="tel" placeholder="接收验证码的手机号">
-        </label>
-        <div class="tms-action-creds-foot">
-          <button class="primary-btn tms-action-primary" type="submit" data-session-action="save-credentials">保存账号</button>
-          <button class="tms-action-link tms-action-link--danger" type="submit" formaction="/automations/tms-session/clear-credentials" formmethod="post" data-session-action="clear-credentials">清空已保存</button>
-        </div>
-        <div class="tms-action-creds-foot tms-action-creds-foot--authed" data-tms-settings-authed-actions hidden>
-          <button class="tms-action-link" type="submit" formaction="/automations/tms-session/clear" formmethod="post" data-session-action="clear">清除登录态</button>
-        </div>
-      </form>
-    </section>
-  </aside>
-</div>
 {% endblock %}
 
 {% macro render_visual_field(field, prefix) %}
@@ -162,78 +62,117 @@
   </label>
 {% endmacro %}
 
+{% macro render_plugin_config_field(field, prefix) %}
+  {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
+  <label class="auto-field">
+    <span class="auto-field-label">{{ field.label }}{% if field.required %}<em aria-hidden="true"> *</em>{% endif %}</span>
+    {% if field.kind == "checkbox" %}
+    <div class="auto-checkbox-wrap">
+      <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="checkbox" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" {% if field.value %}checked{% endif %}>
+      <span class="auto-checkbox-label">{{ '已启用' if field.value else '未启用' }}</span>
+    </div>
+    {% elif field.kind == "list" %}
+    <textarea id="{{ input_id }}" class="review-input auto-list-input" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="list" data-plugin-config-item-type="{{ field.item_type }}" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" data-plugin-config-required="{{ 'true' if field.required else 'false' }}" placeholder="每行一个值">{{ field.value | join('\n') if field.value is iterable and field.value is not string else '' }}</textarea>
+    {% elif field.kind == "select" %}
+    <select id="{{ input_id }}" class="review-input compact-input" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="select" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" data-plugin-config-required="{{ 'true' if field.required else 'false' }}">
+      {% if not field.required %}<option value="" {% if not field.present %}selected{% endif %}>不设置</option>{% endif %}
+      {% for option in field.enum %}<option value="{{ loop.index0 }}" data-plugin-option-value="{{ option | tojson | forceescape }}" {% if field.present and option == field.value %}selected{% endif %}>{{ option }}</option>{% endfor %}
+    </select>
+    {% else %}
+    <input
+      id="{{ input_id }}"
+      class="review-input compact-input"
+      type="{{ 'password' if field.secret else 'number' if field.kind == 'number' else 'text' }}"
+      value="{{ field.value }}"
+      data-plugin-config-path="{{ field.path }}"
+      data-plugin-config-kind="{{ field.kind }}"
+      data-plugin-config-present="{{ 'true' if field.present else 'false' }}"
+      data-plugin-config-required="{{ 'true' if field.required else 'false' }}"
+      {% if field.secret %}autocomplete="new-password" data-plugin-config-secret="true"{% endif %}
+      {% if field.step %}step="{{ field.step }}"{% endif %}
+      {% if field.minimum is not none %}min="{{ field.minimum }}"{% endif %}
+      {% if field.maximum is not none %}max="{{ field.maximum }}"{% endif %}
+      {% if field.min_length is not none %}minlength="{{ field.min_length }}"{% endif %}
+      {% if field.max_length is not none %}maxlength="{{ field.max_length }}"{% endif %}
+      placeholder="{{ '输入新值（不会回显）' if field.secret else field.label }}"
+    >
+    {% endif %}
+    {% if field.hint %}<span class="auto-field-hint">{{ field.hint }}</span>{% endif %}
+  </label>
+{% endmacro %}
+
 {% block content %}
 <section class="auto-page" data-reveal="tasks">
-  {% set tms = tms_session_status %}
-  {% set creds = tms_session_credentials %}
 
-  {# ── TMS 登录维护 Action 内联条 ── #}
-  <section
-    class="tms-action-card"
-    data-tms-action-card
-    hidden
-    role="region"
-    aria-live="polite"
-    aria-label="登录维护"
-    data-status="{{ tms.status }}"
-  >
-    <header class="tms-action-head">
-      <div>
-        <h2 class="tms-action-title" data-tms-action-title>
-          {% if tms.status == 'pending_code' %}请输入 TMS融辉 {{ tms.challenge_label or '验证码' }}
-          {% elif tms.status == 'authenticated' %}TMS融辉 已登录 <span hidden>验证码共享登录态</span>
-          {% else %}TMS融辉 登录态已断开{% endif %}
-        </h2>
-        <p class="tms-action-sub" data-tms-action-sub {% if not tms.last_error_summary %}hidden{% endif %}>{{ tms.last_error_summary }}</p>
-      </div>
-      <div class="tms-action-head-actions">
-        <button type="button" class="tms-action-icon-btn" data-tms-settings aria-label="账号设置" title="账号设置">
-          <i data-feather="settings"></i>
-        </button>
-        <button type="button" class="tms-action-close" data-tms-close aria-label="收起">
-          <i data-feather="x"></i>
-        </button>
-      </div>
-    </header>
-
-    {# TMS 验证码：未发送时只显示发送按钮，待提交时显示输入框 + 同一个重发按钮 #}
-    <form
-      method="post"
-      action="/automations/tms-session/submit-code"
-      class="tms-action-form"
-      data-tms-action-form
-      data-session-action="submit-code"
-      hidden
-    >
-      <label class="tms-action-field tms-action-field--code" data-tms-code-field>
-        <span data-tms-code-label>{{ tms.challenge_label or '验证码' }}</span>
-        <input
-          class="review-input compact-input tms-action-code-input"
-          type="text"
-          name="code"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          maxlength="6"
-          pattern="\d{6}"
-          placeholder="发送后输入验证码"
-          data-tms-code-input
-          disabled
-          required
-          aria-describedby="tms-code-hint"
-        >
-        <div class="tms-captcha-preview" data-tms-captcha{% if not (tms.status == 'pending_code' and tms.challenge_type == 'image' and tms.captcha_image) %} hidden{% endif %}>
-          <img alt="图片验证码" src="{{ tms.captcha_image or '' }}" data-tms-captcha-img>
-        </div>
+  {% if can_manage_plugins %}
+  <section class="automation-plugin-install-panel" id="automation-plugin-install-panel" data-plugin-install-panel hidden aria-labelledby="automation-plugin-install-title">
+    <div class="automation-plugin-install-copy">
+      <span class="auto-project-governance-kicker"><i data-feather="package"></i> 签名动作包</span>
+      <h2 id="automation-plugin-install-title">安装为新的自动化项目</h2>
+      <p>同一个动作包可以重复安装。每次安装都会生成独立项目，账号、资源、定时、权限和设备互不影响；新项目默认停用。</p>
+    </div>
+    <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
+      <label>
+        <span>项目名称</span>
+        <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" required placeholder="例如：华东仓每日签收">
       </label>
-      <button class="primary-btn tms-action-primary" type="submit" formaction="/automations/tms-session/send-code" formnovalidate data-tms-send-btn data-session-action="send-code" {% if not creds.has_saved_credentials %}disabled{% endif %}>
-        {% if tms.status == 'pending_code' %}
-          {{ '刷新验证码' if tms.challenge_type == 'image' else '重新发送验证码' }}
-        {% else %}
-          {{ '登录' if not tms.challenge_type or tms.challenge_type == 'image' else '发送验证码' }}
-        {% endif %}
-      </button>
+      <label>
+        <span>签名 ZIP</span>
+        <input class="review-input automation-plugin-file" type="file" name="package" accept=".zip,application/zip" required>
+      </label>
+      <div class="automation-plugin-install-actions">
+        <button class="primary-btn" type="submit" data-plugin-install-submit>安装新项目</button>
+        <button class="ghost-btn" type="button" data-plugin-install-cancel>取消</button>
+      </div>
+      <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
     </form>
   </section>
+  {% endif %}
+
+  {% if automation_plugin_warning %}
+  <div class="auto-feedback auto-feedback--warning" role="status">
+    <div class="auto-feedback-head">
+      <strong>插件目录暂不可用</strong>
+      <span>{{ automation_plugin_warning }}；所有无法由已安装项目实例确认的任务均已阻断。</span>
+    </div>
+  </div>
+  {% endif %}
+  {% if unsupported_automation_ids %}
+  <div class="auto-feedback auto-feedback--error" role="alert">
+    <div class="auto-feedback-head">
+      <strong>发现未完成插件迁移的自动化</strong>
+      <span>{{ unsupported_automation_ids | join('、') }}。这些项目禁止运行与配置，请先完成受控迁移。</span>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if automation_plugin_packages %}
+  <section class="automation-action-catalog" aria-labelledby="automation-action-catalog-title">
+    <div class="automation-action-catalog-head">
+      <div>
+        <span class="auto-project-governance-kicker"><i data-feather="box"></i> 动作包目录</span>
+        <h2 id="automation-action-catalog-title">已验签的自动化动作</h2>
+      </div>
+      <p>动作包只定义可执行动作、平台、账号角色与资源能力；项目实例的账号、定时、权限和设备各自保存。</p>
+    </div>
+    <div class="automation-action-catalog-grid">
+      {% for package in automation_plugin_packages %}
+      <article class="automation-action-package">
+        <div class="automation-action-package-title">
+          <strong>{{ package.name }}</strong>
+          <span>{{ package.version }}</span>
+        </div>
+        <p>{{ package.action_summary or '已验签动作包' }}</p>
+        <div class="automation-action-package-meta">
+          <span>{{ package.platform_label }}</span>
+          <span>{{ package.account_roles|length }} 个账号角色</span>
+          <span>{{ package.resource_summary or '仅使用核心受管资源' }}</span>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   {% if automation_db_warning %}
   <div class="auto-feedback auto-feedback--warning">
@@ -247,7 +186,7 @@
   <div class="auto-feedback auto-feedback--warning">
     <div class="auto-feedback-head">
       <strong>账号列表暂不可用</strong>
-      <span>{{ automation_account_warning }}；任务仍会按旧参数或系统默认登录态执行。</span>
+      <span>{{ automation_account_warning }}；账号绑定与运行已阻断，不会自动改用默认账号。</span>
     </div>
   </div>
   {% endif %}
@@ -314,17 +253,19 @@
         <textarea name="config_json" hidden data-resource-json-hidden></textarea>
         <textarea name="resources_json" hidden data-resources-json-hidden></textarea>
         <textarea name="tool_params_json" hidden>{{ task.tool_params_json }}</textarea>
+        {% if task.plugin %}<input type="hidden" name="project_plugin_instance" value="true">{% endif %}
         <button type="submit" hidden data-save-trigger></button>
 
         {% set has_schedule = task.is_schedulable and task.schedule_supported %}
-        {% set has_params = task.tool_param_fields %}
+        {% set has_params = task.plugin.config_fields if task.plugin else task.tool_param_fields %}
         {% set has_webhook = task.has_webhook %}
-        {% set has_resources = task.resource_bindings %}
+        {% set has_resources = task.resource_bindings if not task.plugin else [] %}
+        {% set has_plugin_resource_roles = task.plugin.resource_roles if task.plugin else [] %}
         {% set has_account_roles = task.account_role_bindings %}
         {% set is_webhook = task.task_mode == 'webhook' %}
         {% set can_save = task.can_save | default(true) %}
         {% set can_run_now = task.can_run_now | default(true) %}
-        {% set has_expandable_settings = can_save and (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles) %}
+        {% set has_expandable_settings = can_save and (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles or has_plugin_resource_roles or (task.plugin and task.plugin.entrypoints)) %}
 
         {# ── 卡片主行 ── #}
         <div class="auto-card-row">
@@ -399,163 +340,161 @@
           </div>
         </div>
 
-        {% if task.is_schedulable %}
-        {% set policy = task.approval_policy | default({}, true) %}
-        {% set policy_items = policy.get('items', []) %}
+        {% if task.plugin %}
+        {% set plugin = task.plugin %}
         <section
-          class="auto-approval-policy auto-approval-policy--{{ policy.effective_status | default('unavailable', true) | lower }}{% if policy.item_count | default(0) > 1 %} auto-approval-policy--grouped{% endif %}"
-          data-approval-policy
-          aria-label="审批策略"
+          class="automation-plugin-instance{% if task.plugin_blocked %} automation-plugin-instance--blocked{% endif %}"
+          data-plugin-instance
+          data-automation-id="{{ task.task_id }}"
+          data-record-version="{{ plugin.record_version }}"
+          data-project-configuration-version="{{ plugin.project_configuration_version }}"
+          data-current-version="{{ plugin.version }}"
+          aria-label="{{ task.name_value }} 插件实例"
         >
-          <div class="auto-approval-policy-copy">
-            <div class="auto-approval-policy-heading">
-              <span class="auto-approval-policy-title">
-                <i data-feather="shield"></i>
-                审批策略
-              </span>
-              <strong class="auto-approval-policy-state" data-approval-policy-label>
-                {{ policy.label | default('审批策略不可用', true) }}
-              </strong>
-              {% if policy.item_count | default(0) > 1 %}
-              <span class="auto-approval-policy-count" data-approval-policy-count>{{ policy.item_count }} 条任务</span>
-              {% endif %}
-              <span class="auto-approval-policy-restriction" data-approval-policy-restriction {% if not (policy.available and not policy.can_exempt) %}hidden{% endif %}>{% if policy.item_count | default(0) > 1 %}部分计划不允许免审{% else %}工具不允许免审{% endif %}</span>
+          <div class="automation-plugin-instance-main">
+            <div class="automation-plugin-instance-copy">
+              <div class="automation-plugin-instance-line">
+                <span class="automation-plugin-state automation-plugin-state--{{ plugin.state | lower }}">{{ plugin.status_label }}</span>
+                <span>{{ plugin.version }}</span>
+                <span>{{ plugin.platform_label }}</span>
+                <span>{{ '可设置定时' if plugin.can_schedule else '仅按允许入口触发' }}</span>
+              </div>
+              {% if plugin.action_summary %}<p>{{ plugin.action_summary }}</p>{% endif %}
+              {% if plugin.resource_summary %}<small>账号与资源：{{ plugin.resource_summary }}</small>{% endif %}
             </div>
-            <p class="auto-approval-policy-summary" data-approval-policy-summary>
-              {{ policy.summary | default('未取得任务级审批策略，请稍后刷新。', true) }}
-            </p>
-            {% if policy.available %}
-            <p class="auto-approval-policy-modes">
-              已配置：<strong data-policy-configured-mode>{% if policy.configured_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% elif policy.configured_mode == 'REQUIRE_EACH_RUN' %}每次运行审批{% else %}混合策略{% endif %}</strong>
-              <span aria-hidden="true">·</span>
-              当前生效：<strong data-policy-effective-mode>{% if policy.effective_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% elif policy.effective_mode == 'REQUIRE_EACH_RUN' %}每次运行审批{% else %}混合策略{% endif %}</strong>
-            </p>
+            {% if can_manage_plugins %}
+            <div class="automation-plugin-menu-wrap">
+              <button class="ghost-btn automation-plugin-menu-toggle" type="button" data-plugin-menu-toggle aria-expanded="false" aria-label="管理 {{ task.name_value }}" title="{{ '更多操作' if plugin.lifecycle_actions_allowed else '当前状态不可执行项目操作' }}" {% if not plugin.lifecycle_actions_allowed %}disabled aria-disabled="true"{% endif %}>
+                <i data-feather="more-horizontal"></i>
+              </button>
+              <div class="automation-plugin-menu" data-plugin-menu hidden>
+                <label class="automation-plugin-upgrade-file">
+                  <span>选择升级 ZIP</span>
+                  <input type="file" accept=".zip,application/zip" data-plugin-upgrade-package {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>
+                </label>
+                <button class="automation-plugin-menu-item" type="button" data-plugin-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级此项目</button>
+                {% if plugin.enabled %}
+                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="disable" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>停用此项目</button>
+                {% else %}
+                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="enable" {% if task.plugin_blocked or not plugin.lifecycle_actions_allowed %}disabled title="{{ '当前状态不可启用' if not plugin.lifecycle_actions_allowed else '请先补齐账号、资源和设备配置' }}"{% endif %}>启用此项目</button>
+                {% endif %}
+                <button class="automation-plugin-menu-item automation-plugin-menu-item--danger" type="button" data-plugin-instance-action="uninstall" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>卸载此项目</button>
+              </div>
+            </div>
             {% endif %}
-            <dl class="auto-approval-policy-meta">
-              <div {% if not policy.policy_hash_short %}hidden{% endif %} data-policy-meta-hash>
-                <dt>策略标识</dt>
-                <dd data-policy-hash>{{ policy.policy_hash_short }}</dd>
-              </div>
-              <div {% if not policy.approved_by %}hidden{% endif %} data-policy-meta-actor>
-                <dt>授权人</dt>
-                <dd data-policy-approved-by>{{ policy.approved_by }}</dd>
-              </div>
-              <div {% if not policy.approved_at %}hidden{% endif %} data-policy-meta-time>
-                <dt>授权时间</dt>
-                <dd data-policy-approved-at>{{ policy.approved_at }}</dd>
-              </div>
-              <div {% if not policy.invalid_reason %}hidden{% endif %} data-policy-meta-reason>
-                <dt>失效原因</dt>
-                <dd data-policy-invalid-reason>{{ policy.invalid_reason }}</dd>
-              </div>
-            </dl>
           </div>
 
-          {% if policy.available and policy_items | length == 1 %}
-          {% set policy_item = policy_items[0] %}
-          {% if can_manage_approval_policies %}
-          <div
-            class="auto-approval-policy-editor"
-            data-approval-policy-item
-            data-policy-item="{{ policy_item | tojson | forceescape }}"
-          >
-            <label class="auto-approval-policy-field">
-              <span>审批方式</span>
-              <select class="review-input compact-input" data-approval-policy-mode>
-                <option value="REQUIRE_EACH_RUN" {% if policy_item.mode == 'REQUIRE_EACH_RUN' %}selected{% endif %}>每次运行审批</option>
-                <option value="EXACT_SCHEDULE_EXEMPT" {% if policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}selected{% endif %} {% if not policy_item.can_exempt %}disabled{% endif %}>固定计划自动执行</option>
-              </select>
-            </label>
-            <label class="auto-approval-policy-field auto-approval-policy-comment">
-              <span>变更理由（可选）</span>
-              <input
-                class="review-input compact-input"
-                type="text"
-                maxlength="500"
-                autocomplete="off"
-                placeholder="例如：固定晚间打卡计划"
-                data-approval-policy-comment
-              >
-            </label>
-            <button
-              class="ghost-btn auto-approval-policy-save"
-              type="button"
-              data-approval-policy-save
-              aria-label="保存 {{ policy_item.schedule_label }}审批策略"
-            >
-              <i data-feather="save"></i>
-              <span data-approval-policy-save-label>{% if policy_item.effective_status == 'STALE' and policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}重新授权固定计划{% else %}保存审批策略{% endif %}</span>
-            </button>
-            <p class="auto-approval-policy-feedback" data-approval-policy-feedback role="status" aria-live="polite" hidden></p>
+          {% if plugin.execution_platform == 'windows' %}
+          <div class="automation-plugin-worker-binding">
+            <label for="plugin-worker-{{ task.task_id }}">运行设备</label>
+            <select id="plugin-worker-{{ task.task_id }}" class="review-input compact-input" data-plugin-worker-select {% if not can_manage_plugins %}disabled{% endif %}>
+              <option value="" {% if not plugin.device %}selected{% endif %}>请选择命名 Worker</option>
+              {% for worker in task.plugin_worker_options | default([], true) %}
+              <option value="{{ worker.device_id }}" {% if plugin.device and worker.device_id == plugin.device.device_id %}selected{% endif %} {% if not worker.binding_usable %}disabled{% endif %}>{{ worker.name }} · {{ worker.status_label }}</option>
+              {% endfor %}
+            </select>
+            <small>设备绑定会随“保存项目设置”一起提交。</small>
           </div>
-          {% else %}
-          <p class="auto-approval-policy-readonly">当前账号只读，需超级管理员修改。</p>
           {% endif %}
-          {% elif policy.available and policy_items %}
-          <div class="auto-approval-policy-list" role="list" aria-label="按执行时间设置审批策略">
-            {% for policy_item in policy_items %}
-            <div
-              class="auto-approval-policy-item auto-approval-policy-item--{{ policy_item.effective_status | lower }}"
-              role="listitem"
-              data-approval-policy-item
-              data-policy-item="{{ policy_item | tojson | forceescape }}"
-            >
-              <div class="auto-approval-policy-item-identity">
-                <strong id="approval-policy-task-{{ task.task_id }}-{{ loop.index }}">{{ policy_item.schedule_label }}</strong>
-                <code>{{ policy_item.task_id }}</code>
-              </div>
-              <div class="auto-approval-policy-item-status" aria-labelledby="approval-policy-task-{{ task.task_id }}-{{ loop.index }}">
-                <strong class="auto-approval-policy-item-state" data-policy-item-state>
-                  {% if policy_item.effective_status == 'STALE' %}免审已失效{% elif policy_item.effective_status == 'UNSUPPORTED' %}不支持免审{% elif policy_item.effective_mode == 'EXACT_SCHEDULE_EXEMPT' %}免审生效{% else %}需要审批{% endif %}
-                </strong>
-                <p class="auto-approval-policy-item-modes">
-                  配置：<strong data-policy-item-configured-mode>{% if policy_item.configured_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% else %}每次运行审批{% endif %}</strong>
-                  <span aria-hidden="true">·</span>
-                  生效：<strong data-policy-item-effective-mode>{% if policy_item.effective_mode == 'EXACT_SCHEDULE_EXEMPT' %}固定计划自动执行{% else %}每次运行审批{% endif %}</strong>
-                </p>
-                <p class="auto-approval-policy-item-reason" data-policy-item-invalid-reason {% if not policy_item.invalid_reason %}hidden{% endif %}>{{ policy_item.invalid_reason }}</p>
-              </div>
-              {% if can_manage_approval_policies %}
-              <div class="auto-approval-policy-item-editor">
-                <label class="auto-approval-policy-field auto-approval-policy-item-mode">
-                  <span>审批方式</span>
-                  <select class="review-input compact-input" data-approval-policy-mode>
-                    <option value="REQUIRE_EACH_RUN" {% if policy_item.mode == 'REQUIRE_EACH_RUN' %}selected{% endif %}>每次运行审批</option>
-                    <option value="EXACT_SCHEDULE_EXEMPT" {% if policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}selected{% endif %} {% if not policy_item.can_exempt %}disabled{% endif %}>固定计划自动执行</option>
-                  </select>
-                </label>
-                <label class="auto-approval-policy-field auto-approval-policy-item-comment">
-                  <span>变更理由（可选）</span>
-                  <input
-                    class="review-input compact-input"
-                    type="text"
-                    maxlength="500"
-                    autocomplete="off"
-                    placeholder="例如：该时段固定自动运行"
-                    data-approval-policy-comment
-                  >
-                </label>
-                <button
-                  class="ghost-btn auto-approval-policy-save"
-                  type="button"
-                  data-approval-policy-save
-                  aria-label="保存 {{ policy_item.schedule_label }}审批策略"
-                >
-                  <i data-feather="save"></i>
-                  <span data-approval-policy-save-label>{% if policy_item.effective_status == 'STALE' and policy_item.mode == 'EXACT_SCHEDULE_EXEMPT' %}重新授权{% else %}保存{% endif %}</span>
-                </button>
-              </div>
-              {% endif %}
-              <p class="auto-approval-policy-feedback" data-approval-policy-feedback role="status" aria-live="polite" hidden></p>
+
+          {% if task.plugin_blocked %}
+          <div class="automation-plugin-block" role="status">
+            <i data-feather="alert-triangle"></i>
+            <span>{{ task.plugin_warning or '项目配置尚未完整；运行、启用和完全自动均已阻断。' }}</span>
+          </div>
+          {% endif %}
+          <p class="automation-plugin-feedback" data-plugin-instance-feedback role="status" aria-live="polite" hidden></p>
+        </section>
+        {% else %}
+        <div class="automation-plugin-block automation-plugin-block--missing" role="alert">
+          <i data-feather="package-x"></i>
+          <span>{{ task.plugin_warning or '迁移/插件缺失：该任务禁止运行与配置。' }}</span>
+        </div>
+        {% endif %}
+
+        {% if task.approval_policy %}
+        {% set policy = task.approval_policy | default({}, true) %}
+        <section
+          class="auto-project-governance auto-project-governance--{{ policy.effective_status | default('unavailable', true) | lower }}"
+          data-automation-project-governance
+          data-automation-id="{{ task.task_id }}"
+          data-project-policy="{{ policy | tojson | forceescape }}"
+          data-can-manage="{{ 'true' if can_manage_approval_policies else 'false' }}"
+          aria-label="{{ task.name_value }}运行权限与待审批"
+        >
+          <div class="auto-project-governance-row">
+            <div class="auto-project-governance-copy">
+              <span class="auto-project-governance-kicker">
+                <i data-feather="shield"></i>
+                项目权限
+              </span>
+              <strong data-project-policy-label>{{ policy.label | default('权限状态不可用', true) }}</strong>
+              <p data-project-policy-summary>{{ policy.summary | default('未取得项目权限，请稍后刷新。', true) }}</p>
             </div>
-            {% endfor %}
+            <button
+              class="ghost-btn auto-project-policy-toggle"
+              type="button"
+              data-project-policy-toggle
+              aria-expanded="false"
+              aria-controls="project-policy-{{ task.task_id }}"
+            >
+              <i data-feather="sliders"></i>
+              权限设置
+            </button>
           </div>
-          {% if not can_manage_approval_policies %}
-          <p class="auto-approval-policy-readonly">当前账号只读，需超级管理员修改。</p>
-          {% endif %}
-          {% else %}
-          <p class="auto-approval-policy-readonly">当前策略不可编辑，请先处理上方提示。</p>
-          {% endif %}
+
+          <div class="auto-project-policy-panel" id="project-policy-{{ task.task_id }}" data-project-policy-panel hidden>
+            <fieldset {% if not (policy.available and can_manage_approval_policies) or task.plugin_blocked %}disabled{% endif %}>
+              <legend>选择项目的运行方式</legend>
+              <label class="auto-project-policy-option">
+                <input type="radio" value="REQUIRE_EACH_RUN" data-project-policy-mode {% if policy.configured_mode == 'REQUIRE_EACH_RUN' %}checked{% endif %}>
+                <span>
+                  <strong>每次运行审批</strong>
+                  <small>项目已启用的全部可信入口，每次运行都先进入本项目待审批。</small>
+                </span>
+              </label>
+              <label class="auto-project-policy-option{% if not policy.can_full_auto or task.plugin_blocked %} is-disabled{% endif %}">
+                <input type="radio" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %} {% if not policy.can_full_auto or task.plugin_blocked %}disabled{% endif %}>
+                <span>
+                  <strong>完全自动</strong>
+                  <small>项目清单允许的定时、后台、飞书与验签 Webhook 入口按已保存配置执行。</small>
+                </span>
+              </label>
+            </fieldset>
+            {% if policy.available and can_manage_approval_policies %}
+            <label class="auto-project-policy-comment">
+              <span>变更说明（可选）</span>
+              <input class="review-input compact-input" type="text" maxlength="500" autocomplete="off" placeholder="说明为什么调整项目权限" data-project-policy-comment>
+            </label>
+            <div class="auto-project-policy-actions">
+              <button class="primary-btn" type="button" data-project-policy-save {% if task.plugin_blocked %}disabled{% endif %}>保存权限</button>
+              <button class="ghost-btn" type="button" data-project-policy-cancel>取消</button>
+            </div>
+            {% else %}
+            <p class="auto-project-policy-readonly">当前账号只读，需超级管理员修改。</p>
+            {% endif %}
+            <p class="auto-project-policy-feedback" data-project-policy-feedback role="status" aria-live="polite" hidden></p>
+          </div>
+
+          <div class="auto-pending-approvals" data-project-pending hidden>
+            <div class="auto-pending-approvals-copy">
+              <strong><span data-pending-count>0</span> 项待审批</strong>
+              <span>最高风险：<b data-pending-risk>—</b></span>
+              <span>来源：<b data-pending-source>—</b></span>
+            </div>
+            {% if can_manage_approval_policies %}
+            <label class="auto-pending-comment">
+              <span class="sr-only">批量处理说明（可选）</span>
+              <input class="review-input compact-input" type="text" maxlength="500" autocomplete="off" placeholder="批量处理说明（可选）" data-pending-comment>
+            </label>
+            <div class="auto-pending-actions">
+              <button class="primary-btn" type="button" data-pending-action="approve">全部审批通过</button>
+              <button class="ghost-btn auto-pending-reject" type="button" data-pending-action="reject">全部驳回</button>
+            </div>
+            {% endif %}
+            <p class="auto-pending-feedback" data-pending-feedback role="status" aria-live="polite" hidden></p>
+          </div>
+          <p class="sr-only" data-governance-live role="status" aria-live="polite"></p>
         </section>
         {% endif %}
 
@@ -681,22 +620,113 @@
                   {{ role.label }}
                   <small>{{ role.system_label }}</small>
                 </span>
-                <select class="review-input compact-input auto-account-select" name="account_role__{{ role.field }}" data-json-path="{{ role.field }}">
+                <select
+                  class="review-input compact-input auto-account-select"
+                  name="{{ 'plugin_account_role__' if task.plugin else 'account_role__' }}{{ role.field }}"
+                  {% if task.plugin %}data-plugin-account-role="{{ role.field }}"{% else %}data-json-path="{{ role.field }}"{% endif %}
+                  data-plugin-account-required="{{ 'true' if role.required else 'false' }}"
+                  data-plugin-account-cardinality="{{ role.binding_cardinality | default('one', true) }}"
+                  {% if task.plugin and role.binding_cardinality == 'many' %}multiple size="5"{% endif %}
+                >
+                  {% if not (task.plugin and role.binding_cardinality == 'many') %}
+                  <option value="" {% if not role.selected_account_id %}selected{% endif %}>请选择账号（必填）</option>
+                  {% endif %}
                   {% for account in role.options %}
-                  <option value="{{ account.account_id }}" {% if account.account_id == role.selected_account_id %}selected{% endif %}>
+                  <option value="{{ account.account_id }}" {% if account.account_id in role.selected_account_ids | default([role.selected_account_id], true) %}selected{% endif %} {% if not account.binding_usable %}disabled{% endif %}>
                     {{ account.name }} · {{ account.status_label or '未知' }}
                   </option>
                   {% endfor %}
                 </select>
+                {% if task.plugin and role.binding_cardinality == 'many' %}<small>可按 Ctrl / Command 多选；不会自动选第一项。</small>{% endif %}
+                {% if role.blocked_reason %}<small class="auto-account-blocked">{{ role.blocked_reason }}</small>{% endif %}
               </label>
               {% endfor %}
-              <a class="ghost-btn auto-account-manage-link" href="/automation-accounts">
-                <i data-feather="users"></i>
-                账号管理
-              </a>
             </div>
-            <p class="auto-webhook-note">保存后会写入各角色对应的任务参数；旧任务未设置时使用角色默认账号。</p>
+            <p class="auto-webhook-note">每个项目实例独立保存账号绑定；未选择、账号停用或登录态失效都会阻断运行，不会自动改用其他账号。</p>
           </div>
+          {% endif %}
+
+          {% if task.plugin %}
+          <div class="auto-settings-section automation-plugin-config-section">
+            <div class="auto-settings-label">
+              <i data-feather="sliders" class="auto-settings-icon"></i>
+              项目运行配置
+              {% if task.plugin.config_fields %}<span class="auto-settings-count">{{ task.plugin.config_fields|length }}</span>{% endif %}
+            </div>
+            {% if task.plugin.config_schema_supported %}
+              {% if task.plugin.config_fields %}
+              <div class="auto-param-grid" data-plugin-config-fields>
+                {% for field in task.plugin.config_fields %}
+                {{ render_plugin_config_field(field, 'plugin-config-' ~ task.task_id) }}
+                {% endfor %}
+              </div>
+              {% else %}
+              <p class="auto-webhook-note">该动作包无需额外运行参数。</p>
+              {% endif %}
+            {% else %}
+            <div class="automation-plugin-block" role="alert">
+              <i data-feather="alert-triangle"></i>
+              <span>{{ task.plugin.config_schema_error or '该插件配置 Schema 不受 Console 安全表单支持，已阻断配置。' }}</span>
+            </div>
+            {% endif %}
+          </div>
+
+          <div class="auto-settings-section automation-plugin-entrypoints">
+            <div class="auto-settings-label">
+              <i data-feather="git-branch" class="auto-settings-icon"></i>
+              可信运行入口
+            </div>
+            <div class="automation-plugin-entrypoint-grid">
+              {% for entrypoint in task.plugin.entrypoints %}
+              <label class="automation-plugin-entrypoint-option">
+                <input type="checkbox" value="{{ entrypoint }}" data-plugin-entrypoint {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %}>
+                <span>{{ {'scheduler': '系统定时', 'console': 'Console 后台', 'feishu': '飞书', 'webhook': '验签 Webhook'}.get(entrypoint, entrypoint) }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            <p class="auto-webhook-note">只允许启用签名动作包清单声明的入口；通用 API 与 LLM 不在项目完全自动授权范围内。</p>
+          </div>
+
+          {% if has_plugin_resource_roles %}
+          <div class="auto-settings-section">
+            <div class="auto-settings-label">
+              <i data-feather="database" class="auto-settings-icon"></i>
+              受管资源
+            </div>
+            {% if task.plugin.resource_pool_available %}
+            <div class="auto-account-role-stack">
+              {% for binding in task.plugin.resource_role_bindings %}
+              <label class="auto-account-role-row">
+                <span class="auto-account-role-label">
+                  {{ binding.label }}
+                  <small>{{ binding.allowed_kinds | join(' / ') }}</small>
+                </span>
+                <select
+                  class="review-input compact-input auto-account-select"
+                  data-plugin-resource-role="{{ binding.role }}"
+                  data-plugin-resource-required="{{ 'true' if binding.required else 'false' }}"
+                >
+                  <option value="" {% if not binding.selected_resource_id %}selected{% endif %}>请选择资源{% if binding.required %}（必填）{% endif %}</option>
+                  {% if binding.selected_resource_id and not binding.selected_available %}
+                  <option value="{{ binding.selected_resource_id }}" selected disabled>已保存资源不可用，请重新选择</option>
+                  {% endif %}
+                  {% for resource in binding.options %}
+                  <option value="{{ resource.resource_id }}" {% if resource.resource_id == binding.selected_resource_id %}selected{% endif %}>{{ resource.name }} · {{ resource.kind }}</option>
+                  {% endfor %}
+                </select>
+                {% if binding.blocked_reason %}<small class="auto-account-blocked">{{ binding.blocked_reason }}</small>{% endif %}
+              </label>
+              {% endfor %}
+            </div>
+            <p class="auto-webhook-note">这里只保存资源标识；Token、表格 ID、文件路径和完整配置不会发送到浏览器。系统不会自动选择第一项。</p>
+            {% else %}
+            <div class="automation-plugin-block" role="alert">
+              <i data-feather="alert-triangle"></i>
+              <span>受管资源池当前不可用，资源绑定与项目运行已安全阻断；不会从旧任务字段猜测或默认绑定。</span>
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
           {% endif %}
 
           {% if has_resources %}
@@ -798,7 +828,21 @@
               <i data-feather="clock" class="auto-settings-icon"></i>
               执行时间
             </div>
-            <div class="auto-schedule-stack" data-schedule-stack>
+            {% if task.plugin %}
+            <label class="auto-field automation-plugin-schedule-kind">
+              <span class="auto-field-label">调度方式</span>
+              <select class="review-input compact-input" data-plugin-schedule-kind {% if not task.plugin_schedule_supported %}disabled{% endif %}>
+                <option value="none" {% if task.plugin_schedule_kind == 'none' %}selected{% endif %}>不设置定时</option>
+                {% if 'daily_times' in task.plugin.scheduling.allowed_kinds %}
+                <option value="daily_times" {% if task.plugin_schedule_kind == 'daily_times' %}selected{% endif %}>每天指定时间</option>
+                {% endif %}
+                {% if 'startup' in task.plugin.scheduling.allowed_kinds %}
+                <option value="startup" {% if task.plugin_schedule_kind == 'startup' %}selected{% endif %}>服务启动补偿</option>
+                {% endif %}
+              </select>
+            </label>
+            {% endif %}
+            <div class="auto-schedule-stack" data-schedule-stack {% if task.plugin %}data-plugin-schedule-max="{{ task.plugin_schedule_max_daily_times }}"{% endif %} {% if task.plugin and task.plugin_schedule_kind != 'daily_times' %}hidden{% endif %}>
               {% for schedule_time in task.schedule_time_values | default([], true) %}
               <div class="auto-schedule-row" data-schedule-row>
                 <input class="review-input compact-input auto-time-input" type="time" value="{{ schedule_time }}" data-schedule-time>
@@ -808,15 +852,16 @@
               </div>
               {% endfor %}
             </div>
-            <button class="ghost-btn auto-add-btn" type="button" data-add-schedule-time>
+            <button class="ghost-btn auto-add-btn" type="button" data-add-schedule-time {% if task.plugin and task.plugin_schedule_kind != 'daily_times' %}hidden{% endif %}>
               <i data-feather="plus"></i>
               添加时间
             </button>
+            {% if task.plugin %}<p class="auto-webhook-note">定时由系统设置维护；浏览器只提交时间与启停状态，任务 ID 和 Cron 由 Agent 生成。{% if task.plugin_schedule_source == 'legacy_migration' %} 当前显示旧定时迁移值，首次保存后切换为项目权威。{% endif %}</p>{% endif %}
           </div>
           {% endif %}
 
           {# 可视化参数 #}
-          {% if has_params %}
+          {% if has_params and not task.plugin %}
           <div class="auto-settings-section">
             <div class="auto-settings-label">
               <i data-feather="sliders" class="auto-settings-icon"></i>
@@ -832,10 +877,17 @@
           {% endif %}
 
           <div class="auto-settings-footer">
+            {% if task.plugin %}
+            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save {% if not can_manage_plugins or not task.plugin.config_schema_supported or (has_plugin_resource_roles and not task.plugin.resource_pool_available) or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
+              <i data-feather="check"></i>
+              保存项目设置
+            </button>
+            {% else %}
             <button class="ghost-btn auto-save-btn" type="submit">
               <i data-feather="check"></i>
               保存设置
             </button>
+            {% endif %}
           </div>
         </div>
         {% endif %}
@@ -1144,9 +1196,6 @@
       try { window.localStorage.setItem(AUTOMATION_PROVIDER_KEY, nextProvider); } catch {}
     }
     applyListState();
-    if (typeof window.__setAutomationSessionProvider === "function") {
-      window.__setAutomationSessionProvider(nextProvider);
-    }
   }
 
   /* ── 统计栏实时同步 ── */
@@ -1179,10 +1228,14 @@
     const runtimeBox = form.querySelector("[data-runtime-feedback-box]");
     const runBtn = form.querySelector("[data-run-now]");
     let runTimer = null;
+    let approvedBatchPollTimer = null;
+    let approvedBatchGeneration = 0;
+    let approvedBatchReceipts = [];
     let runUiState = {
       running: false,
       awaitingApproval: false,
       pendingRun: false,
+      batchTracking: false,
       startedAt: "",
       cancelRequested: false,
       runId: "",
@@ -1193,17 +1246,18 @@
       const isRunning = !!runUiState.running;
       const isAwaitingApproval = !!runUiState.awaitingApproval;
       const isPendingRun = !!runUiState.pendingRun;
+      const isBatchTracking = !!runUiState.batchTracking;
       const isActive = isRunning || isAwaitingApproval || isPendingRun;
       const isCancelPending = isActive && !!runUiState.cancelRequested;
-      const iconName = isActive ? "x-circle" : "play";
-      const labelText = isCancelPending ? "取消中" : isActive ? "取消" : "执行";
+      const iconName = isBatchTracking ? "loader" : isActive ? "x-circle" : "play";
+      const labelText = isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : "执行";
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
 
-      runBtn.dataset.runMode = isActive ? "cancel" : "start";
-      runBtn.classList.toggle("auto-run-btn--cancel", isActive);
+      runBtn.dataset.runMode = isBatchTracking ? "tracking" : isActive ? "cancel" : "start";
+      runBtn.classList.toggle("auto-run-btn--cancel", isActive && !isBatchTracking);
       runBtn.classList.toggle("is-pending", isCancelPending);
-      runBtn.disabled = runBtn.hasAttribute("aria-busy") || isCancelPending;
+      runBtn.disabled = runBtn.hasAttribute("aria-busy") || isCancelPending || isBatchTracking;
       if (runLabel) {
         runLabel.textContent = labelText;
       }
@@ -1218,7 +1272,7 @@
         ...runUiState,
         ...next,
       };
-      if (!runUiState.running && !runUiState.awaitingApproval && !runUiState.pendingRun) {
+      if (!runUiState.running && !runUiState.awaitingApproval && !runUiState.pendingRun && !runUiState.batchTracking) {
         runUiState.startedAt = "";
         runUiState.cancelRequested = false;
         runUiState.runId = "";
@@ -1247,6 +1301,7 @@
         running: true,
         awaitingApproval: false,
         pendingRun: false,
+        batchTracking: false,
         startedAt: startedAt || "",
         cancelRequested: runUiState.cancelRequested,
       });
@@ -1554,6 +1609,7 @@
     const termDrawer = form.querySelector("[data-terminal-drawer]");
     let fetchOutputState = async function() { return null; };
     let startPolling = function() {};
+    let stopPolling = function() {};
     if (termBtn && termDrawer) {
       const termBody = termDrawer.querySelector("[data-terminal-body]");
       const termStatus = termDrawer.querySelector("[data-terminal-status]");
@@ -1620,7 +1676,7 @@
         renderFeedback(form, {
           kind: "warning",
           title: "待审批",
-          message: "手工运行已提交，正在等待事项中心审批；审批通过后脚本才会开始执行。",
+          message: "手工运行已进入本项目待审批，可在当前卡片原位处理；审批通过后脚本才会开始执行。",
           showTimer: false,
           stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
           body: "状态：WAITING_APPROVAL",
@@ -1659,9 +1715,10 @@
       }
 
       async function pollOutput() {
-        if (!toolName) return;
+        if (!toolName || runUiState.batchTracking) return;
         try {
           const data = await fetchOutputState();
+          if (runUiState.batchTracking) return;
           if (data.lines && data.lines.length > 0) {
             const fragment = data.lines.join("\n") + "\n";
             termBody.textContent += fragment;
@@ -1775,6 +1832,15 @@
         pollOutput();
       };
 
+      stopPolling = function() {
+        if (termPollTimer) {
+          clearTimeout(termPollTimer);
+          termPollTimer = null;
+        }
+        termNeedsFinalRuntimePoll = false;
+        termFinalRuntimePollCount = 0;
+      };
+
       async function resumeRunningTask() {
         if (!toolName) return;
         try {
@@ -1821,9 +1887,9 @@
         togglePanel(termBtn, termDrawer);
         const isOpen = termBtn.getAttribute("aria-expanded") === "true";
         if (isOpen) {
-          startPolling();
+          if (!runUiState.batchTracking) startPolling();
         } else {
-          if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
+          stopPolling();
         }
       });
 
@@ -1845,6 +1911,184 @@
 
       // 初次进入页面保持干净，不自动展开历史执行结果。
     }
+
+    const batchTerminalStatuses = new Set(["COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"]);
+    const batchQueuedStatuses = new Set(["RECEIVED", "CONTEXT_READY", "PLANNED", "VALIDATED", "WAITING_APPROVAL"]);
+    const batchAttentionStatuses = new Set(["NEEDS_CLARIFICATION", "BLOCKED_LOGIN", "BLOCKED_DATA", "FAILED_RETRYABLE"]);
+    const batchReceiptIdPattern = /^[A-Za-z0-9_.:@-]{1,160}$/;
+
+    function updateApprovedBatchPill(label, completed, total) {
+      const progress = form.querySelector("[data-task-progress]");
+      const progressLabel = form.querySelector("[data-task-progress-label]");
+      const progressTimer = form.querySelector("[data-task-progress-timer]");
+      if (progress) progress.hidden = false;
+      if (progressLabel) progressLabel.textContent = label;
+      if (progressTimer) progressTimer.textContent = `${completed}/${total}`;
+    }
+
+    function announceApprovedBatch(message) {
+      const live = form.querySelector("[data-governance-live]");
+      if (live) live.textContent = message;
+    }
+
+    function scheduleApprovedBatchPoll(receipts, generation, delayMs) {
+      if (approvedBatchPollTimer) clearTimeout(approvedBatchPollTimer);
+      approvedBatchPollTimer = window.setTimeout(
+        () => void pollApprovedBatch(receipts, generation),
+        Math.max(500, Math.min(Number(delayMs) || 1000, 5000)),
+      );
+    }
+
+    async function pollApprovedBatch(receipts, generation) {
+      if (generation !== approvedBatchGeneration || !runUiState.batchTracking) return;
+      if (document.hidden) {
+        scheduleApprovedBatchPoll(receipts, generation, 1000);
+        return;
+      }
+      try {
+        const states = await Promise.all(receipts.map(async receipt => {
+          const state = await fetchOutputState({ runId: receipt.run_id, offset: 0 });
+          if (!state || state.error) {
+            throw new Error(state?.error || "Run 状态暂不可用");
+          }
+          return {
+            status: String(state.status || "").toUpperCase(),
+            next_poll_after_ms: Number(state.next_poll_after_ms) || receipt.next_poll_after_ms || 1000,
+          };
+        }));
+        if (generation !== approvedBatchGeneration) return;
+
+        const total = states.length;
+        const terminalCount = states.filter(state => batchTerminalStatuses.has(state.status)).length;
+        const runningCount = states.filter(state => state.status === "RUNNING" || state.status === "VERIFYING").length;
+        if (terminalCount < total) {
+          const attentionCount = states.filter(state => batchAttentionStatuses.has(state.status)).length;
+          const knownCount = states.filter(state => (
+            batchTerminalStatuses.has(state.status)
+            || batchQueuedStatuses.has(state.status)
+            || batchAttentionStatuses.has(state.status)
+            || state.status === "RUNNING"
+            || state.status === "VERIFYING"
+          )).length;
+          const label = attentionCount
+            ? "执行需要处理"
+            : knownCount < total
+              ? "等待状态同步"
+              : runningCount
+                ? "批量执行中"
+                : "已批准，等待执行";
+          updateApprovedBatchPill(
+            label,
+            terminalCount,
+            total,
+          );
+          if (attentionCount) {
+            renderFeedback(form, {
+              kind: "warning",
+              title: "执行需要处理",
+              message: `${attentionCount} 个 Run 正在等待补充信息、登录恢复或可重试状态处理，卡片会继续跟踪。`,
+              showTimer: false,
+            });
+          }
+          const nextPollAfterMs = Math.min(...states.map(state => state.next_poll_after_ms));
+          scheduleApprovedBatchPoll(receipts, generation, nextPollAfterMs);
+          return;
+        }
+
+        const completedCount = states.filter(state => state.status === "COMPLETED").length;
+        const cancelledCount = states.filter(state => state.status === "CANCELLED").length;
+        const unsuccessfulCount = total - completedCount;
+        const allCancelled = total > 0 && cancelledCount === total;
+        const title = unsuccessfulCount === 0
+          ? "批量执行完成"
+          : allCancelled
+            ? "批量执行已取消"
+            : "批量执行已结束";
+        const message = unsuccessfulCount === 0
+          ? `本次批准的 ${total} 个 Run 均已完成。`
+          : `本次批准的 ${total} 个 Run 中，完成 ${completedCount} 个，未成功 ${unsuccessfulCount} 个。`;
+        updateApprovedBatchPill(title, terminalCount, total);
+        setRunUiState({
+          running: false,
+          awaitingApproval: false,
+          pendingRun: false,
+          batchTracking: false,
+          cancelRequested: false,
+          runId: "",
+        });
+        syncRuntimeFeedback(form, {
+          ok: unsuccessfulCount === 0,
+          cancelled: allCancelled,
+          title,
+          message,
+          last_run: fmtStamp(Date.now()),
+          error: unsuccessfulCount > 0 && !allCancelled ? message : "",
+        });
+        announceApprovedBatch(message);
+        approvedBatchReceipts = [];
+        approvedBatchPollTimer = null;
+      } catch (error) {
+        if (generation !== approvedBatchGeneration) return;
+        const total = receipts.length;
+        updateApprovedBatchPill("状态同步中断", 0, total);
+        renderFeedback(form, {
+          kind: "warning",
+          title: "执行状态暂不可达",
+          message: "本次批准已生效，卡片会继续查询这些 Run，不会重新提交或重试执行。",
+          showTimer: false,
+          body: error instanceof Error ? error.message : "Run 状态暂不可用",
+        });
+        scheduleApprovedBatchPoll(receipts, generation, 3000);
+      }
+    }
+
+    form.addEventListener("automation:approved-runs", event => {
+      const detail = event.detail;
+      const automationId = form.querySelector('input[name="task_id"]')?.value || "";
+      const receipts = Array.isArray(detail?.run_receipts) ? detail.run_receipts : [];
+      const valid = detail?.automation_id === automationId
+        && Number.isInteger(detail?.decided_count)
+        && detail.decided_count === receipts.length
+        && receipts.every(receipt => (
+          receipt?.automation_id === automationId
+          && batchReceiptIdPattern.test(String(receipt?.run_id || ""))
+          && batchReceiptIdPattern.test(String(receipt?.work_item_id || ""))
+        ));
+      if (!valid || receipts.length === 0) return;
+
+      const merged = new Map(approvedBatchReceipts.map(receipt => [receipt.run_id, receipt]));
+      receipts.forEach(receipt => merged.set(receipt.run_id, receipt));
+      approvedBatchReceipts = [...merged.values()];
+      approvedBatchGeneration += 1;
+      const generation = approvedBatchGeneration;
+      if (approvedBatchPollTimer) clearTimeout(approvedBatchPollTimer);
+      approvedBatchPollTimer = null;
+      stopPolling();
+      stopRunProgress();
+      if (termDrawer) {
+        delete termDrawer.dataset.runId;
+        delete termDrawer.dataset.runStartedAt;
+      }
+      setRunUiState({
+        running: false,
+        awaitingApproval: false,
+        pendingRun: false,
+        batchTracking: true,
+        startedAt: fmtStamp(Date.now()),
+        cancelRequested: false,
+        runId: "",
+      });
+      updateApprovedBatchPill("已批准，等待执行", 0, approvedBatchReceipts.length);
+      renderFeedback(form, {
+        kind: "info",
+        title: "审批已通过",
+        message: `正在原位跟踪本次批准的 ${approvedBatchReceipts.length} 个 Run。`,
+        showTimer: false,
+        stampText: `${approvedBatchReceipts.length} 个 Run`,
+      });
+      announceApprovedBatch(`已批准 ${approvedBatchReceipts.length} 个 Run，正在等待执行。`);
+      void pollApprovedBatch(approvedBatchReceipts, generation);
+    });
 
     // 反馈关闭按钮
     const feedbackClose = form.querySelector("[data-feedback-close]");
@@ -1963,7 +2207,7 @@
         renderFeedback(form, {
           kind: "error",
           title: "无法取消",
-          message: "当前页面没有可追踪的 Run 标识，请到事项中心处理。",
+          message: "当前页面没有可追踪的 Run 标识，请刷新当前项目卡片后重试；只有状态异常时再到事项中心核查历史。",
           showTimer: false,
         });
         return;
@@ -2167,7 +2411,6 @@
             const code = String(result.error_code || result.payload?.error_code || "").trim();
             const errText = String(result.error || result.message || "");
             if (code.startsWith("AUTH_") || /登录态|未登录|登录/.test(errText)) {
-              window.__tmsRefresh?.({ manual: false });
             }
           }
         } catch (err) {
@@ -2273,906 +2516,8 @@
   document.querySelector("[data-automation-sort]")?.addEventListener("change", applyListState);
   setAutomationProvider(readAutomationProvider(), false);
 
-  function tmsDisplayValue(value) {
-    const text = typeof value === "string" ? value.trim() : String(value || "").trim();
-    return text || "—";
-  }
-
-  function credentialSourceLabel(state) {
-    const source = String(state?.credential_source || "").trim();
-    if (source === "saved") return "后台保存";
-    if (source === "env") return "环境变量";
-    return state?.has_saved_credentials ? "已配置" : "未配置";
-  }
-
-  /* ── TMS 隐藏式状态标记 ── */
-  const tmsDot = document.querySelector("[data-tms-dot]");
-  const tmsPopover = document.querySelector("[data-tms-popover]");
-  const tmsActionCard = document.querySelector("[data-tms-action-card]");
-
-  if (tmsDot && tmsPopover && tmsActionCard) {
-    const sessionContextBaseUrl = tmsDot.dataset.contextUrl || "/automations/session-context";
-    const pollIntervalMs = Number(tmsDot.dataset.pollIntervalMs || "5000");
-    const SESSION_PROFILES = {
-      ronghui: {
-        label: "TMS融辉",
-        dotLabel: "TMS融辉",
-        loginKind: "image",
-        actions: {
-          status: "/automations/tms-session/status",
-          send_code: "/automations/tms-session/send-code",
-          save_credentials: "/automations/tms-session/save-credentials",
-          clear_credentials: "/automations/tms-session/clear-credentials",
-          submit_code: "/automations/tms-session/submit-code",
-          clear: "/automations/tms-session/clear",
-        },
-      },
-      yunda: {
-        label: "韵达",
-        dotLabel: "韵达",
-        loginKind: "password",
-        actions: {
-          status: "/automations/yunda-session/status",
-          send_code: "/automations/yunda-session/send-code",
-          save_credentials: "/automations/yunda-session/save-credentials",
-          clear_credentials: "/automations/yunda-session/clear-credentials",
-          submit_code: "/automations/yunda-session/submit-code",
-          clear: "/automations/yunda-session/clear",
-        },
-      },
-    };
-    let activeSessionProvider = currentAutomationProvider();
-    if (!SESSION_PROFILES[activeSessionProvider]) activeSessionProvider = "ronghui";
-    let activeSessionMeta = { ...SESSION_PROFILES[activeSessionProvider] };
-    const sessionCredentialDirty = { ronghui: false, yunda: false };
-    const sessionCredentialDrafts = { ronghui: null, yunda: null };
-
-    const actionForm = tmsActionCard.querySelector("[data-tms-action-form]");
-    const codeField = tmsActionCard.querySelector("[data-tms-code-field]");
-    const captchaPreview = tmsActionCard.querySelector("[data-tms-captcha]");
-    const captchaImage = tmsActionCard.querySelector("[data-tms-captcha-img]");
-    const sendBtn = tmsActionCard.querySelector("[data-tms-send-btn]");
-
-    const settingsPanel = tmsPopover.querySelector("[data-tms-settings-panel]");
-    const settingsToggle = tmsPopover.querySelector("[data-tms-toggle-settings]");
-    const settingsForm = tmsPopover.querySelector("[data-tms-settings-form]");
-    const settingsAuthedActions = tmsPopover.querySelector("[data-tms-settings-authed-actions]");
-    const passwordInput = tmsPopover.querySelector("[data-tms-password-input]");
-    const passwordToggle = tmsPopover.querySelector("[data-tms-password-toggle]");
-
-    function sessionLabel() {
-      return activeSessionMeta.label || "TMS融辉";
-    }
-
-    function sessionDotLabel() {
-      return activeSessionMeta.dotLabel || activeSessionMeta.dot_label || sessionLabel();
-    }
-
-    function sessionActions() {
-      return activeSessionMeta.actions || SESSION_PROFILES[activeSessionProvider].actions;
-    }
-
-    function sessionLoginKind() {
-      return activeSessionMeta.loginKind || activeSessionMeta.login_kind || SESSION_PROFILES[activeSessionProvider].loginKind || "image";
-    }
-
-    function sessionChallengeType(state) {
-      const rawValue = state
-        ? (state.challenge_type || state.challengeType || "")
-        : (tmsActionCard?.dataset.challengeType || "");
-      const raw = String(rawValue).trim().toLowerCase();
-      if (raw === "sms" || raw === "image") return raw;
-      return ["image", "password"].includes(sessionLoginKind()) ? "image" : "sms";
-    }
-
-    function sessionChallengeLabel(state) {
-      const rawValue = state
-        ? (state.challenge_label || state.challengeLabel || "")
-        : (tmsActionCard?.dataset.challengeLabel || "");
-      const label = String(rawValue).trim();
-      if (label) return label;
-      return sessionChallengeType(state) === "image" ? "图片验证码" : "短信验证码";
-    }
-
-    function applyCodeInputMode(input, challengeType) {
-      if (!input) return;
-      const normalized = challengeType === "image" ? "image" : "sms";
-      input.dataset.loginKind = normalized;
-      input.dataset.challengeType = normalized;
-      input.inputMode = normalized === "image" ? "text" : "numeric";
-      input.autocomplete = normalized === "image" ? "off" : "one-time-code";
-      input.maxLength = normalized === "image" ? 4 : 6;
-      if (normalized === "image") {
-        input.removeAttribute("pattern");
-      } else {
-        input.setAttribute("pattern", "\\d{6}");
-      }
-    }
-
-    function sessionContextUrl() {
-      const params = new URLSearchParams({ profile: activeSessionProvider, force: "1" });
-      return `${sessionContextBaseUrl}?${params.toString()}`;
-    }
-
-    function applySessionActions(actions) {
-      const merged = { ...SESSION_PROFILES[activeSessionProvider].actions, ...(actions || {}) };
-      activeSessionMeta.actions = merged;
-      tmsDot.dataset.statusUrl = merged.status || "";
-      if (actionForm && merged.submit_code) actionForm.action = merged.submit_code;
-      if (sendBtn && merged.send_code) sendBtn.setAttribute("formaction", merged.send_code);
-      if (settingsForm && merged.save_credentials) settingsForm.action = merged.save_credentials;
-      const clearCredsBtn = settingsForm?.querySelector('[data-session-action="clear-credentials"]');
-      if (clearCredsBtn && merged.clear_credentials) clearCredsBtn.setAttribute("formaction", merged.clear_credentials);
-      const clearSessionBtn = settingsForm?.querySelector('[data-session-action="clear"]');
-      if (clearSessionBtn && merged.clear) clearSessionBtn.setAttribute("formaction", merged.clear);
-    }
-
-    function applySessionText() {
-      const label = sessionLabel();
-      const dotLabel = sessionDotLabel();
-      tmsDot.dataset.profile = activeSessionProvider;
-      tmsDot.dataset.profileLabel = label;
-      tmsDot.dataset.dotLabel = dotLabel;
-      const dotLabelEl = tmsDot.querySelector("[data-tms-dot-label]");
-      if (dotLabelEl) dotLabelEl.textContent = dotLabel;
-      tmsPopover.setAttribute("aria-label", `${label} 登录状态详情`);
-      tmsActionCard.setAttribute("aria-label", `${label} 登录维护`);
-      const usernameInput = settingsForm?.querySelector('input[name="username"]');
-      const passwordInputEl = settingsForm?.querySelector('input[name="password"]');
-      const phoneField = settingsForm?.querySelector("[data-session-phone-field]");
-      const phoneInput = phoneField?.querySelector('input[name="phone"]');
-      const codeLabel = actionForm?.querySelector("[data-tms-code-label]");
-      if (usernameInput) usernameInput.placeholder = `${label} 登录账号`;
-      if (passwordInputEl) passwordInputEl.placeholder = `${label} 登录密码`;
-      const loginKind = sessionLoginKind();
-      const passwordLogin = loginKind === "password";
-      const phoneRequired = loginKind === "sms";
-      if (phoneField) phoneField.hidden = passwordLogin;
-      if (phoneInput) {
-        phoneInput.required = phoneRequired;
-        phoneInput.disabled = passwordLogin;
-      }
-      const challengeType = sessionChallengeType();
-      if (codeLabel) codeLabel.textContent = sessionChallengeLabel();
-      const codeInput = actionForm?.querySelector("[data-tms-code-input]");
-      if (codeInput) {
-        applyCodeInputMode(codeInput, challengeType);
-      }
-    }
-
-    function credentialInputs() {
-      return {
-        username: settingsForm?.querySelector('input[name="username"]') || null,
-        password: settingsForm?.querySelector('input[name="password"]') || null,
-        phone: settingsForm?.querySelector('input[name="phone"]') || null,
-      };
-    }
-
-    function readCredentialDraft() {
-      const inputs = credentialInputs();
-      return {
-        username: inputs.username?.value || "",
-        password: inputs.password?.value || "",
-        phone: inputs.phone?.value || "",
-      };
-    }
-
-    function writeCredentialValues(values) {
-      const inputs = credentialInputs();
-      if (inputs.username) inputs.username.value = values?.username || "";
-      if (inputs.password) inputs.password.value = values?.password || "";
-      if (inputs.phone) inputs.phone.value = values?.phone || "";
-    }
-
-    function markCredentialDirty() {
-      sessionCredentialDirty[activeSessionProvider] = true;
-      sessionCredentialDrafts[activeSessionProvider] = readCredentialDraft();
-    }
-
-    function clearCredentialDirty(provider = activeSessionProvider) {
-      sessionCredentialDirty[provider] = false;
-      sessionCredentialDrafts[provider] = null;
-    }
-
-    function showCredentialDraftOrBlank(provider) {
-      const draft = sessionCredentialDrafts[provider];
-      writeCredentialValues(draft || { username: "", password: "", phone: "" });
-    }
-
-    function fillSessionCredentials(credentials, options = {}) {
-      if (!credentials || !settingsForm) return;
-      const profile = options.profile || activeSessionProvider;
-      const force = !!options.force;
-      if (!force && profile === activeSessionProvider && sessionCredentialDirty[profile]) {
-        return;
-      }
-      const u = settingsForm.querySelector('input[name="username"]');
-      const p = settingsForm.querySelector('input[name="password"]');
-      const ph = settingsForm.querySelector('input[name="phone"]');
-      if (u) u.value = credentials.username || "";
-      if (p) p.value = credentials.password || "";
-      if (ph) ph.value = credentials.phone || "";
-      clearCredentialDirty(profile);
-    }
-
-    function applySessionContext(payload) {
-      if (!payload || typeof payload !== "object") return;
-      const profile = payload.profile || activeSessionProvider;
-      if (SESSION_PROFILES[profile]) activeSessionProvider = profile;
-      activeSessionMeta = {
-        ...SESSION_PROFILES[activeSessionProvider],
-        label: payload.profile_label || payload.label || SESSION_PROFILES[activeSessionProvider].label,
-        dotLabel: payload.dot_label || payload.dotLabel || SESSION_PROFILES[activeSessionProvider].dotLabel,
-        loginKind: payload.login_kind || payload.loginKind || SESSION_PROFILES[activeSessionProvider].loginKind,
-        actions: payload.actions || activeSessionMeta.actions || SESSION_PROFILES[activeSessionProvider].actions,
-      };
-      applySessionActions(activeSessionMeta.actions);
-      applySessionText();
-      fillSessionCredentials(payload.credentials, { profile: activeSessionProvider });
-      if (payload.state) applyTmsState(payload.state);
-    }
-
-    const TONE_CLASS = {
-      success: "tms-dot--ok",
-      warning: "tms-dot--warn",
-      error: "tms-dot--alert",
-      neutral: "tms-dot--alert",
-    };
-
-    function setDotTone(tone, status) {
-      tmsDot.classList.remove("tms-dot--ok", "tms-dot--warn", "tms-dot--alert");
-      tmsDot.classList.add(TONE_CLASS[tone] || "tms-dot--alert");
-      tmsDot.dataset.statusTone = tone || "error";
-      tmsDot.dataset.status = status || "error";
-      tmsDot.classList.remove("tms-dot--pulse");
-      if (status !== "authenticated") {
-        void tmsDot.offsetWidth;
-        tmsDot.classList.add("tms-dot--pulse");
-      }
-    }
-
-    function updateDotStaleness(lastValidationAt) {
-      if (!lastValidationAt) {
-        tmsDot.classList.remove("tms-dot--stale");
-        return;
-      }
-      const parsed = Date.parse(String(lastValidationAt).replace(" ", "T"));
-      if (!Number.isFinite(parsed)) {
-        tmsDot.classList.remove("tms-dot--stale");
-        return;
-      }
-      const ageMs = Date.now() - parsed;
-      tmsDot.classList.toggle("tms-dot--stale", ageMs > 90_000);
-    }
-
-    function setPopoverField(selector, value) {
-      const el = tmsPopover.querySelector(selector);
-      if (el) el.textContent = tmsDisplayValue(value);
-    }
-
-    function pickActionVariant(status) {
-      if (status === "checking") return null;
-      if (status === "pending_code") return "submit-code";
-      if (status === "authenticated") return null;
-      return "send-code"; // logged_out / expired / error
-    }
-
-    /* ── 发送验证码冷却态 ── */
-    const COOLDOWN_SEC = 60;
-    let cooldownTimerId = null;
-    function cooldownKey() {
-      return `tms:${activeSessionProvider}:last_send_at`;
-    }
-    function cooldownRemainingSec() {
-      if (sessionChallengeType() === "image") return 0;
-      const raw = Number(localStorage.getItem(cooldownKey()) || "0");
-      if (!Number.isFinite(raw) || raw <= 0) return 0;
-      const elapsed = Math.floor((Date.now() - raw) / 1000);
-      return Math.max(0, COOLDOWN_SEC - elapsed);
-    }
-    function markCodeJustSent() {
-      localStorage.setItem(cooldownKey(), String(Date.now()));
-    }
-    function applyCooldown() {
-      const remain = cooldownRemainingSec();
-      const hasCreds = tmsDot.dataset.hasSavedCredentials === "true";
-      const challengeType = sessionChallengeType();
-      if (sendBtn) {
-        if (remain > 0) {
-          sendBtn.disabled = true;
-          sendBtn.dataset.cooldown = "1";
-          sendBtn.textContent = `已发送 · ${remain}s`;
-        } else {
-          sendBtn.disabled = !hasCreds;
-          delete sendBtn.dataset.cooldown;
-          if (challengeType === "image") {
-            sendBtn.textContent = tmsActionCard.dataset.variant === "submit-code" ? "刷新验证码" : "登录";
-          } else {
-            sendBtn.textContent = tmsActionCard.dataset.variant === "submit-code" ? "重新发送验证码" : "发送验证码";
-          }
-        }
-      }
-      if (remain > 0 && !cooldownTimerId) {
-        cooldownTimerId = window.setInterval(applyCooldown, 1000);
-      } else if (remain === 0 && cooldownTimerId) {
-        window.clearInterval(cooldownTimerId);
-        cooldownTimerId = null;
-      }
-    }
-
-    function baseSendActionLabel(challengeType, variant) {
-      if (challengeType === "image") {
-        return variant === "submit-code" ? "刷新验证码" : "登录";
-      }
-      return variant === "submit-code" ? "重新发送验证码" : "发送验证码";
-    }
-
-    applyCooldown = function applyCooldownOverride() {
-      const remain = cooldownRemainingSec();
-      const hasCreds = tmsDot.dataset.hasSavedCredentials === "true";
-      const challengeType = sessionChallengeType();
-      if (sendBtn) {
-        if (remain > 0) {
-          sendBtn.disabled = true;
-          sendBtn.dataset.cooldown = "1";
-          sendBtn.textContent = `已发送 · ${remain}s`;
-        } else {
-          sendBtn.disabled = !hasCreds;
-          delete sendBtn.dataset.cooldown;
-          sendBtn.textContent = baseSendActionLabel(challengeType, tmsActionCard.dataset.variant);
-        }
-      }
-      if (remain > 0 && !cooldownTimerId) {
-        cooldownTimerId = window.setInterval(applyCooldown, 1000);
-      } else if (remain === 0 && cooldownTimerId) {
-        window.clearInterval(cooldownTimerId);
-        cooldownTimerId = null;
-      }
-    };
-
-    const initialRenderedProvider = tmsDot.dataset.profile || "ronghui";
-    let lastStatus = tmsDot.dataset.status || "";
-    let lastVariant = null;
-
-    function ensureSubLink(subEl, hasCreds) {
-      let link = subEl.querySelector("[data-tms-goto-settings]");
-      if (hasCreds) {
-        if (link) link.remove();
-        return;
-      }
-      if (!link) {
-        link = document.createElement("button");
-        link.type = "button";
-        link.className = "tms-action-sub-link";
-        link.dataset.tmsGotoSettings = "";
-        link.textContent = "去设置";
-        link.addEventListener("click", (e) => {
-          e.stopPropagation();
-          openPopover();
-          openSettings();
-        });
-        subEl.appendChild(link);
-      }
-    }
-
-    function updateCaptchaPreview(state, showCodeField) {
-      if (!captchaPreview || !captchaImage) return;
-      const image = String(state.captcha_image || state.captchaImage || "");
-      const shouldShow = !!(showCodeField && sessionChallengeType(state) === "image" && image);
-      captchaPreview.hidden = !shouldShow;
-      if (shouldShow) {
-        captchaImage.src = image;
-      } else {
-        captchaImage.removeAttribute("src");
-      }
-    }
-
-    function updateActionCard(state) {
-      const variant = pickActionVariant(state.status);
-      const hasCreds = !!state.has_saved_credentials;
-      const label = sessionLabel();
-      const challengeType = sessionChallengeType(state);
-      const challengeLabel = sessionChallengeLabel(state);
-
-      const titleEl = tmsActionCard.querySelector("[data-tms-action-title]");
-      const subEl = tmsActionCard.querySelector("[data-tms-action-sub]");
-      if (titleEl) {
-        if (state.status === "pending_code") titleEl.textContent = `请输入 ${label} ${challengeLabel}`;
-        else if (state.status === "authenticated") titleEl.textContent = `${label} 已登录`;
-        else titleEl.textContent = `${label} 登录态已断开`;
-      }
-      if (subEl) {
-        const summary = (state.last_error_summary || "").trim();
-        // 未登录且没有保存凭证时，强制副标题提示 + "去设置"链接
-        const needSetup = variant === "send-code" && !hasCreds;
-        if (needSetup) {
-          subEl.textContent = `请先在账号设置中保存${label}登录账号`;
-          ensureSubLink(subEl, false);
-          subEl.hidden = false;
-        } else if (summary) {
-          subEl.textContent = summary;
-          ensureSubLink(subEl, true);
-          subEl.hidden = false;
-        } else {
-          subEl.textContent = "";
-          ensureSubLink(subEl, true);
-          subEl.hidden = true;
-        }
-      }
-
-      tmsActionCard.dataset.status = state.status || "error";
-      tmsActionCard.dataset.statusTone = state.status_tone || "error";
-      tmsActionCard.dataset.variant = variant || "";
-      tmsActionCard.dataset.challengeType = challengeType;
-      tmsActionCard.dataset.challengeLabel = challengeLabel;
-
-      if (actionForm) {
-        actionForm.hidden = variant === null;
-        actionForm.style.display = variant === null ? "none" : "";
-        actionForm.dataset.challengeType = challengeType;
-      }
-      if (codeField) {
-        const showCodeField = variant === "submit-code";
-        codeField.hidden = !showCodeField;
-        codeField.style.display = showCodeField ? "" : "none";
-        const codeLabel = codeField.querySelector("[data-tms-code-label]");
-        const codeInput = codeField.querySelector("[data-tms-code-input]");
-        if (codeLabel) codeLabel.textContent = challengeLabel;
-        if (codeInput) {
-          applyCodeInputMode(codeInput, challengeType);
-          codeInput.disabled = !showCodeField;
-          codeInput.required = showCodeField;
-          codeInput.placeholder = showCodeField ? (challengeType === "image" ? "输入图片验证码" : "6 位数字") : "发送后输入验证码";
-        }
-        updateCaptchaPreview(state, showCodeField);
-      }
-      if (sendBtn) sendBtn.hidden = variant === null;
-
-      applyCooldown();
-
-      const shouldShow = variant !== null;
-      const freshlyAuthenticated = state.status === "authenticated" && lastStatus && lastStatus !== "authenticated";
-
-      if (shouldShow && tmsActionCard.hidden) {
-        tmsActionCard.hidden = false;
-        requestAnimationFrame(() => tmsActionCard.classList.add("is-open"));
-      } else if (!shouldShow && !tmsActionCard.hidden) {
-        if (freshlyAuthenticated) {
-          tmsActionCard.classList.add("is-success");
-          window.setTimeout(() => {
-            tmsActionCard.classList.remove("is-success");
-            tmsActionCard.classList.remove("is-open");
-            window.setTimeout(() => {
-              if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
-            }, 240);
-          }, 800);
-        } else {
-          tmsActionCard.classList.remove("is-open");
-          window.setTimeout(() => {
-            if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
-          }, 240);
-        }
-      }
-
-      if (variant === "submit-code" && lastVariant !== "submit-code") {
-        const codeInput = actionForm?.querySelector("[data-tms-code-input]");
-        if (codeInput) {
-          requestAnimationFrame(() => {
-            codeInput.focus({ preventScroll: true });
-            codeInput.select();
-          });
-        }
-      }
-
-      // 已登录时 settings 面板多一个"清除登录态"按钮
-      if (settingsAuthedActions) {
-        settingsAuthedActions.hidden = state.status !== "authenticated";
-      }
-
-      lastStatus = state.status || "";
-      lastVariant = variant;
-      feather.replace();
-    }
-
-    function applyTmsState(state) {
-      if (!state || typeof state !== "object") return;
-      const tone = state.status_tone || "error";
-      const status = state.status || "error";
-      const label = state.label || "异常";
-      const profileLabel = sessionLabel();
-
-      setDotTone(tone, status);
-      updateDotStaleness(state.last_validation_at);
-
-      const ariaLabelMap = {
-        authenticated: `${profileLabel} 已登录`,
-        pending_code: `${profileLabel} 待输入验证码`,
-      };
-      tmsDot.setAttribute("aria-label", ariaLabelMap[status] || `${profileLabel} ${label}，需要重新登录`);
-      tmsDot.dataset.label = label;
-      tmsDot.dataset.hasSavedCredentials = state.has_saved_credentials ? "true" : "false";
-
-      const popoverState = tmsPopover.querySelector("[data-tms-popover-state]");
-      if (popoverState) popoverState.textContent = label;
-      setPopoverField("[data-tms-expires-at]", state.expires_at);
-      setPopoverField("[data-tms-last-validation]", state.last_validation_at);
-      setPopoverField("[data-tms-credential-source]", credentialSourceLabel(state));
-
-      updateActionCard(state);
-    }
-
-    function applySessionCheckingState() {
-      applyTmsState({
-        status: "checking",
-        label: "校验中",
-        status_tone: "warning",
-        last_validation_at: "",
-        expires_at: "",
-        last_error_summary: "",
-        has_saved_credentials: tmsDot.dataset.hasSavedCredentials === "true",
-      });
-    }
-
-    /* ── 轮询 + 刷新 ── */
-    let refreshPending = false;
-    async function refreshTmsSessionStatus(options = {}) {
-      if (refreshPending) return;
-      refreshPending = true;
-      const refreshBtn = tmsPopover.querySelector("[data-tms-refresh]");
-      if (options.manual && refreshBtn) setButtonLoading(refreshBtn, true);
-      try {
-        const response = await fetch(sessionContextUrl(), {
-          method: "GET",
-          headers: { "Accept": "application/json" },
-        });
-        const payload = await response.json();
-        if (payload && payload.state) {
-          applySessionContext(payload);
-        } else {
-          applyTmsState(payload);
-        }
-      } catch (err) {
-        applyTmsState({
-          status: "error",
-          label: "异常",
-          status_tone: "error",
-          last_validation_at: "",
-          expires_at: "",
-          last_error_summary: err instanceof Error ? err.message : String(err || "状态刷新失败"),
-          has_saved_credentials: tmsDot.dataset.hasSavedCredentials === "true",
-        });
-      } finally {
-        refreshPending = false;
-        if (options.manual && refreshBtn) setButtonLoading(refreshBtn, false);
-      }
-    }
-
-    window.__tmsRefresh = refreshTmsSessionStatus;
-    window.__setAutomationSessionProvider = (provider) => {
-      const nextProvider = SESSION_PROFILES[provider] ? provider : "ronghui";
-      if (activeSessionProvider === nextProvider) {
-        applySessionText();
-        return;
-      }
-      sessionCredentialDrafts[activeSessionProvider] = readCredentialDraft();
-      activeSessionProvider = nextProvider;
-      activeSessionMeta = { ...SESSION_PROFILES[activeSessionProvider] };
-      lastStatus = "";
-      lastVariant = null;
-      applySessionActions(activeSessionMeta.actions);
-      applySessionText();
-      applySessionCheckingState();
-      showCredentialDraftOrBlank(activeSessionProvider);
-      ensureSettingsError("");
-      if (codeInput) codeInput.value = "";
-      refreshTmsSessionStatus();
-    };
-
-    /* ── popover 显隐 + sticky 模式 ── */
-    let popoverHideTimer = null;
-    let isSticky = false;
-
-    function openPopover() {
-      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
-      tmsPopover.hidden = false;
-      requestAnimationFrame(() => tmsPopover.classList.add("is-open"));
-      tmsDot.setAttribute("aria-expanded", "true");
-    }
-    function closePopover() {
-      if (isSticky) return;
-      tmsPopover.classList.remove("is-open");
-      tmsDot.setAttribute("aria-expanded", "false");
-      popoverHideTimer = window.setTimeout(() => {
-        if (!tmsPopover.classList.contains("is-open")) tmsPopover.hidden = true;
-      }, 180);
-    }
-    function scheduleClose() {
-      if (isSticky) return;
-      popoverHideTimer = window.setTimeout(closePopover, 260);
-    }
-    function openSettings() {
-      if (!settingsPanel || !settingsToggle) return;
-      settingsPanel.hidden = false;
-      requestAnimationFrame(() => settingsPanel.classList.add("is-open"));
-      settingsToggle.setAttribute("aria-expanded", "true");
-      isSticky = true;
-      tmsPopover.classList.add("is-sticky");
-      requestAnimationFrame(() => {
-        settingsPanel.querySelector('input[name="username"]')?.focus({ preventScroll: true });
-      });
-    }
-    function closeSettings() {
-      if (!settingsPanel || !settingsToggle) return;
-      settingsPanel.classList.remove("is-open");
-      settingsToggle.setAttribute("aria-expanded", "false");
-      window.setTimeout(() => {
-        if (!settingsPanel.classList.contains("is-open")) settingsPanel.hidden = true;
-      }, 220);
-      isSticky = false;
-      tmsPopover.classList.remove("is-sticky");
-    }
-
-    tmsDot.addEventListener("mouseenter", openPopover);
-    tmsDot.addEventListener("mouseleave", scheduleClose);
-    tmsDot.addEventListener("focus", openPopover);
-    tmsDot.addEventListener("blur", (e) => {
-      if (tmsPopover.contains(e.relatedTarget)) return;
-      scheduleClose();
-    });
-    tmsPopover.addEventListener("mouseenter", () => {
-      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
-    });
-    tmsPopover.addEventListener("mouseleave", scheduleClose);
-    tmsDot.addEventListener("click", () => {
-      if (tmsPopover.hidden) openPopover();
-      else if (!isSticky) closePopover();
-    });
-    tmsDot.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        if (tmsPopover.hidden) openPopover();
-        else if (!isSticky) closePopover();
-      } else if (e.key === "Escape") {
-        if (isSticky) closeSettings();
-        else closePopover();
-      }
-    });
-
-    /* ── popover 操作：刷新 + 账号设置折叠切换 ── */
-    tmsPopover.querySelector("[data-tms-refresh]")?.addEventListener("click", () => {
-      refreshTmsSessionStatus({ manual: true });
-    });
-    settingsToggle?.addEventListener("click", () => {
-      if (settingsPanel?.classList.contains("is-open")) closeSettings();
-      else openSettings();
-    });
-
-    /* ── 密码显隐切换 ── */
-    passwordToggle?.addEventListener("click", () => {
-      if (!passwordInput) return;
-      const isPwd = passwordInput.type === "password";
-      passwordInput.type = isPwd ? "text" : "password";
-      passwordToggle.setAttribute("aria-label", isPwd ? "隐藏密码" : "显示密码");
-      const icon = passwordToggle.querySelector("i");
-      if (icon) {
-        icon.setAttribute("data-feather", isPwd ? "eye-off" : "eye");
-        feather.replace();
-      }
-    });
-
-    settingsForm?.querySelectorAll('input[name="username"], input[name="password"], input[name="phone"]').forEach(input => {
-      input.addEventListener("input", markCredentialDirty);
-    });
-
-    /* ── 点击 popover 外部：收起 settings + 关 popover ── */
-    document.addEventListener("click", (e) => {
-      if (tmsPopover.hidden) return;
-      if (tmsPopover.contains(e.target) || tmsDot.contains(e.target)) return;
-      if (isSticky) closeSettings();
-      closePopover();
-    });
-
-    /* ── action 卡关闭 ── */
-    tmsActionCard.querySelector("[data-tms-close]")?.addEventListener("click", () => {
-      tmsActionCard.classList.remove("is-open");
-      window.setTimeout(() => {
-        if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
-      }, 240);
-    });
-
-    /* ── 齿轮按钮（快捷入口）：打开 popover + 展开设置 ── */
-    tmsActionCard.querySelector("[data-tms-settings]")?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openPopover();
-      openSettings();
-    });
-
-    function normalizeSessionCodeValue(value) {
-      const raw = String(value || "");
-      if (sessionChallengeType() === "image") {
-        return raw.replace(/\s+/g, "").slice(0, 4);
-      }
-      return raw.replace(/\D+/g, "").slice(0, 6);
-    }
-
-    function isSessionCodeComplete(value) {
-      const cleaned = normalizeSessionCodeValue(value);
-      if (sessionChallengeType() === "image") return cleaned.length === 4;
-      return /^\d{6}$/.test(cleaned);
-    }
-
-    /* ── 验证码输入：短信满 6 位自动提交；图片验证码满 4 位自动提交 ── */
-    const codeInput = actionForm?.querySelector("[data-tms-code-input]");
-    const codeForm = actionForm;
-    if (codeInput && codeForm) {
-      codeInput.addEventListener("input", () => {
-        const cleaned = normalizeSessionCodeValue(codeInput.value);
-        if (cleaned !== codeInput.value) codeInput.value = cleaned;
-        if (isSessionCodeComplete(cleaned) && !codeForm.classList.contains("is-submitting")) {
-          codeForm.requestSubmit();
-        }
-      });
-      codeInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          const cleaned = normalizeSessionCodeValue(codeInput.value);
-          if (isSessionCodeComplete(cleaned) && !codeForm.classList.contains("is-submitting")) {
-            e.preventDefault();
-            codeForm.requestSubmit();
-          }
-        }
-      });
-    }
-
-    /* ── AJAX submit handler（action 卡 + popover 设置表单通用） ── */
-    async function handleTmsFormSubmit(event) {
-      const form = event.target instanceof HTMLFormElement ? event.target : null;
-      if (!form) return;
-      if (!form.matches(".tms-action-form, .tms-action-form-inline, .tms-action-creds")) return;
-      event.preventDefault();
-
-      const submitter = event.submitter instanceof HTMLElement ? event.submitter : null;
-      const loadingTarget = submitter || form.querySelector('button[type="submit"]');
-      const action = (submitter && submitter.getAttribute("formaction")) || form.action;
-      if (!action) return;
-
-      const actionKind = submitter?.dataset.sessionAction || form.dataset.sessionAction || "";
-      const isSendAction = actionKind === "send-code";
-      const isSubmitAction = actionKind === "submit-code";
-      const isSaveCreds = actionKind === "save-credentials";
-      const isClearCreds = actionKind === "clear-credentials";
-      const isClearSession = actionKind === "clear";
-      const isSettingsForm = form === settingsForm;
-
-      if (isSubmitAction && codeForm) codeForm.classList.add("is-submitting");
-      setButtonLoading(loadingTarget, true);
-      try {
-        const resp = await fetch(action, {
-          method: "POST",
-          headers: {
-            "Accept": "application/json",
-            "X-Requested-With": "fetch",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          },
-          body: new URLSearchParams(new FormData(form)).toString(),
-          credentials: "same-origin",
-        });
-        let payload = null;
-        try { payload = await resp.json(); } catch (_) { /* 非 JSON 返回也兜底 */ }
-
-        if (payload && payload.state) {
-          applySessionContext(payload);
-        } else {
-          await refreshTmsSessionStatus();
-        }
-
-        const sub = tmsActionCard.querySelector("[data-tms-action-sub]");
-        if (payload && payload.ok === false) {
-          const msg = payload.message || "操作失败";
-          if (isSettingsForm) {
-            // 设置表单的错误就近显示在 settings 面板
-            ensureSettingsError(msg);
-          } else if (sub) {
-            sub.textContent = msg;
-            sub.hidden = false;
-          }
-          if (isSubmitAction && codeInput) {
-            codeInput.value = "";
-            requestAnimationFrame(() => codeInput.focus({ preventScroll: true }));
-          }
-        } else if (payload && payload.ok) {
-          if (isSendAction && sessionChallengeType() === "sms") markCodeJustSent();
-          applyCooldown();
-          if (isSendAction && codeInput) {
-            codeInput.value = "";
-            requestAnimationFrame(() => codeInput.focus({ preventScroll: true }));
-          }
-          if (isSettingsForm) {
-            ensureSettingsError("");
-            if (isSaveCreds || isClearCreds || isClearSession) {
-              closeSettings();
-            }
-          }
-          // 保存成功后刷新 popover 里 credentials 字段
-          if (payload.credentials && settingsForm) {
-            fillSessionCredentials(payload.credentials, { profile: activeSessionProvider, force: true });
-          } else if (isSettingsForm && (isSaveCreds || isClearCreds)) {
-            clearCredentialDirty(activeSessionProvider);
-          }
-        }
-      } catch (err) {
-        const sub = tmsActionCard.querySelector("[data-tms-action-sub]");
-        const msg = (err && err.message) || "网络异常，请稍后重试";
-        if (isSettingsForm) ensureSettingsError(msg);
-        else if (sub) { sub.textContent = msg; sub.hidden = false; }
-        await refreshTmsSessionStatus();
-      } finally {
-        setButtonLoading(loadingTarget, false);
-        if (isSubmitAction && codeForm) codeForm.classList.remove("is-submitting");
-        applyCooldown();
-      }
-    }
-
-    function ensureSettingsError(msg) {
-      if (!settingsPanel) return;
-      let err = settingsPanel.querySelector("[data-tms-settings-error]");
-      if (!msg) {
-        if (err) err.remove();
-        return;
-      }
-      if (!err) {
-        err = document.createElement("p");
-        err.className = "tms-settings-error";
-        err.dataset.tmsSettingsError = "";
-        settingsPanel.prepend(err);
-      }
-      err.textContent = msg;
-    }
-
-    tmsActionCard.addEventListener("submit", handleTmsFormSubmit);
-    settingsForm?.addEventListener("submit", handleTmsFormSubmit);
-
-    /* ── 键盘：Esc 关闭 action 卡（非 pending_code 时） ── */
-    document.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape") return;
-      if (isSticky) { closeSettings(); return; }
-      if (!tmsActionCard.hidden && tmsActionCard.dataset.status === "authenticated") {
-        tmsActionCard.classList.remove("is-open");
-        window.setTimeout(() => {
-          if (!tmsActionCard.classList.contains("is-open")) tmsActionCard.hidden = true;
-        }, 240);
-      }
-    });
-
-    /* ── 轮询、visibility、focus 触发 ── */
-    if (Number.isFinite(pollIntervalMs) && pollIntervalMs >= 5000) {
-      const timerId = window.setInterval(() => refreshTmsSessionStatus(), pollIntervalMs);
-      window.addEventListener("beforeunload", () => clearInterval(timerId), { once: true });
-    }
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") refreshTmsSessionStatus();
-    });
-    window.addEventListener("focus", () => refreshTmsSessionStatus());
-
-    /* ── 初始化 ── */
-    applySessionActions(activeSessionMeta.actions);
-    applySessionText();
-    if (activeSessionProvider === initialRenderedProvider) {
-      applyTmsState({
-        status: tmsDot.dataset.status || "error",
-        status_tone: tmsDot.dataset.statusTone || "error",
-        label: tmsDot.dataset.label || "异常",
-        last_validation_at: tmsPopover.querySelector("[data-tms-last-validation]")?.textContent || "",
-        expires_at: tmsPopover.querySelector("[data-tms-expires-at]")?.textContent || "",
-        has_saved_credentials: tmsDot.dataset.hasSavedCredentials === "true",
-        last_error_summary: tmsActionCard.querySelector("[data-tms-action-sub]")?.textContent || "",
-      });
-    } else {
-      applySessionCheckingState();
-    }
-    refreshTmsSessionStatus();
-  }
 
   feather.replace();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260814-3" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260815-project-plugin4" defer></script>
 {% endblock %}

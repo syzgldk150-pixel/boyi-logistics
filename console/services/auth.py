@@ -626,13 +626,19 @@ class AuthServiceMixin:
     def _automation_account_options_by_system(self, accounts: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         options: dict[str, list[dict[str, Any]]] = {}
         for account in accounts:
-            if not bool(account.get("is_active", True)):
-                continue
+            account = dict(account)
+            status = account.get("status") if isinstance(account.get("status"), dict) else {}
+            session_ready = (
+                not bool(account.get("session_capable"))
+                or str(status.get("status") or "").strip() == "authenticated"
+            )
+            account["binding_usable"] = bool(account.get("is_active", True)) and session_ready
             system = str(account.get("system") or "").strip().lower()
             options.setdefault(system, []).append(account)
         for system, rows in options.items():
             rows.sort(
                 key=lambda item: (
+                    not bool(item.get("binding_usable")),
                     not bool(item.get("is_default")),
                     str(item.get("name") or item.get("account_id") or ""),
                 )
@@ -648,8 +654,9 @@ class AuthServiceMixin:
     ) -> list[dict[str, Any]]:
         workflow = workflow or automation_workflow_definition(task_id)
         raw_roles = workflow.get("account_roles")
-        roles = raw_roles if isinstance(raw_roles, list) else []
-        if not roles:
+        roles_declared = isinstance(raw_roles, list)
+        roles = raw_roles if roles_declared else []
+        if not roles and not roles_declared:
             normalized = normalize_task_group_id(task_id)
             tool_name_value = str(tool_name or workflow.get("tool_name") or "").strip()
             provider_value = str(provider or "").strip().lower()
@@ -676,21 +683,42 @@ class AuthServiceMixin:
         for role in roles:
             if not isinstance(role, dict):
                 continue
-            system = str(role.get("system") or "").strip().lower()
-            if system not in AUTOMATION_ACCOUNT_SYSTEM_LABELS:
+            allowed_systems = role.get("allowed_systems")
+            if isinstance(allowed_systems, list):
+                systems = [
+                    str(item or "").strip().lower()
+                    for item in allowed_systems
+                    if str(item or "").strip().lower() in AUTOMATION_ACCOUNT_SYSTEM_LABELS
+                ]
+            else:
+                system = str(role.get("system") or "").strip().lower()
+                systems = [system] if system in AUTOMATION_ACCOUNT_SYSTEM_LABELS else []
+            systems = list(dict.fromkeys(systems))
+            if not systems:
                 continue
-            field = str(role.get("field") or "account_id").strip() or "account_id"
+            system = systems[0]
+            field = str(role.get("field") or role.get("role") or "account_id").strip()
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", field):
+                continue
             normalized_roles.append(
                 {
                     "label": str(role.get("label") or "运行账号").strip() or "运行账号",
                     "field": field,
                     "system": system,
-                    "system_label": AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(system, system),
+                    "systems": systems,
+                    "system_label": " / ".join(
+                        AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(item, item) for item in systems
+                    ),
                     "default_account_id": str(
                         role.get("default_account_id")
                         or AUTOMATION_DEFAULT_ACCOUNT_IDS.get(system, "")
                     ).strip(),
                     "required": bool(role.get("required", True)),
+                    "binding_cardinality": (
+                        "many"
+                        if str(role.get("binding_cardinality") or "one") == "many"
+                        else "one"
+                    ),
                 }
             )
         return normalized_roles
@@ -728,7 +756,16 @@ class AuthServiceMixin:
         options_by_system = self._automation_account_options_by_system(accounts)
         for task in tasks:
             task_id = str(task.get("task_id") or "")
-            workflow = automation_workflow_definition(task_id)
+            workflow = dict(automation_workflow_definition(task_id))
+            plugin = task.get("plugin")
+            if isinstance(plugin, dict):
+                workflow["account_roles"] = list(plugin.get("account_roles") or [])
+            plugin_account_bindings = (
+                plugin.get("account_bindings")
+                if isinstance(plugin, dict)
+                and isinstance(plugin.get("account_bindings"), dict)
+                else {}
+            )
             try:
                 payload = json.loads(str(task.get("tool_params_json") or "{}"))
             except json.JSONDecodeError:
@@ -744,24 +781,72 @@ class AuthServiceMixin:
                 str(task.get("provider") or ""),
             ):
                 system = str(role.get("system") or "").strip().lower()
-                options = list(options_by_system.get(system, []))
+                systems = list(role.get("systems") or [system])
+                options = [
+                    account
+                    for allowed_system in systems
+                    for account in options_by_system.get(str(allowed_system), [])
+                ]
                 option_ids = {str(item.get("account_id") or "") for item in options}
                 field = str(role.get("field") or "account_id")
-                selected = str(payload.get(field) or "").strip()
-                if not selected and field == "account_id":
-                    selected = str(payload.get("accountId") or "").strip()
-                if selected not in option_ids:
-                    default_account_id = str(role.get("default_account_id") or "").strip()
-                    selected = (
-                        default_account_id
-                        if default_account_id in option_ids
-                        else str(options[0].get("account_id") or "") if options else ""
+                many = role.get("binding_cardinality") == "many"
+                if isinstance(plugin, dict):
+                    # Installed projects are configured only from the core-owned
+                    # project binding.  Legacy cron parameters remain readable
+                    # migration evidence, never an execution/config authority.
+                    raw_configured = plugin_account_bindings.get(field)
+                    configured_account_ids = (
+                        [str(item or "").strip() for item in raw_configured]
+                        if isinstance(raw_configured, list)
+                        else [str(raw_configured or "").strip()]
                     )
+                else:
+                    configured_account_id = str(payload.get(field) or "").strip()
+                    if not configured_account_id and field == "account_id":
+                        configured_account_id = str(payload.get("accountId") or "").strip()
+                    configured_account_ids = [configured_account_id]
+                configured_account_ids = [item for item in configured_account_ids if item]
+                if not many and len(configured_account_ids) > 1:
+                    configured_account_ids = configured_account_ids[:1]
+                selected_account_ids = [
+                    item for item in configured_account_ids if item in option_ids
+                ]
+                selected_accounts = [
+                    item
+                    for item in options
+                    if str(item.get("account_id") or "") in selected_account_ids
+                ]
+                configured_invalid = len(selected_account_ids) != len(configured_account_ids)
+                unavailable = any(
+                    not bool(account.get("binding_usable")) for account in selected_accounts
+                )
+                blocked = configured_invalid or unavailable or (
+                    bool(role.get("required", True)) and not selected_accounts
+                )
+                if configured_invalid:
+                    blocked_reason = "已保存账号不存在或不属于此角色"
+                elif not selected_accounts:
+                    blocked_reason = "未选择账号"
+                elif any(not bool(account.get("is_active", True)) for account in selected_accounts):
+                    blocked_reason = "已保存账号已停用"
+                elif any(
+                    bool(account.get("session_capable"))
+                    and not bool(account.get("binding_usable"))
+                    for account in selected_accounts
+                ):
+                    blocked_reason = "已保存账号登录态无效"
+                else:
+                    blocked_reason = ""
                 role_bindings.append(
                     {
                         **role,
                         "options": options,
-                        "selected_account_id": selected,
+                        "selected_account_ids": selected_account_ids,
+                        "selected_account_id": selected_account_ids[0]
+                        if selected_account_ids
+                        else "",
+                        "blocked": blocked,
+                        "blocked_reason": blocked_reason if blocked else "",
                     }
                 )
 
@@ -771,6 +856,21 @@ class AuthServiceMixin:
             task["account_system_label"] = str(first_role.get("system_label") or "")
             task["account_options"] = list(first_role.get("options") or [])
             task["selected_account_id"] = str(first_role.get("selected_account_id") or "")
+            account_block_reasons = [
+                str(role.get("blocked_reason") or "")
+                for role in role_bindings
+                if role.get("blocked") and str(role.get("blocked_reason") or "")
+            ]
+            task["account_blocked"] = bool(account_block_reasons)
+            task["account_block_reasons"] = account_block_reasons
+            if account_block_reasons:
+                task["can_run_now"] = False
+                task["plugin_blocked"] = True
+                existing_warning = str(task.get("plugin_warning") or "").strip()
+                account_warning = "；".join(dict.fromkeys(account_block_reasons))
+                task["plugin_warning"] = "；".join(
+                    item for item in (existing_warning, account_warning) if item
+                )
 
     def _handle_automation_account_post(self, handler: BaseHTTPRequestHandler, path: str) -> bool:
         if path == "/automation-accounts/create":

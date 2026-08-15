@@ -3,6 +3,28 @@
 from __future__ import annotations
 
 
+WINDOWS_WORKER_REQUIRED_TABLES = frozenset(
+    {
+        "automation_worker_devices",
+        "automation_worker_jobs",
+        "automation_worker_cleanup_directives",
+    }
+)
+
+WINDOWS_WORKER_REQUIRED_COLUMNS = frozenset(
+    {
+        ("automation_worker_devices", "interactive_session_state"),
+        ("automation_worker_devices", "paired_public_key_fingerprint"),
+        ("automation_worker_jobs", "deadline_at"),
+        ("automation_worker_jobs", "plugin_id"),
+        ("automation_worker_jobs", "automation_generation"),
+        ("automation_worker_cleanup_directives", "package_sha256"),
+        ("automation_worker_cleanup_directives", "cleanup_scope"),
+        ("automation_worker_cleanup_directives", "purge_id"),
+        ("automation_worker_cleanup_directives", "acknowledged_result_sha256"),
+    }
+)
+
 REQUIRED_TABLES = frozenset(
     {
         "admin_users",
@@ -24,6 +46,25 @@ REQUIRED_TABLES = frozenset(
         "event_consumptions",
         "scheduled_task_approval_policies",
         "scheduled_task_approval_policy_events",
+        "automation_project_policies",
+        "automation_project_policy_events",
+        "automation_project_approval_batches",
+        "automation_project_bootstrap_items_018",
+        "automation_project_bootstrap_marker_018",
+        "automation_plugin_packages",
+        "automation_plugin_versions",
+        "automation_projects",
+        "automation_project_configs",
+        "automation_project_generations",
+        "automation_project_generation_coeffects",
+        "automation_project_generation_effects",
+        "automation_project_generation_leases",
+        "automation_plugin_package_events",
+        "automation_project_events",
+        "automation_worker_devices",
+        "automation_worker_jobs",
+        "automation_worker_cleanup_directives",
+        "automation_plugin_purge_journal",
         "tool_logs",
         "waybill_problem_events",
         "waybill_sign_events",
@@ -39,6 +80,9 @@ REQUIRED_COLUMNS = frozenset(
         ("agent_commands", "idempotency_key"),
         ("agent_commands", "correlation_id"),
         ("agent_commands", "parameters_json"),
+        ("agent_commands", "automation_id"),
+        ("agent_commands", "automation_generation"),
+        ("agent_commands", "automation_invocation_json"),
         ("work_items", "work_item_id"),
         ("work_items", "dedupe_key"),
         ("work_items", "owner_type"),
@@ -73,6 +117,8 @@ REQUIRED_COLUMNS = frozenset(
         ("event_consumptions", "consumer_name"),
         ("event_consumptions", "event_id"),
         ("scheduled_tasks", "configuration_version"),
+        ("scheduled_tasks", "automation_id"),
+        ("scheduled_tasks", "automation_generation"),
         ("scheduled_tasks", "updated_at"),
         ("scheduled_task_approval_policies", "task_id"),
         ("scheduled_task_approval_policies", "mode"),
@@ -81,8 +127,63 @@ REQUIRED_COLUMNS = frozenset(
         ("scheduled_task_approval_policy_events", "event_id"),
         ("scheduled_task_approval_policy_events", "request_id"),
         ("scheduled_task_approval_policy_events", "task_id"),
+        ("automation_project_policies", "automation_id"),
+        ("automation_project_policies", "mode"),
+        ("automation_project_policies", "contract_hash"),
+        ("automation_project_policies", "project_configuration_version"),
+        ("automation_project_policy_events", "request_id"),
+        ("automation_project_approval_batches", "request_id"),
+        ("automation_plugin_packages", "plugin_id"),
+        ("automation_plugin_packages", "record_version"),
+        ("automation_projects", "automation_id"),
+        ("automation_projects", "plugin_id"),
+        ("automation_projects", "plugin_version"),
+        ("automation_projects", "install_request_id"),
+        ("automation_projects", "record_version"),
+        ("automation_projects", "target_generation"),
+        ("automation_projects", "committed_generation"),
+        ("automation_projects", "reconcile_state"),
+        ("automation_project_configs", "automation_id"),
+        ("automation_project_configs", "account_bindings_json"),
+        ("automation_project_configs", "config_version"),
+        ("automation_project_generations", "snapshot_sha256"),
+        ("automation_project_generations", "compiled_invocations_sha256"),
+        ("automation_project_generations", "runtime_descriptor_sha256"),
+        ("automation_project_generations", "governance_anchor_sha256"),
+        ("automation_project_generation_effects", "effect_sequence"),
+        ("automation_project_generation_leases", "outcome"),
+        ("automation_plugin_versions", "package_sha256"),
+        ("automation_plugin_package_events", "request_id"),
+        ("automation_project_events", "request_id"),
+        ("automation_worker_devices", "interactive_session_state"),
+        ("automation_worker_devices", "paired_public_key_fingerprint"),
+        ("automation_worker_jobs", "deadline_at"),
+        ("automation_worker_jobs", "plugin_id"),
+        ("automation_worker_jobs", "automation_generation"),
+        ("automation_worker_cleanup_directives", "package_sha256"),
+        ("automation_worker_cleanup_directives", "cleanup_scope"),
+        ("automation_worker_cleanup_directives", "purge_id"),
+        ("automation_worker_cleanup_directives", "acknowledged_result_sha256"),
+        ("automation_plugin_purge_journal", "phase"),
+        ("automation_plugin_purge_journal", "instance_snapshot_sha256"),
+        ("workflow_resources", "configuration_version"),
+        ("workflow_resources", "config_sha256"),
         ("tool_logs", "run_id"),
         ("tool_logs", "step_id"),
         ("tool_logs", "correlation_id"),
     }
 )
+
+
+def orchestration_schema_requirements(
+    *,
+    include_windows_worker: bool = True,
+) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    """Return the schema required by the selected runtime composition."""
+
+    if include_windows_worker:
+        return REQUIRED_TABLES, REQUIRED_COLUMNS
+    return (
+        REQUIRED_TABLES - WINDOWS_WORKER_REQUIRED_TABLES,
+        REQUIRED_COLUMNS - WINDOWS_WORKER_REQUIRED_COLUMNS,
+    )

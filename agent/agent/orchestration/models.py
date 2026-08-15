@@ -16,8 +16,22 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
+from shared.automation_project_authorization import AutomationProjectInvocation
+
 
 PLAN_SCHEMA_VERSION = 1
+RESERVED_AUTOMATION_CONTEXT_FIELDS = frozenset(
+    {
+        "automation_id",
+        "automation_generation",
+        "automation_invocation",
+        "contract_id",
+        "contract_hash",
+        "policy_version",
+        "project_configuration_version",
+        "_automation_project_invocation",
+    }
+)
 
 
 class OrchestrationError(RuntimeError):
@@ -368,6 +382,7 @@ class Command:
     parameters: Mapping[str, Any]
     idempotency_key: str
     entity_refs: tuple[EntityRef, ...] = ()
+    automation_invocation: AutomationProjectInvocation | None = None
     command_id: str = field(default_factory=new_id)
     correlation_id: str = field(default_factory=new_id)
     requested_at: datetime = field(default_factory=utc_now)
@@ -383,6 +398,53 @@ class Command:
         if not isinstance(self.parameters, Mapping):
             raise OrchestrationError("INVALID_COMMAND_PARAMETERS", "parameters must be a JSON object")
         canonical_json(self.parameters)
+        if _contains_reserved_automation_context(self.parameters):
+            raise OrchestrationError(
+                "RESERVED_AUTOMATION_CONTEXT",
+                "Automation project context is server-owned",
+            )
+        invocation = self.automation_invocation
+        tool_name = str(self.parameters.get("tool_name") or "")
+        is_project_tool = (
+            tool_name.startswith("automation.")
+            and tool_name.endswith(".run")
+            and len(tool_name) > len("automation..run")
+        )
+        if invocation is None and (
+            self.command_type == "automation.project.invoke" or is_project_tool
+        ):
+            raise OrchestrationError(
+                "RESERVED_AUTOMATION_CONTEXT",
+                "Automation projects may only be invoked through a trusted project entrypoint",
+            )
+        if invocation is not None:
+            if self.command_type != "automation.project.invoke":
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_COMMAND",
+                    "Typed automation invocations require the project command type",
+                )
+            if self.source != invocation.entrypoint.value:
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_COMMAND",
+                    "Automation invocation source does not match its trusted entrypoint",
+                )
+            expected_tool_name = f"automation.{invocation.automation_id}.run"
+            if tool_name != expected_tool_name:
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_COMMAND",
+                    "Automation invocation tool identity does not match its project",
+                )
+            if not isinstance(self.parameters.get("arguments"), Mapping):
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_COMMAND",
+                    "Automation invocation arguments must be a JSON object",
+                )
+            context = self.parameters.get("execution_context", {})
+            if not isinstance(context, Mapping):
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_COMMAND",
+                    "Automation execution context must be a JSON object",
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -393,6 +455,11 @@ class Command:
             "parameters": dict(self.parameters),
             "idempotency_key": self.idempotency_key,
             "entity_refs": [ref.to_dict() for ref in self.entity_refs],
+            "automation_invocation": (
+                self.automation_invocation.to_dict()
+                if self.automation_invocation is not None
+                else None
+            ),
             "correlation_id": self.correlation_id,
             "requested_at": self.requested_at,
         }
@@ -480,6 +547,9 @@ class Plan:
     tool_catalog_hash: str
     steps: tuple[PlanStep, ...]
     impact: Mapping[str, Any] = field(default_factory=dict)
+    automation_id: str | None = None
+    automation_generation: int | None = None
+    automation_contract_hash: str | None = None
     schema_version: int = PLAN_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -488,9 +558,35 @@ class Plan:
         keys = [step.step_key for step in self.steps]
         if len(keys) != len(set(keys)):
             raise OrchestrationError("DUPLICATE_STEP_KEY", "Plan step keys must be unique")
+        project_fields = (
+            self.automation_id,
+            self.automation_generation,
+            self.automation_contract_hash,
+        )
+        if any(value is not None for value in project_fields):
+            if not all(value is not None for value in project_fields):
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_PLAN",
+                    "Automation plan identity must be complete",
+                )
+            if not str(self.automation_id or "").strip():
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_PLAN",
+                    "Automation plan identity is empty",
+                )
+            if type(self.automation_generation) is not int or self.automation_generation <= 0:
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_PLAN",
+                    "Automation plan generation must be a positive integer",
+                )
+            if len(str(self.automation_contract_hash or "")) != 64:
+                raise OrchestrationError(
+                    "INVALID_AUTOMATION_PLAN",
+                    "Automation plan contract hash is invalid",
+                )
 
     def hash_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "command_type": self.command_type,
             "context_fingerprint": self.context_fingerprint,
@@ -498,6 +594,11 @@ class Plan:
             "steps": [step.hash_dict() for step in self.steps],
             "impact": dict(self.impact),
         }
+        if self.automation_id is not None:
+            payload["automation_id"] = self.automation_id
+            payload["automation_generation"] = self.automation_generation
+            payload["automation_contract_hash"] = self.automation_contract_hash
+        return payload
 
     @property
     def plan_hash(self) -> str:
@@ -547,6 +648,18 @@ class CommandReceipt:
             "reused": self.reused,
             "next_poll_after_ms": self.next_poll_after_ms,
         }
+
+
+def _contains_reserved_automation_context(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if RESERVED_AUTOMATION_CONTEXT_FIELDS.intersection(
+            str(key) for key in value
+        ):
+            return True
+        return any(_contains_reserved_automation_context(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_reserved_automation_context(item) for item in value)
+    return False
 
 
 def topological_steps(steps: Iterable[PlanStep]) -> tuple[PlanStep, ...]:

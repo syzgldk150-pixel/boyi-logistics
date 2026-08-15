@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from agent.automation_plugins.first_party_handlers import customer_problem_identity
 from agent.orchestration.models import (
     Actor,
     OrchestrationError,
@@ -797,23 +798,22 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
     for item in uow.work_items.list_by_type("CUSTOMER_SERVICE_PROBLEM"):
         if str(item.get("status") or "") not in _OPEN_CUSTOMER_PROBLEM_STATUSES:
             continue
-        dedupe_key = str(item.get("dedupe_key") or "").strip()
-        parts = dedupe_key.split(":", 3)
-        if len(parts) != 4 or parts[0] != "problem" or not all(parts[1:]):
+        persisted_key = str(item.get("dedupe_key") or "").strip()
+        parts = persisted_key.split(":", 3)
+        legacy_identity = len(parts) == 4 and parts[0] == "problem" and all(parts[1:])
+        opaque_identity = (
+            len(persisted_key) == len("problem:v1:") + 64
+            and persisted_key.startswith("problem:v1:")
+            and all(character in "0123456789abcdef" for character in persisted_key[-64:])
+        )
+        if not legacy_identity and not opaque_identity:
             refs.append(
                 {
-                    "dedupe_key": dedupe_key,
+                    "dedupe_key": persisted_key,
                     "context_error": "INVALID_PERSISTED_PROBLEM_IDENTITY",
                 }
             )
             continue
-        _prefix, platform, account_id, external_id = parts
-        ref: dict[str, Any] = {
-            "dedupe_key": dedupe_key,
-            "platform": platform.lower(),
-            "account_id": account_id,
-            "external_id": external_id,
-        }
         entities = uow.work_items.list_entities(str(item["work_item_id"]))
         subjects = [
             entity
@@ -821,23 +821,52 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             if str(entity.get("relation_type") or "") == "subject"
             and str(entity.get("entity_type") or "") == "customer_problem"
         ]
+        platform = ""
+        account_id = ""
+        external_id = ""
+        metadata: Mapping[str, Any] = {}
         if len(subjects) != 1:
-            ref["context_error"] = (
+            context_error = (
                 "SUBJECT_ENTITY_MISSING" if not subjects else "SUBJECT_ENTITY_AMBIGUOUS"
             )
         else:
             subject = subjects[0]
-            metadata = subject.get("metadata_json")
-            metadata = metadata if isinstance(metadata, Mapping) else {}
+            raw_metadata = subject.get("metadata_json")
+            metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+            platform = str(subject.get("source_system") or "").strip().lower()
+            external_id = str(subject.get("entity_id") or "").strip()
+            account_id = str(metadata.get("account_id") or "").strip()
+            context_error = ""
+
+        if legacy_identity:
+            _prefix, legacy_platform, legacy_account_id, legacy_external_id = parts
             if (
-                str(subject.get("source_system") or "").strip().lower() != ref["platform"]
-                or str(subject.get("entity_id") or "").strip() != external_id
-                or str(metadata.get("account_id") or "").strip() != account_id
+                platform != legacy_platform.lower()
+                or account_id != legacy_account_id
+                or external_id != legacy_external_id
             ):
-                ref["context_error"] = "SUBJECT_ENTITY_IDENTITY_MISMATCH"
-            source_direction = str(metadata.get("source_direction") or "").strip().lower()
-            if source_direction:
-                ref["source_direction"] = source_direction
+                context_error = "SUBJECT_ENTITY_IDENTITY_MISMATCH"
+        if not platform or not account_id or not external_id:
+            context_error = context_error or "SUBJECT_ENTITY_IDENTITY_MISMATCH"
+            opaque_key = persisted_key
+        else:
+            opaque_key = customer_problem_identity(
+                account_id=account_id,
+                platform=platform,
+                external_id=external_id,
+            )
+            if opaque_identity and opaque_key != persisted_key:
+                context_error = "SUBJECT_ENTITY_IDENTITY_MISMATCH"
+        ref: dict[str, Any] = {
+            "dedupe_key": opaque_key,
+            "platform": platform,
+            "external_id": external_id,
+        }
+        if context_error:
+            ref["context_error"] = context_error
+        source_direction = str(metadata.get("source_direction") or "").strip().lower()
+        if source_direction:
+            ref["source_direction"] = source_direction
 
         waybills = [
             str(entity.get("entity_id") or "").strip()

@@ -390,7 +390,7 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertFalse(result["_created"])
         self.assertEqual("first-correlation", result["correlation_id"])
         insert_params = next(params for sql, params in cursor.calls if "INSERT INTO agent_commands" in sql)
-        self.assertIn("[REDACTED]", insert_params[7])
+        self.assertIn("[REDACTED]", insert_params[9])
         self.assertNotIn("secret-value", insert_params[7])
 
     def test_duplicate_gateway_returns_original_aggregate_without_new_event(self):
@@ -542,7 +542,7 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         )
         self.assertIn("'RECEIVED'", command_sql)
         self.assertEqual("retry-command", command_params[0])
-        self.assertEqual("retry:source-run:retry-run", command_params[8])
+        self.assertEqual("retry:source-run:retry-run", command_params[11])
         insert_sql, insert_params = next(
             (sql, params) for sql, params in cursor.calls if "INSERT INTO agent_runs" in sql
         )

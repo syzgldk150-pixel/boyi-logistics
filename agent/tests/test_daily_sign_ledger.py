@@ -28,6 +28,75 @@ def problem(problem_type: str, registered_at: str, *, complete: bool = True) -> 
     }
 
 
+def persisted_snapshot_proof(**kwargs) -> dict:
+    marker = kwargs["persistence_marker"]
+    return {
+        "ok": True,
+        "ledger_rows": len(kwargs["ledger_rows"]),
+        "publication_rows": len(kwargs["publication_rows"]),
+        "persistence_marker": marker,
+    }
+
+
+def persistence_readback_proof(**kwargs) -> dict:
+    marker = kwargs["persistence_marker"]
+
+    def row_set(name: str) -> dict:
+        return {
+            "verified": True,
+            "record_count": marker[name]["count"],
+            "sha256": marker[name]["sha256"],
+        }
+
+    return {
+        "verified": True,
+        "record_count": len(kwargs["ledger_rows"]),
+        "problem_events": row_set("problem_events"),
+        "sign_events": row_set("sign_events"),
+        "sign_verification_states": row_set("sign_verification_states"),
+        "ledger_rows": row_set("ledger_rows"),
+        "publication_rows": row_set("publication_rows"),
+        "ledger_sha256": marker["ledger_rows"]["sha256"],
+        "publication_sha256": marker["publication_rows"]["sha256"],
+        "persistence_sha256": marker["marker_sha256"],
+    }
+
+
+def projection_readback_proof(rows: list[dict], *, digest_char: str) -> dict:
+    return {
+        "verified": True,
+        "record_count": len(rows),
+        "snapshot_sha256": digest_char * 64,
+    }
+
+
+def completed_run_readback_proof(*, expected_values, **_kwargs) -> dict:
+    diagnostics = expected_values.get("diagnostics_json")
+    marker = (
+        diagnostics.get("persistence_commit")
+        if isinstance(diagnostics, dict)
+        else None
+    )
+    return {
+        "verified": True,
+        "record_count": expected_values.get("published_rows", 0),
+        "publication_sha256": expected_values.get("fingerprint") or "",
+        "persistence_sha256": (
+            marker.get("marker_sha256") if isinstance(marker, dict) else ""
+        ),
+    }
+
+
+def failed_run_values(_run_id, diagnostics, *, message: str) -> dict:
+    return {
+        "status": "failed",
+        "published_rows": 0,
+        "fingerprint": diagnostics.get("fingerprint"),
+        "diagnostics_json": diagnostics,
+        "error_summary": message,
+    }
+
+
 class DailySignLedgerRulesTest(unittest.TestCase):
  def test_normal_complete_is_due_next_day_end_of_day(self):
     due, state = calculate_system_sign_due([arrival("2026-08-12", 10, 10)], [])
@@ -201,6 +270,22 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             "scan_site": "邵阳大祥S站",
             "is_main_waybill": True,
         }
+
+        def sync_bitable(rows, _params):
+            return {
+                "ok": True,
+                "written": len(rows),
+                "readback": projection_readback_proof(rows, digest_char="b"),
+            }
+
+        def sync_sheet(rows, _params):
+            captured.extend(rows)
+            return {
+                "ok": True,
+                "rows": len(rows),
+                "readback": projection_readback_proof(rows, digest_char="s"),
+            }
+
         with (
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
@@ -241,10 +326,24 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             ),
             patch(
                 "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
-                return_value={"ok": True, "ledger_rows": 4, "fingerprint": "ledger-hash"},
+                side_effect=persisted_snapshot_proof,
+            ) as persist,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                side_effect=persistence_readback_proof,
+            ) as verify_persistence,
+            patch(
+                "tools.daily_sign_sync_tool._sync_bitable",
+                side_effect=sync_bitable,
             ),
-            patch("tools.daily_sign_sync_tool._sync_bitable", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool._sync_sheet", side_effect=lambda rows, _params: captured.extend(rows) or {"ok": True}),
+            patch(
+                "tools.daily_sign_sync_tool._sync_sheet",
+                side_effect=sync_sheet,
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=completed_run_readback_proof,
+            ) as verify_completed,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
 
@@ -259,6 +358,99 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertIn("r13_signed_without_tms_scan", r2["data_quality_flags"])
         self.assertIsNone(r3["system_sign_due_at"])
         self.assertIsNone(r3["arrived_quantity"])
+        marker = persist.call_args.kwargs["persistence_marker"]
+        self.assertEqual(0, marker["problem_events"]["count"])
+        self.assertEqual(1, marker["sign_events"]["count"])
+        self.assertEqual(0, marker["sign_verification_states"]["count"])
+        self.assertEqual(4, marker["ledger_rows"]["count"])
+        self.assertEqual(3, marker["publication_rows"]["count"])
+        self.assertEqual(64, len(marker["marker_sha256"]))
+        verify_persistence.assert_called_once()
+        verify_completed.assert_called_once()
+
+    def test_missing_projection_readback_proof_fails_closed(self):
+        observed_at = datetime(2026, 8, 12, 12, 0, 0)
+        state = {
+            "ledger": {},
+            "arrivals": {},
+            "target_station_codes": set(),
+            "problems": {},
+            "signs": {},
+            "sign_verifications": {},
+            "source_refs": [],
+            "arrival_source_proof": {
+                "complete": True,
+                "active_stat_runs": 1,
+                "latest_forecast_runs": 0,
+                "run_ids": ["arrival-run"],
+            },
+        }
+        with (
+            patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
+            patch(
+                "tools.daily_sign_sync_tool.start_sync_run",
+                return_value=("run", observed_at),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.load_daily_sign_state",
+                return_value=state,
+            ),
+            patch(
+                "tools.daily_sign_pipeline._resolve_r13_request",
+                return_value={"days": 1, "fetch_all": True, "page": 1},
+            ),
+            patch(
+                "tools.daily_sign_pipeline._source_query_window",
+                return_value=(observed_at, observed_at),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._collect_problem_events",
+                return_value=(
+                    [],
+                    {"rows": 0, "declared_total": 0, "complete": True},
+                ),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._collect_sign_events",
+                return_value=([], {"source_rows": 0, "complete": True}),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                return_value=([], {"ok": True, "complete": True}),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                return_value=(
+                    [],
+                    {"ok": True, "complete": True, "verification_rows": []},
+                ),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                side_effect=persisted_snapshot_proof,
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                side_effect=persistence_readback_proof,
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_bitable",
+                return_value={"ok": True},
+            ),
+            patch("tools.daily_sign_sync_tool._sync_sheet") as sheet,
+            patch("tools.daily_sign_sync_tool.finish_sync_run") as finish,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run"
+            ) as verify_completed,
+        ):
+            result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
+
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("WRITE_OUTCOME_UNKNOWN", result["error"]["code"])
+        self.assertFalse(result["error"]["retryable"])
+        sheet.assert_not_called()
+        finish.assert_not_called()
+        verify_completed.assert_not_called()
 
     def test_sign_query_failure_is_blocked_and_never_publishes(self):
         state = self._state()
@@ -290,7 +482,14 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                     retryable=True,
                 ),
             ),
-            patch("tools.daily_sign_pipeline._finish_failed_run") as failed_run,
+            patch(
+                "tools.daily_sign_pipeline._finish_failed_run",
+                side_effect=failed_run_values,
+            ) as failed_run,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=completed_run_readback_proof,
+            ) as verify_completed,
             patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
             patch("tools.daily_sign_sync_tool._sync_bitable") as bitable,
             patch("tools.daily_sign_sync_tool._sync_sheet") as sheet,
@@ -303,6 +502,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertEqual("run", result["data"]["source_run_id"])
         self.assertFalse(result["meta"]["pagination_complete"])
         failed_run.assert_called_once()
+        verify_completed.assert_called_once()
         persist.assert_not_called()
         bitable.assert_not_called()
         sheet.assert_not_called()
@@ -333,7 +533,14 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                     retryable=True,
                 ),
             ),
-            patch("tools.daily_sign_pipeline._finish_failed_run") as failed_run,
+            patch(
+                "tools.daily_sign_pipeline._finish_failed_run",
+                side_effect=failed_run_values,
+            ) as failed_run,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=completed_run_readback_proof,
+            ) as verify_completed,
             patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
             patch("tools.daily_sign_sync_tool._sync_bitable") as bitable,
             patch("tools.daily_sign_sync_tool._sync_sheet") as sheet,
@@ -345,6 +552,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertTrue(result["error"]["retryable"])
         self.assertFalse(result["meta"]["pagination_complete"])
         failed_run.assert_called_once()
+        verify_completed.assert_called_once()
         persist.assert_not_called()
         bitable.assert_not_called()
         sheet.assert_not_called()
@@ -644,23 +852,42 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
     def test_sheet_validates_nine_headers_and_writes_before_clearing_tail(self):
         actions = []
+        rows = [
+            {
+                "tracking_number": "R1",
+                "r13_plan_sign_at": "2026-08-13 23:59:59",
+            }
+        ]
+        expected_values = daily_sign_sync_tool._build_ledger_sheet_values(rows)
 
         def fake_operation(action, params):
             actions.append(action)
             if action == "read_sheet":
-                return {"ok": True, "data": {"valueRange": {"values": [daily_sign_sync_tool.SHEET_HEADERS]}}}
+                values = (
+                    [daily_sign_sync_tool.SHEET_HEADERS]
+                    if params["range"] == "Sheet1!A1:I1"
+                    else expected_values
+                )
+                return {
+                    "ok": True,
+                    "data": {"valueRange": {"values": values}},
+                }
             return {"ok": True}
 
         with (
             patch("tools.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
             patch("tools.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
         ):
-            result = daily_sign_sync_tool._sync_sheet(
-                [{"tracking_number": "R1", "r13_plan_sign_at": "2026-08-13 23:59:59"}], {}
-            )
+            result = daily_sign_sync_tool._sync_sheet(rows, {})
 
         self.assertTrue(result["ok"])
-        self.assertEqual(["read_sheet", "write_sheet", "clear_sheet"], actions)
+        self.assertEqual(
+            ["read_sheet", "write_sheet", "clear_sheet", "read_sheet"],
+            actions,
+        )
+        self.assertTrue(result["readback"]["verified"])
+        self.assertEqual(1, result["readback"]["record_count"])
+        self.assertEqual(64, len(result["readback"]["snapshot_sha256"]))
 
     def test_sheet_header_mismatch_fails_without_write(self):
         with (
@@ -677,10 +904,23 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
     def test_bitable_uses_delta_write_then_delete(self):
         actions = []
+        rows = [{"tracking_number": "A"}, {"tracking_number": "B"}]
+        target_records = daily_sign_sync_tool._build_ledger_records(rows)
+        list_calls = 0
 
         def fake_operation(action, params):
+            nonlocal list_calls
             actions.append(action)
             if action == "list_records":
+                list_calls += 1
+                if list_calls == 2:
+                    return {
+                        "ok": True,
+                        "items": [
+                            {"record_id": f"rec-{index}", **record}
+                            for index, record in enumerate(target_records, 1)
+                        ],
+                    }
                 return {
                     "ok": True,
                     "items": [
@@ -695,12 +935,16 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             patch("tools.daily_sign_sync_tool._ensure_bitable_schema", return_value={"ok": True, "fields": {"R13应签收时间": 1}}),
             patch("tools.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
         ):
-            result = daily_sign_sync_tool._sync_bitable(
-                [{"tracking_number": "A"}, {"tracking_number": "B"}], {}
-            )
+            result = daily_sign_sync_tool._sync_bitable(rows, {})
 
         self.assertTrue(result["ok"])
-        self.assertEqual(["list_records", "write_records", "delete_records"], actions)
+        self.assertEqual(
+            ["list_records", "write_records", "delete_records", "list_records"],
+            actions,
+        )
+        self.assertTrue(result["readback"]["verified"])
+        self.assertEqual(2, result["readback"]["record_count"])
+        self.assertEqual(64, len(result["readback"]["snapshot_sha256"]))
 
 
 class DailySignSourceCompletenessTest(unittest.TestCase):

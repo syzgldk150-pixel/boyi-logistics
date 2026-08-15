@@ -4,12 +4,24 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # 物流 Agent 项目总览
 
 > 本文件是项目总览的唯一规范副本；仓库根或 `agent/` 根目录不得保留同名重复文档。
+
+## 2026-08-15 自动化插件、账号/资源池与系统定时
+
+- 签名插件只安装可复用动作，不携带业务账号、资源详情或实际定时。每次安装由服务端创建独立
+  `automation_id`，重复实例各自选择业务账号、资源、系统定时和项目权限。
+- 业务账号的凭据与登录态只在“业务账号”模块维护；自动化页不再显示顶部登录绿点、登录态
+  popover、凭据表单或账号管理快捷入口。项目卡只消费 Agent 返回的安全账号投影。
+- `workflow_resources` 的 Token、表格 ID、读写范围、路径、配置哈希/版本和原始配置只留在 Agent。
+  Catalog 只暴露 `resource_id/name/kind/status`，Console 按签名 manifest 的 role+kind 精确筛选，
+  不默认选择第一项；资源池不可用、字段漂移、缺失/停用或类型不符时阻断配置和运行。
+- `none/daily_times/startup` 等定时在插件安装后由系统项目配置保存，不属于 ZIP/manifest；配置、
+  账号/资源绑定、入口、定时和权限使用同一版本化合同，任何漂移都会 fail closed 并使授权 stale。
 
 ## 2026-08-13 Agent 统一控制平面
 
@@ -139,7 +151,7 @@ updated: 2026-08-14
 - `AI客服` 当前没有单独目录，运行时能力集中在 `agent/`、`feishu/` 和飞书工具链。
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
-- Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
+- Phase 7 迁移所需的飞书表格、Webhook 等资源配置统一保存在 Agent MySQL 的 `workflow_resources` 表中，不再依赖 N8N sqlite；Console 只读取闭合安全 descriptor，不直接读取 Token、表格 ID、范围、路径或原始配置。
 - `sync_daily_should_sign` 必须显式绑定独立的 `r13_account_id` 与唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
 - R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
@@ -165,9 +177,8 @@ updated: 2026-08-14
 - 2026-05-31：自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
 - 2026-08-11：账号页统一所有系统的管理契约：“立即登录”执行真实登录，自动登录只控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
 
-## 2026-04-03 Update
+## 2026-04-03 历史更新
 
-- 新增控制台入口 `/automations`，用于统一维护 Agent 自动化参数，并在页面顶部按分类管理 TMS融辉图片验证码登录态（旧短信验证码页兼容）与韵达账号密码/图片验证码登录态。
-- `/automations` 顶部现支持保存默认账号、密码；融辉当前不再要求手机号，旧短信页出现时仍可使用保存的手机号。本地验证通过前不进入 ECS 切换。
-- 控制台页现在直接操作共享 MySQL 中的 `workflow_resources` 与 `scheduled_tasks`。
+- 当时新增 `/automations` 统一维护 Agent 自动化参数；其中顶部登录态、默认账号/密码和直接资源配置入口已由 2026-08-15 插件项目页取代，凭据与登录态现只在“业务账号”模块维护。
+- 当前 Console 不直接操作 `workflow_resources` 的完整配置；只消费 Agent 的安全资源 descriptor。`scheduled_tasks` 由安装后的系统项目定时配置生成和维护。
 - 任务在控制台保存后会触发 Agent `/admin/reload`，把最新的调度定义即时重载到 APScheduler。

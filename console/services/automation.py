@@ -1,236 +1,47 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from console.services.automation_projects import *  # noqa: F403
 
 
-SCHEDULED_APPROVAL_POLICY_ENDPOINT = (
-    "/internal/v1/scheduled-task-approval-policies"
-)
-SCHEDULED_APPROVAL_POLICY_MODES = frozenset(
-    {"REQUIRE_EACH_RUN", "EXACT_SCHEDULE_EXEMPT"}
-)
-SCHEDULED_APPROVAL_POLICY_STATUSES = frozenset({"ACTIVE", "STALE", "UNSUPPORTED"})
-SCHEDULED_APPROVAL_POLICY_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
-SCHEDULED_APPROVAL_POLICY_MAX_TASKS = 100
-SCHEDULED_APPROVAL_POLICY_COMMENT_MAX_CHARS = 500
+def group_scheduled_rows_by_automation_id(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group only by the persisted project identity; never infer it from task IDs."""
 
-
-def normalize_scheduled_approval_policy_items(value: Any) -> list[dict[str, Any]]:
-    """Return the closed, browser-safe policy projection from Agent data."""
-
-    if not isinstance(value, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw in value:
-        if not isinstance(raw, dict):
+    groups: list[dict[str, Any]] = []
+    linked_groups: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        automation_id = str(row.get("automation_id") or "").strip()
+        if AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id):
+            group = linked_groups.get(automation_id)
+            if group is None:
+                group = {
+                    "storage_key": automation_id,
+                    "task_id": automation_id,
+                    "missing_automation_id": False,
+                    "rows": [],
+                }
+                linked_groups[automation_id] = group
+                groups.append(group)
+            group["rows"].append(row)
             continue
-        task_id = str(raw.get("task_id") or "").strip()
-        mode = str(raw.get("mode") or "").strip().upper()
-        configured_mode = str(raw.get("configured_mode") or mode).strip().upper()
-        effective_mode = str(raw.get("effective_mode") or "").strip().upper()
-        effective_status = str(raw.get("effective_status") or "").strip().upper()
-        can_exempt = raw.get("can_exempt")
-        version = raw.get("version")
-        configuration_version = raw.get("configuration_version")
-        if (
-            task_id in seen
-            or not SCHEDULED_APPROVAL_POLICY_TASK_ID_RE.fullmatch(task_id)
-            or mode not in SCHEDULED_APPROVAL_POLICY_MODES
-            or configured_mode != mode
-            or effective_mode not in SCHEDULED_APPROVAL_POLICY_MODES
-            or effective_status not in SCHEDULED_APPROVAL_POLICY_STATUSES
-            or not isinstance(can_exempt, bool)
-            or isinstance(version, bool)
-            or not isinstance(version, int)
-            or version < 1
-            or isinstance(configuration_version, bool)
-            or not isinstance(configuration_version, int)
-            or configuration_version < 1
-        ):
-            continue
-        seen.add(task_id)
-        policy_hash_short = str(raw.get("policy_hash_short") or "").strip()
-        policy_hash_short = re.sub(r"[^A-Za-z0-9_-]", "", policy_hash_short)[:12]
-        normalized.append(
+
+        task_id = str(row.get("id") or "").strip()
+        if not task_id:
+            task_id = f"unlinked_scheduled_task_{index + 1}"
+        groups.append(
             {
+                "storage_key": f"__unlinked_scheduled_task__:{index}",
                 "task_id": task_id,
-                "mode": mode,
-                "configured_mode": configured_mode,
-                "effective_mode": effective_mode,
-                "effective_status": effective_status,
-                "can_exempt": can_exempt,
-                "version": version,
-                "configuration_version": configuration_version,
-                "policy_hash_short": policy_hash_short,
-                "approved_by": normalize_feedback_text(
-                    redact_text(str(raw.get("approved_by") or ""))
-                )[:100],
-                "approved_at": normalize_feedback_text(
-                    redact_text(str(raw.get("approved_at") or ""))
-                )[:40],
-                "invalid_reason": normalize_feedback_text(
-                    redact_text(str(raw.get("invalid_reason") or ""))
-                )[:240],
+                "missing_automation_id": True,
+                "rows": [row],
             }
         )
-    return normalized
+    return groups
 
 
-def build_scheduled_approval_policy_view(
-    task_ids: list[str],
-    items_by_task_id: dict[str, dict[str, Any]],
-    *,
-    cron_expressions_by_task_id: dict[str, str] | None = None,
-    load_error: str = "",
-) -> dict[str, Any]:
-    """Aggregate exact scheduled rows without losing per-row policy controls."""
-
-    normalized_task_ids = [str(task_id or "").strip() for task_id in task_ids]
-    normalized_task_ids = [task_id for task_id in normalized_task_ids if task_id]
-    cron_expressions = cron_expressions_by_task_id or {}
-    base = {
-        "available": False,
-        "task_ids": normalized_task_ids,
-        "item_count": len(normalized_task_ids),
-        "items": [],
-        "mode": "",
-        "configured_mode": "",
-        "effective_mode": "",
-        "effective_status": "UNAVAILABLE",
-        "label": "审批策略不可用",
-        "summary": load_error or "未取得任务级审批策略，请稍后刷新。",
-        "can_exempt": False,
-        "mixed": False,
-        "expected_versions": {},
-        "expected_configuration_versions": {},
-        "policy_hash_short": "",
-        "approved_by": "",
-        "approved_at": "",
-        "invalid_reason": "",
-    }
-    if not normalized_task_ids:
-        base["label"] = "任务尚未保存"
-        base["summary"] = "保存定时任务后，才能设置其审批策略。"
-        return base
-
-    items = [items_by_task_id.get(task_id) for task_id in normalized_task_ids]
-    if any(not isinstance(item, dict) for item in items):
-        return base
-    def schedule_label(task_id: str) -> str:
-        cron_expression = str(cron_expressions.get(task_id) or "").strip()
-        if cron_expression == "@startup":
-            return "服务启动时"
-        if cron_expression:
-            parsed = parse_daily_cron_expression(cron_expression)
-            return str(parsed.get("summary") or cron_expression)
-        time_value = extract_task_time_value(task_id)
-        return f"每天 {time_value}" if time_value else "计划时间未设置"
-
-    safe_items = [item for item in items if isinstance(item, dict)]
-    row_items = [
-        {
-            "task_id": str(item["task_id"]),
-            "schedule_label": schedule_label(str(item["task_id"])),
-            "mode": str(item["mode"]),
-            "configured_mode": str(item["configured_mode"]),
-            "effective_mode": str(item["effective_mode"]),
-            "effective_status": str(item["effective_status"]).upper(),
-            "can_exempt": bool(item.get("can_exempt")),
-            "version": int(item["version"]),
-            "configuration_version": int(item["configuration_version"]),
-            "policy_hash_short": str(item.get("policy_hash_short") or ""),
-            "approved_by": str(item.get("approved_by") or ""),
-            "approved_at": str(item.get("approved_at") or ""),
-            "invalid_reason": str(item.get("invalid_reason") or ""),
-        }
-        for item in safe_items
-    ]
-    modes = {str(item["mode"]) for item in safe_items}
-    effective_modes = {str(item["effective_mode"]) for item in safe_items}
-    statuses = {str(item["effective_status"]).upper() for item in safe_items}
-    invalid_reasons = [
-        str(item.get("invalid_reason") or "").strip()
-        for item in safe_items
-        if str(item.get("invalid_reason") or "").strip()
-    ]
-    stale = bool(invalid_reasons) or "STALE" in statuses
-    unsupported = "UNSUPPORTED" in statuses
-    mixed = len(modes) != 1
-    effective_mixed = len(effective_modes) != 1
-    can_exempt = all(bool(item.get("can_exempt")) for item in safe_items)
-    mode = next(iter(modes)) if not mixed else ""
-    effective_mode = next(iter(effective_modes)) if not effective_mixed else ""
-    group_prefix = f"{len(safe_items)} 条任务，" if len(safe_items) > 1 else ""
-
-    if unsupported:
-        label = "工具不允许免审"
-        summary = f"{group_prefix}当前工具契约不允许固定计划免审。"
-        effective_status = "UNSUPPORTED"
-    elif mixed or effective_mixed:
-        label = "混合策略"
-        summary = f"{group_prefix}当前审批策略不一致，可在下方按执行时间分别设置。"
-        effective_status = "MIXED"
-    elif mode == "EXACT_SCHEDULE_EXEMPT" and stale:
-        label = "配置已变更需重新授权"
-        summary = (
-            f"{group_prefix}已保存的免审基线与当前配置不一致，任务不会免审执行。"
-        )
-        effective_status = "STALE"
-    elif mode == "EXACT_SCHEDULE_EXEMPT":
-        label = "固定计划自动执行"
-        summary = (
-            f"{group_prefix}仅 Scheduler 按当前时间、账号、参数和工具版本执行时免审；手工运行仍需审批。"
-        )
-        effective_status = "ACTIVE"
-    else:
-        label = "每次运行审批"
-        summary = f"{group_prefix}每次定时运行都先进入审批。"
-        effective_status = "ACTIVE"
-
-    if not can_exempt:
-        summary += " 工具不允许免审。"
-
-    def one_or_many(field: str, *, many_label: str) -> str:
-        values = {
-            str(item.get(field) or "").strip()
-            for item in safe_items
-            if str(item.get(field) or "").strip()
-        }
-        if len(values) == 1:
-            return next(iter(values))
-        return many_label if len(values) > 1 else ""
-
-    return {
-        **base,
-        "available": True,
-        "items": row_items,
-        "mode": mode,
-        "configured_mode": mode,
-        "effective_mode": effective_mode,
-        "effective_status": effective_status,
-        "label": label,
-        "summary": summary,
-        "can_exempt": can_exempt,
-        "mixed": mixed or effective_mixed,
-        "expected_versions": {
-            str(item["task_id"]): int(item["version"])
-            for item in safe_items
-        },
-        "expected_configuration_versions": {
-            str(item["task_id"]): int(item["configuration_version"])
-            for item in safe_items
-        },
-        "policy_hash_short": one_or_many(
-            "policy_hash_short", many_label="多项"
-        ),
-        "approved_by": one_or_many("approved_by", many_label="多人"),
-        "approved_at": one_or_many("approved_at", many_label="多次"),
-        "invalid_reason": "；".join(dict.fromkeys(invalid_reasons))[:240],
-    }
-
-
-class AutomationServiceMixin:
+class AutomationServiceMixin(AutomationProjectsServiceMixin):
     def _build_virtual_automation_task(
         self,
         task_id: str,
@@ -469,7 +280,9 @@ class AutomationServiceMixin:
             error_message=error_message_value,
         )
 
-        if payload.get("task_mode") == "scheduled":
+        if payload.get("task_mode") == "scheduled" and not payload.get(
+            "project_plugin_instance"
+        ):
             self.repository.update_scheduled_task_runtime(
                 base_task_id=payload["task_id"],
                 last_run=run_time,
@@ -508,15 +321,23 @@ class AutomationServiceMixin:
         trusted_context: dict[str, Any],
         browser_request_uuid: str,
     ) -> dict[str, Any]:
-        """Submit one durable command and return its Run receipt immediately."""
+        """Invoke one saved automation project; Agent resolves its trusted configuration."""
 
-        run_result = self._submit_console_tool_command(
-            trusted_context=trusted_context,
-            browser_request_uuid=browser_request_uuid,
-            tool_name=payload["tool_name"],
-            arguments=payload["tool_params"],
-            entity_refs=[],
-            console_entry="/automations/tasks/run-now",
+        automation_id = self._automation_project_id(payload.get("task_id"))
+        request_id = self._normalize_browser_request_uuid(browser_request_uuid)
+        if not automation_id or not request_id:
+            return {
+                "ok": False,
+                "status": HTTPStatus.BAD_REQUEST,
+                "error": "自动化项目或浏览器请求标识无效。",
+                "error_code": "INVALID_AUTOMATION_PROJECT_INVOKE",
+            }
+        run_result = self._agent_request(
+            "POST",
+            f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/invoke",
+            payload={"request_id": request_id},
+            timeout=self.settings.agent_timeout_seconds,
+            console_principal=trusted_context["_console_principal"],
         )
         if not run_result.get("ok"):
             return run_result
@@ -532,7 +353,9 @@ class AutomationServiceMixin:
             }
 
         started_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if payload.get("task_mode") == "scheduled":
+        if payload.get("task_mode") == "scheduled" and not payload.get(
+            "project_plugin_instance"
+        ):
             self.repository.update_scheduled_task_runtime(
                 base_task_id=payload["task_id"],
                 last_run=started_stamp,
@@ -553,251 +376,17 @@ class AutomationServiceMixin:
         state.update(
             {
                 "run_id": run_id,
-                "task_mode": payload.get("task_mode"),
+                "task_mode": (
+                    "plugin"
+                    if payload.get("project_plugin_instance")
+                    else payload.get("task_mode")
+                ),
                 "last_run": started_stamp,
                 "last_status": "running",
             }
         )
         self.automation_virtual_task_state[payload["task_id"]] = state
         return run_result
-
-    def _load_scheduled_task_approval_policies(
-        self,
-        handler: BaseHTTPRequestHandler,
-        tasks: list[dict[str, Any]],
-    ) -> tuple[str, bool]:
-        user = getattr(handler, "current_admin_user", None)
-        principal = self._mysql_console_principal(user)
-        can_manage = bool(
-            principal and "super_admin" in list(principal.get("roles") or [])
-        )
-        scheduled_tasks = [task for task in tasks if task.get("is_schedulable")]
-        if principal is None:
-            warning = "审批策略只对真实 MySQL 管理员会话开放。"
-            for task in scheduled_tasks:
-                task["approval_policy"] = build_scheduled_approval_policy_view(
-                    list(task.get("task_ids") or []),
-                    {},
-                    cron_expressions_by_task_id=dict(
-                        task.get("task_cron_expressions") or {}
-                    ),
-                    load_error=warning,
-                )
-            return warning, False
-
-        result = self._agent_request(
-            "GET",
-            SCHEDULED_APPROVAL_POLICY_ENDPOINT,
-            timeout=12,
-            console_principal=principal,
-        )
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        raw_items = data.get("items") if isinstance(data, dict) else None
-        safe_items = normalize_scheduled_approval_policy_items(raw_items)
-        if not result.get("ok") or not isinstance(raw_items, list):
-            error_code = str(
-                result.get("error_code") or "POLICY_SERVICE_UNAVAILABLE"
-            ).strip()
-            warning = f"审批策略当前不可用（{error_code}），任务配置仍可查看。"
-            items_by_task_id: dict[str, dict[str, Any]] = {}
-        else:
-            warning = ""
-            items_by_task_id = {
-                str(item["task_id"]): item for item in safe_items
-            }
-
-        for task in scheduled_tasks:
-            task["approval_policy"] = build_scheduled_approval_policy_view(
-                list(task.get("task_ids") or []),
-                items_by_task_id,
-                cron_expressions_by_task_id=dict(
-                    task.get("task_cron_expressions") or {}
-                ),
-                load_error=warning,
-            )
-        return warning, can_manage
-
-    def _handle_automation_task_approval_policy(
-        self,
-        handler: BaseHTTPRequestHandler,
-    ) -> None:
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以修改定时任务审批策略。",
-            )
-            return
-
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        raw_task_ids = values.get("task_ids")
-        if not isinstance(raw_task_ids, list):
-            raw_task_ids = []
-        task_ids: list[str] = []
-        for raw_task_id in raw_task_ids:
-            task_id = str(raw_task_id or "").strip()
-            if (
-                not SCHEDULED_APPROVAL_POLICY_TASK_ID_RE.fullmatch(task_id)
-                or task_id in task_ids
-            ):
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "INVALID_TASK_IDS",
-                    "任务标识必须唯一且格式有效。",
-                )
-                return
-            task_ids.append(task_id)
-        if not task_ids or len(task_ids) > SCHEDULED_APPROVAL_POLICY_MAX_TASKS:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "INVALID_TASK_IDS",
-                "请选择有效的定时任务后再保存审批策略。",
-            )
-            return
-
-        mode = str(values.get("mode") or "").strip().upper()
-        if mode not in SCHEDULED_APPROVAL_POLICY_MODES:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "INVALID_APPROVAL_POLICY_MODE",
-                "审批策略只能是每次运行审批或固定计划自动执行。",
-            )
-            return
-
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        if not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "BROWSER_REQUEST_UUID_REQUIRED",
-                "缺少有效且稳定的请求标识，审批策略未保存。",
-            )
-            return
-
-        comment = normalize_feedback_text(str(values.get("comment") or "")).strip()
-        if len(comment) > SCHEDULED_APPROVAL_POLICY_COMMENT_MAX_CHARS:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "COMMENT_TOO_LONG",
-                "理由不能超过 500 个字符。",
-            )
-            return
-
-        raw_versions = values.get("expected_versions")
-        if not isinstance(raw_versions, dict) or set(raw_versions) != set(task_ids):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "EXPECTED_VERSIONS_REQUIRED",
-                "任务版本快照不完整，请刷新页面后重试。",
-            )
-            return
-        expected_versions: dict[str, int] = {}
-        for task_id in task_ids:
-            version = raw_versions.get(task_id)
-            if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "INVALID_EXPECTED_VERSION",
-                    "任务版本格式无效，请刷新页面后重试。",
-                )
-                return
-            expected_versions[task_id] = version
-
-        raw_configuration_versions = values.get("expected_configuration_versions")
-        if (
-            not isinstance(raw_configuration_versions, dict)
-            or set(raw_configuration_versions) != set(task_ids)
-        ):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "EXPECTED_CONFIGURATION_VERSIONS_REQUIRED",
-                "任务配置版本快照不完整，请刷新页面并重新确认后再试。",
-            )
-            return
-        expected_configuration_versions: dict[str, int] = {}
-        for task_id in task_ids:
-            version = raw_configuration_versions.get(task_id)
-            if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "INVALID_EXPECTED_CONFIGURATION_VERSION",
-                    "任务配置版本格式无效，请刷新页面并重新确认后再试。",
-                )
-                return
-            expected_configuration_versions[task_id] = version
-
-        result = self._agent_request(
-            "POST",
-            SCHEDULED_APPROVAL_POLICY_ENDPOINT,
-            payload={
-                "task_ids": task_ids,
-                "mode": mode,
-                "comment": comment,
-                "request_id": request_id,
-                "expected_versions": expected_versions,
-                "expected_configuration_versions": expected_configuration_versions,
-                "source": "console",
-            },
-            timeout=20,
-            console_principal=trusted_context.get("_console_principal"),
-        )
-        if not result.get("ok"):
-            try:
-                status = HTTPStatus(int(result.get("status")))
-            except (TypeError, ValueError):
-                status = HTTPStatus.BAD_GATEWAY
-            if status not in {
-                HTTPStatus.BAD_REQUEST,
-                HTTPStatus.FORBIDDEN,
-                HTTPStatus.CONFLICT,
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                HTTPStatus.SERVICE_UNAVAILABLE,
-            }:
-                status = HTTPStatus.BAD_GATEWAY
-            self._control_plane_error(
-                handler,
-                status,
-                str(result.get("error_code") or "POLICY_UPDATE_FAILED"),
-                str(result.get("error") or "审批策略保存失败。"),
-            )
-            return
-
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        safe_items = normalize_scheduled_approval_policy_items(data.get("items"))
-        if {str(item["task_id"]) for item in safe_items} != set(task_ids):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_GATEWAY,
-                "INVALID_POLICY_RESPONSE",
-                "Agent 未返回完整的审批策略结果。",
-            )
-            return
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": {
-                    "items": safe_items,
-                    "updated_count": len(safe_items),
-                },
-                "message": "审批策略已保存。",
-            },
-        )
 
     def _render_automations(
         self,
@@ -822,23 +411,38 @@ class AutomationServiceMixin:
             scheduled_rows = []
             workflow_resource_rows = []
             automation_db_warning = normalize_feedback_text(
-                f"自动化任务数据库当前不可达，任务列表已临时降级为空，仅保留顶部 TMS 登录态验证模块。详情：{exc}"
+                f"自动化任务数据库当前不可达，任务列表已临时降级为空。详情：{exc}"
             )
 
-        grouped_rows: dict[str, list[dict[str, Any]]] = {}
-        for row in scheduled_rows:
-            grouped_rows.setdefault(normalize_task_group_id(str(row.get("id", "") or "")), []).append(row)
+        (
+            automation_plugin_packages,
+            automation_plugin_instances,
+            automation_workers,
+            unsupported_automation_ids,
+            automation_plugin_warning,
+            can_manage_plugins,
+        ) = self._load_automation_plugin_catalog(handler)
+        plugin_instances_by_id = {
+            str(item["automation_id"]): item for item in automation_plugin_instances
+        }
+
+        scheduled_row_groups = group_scheduled_rows_by_automation_id(scheduled_rows)
         workflow_resources = {
             str(item.get("resource_key", "") or ""): item
             for item in workflow_resource_rows
         }
 
         tasks_by_id: dict[str, dict[str, Any]] = {}
-        for base_task_id, rows in grouped_rows.items():
+        for scheduled_group in scheduled_row_groups:
+            base_task_id = str(scheduled_group["task_id"])
+            automation_link_missing = bool(
+                scheduled_group["missing_automation_id"]
+            )
+            rows = list(scheduled_group["rows"])
             rows = sorted(
                 rows,
                 key=lambda item: (
-                    task_group_slot_index(str(item.get("id", "") or "")),
+                    str(item.get("cron_expression", "") or ""),
                     str(item.get("id", "") or ""),
                 ),
             )
@@ -930,13 +534,14 @@ class AutomationServiceMixin:
                 for item in resource_bindings
                 if item.get("missing") and item.get("required")
             ]
-            tasks_by_id[base_task_id] = {
+            tasks_by_id[str(scheduled_group["storage_key"])] = {
                 **primary_row,
                 "note": str(workflow.get("note") or automation_task_note(base_task_id)),
                 "provider": provider_value,
                 "provider_label": automation_provider_label(provider_value),
                 "system_badges": list(workflow.get("system_badges") or []),
                 "task_id": base_task_id,
+                "automation_link_missing": automation_link_missing,
                 "task_mode": "scheduled",
                 "display_task_id": str(primary_row.get("id", "") or base_task_id) if len(rows) == 1 else base_task_id,
                 "group_size": len(rows),
@@ -1006,18 +611,186 @@ class AutomationServiceMixin:
                 "feedback": task_feedbacks.get(base_task_id),
             }
 
-        for workflow in AUTOMATION_WORKFLOW_CATALOG:
-            workflow_task_id = str(workflow.get("task_id", "") or "")
-            if not workflow_task_id or workflow_task_id in tasks_by_id:
+        # The static catalog is only an offline/migration display fallback. Installed
+        # instances returned by Agent are the runtime authority.
+        if automation_plugin_warning:
+            for workflow in AUTOMATION_WORKFLOW_CATALOG:
+                workflow_task_id = str(workflow.get("task_id", "") or "")
+                if not workflow_task_id or workflow_task_id in tasks_by_id:
+                    continue
+                tasks_by_id[workflow_task_id] = self._build_virtual_automation_task(
+                    workflow_task_id,
+                    override=task_overrides.get(workflow_task_id),
+                    feedback=task_feedbacks.get(workflow_task_id),
+                    open_task_id=open_task_id,
+                    workflow_resources=workflow_resources,
+                    resource_overrides=resource_overrides,
+                )
+
+        for plugin in automation_plugin_instances:
+            automation_id = str(plugin["automation_id"])
+            if automation_id in tasks_by_id:
                 continue
-            tasks_by_id[workflow_task_id] = self._build_virtual_automation_task(
-                workflow_task_id,
-                override=task_overrides.get(workflow_task_id),
-                feedback=task_feedbacks.get(workflow_task_id),
+            plugin_override = dict(task_overrides.get(automation_id) or {})
+            plugin_override.setdefault("name", str(plugin.get("instance_name") or automation_id))
+            plugin_override.setdefault("tool_name", f"automation.{automation_id}.run")
+            plugin_override.setdefault("enabled", False)
+            task = self._build_virtual_automation_task(
+                automation_id,
+                override=plugin_override,
+                feedback=task_feedbacks.get(automation_id),
                 open_task_id=open_task_id,
                 workflow_resources=workflow_resources,
                 resource_overrides=resource_overrides,
             )
+            can_schedule = bool(plugin.get("can_schedule"))
+            task.update(
+                {
+                    "task_mode": "scheduled" if can_schedule else "manual",
+                    "is_schedulable": can_schedule,
+                    "schedule_supported": can_schedule,
+                    "schedule_editable": can_schedule,
+                    "trigger_label": "定时任务 / 手工执行" if can_schedule else "手工执行",
+                }
+            )
+            tasks_by_id[automation_id] = task
+
+        for task in tasks_by_id.values():
+            automation_id = str(task.get("task_id") or "")
+            plugin = (
+                None
+                if task.get("automation_link_missing")
+                else plugin_instances_by_id.get(automation_id)
+            )
+            task["plugin"] = plugin
+            task["plugin_missing"] = plugin is None
+            task["plugin_warning"] = ""
+            if plugin is None:
+                task["can_save"] = False
+                task["can_run_now"] = False
+                task["schedule_editable"] = False
+                task["plugin_blocked"] = True
+                task["plugin_warning"] = (
+                    "迁移/插件缺失：定时任务未关联 automation_id，已作为独立阻断项显示，禁止按任务名推断归属。"
+                    if task.get("automation_link_missing")
+                    else "迁移/插件缺失：该任务不在 Agent 已安装实例目录中，运行与配置均已阻断。"
+                )
+                continue
+
+            task["name_value"] = str(plugin.get("instance_name") or task.get("name_value") or automation_id)
+            task["display_task_id"] = automation_id
+            task["plugin_blocked"] = bool(plugin.get("blocked"))
+            task["control_plane_only"] = False
+            task["control_plane_notice"] = ""
+            task["has_webhook"] = False
+            task["webhook_path"] = ""
+            task["webhook_full_url"] = ""
+            task["webhook_masked_url"] = ""
+            task["resource_bindings"] = []
+            task["missing_required_resources"] = []
+            task["missing_required_resource_labels"] = []
+            task["resource_blocked"] = False
+            task["is_schedulable"] = bool(plugin.get("can_schedule"))
+            task["schedule_supported"] = bool(task.get("is_schedulable"))
+            stable_state = str(plugin.get("state") or "") in AUTOMATION_PLUGIN_STABLE_STATES
+            task["can_save"] = stable_state
+            task["schedule_editable"] = bool(plugin.get("can_schedule")) and stable_state
+
+            cron_values = [
+                str(value or "").strip()
+                for value in (task.get("task_cron_expressions") or {}).values()
+                if str(value or "").strip()
+            ]
+            legacy_schedule_times = list(task.get("schedule_time_values") or [])
+            signed_schedule = dict(plugin.get("schedule") or {})
+            signed_schedule_kind = str(signed_schedule.get("kind") or "none")
+            allowed_schedule_kinds = set(
+                (plugin.get("scheduling") or {}).get("allowed_kinds") or []
+            )
+            task["plugin_schedule_source"] = "agent"
+            if signed_schedule_kind != "none":
+                plugin_schedule_kind = signed_schedule_kind
+                plugin_schedule_supported = signed_schedule_kind in allowed_schedule_kinds
+                task["schedule_time_values"] = list(signed_schedule.get("times") or [])
+                task["enabled_value"] = bool(signed_schedule.get("enabled"))
+            elif not cron_values:
+                plugin_schedule_kind = "none"
+                plugin_schedule_supported = True
+                task["schedule_time_values"] = []
+                task["enabled_value"] = False
+            elif all(value == "@startup" for value in cron_values):
+                plugin_schedule_kind = "startup"
+                plugin_schedule_supported = "startup" in allowed_schedule_kinds
+                task["schedule_time_values"] = []
+                task["plugin_schedule_source"] = "legacy_migration"
+            elif legacy_schedule_times:
+                plugin_schedule_kind = "daily_times"
+                plugin_schedule_supported = "daily_times" in allowed_schedule_kinds
+                task["schedule_time_values"] = legacy_schedule_times
+                task["plugin_schedule_source"] = "legacy_migration"
+            else:
+                plugin_schedule_kind = "unsupported"
+                plugin_schedule_supported = False
+            task["plugin_schedule_kind"] = plugin_schedule_kind
+            task["plugin_schedule_supported"] = plugin_schedule_supported
+            task["plugin_schedule_max_daily_times"] = int(
+                (plugin.get("scheduling") or {}).get("max_daily_times") or 0
+            )
+            if not plugin_schedule_supported:
+                task["plugin_blocked"] = True
+                plugin["blocked"] = True
+                plugin["missing_requirements"] = list(
+                    dict.fromkeys(
+                        [
+                            *list(plugin.get("missing_requirements") or []),
+                            "旧定时不符合签名动作包的调度合同，禁止猜测迁移",
+                        ]
+                    )
+                )
+
+            if plugin.get("execution_platform") == "windows":
+                bound_device_id = str((plugin.get("device") or {}).get("device_id") or "")
+                bound_worker = next(
+                    (
+                        worker
+                        for worker in automation_workers
+                        if str(worker.get("device_id") or "") == bound_device_id
+                    ),
+                    None,
+                )
+                if bound_device_id and (
+                    bound_worker is None or not bool(bound_worker.get("binding_usable"))
+                ):
+                    task["plugin_blocked"] = True
+                    plugin["blocked"] = True
+                    plugin["missing_requirements"] = list(
+                        dict.fromkeys(
+                            [
+                                *list(plugin.get("missing_requirements") or []),
+                                "已绑定 Windows Worker 不在线或会话不可用",
+                            ]
+                        )
+                    )
+            task["can_run_now"] = bool(
+                plugin.get("enabled") and plugin.get("configured") and not plugin.get("blocked")
+            )
+            task["plugin_worker_options"] = (
+                automation_workers if plugin.get("execution_platform") == "windows" else []
+            )
+            task["plugin_warning"] = "；".join(
+                str(item) for item in plugin.get("missing_requirements") or []
+            ) if task.get("plugin_blocked") else ""
+            task["search_text"] = " ".join(
+                item
+                for item in (
+                    str(task.get("search_text") or ""),
+                    str(plugin.get("plugin_id") or ""),
+                    str(plugin.get("instance_name") or ""),
+                    str(plugin.get("version") or ""),
+                    str(plugin.get("execution_platform") or ""),
+                )
+                if item
+            ).lower()
 
         tasks = sorted(
             tasks_by_id.values(),
@@ -1029,7 +802,7 @@ class AutomationServiceMixin:
         (
             automation_approval_policy_warning,
             can_manage_approval_policies,
-        ) = self._load_scheduled_task_approval_policies(handler, tasks)
+        ) = self._load_automation_project_policies(handler, tasks)
         automation_accounts, automation_account_warning = self._fetch_automation_accounts(
             force=False,
             prefer_cached=True,
@@ -1064,8 +837,12 @@ class AutomationServiceMixin:
             automation_account_warning=automation_account_warning,
             automation_approval_policy_warning=automation_approval_policy_warning,
             can_manage_approval_policies=can_manage_approval_policies,
-            tms_session_status=self._fetch_tms_session_status(),
-            tms_session_credentials=self._fetch_tms_session_credentials(),
+            automation_plugin_packages=automation_plugin_packages,
+            automation_plugin_instances=automation_plugin_instances,
+            automation_workers=automation_workers,
+            unsupported_automation_ids=unsupported_automation_ids,
+            automation_plugin_warning=automation_plugin_warning,
+            can_manage_plugins=can_manage_plugins,
         )
         self._send_html(handler, body)
 
@@ -1193,6 +970,18 @@ class AutomationServiceMixin:
             )
             return
 
+        if payload.get("project_plugin_instance"):
+            message = "插件项目设置只能通过当前卡片的“保存项目设置”提交到 Agent。"
+            if ajax_request:
+                self._send_json(
+                    handler,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "task_id": payload.get("task_id", ""), "message": message},
+                )
+                return
+            self._redirect_with_message(handler, "/automations", message, "warning")
+            return
+
         reload_result = self._persist_automation_task(payload)
         save_message = str(payload.get("save_message") or "").strip()
         success_message = f"已保存：{payload['name']}"
@@ -1266,20 +1055,24 @@ class AutomationServiceMixin:
             )
             return
 
-        try:
-            workflow_resource_rows = self.repository.list_workflow_resources()
-        except Exception:
-            workflow_resource_rows = []
-        workflow_resources = {
-            str(item.get("resource_key", "") or ""): item
-            for item in workflow_resource_rows
-        }
-        resource_bindings = build_automation_resource_bindings(payload["task_id"], workflow_resources)
-        missing_required_resources = [
-            item.get("display_name") or item["resource_key"]
-            for item in resource_bindings
-            if item.get("missing") and item.get("required")
-        ]
+        missing_required_resources: list[str] = []
+        if not payload.get("project_plugin_instance"):
+            try:
+                workflow_resource_rows = self.repository.list_workflow_resources()
+            except Exception:
+                workflow_resource_rows = []
+            workflow_resources = {
+                str(item.get("resource_key", "") or ""): item
+                for item in workflow_resource_rows
+            }
+            resource_bindings = build_automation_resource_bindings(
+                payload["task_id"], workflow_resources
+            )
+            missing_required_resources = [
+                item.get("display_name") or item["resource_key"]
+                for item in resource_bindings
+                if item.get("missing") and item.get("required")
+            ]
         if missing_required_resources:
             message = (
                 "缺少运行资源："
@@ -1308,7 +1101,11 @@ class AutomationServiceMixin:
 
         started_at = time.perf_counter()
         started_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        reload_result = self._persist_automation_task(payload)
+        reload_result = (
+            {"ok": True, "data": {"mode": "agent_project_configuration"}}
+            if payload.get("project_plugin_instance")
+            else self._persist_automation_task(payload)
+        )
         if not reload_result.get("ok"):
             failure_message = normalize_feedback_text(reload_result.get("error", "unknown error"))
             duration_ms = int(round((time.perf_counter() - started_at) * 1000))
@@ -1393,7 +1190,7 @@ class AutomationServiceMixin:
             "pending": True,
             "task_id": payload["task_id"],
             "title": "命令已受理",
-            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新；如需审批，请在事项中心处理。",
+            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新；如需审批，可在当前项目卡片原位处理。",
             "status_label": "等待状态同步",
             "activity_label": "提交时间",
             "activity_value": started_stamp,
@@ -1660,6 +1457,15 @@ class AutomationServiceMixin:
         tool_params_json = str(values.get("tool_params_json", "") or "").strip()
         enabled = str(values.get("enabled", "") or "").strip().lower() in {"1", "on", "true", "yes"}
         schedule_times_json = str(values.get("schedule_times_json", "") or "").strip()
+        project_plugin_instance = str(
+            values.get("project_plugin_instance", "") or ""
+        ).strip().lower() in {"1", "on", "true", "yes"}
+
+        if project_plugin_instance:
+            if not self._automation_project_id(task_id):
+                return None, {}, "自动化项目标识无效。"
+            tool_name = f"automation.{task_id}.run"
+            tool_params_json = "{}"
 
         override = {
             task_id: {
@@ -1676,7 +1482,7 @@ class AutomationServiceMixin:
         if not task_id or not name or not tool_name:
             return None, override, "任务 ID、任务名称和工具名称不能为空。"
 
-        if automation_task_control_plane_only(task_id):
+        if automation_task_control_plane_only(task_id) and not project_plugin_instance:
             return None, override, CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE
 
         try:
@@ -1687,12 +1493,15 @@ class AutomationServiceMixin:
         if not isinstance(tool_params, dict):
             return None, override, f"任务 {task_id} 的参数必须是 JSON 对象。"
 
-        tool_params = self._merge_submitted_account_roles(
-            task_id=task_id,
-            tool_name=tool_name,
-            tool_params=tool_params,
-            values=values,
-        )
+        if project_plugin_instance:
+            tool_params = {}
+        else:
+            tool_params = self._merge_submitted_account_roles(
+                task_id=task_id,
+                tool_name=tool_name,
+                tool_params=tool_params,
+                values=values,
+            )
         tool_params_json = json.dumps(tool_params, ensure_ascii=False, indent=2)
         override[task_id]["tool_params_json"] = tool_params_json
 
@@ -1710,6 +1519,7 @@ class AutomationServiceMixin:
                     "schedule_times": [],
                     "schedule_times_json": "[]",
                     "enabled": False,
+                    "project_plugin_instance": project_plugin_instance,
                 },
                 override,
                 "",
@@ -1739,6 +1549,25 @@ class AutomationServiceMixin:
 
         cron_expressions = [item for item in cron_expressions if item]
         if not cron_expressions:
+            if project_plugin_instance:
+                return (
+                    {
+                        "task_id": task_id,
+                        "name": name,
+                        "tool_name": tool_name,
+                        "task_mode": "scheduled",
+                        "cron_expression": "",
+                        "cron_expressions": [],
+                        "tool_params_json": "{}",
+                        "tool_params": {},
+                        "schedule_times": [],
+                        "schedule_times_json": "[]",
+                        "enabled": False,
+                        "project_plugin_instance": True,
+                    },
+                    override,
+                    "",
+                )
             if not allow_missing_schedule:
                 return None, override, "请至少设置一个执行时间"
             return (
@@ -1754,6 +1583,7 @@ class AutomationServiceMixin:
                     "schedule_times": [],
                     "schedule_times_json": "[]",
                     "enabled": False,
+                    "project_plugin_instance": False,
                 },
                 override,
                 "",
@@ -1772,6 +1602,7 @@ class AutomationServiceMixin:
                 "schedule_times": schedule_times,
                 "schedule_times_json": json.dumps(schedule_times, ensure_ascii=False),
                 "enabled": enabled,
+                "project_plugin_instance": project_plugin_instance,
             },
             override,
             "",

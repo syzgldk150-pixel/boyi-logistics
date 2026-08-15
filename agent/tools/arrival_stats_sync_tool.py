@@ -19,6 +19,7 @@ from tools.feishu_cli_tool import (
     _clear_spreadsheet_sheet_cache,
     _spreadsheet_sheet_info,
     _spreadsheet_sheet_ref_map,
+    _spreadsheet_sheet_title_count,
     feishu_operation,
 )
 from tools.daily_sign_store import (
@@ -690,6 +691,11 @@ def _find_archive_sheet(resource: dict, archive_title: str, *, refresh: bool = F
     if refresh:
         _clear_spreadsheet_sheet_cache(spreadsheet_token)
     ref_map = _spreadsheet_sheet_ref_map(spreadsheet_token)
+    title_count = _spreadsheet_sheet_title_count(spreadsheet_token, title)
+    if title_count > 1:
+        raise ValueError("arrival archive title is ambiguous")
+    if title_count != 1:
+        return None
     sheet_id = str(ref_map.get(title) or "").strip()
     if not sheet_id:
         return None

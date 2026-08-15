@@ -19,6 +19,7 @@ from agent.orchestration.models import (
     sha256_json,
 )
 from agent.orchestration.ports import ToolCatalogPort
+from shared.automation_project_authorization import AutomationProjectInvocation
 
 
 logger = logging.getLogger("agent")
@@ -97,6 +98,17 @@ class ScheduledAllowlistEntry:
                 expected = (scheduled_for.date() - timedelta(days=1)).isoformat()
                 if actual != expected:
                     return False
+            elif rule == "current_business_day":
+                scheduled_for = _parse_scheduled_for(execution_context.get("scheduled_for"))
+                if scheduled_for is None:
+                    return False
+                expected = (
+                    scheduled_for.astimezone(ZoneInfo("Asia/Shanghai"))
+                    .date()
+                    .isoformat()
+                )
+                if actual != expected:
+                    return False
             else:
                 return False
         return self.arguments_hash == sha256_json(arguments)
@@ -112,6 +124,20 @@ class PolicyDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class ProjectPolicyEvaluation:
+    """Project-specific override after the ordinary tool ceiling is enforced.
+
+    ``requires_approval=None`` delegates to the legacy tool/schedule policy.
+    The two user-facing project modes return an explicit boolean.
+    """
+
+    allowed: bool
+    requires_approval: bool | None
+    code: str
+    reason: str
+
+
 class PolicyEngine:
     def __init__(
         self,
@@ -119,10 +145,25 @@ class PolicyEngine:
         *,
         scheduler_allowlist: Sequence[ScheduledAllowlistEntry] = (),
         scheduler_allowlist_provider: Callable[[], Sequence[ScheduledAllowlistEntry]] | None = None,
+        project_policy_provider: (
+            Callable[
+                [
+                    Plan,
+                    Actor,
+                    str,
+                    Mapping[str, Any],
+                    AutomationProjectInvocation,
+                    Any | None,
+                ],
+                ProjectPolicyEvaluation,
+            ]
+            | None
+        ) = None,
     ) -> None:
         self._catalog = catalog
         self._scheduler_allowlist = tuple(scheduler_allowlist)
         self._scheduler_allowlist_provider = scheduler_allowlist_provider
+        self._project_policy_provider = project_policy_provider
 
     def evaluate(
         self,
@@ -131,6 +172,8 @@ class PolicyEngine:
         *,
         source: str,
         execution_context: Mapping[str, Any] | None = None,
+        automation_invocation: AutomationProjectInvocation | None = None,
+        project_transaction: Any | None = None,
     ) -> PolicyDecision:
         execution_context = dict(execution_context or {})
         highest_risk = RiskLevel.LOW
@@ -223,13 +266,60 @@ class PolicyEngine:
                     required_roles.add(str(approval.get("required_role") or "admin"))
 
         required_role = "super_admin" if "super_admin" in required_roles else ("admin" if required_roles else None)
-        return PolicyDecision(
+        baseline = PolicyDecision(
             allowed=True,
             requires_approval=requires_approval,
             required_role=required_role,
             risk_level=highest_risk,
             code="APPROVAL_REQUIRED" if requires_approval else "ALLOWED",
             reason="A separate approval decision is required" if requires_approval else "Plan is allowed by policy",
+        )
+        if automation_invocation is None:
+            return baseline
+        if self._project_policy_provider is None:
+            return PolicyDecision(
+                allowed=False,
+                requires_approval=False,
+                required_role=None,
+                risk_level=highest_risk,
+                code="PROJECT_AUTHORIZATION_UNAVAILABLE",
+                reason="Automation project authorization is unavailable",
+            )
+        project = self._project_policy_provider(
+            plan,
+            actor,
+            source,
+            execution_context,
+            automation_invocation,
+            project_transaction,
+        )
+        if not isinstance(project, ProjectPolicyEvaluation):
+            raise OrchestrationError(
+                "INVALID_PROJECT_POLICY_DECISION",
+                "Automation project policy provider returned an invalid decision",
+            )
+        if not project.allowed:
+            return PolicyDecision(
+                allowed=False,
+                requires_approval=False,
+                required_role=None,
+                risk_level=highest_risk,
+                code=project.code,
+                reason=project.reason,
+            )
+        if project.requires_approval is None:
+            return baseline
+        return PolicyDecision(
+            allowed=True,
+            requires_approval=project.requires_approval,
+            required_role="super_admin" if project.requires_approval else None,
+            risk_level=highest_risk,
+            code="APPROVAL_REQUIRED" if project.requires_approval else "ALLOWED",
+            reason=(
+                "A separate project approval decision is required"
+                if project.requires_approval
+                else "Plan is allowed by the current project contract"
+            ),
         )
 
     def can_decide(self, actor: Actor, *, required_role: str, source: str) -> bool:

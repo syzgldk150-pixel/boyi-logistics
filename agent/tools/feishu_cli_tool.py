@@ -19,6 +19,7 @@ LARK_CLI = "lark-cli"
 _TOKEN_CACHE: dict[str, float | str | None] = {"token": None, "expires_at": 0.0}
 _SHEET_REF_CACHE: dict[str, dict[str, str]] = {}
 _SHEET_INFO_CACHE: dict[str, dict[str, dict]] = {}
+_SHEET_TITLE_COUNTS_CACHE: dict[str, dict[str, int]] = {}
 
 _A1_RANGE_RE = re.compile(
     r"^(?:(?P<sheet>[^!]+)!)?(?P<start_col>[A-Z]+)(?P<start_row>\d+):(?P<end_col>[A-Z]+)(?P<end_row>\d+)$"
@@ -29,6 +30,7 @@ _MAX_CELLS_PER_WRITE = 4000
 def _clear_spreadsheet_sheet_cache(spreadsheet_token: str) -> None:
     _SHEET_REF_CACHE.pop(spreadsheet_token, None)
     _SHEET_INFO_CACHE.pop(spreadsheet_token, None)
+    _SHEET_TITLE_COUNTS_CACHE.pop(spreadsheet_token, None)
 
 
 def run_lark_cli(args: list[str], timeout: int = 20) -> dict:
@@ -367,6 +369,7 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
 
     refs: dict[str, str] = {}
     sheet_infos: dict[str, dict] = {}
+    title_counts: dict[str, int] = {}
     sheet_ids: list[str] = []
     for sheet in sheets:
         if not isinstance(sheet, dict):
@@ -378,6 +381,7 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
         sheet_ids.append(sheet_id)
         refs[sheet_id] = sheet_id
         if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
             refs.setdefault(title, sheet_id)
 
         grid_properties = sheet.get("grid_properties")
@@ -415,7 +419,16 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
 
     _SHEET_REF_CACHE[spreadsheet_token] = refs
     _SHEET_INFO_CACHE[spreadsheet_token] = sheet_infos
+    _SHEET_TITLE_COUNTS_CACHE[spreadsheet_token] = title_counts
     return refs
+
+
+def _spreadsheet_sheet_title_count(spreadsheet_token: str, title: str) -> int:
+    lookup = str(title or "").strip()
+    if not spreadsheet_token or not lookup:
+        return 0
+    _spreadsheet_sheet_ref_map(spreadsheet_token)
+    return int(_SHEET_TITLE_COUNTS_CACHE.get(spreadsheet_token, {}).get(lookup, 0))
 
 
 def _spreadsheet_sheet_info(spreadsheet_token: str, sheet_ref: str) -> dict | None:

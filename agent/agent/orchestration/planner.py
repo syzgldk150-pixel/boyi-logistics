@@ -114,12 +114,20 @@ class DeterministicPlanner:
             risk_level=_risk_level(capability),
             requires_approval=False,
         )
+        invocation = command.automation_invocation
         return Plan(
             command_type=command.command_type,
             context_fingerprint=context.fingerprint,
             tool_catalog_hash=self._catalog.catalog_hash,
             steps=(step,),
             impact=impact,
+            automation_id=(invocation.automation_id if invocation is not None else None),
+            automation_generation=(
+                invocation.automation_generation if invocation is not None else None
+            ),
+            automation_contract_hash=(
+                invocation.contract_hash if invocation is not None else None
+            ),
         )
 
 

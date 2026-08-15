@@ -1,5 +1,7 @@
 """FastAPI entrypoint for the logistics agent service."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -42,7 +44,6 @@ from shared.service_identity import (
     ConsoleIdentityVerifier,
     validate_service_identity_secrets,
 )
-from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -121,7 +122,29 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
+from agent.automation_plugins.production import (
+    ProductionAutomationPluginRuntime,
+    build_production_automation_plugin_runtime,
+    production_cursor_secret,
+)
+from agent.automation_plugins.first_party import (
+    release_first_party_broker_action_keys,
+    release_first_party_plugin_ids,
+)
+from agent.automation_plugins.management_api import (
+    create_automation_plugin_management_router,
+)
 from agent.orchestration.approval_service import ApprovalService
+from agent.orchestration.automation_project_api import (
+    create_automation_project_router,
+)
+from agent.orchestration.automation_project_entrypoints import (
+    AutomationProjectEntrypoints,
+    CommittedAutomationProjectRouteResolver,
+)
+from agent.orchestration.automation_project_policy_service import (
+    AutomationProjectPolicyService,
+)
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.control_plane_service import ControlPlaneService
@@ -142,6 +165,15 @@ from agent.orchestration.policy_engine import PolicyEngine
 from agent.orchestration.scheduled_task_approval_service import ScheduledTaskApprovalService
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.orchestration.workflow_runner import WorkflowRunner
+from agent.automation_plugins.release_scope import WINDOWS_WORKER_RELEASE_ENABLED
+if WINDOWS_WORKER_RELEASE_ENABLED:
+    from agent.windows_worker.server_api import (
+        FilesystemWorkerPackageArchiveReader,
+        WindowsWorkerServerTransport,
+        build_worker_transport_router,
+        is_worker_transport_path,
+        load_worker_server_signer,
+    )
 from agent.llm_settings import (
     LLMCompatibilityService,
     LLMSettingsError,
@@ -183,6 +215,7 @@ from feishu.notify import send_finance_anomaly_alert, send_tms_session_disconnec
 from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
+from plugin_core_adapters import build_production_first_party_core_handler_map
 from shared.orchestration_repository import (
     OrchestrationPersistenceError,
     OrchestrationRepository,
@@ -200,7 +233,11 @@ workflow_runner: WorkflowRunner | None = None
 outbox_dispatcher: OutboxDispatcher | None = None
 control_plane_service: ControlPlaneService | None = None
 scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
+automation_project_policy_service: AutomationProjectPolicyService | None = None
 scheduled_task_approval_bootstrap: dict[str, int] = {}
+automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
+automation_worker_transport_service: WindowsWorkerServerTransport | None = None
+automation_project_entrypoints: AutomationProjectEntrypoints | None = None
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 AGENT_INTERNAL_API_TOKEN = ""
@@ -254,6 +291,90 @@ def _scheduled_task_approvals() -> ScheduledTaskApprovalService:
     if scheduled_task_approval_service is None:
         raise RuntimeError("Scheduled task approval service is not initialized")
     return scheduled_task_approval_service
+
+
+def _automation_project_policies() -> AutomationProjectPolicyService:
+    if automation_project_policy_service is None:
+        raise RuntimeError("Automation project policy service is not initialized")
+    return automation_project_policy_service
+
+
+def _automation_project_entrypoint_service() -> AutomationProjectEntrypoints:
+    if automation_project_entrypoints is None:
+        raise RuntimeError("Automation project entrypoints are not initialized")
+    return automation_project_entrypoints
+
+
+def _automation_plugins() -> ProductionAutomationPluginRuntime:
+    if automation_plugin_runtime is None:
+        raise RuntimeError("Automation plugin runtime is not initialized")
+    return automation_plugin_runtime
+
+
+def _automation_worker_transport() -> WindowsWorkerServerTransport:
+    if automation_worker_transport_service is None:
+        raise RuntimeError("Windows Worker transport is not initialized")
+    return automation_worker_transport_service
+
+
+def _automation_plugin_health() -> dict[str, Any]:
+    runtime = automation_plugin_runtime
+    if runtime is None:
+        return {
+            "ok": False,
+            "broker": {"state": "stopped"},
+            "catalog": {"ok": False},
+            "generations": {"healthy": False},
+            "error_code": "AUTOMATION_PLUGIN_RUNTIME_UNAVAILABLE",
+        }
+    try:
+        return runtime.health()
+    except Exception as exc:
+        logger.error(
+            "Automation plugin health failed error=%s",
+            redact_text(exc),
+        )
+        return {
+            "ok": False,
+            "broker": {"state": "running" if runtime.started else "stopped"},
+            "catalog": {"ok": False},
+            "generations": {"healthy": False},
+            "error_code": getattr(exc, "code", type(exc).__name__.upper())[:64],
+        }
+
+
+def _automation_worker_dispatch_health(*, release_hold: bool) -> dict[str, Any]:
+    if not WINDOWS_WORKER_RELEASE_ENABLED:
+        return {
+            "enabled": False,
+            "state": "disabled",
+            "release_hold": False,
+            "active_jobs": 0,
+        }
+    repository = orchestration_repository
+    if repository is None:
+        return {"state": "stopped", "release_hold": True, "active_jobs": 0}
+    try:
+        with repository.unit_of_work() as uow:
+            payload = uow.automation_plugins.worker_dispatch_health(
+                release_hold=release_hold,
+            )
+    except Exception as exc:
+        logger.error(
+            "Automation worker dispatch health failed error=%s",
+            redact_text(exc),
+        )
+        return {
+            "state": "error",
+            "release_hold": True,
+            "active_jobs": 0,
+            "error_code": getattr(exc, "code", type(exc).__name__.upper())[:64],
+        }
+    return {
+        "state": "held" if release_hold else "running",
+        "release_hold": bool(payload.get("release_hold")),
+        "active_jobs": int(payload.get("active_jobs") or 0),
+    }
 
 
 def _orchestration_connection():
@@ -857,6 +978,9 @@ async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global orchestration_repository, workflow_runner, outbox_dispatcher, control_plane_service
     global scheduled_task_approval_service, scheduled_task_approval_bootstrap
+    global automation_plugin_runtime, automation_project_policy_service
+    global automation_worker_transport_service
+    global automation_project_entrypoints
     load_agent_environment()
     setup_logging()
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
@@ -881,14 +1005,57 @@ async def lifespan(app: FastAPI):
     await runtime.init()
     repository = OrchestrationRepository(_orchestration_connection)
     mysql_version = await asyncio.to_thread(repository.validate_mysql8)
-    await asyncio.to_thread(repository.validate_schema)
+    await asyncio.to_thread(
+        repository.validate_schema,
+        include_windows_worker=WINDOWS_WORKER_RELEASE_ENABLED,
+    )
     logger.info("Orchestration persistence ready mysql=%s", mysql_version)
 
     tool_executor = ToolExecutor()
-    catalog = runtime.registry
+    core_catalog = runtime.registry
+    account_manager = get_account_manager()
+    cursor_secret = production_cursor_secret(os.environ)
+    plugin_handlers = build_production_first_party_core_handler_map(
+        account_manager=account_manager,
+        cursor_secret=cursor_secret,
+        allowed_action_keys=release_first_party_broker_action_keys(core_catalog),
+    )
+    plugin_runtime = await asyncio.to_thread(
+        build_production_automation_plugin_runtime,
+        orchestration_repository=repository,
+        core_catalog=core_catalog,
+        core_executor=tool_executor,
+        account_manager=account_manager,
+        broker_handlers=plugin_handlers,
+        runtime_release_sha=_release_sha(),
+        environ=os.environ,
+        release_hold_provider=scheduler_release_hold_requested,
+    )
+    await plugin_runtime.start()
+    automation_plugin_runtime = plugin_runtime
+    if WINDOWS_WORKER_RELEASE_ENABLED:
+        worker_server_signer = load_worker_server_signer(
+            private_key_path=str(
+                os.getenv("BOYI_AUTOMATION_WORKER_SERVER_SIGNING_KEY_PATH", "") or ""
+            ).strip(),
+            key_id=str(
+                os.getenv("BOYI_AUTOMATION_WORKER_SERVER_SIGNING_KEY_ID", "") or ""
+            ).strip(),
+        )
+        automation_worker_transport_service = WindowsWorkerServerTransport(
+            orchestration_repository=repository,
+            release_hold_provider=scheduler_release_hold_requested,
+            release_sha=_release_sha(),
+            server_signer=worker_server_signer,
+            package_reader=FilesystemWorkerPackageArchiveReader(plugin_runtime.storage),
+        )
+    await asyncio.to_thread(plugin_runtime.reconcile)
+    initial_plugin_health = plugin_runtime.health()
+    catalog = plugin_runtime.composite_catalog
+    agent_core.configure_tool_catalog(catalog)
     execution_port = RegisteredToolExecutionAdapter(
         catalog=catalog,
-        executor=tool_executor,
+        executor=plugin_runtime.execution_router,
         direct_runners={
             "track_waybill": run_track_waybill,
             "get_price": run_price_tool,
@@ -910,8 +1077,8 @@ async def lifespan(app: FastAPI):
         implicit_account_ids_by_tool={
             "sync_finance_bills": enabled_finance_account_ids(),
         },
+        bootstrap_allowed_tool_names=release_first_party_plugin_ids(),
     )
-    account_manager = get_account_manager()
     account_manager.set_credentials_change_guard(
         schedule_policy_service.begin_credentials_change
     )
@@ -928,11 +1095,34 @@ async def lifespan(app: FastAPI):
         scheduled_task_approval_bootstrap.get("rejected", 0),
         scheduled_task_approval_bootstrap.get("completed", 0),
     )
+    runner_holder: dict[str, WorkflowRunner] = {}
+    gateway = CommandGateway(
+        repository,
+        wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
+    )
+    project_policy_service = AutomationProjectPolicyService(
+        repository,
+        core_catalog,
+        plugin_runtime.catalog,
+        command_gateway=gateway,
+        wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
+        release_hold_provider=scheduler_release_hold_requested,
+    )
+    automation_project_policy_service = project_policy_service
+    automation_project_entrypoints = AutomationProjectEntrypoints(
+        project_policy_service,
+        route_resolver=CommittedAutomationProjectRouteResolver(
+            catalog=plugin_runtime.catalog,
+            runtime_repository=plugin_runtime.runtime_repository,
+            binding_resolver=plugin_runtime.binding_resolver,
+            resource_provider=get_workflow_resource,
+        ),
+    )
     policy = PolicyEngine(
         catalog,
         scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
+        project_policy_provider=project_policy_service.evaluate_invocation,
     )
-    runner_holder: dict[str, WorkflowRunner] = {}
     approval_service = ApprovalService(
         repository,
         policy,
@@ -947,7 +1137,7 @@ async def lifespan(app: FastAPI):
         validator=validator,
         policy=policy,
         approval_service=approval_service,
-        verifier=ResultVerifier(),
+        verifier=ResultVerifier(plugin_runtime.runtime_repository),
         worker_id=f"{INSTANCE_ID}:runs",
         protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
     )
@@ -971,7 +1161,6 @@ async def lifespan(app: FastAPI):
             ),
         },
     )
-    gateway = CommandGateway(repository, wake_runner=runner.wake)
     service = ControlPlaneService(
         repository,
         approval_service,
@@ -987,10 +1176,13 @@ async def lifespan(app: FastAPI):
         command_gateway=gateway,
         repository=repository,
         workflow_runner=runner,
-        execution_runtime=tool_executor,
+        execution_runtime=plugin_runtime.execution_router,
         control_plane_service=service,
     )
-    release_hold = scheduler_release_hold_requested()
+    release_hold = (
+        scheduler_release_hold_requested()
+        or initial_plugin_health.get("ok") is not True
+    )
     await runner.start(held_for_release=release_hold)
     await dispatcher.start()
     bind_agent_runtime(runtime, loop)
@@ -1008,7 +1200,10 @@ async def lifespan(app: FastAPI):
 
     register_account_session_restored(on_session_restored)
 
-    scheduler = init_scheduler(runtime)
+    scheduler = init_scheduler(
+        runtime,
+        automation_project_invoker=project_policy_service,
+    )
     scheduler.start(paused=release_hold)
     logger.info(
         "APScheduler started with %d jobs state=%s",
@@ -1043,10 +1238,15 @@ async def lifespan(app: FastAPI):
     await stop_feishu_ws()
     await runner.stop()
     await dispatcher.stop()
+    await plugin_runtime.stop()
     await runtime.close()
     control_plane_service = None
     scheduled_task_approval_service = None
     scheduled_task_approval_bootstrap = {}
+    automation_plugin_runtime = None
+    automation_worker_transport_service = None
+    automation_project_entrypoints = None
+    automation_project_policy_service = None
     outbox_dispatcher = None
     workflow_runner = None
     orchestration_repository = None
@@ -1059,6 +1259,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Logistics Agent", version="0.1.0", lifespan=lifespan)
 app.include_router(tms_router, deprecated=True)
 app.include_router(tms_router, prefix="/internal/v1")
+app.include_router(
+    create_automation_project_router(
+        service_provider=_automation_project_policies,
+        actor_provider=lambda request: _require_console_admin_request(request),
+    )
+)
+app.include_router(
+    create_automation_plugin_management_router(
+        service_provider=lambda: _automation_plugins().management,
+        actor_provider=lambda request: _require_console_admin_request(request),
+        include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
+    )
+)
+if WINDOWS_WORKER_RELEASE_ENABLED:
+    app.include_router(
+        build_worker_transport_router(service_provider=_automation_worker_transport)
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -1081,7 +1298,9 @@ async def internal_http_error(request: Request, exc: HTTPException):
 
 @app.exception_handler(OrchestrationError)
 async def orchestration_error_handler(request: Request, exc: OrchestrationError):
-    if not request.url.path.startswith("/internal/v1/"):
+    is_internal = request.url.path.startswith("/internal/v1/")
+    is_verified_webhook = request.url.path.startswith("/webhook/")
+    if not is_internal and not is_verified_webhook:
         raise exc
     status_by_code = {
         "RUN_NOT_FOUND": 404,
@@ -1106,11 +1325,23 @@ async def orchestration_error_handler(request: Request, exc: OrchestrationError)
         "IDEMPOTENCY_CONFLICT": 409,
         "SCHEDULE_TASK_NOT_FOUND": 404,
         "ILLEGAL_RUN_TRANSITION": 409,
+        "PROJECT_ROUTE_NOT_FOUND": 404,
+        "PROJECT_ROUTE_AMBIGUOUS": 409,
+        "PROJECT_ROUTE_STALE": 409,
+        "PROJECT_ENTRYPOINT_DISABLED": 409,
+        "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN": 422,
+        "PROJECT_ARGUMENT_OVERRIDE_FORBIDDEN": 422,
+        "PROJECT_DYNAMIC_INPUT_CONFLICT": 422,
+        "STABLE_EVENT_ID_REQUIRED": 422,
     }
     status_code = status_by_code.get(exc.code, 422)
     return JSONResponse(
         status_code=status_code,
-        content=api_failure(exc.code, exc.message, data=exc.details or None),
+        content=api_failure(
+            exc.code,
+            redact_text(exc.message),
+            data=exc.details or None if is_internal else None,
+        ),
     )
 
 
@@ -1152,6 +1383,11 @@ async def internal_unhandled_error(request: Request, exc: Exception):
 @app.middleware("http")
 async def require_internal_api_token(request: Request, call_next):
     request.state.console_principal = None
+    if WINDOWS_WORKER_RELEASE_ENABLED and is_worker_transport_path(request.url.path):
+        # Worker routes authenticate a loopback TLS proxy, the paired mTLS
+        # certificate and a signed device envelope.  They never accept the
+        # Console/internal bearer token as a substitute for device identity.
+        return await call_next(request)
     execution_capability = str(
         request.headers.get(EXECUTION_CAPABILITY_HEADER) or ""
     ).strip()
@@ -1226,6 +1462,9 @@ def _admin_request_requires_console_principal(path: str) -> bool:
     normalized = "/" + str(path or "").lstrip("/")
     return (
         normalized == "/internal/v1/scheduled-task-approval-policies"
+        or normalized == "/internal/v1/automation-project-policies"
+        or normalized.startswith("/internal/v1/automation-projects/")
+        or normalized.startswith("/internal/v1/automation/")
         or normalized in {"/admin", "/internal/v1/admin"}
         or normalized.startswith(
             ("/admin/", "/internal/v1/admin/")
@@ -1307,83 +1546,6 @@ async def _webhook_envelope(request: Request) -> dict[str, dict]:
     return {"body": body, "query": dict(request.query_params)}
 
 
-def _phase7_webhook_arguments(tool_name: str, envelope: dict[str, dict]) -> dict:
-    """Select only fields declared by the target tool input schema.
-
-    Event identifiers and arbitrary transport metadata are deliberately kept
-    outside tool arguments.  Conflicting body/query values fail closed instead
-    of relying on an implicit precedence rule.
-    """
-
-    capability = _runtime().registry.get_capability(tool_name)
-    if not isinstance(capability, dict):
-        raise HTTPException(status_code=500, detail="Webhook target tool is not registered")
-    schema = capability.get("input_schema")
-    properties = schema.get("properties") if isinstance(schema, dict) else None
-    if not isinstance(properties, dict):
-        raise HTTPException(status_code=500, detail="Webhook target tool has no input schema")
-
-    body = envelope.get("body") if isinstance(envelope.get("body"), dict) else {}
-    query = envelope.get("query") if isinstance(envelope.get("query"), dict) else {}
-    arguments: dict = {}
-    for field in properties:
-        body_has = field in body
-        query_has = field in query
-        if body_has and query_has and body[field] != query[field]:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Conflicting webhook argument in body and query: {field}",
-            )
-        if body_has:
-            arguments[field] = body[field]
-        elif query_has:
-            arguments[field] = query[field]
-
-    webhook_account_profiles = {
-        "sync_delivery_status": "delivery_status",
-        "sync_arrival_stats": "arrival_stats",
-    }
-    profile_name = webhook_account_profiles.get(tool_name)
-    if profile_name is not None:
-        approved_account_id = APPROVED_SCHEDULED_TASK_PROFILES[profile_name].approved_arguments.get(
-            "account_id"
-        )
-        if "account_id" not in properties or not isinstance(approved_account_id, str):
-            raise HTTPException(
-                status_code=500,
-                detail="Webhook account binding is not configured",
-            )
-        supplied_account_id = arguments.get("account_id")
-        if supplied_account_id is not None and supplied_account_id != approved_account_id:
-            raise HTTPException(
-                status_code=422,
-                detail="Webhook account_id cannot override the code-approved account",
-            )
-        arguments["account_id"] = approved_account_id
-    try:
-        _runtime().registry.validate_arguments(tool_name, arguments)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return arguments
-
-
-def _phase7_webhook_tool(path: str) -> str | None:
-    normalized_path = path.strip("/")
-    mapping = {
-        "phase7.delivery_status_webhook": "sync_delivery_status",
-        "phase7.scan_webhook": "sync_scan_codes",
-        "phase7.stats_webhook": "sync_arrival_stats",
-    }
-    for resource_key, tool_name in mapping.items():
-        resource = get_workflow_resource(resource_key)
-        resource_path = str((resource or {}).get("path") or "").strip("/")
-        if resource_path.startswith("webhook/"):
-            resource_path = resource_path[len("webhook/") :]
-        if resource_path and resource_path == normalized_path:
-            return tool_name
-    return None
-
-
 def _feishu_verification_token() -> str:
     return str(
         os.getenv("FEISHU_EVENT_VERIFICATION_TOKEN", "") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
@@ -1460,44 +1622,28 @@ async def webhook_sign_status(request: Request):
     await _verify_webhook_token(request)
     envelope = await _webhook_envelope(request)
     source_event_id = _stable_webhook_event_id(envelope)
-    arguments = _phase7_webhook_arguments("sync_delivery_status", envelope)
-    return await _runtime().execute_tool(
-        "sync_delivery_status",
-        arguments,
-        actor=Actor(ActorType.WEBHOOK, "sign-status"),
-        source="webhook",
-        idempotency_key=f"webhook:sign-status:{source_event_id}",
-        execution_context={
-            "webhook_path": "sign-status",
-            "source_event_id": source_event_id,
-            "argument_fields": sorted(arguments),
-        },
+    route_key = request.url.path.strip("/")
+    return await _automation_project_entrypoint_service().invoke_webhook(
+        route_key=route_key,
+        source_event_id=source_event_id,
+        webhook_path=route_key,
+        envelope=envelope,
     )
 
 
 @app.post("/webhook/{path:path}")
 async def webhook_handler(path: str, request: Request):
     await _verify_webhook_token(request)
-    tool_name = _phase7_webhook_tool(path)
-    if tool_name:
-        logger.info("Webhook migrated route hit: /%s -> %s", path, tool_name)
-        envelope = await _webhook_envelope(request)
-        source_event_id = _stable_webhook_event_id(envelope)
-        arguments = _phase7_webhook_arguments(tool_name, envelope)
-        return await _runtime().execute_tool(
-            tool_name,
-            arguments,
-            actor=Actor(ActorType.WEBHOOK, path),
-            source="webhook",
-            idempotency_key=f"webhook:{path}:{source_event_id}",
-            execution_context={
-                "webhook_path": path,
-                "source_event_id": source_event_id,
-                "argument_fields": sorted(arguments),
-            },
-        )
-    logger.info("Webhook request received: /%s", path)
-    return {"status": "ok", "message": "webhook endpoint placeholder"}
+    envelope = await _webhook_envelope(request)
+    source_event_id = _stable_webhook_event_id(envelope)
+    route_key = request.url.path.strip("/")
+    logger.info("Verified automation project Webhook route hit: /%s", path)
+    return await _automation_project_entrypoint_service().invoke_webhook(
+        route_key=route_key,
+        source_event_id=source_event_id,
+        webhook_path=route_key,
+        envelope=envelope,
+    )
 
 
 def _stable_webhook_event_id(envelope: dict) -> str:
@@ -1572,6 +1718,10 @@ async def internal_health():
                         "release_hold": False,
                         "active_runs": 0,
                     }
+                ),
+                "automation_plugins": _automation_plugin_health(),
+                "automation_workers": _automation_worker_dispatch_health(
+                    release_hold=scheduler_release_hold_requested()
                 ),
                 "scheduled_task_approval_bootstrap": dict(scheduled_task_approval_bootstrap),
                 "tms_session": get_session_broker().describe_status(validate=False),
@@ -2109,14 +2259,41 @@ async def internal_activate_scheduler_after_release(request: Request):
         raise HTTPException(status_code=409, detail="Workflow runner is unavailable")
     async with RELEASE_ACTIVATION_LOCK:
         try:
+            release_marker_present = scheduler_release_hold_requested()
+            plugin_runtime = _automation_plugins()
+            await asyncio.to_thread(plugin_runtime.reconcile)
+            plugin_status = plugin_runtime.assert_release_ready()
             scheduler_status = begin_scheduler_release_activation(_release_sha())
-            worker_status = runner.resume_after_release()
+            runner_status = runner.resume_after_release()
+            if WINDOWS_WORKER_RELEASE_ENABLED:
+                worker_status = _automation_worker_dispatch_health(release_hold=False)
+                worker_ready = (
+                    worker_status.get("state") == "running"
+                    and worker_status.get("release_hold") is False
+                    and int(worker_status.get("active_jobs") or 0) == 0
+                )
+            else:
+                worker_status = {
+                    "enabled": False,
+                    "state": "disabled",
+                    "release_hold": False,
+                    "active_jobs": 0,
+                }
+                worker_ready = True
             if (
                 scheduler_status.get("state") != "running"
-                or worker_status.get("state") != "running"
-                or worker_status.get("release_hold") is not False
+                or bool(scheduler_status.get("release_hold"))
+                != release_marker_present
+                or runner_status.get("state") != "running"
+                or runner_status.get("release_hold") is not False
+                or not worker_ready
+                or plugin_status.get("ok") is not True
             ):
                 raise RuntimeError("Release runtimes did not enter the running state")
+            # Marker consumption is the final mutation.  Plugin invocations
+            # remain held until every in-scope runtime above has reported a
+            # stable committed generation. Windows Worker is explicitly out
+            # of scope and therefore has no route, signer or dispatcher gate.
             scheduler_status = consume_scheduler_release_hold(_release_sha())
         except RuntimeError as exc:
             if scheduler_release_hold_requested():
@@ -2132,8 +2309,12 @@ async def internal_activate_scheduler_after_release(request: Request):
     status = {
         **scheduler_status,
         "workflow_runner": runner.runtime_status(),
+        "automation_plugins": plugin_status,
+        "automation_workers": worker_status,
     }
-    logger.info("Release hold consumed after scheduler and workflow runner activation")
+    logger.info(
+        "Release hold consumed after all in-scope server runtimes activated"
+    )
     return api_success(status)
 
 

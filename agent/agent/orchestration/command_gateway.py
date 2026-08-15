@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from agent.orchestration.models import (
     Command,
@@ -33,7 +33,12 @@ class CommandGateway:
         self._repository = repository
         self._wake_runner = wake_runner
 
-    def submit(self, command: Command) -> CommandReceipt:
+    def submit(
+        self,
+        command: Command,
+        *,
+        uow_guard: Callable[[Any], None] | None = None,
+    ) -> CommandReceipt:
         work_item_type, title, dedupe_key = self._classify_work_item(command)
         work_item_id = new_id()
         run_id = new_id()
@@ -49,6 +54,21 @@ class CommandGateway:
             "actor_roles": list(command.actor.roles),
             "entity_refs": [ref.to_dict() for ref in command.entity_refs],
             "parameters": dict(command.parameters),
+            "automation_id": (
+                command.automation_invocation.automation_id
+                if command.automation_invocation is not None
+                else None
+            ),
+            "automation_generation": (
+                command.automation_invocation.automation_generation
+                if command.automation_invocation is not None
+                else None
+            ),
+            "automation_invocation": (
+                command.automation_invocation.to_dict()
+                if command.automation_invocation is not None
+                else None
+            ),
             "idempotency_key": command.idempotency_key,
             "correlation_id": command.correlation_id,
             "status": "RECEIVED",
@@ -93,6 +113,16 @@ class CommandGateway:
                 "source": command.source,
                 "actor_type": command.actor.actor_type.value,
                 "actor_id": command.actor.actor_id,
+                "automation_id": (
+                    command.automation_invocation.automation_id
+                    if command.automation_invocation is not None
+                    else None
+                ),
+                "automation_generation": (
+                    command.automation_invocation.automation_generation
+                    if command.automation_invocation is not None
+                    else None
+                ),
             },
         }
         outbox_rows = (
@@ -105,6 +135,8 @@ class CommandGateway:
         )
         try:
             with self._repository.unit_of_work() as uow:
+                if uow_guard is not None:
+                    uow_guard(uow)
                 receipt = uow.command_gateway_create(
                     command_row,
                     work_item_row,

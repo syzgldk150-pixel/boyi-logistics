@@ -28,7 +28,10 @@ def test_login_failure_keeps_account_identity(monkeypatch, capsys) -> None:
             }
         ],
     )
-    monkeypatch.setattr("sys.stdin.read", lambda: json.dumps({"direction": "both"}))
+    monkeypatch.setattr(
+        "sys.stdin.read",
+        lambda: json.dumps({"direction": "both", "account_ids": ["account-1"]}),
+    )
 
     sync_tool.main()
 
@@ -100,7 +103,7 @@ def test_disappeared_item_uses_fixed_exact_detail_and_closes_on_terminal(monkeyp
 
     monkeypatch.setattr(sync_tool, "run_once", detail)
 
-    result = sync_tool.run({"direction": "both", "recheck_items": [_recheck_item()]})
+    result = sync_tool.run({"direction": "both", "account_ids": ["account-1"], "recheck_items": [_recheck_item()]})
 
     assert calls == [
         {
@@ -134,7 +137,7 @@ def test_disappeared_item_detail_login_failure_is_account_scoped(monkeypatch) ->
         },
     )
 
-    result = sync_tool.run({"direction": "both", "recheck_items": [_recheck_item()]})
+    result = sync_tool.run({"direction": "both", "account_ids": ["account-1"], "recheck_items": [_recheck_item()]})
 
     check = result["data"]["detail_rechecks"][0]
     assert check["status"] == "BLOCKED_LOGIN"
@@ -151,7 +154,7 @@ def test_disappeared_item_unknown_detail_never_closes(monkeypatch) -> None:
         lambda _params: {"ok": True, "details": [{"prob_status": "处理中"}]},
     )
 
-    result = sync_tool.run({"direction": "both", "recheck_items": [_recheck_item()]})
+    result = sync_tool.run({"direction": "both", "account_ids": ["account-1"], "recheck_items": [_recheck_item()]})
 
     check = result["data"]["detail_rechecks"][0]
     assert check["status"] == "BLOCKED_DATA"
@@ -187,7 +190,7 @@ def test_item_still_present_in_complete_list_skips_detail_recheck(monkeypatch) -
         lambda _params: (_ for _ in ()).throw(AssertionError("detail must not run")),
     )
 
-    result = sync_tool.run({"direction": "both", "recheck_items": [_recheck_item()]})
+    result = sync_tool.run({"direction": "both", "account_ids": ["account-1"], "recheck_items": [_recheck_item()]})
 
     assert result["data"]["detail_rechecks"] == []
     assert result["data"]["open_items"][0]["dedupe_key"] == _recheck_item()["dedupe_key"]

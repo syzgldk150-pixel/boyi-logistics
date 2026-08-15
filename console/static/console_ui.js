@@ -312,6 +312,28 @@
     });
   }
 
+  function ensureOverviewPlaceholder(currentKey) {
+    if (currentKey === "/" || openTabs.has("/")) {
+      return;
+    }
+    openTabs.set("/", {
+      key: "/",
+      url: new URL("/", window.location.origin),
+      title: "概览",
+      icon: "grid",
+      pinned: true,
+      placeholder: true,
+      main: null,
+      aside: null,
+      runtime: null,
+      bodyClass: "",
+      shellClass: "",
+      documentTitle: "概览",
+      headNodes: [],
+      lastActivated: 0,
+    });
+  }
+
   function ensureInitialTab() {
     if (openTabs.size || !document.querySelector("[data-console-tabs]")) {
       return;
@@ -324,6 +346,7 @@
 
     const url = new URL(window.location.href);
     const key = getTabKey(url);
+    ensureOverviewPlaceholder(key);
     const navMeta = getNavMeta(key);
     const title = navMeta.label || normalizeLabel(main.getAttribute("data-console-tab-title")) || normalizeLabel(main.querySelector(".page-title")?.textContent) || "首页大盘";
     main.dataset.consoleTabKey = key;
@@ -369,8 +392,15 @@
     if (!tab) {
       return false;
     }
+    if (tab.placeholder) {
+      void ensureModuleTab(tab.url, { reload: true, pushState: options.pushState !== false });
+      return false;
+    }
     syncActiveHead(tab);
     openTabs.forEach((item) => {
+      if (item.placeholder || !item.main) {
+        return;
+      }
       const active = item.key === tabKey;
       item.main.hidden = !active;
       if (item.aside) {
@@ -1049,7 +1079,11 @@
 
   async function ensureModuleTab(url, options = {}) {
     const tabKey = getTabKey(url);
-    const existing = openTabs.get(tabKey);
+    let existing = openTabs.get(tabKey);
+    if (existing?.placeholder) {
+      openTabs.delete(tabKey);
+      existing = null;
+    }
     if (existing && !options.reload) {
       existing.url = url;
       activateTab(tabKey, { pushState: options.pushState !== false });

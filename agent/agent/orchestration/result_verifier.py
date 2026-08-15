@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
+import uuid
 
+from agent.automation_plugins.models import (
+    GenerationBoundResult,
+    GenerationVerificationContext,
+    RuntimeLeaseOutcome,
+)
+from agent.automation_plugins.ports import RuntimeGenerationLeasePort
 from agent.orchestration.models import OrchestrationError, PlanStep, RunStatus, ToolResult, sha256_json
 from agent.tool_registry import validate_schema_instance
 
@@ -18,6 +25,7 @@ class VerificationOutcome:
     code: str
     message: str
     result: ToolResult | None = None
+    generation_verification: GenerationVerificationContext | None = None
 
 
 class ResultVerifier:
@@ -25,11 +33,65 @@ class ResultVerifier:
         {"source_system", "account_id", "observed_at", "record_count", "pagination_complete", "evidence_refs"}
     )
 
+    def __init__(self, generation_leases: RuntimeGenerationLeasePort | None = None) -> None:
+        self._generation_leases = generation_leases
+
     def verify(
         self,
         step: PlanStep,
         raw_result: Mapping[str, Any],
         capability: Mapping[str, Any],
+    ) -> VerificationOutcome:
+        verification = getattr(raw_result, "generation_verification", None)
+        schema_result: Mapping[str, Any] = raw_result
+        verification_error: VerificationOutcome | None = None
+        if isinstance(verification, GenerationVerificationContext):
+            raw_meta = raw_result.get("meta")
+            if not isinstance(raw_meta, Mapping) or "account_id" in raw_meta:
+                verification_error = self._failure(
+                    "PLUGIN_ACCOUNT_PROOF_FORGED",
+                    "Plugin payload cannot provide core account binding proof",
+                )
+            elif step.account_id and step.account_id not in verification.account_ids:
+                verification_error = self._failure(
+                    "RESULT_ACCOUNT_MISMATCH",
+                    "Approved account is not bound to the committed plugin generation",
+                )
+            else:
+                # The subprocess never receives account identifiers, and its
+                # verified result must not turn the core-only side channel into
+                # a new disclosure path.  A stable binding-set proof works for
+                # both singleton and collection roles; the actual IDs remain
+                # available only on ``GenerationVerificationContext`` to
+                # trusted core projections and reconcilers.
+                trusted_account_id = f"binding-set:{verification.account_bindings_sha256}"
+                enriched = dict(raw_result)
+                enriched["meta"] = {**dict(raw_meta), "account_id": trusted_account_id}
+                raw_result = GenerationBoundResult(enriched, verification=verification)
+        outcome = verification_error or self._verify(
+            step,
+            raw_result,
+            capability,
+            schema_result=schema_result,
+            trusted_account_proof=(
+                f"binding-set:{verification.account_bindings_sha256}"
+                if isinstance(verification, GenerationVerificationContext)
+                else None
+            ),
+        )
+        outcome = self._finalize_generation_write(step, raw_result, outcome, verification)
+        if outcome.accepted and isinstance(verification, GenerationVerificationContext):
+            return replace(outcome, generation_verification=verification)
+        return outcome
+
+    def _verify(
+        self,
+        step: PlanStep,
+        raw_result: Mapping[str, Any],
+        capability: Mapping[str, Any],
+        *,
+        schema_result: Mapping[str, Any] | None = None,
+        trusted_account_proof: str | None = None,
     ) -> VerificationOutcome:
         if not isinstance(raw_result, Mapping):
             return self._failure("INVALID_RESULT_CONTRACT", "Tool result must be a JSON object")
@@ -51,7 +113,8 @@ class ResultVerifier:
                 "RESULT_META_MISSING",
                 f"Tool result meta is missing: {', '.join(missing_meta)}",
             )
-        if step.account_id and str(normalized.meta.get("account_id") or "") != step.account_id:
+        expected_account_proof = trusted_account_proof or step.account_id
+        if expected_account_proof and str(normalized.meta.get("account_id") or "") != expected_account_proof:
             return self._failure("RESULT_ACCOUNT_MISMATCH", "Tool result account does not match the approved plan")
         if not self._valid_observed_at(normalized.meta.get("observed_at")):
             return self._failure("INVALID_OBSERVED_AT", "Tool result observed_at must be an ISO timestamp")
@@ -72,7 +135,7 @@ class ResultVerifier:
         try:
             validate_schema_instance(
                 f"{step.tool_name} output",
-                normalized.to_dict(),
+                dict(schema_result) if schema_result is not None else normalized.to_dict(),
                 output_schema,
             )
         except (KeyError, TypeError, ValueError):
@@ -165,6 +228,79 @@ class ResultVerifier:
             message="Tool result and evidence were verified",
             result=normalized,
         )
+
+    def _finalize_generation_write(
+        self,
+        step: PlanStep,
+        raw_result: Mapping[str, Any],
+        outcome: VerificationOutcome,
+        verification: GenerationVerificationContext | None,
+    ) -> VerificationOutcome:
+        if verification is None:
+            return outcome
+        if not isinstance(verification, GenerationVerificationContext):
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Plugin generation verification metadata is incomplete",
+            )
+        try:
+            uuid.UUID(verification.lease_id)
+        except (ValueError, TypeError, AttributeError):
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Plugin generation verification metadata is incomplete",
+            )
+        if not verification.automation_id or verification.generation <= 0:
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Plugin generation verification metadata is incomplete",
+            )
+        if (
+            len(verification.account_bindings_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in verification.account_bindings_sha256
+            )
+            or any(not account_id for account_id in verification.account_ids)
+            or len(verification.account_ids) != len(set(verification.account_ids))
+        ):
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Plugin generation verification metadata is incomplete",
+            )
+        is_write = step.operation_type.value not in {"read", "compute"}
+        if is_write != verification.requires_write_verification:
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Plugin generation lease kind does not match the planned operation",
+            )
+        if not is_write:
+            return outcome
+        if self._generation_leases is None:
+            return self._failure(
+                "GENERATION_VERIFIER_UNAVAILABLE",
+                "Plugin write lease cannot be finalized without its generation repository",
+            )
+        final_outcome = (
+            RuntimeLeaseOutcome.WRITE_VERIFIED
+            if outcome.accepted
+            else RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+        )
+        evidence_value = outcome.result.to_dict() if outcome.result is not None else dict(raw_result)
+        try:
+            self._generation_leases.finalize_generation_write(
+                automation_id=verification.automation_id,
+                generation=verification.generation,
+                lease_id=verification.lease_id,
+                outcome=final_outcome,
+                evidence_sha256=sha256_json(evidence_value),
+            )
+        except Exception:
+            return self._failure(
+                "GENERATION_LEASE_FINALIZE_FAILED",
+                "Plugin generation write outcome could not be persisted",
+            )
+        return outcome
 
     def _normalize_result(self, raw_result: Mapping[str, Any]) -> ToolResult:
         status = str(raw_result.get("status") or "").upper()

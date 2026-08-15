@@ -51,7 +51,7 @@ class _App(AutomationServiceMixin, AgentApiServiceMixin):
 
 
 class AutomationControlPlaneCutoverTests(unittest.TestCase):
-    def test_manual_run_submits_one_command_and_keeps_run_reference(self):
+    def test_manual_run_invokes_saved_project_and_keeps_run_reference(self):
         app = _App(
             {
                 "ok": True,
@@ -93,10 +93,13 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         method, endpoint, payload, _timeout, signed_principal = app.calls[0]
-        self.assertEqual(("POST", "/internal/v1/commands"), (method, endpoint))
-        self.assertEqual(f"console:17:tool.execute:{request_uuid}", payload["idempotency_key"])
-        self.assertEqual("sync_daily_should_sign", payload["parameters"]["tool_name"])
-        self.assertNotIn("_console_principal", payload)
+        self.assertEqual(
+            ("POST", "/internal/v1/automation-projects/daily_sign/invoke"),
+            (method, endpoint),
+        )
+        self.assertEqual({"request_id": request_uuid}, payload)
+        self.assertNotIn("tool_name", payload)
+        self.assertNotIn("parameters", payload)
         self.assertEqual(console_principal, signed_principal)
         self.assertEqual("run-1", app.automation_virtual_task_state["daily_sign"]["run_id"])
 

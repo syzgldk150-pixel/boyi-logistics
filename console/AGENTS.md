@@ -16,18 +16,28 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 ## 事项中心与命令入口
 
-- `/work-items` 与 `/work-items/{id}` 是统一事项中心；实现位于 `routes/control_plane.py`、`services/control_plane.py`、`services/agent_api.py`、`templates/work_items*.html` 和 `static/control_plane.*`。Console 不得查询 Agent 控制平面表。
-- 所有业务执行型 POST 先提交 `/internal/v1/commands`。自动化立即运行/取消、客服标记已读/回复/发布/附件上传、回单同步/审核都不能直调 `/tms/*` 或第三方脚本；登录/验证码、Console 本地 OCR 和博益手工运单 CRUD 不在此范围。
+- `/work-items` 与 `/work-items/{id}` 是统一事项中心，主要承载历史、跨项目和异常处理；自动化项目的日常待审批在当前项目卡片原位完成。实现位于 `routes/control_plane.py`、`services/control_plane.py`、`services/agent_api.py`、`templates/work_items*.html` 和 `static/control_plane.*`。Console 不得查询 Agent 控制平面表。
+- 一般业务执行型 POST 提交 `/internal/v1/commands`。自动化项目手工执行是专用例外，只能调用 `/internal/v1/automation-projects/{automation_id}/invoke`，Agent 从已保存项目配置派生动作与参数；浏览器和 Console 都不得向 Agent invoke body 填工具名、账号、参数或来源。客服标记已读/回复/发布/附件上传、回单同步/审核都不能直调 `/tms/*` 或第三方脚本；登录/验证码、Console 本地 OCR 和博益手工运单 CRUD 不在此范围。
 - 控制平面写请求只接受真实 MySQL 管理员会话和同源 Origin/Referer。Basic Auth 明确拒绝；服务端从会话生成私有 principal 并签名，浏览器 actor、roles、source、authenticated_by 和同名私有标记均不能覆盖。`control_plane_role` 只有 `admin`/`super_admin`，高风险审批只允许后者。
 - 浏览器通过 `X-Browser-Request-UUID` 提供每次用户动作的稳定 UUID，服务端生成 `console:{admin_id}:{command_type}:{uuid}`；缺失或格式错误显式失败。approve/reject 只转发 approval ID、plan hash 和 comment。
 - Command 成功提交保留 Agent 的 `202`、`command_id/work_item_id/run_id`、`reused` 与 `next_poll_after_ms`。前端页面隐藏时暂停轮询，等待状态降频，终态停止；Evidence 只用文本安全渲染。
 - 补充信息表单只允许显式 `note/account_id/argument_updates`；参数更新必须是 JSON 对象。普通说明只作审计 note，Console 不解析自然语言为账号或工具参数。
-- 自动化页提供每个真实定时任务行的审批策略与有效状态：默认 `REQUIRE_EACH_RUN`，可配置为 `EXACT_SCHEDULE_EXEMPT`。同一业务存在多个 cron 时可以按每个执行时刻独立设置，保存单行不得覆盖同组其他任务。只有同源、真实 MySQL 会话并持有 `super_admin` 的签名 Console 请求可以设置；Basic Auth、普通管理员和浏览器伪造身份必须被拒绝。页面只提交当前任务 ID、模式、说明、请求 UUID 及该行的策略/配置版本前提，Agent 在服务端计算行为哈希；不得让浏览器传入参数哈希或完整策略快照。
-- 豁免只适用于 Scheduler；从 Console、飞书、Webhook 或手工“立即运行”发起的同一任务仍逐次审批。页面须明确展示 stale/不受支持状态、最近配置者/时间和隐私安全的哈希摘要。显示名称不进入行为哈希；工具/版本、参数/账号、cron、enabled、治理字段、postconditions、动态规则或配置版本变化会使豁免失效。`approval.mode: schedule_allowlist` 只是工具可被设置为免审的资格上限。
+- 自动化页按 `automation_id` 每个项目只有一个权限入口，新配置模式只有 `REQUIRE_EACH_RUN` 与 `PROJECT_FULL_AUTO`；旧 `EXACT_SCHEDULE_EXEMPT` 只可投影成只读兼容状态，不能出现在新 UI 或写请求。策略保存必须同时提交 `expected_policy_version` 与 `expected_project_configuration_version`，防止页面加载后配置变化造成越权。
+- 项目卡的待审批条只展示数量、最高风险和来源摘要；“全部审批通过”与“全部驳回”只提交 `expected_pending_set_hash/request_id/comment`，不提交审批 ID、plan hash 或任务 ID。集合变化时必须在原卡刷新，事项中心不是日常审批必经入口。
+
+## 自动化项目与插件边界
+
+- Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。动作包只声明验签后的动作、平台、账号/资源角色、闭合 `config_schema`、允许入口和调度能力；同一 `plugin_id` 可以重复安装为不同 `automation_id`。任何持久化定时行若无法关联到已安装实例，Console 只能显示“迁移/插件缺失”阻断卡，禁止运行和配置。
+- 安装与升级只允许同源、真实 MySQL `super_admin` 会话。浏览器安装 multipart 只含 `package/instance_name/request_id`，不能指定 `automation_id`、manifest 或摘要；Console 限制 ZIP/请求体大小，在受限临时目录暂存并及时清理，按收到的字节计算传输 SHA 后再用签名 principal 转发。重复安装生成新的停用实例，升级/启停/卸载只作用于路径中的具体实例并使用版本 CAS。
+- 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`schedule` 只能是 `none/daily_times/startup` 的类型化结构；浏览器不得提交 task ID、Cron、哈希或身份。Agent 按签名 manifest 重验 Schema、角色、命名 Worker 和调度能力，并在同一事务更新配置、全组定时和权限 stale 状态。
+- 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
+- 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
+- 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
+- Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑；`services/automation_projects.py` 维护项目级权限、卡内待审批集合、插件目录/安装/生命周期及项目配置，并由 `AutomationServiceMixin` 继承复用。原 `services.automation` 的公共导入保持兼容。
 
 `scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 
-迁移 `014` 仅把遗留任务规范化为当前契约，不能作为免审授权；迁移 `015` 增加任务配置版本、当前审批策略和不可变审计事件。代码内 69 个精确审阅合同由一次可审计 bootstrap 只为部署时已启用且仍完整命中的既有任务保留调度行为（当前生产预期 67 项）；禁用项和新任务默认逐次审批。打卡卡片仍按精确账号/会话配置展示，外部写的未知结果不会显示为成功。
+迁移 `014` 仅把遗留任务规范化为当前契约，不能作为免审授权；后续迁移增加任务配置版本、项目级权限与不可变审计事件。既有逐 Cron 策略只用于迁移兼容；Console 的新权限入口始终按项目配置。外部写的未知结果不能显示为成功。
 
 Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生命周期、认证门禁和请求分发。认证、自动化、监控/财务、客服、回单/运单、TMS 代理、OCR 文档业务分别维护在 `services/` 的领域 mixin 中，路由识别维护在 `routes/`。所有 Console 运行时表均由 `../agent/migrations/` 统一创建，`database.py` 只验证和读写。
 
@@ -56,24 +66,18 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `static/style.css`
 - 改自动化页 UI、表单结构、保存交互：
   - `templates/automation.html`
-  - `app.py`
-  - `database.py`
-  - 韵达类卡片当前包含“韵达派件预测主单表”和“韵达寄件运单同步”；新增工具要同步补 `AUTOMATION_WORKFLOW_CATALOG`、资源说明、资源绑定和运行超时。
-- 改 `/automations` 顶部 TMS 登录态模块、图片/短信验证码表单代理、状态轮询：
-  - `templates/automation.html`
-  - `app.py`
+  - `static/automation_approval_policy.js`
+  - `services/automation.py`
+  - `services/automation_projects.py`
+  - `services/auth.py`
+  - `routes/automation.py`
   - `static/style.css`
 - 改业务自动化账号管理页、多账号登录态代理、任务账号绑定：
   - `templates/automation_accounts.html`
-  - `templates/automation.html`
-  - `app.py`
   - `templates/base.html`
+  - `services/auth.py`
   - `static/style.css`
-  - 账号管理页只维护真实外部系统账号、凭据和登录态；脚本使用哪个账号在 `/automations` 卡片的 `account_roles` 角色绑定里配置。
-- 改 `/automations` 顶部默认账号/密码/手机号保存、页面回填、凭据代理：
-  - `templates/automation.html`
-  - `app.py`
-  - `static/style.css`
+  - 账号管理页是凭据与登录态的唯一入口；自动化项目卡只选择并保存 Agent catalog 返回的账号绑定，不提供登录或凭据快捷入口。
 - 改 OCR 工作区、上传、复核、模板：
   - `templates/document.html`
   - `templates/waybill_print.html`
@@ -155,6 +159,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - 后台主认证方式为 `/login` 登录页 + MySQL 管理员账号 + `HttpOnly` 会话 Cookie，账号管理页为 `/settings/accounts`。
 - 自动化业务账号管理页为 `/automation-accounts`，只代理 Agent 侧账号元数据、凭据保存和登录态操作；账号系统只展示真实外部系统（TMS融辉、韵达、R7、R13），不在账号页维护“大祥报价 / 自提问题件 / 大祥S站”等用途标签；这些业务使用关系在 `/automations` 每个脚本卡片的账号角色绑定里选择。系统名下方的灰色账号备注使用账号 `name`，必须可在“编辑”面板单独保存并即时刷新，保存时不得额外校验登录态。“已停用”徽标只在 `is_active=false` 时显示；同一个启停操作必须在停用后明确显示“重新启用账号”。所有账号必须呈现同一套保存凭据、立即登录、退出登录、自动登录、停用/恢复和状态校验操作；R7/R13 不得显示“不支持”，协议差异只由 Agent 后端处理。“立即登录”点击后必须马上调用 Agent 登录接口；自动登录开关只表示定时校验和掉线恢复，关闭时仍允许手动登录。不要把业务账号密码落到 Console/MySQL，也不要在 GET 响应或页面中回显密码。自动登录开关必须在账号列表直接可见、默认关闭，且只在页面已保存完整账号密码时允许开启；不得显示“环境变量凭据”。
+- `/automations` 不得提供任何账号登录、凭据保存、账号管理快捷入口或隐式默认绑定；只能展示业务账号池的安全名称/状态投影并按项目保存绑定。
 - 首个管理员通过环境变量 `DOCFLOW_ADMIN_USERNAME`、`DOCFLOW_ADMIN_PASSWORD` 引导创建；不要把真实账号密码写进代码或文档。
 - `DOCFLOW_SESSION_SECRET` 用于签名会话 Cookie，生产/绑定域名时必须配置为固定随机值。
 - 生产入口固定为 `https://boyi.homes`，`www.boyi.homes` 与 HTTP 请求统一跳转到根域名 HTTPS；Nginx 配置维护在 `../agent/deploy/nginx/`。
@@ -169,6 +174,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 ## 移动端导航与视觉壳层
 
 - 唯一导航目录：`navigation.py`。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用其中路由，不得维护模板内副本。
+- 系统区固定顺序为“智能模型 → 事项中心 → 系统管理”，移动端用户偏好顺序不变。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
 - 视觉约束请先看根目录 `PRODUCT.md`、`DESIGN.md` 与 `.impeccable/design.json`。

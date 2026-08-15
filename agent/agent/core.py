@@ -91,6 +91,11 @@ class AgentCore:
         self._execution_runtime = execution_runtime
         self._control_plane_service = control_plane_service
 
+    def configure_tool_catalog(self, catalog: Any) -> None:
+        """Use the production-scoped catalog for discovery and preflight."""
+
+        self.registry = catalog
+
     async def init(self) -> None:
         self._load_prompts()
         try:
@@ -185,6 +190,19 @@ class AgentCore:
 
         direct_request = direct_tool_request_from_text(message)
         if direct_request:
+            if direct_request.get("automation_route_key"):
+                # Project identity/generation may only be created by the
+                # trusted Feishu/Console/Scheduler/Webhook adapters.  A chat,
+                # generic command, or LLM path must never turn a familiar
+                # phrase into a project invocation.
+                final_content = UNKNOWN_EXECUTION_REPLY
+                self._save_assistant_message(conv_id, final_content)
+                return {
+                    "reply": final_content,
+                    "conversation_id": conv_id,
+                    "duration_s": round(time.monotonic() - started, 2),
+                    "executed_tools": [],
+                }
             tool_name = str(direct_request["tool_name"])
             params = dict(direct_request["params"])
             local_result = direct_request.get("local_result")

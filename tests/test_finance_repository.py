@@ -937,6 +937,81 @@ class FinanceRepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "total_runs must be an integer count"):
             repository.list_sync_batches()
 
+    def test_batch_commit_proof_uses_one_fresh_read_connection(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if "FROM finance_sync_batches" in sql:
+                return {
+                    "id": 31,
+                    "trigger_type": "sync",
+                    "requested_start_date": dt.date(2026, 7, 11),
+                    "requested_end_date": dt.date(2026, 7, 11),
+                    "rescan_days": 1,
+                    "status": "success",
+                    "earliest_date_status": None,
+                    "requested_by": "plugin:v1:proof",
+                }
+            if "FROM finance_sync_runs" in sql:
+                return [
+                    {"status": "success", "total": Decimal("2")},
+                    {"status": "no_data", "total": Decimal("1")},
+                ]
+            return []
+
+        result = FinanceRepository(
+            lambda: RouterConnection(records, router)
+        ).read_batch_commit_proof(31)
+
+        self.assertEqual(31, result["batch_id"])
+        self.assertEqual(
+            {"success": 2, "no_data": 1},
+            result["run_counts"],
+        )
+        self.assertEqual([(31,), (31,)], [params for _sql, params in records])
+        self._assert_placeholder_counts(records)
+
+    def test_run_commit_proof_reads_identity_rows_and_amount_totals(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if "FROM finance_sync_runs" in sql:
+                return {
+                    "id": 41,
+                    "batch_id": 31,
+                    "platform": "ronghui",
+                    "account_id": "price_default",
+                    "target_date": dt.date(2026, 7, 11),
+                    "status": "success",
+                    "remote_total": 2,
+                    "unique_row_count": 2,
+                    "written_row_count": 2,
+                }
+            if "FROM finance_transactions" in sql:
+                return {
+                    "transaction_count": 2,
+                    "transaction_unique_count": 2,
+                    "transaction_income": Decimal("3.2500"),
+                    "transaction_expense": Decimal("1.5000"),
+                }
+            if "FROM finance_summary_snapshots" in sql:
+                return {
+                    "summary_count": 2,
+                    "summary_income": Decimal("3.2500"),
+                    "summary_expense": Decimal("1.5000"),
+                }
+            return []
+
+        result = FinanceRepository(
+            lambda: RouterConnection(records, router)
+        ).read_run_commit_proof(41)
+
+        self.assertEqual(2, result["transaction_unique_count"])
+        self.assertEqual(Decimal("3.2500"), result["transaction_income"])
+        self.assertEqual(Decimal("1.5000"), result["summary_expense"])
+        self.assertEqual([(41,), (41,), (41,)], [params for _sql, params in records])
+        self._assert_placeholder_counts(records)
+
 
 if __name__ == "__main__":
     unittest.main()

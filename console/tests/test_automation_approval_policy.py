@@ -9,29 +9,36 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.app import LocalDocFlowApp
 from console.services.automation import (
-    build_scheduled_approval_policy_view,
-    normalize_scheduled_approval_policy_items,
+    build_automation_project_policy_view,
+    normalize_automation_approval_batch_result,
+    normalize_automation_pending_approvals,
+    normalize_automation_project_policy_items,
 )
 
 
-class AutomationApprovalPolicyProjectionTests(unittest.TestCase):
-    def test_normalizer_keeps_only_closed_safe_fields(self):
-        items = normalize_scheduled_approval_policy_items(
+POLICY_ITEM = {
+    "automation_id": "clockin_daxiang",
+    "configured_mode": "PROJECT_FULL_AUTO",
+    "effective_mode": "PROJECT_FULL_AUTO",
+    "effective_status": "ACTIVE",
+    "can_full_auto": True,
+    "summary": "项目清单允许的入口完全自动。",
+    "updated_by": "系统管理员",
+    "updated_at": "2026-08-15 09:00:00",
+    "policy_version": 7,
+    "project_configuration_version": 11,
+}
+
+
+class AutomationProjectPolicyProjectionTests(unittest.TestCase):
+    def test_policy_projection_is_project_level_and_drops_technical_contract(self):
+        items = normalize_automation_project_policy_items(
             [
                 {
-                    "task_id": "clockin_daxiang_1830",
-                    "mode": "EXACT_SCHEDULE_EXEMPT",
-                    "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_status": "ACTIVE",
-                    "can_exempt": True,
-                    "version": 7,
-                    "configuration_version": 11,
-                    "policy_hash_short": "ab12cd34",
-                    "approved_by": "管理员 <script>",
-                    "approved_at": "2026-08-14 12:00:00",
-                    "invalid_reason": "",
+                    **POLICY_ITEM,
+                    "task_ids": ["clockin_daxiang_1830"],
                     "policy_hash": "must-not-leak",
+                    "manifest_hash": "must-not-leak",
                     "arguments": {"token": "must-not-leak"},
                 }
             ]
@@ -40,153 +47,138 @@ class AutomationApprovalPolicyProjectionTests(unittest.TestCase):
         self.assertEqual(1, len(items))
         self.assertEqual(
             {
-                "task_id",
-                "mode",
+                "automation_id",
                 "configured_mode",
                 "effective_mode",
                 "effective_status",
-                "can_exempt",
-                "version",
-                "configuration_version",
-                "policy_hash_short",
-                "approved_by",
-                "approved_at",
-                "invalid_reason",
+                "can_full_auto",
+                "summary",
+                "updated_by",
+                "updated_at",
+                "policy_version",
+                "project_configuration_version",
             },
             set(items[0]),
         )
+        self.assertNotIn("task_ids", items[0])
         self.assertNotIn("policy_hash", items[0])
-        self.assertNotIn("arguments", items[0])
+        self.assertNotIn("manifest_hash", items[0])
 
-    def test_group_projection_marks_mixed_and_stale_explicitly(self):
-        mixed = build_scheduled_approval_policy_view(
-            ["daily_sign_0500", "daily_sign_0700"],
-            {
-                "daily_sign_0500": {
-                    "task_id": "daily_sign_0500",
-                    "mode": "REQUIRE_EACH_RUN",
-                    "configured_mode": "REQUIRE_EACH_RUN",
-                    "effective_mode": "REQUIRE_EACH_RUN",
-                    "effective_status": "ACTIVE",
-                    "can_exempt": True,
-                    "version": 2,
-                    "configuration_version": 5,
-                },
-                "daily_sign_0700": {
-                    "task_id": "daily_sign_0700",
-                    "mode": "EXACT_SCHEDULE_EXEMPT",
-                    "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_status": "ACTIVE",
-                    "can_exempt": True,
-                    "version": 3,
-                    "configuration_version": 6,
-                },
-            },
-        )
-        stale = build_scheduled_approval_policy_view(
-            ["clockin_daxiang_1830"],
-            {
-                "clockin_daxiang_1830": {
-                    "task_id": "clockin_daxiang_1830",
-                    "mode": "EXACT_SCHEDULE_EXEMPT",
-                    "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_mode": "REQUIRE_EACH_RUN",
-                    "effective_status": "STALE",
-                    "can_exempt": True,
-                    "version": 8,
-                    "configuration_version": 9,
-                    "invalid_reason": "工具版本已变化",
-                }
-            },
-        )
-
-        self.assertTrue(mixed["mixed"])
-        self.assertEqual("混合策略", mixed["label"])
-        self.assertIn("2 条任务", mixed["summary"])
-        self.assertEqual("配置已变更需重新授权", stale["label"])
-        self.assertEqual("工具版本已变化", stale["invalid_reason"])
-        self.assertEqual("EXACT_SCHEDULE_EXEMPT", stale["configured_mode"])
-        self.assertEqual("REQUIRE_EACH_RUN", stale["effective_mode"])
-        self.assertEqual(
-            {"clockin_daxiang_1830": 9},
-            stale["expected_configuration_versions"],
-        )
-
-    def test_group_projection_preserves_each_real_schedule_row(self):
-        view = build_scheduled_approval_policy_view(
-            ["delivery_status_0900", "delivery_status_0930"],
-            {
-                "delivery_status_0900": {
-                    "task_id": "delivery_status_0900",
-                    "mode": "REQUIRE_EACH_RUN",
-                    "configured_mode": "REQUIRE_EACH_RUN",
-                    "effective_mode": "REQUIRE_EACH_RUN",
-                    "effective_status": "ACTIVE",
-                    "can_exempt": True,
-                    "version": 2,
-                    "configuration_version": 7,
-                },
-                "delivery_status_0930": {
-                    "task_id": "delivery_status_0930",
-                    "mode": "EXACT_SCHEDULE_EXEMPT",
-                    "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                    "effective_mode": "REQUIRE_EACH_RUN",
-                    "effective_status": "STALE",
-                    "can_exempt": True,
-                    "version": 4,
-                    "configuration_version": 9,
-                    "invalid_reason": "任务参数已变化",
-                },
-            },
-            cron_expressions_by_task_id={
-                "delivery_status_0900": "0 9 * * *",
-                "delivery_status_0930": "30 9 * * *",
-            },
-        )
-
-        self.assertEqual(
-            ["delivery_status_0900", "delivery_status_0930"],
-            [item["task_id"] for item in view["items"]],
-        )
-        self.assertEqual(
-            ["每天 09:00", "每天 09:30"],
-            [item["schedule_label"] for item in view["items"]],
-        )
-        self.assertEqual(2, view["items"][0]["version"])
-        self.assertEqual(9, view["items"][1]["configuration_version"])
-        self.assertEqual("任务参数已变化", view["items"][1]["invalid_reason"])
-        self.assertEqual("混合策略", view["label"])
-
-    def test_normalizer_rejects_open_status_and_inconsistent_modes(self):
-        base = {
-            "task_id": "daily_sign_0500",
-            "mode": "REQUIRE_EACH_RUN",
-            "configured_mode": "REQUIRE_EACH_RUN",
-            "effective_mode": "REQUIRE_EACH_RUN",
-            "effective_status": "ACTIVE",
-            "can_exempt": True,
-            "version": 1,
-            "configuration_version": 1,
-        }
-        unknown_status = {**base, "effective_status": "UNKNOWN"}
-        inconsistent_mode = {
-            **base,
+    def test_legacy_per_cron_mode_is_never_a_new_configured_mode(self):
+        old_mode = {
+            **POLICY_ITEM,
             "configured_mode": "EXACT_SCHEDULE_EXEMPT",
+            "effective_mode": "EXACT_SCHEDULE_EXEMPT",
+        }
+        legacy_effective = {
+            **POLICY_ITEM,
+            "configured_mode": "REQUIRE_EACH_RUN",
+            "effective_mode": "LEGACY_SCHEDULE_ONLY",
+            "effective_status": "LEGACY_SCHEDULE_ONLY",
         }
 
+        self.assertEqual([], normalize_automation_project_policy_items([old_mode]))
+        normalized = normalize_automation_project_policy_items([legacy_effective])
+        self.assertEqual("LEGACY_SCHEDULE_ONLY", normalized[0]["effective_mode"])
+        view = build_automation_project_policy_view("clockin_daxiang", normalized[0])
+        self.assertEqual("旧版计划权限", view["label"])
+
+    def test_missing_dynamic_project_is_fail_closed(self):
+        view = build_automation_project_policy_view("finance_startup_catchup", None)
+
+        self.assertFalse(view["available"])
+        self.assertEqual("未安装 / 每次运行审批", view["label"])
+        self.assertNotEqual("PROJECT_FULL_AUTO", view["effective_mode"])
+
+    def test_pending_projection_is_aggregate_only(self):
+        pending = normalize_automation_pending_approvals(
+            {
+                "automation_id": "clockin_daxiang",
+                "pending_count": 3,
+                "highest_risk": "HIGH",
+                "source_summary": "Scheduler 2、飞书 1",
+                "pending_set_hash": "a" * 64,
+                "can_approve": True,
+                "can_reject": True,
+                "approval_ids": ["approval-secret"],
+                "plan_hashes": ["plan-secret"],
+            },
+            expected_automation_id="clockin_daxiang",
+        )
+
         self.assertEqual(
-            [],
-            normalize_scheduled_approval_policy_items(
-                [unknown_status, inconsistent_mode]
-            ),
+            {
+                "automation_id",
+                "pending_count",
+                "highest_risk",
+                "highest_risk_label",
+                "source_summary",
+                "expected_pending_set_hash",
+                "can_approve",
+                "can_reject",
+            },
+            set(pending or {}),
+        )
+        self.assertNotIn("approval_ids", pending or {})
+        self.assertNotIn("plan_hashes", pending or {})
+
+    def test_batch_receipt_projection_is_closed_and_project_bound(self):
+        result = normalize_automation_approval_batch_result(
+            {
+                "decision": "APPROVED",
+                "decided_count": 1,
+                "run_receipts": [
+                    {
+                        "automation_id": "clockin_daxiang",
+                        "work_item_id": "work-1",
+                        "run_id": "run-1",
+                        "status": "WAITING_APPROVAL",
+                    }
+                ],
+                "approval_ids": ["hidden"],
+                "plan_hashes": ["hidden"],
+            },
+            expected_automation_id="clockin_daxiang",
+            expected_decision="APPROVED",
+        )
+
+        self.assertEqual(1, result["decided_count"])
+        self.assertEqual(
+            {
+                "automation_id",
+                "work_item_id",
+                "run_id",
+                "status",
+                "next_poll_after_ms",
+            },
+            set(result["run_receipts"][0]),
+        )
+        self.assertNotIn("approval_ids", result)
+        self.assertNotIn("plan_hashes", result)
+        self.assertIsNone(
+            normalize_automation_approval_batch_result(
+                {
+                    "decision": "APPROVED",
+                    "decided_count": 1,
+                    "run_receipts": [
+                        {
+                            "automation_id": "another-project",
+                            "work_item_id": "work-1",
+                            "run_id": "run-1",
+                            "status": "WAITING_APPROVAL",
+                        }
+                    ],
+                },
+                expected_automation_id="clockin_daxiang",
+                expected_decision="APPROVED",
+            )
         )
 
 
-class AutomationApprovalPolicyHandlerTests(unittest.TestCase):
+class AutomationProjectPolicyHandlerTests(unittest.TestCase):
     @staticmethod
-    def _handler(payload, *, role="super_admin"):
-        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    def _handler(payload=None, *, role="super_admin"):
+        raw = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
         return SimpleNamespace(
             headers={
                 "Content-Type": "application/json; charset=utf-8",
@@ -206,33 +198,107 @@ class AutomationApprovalPolicyHandlerTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _payload():
+    def _policy_payload():
         return {
-            "task_ids": ["clockin_daxiang_1830"],
-            "mode": "EXACT_SCHEDULE_EXEMPT",
-            "comment": "固定晚间打卡计划",
+            "mode": "PROJECT_FULL_AUTO",
             "request_id": "12345678-1234-4234-8234-123456789abc",
-            "expected_versions": {"clockin_daxiang_1830": 4},
-            "expected_configuration_versions": {"clockin_daxiang_1830": 9},
-            "actor": {"actor_id": "forged"},
-            "roles": ["super_admin"],
+            "comment": "固定项目完全自动",
+            "expected_policy_version": 7,
+            "expected_project_configuration_version": 11,
         }
 
-    def _app(self):
+    @staticmethod
+    def _app():
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         captured = {}
         app._send_json = lambda handler, status, payload: captured.update(
-            status=status, payload=payload
-        )
-        app._control_plane_error = lambda handler, status, code, message: captured.update(
             status=status,
-            payload={"ok": False, "error_code": code, "message": message},
+            payload=payload,
         )
         return app, captured
 
-    def test_super_admin_forwards_closed_payload_with_signed_principal(self):
+    def test_policy_post_forwards_only_locked_dto_with_signed_principal(self):
         app, captured = self._app()
-        handler = self._handler(self._payload())
+        handler = self._handler(self._policy_payload())
+        forwarded = {}
+
+        def agent_request(method, endpoint, **kwargs):
+            forwarded.update(method=method, endpoint=endpoint, **kwargs)
+            return {"ok": True, "data": {"policy": POLICY_ITEM}}
+
+        app._agent_request = agent_request
+        app._handle_automation_project_approval_policy(handler, "clockin_daxiang")
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual("POST", forwarded["method"])
+        self.assertEqual(
+            "/internal/v1/automation-projects/clockin_daxiang/approval-policy",
+            forwarded["endpoint"],
+        )
+        self.assertEqual(self._policy_payload(), forwarded["payload"])
+        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
+        self.assertNotIn("actor", forwarded["payload"])
+        self.assertNotIn("task_ids", forwarded["payload"])
+
+    def test_old_mode_extra_ids_and_non_super_admin_are_rejected(self):
+        invalid_payloads = [
+            {**self._policy_payload(), "mode": "EXACT_SCHEDULE_EXEMPT"},
+            {**self._policy_payload(), "task_ids": ["clockin_daxiang_1830"]},
+            {**self._policy_payload(), "expected_policy_version": 0},
+        ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                app, captured = self._app()
+                app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
+                app._handle_automation_project_approval_policy(
+                    self._handler(payload),
+                    "clockin_daxiang",
+                )
+                self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+
+        app, captured = self._app()
+        app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
+        app._handle_automation_project_approval_policy(
+            self._handler(self._policy_payload(), role="admin"),
+            "clockin_daxiang",
+        )
+        self.assertEqual(HTTPStatus.FORBIDDEN, captured["status"])
+
+    def test_pending_get_returns_only_safe_project_summary(self):
+        app, captured = self._app()
+        handler = self._handler()
+        app._agent_request = lambda *args, **kwargs: {
+            "ok": True,
+            "data": {
+                "pending": {
+                    "automation_id": "clockin_daxiang",
+                    "pending_count": 2,
+                    "highest_risk": "HIGH",
+                    "source_summary": "Scheduler 2",
+                    "pending_set_hash": "b" * 64,
+                    "can_approve": True,
+                    "can_reject": True,
+                    "approval_ids": ["hidden"],
+                    "plan_hash": "hidden",
+                }
+            },
+        }
+
+        app._handle_automation_project_pending_approvals_get(handler, "clockin_daxiang")
+
+        pending = captured["payload"]["data"]["pending"]
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual("b" * 64, pending["expected_pending_set_hash"])
+        self.assertNotIn("approval_ids", pending)
+        self.assertNotIn("plan_hash", pending)
+
+    def test_batch_action_forwards_only_expected_set_request_and_comment(self):
+        body = {
+            "expected_pending_set_hash": "c" * 64,
+            "request_id": "87654321-4321-4321-8321-cba987654321",
+            "comment": "同一项目批量通过",
+        }
+        app, captured = self._app()
         forwarded = {}
 
         def agent_request(method, endpoint, **kwargs):
@@ -240,98 +306,128 @@ class AutomationApprovalPolicyHandlerTests(unittest.TestCase):
             return {
                 "ok": True,
                 "data": {
-                    "items": [
+                    "decision": "APPROVED",
+                    "decided_count": 1,
+                    "run_receipts": [
                         {
-                            "task_id": "clockin_daxiang_1830",
-                            "mode": "EXACT_SCHEDULE_EXEMPT",
-                            "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                            "effective_mode": "EXACT_SCHEDULE_EXEMPT",
-                            "effective_status": "ACTIVE",
-                            "can_exempt": True,
-                            "version": 5,
-                            "configuration_version": 9,
-                            "policy_hash_short": "abc12345",
-                            "approved_by": "Operator",
-                            "approved_at": "2026-08-14 12:00:00",
-                            "invalid_reason": "",
+                            "automation_id": "clockin_daxiang",
+                            "work_item_id": "work-1",
+                            "run_id": "run-1",
+                            "status": "WAITING_APPROVAL",
                         }
-                    ]
+                    ],
+                    "pending": {
+                        "automation_id": "clockin_daxiang",
+                        "pending_count": 0,
+                        "highest_risk": "",
+                        "source_summary": "",
+                        "pending_set_hash": "",
+                    }
                 },
             }
 
         app._agent_request = agent_request
-        app._handle_automation_task_approval_policy(handler)
+        app._handle_automation_project_pending_approvals_action(
+            self._handler(body),
+            "clockin_daxiang",
+            "approve",
+        )
 
         self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual("POST", forwarded["method"])
+        self.assertEqual(body, forwarded["payload"])
         self.assertEqual(
-            "/internal/v1/scheduled-task-approval-policies",
+            "/internal/v1/automation-projects/clockin_daxiang/pending-approvals/approve",
             forwarded["endpoint"],
         )
-        self.assertEqual(
-            (set(self._payload()) - {"actor", "roles"}) | {"source"},
-            set(forwarded["payload"]),
-        )
-        self.assertEqual("console", forwarded["payload"]["source"])
-        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
-        self.assertNotIn("actor", forwarded["payload"])
+        self.assertNotIn("approval_ids", forwarded["payload"])
+        self.assertNotIn("plan_hash", forwarded["payload"])
+        response_data = captured["payload"]["data"]
+        self.assertEqual(1, response_data["decided_count"])
+        self.assertEqual("run-1", response_data["run_receipts"][0]["run_id"])
+        self.assertNotIn("approval_id", response_data["run_receipts"][0])
+        self.assertNotIn("plan_hash", response_data["run_receipts"][0])
 
-    def test_admin_and_basic_auth_are_rejected_before_agent_call(self):
-        for handler in (
-            self._handler(self._payload(), role="admin"),
-            SimpleNamespace(
-                headers={
-                    "Content-Type": "application/json",
-                    "Content-Length": "2",
-                    "Host": "console.example",
-                    "Origin": "https://console.example",
-                },
-                rfile=io.BytesIO(b"{}"),
-                current_admin_user={
-                    "id": 0,
-                    "username": "legacy",
-                    "role": "legacy_admin",
-                    "control_plane_role": "legacy_admin",
-                    "is_legacy_basic_auth": True,
-                },
-            ),
-        ):
-            with self.subTest(role=handler.current_admin_user["role"]):
-                app, captured = self._app()
-                app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
-                app._handle_automation_task_approval_policy(handler)
-                self.assertEqual(HTTPStatus.FORBIDDEN, captured["status"])
-
-    def test_cross_origin_and_invalid_versions_are_rejected(self):
-        cross_origin = self._handler(self._payload())
-        cross_origin.headers["Origin"] = "https://attacker.example"
+    def test_pending_set_conflict_is_safely_projected_for_inline_refresh(self):
+        body = {
+            "expected_pending_set_hash": "d" * 64,
+            "request_id": "87654321-4321-4321-8321-cba987654321",
+            "comment": "",
+        }
         app, captured = self._app()
-        app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
-        app._handle_automation_task_approval_policy(cross_origin)
-        self.assertEqual(HTTPStatus.FORBIDDEN, captured["status"])
-        self.assertEqual("CSRF_ORIGIN_REJECTED", captured["payload"]["error_code"])
+        app._agent_request = lambda *args, **kwargs: {
+            "ok": False,
+            "status": 409,
+            "error_code": "PENDING_SET_CHANGED",
+            "error": "集合已变化",
+            "data": {
+                "pending": {
+                    "automation_id": "clockin_daxiang",
+                    "pending_count": 1,
+                    "highest_risk": "MEDIUM",
+                    "source_summary": "Console 1",
+                    "pending_set_hash": "e" * 64,
+                    "approval_ids": ["hidden"],
+                }
+            },
+        }
 
-        invalid = self._payload()
-        invalid["expected_versions"] = {}
-        app, captured = self._app()
-        app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
-        app._handle_automation_task_approval_policy(self._handler(invalid))
-        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
-        self.assertEqual("EXPECTED_VERSIONS_REQUIRED", captured["payload"]["error_code"])
-
-        invalid = self._payload()
-        invalid["expected_configuration_versions"] = {}
-        app, captured = self._app()
-        app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
-        app._handle_automation_task_approval_policy(self._handler(invalid))
-        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
-        self.assertEqual(
-            "EXPECTED_CONFIGURATION_VERSIONS_REQUIRED",
-            captured["payload"]["error_code"],
+        app._handle_automation_project_pending_approvals_action(
+            self._handler(body),
+            "clockin_daxiang",
+            "reject",
         )
 
+        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
+        projected = captured["payload"]["data"]["pending"]
+        self.assertEqual(1, projected["pending_count"])
+        self.assertNotIn("approval_ids", projected)
 
-class AutomationApprovalPolicyTemplateTests(unittest.TestCase):
+    def test_batch_action_rejects_incomplete_or_overbroad_agent_receipts(self):
+        body = {
+            "expected_pending_set_hash": "f" * 64,
+            "request_id": "87654321-4321-4321-8321-cba987654321",
+            "comment": "",
+        }
+        app, captured = self._app()
+        app._agent_request = lambda *args, **kwargs: {
+            "ok": True,
+            "data": {
+                "decision": "APPROVED",
+                "decided_count": 1,
+                "run_receipts": [
+                    {
+                        "automation_id": "clockin_daxiang",
+                        "work_item_id": "work-1",
+                        "run_id": "run-1",
+                        "status": "WAITING_APPROVAL",
+                        "plan_hash": "must-not-cross-console-boundary",
+                    }
+                ],
+                "pending": {
+                    "automation_id": "clockin_daxiang",
+                    "pending_count": 0,
+                    "highest_risk": "",
+                    "source_summary": "",
+                    "pending_set_hash": "",
+                },
+            },
+        }
+
+        app._handle_automation_project_pending_approvals_action(
+            self._handler(body),
+            "clockin_daxiang",
+            "approve",
+        )
+
+        self.assertEqual(HTTPStatus.BAD_GATEWAY, captured["status"])
+        self.assertEqual(
+            "INVALID_PENDING_APPROVAL_ACTION_RESPONSE",
+            captured["payload"]["error"]["code"],
+        )
+        self.assertIsNone(captured["payload"].get("data"))
+
+
+class AutomationProjectPolicyTemplateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         template_dir = Path(__file__).resolve().parents[1] / "templates"
@@ -340,50 +436,15 @@ class AutomationApprovalPolicyTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         ).get_template("automation.html")
 
-    def _render(self, *, can_manage):
-        policy_item = {
-            "task_id": "clockin_daxiang_s_1833",
-            "schedule_label": "每天 18:33",
-            "mode": "EXACT_SCHEDULE_EXEMPT",
-            "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-            "effective_mode": "EXACT_SCHEDULE_EXEMPT",
-            "effective_status": "ACTIVE",
-            "can_exempt": True,
-            "version": 3,
-            "configuration_version": 7,
-            "policy_hash_short": "ab12cd34",
-            "approved_by": "系统管理员",
-            "approved_at": "2026-08-14 12:00:00",
-            "invalid_reason": "",
-        }
-        policy = {
-            "available": True,
-            "task_ids": ["clockin_daxiang_s_1833"],
-            "item_count": 1,
-            "items": [policy_item],
-            "mode": "EXACT_SCHEDULE_EXEMPT",
-            "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-            "effective_mode": "EXACT_SCHEDULE_EXEMPT",
-            "effective_status": "ACTIVE",
-            "label": "固定计划自动执行",
-            "summary": "仅 Scheduler 定时触发可免审；手工运行仍需审批。",
-            "can_exempt": True,
-            "mixed": False,
-            "expected_versions": {"clockin_daxiang_s_1833": 3},
-            "expected_configuration_versions": {"clockin_daxiang_s_1833": 7},
-            "policy_hash_short": "ab12cd34",
-            "approved_by": "系统管理员",
-            "approved_at": "2026-08-14 12:00:00",
-            "invalid_reason": "",
-        }
+    def _render(self, *, can_manage=True):
         task = {
-            "task_id": "clockin_daxiang_s",
-            "task_ids": ["clockin_daxiang_s_1833"],
+            "task_id": "clockin_daxiang",
+            "task_ids": ["clockin_daxiang_1830", "clockin_daxiang_1900"],
             "task_mode": "scheduled",
-            "name_value": "网点打卡-大祥S站",
+            "name_value": "网点打卡-大祥",
             "tool_name_value": "clock_in_dual",
-            "cron_expression_value": "33 18 * * *",
-            "schedule_time_values": ["18:33"],
+            "cron_expression_value": "0 18,19 * * *",
+            "schedule_time_values": ["18:00", "19:00"],
             "tool_params_json": "{}",
             "tool_param_fields": [],
             "search_text": "clockin",
@@ -396,8 +457,11 @@ class AutomationApprovalPolicyTemplateTests(unittest.TestCase):
             "can_save": False,
             "can_run_now": False,
             "control_plane_only": True,
-            "control_plane_notice": "任务配置只读，审批策略单独设置。",
-            "approval_policy": policy,
+            "control_plane_notice": "任务配置只读。",
+            "approval_policy": build_automation_project_policy_view(
+                "clockin_daxiang",
+                POLICY_ITEM,
+            ),
         }
         return self.template.render(
             app_title="Console",
@@ -411,179 +475,83 @@ class AutomationApprovalPolicyTemplateTests(unittest.TestCase):
             tms_session_credentials={},
         )
 
-    def _render_group(self, *, can_manage=True):
-        items = [
-            {
-                "task_id": "delivery_status_0900",
-                "schedule_label": "每天 09:00",
-                "mode": "REQUIRE_EACH_RUN",
-                "configured_mode": "REQUIRE_EACH_RUN",
-                "effective_mode": "REQUIRE_EACH_RUN",
-                "effective_status": "ACTIVE",
-                "can_exempt": True,
-                "version": 2,
-                "configuration_version": 7,
-                "policy_hash_short": "",
-                "approved_by": "",
-                "approved_at": "",
-                "invalid_reason": "",
-            },
-            {
-                "task_id": "delivery_status_0930",
-                "schedule_label": "每天 09:30",
-                "mode": "EXACT_SCHEDULE_EXEMPT",
-                "configured_mode": "EXACT_SCHEDULE_EXEMPT",
-                "effective_mode": "REQUIRE_EACH_RUN",
-                "effective_status": "STALE",
-                "can_exempt": True,
-                "version": 4,
-                "configuration_version": 9,
-                "policy_hash_short": "cd34ef56",
-                "approved_by": "系统管理员",
-                "approved_at": "2026-08-14 12:00:00",
-                "invalid_reason": "任务参数已变化",
-            },
-        ]
-        policy = {
-            "available": True,
-            "task_ids": [item["task_id"] for item in items],
-            "item_count": 2,
-            "items": items,
-            "mode": "",
-            "configured_mode": "",
-            "effective_mode": "",
-            "effective_status": "MIXED",
-            "label": "混合策略",
-            "summary": "2 条任务，当前审批策略不一致，可按执行时间分别设置。",
-            "can_exempt": True,
-            "mixed": True,
-            "policy_hash_short": "多项",
-            "approved_by": "",
-            "approved_at": "",
-            "invalid_reason": "任务参数已变化",
-        }
-        task = {
-            "task_id": "delivery_status",
-            "task_ids": [item["task_id"] for item in items],
-            "task_mode": "scheduled",
-            "name_value": "签收状态同步",
-            "tool_name_value": "sync_delivery_status",
-            "cron_expression_value": "0 9,9 * * *",
-            "schedule_time_values": ["09:00", "09:30"],
-            "tool_params_json": "{}",
-            "tool_param_fields": [],
-            "search_text": "delivery",
-            "last_activity_value": "",
-            "is_schedulable": True,
-            "schedule_supported": True,
-            "schedule_editable": False,
-            "has_webhook": False,
-            "enabled_value": True,
-            "can_save": False,
-            "can_run_now": False,
-            "control_plane_only": False,
-            "approval_policy": policy,
-        }
-        return self.template.render(
-            app_title="Console",
-            scheduled_tasks=[task],
-            enabled_task_count=2,
-            automation_db_warning="",
-            automation_account_warning="",
-            automation_approval_policy_warning="",
-            can_manage_approval_policies=can_manage,
-            tms_session_status={},
-            tms_session_credentials={},
-        )
+    def test_one_project_permission_entry_has_exactly_two_product_options(self):
+        html = self._render()
+        card = html.split("<article", 1)[1].split("</article>", 1)[0]
 
-    def test_super_admin_sees_policy_editor_without_sensitive_contract(self):
-        html = self._render(can_manage=True)
-        task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
-        self.assertIn("每次运行审批", task_html)
-        self.assertIn("固定计划自动执行", task_html)
-        self.assertIn("保存审批策略", task_html)
-        self.assertIn("ab12cd34", task_html)
-        self.assertIn("手工运行仍需审批", task_html)
-        self.assertNotIn("完整参数", task_html)
-        self.assertNotIn('data-settings-toggle', task_html)
+        self.assertEqual(1, card.count("data-project-policy-toggle"))
+        self.assertEqual(2, card.count("data-project-policy-mode"))
+        self.assertIn("每次运行审批", card)
+        self.assertIn("完全自动", card)
+        self.assertNotIn("EXACT_SCHEDULE_EXEMPT", card)
+        self.assertNotIn("clockin_daxiang_1830", card)
+        self.assertNotIn("策略标识", card)
+        self.assertNotIn("policy_hash", card)
 
-    def test_admin_sees_policy_read_only(self):
+    def test_pending_strip_has_aggregate_summary_and_card_actions(self):
+        html = self._render()
+
+        self.assertIn("项待审批", html)
+        self.assertIn("最高风险", html)
+        self.assertIn("来源", html)
+        self.assertIn("全部审批通过", html)
+        self.assertIn("全部驳回", html)
+        self.assertIn("data-project-policy-cancel", html)
+
+    def test_non_super_admin_sees_read_only_project_policy(self):
         html = self._render(can_manage=False)
+
         self.assertIn("当前账号只读，需超级管理员修改", html)
-        self.assertNotIn("data-approval-policy-save", html)
-        self.assertNotIn("data-approval-policy-mode", html)
+        self.assertNotIn("data-project-policy-save", html)
+        self.assertNotIn("data-pending-action", html)
 
-    def test_group_renders_an_independent_editor_for_each_real_task(self):
-        html = self._render_group()
-
-        self.assertIn("每天 09:00", html)
-        self.assertIn("每天 09:30", html)
-        self.assertIn("delivery_status_0900", html)
-        self.assertIn("delivery_status_0930", html)
-        self.assertIn("任务参数已变化", html)
-        self.assertEqual(2, html.count("data-approval-policy-item\n"))
-        self.assertEqual(2, html.count("data-approval-policy-save\n"))
-        self.assertEqual(2, html.count("data-approval-policy-mode>"))
-        self.assertIn("按执行时间设置审批策略", html)
-
-    def test_group_is_read_only_per_row_for_non_super_admin(self):
-        html = self._render_group(can_manage=False)
-
-        self.assertIn("每天 09:00", html)
-        self.assertIn("每天 09:30", html)
-        self.assertIn("当前账号只读，需超级管理员修改", html)
-        self.assertNotIn("data-approval-policy-save", html)
-        self.assertNotIn("data-approval-policy-mode", html)
-
-    def test_javascript_has_explicit_confirmation_and_replay_uuid(self):
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "static"
-            / "automation_approval_policy.js"
-        ).read_text(encoding="utf-8")
-        self.assertIn("window.crypto.randomUUID()", source)
-        self.assertIn("X-Browser-Request-UUID", source)
-        self.assertIn("仅 Scheduler 定时触发可免审", source)
-        self.assertIn("任务名称改动不影响授权", source)
-        self.assertIn("时间、账号、参数或工具版本变化会立即失效", source)
-        self.assertIn('credentials: "same-origin"', source)
-        body_start = source.index("body: JSON.stringify({")
-        body_end = source.index("}),", body_start)
-        request_body = source[body_start:body_end]
-        self.assertIn("expected_configuration_versions", request_body)
-        self.assertNotIn("contract_hash", request_body)
-        self.assertIn("TASK_CONFIGURATION_VERSION_CONFLICT", source)
-
-    def test_javascript_updates_only_the_selected_task_row(self):
+    def test_javascript_uses_project_contract_and_closed_batch_body(self):
         source = (
             Path(__file__).resolve().parents[1]
             / "static"
             / "automation_approval_policy.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("const taskId = item.task_id;", source)
-        self.assertIn("task_ids: [taskId]", source)
-        self.assertIn("expected_versions: { [taskId]: item.version }", source)
-        self.assertIn(
-            "expected_configuration_versions: { [taskId]: item.configuration_version }",
-            source,
+        self.assertIn("PROJECT_FULL_AUTO", source)
+        self.assertNotIn("EXACT_SCHEDULE_EXEMPT", source)
+        self.assertIn("expected_policy_version", source)
+        self.assertIn("expected_project_configuration_version", source)
+        self.assertIn("PENDING_SET_CHANGED", source)
+        batch_start = source.index("body: JSON.stringify({", source.index("async function actOnPending"))
+        batch_end = source.index("}),", batch_start)
+        batch_body = source[batch_start:batch_end]
+        self.assertIn("expected_pending_set_hash", batch_body)
+        self.assertIn("request_id", batch_body)
+        self.assertIn("comment", batch_body)
+        self.assertNotIn("approval_ids", batch_body)
+        self.assertNotIn("plan_hash", batch_body)
+        self.assertNotIn("automation_id", batch_body)
+        self.assertIn("validApprovedRunReceipts", source)
+        self.assertIn('new CustomEvent("automation:approved-runs"', source)
+        self.assertLess(
+            source.index("if (changed)"),
+            source.index('new CustomEvent("automation:approved-runs"'),
         )
-        self.assertIn("items.length !== 1", source)
-        self.assertIn("items[0]?.task_id !== taskId", source)
-        self.assertIn("renderPolicyItem(row, items[0])", source)
-        self.assertNotIn("task_ids: policy.task_ids", source)
 
-    def test_hidden_policy_badges_are_not_revealed_by_flex_styles(self):
+        template_source = (
+            Path(__file__).resolve().parents[1] / "templates" / "automation.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('form.addEventListener("automation:approved-runs"', template_source)
+        self.assertIn("async function pollApprovedBatch", template_source)
+        self.assertIn("batchTerminalStatuses", template_source)
+        self.assertIn("已批准，等待执行", template_source)
+        self.assertIn("project-plugin4", template_source)
+
+    def test_assets_are_cache_busted_with_project_governance_styles(self):
         static_dir = Path(__file__).resolve().parents[1] / "static"
         style = (static_dir / "style.css").read_text(encoding="utf-8")
         base = (
             Path(__file__).resolve().parents[1] / "templates" / "base.html"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(".auto-approval-policy-restriction[hidden]", style)
-        self.assertIn(".auto-approval-policy-meta [hidden]", style)
-        self.assertIn("display: none !important", style)
-        self.assertIn("style.css?v=cal-console-20260814-policy1", base)
+        self.assertIn(".auto-project-governance", style)
+        self.assertIn(".auto-pending-approvals[hidden]", style)
+        self.assertIn("style.css?v=cal-console-20260815-project-plugin3", base)
 
 
 if __name__ == "__main__":

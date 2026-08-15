@@ -347,6 +347,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -446,6 +447,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -549,6 +551,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -785,6 +788,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -818,6 +822,9 @@ tools:
           minLength: 1
           maxLength: 128
           description: "由控制平面显式选择的融辉账号；request_body 中若带账号必须完全一致"
+        target_date:
+          type: string
+          description: "控制平面按 Asia/Shanghai 当前业务日注入（YYYY-MM-DD），插件不接受缺省日期"
         request_body:
           type: object
           description: "可选，覆盖默认 get_wangdiansendlist 请求体"
@@ -833,7 +840,7 @@ tools:
         range:
           type: string
           description: "可选，覆盖 phase7.site_send_sheet 的写入范围"
-      required: [account_id]
+      required: [account_id, target_date]
     output_schema:
       type: object
       additionalProperties: false
@@ -866,6 +873,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -947,6 +955,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -954,7 +963,7 @@ tools:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: none
@@ -975,6 +984,14 @@ tools:
       type: object
       additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由项目实例从业务账号池显式绑定；禁止默认账号或运行时换号"
+        target_date:
+          type: string
+          description: "可选，扫描业务日期（YYYY-MM-DD）；为空时使用上海时区当天"
         request_body:
           type: object
           description: "可选，覆盖 get_scan 请求体"
@@ -1001,7 +1018,7 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/不真正执行 scan_next"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1034,6 +1051,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -1138,6 +1156,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -1176,7 +1195,9 @@ tools:
           description: "可选，应派日期，格式 YYYY-MM-DD；默认明天"
         dest_brch:
           type: string
-          description: "可选，目的网点编码，默认 56739382"
+          minLength: 1
+          maxLength: 64
+          description: "必填，项目实例显式保存的目的网点编码；插件和运行时均不提供默认值"
         session_profile:
           type: string
           enum: [yunda]
@@ -1193,7 +1214,7 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不删除或写入飞书记录"
-      required: [account_id]
+      required: [account_id, dest_brch]
     output_schema:
       type: object
       additionalProperties: false
@@ -1226,6 +1247,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: medium
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: admin
@@ -1442,7 +1464,7 @@ tools:
       allow_implicit_default: false
     idempotency:
       mode: key
-      key_fields: [account_id]
+      key_fields: [account_id, daxiang_s_account_id]
     retry:
       safe: true
       max_attempts: 2
@@ -1456,7 +1478,8 @@ tools:
       additionalProperties: false
       properties:
         account_id: {type: string, minLength: 1, maxLength: 128}
-      required: [account_id]
+        daxiang_s_account_id: {type: string, minLength: 1, maxLength: 128}
+      required: [account_id, daxiang_s_account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1481,6 +1504,7 @@ tools:
     operation_type: external_write
     risk_level: high
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: required
       required_role: super_admin
@@ -1504,7 +1528,7 @@ tools:
         - execution_result
     postconditions:
       - third_party_self_pickup_problem_confirmed
-    description: "自提到货问题件：读取飞书每日到货表，分别筛选邵阳自提部、邵阳大祥S站且派送方式=自提，且累计到货件数等于货物件数的单号，并按各自 TMS 登录态登记“开单为自提件”；默认不上传截图"
+    description: "自提到货问题件：从项目绑定的飞书每日到货表精确筛选邵阳自提部及邵阳大祥S站自提到齐运单；正式执行必须提交本次预览选择和指纹，并经独立登记问题件列表读回后才算成功"
     input_schema:
       type: object
       additionalProperties: false
@@ -1518,51 +1542,27 @@ tools:
         daxiang_s_account_id:
           type: string
           description: "可选，大祥S站 TMS 账号角色绑定；默认使用 ronghui_daxiang_s，不要使用 price_default"
-        spreadsheet_token:
-          type: string
-          description: "可选，飞书电子表格 token；默认使用固定到货表"
-        sheet_id:
-          type: string
-          description: "可选，飞书 URL 中的 sheet id；默认 UeBd3I，找不到来源表时回退读取"
-        source_sheet_title:
-          type: string
-          description: "可选，优先读取的源表名称；默认 每日到货表，按目的站点和派送方式筛选"
-        destination_site:
-          type: string
-          description: "可选，自提部目的站点筛选值；默认 邵阳自提部"
         include_daxiang_s_self_pickup:
           type: boolean
           description: "可选，默认 true；同时处理邵阳大祥S站且派送方式=自提的单号"
-        daxiang_s_destination_site:
-          type: string
-          description: "可选，大祥S站目的站点筛选值；默认 邵阳大祥S站"
-        daxiang_s_delivery_method:
-          type: string
-          description: "可选，大祥S站派送方式筛选值；默认 自提"
-        upload_screenshot:
-          type: boolean
-          description: "可选，默认 false；设为 true 时才从环境变量读取截图并上传"
-        screenshot_path:
-          type: string
-          description: "可选，截图路径；提供后会上传并关联到每个问题件"
-        screenshot_dir:
-          type: string
-          description: "可选，截图目录；提供后优先匹配包含单号或以单号命名的图片"
-        screenshot_map:
-          type: object
-          description: "可选，按单号指定截图路径的映射；提供后对应单号会上传截图"
-        problem_cause:
-          type: string
-          description: "可选，覆盖自提部默认问题原因文案；大祥S站使用独立 3 天游离仓储文案"
-        skip_existing_problem:
-          type: boolean
-          description: "可选，默认 true；登记前用 FIND_PROBLEM_BY_CODE 检查已有同类型或同文案问题件，存在则跳过"
         limit:
           type: integer
-          description: "可选，仅处理前 N 个候选单号，便于试跑"
-        stop_on_error:
-          type: boolean
-          description: "可选，遇到单票失败后是否停止后续处理，默认 false"
+          minimum: 0
+          maximum: 2000
+          description: "可选，仅预览来源顺序中的前 N 个候选；正式执行仍必须显式选择"
+        selected_bill_codes:
+          type: array
+          maxItems: 250
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: "正式执行必填；仅包含本次预览中由用户选择的运单"
+        preview_fingerprint:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: "正式执行必填；绑定来源行、业务规则和候选集合"
       required: []
     output_schema:
       type: object
@@ -1644,6 +1644,7 @@ tools:
     operation_type: external_write
     risk_level: high
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: required
       required_role: super_admin
@@ -1719,6 +1720,7 @@ tools:
     operation_type: external_write
     risk_level: high
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: super_admin
@@ -1817,6 +1819,7 @@ tools:
     operation_type: external_write
     risk_level: high
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: required
       required_role: super_admin
@@ -1915,6 +1918,7 @@ tools:
     operation_type: internal_projection_write
     risk_level: high
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: super_admin
@@ -1962,7 +1966,8 @@ tools:
           description: "sync/backfill 可选平台过滤；首期仅允许已上线的融辉来源"
         account_id:
           type: string
-          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem]
+          minLength: 1
+          maxLength: 128
           description: "sync/backfill 可选的已上线融辉财务角色 ID"
         batch_id:
           type: integer
@@ -2206,13 +2211,14 @@ tools:
     operation_type: read
     risk_level: low
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: none
     permissions:
       required_roles:
         - admin
     account_scope:
-      required: false
+      required: true
       allow_implicit_default: false
     idempotency:
       mode: parameters
@@ -2244,7 +2250,7 @@ tools:
           items:
             type: string
             minLength: 1
-          description: "可选；省略时查询全部已启用的融辉和韵达配置账号"
+          description: "项目实例显式绑定的融辉/韵达账号集合；禁止省略后查询全部账号"
         recheck_items:
           type: array
           description: "由服务端计划上下文覆盖；当前开放事项的精确详情复核身份"
@@ -2260,7 +2266,7 @@ tools:
               waybill_no: {type: string, maxLength: 100}
               context_error: {type: string, maxLength: 100}
             required: [dedupe_key]
-      required: [direction]
+      required: [direction, account_ids]
     output_schema:
       type: object
       additionalProperties: false
@@ -2438,6 +2444,7 @@ tools:
     operation_type: external_write
     risk_level: high
     llm_exposed: false
+    project_full_auto_allowed: true
     approval:
       mode: schedule_allowlist
       required_role: super_admin

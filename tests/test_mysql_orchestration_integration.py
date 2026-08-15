@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import hashlib
@@ -27,6 +28,28 @@ def _load_migration_runner():
     return module
 
 
+def _load_automation_project_scenarios():
+    path = PROJECT_ROOT / "tests" / "mysql_automation_project_scenarios.py"
+    spec = importlib.util.spec_from_file_location("mysql_automation_project_scenarios", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_daily_sign_scenarios():
+    path = PROJECT_ROOT / "tests" / "mysql_daily_sign_scenarios.py"
+    spec = importlib.util.spec_from_file_location("mysql_daily_sign_scenarios", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+AUTOMATION_PROJECT_SCENARIOS = _load_automation_project_scenarios()
+DAILY_SIGN_SCENARIOS = _load_daily_sign_scenarios()
+
+
 @unittest.skipUnless(RUN_MYSQL, "set RUN_MYSQL_INTEGRATION=1 for real MySQL 8 tests")
 class MySqlOrchestrationIntegrationTests(unittest.TestCase):
     @classmethod
@@ -51,6 +74,24 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls.policy_restore_database = f"{cls.database[:-5]}_policy_restore_test"
         cls.release_manifest_database = f"{cls.database[:-5]}_release_manifest_test"
         cls.protected_write_database = f"{cls.database[:-5]}_protected_write_test"
+        cls.project_authorization_database = (
+            f"{cls.database[:-5]}_project_authorization_test"
+        )
+        cls.project_authorization_partial_database = (
+            f"{cls.database[:-5]}_project_authorization_partial_test"
+        )
+        cls.project_authorization_collation_database = (
+            f"{cls.database[:-5]}_project_authorization_collation_test"
+        )
+        cls.project_approval_atomic_database = (
+            f"{cls.database[:-5]}_project_approval_atomic_test"
+        )
+        cls.worker_dispatch_database = (
+            f"{cls.database[:-5]}_worker_dispatch_test"
+        )
+        cls.daily_sign_readback_database = (
+            f"{cls.database[:-5]}_daily_sign_readback_test"
+        )
         cls.databases = (
             cls.database,
             cls.upgrade_database,
@@ -66,6 +107,12 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             cls.policy_restore_database,
             cls.release_manifest_database,
             cls.protected_write_database,
+            cls.project_authorization_database,
+            cls.project_authorization_partial_database,
+            cls.project_authorization_collation_database,
+            cls.project_approval_atomic_database,
+            cls.worker_dispatch_database,
+            cls.daily_sign_readback_database,
         )
         cls.runner = _load_migration_runner()
 
@@ -101,6 +148,12 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls._run_migrations(cls.policy_restore_database)
         cls._run_migrations(cls.release_manifest_database)
         cls._run_migrations(cls.protected_write_database)
+        cls._apply_through(cls.project_authorization_database, "017")
+        cls._apply_through(cls.project_authorization_partial_database, "017")
+        cls._apply_through(cls.project_authorization_collation_database, "017")
+        cls._apply_through(cls.project_approval_atomic_database, "017")
+        cls._apply_through(cls.worker_dispatch_database, "017")
+        cls._apply_through(cls.daily_sign_readback_database, "013")
         cls._apply_through(cls.compat_database, "013")
         cls._apply_through(cls.contract_chain_database, "013")
         cls._apply_through(cls.startup_contract_database, "015")
@@ -187,6 +240,13 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
     @classmethod
     def _run_migrations(cls, database: str, *, check_only: bool = False) -> None:
+        if not check_only:
+            # Migration 018 intentionally refuses to guess its nine reviewed
+            # external destinations. Integration databases therefore model the
+            # deployment prerequisite explicitly after 017, instead of weakening
+            # the production migration with test defaults.
+            cls._apply_through(database, "017")
+            cls._seed_required_project_resources(database)
         with patch.dict(os.environ, cls._environment(database), clear=False):
             cls.runner.run(check_only=check_only)
 
@@ -200,7 +260,13 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         with cls._connection(database, autocommit=True) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(cls.runner.SCHEMA_MIGRATIONS_SQL)
+                cursor.execute("SELECT version FROM schema_migrations")
+                applied_versions = {
+                    str(row["version"]) for row in cursor.fetchall()
+                }
                 for version, path in migrations:
+                    if version in applied_versions:
+                        continue
                     for statement in cls.runner.split_sql_statements(
                         path.read_text(encoding="utf-8")
                     ):
@@ -210,6 +276,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                         "VALUES (%s, %s, %s)",
                         (version, path.name, cls.runner.migration_checksum(path)),
                     )
+                    applied_versions.add(version)
+
+    @classmethod
+    def _seed_required_project_resources(cls, database: str) -> None:
+        AUTOMATION_PROJECT_SCENARIOS.seed_required_project_resources(cls, database)
 
     @classmethod
     def _apply_one(cls, database: str, version: str) -> None:
@@ -2800,3 +2871,33 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             order += 1
             insert_step(status=status, operation_type=operation_type, order=order)
         self.assertEqual(0, check())
+
+    def test_automation_project_018_forward_restore_reapply_and_atomic_config(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_automation_project_018_forward_restore_reapply_and_atomic_config(
+            self
+        )
+
+    def test_automation_project_018_partial_rerun_is_safe(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_automation_project_018_partial_rerun_is_safe(
+            self
+        )
+
+    def test_automation_worker_dispatch_is_durable_exact_device_and_replay_safe(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_automation_worker_dispatch_is_durable_exact_device_and_replay_safe(
+            self
+        )
+
+    def test_automation_project_018_case_drift_fails_before_ddl(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_automation_project_018_case_drift_fails_before_ddl(
+            self
+        )
+
+    def test_automation_project_grouped_approval_rolls_back_real_mysql_transaction(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_grouped_approval_second_cas_failure_is_atomic(
+            self
+        )
+
+    def test_daily_sign_fresh_readback_rejects_event_and_publication_tamper(self):
+        DAILY_SIGN_SCENARIOS.run_test_daily_sign_fresh_readback_rejects_mysql_tamper(
+            self
+        )

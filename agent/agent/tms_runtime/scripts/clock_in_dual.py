@@ -25,6 +25,7 @@ import datetime
 import io
 import json
 import logging
+import re
 import sys
 import time
 import traceback
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 ROOT_URL = "https://tms.ronghuiwl.com"
 SAVE_URL = f"{ROOT_URL}/dataOperation/saveTables"
+LIST_QUERY_URL = f"{ROOT_URL}/dataQuery/findPageByCallId"
+LIST_QUERY_CALL_ID = "FIND_REACH_OR_LEAVE_PORT_DETNEW"
 MENU_URL = f"{ROOT_URL}/menuTreeExtend/loadMenu"
 TARGET_MENU_TEXT = "网点到离港记录"
 ADD_OPERATION_KEY = "TAB_REACH_OR_LEAVE_PORT_DETNEW_ADD"
@@ -46,6 +49,10 @@ DEFAULT_SITE_NAME = "邵阳大祥站"
 DEFAULT_SITE_FB_NAME = "邵阳操作场"
 DEFAULT_FIRST_TYPE = "交件到港"
 DEFAULT_SECOND_TYPE = "接件离港"
+_CONFIRMED_CLOCK_RESULTS = {
+    DEFAULT_FIRST_TYPE: frozenset({"交件及时", "交件延误"}),
+    DEFAULT_SECOND_TYPE: frozenset({"接件及时", "接件延误"}),
+}
 
 
 def localnow() -> datetime.datetime:
@@ -93,6 +100,14 @@ def _find_add_dialog_url(list_html: str) -> str:
     return add_url
 
 
+def _script_value(html: str, name: str) -> str:
+    match = re.search(
+        rf"\b{re.escape(name)}\s*[:=]\s*(['\"])(?P<value>[^'\"]+)\1",
+        html,
+    )
+    return str(match.group("value") if match else "").strip()
+
+
 def _resolve_clockin_page_context(session: Any) -> Dict[str, str]:
     menu_resp = session.get(MENU_URL, timeout=20)
     menu_resp.raise_for_status()
@@ -113,6 +128,10 @@ def _resolve_clockin_page_context(session: Any) -> Dict[str, str]:
         list_html = session.get(list_url, timeout=20).text
         if not all(marker in list_html for marker in LIST_PAGE_MARKERS):
             continue
+        list_page_id = _script_value(list_html, "pageId")
+        list_authentication_key = _script_value(list_html, "authenticationKey")
+        if not list_page_id or not list_authentication_key:
+            continue
 
         add_url = _find_add_dialog_url(list_html)
         if not add_url:
@@ -126,6 +145,8 @@ def _resolve_clockin_page_context(session: Any) -> Dict[str, str]:
 
         return {
             "list_url": list_url,
+            "list_page_id": list_page_id,
+            "list_authentication_key": list_authentication_key,
             "add_url": add_url,
             "page_id": page_id,
             "authentication_key": authentication_key,
@@ -264,6 +285,183 @@ def submit_clockin(records: List[Dict[str, Any]], session: Any, page_context: Di
         resp.raise_for_status()
 
     return data
+
+
+def build_clockin_query_payload(
+    *,
+    sitecode: str,
+    sitefbcode: str,
+    clock_in_type: str,
+    start: datetime.datetime,
+    end: datetime.datetime,
+    page_size: int = 200,
+) -> Dict[str, str]:
+    """Build the exact read-only query used by the real clock-record grid."""
+
+    if start > end:
+        raise ValueError("clock verification start must be <= end")
+    if not 1 <= page_size <= 500:
+        raise ValueError("clock verification page_size is invalid")
+    for label, value in (
+        ("sitecode", sitecode),
+        ("sitefbcode", sitefbcode),
+        ("clock_in_type", clock_in_type),
+    ):
+        if not str(value or "").strip():
+            raise ValueError(f"clock verification {label} is required")
+    date_range = json.dumps(
+        {
+            "start": start.strftime("%Y/%m/%d %H:%M:%S"),
+            "end": end.strftime("%Y/%m/%d %H:%M:%S"),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return {
+        "searchDateType": "REALITY_DATE",
+        "SEARCH_DATE_RANGE": date_range,
+        "REALITY_DATE": date_range,
+        "SITE_CODE": str(sitecode).strip(),
+        "SITE_FB_CODE": str(sitefbcode).strip(),
+        "REACH_OR_LEAVE_PORT_TYPE": str(clock_in_type).strip(),
+        "CREATE_MAN": "",
+        "pageIndex": "0",
+        "pageSize": str(page_size),
+        "sortField": "",
+        "sortOrder": "",
+        "totalColumns": "[]",
+    }
+
+
+def query_clockin_page(
+    session: Any,
+    page_context: Dict[str, str],
+    payload: Dict[str, str],
+    *,
+    timeout: float = 20,
+) -> Dict[str, Any]:
+    """Read one complete clock-record page through the source-proven grid call."""
+
+    required_context = (
+        "list_url",
+        "list_page_id",
+        "list_authentication_key",
+    )
+    if any(not str(page_context.get(key) or "").strip() for key in required_context):
+        raise RuntimeError("clock verification list-page context is incomplete")
+    headers = {
+        "Accept": "text/plain, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": ROOT_URL,
+        "Referer": page_context["list_url"],
+        "X-Requested-With": "XMLHttpRequest",
+        "authenticationKey": page_context["list_authentication_key"],
+        "pageId": page_context["list_page_id"],
+    }
+    response = session.post(
+        LIST_QUERY_URL,
+        params={"id": LIST_QUERY_CALL_ID},
+        data=payload,
+        headers=headers,
+        allow_redirects=False,
+        timeout=timeout,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"clock verification query returned HTTP {response.status_code}")
+    try:
+        result = response.json()
+    except Exception as exc:
+        raise RuntimeError("clock verification query did not return JSON") from exc
+    if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+        raise RuntimeError("clock verification query returned an invalid result")
+    rows = result["data"]
+    if any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("clock verification query returned an invalid row")
+    total = result.get("total")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise RuntimeError("clock verification query returned an invalid total")
+    if total != len(rows):
+        raise RuntimeError("clock verification query was not complete")
+    return {"rows": rows, "total": total}
+
+
+def _parse_clock_record_datetime(value: Any) -> datetime.datetime:
+    text = str(value or "").strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            return datetime.datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    raise RuntimeError("clock verification row has an invalid REALITY_DATE")
+
+
+def verify_clockin_record(
+    session: Any,
+    page_context: Dict[str, str],
+    *,
+    sitecode: str,
+    sitefbcode: str,
+    sitename: str,
+    sitefbname: str,
+    clock_in_type: str,
+    submitted_at: datetime.datetime,
+    maximum_skew_seconds: int = 60,
+) -> Dict[str, str]:
+    """Confirm one write by an independent, fresh and complete list query."""
+
+    if submitted_at.tzinfo is not None:
+        submitted_at = submitted_at.astimezone().replace(tzinfo=None)
+    if not 1 <= maximum_skew_seconds <= 300:
+        raise ValueError("clock verification skew is invalid")
+    query_start = submitted_at - datetime.timedelta(seconds=maximum_skew_seconds)
+    query_end = submitted_at + datetime.timedelta(seconds=maximum_skew_seconds)
+    result = query_clockin_page(
+        session,
+        page_context,
+        build_clockin_query_payload(
+            sitecode=sitecode,
+            sitefbcode=sitefbcode,
+            clock_in_type=clock_in_type,
+            start=query_start,
+            end=query_end,
+        ),
+    )
+    confirmed_results = _CONFIRMED_CLOCK_RESULTS.get(clock_in_type)
+    if confirmed_results is None:
+        raise RuntimeError("clock verification type is not source-reviewed")
+    matches: list[tuple[Dict[str, Any], datetime.datetime, str]] = []
+    for row in result["rows"]:
+        reality_at = _parse_clock_record_datetime(row.get("REALITY_DATE"))
+        identity = str(row.get("GUID") or row.get("ROW_ID") or "").strip()
+        if (
+            str(row.get("SITE_CODE") or "").strip() == sitecode
+            and str(row.get("SITE_FB_CODE") or "").strip() == sitefbcode
+            and str(row.get("SITE_NAME") or "").strip() == sitename
+            and str(row.get("SITE_FB_NAME") or "").strip() == sitefbname
+            and str(row.get("REACH_OR_LEAVE_PORT_TYPE") or "").strip()
+            == clock_in_type
+            and str(row.get("CLOCK_IN_TYPE") or "").strip()
+            in confirmed_results
+            and identity
+            and abs((reality_at - submitted_at).total_seconds())
+            <= maximum_skew_seconds
+        ):
+            matches.append((row, reality_at, identity))
+    if len(matches) != 1:
+        raise RuntimeError(
+            "clock verification did not resolve exactly one source record"
+        )
+    row, reality_at, identity = matches[0]
+    return {
+        "record_id": identity,
+        "clock_type": clock_in_type,
+        "clock_result": str(row["CLOCK_IN_TYPE"]).strip(),
+        "observed_at": reality_at.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def submit_dual_clockin(

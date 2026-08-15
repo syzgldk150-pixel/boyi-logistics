@@ -32,6 +32,7 @@ def _run_rollback_fault_harness(
     cutover_pending: bool = True,
     daily_sign_pending: bool = False,
     contract_upgrade_pending: bool = False,
+    automation_project_pending: bool = False,
     bootstrap_absent: bool = False,
     migrations_attempted: bool = False,
     runtime_start_attempted: bool = False,
@@ -48,6 +49,7 @@ def _run_rollback_fault_harness(
         backup_root = stage_root / "_rollback"
         backup_root.mkdir(parents=True)
         (backup_root / "release_sha.absent").touch()
+        (backup_root / "automation_plugin_release.env.absent").touch()
         events_path = temp_root / "events.log"
         for service in ("agent", "console"):
             python_path = temp_root / service / ".venv" / "bin" / "python"
@@ -71,9 +73,10 @@ def _run_rollback_fault_harness(
             cutover_pending="$4"
             daily_sign_pending="$5"
             contract_upgrade_pending="$6"
-            bootstrap_absent="$7"
-            migrations_attempted="$8"
-            runtime_start_attempted="$9"
+            automation_project_pending="$7"
+            bootstrap_absent="$8"
+            migrations_attempted="$9"
+            runtime_start_attempted="${10}"
             stage_root="${temp_root}/stage"
             events_path="${temp_root}/events.log"
             source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
@@ -99,6 +102,7 @@ def _run_rollback_fault_harness(
             CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY="${cutover_pending}"
             DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY="${daily_sign_pending}"
             SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY="${contract_upgrade_pending}"
+            AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY="${automation_project_pending}"
             CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE="${bootstrap_absent}"
             MIGRATIONS_ATTEMPTED="${migrations_attempted}"
             NEW_RUNTIME_START_ATTEMPTED="${runtime_start_attempted}"
@@ -161,6 +165,11 @@ def _run_rollback_fault_harness(
               return 0
             }
 
+            restore_automation_project_authorization_data() {
+              printf 'restore-018\n' >>"${events_path}"
+              return 0
+            }
+
             restore_control_plane_policy_bootstrap_data() {
               printf 'restore-bootstrap\n' >>"${events_path}"
               return 0
@@ -183,6 +192,7 @@ def _run_rollback_fault_harness(
             "1" if cutover_pending else "0",
             "1" if daily_sign_pending else "0",
             "1" if contract_upgrade_pending else "0",
+            "1" if automation_project_pending else "0",
             "1" if bootstrap_absent else "0",
             "1" if migrations_attempted else "0",
             "1" if runtime_start_attempted else "0",
@@ -302,16 +312,31 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_ci_and_production_use_python_310_locked_environments(self):
         workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertEqual(2, workflow.count('python-version: "3.10"'))
+        self.assertEqual(3, workflow.count('python-version: "3.10"'))
         self.assertIn(
             "python -m pip install -r agent/requirements.lock -r console/requirements.lock",
             workflow,
         )
         self.assertIn("verify_locked_environment.py agent/requirements.lock", workflow)
         self.assertIn("verify_locked_environment.py console/requirements.lock", workflow)
+        self.assertIn("windows-worker-quality:", workflow)
+        self.assertIn('if: ${{ false }}', workflow)
+        self.assertIn("runs-on: windows-latest", workflow)
+        self.assertIn("verify_locked_environment.py agent/windows_worker_requirements.lock", workflow)
+        self.assertIn("agent/tests/test_windows_worker_service_loop.py", workflow)
+        agent_gate = workflow.split("agent-quality:", 1)[1].split(
+            "console-quality:", 1
+        )[0]
+        self.assertIn("windows_worker($|/)", agent_gate)
+        self.assertIn("--exclude agent/agent/windows_worker", agent_gate)
+        self.assertIn("--ignore-glob='tests/test_windows_worker_*.py'", agent_gate)
+        self.assertIn("--ignore-glob='agent/tests/test_windows_worker_*.py'", agent_gate)
 
         release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(encoding="utf-8")
         execution = release.split("trap rollback ERR", 1)[1]
+        worker_scope_guard = execution.split(
+            'if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then', 1
+        )[1].split("\n  fi", 1)[0]
         run_release_prefix = release.split("run_release() {", 1)[1].split("trap rollback ERR", 1)[0]
         quiesce_function = release.split("quiesce_runtime_services() {", 1)[1].split("\n}", 1)[0]
         activate_function = release.split("activate_release_virtualenvs() {", 1)[1].split("\n}", 1)[0]
@@ -326,6 +351,13 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("flock -n 9", release)
         self.assertLess(
             execution.index("preflight_service_identity_configuration"),
+            execution.index("backup_managed_sources"),
+        )
+        self.assertIn("WINDOWS_WORKER_RELEASE_ENABLED=0", release)
+        self.assertIn("preflight_worker_mtls_proxy", worker_scope_guard)
+        self.assertIn('echo "windows_worker_release_scope=disabled"', worker_scope_guard)
+        self.assertLess(
+            execution.index("WINDOWS_WORKER_RELEASE_ENABLED"),
             execution.index("backup_managed_sources"),
         )
         self.assertEqual(2, execution.count("preflight_scheduled_write_window\n"))
@@ -343,6 +375,55 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index("MUTATION_STARTED=1"),
         )
         self.assertLess(execution.index("build_release_virtualenvs"), execution.index("MUTATION_STARTED=1"))
+        self.assertLess(
+            execution.index("preflight_signed_first_party_plugins"),
+            execution.index("MUTATION_STARTED=1"),
+        )
+        self.assertLess(
+            execution.index("preflight_worker_server_identity"),
+            execution.index("MUTATION_STARTED=1"),
+        )
+        self.assertGreater(
+            execution.index("install_verified_first_party_plugin_artifacts"),
+            execution.index("MUTATION_STARTED=1"),
+        )
+        self.assertLess(
+            execution.index("quiesce_runtime_services"),
+            execution.index("capture_automation_plugin_installation_state"),
+        )
+        self.assertLess(
+            execution.index("capture_automation_plugin_installation_state"),
+            execution.index("install_verified_first_party_plugin_artifacts"),
+        )
+        self.assertLess(
+            execution.index("install_verified_first_party_plugin_artifacts"),
+            execution.index("apply_migrations"),
+        )
+        self.assertLess(
+            execution.index("preflight_signed_first_party_plugins"),
+            execution.index("install_verified_first_party_plugin_artifacts"),
+        )
+        self.assertIn(
+            'STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT="${STAGE_ROOT}/_plugin_artifacts"',
+            release,
+        )
+        self.assertIn(
+            'STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT="${STAGE_ROOT}/_plugin_trust"',
+            release,
+        )
+        self.assertIn(
+            '[[ "${temp_release}" == '
+            '"${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/.${RELEASE_SHA}."*',
+            release,
+        )
+        self.assertIn("^package_count=[1-9][0-9]*$", release)
+        self.assertIn("^instance_count=[1-9][0-9]*$", release)
+        self.assertIn("BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA", release)
+        self.assertIn(
+            '[[ -f "${verifier}" && ! -L "${verifier}" ]] || {',
+            release,
+        )
+        self.assertNotIn('[[ -f "${verifier}" ]] || return 0', release)
         self.assertLess(execution.index("quiesce_runtime_services"), execution.index("retire_legacy_finance_etl"))
         self.assertLess(
             execution.index('RELEASE_STAGE="quiesce_runtime_services"'),
@@ -382,6 +463,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("verify_runtime_virtualenvs", rollback_function)
         self.assertLess(
             rollback_function.index("stop_runtime_services_for_rollback"),
+            rollback_function.index("restore_automation_project_authorization_data"),
+        )
+        self.assertLess(
+            rollback_function.index("restore_automation_project_authorization_data"),
             rollback_function.index("restore_control_plane_policy_bootstrap_data"),
         )
         self.assertLess(
@@ -398,6 +483,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertIn('CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" == "1', rollback_function)
+        self.assertIn('AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1', rollback_function)
         self.assertIn('MIGRATIONS_ATTEMPTED}" == "1', rollback_function)
@@ -470,6 +556,15 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('workflow_runner.get("state") != "held"', release)
         self.assertIn('workflow_runner.get("release_hold") is not True', release)
         self.assertIn('workflow_runner.get("active_runs") != 0', release)
+        self.assertIn('automation_plugins.get("ok") is not True', release)
+        self.assertIn('automation_workers.get("enabled") is not False', release)
+        self.assertIn('automation_workers.get("state") != "disabled"', release)
+        self.assertIn('automation_workers.get("release_hold") is not False', release)
+        self.assertIn('data["automation_plugins"].get("ok") is not True', release)
+        self.assertIn('data["automation_workers"].get("enabled") is not False', release)
+        self.assertIn('data["automation_workers"].get("state") != "disabled"', release)
+        self.assertIn('data["automation_workers"].get("release_hold") is not False', release)
+        self.assertIn('data["automation_workers"].get("active_jobs") or 0', release)
         self.assertIn("for _attempt in range(3):", release)
         self.assertIn(
             'request_target = "/internal/v1/admin/scheduler/activate-after-release"',
@@ -589,6 +684,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             cutover_pending=True,
             daily_sign_pending=True,
             contract_upgrade_pending=True,
+            automation_project_pending=True,
             bootstrap_absent=True,
             migrations_attempted=True,
             runtime_start_attempted=True,
@@ -598,7 +694,13 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertFalse(stage_exists)
         restore_events = [event for event in events if event.startswith("restore-")]
         self.assertEqual(
-            ["restore-bootstrap", "restore-017", "restore-016", "restore-014"],
+            [
+                "restore-018",
+                "restore-bootstrap",
+                "restore-017",
+                "restore-016",
+                "restore-014",
+            ],
             restore_events,
         )
         self.assertLess(events.index("restore-014"), events.index("venv:agent"))
@@ -614,9 +716,39 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertNotIn("StrictHostKeyChecking=no", publisher)
         self.assertIn('"app_support.py"', publisher)
         self.assertIn('"navigation.py"', publisher)
+        agent_files = publisher.split("$AgentFiles = @(", 1)[1].split("\n)", 1)[0]
+        blocked_files = publisher.split("$BlockedFileNames = @(", 1)[1].split(
+            "\n)", 1
+        )[0]
+        blocked_dirs = publisher.split("$BlockedDirNames = @(", 1)[1].split(
+            "\n)", 1
+        )[0]
+        self.assertNotIn('"windows_worker_requirements.txt"', agent_files)
+        self.assertNotIn('"windows_worker_requirements.lock"', agent_files)
+        self.assertIn('"windows_worker_requirements.txt"', blocked_files)
+        self.assertIn('"windows_worker_requirements.lock"', blocked_files)
+        self.assertIn('"windows_worker_host.py"', blocked_files)
+        self.assertIn('"windows_worker"', blocked_dirs)
+        self.assertIn('"first_party_automation_plugins"', publisher)
+        self.assertIn("[string]$AutomationPluginArtifactRoot", publisher)
+        self.assertIn("[string]$AutomationPluginTrustRoot", publisher)
+        self.assertIn("function Copy-AutomationPluginReleaseInputs", publisher)
+        self.assertIn("one release-index.json and only its ZIP packages", publisher)
+        self.assertIn('$_.Extension -cne ".pub"', publisher)
+        self.assertIn('Join-Path $DestinationRoot "_plugin_artifacts"', publisher)
+        self.assertIn('Join-Path $DestinationRoot "_plugin_trust"', publisher)
+        self.assertNotIn('".key"', publisher)
+        self.assertNotIn("BEGIN PRIVATE KEY", publisher)
         self.assertIn('"config", "routes", "services", "static", "templates"', publisher)
         self.assertNotIn('".webp"', blocked_extensions)
         self.assertIn('if ($extension -in @(".png", ".jpg", ".jpeg", ".webp"))', publisher)
+        agent_unit = (REPOSITORY_ROOT / "agent" / "agent.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "EnvironmentFile=/home/boyce/agent/runtime/automation_plugin_release.env",
+            agent_unit,
+        )
 
     def test_release_captures_every_database_prestate_before_mutation(self):
         completed = _run_sourced_release_harness(
@@ -632,6 +764,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 --scheduled-task-contract-upgrade-status)
                   echo 'scheduled_task_contract_upgrade_status=pending_clean'
                   ;;
+                --automation-project-authorization-status)
+                  echo 'automation_project_authorization_status=pending_clean'
+                  ;;
                 --control-plane-policy-bootstrap-marker-status)
                   echo 'control_plane_policy_bootstrap_marker_status=absent'
                   ;;
@@ -639,16 +774,17 @@ class ReleaseBoundaryTests(unittest.TestCase):
               esac
             }
             capture_control_plane_release_state
-            printf 'states=%s,%s,%s,%s\n' \
+            printf 'states=%s,%s,%s,%s,%s\n' \
               "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" \
               "${DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" \
               "${SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" \
+              "${AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" \
               "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}"
             """
         )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("states=0,1,1,1", completed.stdout)
+        self.assertIn("states=0,1,1,1,1", completed.stdout)
 
     def test_release_rejects_dirty_contract_upgrade_before_mutation(self):
         completed = _run_sourced_release_harness(
@@ -673,6 +809,189 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertNotEqual(0, completed.returncode)
         self.assertIn("migration 017 attempt left unrecovered", completed.stderr)
+
+    def test_release_rejects_dirty_project_authorization_before_mutation(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              case "$1" in
+                --control-plane-task-cutover-status)
+                  echo 'control_plane_task_cutover_status=applied'
+                  ;;
+                --daily-sign-single-tms-status)
+                  echo 'daily_sign_single_tms_status=applied'
+                  ;;
+                --scheduled-task-contract-upgrade-status)
+                  echo 'scheduled_task_contract_upgrade_status=applied'
+                  ;;
+                --automation-project-authorization-status)
+                  echo 'automation_project_authorization_status=pending_dirty'
+                  ;;
+                *) return 91 ;;
+              esac
+            }
+            capture_control_plane_release_state
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("migration 018 attempt left unrecovered", completed.stderr)
+
+    def test_release_writes_closed_plugin_runtime_environment_atomically(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            PLUGIN_RUNTIME_ENV_FILE="${stage_root}/runtime/automation_plugin_release.env"
+            FIRST_PARTY_PLUGIN_RELEASE_ROOT="/trusted/releases/${RELEASE_SHA}"
+            FIRST_PARTY_PLUGIN_TRUST_ROOT="/trusted/public-keys"
+            write_automation_plugin_runtime_environment
+            cat "${PLUGIN_RUNTIME_ENV_FILE}"
+            stat -c 'mode=%a' "${PLUGIN_RUNTIME_ENV_FILE}"
+            find "$(dirname "${PLUGIN_RUNTIME_ENV_FILE}")" \
+              -maxdepth 1 -name '.automation_plugin_release.*' -print
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT=/trusted/releases/"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            completed.stdout,
+        )
+        self.assertIn(
+            "BOYI_AUTOMATION_PLUGIN_TRUST_ROOT=/trusted/public-keys",
+            completed.stdout,
+        )
+        self.assertIn(
+            "BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA="
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            completed.stdout,
+        )
+        self.assertIn("mode=600", completed.stdout)
+
+    def test_plugin_artifact_rollback_removes_only_this_release_additions(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            FIRST_PARTY_PLUGIN_RELEASES_ROOT="${AUTOMATION_PLUGIN_ROOT}/releases"
+            FIRST_PARTY_PLUGIN_RELEASE_ROOT="${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${RELEASE_SHA}"
+            FIRST_PARTY_PLUGIN_TRUST_ROOT="${AUTOMATION_PLUGIN_ROOT}/trust"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_TRUST_ADDITIONS_FILE="${BACKUP_DIR}/automation_plugin_trust.added"
+            mkdir -p "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" "${BACKUP_DIR}"
+            printf 'verified-package\n' >"${FIRST_PARTY_PLUGIN_RELEASE_ROOT}/release-index.json"
+            printf 'public-key\n' >"${FIRST_PARTY_PLUGIN_TRUST_ROOT}/release.pub"
+            key_sha="$(sha256sum "${FIRST_PARTY_PLUGIN_TRUST_ROOT}/release.pub" | awk '{print $1}')"
+            printf '%s %s\n' "${key_sha}" release.pub >"${PLUGIN_TRUST_ADDITIONS_FILE}"
+            touch "${BACKUP_DIR}/first_party_plugin_release.absent"
+            touch "${BACKUP_DIR}/plugin_root.absent"
+            touch "${BACKUP_DIR}/plugin_releases_root.absent"
+            touch "${BACKUP_DIR}/plugin_trust_root.absent"
+            verify_installed_first_party_plugin_artifacts() { return 0; }
+            restore_first_party_plugin_artifacts
+            [[ ! -e "${AUTOMATION_PLUGIN_ROOT}" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_plugin_artifact_rollback_refuses_changed_trust_key_without_deleting_release(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            FIRST_PARTY_PLUGIN_RELEASES_ROOT="${AUTOMATION_PLUGIN_ROOT}/releases"
+            FIRST_PARTY_PLUGIN_RELEASE_ROOT="${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${RELEASE_SHA}"
+            FIRST_PARTY_PLUGIN_TRUST_ROOT="${AUTOMATION_PLUGIN_ROOT}/trust"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_TRUST_ADDITIONS_FILE="${BACKUP_DIR}/automation_plugin_trust.added"
+            mkdir -p "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" "${BACKUP_DIR}"
+            printf 'verified-package\n' >"${FIRST_PARTY_PLUGIN_RELEASE_ROOT}/release-index.json"
+            printf 'expected-key\n' >"${stage_root}/expected.pub"
+            expected_sha="$(sha256sum "${stage_root}/expected.pub" | awk '{print $1}')"
+            printf '%s %s\n' "${expected_sha}" release.pub >"${PLUGIN_TRUST_ADDITIONS_FILE}"
+            printf 'changed-key\n' >"${FIRST_PARTY_PLUGIN_TRUST_ROOT}/release.pub"
+            touch "${BACKUP_DIR}/first_party_plugin_release.absent"
+            touch "${BACKUP_DIR}/plugin_root.existing"
+            touch "${BACKUP_DIR}/plugin_releases_root.existing"
+            touch "${BACKUP_DIR}/plugin_trust_root.existing"
+            verify_installed_first_party_plugin_artifacts() { return 0; }
+            if restore_first_party_plugin_artifacts; then
+              exit 91
+            fi
+            [[ -f "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}/release-index.json" ]]
+            [[ -f "${FIRST_PARTY_PLUGIN_TRUST_ROOT}/release.pub" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "Refusing to delete changed automation plugin trust key",
+            completed.stderr,
+        )
+
+    def test_plugin_install_rollback_quarantines_only_release_created_versions(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
+            capture_automation_plugin_installation_state
+            mkdir -p \
+              "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/1.0.0-222222222222/package" \
+              "${AUTOMATION_PLUGIN_INSTALL_ROOT}/.staging/new_action-1.0.0-abcdef123456abcdef123456abcdef12"
+            printf 'old\n' >"${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111/kept"
+            printf 'new\n' >"${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/1.0.0-222222222222/package/moved"
+            restore_automation_plugin_installations
+            [[ -f "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111/kept" ]]
+            [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action" ]]
+            [[ -f "${BACKUP_DIR}/retired/automation_plugin_installed/new_action/1.0.0-222222222222/package/moved" ]]
+            [[ -d "${BACKUP_DIR}/retired/automation_plugin_installed/.staging/new_action-1.0.0-abcdef123456abcdef123456abcdef12" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_plugin_install_rollback_refuses_to_hide_missing_preexisting_version(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
+            capture_automation_plugin_installation_state
+            rmdir "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
+            if restore_automation_plugin_installations; then
+              exit 91
+            fi
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "A pre-release automation plugin installation disappeared",
+            completed.stderr,
+        )
+
+    def test_plugin_install_rollback_removes_new_empty_root_after_quarantine(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            capture_automation_plugin_installation_state
+            mkdir -p \
+              "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/1.0.0-222222222222/package" \
+              "${AUTOMATION_PLUGIN_INSTALL_ROOT}/.staging"
+            restore_automation_plugin_installations
+            [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]]
+            [[ -d "${BACKUP_DIR}/retired/automation_plugin_installed/new_action/1.0.0-222222222222/package" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
 
     def test_release_manifest_uses_bootstrap_prestate_to_select_initial_gate(self):
         completed = _run_sourced_release_harness(

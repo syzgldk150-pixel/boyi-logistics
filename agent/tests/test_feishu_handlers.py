@@ -301,7 +301,7 @@ class FeishuMessageHandlerTests(unittest.TestCase):
 
 
 class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_scan_command_when_running_does_not_start_second_script(self):
+    async def test_project_command_without_verified_event_identity_is_rejected(self):
         replies: list[str] = []
         pending_calls: list[tuple[str, dict, int]] = []
 
@@ -331,10 +331,8 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, len(replies))
         self.assertNotIn("程序正在执行", replies[0])
-        self.assertIn("扫描任务失败", replies[0])
-        self.assertIn("脚本正在执行中", replies[0])
+        self.assertIn("STABLE_EVENT_ID_REQUIRED", replies[0])
         self.assertEqual([], pending_calls)
-        self.assertIn("事项中心", replies[0])
 
     async def test_cancel_running_tool_pending_calls_cancel_tool(self):
         replies: list[str] = []
