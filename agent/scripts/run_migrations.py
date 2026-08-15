@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -382,13 +382,8 @@ def run(*, check_only: bool) -> int:
     return 0
 
 
-def _load_control_plane_scheduled_task_profiles() -> Mapping[str, Any]:
-    """Load the staged code-owned scheduler profiles without changing sys.path.
-
-    Migration preflight must consume the same reviewed task IDs and canonical
-    arguments as runtime policy.  It deliberately does not infer either from
-    current database rows.
-    """
+def _load_control_plane_scheduled_task_contract_module() -> Any:
+    """Load staged scheduler contracts, including dynamic schema witnesses."""
 
     contract_path = PROJECT_ROOT.parent / "shared" / "scheduled_task_contracts.py"
     if not contract_path.is_file():
@@ -412,9 +407,19 @@ def _load_control_plane_scheduled_task_profiles() -> Mapping[str, Any]:
             sys.modules[module_name] = previous_module
 
     profiles = getattr(module, "APPROVED_SCHEDULED_TASK_PROFILES", None)
-    if not isinstance(profiles, Mapping):
+    arguments_for_schema_validation = getattr(
+        module, "_arguments_for_schema_validation", None
+    )
+    if not isinstance(profiles, Mapping) or not callable(
+        arguments_for_schema_validation
+    ):
         raise ControlPlaneTaskCutoverPreflightError("REVIEWED_CONTRACT_SET_INVALID")
-    return profiles
+    return module
+
+
+def _load_control_plane_scheduled_task_profiles() -> Mapping[str, Any]:
+    module = _load_control_plane_scheduled_task_contract_module()
+    return module.APPROVED_SCHEDULED_TASK_PROFILES
 
 
 def _load_control_plane_tool_registry() -> Any:
@@ -1673,6 +1678,9 @@ def _validate_control_plane_policy_states(
     registry: Any,
     approval_contracts: Any,
     profile_by_task_id: Mapping[str, Any],
+    arguments_for_schema_validation: Callable[
+        [Mapping[str, Any], Mapping[str, str]], dict[str, Any]
+    ],
     require_enabled_exact: bool = False,
 ) -> None:
     policy_ids = {str(row.get("task_id") or "") for row in policies}
@@ -1773,7 +1781,14 @@ def _validate_control_plane_policy_states(
             )
         try:
             arguments = _decode_task_arguments(policy.get("tool_params"))
-            registry.validate_arguments(str(policy["tool_name"]), arguments)
+            validation_arguments = arguments_for_schema_validation(
+                arguments,
+                profile.dynamic_argument_rules,
+            )
+            registry.validate_arguments(
+                str(policy["tool_name"]),
+                validation_arguments,
+            )
             if (
                 capability.get("version") != profile.tool_version
                 or capability.get("operation_type") != profile.operation_type
@@ -1825,7 +1840,8 @@ def check_control_plane_release_manifest(
         expected_ids = _load_control_plane_reviewed_manifest_ids()
         registry = _load_control_plane_tool_registry()
         approval_contracts = _load_scheduled_task_approval_contract_module()
-        profiles = _load_control_plane_scheduled_task_profiles()
+        scheduled_task_contracts = _load_control_plane_scheduled_task_contract_module()
+        profiles = scheduled_task_contracts.APPROVED_SCHEDULED_TASK_PROFILES
         profile_by_task_id = {
             task_id: profile
             for profile in profiles.values()
@@ -1955,6 +1971,9 @@ def check_control_plane_release_manifest(
                 registry=registry,
                 approval_contracts=approval_contracts,
                 profile_by_task_id=profile_by_task_id,
+                arguments_for_schema_validation=(
+                    scheduled_task_contracts._arguments_for_schema_validation
+                ),
                 require_enabled_exact=expect_initial_production_manifest,
             )
     except ControlPlaneTaskCutoverPreflightError as exc:

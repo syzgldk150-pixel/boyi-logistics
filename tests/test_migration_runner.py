@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
 import importlib.util
 import json
@@ -474,6 +475,28 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         ):
             result = self.runner.run(check_only=check_only)
         return result, connection, cursor
+
+    def _exact_policy(self, *, task, profile, registry, approval):
+        capability = registry.get_capability(profile.tool_name)
+        contract = approval.build_scheduled_task_contract(
+            task,
+            capability,
+            dynamic_argument_rules=profile.dynamic_argument_rules,
+            allowed_special_cron=profile.cron_expression,
+        )
+        return {
+            "task_id": task["id"],
+            "mode": "EXACT_SCHEDULE_EXEMPT",
+            "contract_hash": contract.contract_hash,
+            "contract_snapshot_json": contract.snapshot,
+            "tool_contract_hash": contract.tool_contract_hash,
+            "approved_by_actor_id": self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ID,
+            "approved_by_actor_role": self.runner.CONTROL_PLANE_MIGRATION_ACTOR_ROLE,
+            "version": 2,
+            "has_explaining_event": 1,
+            "latest_event_reason": "control_plane_v1_bootstrap",
+            **{key: value for key, value in task.items() if key != "id"},
+        }
 
     def test_apply_checks_mysql8_before_creating_migration_history(self):
         result, connection, cursor = self._run("8.0.43-0ubuntu0.24.04.1", check_only=False)
@@ -978,10 +1001,110 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIn("finance_startup_catchup", manifest_ids)
         self.assertEqual(67, self.runner.CONTROL_PLANE_REVIEWED_ENABLED_COUNT)
 
+    def test_manifest_policy_validation_supplies_dynamic_required_schema_field_only(self):
+        registry = self.runner._load_control_plane_tool_registry()
+        approval = self.runner._load_scheduled_task_approval_contract_module()
+        scheduled_task_contracts = (
+            self.runner._load_control_plane_scheduled_task_contract_module()
+        )
+        profile = scheduled_task_contracts.APPROVED_SCHEDULED_TASK_PROFILES[
+            "site_send"
+        ]
+        task_id = "site_send_0500"
+        static_arguments = dict(profile.approved_arguments)
+        task = {
+            "id": task_id,
+            "tool_name": profile.tool_name,
+            "tool_params": static_arguments,
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "configuration_version": 1,
+        }
+        exact = self._exact_policy(
+            task=task,
+            profile=profile,
+            registry=registry,
+            approval=approval,
+        )
+        validation_calls = []
+
+        class RecordingRegistry:
+            def get_capability(self, tool_name):
+                return registry.get_capability(tool_name)
+
+            def validate_arguments(self, tool_name, arguments):
+                validation_calls.append((tool_name, dict(arguments)))
+                return registry.validate_arguments(tool_name, arguments)
+
+        self.runner._validate_control_plane_policy_states(
+            [exact],
+            enabled_ids={task_id},
+            registry=RecordingRegistry(),
+            approval_contracts=approval,
+            profile_by_task_id={task_id: profile},
+            arguments_for_schema_validation=(
+                scheduled_task_contracts._arguments_for_schema_validation
+            ),
+        )
+
+        self.assertEqual(1, len(validation_calls))
+        self.assertIn("target_date", validation_calls[0][1])
+        self.assertEqual(profile.approved_arguments, exact["tool_params"])
+        self.assertNotIn("target_date", exact["tool_params"])
+        self.assertNotIn("target_date", static_arguments)
+
+    def test_manifest_policy_validation_rejects_unsupported_dynamic_resolver(self):
+        registry = self.runner._load_control_plane_tool_registry()
+        approval = self.runner._load_scheduled_task_approval_contract_module()
+        scheduled_task_contracts = (
+            self.runner._load_control_plane_scheduled_task_contract_module()
+        )
+        approved_profile = (
+            scheduled_task_contracts.APPROVED_SCHEDULED_TASK_PROFILES["site_send"]
+        )
+        profile = replace(
+            approved_profile,
+            dynamic_argument_rules={"target_date": "unsupported_resolver"},
+        )
+        task_id = "site_send_0500"
+        task = {
+            "id": task_id,
+            "tool_name": profile.tool_name,
+            "tool_params": dict(profile.approved_arguments),
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "configuration_version": 1,
+        }
+        exact = self._exact_policy(
+            task=task,
+            profile=profile,
+            registry=registry,
+            approval=approval,
+        )
+
+        with self.assertRaises(
+            self.runner.ControlPlaneTaskCutoverPreflightError
+        ) as error:
+            self.runner._validate_control_plane_policy_states(
+                [exact],
+                enabled_ids={task_id},
+                registry=registry,
+                approval_contracts=approval,
+                profile_by_task_id={task_id: profile},
+                arguments_for_schema_validation=(
+                    scheduled_task_contracts._arguments_for_schema_validation
+                ),
+            )
+
+        self.assertEqual("CONTROL_PLANE_POLICY_NOT_ACTIVE", error.exception.code)
+
     def test_enabled_default_or_stale_exact_policy_cannot_pass_manifest_health(self):
         registry = self.runner._load_control_plane_tool_registry()
         approval = self.runner._load_scheduled_task_approval_contract_module()
-        profiles = self.runner._load_control_plane_scheduled_task_profiles()
+        scheduled_task_contracts = (
+            self.runner._load_control_plane_scheduled_task_contract_module()
+        )
+        profiles = scheduled_task_contracts.APPROVED_SCHEDULED_TASK_PROFILES
         task_id = "send_order_2359"
         profile = profiles["send_order"]
         capability = registry.get_capability(profile.tool_name)
@@ -1016,6 +1139,9 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "registry": registry,
             "approval_contracts": approval,
             "profile_by_task_id": {task_id: profile},
+            "arguments_for_schema_validation": (
+                scheduled_task_contracts._arguments_for_schema_validation
+            ),
         }
 
         self.runner._validate_control_plane_policy_states([exact], **kwargs)
