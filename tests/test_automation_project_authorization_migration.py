@@ -6,6 +6,7 @@ import importlib.util
 import io
 from pathlib import Path
 import re
+import sys
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -15,6 +16,12 @@ MIGRATION = ROOT / "agent" / "migrations" / "018_automation_project_authorizatio
 RUNNER_PATH = ROOT / "agent" / "scripts" / "run_migrations.py"
 RESOURCE_PREFLIGHT_PATH = (
     ROOT / "agent" / "scripts" / "automation_project_resource_preflight.py"
+)
+SCHEDULE_IDENTITY_PREFLIGHT_PATH = (
+    ROOT
+    / "agent"
+    / "scripts"
+    / "automation_project_schedule_identity_preflight.py"
 )
 MIGRATION_HELPER_PATH = ROOT / "agent" / "scripts" / "migration_018_authorization.py"
 
@@ -31,6 +38,17 @@ def _load_resource_preflight():
     spec = importlib.util.spec_from_file_location(
         "automation_project_resource_preflight_test",
         RESOURCE_PREFLIGHT_PATH,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_schedule_identity_preflight():
+    spec = importlib.util.spec_from_file_location(
+        "automation_project_schedule_identity_preflight_test",
+        SCHEDULE_IDENTITY_PREFLIGHT_PATH,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -122,6 +140,57 @@ class _ResourceDiagnosticConnection:
         self.closed = True
 
 
+class _ScheduleIdentityCursor:
+    def __init__(self, rows=(), *, applied=False, fail_query=False) -> None:
+        self.rows = rows
+        self.applied = applied
+        self.fail_query = fail_query
+        self._row = None
+        self.calls: list[tuple[str, object]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(str(sql).split())
+        self.calls.append((normalized, params))
+        if normalized == "START TRANSACTION READ ONLY":
+            self._row = None
+        elif normalized.startswith("SELECT 1 FROM schema_migrations"):
+            self._row = {"applied": 1} if self.applied else None
+        elif normalized.startswith("SELECT id, tool_name FROM scheduled_tasks"):
+            if self.fail_query:
+                raise RuntimeError("malicious\npassword=must-not-leak")
+            self._row = None
+        else:
+            raise AssertionError(f"unexpected identity SQL: {normalized}")
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self.rows
+
+
+class _ScheduleIdentityConnection:
+    def __init__(self, cursor: _ScheduleIdentityCursor) -> None:
+        self._cursor = cursor
+        self.rollback_count = 0
+        self.closed = False
+
+    def cursor(self):
+        return self._cursor
+
+    def rollback(self):
+        self.rollback_count += 1
+
+    def close(self):
+        self.closed = True
+
+
 def _valid_diagnostic_row(resource_preflight, spec):
     row = {"resource_key": spec.resource_key}
     for field_name in (
@@ -145,6 +214,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
     def setUpClass(cls) -> None:
         cls.runner = _load_runner()
         cls.resource_preflight = _load_resource_preflight()
+        cls.schedule_identity_preflight = _load_schedule_identity_preflight()
         cls.sql = MIGRATION.read_text(encoding="utf-8")
 
     def test_sql_splits_and_reviewed_map_is_exact_and_complete(self):
@@ -168,6 +238,33 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             "'finance_startup_catchup')",
             values_section,
         )
+        sql_identities = {
+            task_id: (tool_name, automation_id)
+            for task_id, tool_name, automation_id in re.findall(
+                r"\('([^']+)', '([^']+)', '([^']+)'\)",
+                values_section,
+            )
+        }
+        shared_identities = (
+            self.schedule_identity_preflight.load_reviewed_schedule_identities()
+        )
+        self.assertEqual(70, len(shared_identities))
+        self.assertEqual(sql_identities, shared_identities)
+
+    def test_schedule_identity_authority_restores_complete_shared_namespace(self):
+        before = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "shared" or name.startswith("shared.")
+        }
+        self.schedule_identity_preflight.load_reviewed_schedule_identities()
+        after = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "shared" or name.startswith("shared.")
+        }
+        self.assertEqual(set(before), set(after))
+        self.assertTrue(all(after[name] is module for name, module in before.items()))
 
     def test_data_guards_and_capture_complete_before_core_alter(self):
         first_alter = self.sql.index("ALTER TABLE scheduled_tasks ADD COLUMN")
@@ -503,6 +600,169 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
 
         self.assertEqual(1, connection.rollback_count)
         self.assertTrue(connection.closed)
+
+    def test_schedule_identity_preflight_allows_missing_expected_rows(self):
+        cursor = _ScheduleIdentityCursor(
+            (
+                {
+                    "id": "send_order_2359",
+                    "tool_name": "sync_daily_send_orders",
+                },
+                {
+                    "id": "customer_problems_shadow",
+                    "tool_name": "sync_customer_service_problems",
+                },
+            )
+        )
+        connection = _ScheduleIdentityConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = self.schedule_identity_preflight.check_automation_project_scheduled_task_identities(
+                lambda: connection
+            )
+
+        self.assertEqual(0, result)
+        self.assertEqual(
+            "automation_project_scheduled_task_identities=ok "
+            "state=pending allowed_count=70\n",
+            output.getvalue(),
+        )
+        self.assertEqual("START TRANSACTION READ ONLY", cursor.calls[0][0])
+        self.assertEqual(("018",), cursor.calls[1][1])
+        self.assertEqual(
+            "SELECT id, tool_name FROM scheduled_tasks ORDER BY BINARY id",
+            cursor.calls[2][0],
+        )
+        self.assertEqual(1, connection.rollback_count)
+        self.assertTrue(connection.closed)
+
+    def test_schedule_identity_preflight_skips_legacy_set_after_018(self):
+        cursor = _ScheduleIdentityCursor(
+            ({"id": "user_plugin_schedule", "tool_name": "user_tool"},),
+            applied=True,
+        )
+        connection = _ScheduleIdentityConnection(cursor)
+        output = io.StringIO()
+
+        with (
+            patch.object(
+                self.schedule_identity_preflight,
+                "load_reviewed_schedule_identities",
+                side_effect=AssertionError("must not load legacy authority"),
+            ),
+            redirect_stdout(output),
+        ):
+            result = self.schedule_identity_preflight.check_automation_project_scheduled_task_identities(
+                lambda: connection
+            )
+
+        self.assertEqual(0, result)
+        self.assertEqual(
+            "automation_project_scheduled_task_identities=ok "
+            "state=applied allowed_count=70\n",
+            output.getvalue(),
+        )
+        self.assertFalse(any("scheduled_tasks" in sql for sql, _ in cursor.calls))
+        self.assertEqual(1, connection.rollback_count)
+        self.assertTrue(connection.closed)
+
+    def test_schedule_identity_preflight_hex_encodes_untrusted_database_text(self):
+        unknown_id = "未知\npassword=must-not-leak"
+        unknown_tool = "恶意\r\ntool"
+        wrong_tool = "wrong\npassword=must-not-leak"
+        cursor = _ScheduleIdentityCursor(
+            (
+                {"id": unknown_id, "tool_name": unknown_tool},
+                {"id": "send_order_2359", "tool_name": wrong_tool},
+                {"id": "x" * 513, "tool_name": "sync_daily_send_orders"},
+                {"id": "send_order_2359", "tool_name": "y" * 513},
+            )
+        )
+        connection = _ScheduleIdentityConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = self.schedule_identity_preflight.check_automation_project_scheduled_task_identities(
+                lambda: connection
+            )
+
+        self.assertEqual(1, result)
+        rendered = output.getvalue()
+        self.assertNotIn("must-not-leak", rendered)
+        self.assertNotIn("未知", rendered)
+        lines = rendered.splitlines()
+        self.assertEqual(
+            "automation_project_scheduled_task_identities=blocked count=4",
+            lines[0],
+        )
+        hex_lines = [line for line in lines[1:] if " task_id_hex=" in line]
+        hash_lines = [line for line in lines[1:] if "_sha256=" in line]
+        self.assertEqual(2, len(hex_lines))
+        self.assertEqual(2, len(hash_lines))
+        for line in hex_lines:
+            match = re.fullmatch(
+                r"automation_project_scheduled_task_identity "
+                r"task_id_hex=([0-9a-f]{0,1024}) "
+                r"tool_name_hex=([0-9a-f]{0,1024}) "
+                r"reason=(UNKNOWN_TASK_ID|TOOL_NAME_MISMATCH) "
+                r"field=(id|tool_name)",
+                line,
+            )
+            self.assertIsNotNone(match)
+        unknown_line = next(
+            line for line in hex_lines if "reason=UNKNOWN_TASK_ID" in line
+        )
+        unknown_task_hex = re.search(
+            r"task_id_hex=([0-9a-f]+)", unknown_line
+        ).group(1)
+        self.assertEqual(bytes.fromhex(unknown_task_hex).decode(), unknown_id)
+        for line in hash_lines:
+            self.assertRegex(
+                line,
+                r"^automation_project_scheduled_task_identity_sha256="
+                r"[0-9a-f]{64} reason=INVALID_IDENTITY "
+                r"field=(id|tool_name)$",
+            )
+        self.assertEqual(1, connection.rollback_count)
+        self.assertTrue(connection.closed)
+
+    def test_schedule_identity_preflight_suppresses_query_errors_and_rolls_back(self):
+        cursor = _ScheduleIdentityCursor(fail_query=True)
+        connection = _ScheduleIdentityConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = self.schedule_identity_preflight.check_automation_project_scheduled_task_identities(
+                lambda: connection
+            )
+
+        self.assertEqual(1, result)
+        self.assertEqual(
+            "automation_project_scheduled_task_identities=blocked "
+            "reason=AUTOMATION_PROJECT_IDENTITY_PREFLIGHT_RUNTIME_ERROR "
+            "count=1\n",
+            output.getvalue(),
+        )
+        self.assertEqual(1, connection.rollback_count)
+        self.assertTrue(connection.closed)
+
+    def test_runner_exposes_schedule_identity_preflight_cli(self):
+        with (
+            patch.object(sys, "argv", [
+                "run_migrations.py",
+                "--check-automation-project-scheduled-task-identities",
+            ]),
+            patch.object(
+                self.runner,
+                "check_automation_project_scheduled_task_identities",
+                return_value=17,
+            ) as check,
+        ):
+            result = self.runner.main()
+
+        self.assertEqual(17, result)
+        check.assert_called_once_with(self.runner._connect)
 
     def test_plugin_instance_schema_matches_closed_trust_and_worker_contract(self):
         for required in (

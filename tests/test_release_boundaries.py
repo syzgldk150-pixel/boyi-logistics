@@ -357,6 +357,22 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "--check-automation-project-required-resources",
             release,
         )
+        self.assertIn(
+            "--check-automation-project-scheduled-task-identities",
+            release,
+        )
+        self.assertLess(
+            execution.index(
+                'RELEASE_STAGE="preflight_automation_project_scheduled_task_identities"'
+            ),
+            execution.index("backup_managed_sources"),
+        )
+        self.assertLess(
+            execution.index(
+                "preflight_automation_project_scheduled_task_identities\n"
+            ),
+            execution.index("MUTATION_STARTED=1"),
+        )
         self.assertLess(
             execution.index(
                 'RELEASE_STAGE="preflight_automation_project_required_resources"'
@@ -799,6 +815,74 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertIn("states=0,1,1,1,1", completed.stdout)
+
+    def test_schedule_identity_preflight_accepts_only_exact_success_states(self):
+        for state in ("pending", "applied"):
+            with self.subTest(state=state):
+                completed = _run_sourced_release_harness(
+                    f"""
+                    run_staged_migration_runner() {{
+                      [[ "$1" == "--check-automation-project-scheduled-task-identities" ]] || return 92
+                      echo 'automation_project_scheduled_task_identities=ok state={state} allowed_count=70'
+                    }}
+                    preflight_automation_project_scheduled_task_identities
+                    """
+                )
+
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertEqual(
+                    "automation_project_scheduled_task_identities=ok "
+                    f"state={state} allowed_count=70\n",
+                    completed.stdout,
+                )
+
+    def test_schedule_identity_preflight_preserves_only_valid_hex_findings(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            run_staged_migration_runner() {
+              echo 'automation_project_scheduled_task_identities=blocked count=2'
+              echo 'automation_project_scheduled_task_identity task_id_hex=756e6b6e6f776e tool_name_hex=746f6f6c reason=UNKNOWN_TASK_ID field=id'
+              echo 'automation_project_scheduled_task_identity_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa reason=INVALID_IDENTITY field=tool_name'
+              return 1
+            }
+            preflight_automation_project_scheduled_task_identities
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual("", completed.stdout)
+        self.assertIn("task_id_hex=756e6b6e6f776e", completed.stderr)
+        self.assertIn("identity_sha256=" + "a" * 64, completed.stderr)
+
+    def test_schedule_identity_preflight_suppresses_untrusted_or_mismatched_output(self):
+        cases = (
+            """echo 'password=must-not-be-printed'; return 1""",
+            """
+              echo 'automation_project_scheduled_task_identities=blocked count=1'
+              echo 'automation_project_scheduled_task_identity task_id_hex=61 tool_name_hex=62 reason=TOOL_NAME_MISMATCH field=id'
+              return 1
+            """,
+            """echo 'automation_project_scheduled_task_identities=ok state=pending allowed_count=69'""",
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                completed = _run_sourced_release_harness(
+                    f"""
+                    run_staged_migration_runner() {{
+                      {body}
+                    }}
+                    preflight_automation_project_scheduled_task_identities
+                    """
+                )
+
+                self.assertNotEqual(0, completed.returncode)
+                self.assertNotIn("must-not-be-printed", completed.stdout)
+                self.assertNotIn("must-not-be-printed", completed.stderr)
+                self.assertIn(
+                    "automation_project_scheduled_task_identities=blocked "
+                    "reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1",
+                    completed.stderr,
+                )
 
     def test_required_resource_preflight_accepts_only_exact_success(self):
         completed = _run_sourced_release_harness(
