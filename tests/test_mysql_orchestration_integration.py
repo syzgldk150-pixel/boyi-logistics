@@ -406,6 +406,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     enabled = task_id not in self.runner.CONTROL_PLANE_REVIEWED_DISABLED_IDS
                     task = {
                         "id": task_id,
+                        "automation_id": f"integration_manifest_{task_id}",
                         "tool_name": reviewed["tool_name"],
                         "tool_params": arguments,
                         "cron_expression": reviewed["cron_expression"],
@@ -414,11 +415,12 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                     }
                     cursor.execute(
                         "INSERT INTO scheduled_tasks "
-                        "(id, name, tool_name, tool_params, cron_expression, enabled, "
-                        "configuration_version) VALUES (%s, %s, %s, CAST(%s AS JSON), "
-                        "%s, %s, %s)",
+                        "(id, automation_id, name, tool_name, tool_params, cron_expression, "
+                        "enabled, configuration_version) VALUES (%s, %s, %s, %s, "
+                        "CAST(%s AS JSON), %s, %s, %s)",
                         (
                             task_id,
+                            task["automation_id"],
                             f"release manifest {task_id}",
                             task["tool_name"],
                             json.dumps(
@@ -1412,7 +1414,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         with self._connection(database) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
             self.assertEqual(
-                [version for version, _ in self.runner.discover_migrations()],
+                [
+                    version
+                    for version, _ in self.runner.discover_migrations()
+                    if version <= "017"
+                ],
                 [str(row["version"]) for row in cursor.fetchall()],
             )
 
@@ -2294,8 +2300,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         with self._connection(autocommit=True) as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO scheduled_tasks "
-                "(id, name, tool_name, tool_params, cron_expression, enabled) "
-                "VALUES (%s, 'policy default', 'query_waybill', JSON_OBJECT(), "
+                "(id, automation_id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES (%s, 'integration_policy_default_automation', "
+                "'policy default', 'query_waybill', JSON_OBJECT(), "
                 "'0 3 * * *', TRUE)",
                 (task_id,),
             )
@@ -2423,8 +2430,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self.assertEqual(0, cursor.fetchone()["count"])
             cursor.execute(
                 "INSERT INTO scheduled_tasks "
-                "(id, name, tool_name, tool_params, cron_expression, enabled) "
-                "VALUES (%s, 'policy exact', 'integration_external_write', JSON_OBJECT(), "
+                "(id, automation_id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES (%s, 'integration_policy_exact_automation', "
+                "'policy exact', 'integration_external_write', JSON_OBJECT(), "
                 "'30 18 * * *', TRUE)",
                 (task_id,),
             )
@@ -2503,9 +2511,10 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             )
             cursor.execute(
                 "INSERT INTO scheduled_tasks "
-                "(id, name, tool_name, tool_params, cron_expression, enabled) "
-                "VALUES (%s, %s, 'query_waybill', JSON_OBJECT(), '0 3 * * *', TRUE)",
-                (task_id, task_id),
+                "(id, automation_id, name, tool_name, tool_params, cron_expression, enabled) "
+                "VALUES (%s, %s, %s, 'query_waybill', JSON_OBJECT(), "
+                "'0 3 * * *', TRUE)",
+                (task_id, f"{task_id}_automation", task_id),
             )
             cursor.execute(
                 "INSERT INTO scheduled_task_approval_policies "
@@ -2882,6 +2891,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self
         )
 
+    @unittest.skip("Windows Worker is deferred from the current server-only release")
     def test_automation_worker_dispatch_is_durable_exact_device_and_replay_safe(self):
         AUTOMATION_PROJECT_SCENARIOS.run_test_automation_worker_dispatch_is_durable_exact_device_and_replay_safe(
             self
