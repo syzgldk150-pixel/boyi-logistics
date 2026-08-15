@@ -243,7 +243,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
     @classmethod
     def _run_migrations(cls, database: str, *, check_only: bool = False) -> None:
         if not check_only:
-            # Migration 018 intentionally refuses to guess its nine reviewed
+            # Migration 018 intentionally refuses to guess its eight reviewed
             # external destinations. Integration databases therefore model the
             # deployment prerequisite explicitly after 017, instead of weakening
             # the production migration with test defaults.

@@ -92,7 +92,8 @@ ON DUPLICATE KEY UPDATE
     automation_id = VALUES(automation_id);
 
 -- Exact reviewed external-resource identities for the legacy Yunda,
--- problem-action, send-order, arrival, daily-sign and site-send instances.
+-- problem-action, send-order, arrival, daily-sign and site-send instances,
+-- including the code-owned trusted entrypoint routes they bind.
 -- Runtime code binds projects by the
 -- explicit resource ids below; neither migration nor execution may infer a
 -- resource from a project/key suffix. The Yunda and problem-sheet locators
@@ -113,6 +114,117 @@ CREATE TABLE IF NOT EXISTS automation_project_reviewed_resource_map_018 (
 INSERT INTO automation_project_reviewed_resource_map_018 (
     resource_key, expected_kind, materialize_missing, default_config_json
 ) VALUES
+    (
+        'phase7.delivery_status_bitable',
+        'feishu_bitable',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_bitable',
+            'base_token', 'Fcm8b2H7wayK1UsYLjlcFmWhnMh',
+            'table_id', 'tblX96gGAuBfJrtW',
+            'view_name', '未签收明细',
+            'view_id', 'veweDmbdIS'
+        )
+    ),
+    (
+        'phase7.delivery_status_webhook',
+        'webhook_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'webhook_route',
+            'path', 'webhook/sign-status'
+        )
+    ),
+    (
+        'phase7.scan_webhook',
+        'webhook_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'webhook_route',
+            'path', 'webhook/phase7/scan'
+        )
+    ),
+    (
+        'phase7.stats_webhook',
+        'webhook_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'webhook_route',
+            'path', 'webhook/phase7/stats'
+        )
+    ),
+    (
+        'automation.feishu_route.arrive_list',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.arrive_list'
+        )
+    ),
+    (
+        'automation.feishu_route.send_order',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.send_order'
+        )
+    ),
+    (
+        'automation.feishu_route.yunda_dispatch_forecast',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.yunda_dispatch_forecast'
+        )
+    ),
+    (
+        'automation.feishu_route.yunda_send_waybills',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.yunda_send_waybills'
+        )
+    ),
+    (
+        'automation.feishu_route.scan_codes',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.scan_codes'
+        )
+    ),
+    (
+        'automation.feishu_route.arrival_stats',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.arrival_stats'
+        )
+    ),
+    (
+        'automation.feishu_route.self_pickup_problem_upload',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.self_pickup_problem_upload'
+        )
+    ),
+    (
+        'automation.feishu_route.split_pending_problem_upload',
+        'feishu_route',
+        TRUE,
+        JSON_OBJECT(
+            'resource_kind', 'feishu_route',
+            'route_key', 'builtin.split_pending_problem_upload'
+        )
+    ),
     (
         'phase7.yunda_dispatch_forecast_bitable',
         'feishu_bitable',
@@ -243,7 +355,7 @@ SET @cp018_reviewed_resource_count = (
     SELECT COUNT(*) FROM automation_project_reviewed_resource_map_018
 );
 SET @cp018_reviewed_resource_guard_sql = IF(
-    @cp018_reviewed_resource_count = 14,
+    @cp018_reviewed_resource_count = 26,
     'SELECT 1',
     'SELECT * FROM information_schema.cp018_reviewed_resource_map_changed'
 );
@@ -545,12 +657,34 @@ SET @cp018_legacy_pending_backup_count = (
     FROM automation_project_resource_backup_018
     WHERE BINARY resource_key = BINARY 'phase7.pending_arrivals_sheet'
 );
+SET @cp018_legacy_pending_backup_invalid_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018
+    WHERE BINARY resource_key = BINARY 'phase7.pending_arrivals_sheet'
+      AND existed_before <> TRUE
+);
+SET @cp018_resource_backup_missing_reviewed_count = (
+    SELECT COUNT(*)
+    FROM automation_project_reviewed_resource_map_018 AS reviewed
+    LEFT JOIN automation_project_resource_backup_018 AS backup
+      ON BINARY backup.resource_key = BINARY reviewed.resource_key
+    WHERE backup.resource_key IS NULL
+);
+SET @cp018_resource_backup_unexpected_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018 AS backup
+    LEFT JOIN automation_project_reviewed_resource_map_018 AS reviewed
+      ON BINARY reviewed.resource_key = BINARY backup.resource_key
+    WHERE reviewed.resource_key IS NULL
+      AND BINARY backup.resource_key <>
+          BINARY 'phase7.pending_arrivals_sheet'
+);
 SET @cp018_resource_backup_guard_sql = IF(
-    @cp018_resource_backup_count = 14
-    OR (
-        @cp018_resource_backup_count = 15
-        AND @cp018_legacy_pending_backup_count = 1
-    ),
+    @cp018_resource_backup_count = 26 + @cp018_legacy_pending_backup_count
+    AND @cp018_legacy_pending_backup_count IN (0, 1)
+    AND @cp018_legacy_pending_backup_invalid_count = 0
+    AND @cp018_resource_backup_missing_reviewed_count = 0
+    AND @cp018_resource_backup_unexpected_count = 0,
     'SELECT 1',
     'SELECT * FROM information_schema.cp018_resource_backup_incomplete'
 );
@@ -558,8 +692,82 @@ PREPARE cp018_resource_backup_guard_stmt FROM @cp018_resource_backup_guard_sql;
 EXECUTE cp018_resource_backup_guard_stmt;
 DEALLOCATE PREPARE cp018_resource_backup_guard_stmt;
 
--- A later failed pass can also have captured the obsolete fifteenth row. It
--- was never materialized by 018, so accept it only as an exact pre-existing
+-- A rerun of the expanded reviewed set can observe exactly one mixed hash
+-- layout: all fourteen old reviewed rows (and the optional legacy pending row,
+-- when present) were captured by the prior pass, while the twelve newly
+-- reviewed code-owned rows were just backed up and still have NULL hashes.
+-- No other partial hash subset is migration-owned.
+SET @cp018_resource_backup_hashed_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018
+    WHERE migration_config_sha256 IS NOT NULL
+);
+SET @cp018_old_reviewed_backup_unhashed_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018 AS backup
+    INNER JOIN automation_project_reviewed_resource_map_018 AS reviewed
+      ON BINARY reviewed.resource_key = BINARY backup.resource_key
+    WHERE BINARY backup.resource_key NOT IN (
+        BINARY 'phase7.delivery_status_bitable',
+        BINARY 'phase7.delivery_status_webhook',
+        BINARY 'phase7.scan_webhook',
+        BINARY 'phase7.stats_webhook',
+        BINARY 'automation.feishu_route.arrive_list',
+        BINARY 'automation.feishu_route.send_order',
+        BINARY 'automation.feishu_route.yunda_dispatch_forecast',
+        BINARY 'automation.feishu_route.yunda_send_waybills',
+        BINARY 'automation.feishu_route.scan_codes',
+        BINARY 'automation.feishu_route.arrival_stats',
+        BINARY 'automation.feishu_route.self_pickup_problem_upload',
+        BINARY 'automation.feishu_route.split_pending_problem_upload'
+    )
+      AND backup.migration_config_sha256 IS NULL
+);
+SET @cp018_new_reviewed_backup_hashed_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018
+    WHERE BINARY resource_key IN (
+        BINARY 'phase7.delivery_status_bitable',
+        BINARY 'phase7.delivery_status_webhook',
+        BINARY 'phase7.scan_webhook',
+        BINARY 'phase7.stats_webhook',
+        BINARY 'automation.feishu_route.arrive_list',
+        BINARY 'automation.feishu_route.send_order',
+        BINARY 'automation.feishu_route.yunda_dispatch_forecast',
+        BINARY 'automation.feishu_route.yunda_send_waybills',
+        BINARY 'automation.feishu_route.scan_codes',
+        BINARY 'automation.feishu_route.arrival_stats',
+        BINARY 'automation.feishu_route.self_pickup_problem_upload',
+        BINARY 'automation.feishu_route.split_pending_problem_upload'
+    )
+      AND migration_config_sha256 IS NOT NULL
+);
+SET @cp018_legacy_pending_backup_unhashed_count = (
+    SELECT COUNT(*)
+    FROM automation_project_resource_backup_018
+    WHERE BINARY resource_key = BINARY 'phase7.pending_arrivals_sheet'
+      AND migration_config_sha256 IS NULL
+);
+SET @cp018_resource_backup_hash_layout_guard_sql = IF(
+    @cp018_resource_backup_hashed_count = 0
+    OR @cp018_resource_backup_hashed_count = @cp018_resource_backup_count
+    OR (
+        @cp018_resource_backup_hashed_count =
+            14 + @cp018_legacy_pending_backup_count
+        AND @cp018_old_reviewed_backup_unhashed_count = 0
+        AND @cp018_new_reviewed_backup_hashed_count = 0
+        AND @cp018_legacy_pending_backup_unhashed_count = 0
+    ),
+    'SELECT 1',
+    'SELECT * FROM information_schema.cp018_resource_backup_hash_layout_invalid'
+);
+PREPARE cp018_resource_backup_hash_layout_guard_stmt
+    FROM @cp018_resource_backup_hash_layout_guard_sql;
+EXECUTE cp018_resource_backup_hash_layout_guard_stmt;
+DEALLOCATE PREPARE cp018_resource_backup_hash_layout_guard_stmt;
+
+-- A later failed pass can also have captured the obsolete legacy pending row.
+-- It was never materialized by 018, so accept it only as an exact pre-existing
 -- row, its sole migration normalization (resource_kind), or its already
 -- captured post-state. This preserves exact restore ownership without making
 -- the optional resource part of the current reviewed contract.
@@ -1018,7 +1226,7 @@ DEALLOCATE PREPARE cp018_resource_partial_drift_guard_stmt;
 
 -- Materialize missing reviewed rows without overwriting an existing target.
 -- An existing exact row may predate resource-kind governance; only that absent
--- discriminator is added. All routing is by the fourteen BINARY resource ids.
+-- discriminator is added. All routing is by the twenty-six BINARY resource ids.
 INSERT INTO workflow_resources (
     resource_key, config_json, config_sha256, source, configuration_version
 )
@@ -1123,6 +1331,25 @@ SET @cp018_invalid_reviewed_resource_count = (
                     resource.config_json, '$.clear_range'
                 ))) <> ''
             WHEN BINARY reviewed.resource_key =
+                 BINARY 'phase7.delivery_status_bitable'
+            THEN
+                JSON_TYPE(JSON_EXTRACT(resource.config_json, '$.base_token')) = 'STRING'
+                AND TRIM(JSON_UNQUOTE(
+                    JSON_EXTRACT(resource.config_json, '$.base_token')
+                )) <> ''
+                AND JSON_TYPE(JSON_EXTRACT(resource.config_json, '$.table_id')) = 'STRING'
+                AND TRIM(JSON_UNQUOTE(
+                    JSON_EXTRACT(resource.config_json, '$.table_id')
+                )) <> ''
+                AND JSON_TYPE(JSON_EXTRACT(resource.config_json, '$.view_name')) = 'STRING'
+                AND TRIM(JSON_UNQUOTE(
+                    JSON_EXTRACT(resource.config_json, '$.view_name')
+                )) <> ''
+                AND JSON_TYPE(JSON_EXTRACT(resource.config_json, '$.view_id')) = 'STRING'
+                AND TRIM(JSON_UNQUOTE(
+                    JSON_EXTRACT(resource.config_json, '$.view_id')
+                )) <> ''
+            WHEN BINARY reviewed.resource_key =
                  BINARY 'phase7.yunda_dispatch_forecast_bitable'
               OR BINARY reviewed.resource_key =
                  BINARY 'phase7.yunda_send_waybills_bitable'
@@ -1160,6 +1387,51 @@ SET @cp018_invalid_reviewed_resource_count = (
                 AND TRIM(JSON_UNQUOTE(JSON_EXTRACT(
                     resource.config_json, '$.clear_range'
                 ))) <> ''
+            WHEN BINARY reviewed.resource_key IN (
+                BINARY 'phase7.delivery_status_webhook',
+                BINARY 'phase7.scan_webhook',
+                BINARY 'phase7.stats_webhook'
+            )
+            THEN
+                JSON_TYPE(JSON_EXTRACT(
+                    resource.config_json, '$.path'
+                )) = 'STRING'
+                AND CHAR_LENGTH(
+                    TRIM(BOTH '/' FROM TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                        resource.config_json, '$.path'
+                    ))))
+                ) BETWEEN 1 AND 191
+                AND BINARY TRIM(
+                    BOTH '/' FROM TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                        resource.config_json, '$.path'
+                    )))
+                ) = BINARY TRIM(
+                    BOTH '/' FROM TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                        reviewed.default_config_json, '$.path'
+                    )))
+                )
+            WHEN BINARY reviewed.resource_key IN (
+                BINARY 'automation.feishu_route.arrive_list',
+                BINARY 'automation.feishu_route.send_order',
+                BINARY 'automation.feishu_route.yunda_dispatch_forecast',
+                BINARY 'automation.feishu_route.yunda_send_waybills',
+                BINARY 'automation.feishu_route.scan_codes',
+                BINARY 'automation.feishu_route.arrival_stats',
+                BINARY 'automation.feishu_route.self_pickup_problem_upload',
+                BINARY 'automation.feishu_route.split_pending_problem_upload'
+            )
+            THEN
+                JSON_TYPE(JSON_EXTRACT(
+                    resource.config_json, '$.route_key'
+                )) = 'STRING'
+                AND CHAR_LENGTH(TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                    resource.config_json, '$.route_key'
+                )))) BETWEEN 1 AND 191
+                AND BINARY TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                    resource.config_json, '$.route_key'
+                ))) = BINARY TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                    reviewed.default_config_json, '$.route_key'
+                )))
             WHEN BINARY reviewed.resource_key IN (
                 BINARY 'phase7.site_send_bitable',
                 BINARY 'phase7.send_order_bitable',

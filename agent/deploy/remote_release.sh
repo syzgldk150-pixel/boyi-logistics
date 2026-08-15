@@ -1801,7 +1801,12 @@ class SmokeGate(str, Enum):
     RUNNER_HOLD = "runner_hold"
     RUNNER_ACTIVE = "runner_active"
     PLUGIN_BROKER = "plugin_broker"
-    PLUGIN_CATALOG = "plugin_catalog"
+    PLUGIN_CATALOG_UNSUPPORTED = "plugin_catalog_unsupported"
+    PLUGIN_CATALOG_ENABLED_BUILTIN = "plugin_catalog_enabled_builtin"
+    PLUGIN_CATALOG_INVALID_TRUST = "plugin_catalog_invalid_trust"
+    PLUGIN_CATALOG_UNSTABLE_GENERATIONS = "plugin_catalog_unstable_generations"
+    PLUGIN_CATALOG_INVALID_RUNTIME = "plugin_catalog_invalid_runtime"
+    PLUGIN_CATALOG_AGGREGATE_OR_SHAPE = "plugin_catalog_aggregate_or_shape"
     PLUGIN_GENERATIONS = "plugin_generations"
     PLUGIN_AGGREGATE = "plugin_aggregate"
     WORKER = "worker"
@@ -1907,12 +1912,43 @@ try:
         or automation_plugins["broker"].get("state") != "running"
     ):
         raise RuntimeError("automation plugin broker is not release-ready")
-    failure_gate = SmokeGate.PLUGIN_CATALOG
-    if (
-        not isinstance(automation_plugins.get("catalog"), dict)
-        or automation_plugins["catalog"].get("ok") is not True
-    ):
-        raise RuntimeError("automation plugin catalog is not release-ready")
+    failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
+    plugin_catalog = automation_plugins.get("catalog")
+    if not isinstance(plugin_catalog, dict):
+        raise RuntimeError("automation plugin catalog health shape is invalid")
+    catalog_failure_fields = (
+        (
+            SmokeGate.PLUGIN_CATALOG_UNSUPPORTED,
+            "unsupported_automation_ids",
+        ),
+        (
+            SmokeGate.PLUGIN_CATALOG_ENABLED_BUILTIN,
+            "enabled_builtin_release",
+        ),
+        (
+            SmokeGate.PLUGIN_CATALOG_INVALID_TRUST,
+            "invalid_enabled_trust",
+        ),
+        (
+            SmokeGate.PLUGIN_CATALOG_UNSTABLE_GENERATIONS,
+            "unstable_generations",
+        ),
+        (
+            SmokeGate.PLUGIN_CATALOG_INVALID_RUNTIME,
+            "invalid_enabled_runtime",
+        ),
+    )
+    for catalog_gate, field_name in catalog_failure_fields:
+        field_value = plugin_catalog.get(field_name)
+        if not isinstance(field_value, list):
+            failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
+            raise RuntimeError("automation plugin catalog health shape is invalid")
+        if field_value:
+            failure_gate = catalog_gate
+            raise RuntimeError("automation plugin catalog is not release-ready")
+    failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
+    if plugin_catalog.get("ok") is not True:
+        raise RuntimeError("automation plugin catalog aggregate is not release-ready")
     failure_gate = SmokeGate.PLUGIN_GENERATIONS
     if (
         not isinstance(automation_plugins.get("generations"), dict)
