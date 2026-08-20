@@ -599,8 +599,16 @@ def _read_reviewed_backups(
         ORDER BY id
         """,
     )
+    rows = [
+        _decoded_row(
+            row,
+            json_fields=("tool_params",),
+            code="AUTOMATION_PROJECT_BACKUP_INVALID",
+        )
+        for row in cursor.fetchall()
+    ]
     return _rows_by_id(
-        cursor.fetchall(),
+        rows,
         id_field="id",
         expected_ids=expected_ids,
         mismatch_code="AUTOMATION_PROJECT_BACKUP_SET_MISMATCH",

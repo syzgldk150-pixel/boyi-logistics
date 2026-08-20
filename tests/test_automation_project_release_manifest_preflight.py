@@ -129,6 +129,31 @@ def preflight():
     return _load_preflight()
 
 
+def test_read_reviewed_backups_decodes_mysql_json(preflight) -> None:
+    class Cursor:
+        def execute(self, _sql):
+            return None
+
+        def fetchall(self):
+            return [
+                {
+                    "id": "task-1",
+                    "tool_name": "legacy_tool",
+                    "tool_params": '{"account_id":"ronghui_default"}',
+                    "cron_expression": "0 9 * * *",
+                    "enabled": 1,
+                    "configuration_version": 1,
+                }
+            ]
+
+    rows = preflight._read_reviewed_backups(
+        Cursor(),
+        {"all_tasks": frozenset({"task-1"})},
+    )
+
+    assert rows["task-1"]["tool_params"] == {"account_id": "ronghui_default"}
+
+
 def _schedule_for_count(count: int) -> tuple[dict, tuple[str, ...]]:
     if not count:
         return {"kind": "none", "times": [], "enabled": False}, ()
