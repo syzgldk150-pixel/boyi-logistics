@@ -1858,6 +1858,28 @@ class SmokeGate(str, Enum):
     BOOTSTRAP_REJECTED = "bootstrap_rejected"
 
 
+_CLOSED_AUTOMATION_IDS = frozenset(
+    {
+        "arrival_stats",
+        "arrive_list",
+        "clockin_daxiang",
+        "clockin_daxiang_s",
+        "customer_problems_shadow",
+        "daily_sign",
+        "delivery_status",
+        "finance_bills",
+        "finance_startup_catchup",
+        "scan_codes",
+        "self_pickup_problem_upload",
+        "send_order",
+        "site_send",
+        "split_pending_problem_upload",
+        "yunda_dispatch_forecast",
+        "yunda_send_waybills",
+    }
+)
+
+
 def http_failure_gate(status):
     if status in {401, 403}:
         return SmokeGate.HTTP_AUTH_REJECTED
@@ -1867,6 +1889,7 @@ def http_failure_gate(status):
 
 
 failure_gate = SmokeGate.IDENTITY_CONFIGURATION
+closed_diagnostic_ids: tuple[str, ...] = ()
 try:
     from dotenv import dotenv_values
 
@@ -2004,6 +2027,17 @@ try:
             failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
             raise RuntimeError("automation plugin catalog health shape is invalid")
         if field_value:
+            if catalog_gate is SmokeGate.PLUGIN_CATALOG_UNSTABLE_GENERATIONS:
+                closed_diagnostic_ids = tuple(
+                    sorted(
+                        {
+                            value
+                            for value in field_value
+                            if isinstance(value, str)
+                            and value in _CLOSED_AUTOMATION_IDS
+                        }
+                    )
+                )
             failure_gate = catalog_gate
             raise RuntimeError("automation plugin catalog is not release-ready")
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
@@ -2052,8 +2086,13 @@ try:
 except SystemExit:
     raise
 except Exception:
+    diagnostic = (
+        " diagnostic_automation_ids=" + ",".join(closed_diagnostic_ids)
+        if closed_diagnostic_ids
+        else ""
+    )
     print(
-        f"service_identity_smoke=failed reason={failure_gate.value}",
+        f"service_identity_smoke=failed reason={failure_gate.value}{diagnostic}",
         file=sys.stderr,
     )
     raise SystemExit(1)

@@ -852,6 +852,25 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertNotIn(sensitive_marker, completed.stdout)
         self.assertNotIn(sensitive_marker, completed.stderr)
 
+    def test_service_identity_smoke_reports_only_closed_unstable_ids(self):
+        sensitive_marker = "SENSITIVE_UNSTABLE_AUTOMATION_ID"
+        payload = _healthy_service_identity_payload()
+        payload["data"]["components"]["automation_plugins"]["catalog"][
+            "unstable_generations"
+        ] = ["delivery_status", sensitive_marker]
+
+        completed = _run_service_identity_smoke(payload)
+
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual(
+            "service_identity_smoke=failed "
+            "reason=plugin_catalog_unstable_generations "
+            "diagnostic_automation_ids=delivery_status\n",
+            completed.stderr,
+        )
+        self.assertNotIn(sensitive_marker, completed.stdout)
+        self.assertNotIn(sensitive_marker, completed.stderr)
+
     def test_service_identity_smoke_success_contract_is_unchanged(self):
         completed = _run_service_identity_smoke(_healthy_service_identity_payload())
 
@@ -879,7 +898,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         rejected = _run_service_identity_smoke(payload, smoke_scope="full")
         self.assertEqual(1, rejected.returncode)
         self.assertEqual(
-            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations\n",
+            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations "
+            "diagnostic_automation_ids=arrival_stats\n",
             rejected.stderr,
         )
 
