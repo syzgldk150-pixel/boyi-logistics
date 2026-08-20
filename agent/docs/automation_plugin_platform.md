@@ -7,7 +7,7 @@ related:
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-16
+updated: 2026-08-21
 ---
 
 # 自动化插件平台
@@ -278,6 +278,13 @@ escaped client certificate 头后代理到回环 Agent，并清空 internal toke
 应用 mutation 前失败关闭。发布器不读取或部署 CA/私钥。
 
 ## 发布健康门禁
+
+`delivery_status` 当前只对已审计的单个未知写事故提供临时隔离：项目、插件、代际、阻断状态和租约
+UUID 必须精确匹配，且该项目只能存在这一条 generation、不得有活动租约。普通全局健康仍保持红灯，
+发布器只可放行其余项目。移除隔离前必须由权威读后核验按正式恢复合同把该租约判定为
+`APPLIED` 或 `NOT_APPLIED`，使项目恢复为无未知写的 `STABLE committed_generation`；随后在同一受审
+提交中删除固定事故身份、特殊发布/调度门禁及对应测试，并由普通全局健康独立通过。不得用人工改
+状态或仅删除租约记录替代核验。
 
 新进程先在 release hold 下启动。当前只有 allowlist 中的签名包完整、其对应已安装实例具有稳定
 committed generation、没有 `PREPARING/SWITCHING/DRAINING/BLOCKED/UNKNOWN`，且 Scheduler 与

@@ -172,6 +172,7 @@ class _RuntimeRepository:
         self.generations: dict[tuple[str, int], RuntimeGenerationRecord] = {}
         self.unknown_generation_writes: set[tuple[str, int]] = set()
         self.unknown_write_identities: dict[str, dict[str, object]] = {}
+        self.active_generation_leases: dict[tuple[str, int], tuple[object, ...]] = {}
 
     def get_project_runtime(self, automation_id: str) -> ProjectRuntimeRecord | None:
         return self.runtimes.get(automation_id)
@@ -358,10 +359,10 @@ class _RuntimeRepository:
 
     def list_active_generation_leases(
         self,
-        _automation_id: str,
-        _generation: int,
+        automation_id: str,
+        generation: int,
     ) -> Sequence[Any]:
-        return ()
+        return self.active_generation_leases.get((automation_id, generation), ())
 
     def has_unknown_generation_write(
         self,
@@ -1251,6 +1252,48 @@ def test_exact_delivery_unknown_write_keeps_global_health_degraded_but_releases_
     assert unaffected["catalog"]["ok"] is True
     assert unaffected["generations"]["healthy"] is True
     assert runtime.assert_release_ready() == unaffected
+
+
+@pytest.mark.parametrize("topology_drift", ("extra_generation", "active_lease"))
+def test_delivery_unknown_write_topology_drift_blocks_catalog_and_activation(
+    topology_drift: str,
+):
+    world = _build_release_world()
+    _reconcile_world(world)
+    catalog = _quarantine_delivery_unknown_write(world)
+    generation = world.runtime.get_generation("delivery_status", 1)
+    assert generation is not None
+    if topology_drift == "extra_generation":
+        extra_snapshot = replace(generation.snapshot, generation=2)
+        world.runtime.generations[("delivery_status", 2)] = replace(
+            generation,
+            snapshot=extra_snapshot,
+            state=RuntimeGenerationState.DISPOSED,
+        )
+    else:
+        world.runtime.active_generation_leases[("delivery_status", 1)] = (
+            SimpleNamespace(lease_id="unexpected-active-lease"),
+        )
+
+    assert catalog.delivery_status_unknown_write_quarantine_status() is None
+    with pytest.raises(PluginConflictError) as raised:
+        catalog.delivery_status_unknown_write_quarantine_status(fail_closed=True)
+    assert raised.value.code == "DELIVERY_STATUS_QUARANTINE_MISMATCH"
+
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
+    runtime.catalog = catalog
+    runtime.runtime_repository = world.runtime
+    runtime.required_first_party_ids = world.expected_automation_ids
+    runtime._started = True
+    unaffected = runtime.unaffected_release_readiness()
+
+    assert unaffected["ok"] is False
+    assert unaffected["quarantined_automation_ids"] == []
+    assert unaffected["expected_project_count"] == 16
+    with pytest.raises(PluginConflictError) as activation_error:
+        runtime.assert_release_ready()
+    assert activation_error.value.code == "AUTOMATION_PLUGIN_RUNTIME_NOT_READY"
 
 
 @pytest.mark.parametrize(

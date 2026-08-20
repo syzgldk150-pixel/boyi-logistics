@@ -537,11 +537,15 @@ class PluginCatalog:
     @staticmethod
     def _delivery_status_quarantine_project_matches(
         entry: PluginCatalogEntry,
-        generation: object,
+        generations: Sequence[object],
+        active_leases: Sequence[object],
         lease: Mapping[str, Any] | None,
     ) -> bool:
         """Verify every persisted identity before granting the narrow exception."""
 
+        if len(generations) != 1:
+            return False
+        generation = generations[0]
         snapshot = getattr(generation, "snapshot", None)
         return matches_delivery_status_unknown_write_quarantine(
             automation_id=entry.automation_id,
@@ -551,6 +555,8 @@ class PluginCatalog:
             reconcile_state=entry.reconcile_state,
             generation=getattr(snapshot, "generation", None),
             generation_state=getattr(generation, "state", None),
+            generation_count=len(generations),
+            active_lease_count=len(active_leases),
             lease=lease,
         ) and getattr(snapshot, "automation_id", None) == entry.automation_id and getattr(
             snapshot, "plugin_id", None
@@ -582,12 +588,24 @@ class PluginCatalog:
                 )
             return None
         try:
+            generations = tuple(
+                reader.list_project_generations(
+                    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+                )
+            )
+            if len(generations) != 1:
+                raise ValueError("delivery quarantine generation topology mismatched")
+            generation_number = getattr(generations[0].snapshot, "generation", None)
+            if type(generation_number) is not int:
+                raise ValueError("delivery quarantine generation identity mismatched")
+            active_leases = tuple(
+                reader.list_active_generation_leases(
+                    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+                    generation_number,
+                )
+            )
             lease = reader.find_current_unknown_generation_write(
                 DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
-            )
-            generation = reader.get_generation(
-                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
-                DELIVERY_STATUS_QUARANTINE_GENERATION,
             )
         except Exception as exc:
             if fail_closed:
@@ -596,7 +614,12 @@ class PluginCatalog:
                     code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
                 ) from exc
             return None
-        if self._delivery_status_quarantine_project_matches(entry, generation, lease):
+        if self._delivery_status_quarantine_project_matches(
+            entry,
+            generations,
+            active_leases,
+            lease,
+        ):
             return DELIVERY_STATUS_QUARANTINE_STATUS
         if fail_closed:
             raise PluginConflictError(

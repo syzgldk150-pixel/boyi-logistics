@@ -494,13 +494,18 @@ class RuntimeGenerationRepositoryPort(Protocol):
 
 @runtime_checkable
 class RuntimeUnknownWriteReadPort(Protocol):
-    """Read the one current unknown-write lease without exposing persistence SQL."""
+    """Read the complete unknown-write topology without exposing persistence SQL."""
 
-    def get_generation(
+    def list_project_generations(
+        self,
+        automation_id: str,
+    ) -> Sequence[RuntimeGenerationRecord]: ...
+
+    def list_active_generation_leases(
         self,
         automation_id: str,
         generation: int,
-    ) -> RuntimeGenerationRecord | None: ...
+    ) -> Sequence[RuntimeGenerationLease]: ...
 
     def find_current_unknown_generation_write(
         self,

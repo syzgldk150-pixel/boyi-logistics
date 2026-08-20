@@ -40,8 +40,10 @@ def matches_delivery_status_quarantine_project(
     reconcile_state: object,
     generation: object,
     generation_state: object,
+    generation_count: object,
+    active_lease_count: object,
 ) -> bool:
-    """Match only the reviewed project and generation states.
+    """Match only the reviewed project and complete runtime topology.
 
     The caller must separately obtain the lease through the typed
     ``find_current_unknown_generation_write`` repository operation before it
@@ -60,6 +62,8 @@ def matches_delivery_status_quarantine_project(
         and _exact_int(generation, DELIVERY_STATUS_QUARANTINE_GENERATION)
         and _state_value(generation_state)
         == DELIVERY_STATUS_QUARANTINE_GENERATION_STATE
+        and _exact_int(generation_count, 1)
+        and _exact_int(active_lease_count, 0)
     )
 
 
@@ -72,6 +76,8 @@ def matches_delivery_status_unknown_write_quarantine(
     reconcile_state: object,
     generation: object,
     generation_state: object,
+    generation_count: object,
+    active_lease_count: object,
     lease: Mapping[str, Any] | None,
 ) -> bool:
     """Match the complete incident binding, including its sole unknown lease."""
@@ -85,6 +91,8 @@ def matches_delivery_status_unknown_write_quarantine(
             reconcile_state=reconcile_state,
             generation=generation,
             generation_state=generation_state,
+            generation_count=generation_count,
+            active_lease_count=active_lease_count,
         )
         and isinstance(lease, Mapping)
         and set(lease) == {"generation", "lease_id"}

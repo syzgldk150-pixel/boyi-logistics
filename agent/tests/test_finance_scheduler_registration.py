@@ -781,6 +781,35 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         finally:
             scheduler_module._scheduler = previous_scheduler
 
+    def test_delivery_unknown_write_topology_failure_never_skips_as_quarantined(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        valid = {
+            "id": "delivery_status_0900",
+            "name": "Delivery status",
+            "tool_name": "automation.delivery_status.run",
+            "tool_params": {},
+            "cron_expression": "0 9 * * *",
+            "enabled": True,
+            "configuration_version": 2,
+            "automation_id": "delivery_status",
+            "automation_generation": 1,
+        }
+        for drift in ("extra generation", "active lease"):
+            core = _AgentCore()
+
+            def reject_topology(current_drift=drift):
+                raise RuntimeError(f"delivery quarantine {current_drift} mismatch")
+
+            core.registry = SimpleNamespace(
+                delivery_status_unknown_write_quarantine_status=reject_topology
+            )
+            core.memory.rows = [valid]
+            with self.assertRaisesRegex(RuntimeError, drift):
+                scheduler_module._load_tasks_from_db(core)
+
     def test_plugin_schedule_fails_closed_without_explicit_project_identity(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")

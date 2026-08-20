@@ -154,6 +154,30 @@ def test_read_reviewed_backups_decodes_mysql_json(preflight) -> None:
     assert rows["task-1"]["tool_params"] == {"account_id": "ronghui_default"}
 
 
+def test_release_project_reader_includes_complete_generation_topology(preflight) -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.sql = ""
+
+        def execute(self, sql, _params) -> None:
+            self.sql = " ".join(str(sql).split())
+
+        @staticmethod
+        def fetchall():
+            return [{"automation_id": "delivery_status"}]
+
+    cursor = Cursor()
+    rows = preflight._read_release_projects(
+        cursor,
+        {"release_projects": frozenset({"delivery_status"})},
+    )
+
+    assert set(rows) == {"delivery_status"}
+    assert "AS generation_count" in cursor.sql
+    assert "AS active_lease_count" in cursor.sql
+    assert "automation_project_generation_leases" in cursor.sql
+
+
 def _schedule_for_count(count: int) -> tuple[dict, tuple[str, ...]]:
     if not count:
         return {"kind": "none", "times": [], "enabled": False}, ()
@@ -231,6 +255,8 @@ def _valid_world(preflight):
             "compiled_invocations_sha256": preflight._canonical_sha256(compiled),
             "generation": 1,
             "generation_state": "COMMITTED",
+            "generation_count": 1,
+            "active_lease_count": 0,
             "generation_schedule_sha256": preflight._canonical_sha256(
                 desired_schedule
             ),
@@ -777,6 +803,35 @@ def test_delivery_unknown_write_quarantine_identity_drift_remains_blocked(
         "AUTOMATION_PROJECT_STATE_INVALID",
         "AUTOMATION_PROJECT_GENERATION_MISMATCH",
     }
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (("generation_count", 2), ("active_lease_count", 1)),
+)
+def test_delivery_unknown_write_quarantine_topology_drift_remains_blocked(
+    preflight,
+    field_name,
+    value,
+):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects["delivery_status"]
+    project.update(
+        reconcile_state="BLOCKED_UNKNOWN_WRITE",
+        generation_state="BLOCKED",
+        **{field_name: value},
+    )
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=True,
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
 
 
 @pytest.mark.parametrize(

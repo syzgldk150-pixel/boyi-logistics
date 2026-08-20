@@ -664,7 +664,20 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                generation.compiled_invocations_sha256
                    AS generation_invocations_sha256,
                generation.snapshot_json AS generation_snapshot_json,
-               generation.snapshot_sha256 AS generation_snapshot_sha256
+               generation.snapshot_sha256 AS generation_snapshot_sha256,
+               (
+                   SELECT COUNT(*)
+                   FROM automation_project_generations AS topology_generation
+                   WHERE BINARY topology_generation.automation_id =
+                         BINARY project.automation_id
+               ) AS generation_count,
+               (
+                   SELECT COUNT(*)
+                   FROM automation_project_generation_leases AS active_lease
+                   WHERE BINARY active_lease.automation_id =
+                         BINARY project.automation_id
+                     AND active_lease.outcome IN ('RUNNING', 'VERIFYING')
+               ) AS active_lease_count
         FROM automation_projects AS project
         INNER JOIN automation_project_configs AS config
           ON BINARY config.automation_id = BINARY project.automation_id
@@ -1050,6 +1063,8 @@ def _is_exact_delivery_status_quarantine_project(
             reconcile_state=project.get("reconcile_state"),
             generation=row.get("generation"),
             generation_state=row.get("generation_state"),
+            generation_count=project.get("generation_count"),
+            active_lease_count=project.get("active_lease_count"),
         )
     )
 
