@@ -1209,13 +1209,7 @@ class ProviderSessionAdapterBase:
         send_sms: bool = True,
     ) -> dict[str, Any]:
         if send_sms:
-            try:
-                send_button = page.locator(YUNDA_SMS_SEND_BUTTON).first
-                if send_button.is_visible(timeout=2_000) and send_button.is_enabled(timeout=2_000):
-                    send_button.click(timeout=5_000)
-                    page.wait_for_timeout(1_200)
-            except Exception:
-                logger.info("Yunda SMS send button was not clicked; continuing with pending state", exc_info=True)
+            self._send_yunda_sms_code_locked(page)
 
         context.storage_state(path=str(self._pending_storage_state_path))
         csrf = self._read_yunda_csrf(page)
@@ -1246,6 +1240,62 @@ class ProviderSessionAdapterBase:
                 "challenge_label": "短信验证码",
             }
         )
+
+    def _send_yunda_sms_code_locked(self, page: Any) -> None:
+        try:
+            send_button = page.locator(YUNDA_SMS_SEND_BUTTON).first
+            if not send_button.is_visible(timeout=2_000):
+                raise TMSAuthStateError(
+                    "AUTH_REQUIRED",
+                    "韵达短信发送按钮不可见，请重新登录韵达账号。",
+                )
+            if not send_button.is_enabled(timeout=2_000):
+                raise TMSAuthStateError(
+                    "AUTH_REQUIRED",
+                    "韵达短信发送按钮当前不可用，请稍后重试。",
+                )
+        except TMSAuthStateError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Yunda SMS send button inspection failed for profile=%s error_type=%s",
+                self.profile_name,
+                type(exc).__name__,
+            )
+            raise TMSAuthStateError(
+                "AUTH_REQUIRED",
+                "无法确认韵达短信发送按钮状态，请重新登录韵达账号。",
+            ) from exc
+
+        try:
+            with page.expect_response(
+                lambda response: (
+                    str(getattr(getattr(response, "request", None), "method", "")).upper() == "POST"
+                    and urlparse(str(getattr(response, "url", "") or "")).path
+                    == YUNDA_SMS_SEND_PATH
+                ),
+                timeout=10_000,
+            ) as response_info:
+                send_button.click(timeout=5_000)
+            response = response_info.value
+            status = int(getattr(response, "status", 0) or 0)
+            payload = response.json()
+        except Exception as exc:
+            logger.warning(
+                "Yunda SMS send confirmation failed for profile=%s error_type=%s",
+                self.profile_name,
+                type(exc).__name__,
+            )
+            raise TMSAuthStateError(
+                "AUTH_REQUIRED",
+                "未收到韵达短信发送接口的成功确认，请稍后重试。",
+            ) from exc
+
+        if not 200 <= status < 300 or not isinstance(payload, dict) or payload.get("success") is not True:
+            raise TMSAuthStateError(
+                "AUTH_REQUIRED",
+                "韵达未确认短信发送成功，请稍后重试。",
+            )
 
     def _read_yunda_login_action(self, page: Any, fallback_url: str) -> str:
         fallback = str(fallback_url or "").strip() or self.resolve_login_config().login_url
