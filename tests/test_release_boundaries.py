@@ -33,11 +33,98 @@ def _service_identity_smoke_source() -> str:
         encoding="utf-8"
     )
     function = release.split("check_service_identity_smoke() {", 1)[1].split(
-        "\n}\n\nactivate_scheduler_after_release() {",
+        "\nPY\n}",
         1,
     )[0]
     marker = '"${console_python}" - <<\'PY\'\n'
     return function.split(marker, 1)[1].rsplit("\nPY", 1)[0]
+
+
+def _known_arrival_stats_recovery_source() -> str:
+    release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
+        encoding="utf-8"
+    )
+    function = release.split("recover_known_arrival_stats_unknown_write() {", 1)[1].split(
+        "\nPY\n}",
+        1,
+    )[0]
+    marker = '"${console_python}" - <<\'PY\'\n'
+    return function.split(marker, 1)[1].rsplit("\nPY", 1)[0]
+
+
+def _run_known_arrival_stats_recovery() -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
+    task_tmp_preexisting = task_tmp_root.exists()
+    task_tmp_root.mkdir(exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=task_tmp_root) as temporary:
+            temp_root = Path(temporary)
+            (temp_root / "shared").mkdir()
+            (temp_root / "shared" / "__init__.py").write_text("", encoding="utf-8")
+            (temp_root / "dotenv.py").write_text(
+                "def dotenv_values(_path):\n"
+                "    return {\n"
+                "        'AGENT_INTERNAL_API_TOKEN': 'test-internal-token',\n"
+                "        'CONSOLE_AGENT_SIGNING_SECRET': 'test-signing-secret',\n"
+                "    }\n",
+                encoding="utf-8",
+            )
+            (temp_root / "shared" / "service_identity.py").write_text(
+                "def build_console_identity_headers(**_kwargs):\n"
+                "    return {}\n\n"
+                "def validate_service_identity_secrets(**_kwargs):\n"
+                "    return None\n",
+                encoding="utf-8",
+            )
+            capture_path = temp_root / "request.json"
+            (temp_root / "sitecustomize.py").write_text(
+                "import json\n"
+                "import os\n"
+                "import urllib.request\n\n"
+                "class _Response:\n"
+                "    status = 200\n"
+                "    def __enter__(self):\n"
+                "        return self\n"
+                "    def __exit__(self, *_args):\n"
+                "        return False\n"
+                "    def read(self):\n"
+                "        return b'{\\\"ok\\\":true,\\\"data\\\":{\\\"automation_id\\\":\\\"arrival_stats\\\",\\\"recovery_status\\\":\\\"NOT_APPLIED\\\"}}'\n\n"
+                "def _urlopen(request, timeout):\n"
+                "    del timeout\n"
+                "    with open(os.environ['RECOVERY_CAPTURE_PATH'], 'w', encoding='utf-8') as handle:\n"
+                "        json.dump({'url': request.full_url, 'method': request.get_method(), 'body': request.data.decode('utf-8')}, handle)\n"
+                "    return _Response()\n\n"
+                "urllib.request.urlopen = _urlopen\n",
+                encoding="utf-8",
+            )
+            identity_file = temp_root / "identity.env"
+            identity_file.touch()
+            environment = {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": str(temp_root),
+                "BOYI_IDENTITY_ENV_FILE": str(identity_file),
+                "BOYI_DEPLOYED_ROOT": str(temp_root),
+                "RECOVERY_CAPTURE_PATH": str(capture_path),
+            }
+            for name in ("SYSTEMROOT", "WINDIR"):
+                if os.environ.get(name):
+                    environment[name] = os.environ[name]
+            completed = subprocess.run(
+                [sys.executable, "-c", _known_arrival_stats_recovery_source()],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            captured = json.loads(capture_path.read_text(encoding="utf-8"))
+            return completed, captured
+    finally:
+        if not task_tmp_preexisting:
+            try:
+                task_tmp_root.rmdir()
+            except OSError:
+                pass
 
 
 def _healthy_service_identity_payload() -> dict[str, object]:
@@ -688,6 +775,74 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual("service_identity_smoke=ok", completed.stdout.strip())
         self.assertEqual("", completed.stderr)
 
+    def test_post_restart_recovery_is_ordered_and_blocks_activation_on_failure(self):
+        successful = _run_sourced_release_harness(
+            r'''
+            events=()
+            check_service_identity_smoke() { events+=(identity); }
+            recover_known_arrival_stats_unknown_write() { events+=(recovery); }
+            check_control_plane_release_manifest() { events+=(manifest); }
+            activate_scheduler_after_release() { events+=(activation); }
+            rollback() { events+=(rollback); }
+            KNOWN_ARRIVAL_STATS_RECOVERY=1
+            if check_post_restart_release_gates; then
+              activate_scheduler_after_release
+            else
+              rollback
+            fi
+            printf '%s\n' "${events[*]}"
+            '''
+        )
+        self.assertEqual(0, successful.returncode, successful.stderr)
+        self.assertEqual("identity recovery manifest activation", successful.stdout.strip())
+
+        failed = _run_sourced_release_harness(
+            r'''
+            events=()
+            check_service_identity_smoke() { events+=(identity); }
+            recover_known_arrival_stats_unknown_write() { events+=(recovery); return 1; }
+            check_control_plane_release_manifest() { events+=(manifest); }
+            activate_scheduler_after_release() { events+=(activation); }
+            rollback() { events+=(rollback); }
+            KNOWN_ARRIVAL_STATS_RECOVERY=1
+            if check_post_restart_release_gates; then
+              activate_scheduler_after_release
+            else
+              rollback
+            fi
+            printf '%s\n' "${events[*]}"
+            '''
+        )
+        self.assertEqual(0, failed.returncode, failed.stderr)
+        self.assertEqual("identity recovery rollback", failed.stdout.strip())
+
+    def test_known_recovery_uses_only_the_verified_zero_readback_contract(self):
+        completed, request = _run_known_arrival_stats_recovery()
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "arrival_stats_unknown_write_recovery=ok "
+            "run_id=fb077840-a2d0-4e7f-8089-f68c104ab544 outcome=NOT_APPLIED",
+            completed.stdout.strip(),
+        )
+        self.assertEqual("POST", request["method"])
+        self.assertEqual(
+            "http://127.0.0.1:9000/internal/v1/automation/instances/"
+            "arrival_stats/generation/recover-not-applied",
+            request["url"],
+        )
+        self.assertEqual(
+            {
+                "readback": {
+                    "arrival_stat_runs": 0,
+                    "arrival_stat_items": 0,
+                    "feishu_rows_created": 0,
+                },
+                "request_id": "fb077840-a2d0-4e7f-8089-f68c104ab544",
+            },
+            json.loads(str(request["body"])),
+        )
+
     def test_direct_dependencies_are_covered_by_exact_locks(self):
         for service in ("agent", "console"):
             direct = _requirement_names(REPOSITORY_ROOT / service / "requirements.txt")
@@ -997,15 +1152,19 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(execution.index("check_health"), execution.index("cleanup_successful_release"))
         self.assertLess(
             execution.index('RELEASE_STAGE="check_health"'),
-            execution.index('RELEASE_STAGE="check_service_identity_smoke"'),
+            release.index('RELEASE_STAGE="check_service_identity_smoke"'),
         )
         self.assertLess(
-            execution.index('RELEASE_STAGE="check_service_identity_smoke"'),
-            execution.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
+            release.index('RELEASE_STAGE="check_service_identity_smoke"'),
+            release.index('RELEASE_STAGE="recover_known_arrival_stats_unknown_write"'),
         )
         self.assertLess(
-            execution.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
-            execution.index('RELEASE_STAGE="record_dependency_hashes"'),
+            release.index('RELEASE_STAGE="recover_known_arrival_stats_unknown_write"'),
+            release.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
+        )
+        self.assertLess(
+            release.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
+            release.index('RELEASE_STAGE="record_dependency_hashes"'),
         )
         self.assertLess(
             execution.index('RELEASE_STAGE="create_scheduler_release_hold"'),
@@ -1075,6 +1234,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "restart_services",
             "check_health",
             "check_service_identity_smoke",
+            "recover_known_arrival_stats_unknown_write",
             "check_control_plane_release_manifest",
             "record_dependency_hashes",
             "activate_scheduler_after_release",
@@ -1309,6 +1469,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertIn(
             "--emergency-scheduled-window-override=emergency_user_authorized",
+            publisher,
+        )
+        self.assertIn(
+            "[switch]$RecoverKnownArrivalStatsUnknownWrite",
+            publisher,
+        )
+        self.assertIn(
+            "--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544",
             publisher,
         )
         self.assertIn("one release-index.json and only its ZIP packages", publisher)

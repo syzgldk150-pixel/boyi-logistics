@@ -698,7 +698,7 @@ def test_typed_and_deferred_runtime_contracts_accept_exact_world(preflight):
     )
 
 
-def test_arrival_stats_unknown_write_recovery_pending_is_the_only_release_exception(
+def test_arrival_stats_unknown_write_remains_blocked_until_managed_recovery(
     preflight,
 ):
     contract, schedules, backups, projects = _valid_world(preflight)
@@ -708,21 +708,6 @@ def test_arrival_stats_unknown_write_recovery_pending_is_the_only_release_except
         generation_state="BLOCKED",
     )
 
-    preflight._validate_release_projects_and_tasks(
-        contract,
-        schedules=schedules,
-        backups=backups,
-        projects=projects,
-        expect_initial_production_manifest=True,
-    )
-
-    other_automation_id = next(
-        item for item in sorted(contract["release_projects"]) if item != "arrival_stats"
-    )
-    projects[other_automation_id].update(
-        reconcile_state="BLOCKED_UNKNOWN_WRITE",
-        generation_state="BLOCKED",
-    )
     with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
         preflight._validate_release_projects_and_tasks(
             contract,

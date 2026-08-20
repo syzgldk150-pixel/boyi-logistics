@@ -1004,32 +1004,6 @@ def _verify_deferred_projects_absent(cursor: Any, contract: Mapping[str, Any]) -
         )
 
 
-def _is_arrival_stats_recovery_pending(
-    automation_id: str,
-    project: Mapping[str, Any],
-    template: Mapping[str, Any],
-) -> bool:
-    """Allow deployment of the one managed unknown-write recovery endpoint.
-
-    The project remains blocked from execution until the endpoint resolves its
-    readback.  This only lets the held Agent start far enough to expose that
-    endpoint for the exact, already-known arrival statistics generation.
-    """
-
-    return (
-        automation_id == "arrival_stats"
-        and project.get("automation_id") == automation_id
-        and template.get("tool_name") == "sync_arrival_stats"
-        and project.get("plugin_id") == template["tool_name"]
-        and project.get("project_state") == "ENABLED"
-        and project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
-        and project.get("generation_state") == "BLOCKED"
-        and project.get("target_generation")
-        == project.get("committed_generation")
-        == project.get("generation")
-    )
-
-
 def _validate_release_projects_and_tasks(
     contract: Mapping[str, Any],
     *,
@@ -1092,18 +1066,10 @@ def _validate_release_projects_and_tasks(
     for automation_id in sorted(contract["release_projects"]):
         project = projects[automation_id]
         template = contract["templates"][automation_id]
-        recovery_pending = _is_arrival_stats_recovery_pending(
-            automation_id,
-            project,
-            template,
-        )
         if (
             project.get("plugin_id") != template["tool_name"]
             or project.get("project_state") != "ENABLED"
-            or (
-                project.get("reconcile_state") != "STABLE"
-                and not recovery_pending
-            )
+            or project.get("reconcile_state") != "STABLE"
             or not _boolean(
                 project.get("enabled"),
                 code="AUTOMATION_PROJECT_STATE_INVALID",
@@ -1112,10 +1078,7 @@ def _validate_release_projects_and_tasks(
                 project.get("configured"),
                 code="AUTOMATION_PROJECT_CONFIG_INVALID",
             )
-            or (
-                project.get("generation_state") != "COMMITTED"
-                and not recovery_pending
-            )
+            or project.get("generation_state") != "COMMITTED"
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_STATE_INVALID"

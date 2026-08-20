@@ -7,21 +7,45 @@ TARGETS_CSV="${3:?target list is required}"
 SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
 EMERGENCY_SCHEDULED_WINDOW_ARGUMENT="--emergency-scheduled-window-override=emergency_user_authorized"
+KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT="--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544"
 EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
-if (( $# > 6 )); then
+KNOWN_ARRIVAL_STATS_RECOVERY=0
+if (( $# > 7 )); then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
-case "${6:-}" in
-  "") ;;
-  "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}")
-    EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=1
-    ;;
-  *)
-    echo "emergency_scheduled_window_override=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
-    exit 2
-    ;;
-esac
+if (( $# == 7 )) \
+  && [[ "${6}" == "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}" ]] \
+  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}" ]]; then
+  echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
+  exit 2
+fi
+for release_argument in "${@:6}"; do
+  case "${release_argument}" in
+    "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}")
+      [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "0" ]] || {
+        echo "emergency_scheduled_window_override=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
+        exit 2
+      }
+      EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=1
+      ;;
+    "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}")
+      [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "0" ]] || {
+        echo "arrival_stats_unknown_write_recovery=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
+        exit 2
+      }
+      KNOWN_ARRIVAL_STATS_RECOVERY=1
+      ;;
+    --emergency-scheduled-window-override=*)
+      echo "emergency_scheduled_window_override=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
+      exit 2
+      ;;
+    *)
+      echo "release_authorization=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
+      exit 2
+      ;;
+  esac
+done
 # Current production scope is server-only. Windows Worker transport, signer,
 # Nginx mTLS prerequisites and dispatcher health are deliberately excluded.
 WINDOWS_WORKER_RELEASE_ENABLED=0
@@ -1999,6 +2023,122 @@ print("service_identity_smoke=ok")
 PY
 }
 
+recover_known_arrival_stats_unknown_write() {
+  # This is intentionally a one-shot release repair for the named incident.
+  # It never discovers or retries other unknown writes, and the managed Agent
+  # endpoint verifies the current lease before changing any generation state.
+  local console_python="${PYTHON_BINS[console]}"
+  [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
+    echo "arrival_stats_unknown_write_recovery=failed reason=runtime_unavailable" >&2
+    return 1
+  }
+
+  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
+    BOYI_DEPLOYED_ROOT="/home/boyce" \
+    "${console_python}" - <<'PY'
+import json
+import os
+import secrets
+import sys
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from dotenv import dotenv_values
+
+sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+from shared.service_identity import (
+    build_console_identity_headers,
+    validate_service_identity_secrets,
+)
+
+
+RUN_ID = "fb077840-a2d0-4e7f-8089-f68c104ab544"
+AUTOMATION_ID = "arrival_stats"
+REQUEST_TARGET = (
+    f"/internal/v1/automation/instances/{AUTOMATION_ID}/generation/"
+    "recover-not-applied"
+)
+READBACK = {
+    "arrival_stat_runs": 0,
+    "arrival_stat_items": 0,
+    "feishu_rows_created": 0,
+}
+
+
+try:
+    values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
+    internal_token = str(values.get("AGENT_INTERNAL_API_TOKEN") or "")
+    signing_secret = str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or "")
+    validate_service_identity_secrets(
+        internal_api_token=internal_token,
+        console_signing_secret=signing_secret,
+    )
+    body = json.dumps(
+        {"readback": READBACK, "request_id": RUN_ID},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    headers = build_console_identity_headers(
+        secret=signing_secret,
+        method="POST",
+        request_target=REQUEST_TARGET,
+        body=body,
+        principal={
+            "actor_type": "console_admin",
+            "actor_id": "release-arrival-stats-recovery",
+            "roles": ["admin", "super_admin"],
+            "display_name": "Release arrival statistics recovery",
+            "authenticated_by": "mysql_admin_session",
+        },
+        nonce=secrets.token_urlsafe(24),
+    )
+    headers["X-Agent-Internal-Token"] = internal_token
+    headers["Content-Type"] = "application/json"
+    request = Request(
+        f"http://127.0.0.1:9000{REQUEST_TARGET}",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            response_status = response.status
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise RuntimeError("managed recovery request was rejected") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if (
+        response_status != 200
+        or payload.get("ok") is not True
+        or not isinstance(data, dict)
+        or data.get("automation_id") != AUTOMATION_ID
+        or data.get("recovery_status") != "NOT_APPLIED"
+    ):
+        raise RuntimeError("managed recovery response was invalid")
+except Exception:
+    print(
+        "arrival_stats_unknown_write_recovery=failed reason=managed_recovery_rejected",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print(
+    "arrival_stats_unknown_write_recovery=ok "
+    f"run_id={RUN_ID} outcome=NOT_APPLIED"
+)
+PY
+}
+
+check_post_restart_release_gates() {
+  RELEASE_STAGE="check_service_identity_smoke"
+  check_service_identity_smoke || return 1
+  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" ]]; then
+    RELEASE_STAGE="recover_known_arrival_stats_unknown_write"
+    recover_known_arrival_stats_unknown_write || return 1
+  fi
+  RELEASE_STAGE="check_control_plane_release_manifest"
+  check_control_plane_release_manifest || return 1
+}
+
 activate_scheduler_after_release() {
   local console_python="${PYTHON_BINS[console]}"
   [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
@@ -2363,10 +2503,7 @@ run_release() {
   restart_services
   RELEASE_STAGE="check_health"
   check_health
-  RELEASE_STAGE="check_service_identity_smoke"
-  check_service_identity_smoke
-  RELEASE_STAGE="check_control_plane_release_manifest"
-  check_control_plane_release_manifest
+  check_post_restart_release_gates
   RELEASE_STAGE="record_dependency_hashes"
   record_active_dependency_hashes
 
