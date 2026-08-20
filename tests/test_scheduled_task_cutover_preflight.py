@@ -140,6 +140,19 @@ def _applied_014_clock_rows(runner, contracts: dict[str, dict]) -> list[dict]:
     ]
 
 
+def _project_clock_rows(contracts: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "id": task_id,
+            "tool_name": f"automation.{contract['group_id']}.run",
+            "tool_params": {},
+            "cron_expression": contract["cron_expression"],
+            "enabled": 1,
+        }
+        for task_id, contract in sorted(contracts.items())
+    ]
+
+
 def test_preflight_consumes_the_exact_code_reviewed_51_id_set(runner) -> None:
     contracts = runner._load_control_plane_reviewed_task_contracts()
     clock_contracts = runner._load_control_plane_clock_contracts()
@@ -658,6 +671,47 @@ def test_clock_pair_wrong_id_state_binding_or_arguments_fails_closed(
             contracts=contracts,
             clock_contracts=clock_contracts,
         )
+
+    assert error.value.code == expected_code
+
+
+def test_post_018_project_clock_pair_is_current_canonical_shape(runner) -> None:
+    contracts = runner._load_control_plane_clock_contracts()
+
+    assert runner._validate_clock_policy(
+        _project_clock_rows(contracts),
+        contracts=contracts,
+    ) == {
+        "reviewed_rows": 2,
+        "canonical_rows": 2,
+        "legacy_rows": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        (
+            lambda rows: rows[0].update(tool_name="automation.clockin_unknown.run"),
+            "CLOCK_TASK_TOOL_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0]["tool_params"].update(unexpected=True),
+            "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+    ),
+)
+def test_post_018_project_clock_pair_still_fails_closed(
+    runner,
+    mutation,
+    expected_code: str,
+) -> None:
+    contracts = runner._load_control_plane_clock_contracts()
+    rows = _project_clock_rows(contracts)
+    mutation(rows)
+
+    with pytest.raises(runner.ControlPlaneTaskCutoverPreflightError) as error:
+        runner._validate_clock_policy(rows, contracts=contracts)
 
     assert error.value.code == expected_code
 

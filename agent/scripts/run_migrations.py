@@ -966,16 +966,35 @@ def _validate_clock_policy(
             or cron_expression != contract.get("cron_expression")
         ):
             raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_CRON_NOT_REVIEWED")
-        tool_name = row.get("tool_name")
-        if type(tool_name) is not str or tool_name not in CONTROL_PLANE_CLOCK_TOOL_NAMES:
-            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_TOOL_NOT_REVIEWED")
-
         canonical_arguments = contract.get("canonical_arguments")
         if not isinstance(canonical_arguments, Mapping):
             raise ControlPlaneTaskCutoverPreflightError(
                 "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
             )
+        group_id = contract.get("group_id")
+        if type(group_id) is not str or group_id not in (
+            CONTROL_PLANE_REVIEWED_CLOCK_PROFILE_GROUPS
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
+            )
+        tool_name = row.get("tool_name")
+        project_tool_name = f"automation.{group_id}.run"
+        if type(tool_name) is not str or tool_name not in {
+            *CONTROL_PLANE_CLOCK_TOOL_NAMES,
+            project_tool_name,
+        }:
+            raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_TOOL_NOT_REVIEWED")
         arguments = _decode_task_arguments(row.get("tool_params"))
+        # Migration 018 and every later project configuration save route the
+        # reviewed schedule through its typed automation project.  The
+        # scheduler row then carries only that exact project identity; account
+        # and action arguments live in the committed project generation.
+        # Treat it as the current canonical shape for release-window purposes,
+        # while still rejecting any other project identity or persisted args.
+        if tool_name == project_tool_name and _strict_json_equal(arguments, {}):
+            canonical_count += 1
+            continue
         if tool_name == contract.get("tool_name") and _strict_json_equal(
             arguments,
             dict(canonical_arguments),
