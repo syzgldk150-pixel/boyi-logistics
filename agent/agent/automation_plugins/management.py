@@ -36,6 +36,7 @@ _KNOWN_ARRIVAL_STATS_RECOVERY_RUN_IDS = frozenset(
         "71510af3-fcf1-461b-9c2e-152665f32f98",
     }
 )
+_DELIVERY_STATUS_AUTOMATION_ID = "delivery_status"
 
 
 def _iso_datetime(value: object) -> str:
@@ -246,6 +247,34 @@ class AutomationPluginManagementService:
         return {
             **self._catalog_instance_projection(entry),
             "recovery_status": "NOT_APPLIED",
+        }
+
+    def delivery_status_generation_diagnostic(self, *, actor: Actor) -> dict[str, Any]:
+        """Return the fixed project's closed generation state for recovery triage."""
+
+        self._require_console_actor(actor, super_admin=True)
+        entry = self._catalog.require(_DELIVERY_STATUS_AUTOMATION_ID)
+        if entry.plugin_id != "sync_delivery_status":
+            raise PluginConflictError(
+                "generation diagnostic is not available for this automation action",
+                code="PLUGIN_RECOVERY_SCOPE_INVALID",
+            )
+        reconcile_state = entry.reconcile_state.value
+        if reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE.value:
+            lease_reason = "WRITE_OUTCOME_UNKNOWN"
+        elif reconcile_state in {
+            RuntimeReconcileState.ERROR.value,
+            RuntimeReconcileState.WAITING_COEFFECTS.value,
+        }:
+            lease_reason = "PREWRITE_OR_CONFIGURATION_FAILURE"
+        else:
+            lease_reason = "NO_BLOCKED_WRITE_LEASE"
+        return {
+            "automation_id": _DELIVERY_STATUS_AUTOMATION_ID,
+            "target_generation": entry.target_generation,
+            "committed_generation": entry.committed_generation,
+            "reconcile_state": reconcile_state,
+            "lease_reason": lease_reason,
         }
 
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:

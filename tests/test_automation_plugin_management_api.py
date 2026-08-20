@@ -126,6 +126,16 @@ class _ApiService:
         self.calls.append(("recovery", {"automation_id": automation_id, **kwargs}))
         return {"automation_id": automation_id, "recovery_status": "NOT_APPLIED"}
 
+    def delivery_status_generation_diagnostic(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("delivery_diagnostic", kwargs))
+        return {
+            "automation_id": "delivery_status",
+            "target_generation": 7,
+            "committed_generation": 7,
+            "reconcile_state": "BLOCKED_UNKNOWN_WRITE",
+            "lease_reason": "WRITE_OUTCOME_UNKNOWN",
+        }
+
 
 def _api_client(service: _ApiService) -> TestClient:
     app = FastAPI()
@@ -147,6 +157,11 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
 
     assert client.get("/internal/v1/automation/plugins/catalog").status_code == 200
     assert client.get("/internal/v1/automation/workers").status_code == 200
+    diagnostic = client.get(
+        "/internal/v1/automation/instances/delivery_status/generation/diagnostic"
+    )
+    assert diagnostic.status_code == 200
+    assert diagnostic.json()["data"]["lease_reason"] == "WRITE_OUTCOME_UNKNOWN"
     installed = client.post(
         "/internal/v1/automation/plugins/install",
         data={
