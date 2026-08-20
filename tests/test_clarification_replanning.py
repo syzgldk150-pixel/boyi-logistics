@@ -3,7 +3,17 @@ from __future__ import annotations
 import pytest
 
 from agent.orchestration.context_builder import ContextBuilder
-from agent.orchestration.models import Actor, ActorType, Command, OrchestrationError
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    ContextSnapshot,
+    OperationType,
+    OrchestrationError,
+    Plan,
+    PlanStep,
+    RiskLevel,
+)
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 
@@ -158,3 +168,56 @@ def test_context_rejects_clarification_from_another_command() -> None:
                 "account_id": "account-1",
             }
         )
+
+
+def test_broker_bound_project_skips_legacy_account_schema_validation() -> None:
+    class _ProjectCatalog:
+        catalog_hash = "project-catalog"
+        validate_calls = 0
+
+        @staticmethod
+        def get_capability(tool_name: str):
+            if tool_name != "automation.arrival_stats.run":
+                return None
+            return {
+                "version": "1.0.0",
+                "operation_type": "internal_projection_write",
+                "risk_level": "medium",
+                "account_scope": {"required": True},
+                "evidence": [],
+                "_plugin_runtime": {"automation_id": "arrival_stats"},
+            }
+
+        def validate_arguments(self, _tool_name: str, _arguments):
+            self.validate_calls += 1
+            raise ValueError("legacy schema requires broker-only account_id")
+
+    catalog = _ProjectCatalog()
+    context = ContextSnapshot(values={})
+    step = PlanStep(
+        step_key="arrival-stats",
+        tool_name="automation.arrival_stats.run",
+        tool_version="1.0.0",
+        operation_type=OperationType.INTERNAL_PROJECTION_WRITE,
+        arguments={"pending_sheet_disabled": True},
+        account_id=None,
+        depends_on=(),
+        idempotency_key="arrival-stats:request-1",
+        expected_evidence=(),
+        postconditions=(),
+        risk_level=RiskLevel.MEDIUM,
+    )
+    plan = Plan(
+        command_type="automation.project.invoke",
+        context_fingerprint=context.fingerprint,
+        tool_catalog_hash=catalog.catalog_hash,
+        steps=(step,),
+        impact={},
+        automation_id="arrival_stats",
+        automation_generation=1,
+        automation_contract_hash="a" * 64,
+    )
+
+    PlanValidator(catalog).validate(plan, context)
+
+    assert catalog.validate_calls == 0

@@ -43,20 +43,38 @@ class PlanValidator:
                 or step.operation_type not in {OperationType.READ, OperationType.COMPUTE}
             ):
                 raise OrchestrationError("LLM_WRITE_FORBIDDEN", "LLM plans may contain only exposed read/compute tools")
-            try:
-                self._catalog.validate_arguments(step.tool_name, step.arguments)
-            except (KeyError, TypeError, ValueError) as exc:
-                raise OrchestrationError(
-                    "INVALID_TOOL_ARGUMENTS",
-                    f"Tool arguments do not satisfy the governed input_schema: {exc}",
-                    details={"status": "NEEDS_CLARIFICATION"},
-                ) from exc
-            self._validate_account_scope(step.account_id, capability, context)
+            project_bound = self._is_broker_bound_project(step.tool_name, capability)
+            if not project_bound:
+                try:
+                    self._catalog.validate_arguments(step.tool_name, step.arguments)
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise OrchestrationError(
+                        "INVALID_TOOL_ARGUMENTS",
+                        f"Tool arguments do not satisfy the governed input_schema: {exc}",
+                        details={"status": "NEEDS_CLARIFICATION"},
+                    ) from exc
+                self._validate_account_scope(step.account_id, capability, context)
             self._validate_integrity(capability, context)
             if not step.idempotency_key:
                 raise OrchestrationError("STEP_IDEMPOTENCY_REQUIRED", f"Step has no idempotency key: {step.step_key}")
             validate_write_impact(operation_type=step.operation_type, impact=plan.impact)
         return plan
+
+    @staticmethod
+    def _is_broker_bound_project(tool_name: str, capability: Mapping[str, Any]) -> bool:
+        """Identify project actions whose account/resource inputs stay broker-only.
+
+        Their exact invocation arguments are validated against the committed,
+        signed project contract by the project policy service.  The core tool
+        schema still describes the legacy whole-tool API and requires account
+        identifiers that are intentionally absent from plugin JSON.
+        """
+
+        return (
+            str(tool_name).startswith("automation.")
+            and str(tool_name).endswith(".run")
+            and isinstance(capability.get("_plugin_runtime"), Mapping)
+        )
 
     @staticmethod
     def _validate_account_scope(
