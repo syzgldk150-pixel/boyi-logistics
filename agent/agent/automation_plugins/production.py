@@ -785,7 +785,6 @@ class MySQLRuntimeTargetService:
             "compiled_invocations_sha256",
             "runtime_descriptor_sha256",
             "governance_anchor_sha256",
-            "policy_contract_sha256",
             "enabled_entrypoints",
             "execution_metadata",
         )
