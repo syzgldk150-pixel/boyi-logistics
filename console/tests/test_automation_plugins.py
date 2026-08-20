@@ -704,10 +704,12 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             "task.plugin_blocked or not plugin.lifecycle_actions_allowed",
             source,
         )
-        self.assertIn(
-            "or task.plugin_blocked %}disabled{% endif %}",
-            source,
+        full_auto_line = next(
+            line
+            for line in source.splitlines()
+            if 'value="PROJECT_FULL_AUTO"' in line
         )
+        self.assertNotIn("task.plugin_blocked", full_auto_line)
 
 
 if __name__ == "__main__":
