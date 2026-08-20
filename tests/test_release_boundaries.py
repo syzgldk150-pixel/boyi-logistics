@@ -132,6 +132,7 @@ def _healthy_service_identity_payload() -> dict[str, object]:
         "ok": True,
         "probe_marker": "SMOKE_BODY_MUST_NOT_APPEAR",
         "data": {
+            "release_sha": "test-release-sha",
             "components": {
                 "scheduler": {
                     "state": "paused",
@@ -179,6 +180,7 @@ def _run_service_identity_smoke(
     *,
     response_status: int = 200,
     transport_failures: int = 0,
+    raw_payload: str | None = None,
     service_identity_source: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
@@ -243,9 +245,10 @@ def _run_service_identity_smoke(
                 "PYTHONPATH": str(temp_root),
                 "BOYI_IDENTITY_ENV_FILE": str(identity_file),
                 "BOYI_DEPLOYED_ROOT": str(temp_root),
+                "BOYI_RELEASE_SHA": "test-release-sha",
                 "SMOKE_TEST_STATUS": str(response_status),
                 "SMOKE_TEST_TRANSPORT_FAILURES": str(transport_failures),
-                "SMOKE_TEST_PAYLOAD": json.dumps(payload),
+                "SMOKE_TEST_PAYLOAD": raw_payload if raw_payload is not None else json.dumps(payload),
             }
             for name in ("SYSTEMROOT", "WINDIR"):
                 if os.environ.get(name):
@@ -657,10 +660,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_service_identity_smoke_reports_closed_http_gates(self):
         for status, expected in (
-            (401, "http_401"),
-            (403, "http_403"),
-            (503, "http_5xx"),
-            (429, "http_other"),
+            (401, "http_auth_rejected"),
+            (403, "http_auth_rejected"),
+            (503, "http_server_error"),
+            (429, "http_rejected_other"),
         ):
             with self.subTest(status=status):
                 completed = _run_service_identity_smoke(
@@ -690,15 +693,59 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(1, exhausted.returncode)
         self.assertEqual(
-            "service_identity_smoke=failed reason=http_other\n",
+            "service_identity_smoke=failed reason=transport_unavailable\n",
             exhausted.stderr,
         )
         self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", exhausted.stdout)
         self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", exhausted.stderr)
 
+    def test_service_identity_smoke_reports_closed_payload_diagnostics(self):
+        sensitive_marker = "SENSITIVE_SMOKE_PAYLOAD_MARKER"
+        cases = (
+            (
+                "invalid_json_or_shape",
+                _healthy_service_identity_payload(),
+                '{"ok": ' + sensitive_marker,
+            ),
+            (
+                "invalid_json_or_shape",
+                [sensitive_marker],
+                None,
+            ),
+            (
+                "status_not_ok",
+                {"ok": False, "detail": sensitive_marker},
+                None,
+            ),
+            (
+                "release_sha_mismatch",
+                {
+                    **_healthy_service_identity_payload(),
+                    "data": {
+                        **_healthy_service_identity_payload()["data"],
+                        "release_sha": "different-release-sha",
+                    },
+                },
+                None,
+            ),
+        )
+        for expected, payload, raw_payload in cases:
+            with self.subTest(gate=expected):
+                completed = _run_service_identity_smoke(
+                    payload,
+                    raw_payload=raw_payload,
+                )
+                self.assertEqual(1, completed.returncode)
+                self.assertEqual(
+                    f"service_identity_smoke=failed reason={expected}\n",
+                    completed.stderr,
+                )
+                self.assertNotIn(sensitive_marker, completed.stdout)
+                self.assertNotIn(sensitive_marker, completed.stderr)
+
     def test_service_identity_smoke_reports_closed_component_gates(self):
         cases = (
-            ("response_contract", ("ok",), False),
+            ("status_not_ok", ("ok",), False),
             ("scheduler_state", ("scheduler", "state"), "running"),
             ("scheduler_hold", ("scheduler", "release_hold"), False),
             ("runner_state", ("workflow_runner", "state"), "running"),

@@ -1802,7 +1802,8 @@ check_service_identity_smoke() {
   }
 
   BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
-    BOYI_DEPLOYED_ROOT="/home/boyce" \
+  BOYI_DEPLOYED_ROOT="/home/boyce" \
+  BOYI_RELEASE_SHA="${RELEASE_SHA}" \
     "${console_python}" - <<'PY'
 import json
 import os
@@ -1814,11 +1815,13 @@ from urllib.request import Request, urlopen
 
 class SmokeGate(str, Enum):
     IDENTITY_CONFIGURATION = "identity_configuration"
-    HTTP_401 = "http_401"
-    HTTP_403 = "http_403"
-    HTTP_5XX = "http_5xx"
-    HTTP_OTHER = "http_other"
-    RESPONSE_CONTRACT = "response_contract"
+    TRANSPORT_UNAVAILABLE = "transport_unavailable"
+    HTTP_AUTH_REJECTED = "http_auth_rejected"
+    HTTP_SERVER_ERROR = "http_server_error"
+    HTTP_REJECTED_OTHER = "http_rejected_other"
+    INVALID_JSON_OR_SHAPE = "invalid_json_or_shape"
+    STATUS_NOT_OK = "status_not_ok"
+    RELEASE_SHA_MISMATCH = "release_sha_mismatch"
     SCHEDULER_STATE = "scheduler_state"
     SCHEDULER_HOLD = "scheduler_hold"
     RUNNER_STATE = "runner_state"
@@ -1840,13 +1843,11 @@ class SmokeGate(str, Enum):
 
 
 def http_failure_gate(status):
-    if status == 401:
-        return SmokeGate.HTTP_401
-    if status == 403:
-        return SmokeGate.HTTP_403
+    if status in {401, 403}:
+        return SmokeGate.HTTP_AUTH_REJECTED
     if isinstance(status, int) and 500 <= status <= 599:
-        return SmokeGate.HTTP_5XX
-    return SmokeGate.HTTP_OTHER
+        return SmokeGate.HTTP_SERVER_ERROR
+    return SmokeGate.HTTP_REJECTED_OTHER
 
 
 failure_gate = SmokeGate.IDENTITY_CONFIGURATION
@@ -1888,7 +1889,7 @@ try:
             headers=headers,
             method="GET",
         )
-        failure_gate = SmokeGate.HTTP_OTHER
+        failure_gate = SmokeGate.TRANSPORT_UNAVAILABLE
         try:
             with urlopen(request, timeout=10) as response:
                 response_status = response.status
@@ -1905,11 +1906,20 @@ try:
     if response_status != 200:
         failure_gate = http_failure_gate(response_status)
         raise RuntimeError("signed health probe returned an unexpected status")
-    failure_gate = SmokeGate.RESPONSE_CONTRACT
+    failure_gate = SmokeGate.INVALID_JSON_OR_SHAPE
     payload = json.loads(response_body.decode("utf-8"))
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
+    if not isinstance(payload, dict):
+        raise RuntimeError("signed health probe response is not an object")
+    failure_gate = SmokeGate.STATUS_NOT_OK
+    if payload.get("ok") is not True:
         raise RuntimeError("signed health probe was rejected")
     data = payload.get("data")
+    if not isinstance(data, dict):
+        failure_gate = SmokeGate.INVALID_JSON_OR_SHAPE
+        raise RuntimeError("signed health probe data is not an object")
+    failure_gate = SmokeGate.RELEASE_SHA_MISMATCH
+    if data.get("release_sha") != os.environ["BOYI_RELEASE_SHA"]:
+        raise RuntimeError("signed health probe release SHA mismatched")
     components = data.get("components") if isinstance(data, dict) else None
     scheduler = components.get("scheduler") if isinstance(components, dict) else None
     workflow_runner = (
