@@ -78,6 +78,10 @@ from agent.automation_plugins.mysql_repository import (
 )
 from agent.automation_plugins.package import load_ed25519_trust_store
 from agent.automation_plugins.ports import RuntimeEffectPlan
+from agent.automation_plugins.quarantine import (
+    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+    DELIVERY_STATUS_QUARANTINE_STATUS,
+)
 from agent.automation_plugins.release_config import (
     ProductionPluginReleaseConfig,
     load_production_plugin_release_config,
@@ -997,6 +1001,78 @@ class ProductionAutomationPluginRuntime:
             raise PluginConflictError("first-party plugin bootstrap was rejected")
         return self.target_service.reconcile_all()
 
+    @staticmethod
+    def _generation_health_projection(
+        generations: RuntimeGenerationHealth,
+    ) -> dict[str, Any]:
+        return {
+            "healthy": generations.healthy,
+            "project_count": generations.project_count,
+            "committed_count": generations.committed_count,
+            "active_lease_count": generations.active_lease_count,
+            "blocked_projects": {
+                key: list(value)
+                for key, value in sorted(generations.blocked_projects.items())
+            },
+            "recovery_pending_projects": {
+                key: list(value)
+                for key, value in sorted(
+                    generations.recovery_pending_projects.items()
+                )
+            },
+        }
+
+    def unaffected_release_readiness(self) -> dict[str, Any]:
+        """Return the publisher gate for every project except the exact incident.
+
+        This never changes the ordinary health result.  It exists solely so a
+        held release can start the fifteen unaffected projects without replaying
+        or reconfiguring the delivery unknown write.
+        """
+
+        catalog = self.catalog.production_unaffected_release_health(
+            tuple(self.required_first_party_ids),
+            recoverable_unknown_write_automation_ids=("arrival_stats",),
+        )
+        quarantined = tuple(
+            str(item)
+            for item in catalog.get("quarantined_unknown_write_automation_ids", ())
+            if str(item)
+        )
+        exact_delivery_quarantine = quarantined == (
+            DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+        )
+        expected_automation_ids = frozenset(self.required_first_party_ids)
+        ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
+        if exact_delivery_quarantine:
+            expected_automation_ids = expected_automation_ids - {
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+            }
+            ignored_automation_ids = ignored_automation_ids | {
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+            }
+        generations: RuntimeGenerationHealth = runtime_generation_health(
+            self.runtime_repository,
+            expected_automation_ids=expected_automation_ids,
+            ignored_automation_ids=ignored_automation_ids,
+            recoverable_unknown_write_automation_ids=tuple(
+                catalog.get("recovery_pending_generations", ())
+            ),
+        )
+        return {
+            "ok": bool(
+                exact_delivery_quarantine
+                and catalog.get("ok") is True
+                and generations.healthy
+                and self._started
+            ),
+            "quarantined_automation_ids": list(quarantined),
+            "expected_automation_ids": sorted(expected_automation_ids),
+            "expected_project_count": len(expected_automation_ids),
+            "catalog": catalog,
+            "generations": self._generation_health_projection(generations),
+        }
+
     def health(self) -> dict[str, Any]:
         catalog = self.catalog.production_health(
             tuple(self.required_first_party_ids),
@@ -1016,30 +1092,26 @@ class ProductionAutomationPluginRuntime:
             "release_sha": self.release.verified_release_sha,
             "broker": {"state": "running" if self._started else "stopped"},
             "catalog": catalog,
-            "generations": {
-                "healthy": generations.healthy,
-                "project_count": generations.project_count,
-                "committed_count": generations.committed_count,
-                "active_lease_count": generations.active_lease_count,
-                "blocked_projects": {
-                    key: list(value)
-                    for key, value in sorted(generations.blocked_projects.items())
-                },
-                "recovery_pending_projects": {
-                    key: list(value)
-                    for key, value in sorted(generations.recovery_pending_projects.items())
-                },
-            },
+            "generations": self._generation_health_projection(generations),
+            "unaffected_release": self.unaffected_release_readiness(),
         }
 
     def assert_release_ready(self) -> dict[str, Any]:
         health = self.health()
-        if health["ok"] is not True:
-            raise PluginConflictError(
-                "automation plugin runtime is not release-ready",
-                code="AUTOMATION_PLUGIN_RUNTIME_NOT_READY",
-            )
-        return health
+        if health["ok"] is True:
+            return health
+        unaffected_release = health.get("unaffected_release")
+        if (
+            isinstance(unaffected_release, Mapping)
+            and unaffected_release.get("ok") is True
+            and unaffected_release.get("quarantined_automation_ids")
+            == [DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID]
+        ):
+            return dict(unaffected_release)
+        raise PluginConflictError(
+            "automation plugin runtime is not release-ready",
+            code="AUTOMATION_PLUGIN_RUNTIME_NOT_READY",
+        )
 
     def package_bytes(
         self,
@@ -1178,15 +1250,16 @@ def build_production_automation_plugin_runtime(
     config_repository = MySQLAutomationProjectConfigurationReadAdapter(
         orchestration_repository
     )
+    runtime_repository = MySQLAutomationPluginRuntimeAdapter(
+        orchestration_repository
+    )
     catalog = PluginCatalog(
         catalog_repository,
         config_repository,
+        runtime_unknown_write_reader=runtime_repository,
         excluded_automation_plugins=deferred_first_party_automation_plugins(),
         excluded_plugin_ids=deferred_first_party_plugin_ids(),
         allowed_execution_platforms=("server",),
-    )
-    runtime_repository = MySQLAutomationPluginRuntimeAdapter(
-        orchestration_repository
     )
     management_repository = MySQLAutomationPluginManagementRepository(
         orchestration_repository

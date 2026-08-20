@@ -178,6 +178,58 @@ def _healthy_service_identity_payload() -> dict[str, object]:
     }
 
 
+def _delivery_unknown_write_quarantine_payload() -> dict[str, object]:
+    payload = _healthy_service_identity_payload()
+    plugins = payload["data"]["components"]["automation_plugins"]
+    assert isinstance(plugins, dict)
+    catalog = plugins["catalog"]
+    generations = plugins["generations"]
+    assert isinstance(catalog, dict)
+    assert isinstance(generations, dict)
+    plugins["ok"] = False
+    catalog["ok"] = False
+    catalog["unstable_generations"] = ["delivery_status"]
+    generations["healthy"] = False
+    unaffected_ids = [
+        "arrival_stats",
+        "arrive_list",
+        "clockin_daxiang",
+        "clockin_daxiang_s",
+        "customer_problems_shadow",
+        "daily_sign",
+        "finance_bills",
+        "finance_startup_catchup",
+        "scan_codes",
+        "self_pickup_problem_upload",
+        "send_order",
+        "site_send",
+        "split_pending_problem_upload",
+        "yunda_dispatch_forecast",
+        "yunda_send_waybills",
+    ]
+    plugins["unaffected_release"] = {
+        "ok": True,
+        "quarantined_automation_ids": ["delivery_status"],
+        "expected_automation_ids": unaffected_ids,
+        "expected_project_count": len(unaffected_ids),
+        "catalog": {
+            **catalog,
+            "ok": True,
+            "unstable_generations": [],
+            "quarantined_unknown_write_automation_ids": ["delivery_status"],
+        },
+        "generations": {
+            "healthy": True,
+            "project_count": len(unaffected_ids),
+            "committed_count": len(unaffected_ids),
+            "active_lease_count": 0,
+            "blocked_projects": {},
+            "recovery_pending_projects": {},
+        },
+    }
+    return payload
+
+
 def _run_service_identity_smoke(
     payload: object,
     *,
@@ -920,6 +972,40 @@ class ReleaseBoundaryTests(unittest.TestCase):
             completed.stderr,
         )
 
+    def test_service_identity_delivery_quarantine_accepts_only_the_scoped_readiness(self):
+        payload = _delivery_unknown_write_quarantine_payload()
+
+        accepted = _run_service_identity_smoke(
+            payload,
+            smoke_scope="delivery_unknown_write_quarantine",
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertEqual("service_identity_smoke=ok", accepted.stdout.strip())
+
+        full = _run_service_identity_smoke(payload)
+        self.assertEqual(1, full.returncode)
+        self.assertEqual(
+            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations "
+            "diagnostic_automation_ids=delivery_status\n",
+            full.stderr,
+        )
+
+        broken = _delivery_unknown_write_quarantine_payload()
+        plugins = broken["data"]["components"]["automation_plugins"]
+        assert isinstance(plugins, dict)
+        readiness = plugins["unaffected_release"]
+        assert isinstance(readiness, dict)
+        readiness["quarantined_automation_ids"] = ["arrival_stats"]
+        rejected = _run_service_identity_smoke(
+            broken,
+            smoke_scope="delivery_unknown_write_quarantine",
+        )
+        self.assertEqual(1, rejected.returncode)
+        self.assertEqual(
+            "service_identity_smoke=failed reason=plugin_unaffected_release_shape\n",
+            rejected.stderr,
+        )
+
     def test_post_restart_recovery_is_ordered_and_blocks_activation_on_failure(self):
         successful = _run_sourced_release_harness(
             r'''
@@ -986,6 +1072,27 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "delivery_diagnostic identity:recovery_transport recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
             "identity:full manifest",
             auth_failure.stdout.strip(),
+        )
+
+    def test_post_restart_delivery_quarantine_uses_scoped_publisher_gate(self):
+        completed = _run_sourced_release_harness(
+            r'''
+            events=()
+            diagnose_delivery_status_generation() {
+              DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=1
+              events+=(delivery_diagnostic)
+            }
+            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
+            check_control_plane_release_manifest() { events+=(manifest); }
+            check_post_restart_release_gates
+            printf '%s\n' "${events[*]}"
+            '''
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "delivery_diagnostic identity:delivery_unknown_write_quarantine manifest",
+            completed.stdout.strip(),
         )
 
     def test_known_recovery_uses_only_the_verified_zero_readback_contract(self):

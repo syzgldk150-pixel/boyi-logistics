@@ -16,7 +16,17 @@ from agent.automation_plugins.models import (
     RuntimeReconcileState,
     RuntimeGenerationSnapshot,
 )
-from agent.automation_plugins.ports import AutomationPluginRepositoryPort, AutomationProjectConfigurationPort
+from agent.automation_plugins.ports import (
+    AutomationPluginRepositoryPort,
+    AutomationProjectConfigurationPort,
+    RuntimeUnknownWriteReadPort,
+)
+from agent.automation_plugins.quarantine import (
+    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+    DELIVERY_STATUS_QUARANTINE_GENERATION,
+    DELIVERY_STATUS_QUARANTINE_STATUS,
+    matches_delivery_status_unknown_write_quarantine,
+)
 from agent.tool_registry import validate_schema_instance
 
 
@@ -428,6 +438,7 @@ class PluginCatalog:
         repository: AutomationPluginRepositoryPort,
         project_configuration: AutomationProjectConfigurationPort | None = None,
         *,
+        runtime_unknown_write_reader: RuntimeUnknownWriteReadPort | None = None,
         excluded_automation_ids: Sequence[str] = (),
         excluded_automation_plugins: Mapping[str, str] | None = None,
         excluded_plugin_ids: Sequence[str] = (),
@@ -435,6 +446,7 @@ class PluginCatalog:
     ) -> None:
         self._repository = repository
         self._project_configuration = project_configuration
+        self._runtime_unknown_write_reader = runtime_unknown_write_reader
         self._excluded_automation_ids = frozenset(
             str(item or "").strip()
             for item in excluded_automation_ids
@@ -523,6 +535,123 @@ class PluginCatalog:
         return sorted(entries, key=lambda item: item.automation_id)
 
     @staticmethod
+    def _delivery_status_quarantine_project_matches(
+        entry: PluginCatalogEntry,
+        generation: object,
+        lease: Mapping[str, Any] | None,
+    ) -> bool:
+        """Verify every persisted identity before granting the narrow exception."""
+
+        snapshot = getattr(generation, "snapshot", None)
+        return matches_delivery_status_unknown_write_quarantine(
+            automation_id=entry.automation_id,
+            plugin_id=entry.plugin_id,
+            target_generation=entry.target_generation,
+            committed_generation=entry.committed_generation,
+            reconcile_state=entry.reconcile_state,
+            generation=getattr(snapshot, "generation", None),
+            generation_state=getattr(generation, "state", None),
+            lease=lease,
+        ) and getattr(snapshot, "automation_id", None) == entry.automation_id and getattr(
+            snapshot, "plugin_id", None
+        ) == entry.plugin_id
+
+    def delivery_status_unknown_write_quarantine_status(
+        self,
+        *,
+        fail_closed: bool = False,
+    ) -> str | None:
+        """Return the incident status only after a typed current-lease re-read.
+
+        A caller may opt into a raised conflict for an observed
+        ``BLOCKED_UNKNOWN_WRITE`` state that does not exactly match the audited
+        project, generation and lease.  The default leaves the normal global
+        health gate degraded rather than turning a health probe into an
+        exception.
+        """
+
+        entry = self.get(DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID)
+        if entry is None or entry.reconcile_state != RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE:
+            return None
+        reader = self._runtime_unknown_write_reader
+        if reader is None:
+            if fail_closed:
+                raise PluginConflictError(
+                    "delivery unknown-write quarantine reader is unavailable",
+                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                )
+            return None
+        try:
+            lease = reader.find_current_unknown_generation_write(
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+            )
+            generation = reader.get_generation(
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+                DELIVERY_STATUS_QUARANTINE_GENERATION,
+            )
+        except Exception as exc:
+            if fail_closed:
+                raise PluginConflictError(
+                    "delivery unknown-write quarantine identity is unavailable",
+                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                ) from exc
+            return None
+        if self._delivery_status_quarantine_project_matches(entry, generation, lease):
+            return DELIVERY_STATUS_QUARANTINE_STATUS
+        if fail_closed:
+            raise PluginConflictError(
+                "delivery unknown-write quarantine identity mismatched",
+                code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+            )
+        return None
+
+    def production_unaffected_release_health(
+        self,
+        automation_ids: Sequence[str],
+        *,
+        recoverable_unknown_write_automation_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Report publisher readiness excluding only the verified incident.
+
+        The normal ``production_health`` output stays untouched and degraded.
+        This projection removes only the exact delivery unstable generation;
+        every other catalog failure remains a hard release block.
+        """
+
+        health = self.production_health(
+            automation_ids,
+            recoverable_unknown_write_automation_ids=(
+                recoverable_unknown_write_automation_ids
+            ),
+        )
+        quarantine_status = self.delivery_status_unknown_write_quarantine_status()
+        if quarantine_status != DELIVERY_STATUS_QUARANTINE_STATUS:
+            return {
+                **health,
+                "quarantined_unknown_write_automation_ids": [],
+            }
+        unstable = [
+            automation_id
+            for automation_id in health["unstable_generations"]
+            if automation_id != DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+        ]
+        result = {
+            **health,
+            "unstable_generations": unstable,
+            "quarantined_unknown_write_automation_ids": [
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+            ],
+        }
+        result["ok"] = bool(
+            not result["unsupported_automation_ids"]
+            and not result["enabled_builtin_release"]
+            and not result["invalid_enabled_trust"]
+            and not result["unstable_generations"]
+            and not result["invalid_enabled_runtime"]
+        )
+        return result
+
+    @staticmethod
     def _resource_summary(entry: PluginCatalogEntry) -> str:
         permissions = entry.runtime_permissions
         labels: list[str] = []
@@ -570,6 +699,9 @@ class PluginCatalog:
         """
 
         entries = self.list()
+        delivery_quarantine_status = self.delivery_status_unknown_write_quarantine_status(
+            fail_closed=True
+        )
         newest: dict[str, PluginCatalogEntry] = {}
         for entry in entries:
             current = newest.get(entry.plugin_id)
@@ -612,6 +744,11 @@ class PluginCatalog:
                 "target_generation": entry.target_generation,
                 "committed_generation": entry.committed_generation,
                 "reconcile_state": entry.reconcile_state.value,
+                "quarantine_status": (
+                    delivery_quarantine_status
+                    if entry.automation_id == DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+                    else None
+                ),
                 "project_configuration_version": entry.project_config_version,
                 "execution_platform": entry.execution_platform,
                 "can_schedule": entry.scheduling.get("supported") is True,
@@ -945,6 +1082,13 @@ class CompositeToolRegistry:
 
     def get_project_capability(self, automation_id: str) -> Mapping[str, Any]:
         return self._plugins.get_project_capability(automation_id)
+
+    def delivery_status_unknown_write_quarantine_status(self) -> str | None:
+        """Expose only the catalog's strict incident check to the scheduler."""
+
+        return self._plugins.delivery_status_unknown_write_quarantine_status(
+            fail_closed=True
+        )
 
     def validate_arguments(self, tool_name: str, arguments: Mapping[str, Any]) -> None:
         capability = self.get_capability(tool_name)

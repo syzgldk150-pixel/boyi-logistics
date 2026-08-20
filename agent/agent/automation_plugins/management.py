@@ -24,6 +24,13 @@ from agent.automation_plugins.models import (
     RuntimeReconcileState,
 )
 from agent.automation_plugins.ports import PluginStoragePort
+from agent.automation_plugins.quarantine import (
+    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+    DELIVERY_STATUS_QUARANTINE_GENERATION,
+    DELIVERY_STATUS_QUARANTINE_LEASE_ID,
+    DELIVERY_STATUS_QUARANTINE_PLUGIN_ID,
+    DELIVERY_STATUS_QUARANTINE_STATUS,
+)
 from agent.orchestration.models import Actor, ActorType
 
 
@@ -36,9 +43,6 @@ _KNOWN_ARRIVAL_STATS_RECOVERY_RUN_IDS = frozenset(
         "71510af3-fcf1-461b-9c2e-152665f32f98",
     }
 )
-_DELIVERY_STATUS_AUTOMATION_ID = "delivery_status"
-
-
 def _iso_datetime(value: object) -> str:
     if not isinstance(value, datetime):
         return ""
@@ -253,22 +257,38 @@ class AutomationPluginManagementService:
         """Return the fixed project's closed generation state for recovery triage."""
 
         self._require_console_actor(actor, super_admin=True)
-        entry = self._catalog.require(_DELIVERY_STATUS_AUTOMATION_ID)
-        if entry.plugin_id != "sync_delivery_status":
+        entry = self._catalog.require(DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID)
+        if entry.plugin_id != DELIVERY_STATUS_QUARANTINE_PLUGIN_ID:
             raise PluginConflictError(
                 "generation diagnostic is not available for this automation action",
                 code="PLUGIN_RECOVERY_SCOPE_INVALID",
             )
         lease_id = ""
         lease_generation: int | None = None
+        quarantine_status: str | None = None
         if entry.reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE:
+            quarantine_status = self._catalog.delivery_status_unknown_write_quarantine_status(
+                fail_closed=True
+            )
+            if quarantine_status != DELIVERY_STATUS_QUARANTINE_STATUS:
+                raise PluginConflictError(
+                    "delivery unknown-write quarantine identity mismatched",
+                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                )
             identity = self._targets.current_unknown_write_identity(
-                _DELIVERY_STATUS_AUTOMATION_ID
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
             )
             lease_id = str(identity.get("lease_id") or "")
             lease_generation = identity.get("generation")
-            if not lease_id or type(lease_generation) is not int:
-                raise PluginConflictError("delivery unknown write identity is unavailable")
+            if (
+                lease_id != DELIVERY_STATUS_QUARANTINE_LEASE_ID
+                or type(lease_generation) is not int
+                or lease_generation != DELIVERY_STATUS_QUARANTINE_GENERATION
+            ):
+                raise PluginConflictError(
+                    "delivery unknown-write quarantine lease mismatched",
+                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                )
         reconcile_state = entry.reconcile_state.value
         if reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE.value:
             lease_reason = "WRITE_OUTCOME_UNKNOWN"
@@ -280,13 +300,14 @@ class AutomationPluginManagementService:
         else:
             lease_reason = "NO_BLOCKED_WRITE_LEASE"
         return {
-            "automation_id": _DELIVERY_STATUS_AUTOMATION_ID,
+            "automation_id": DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
             "target_generation": entry.target_generation,
             "committed_generation": entry.committed_generation,
             "reconcile_state": reconcile_state,
             "lease_reason": lease_reason,
             "lease_id": lease_id,
             "lease_generation": lease_generation,
+            "quarantine_status": quarantine_status,
         }
 
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:

@@ -682,6 +682,105 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         finally:
             scheduler_module._scheduler = previous_scheduler
 
+    def test_delivery_unknown_write_quarantine_skips_only_exact_reviewed_rows(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        definition = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["delivery_status"]
+        self.assertEqual(
+            set(definition.scheduled_task_ids),
+            set(scheduler_module.DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS),
+        )
+        core = _AgentCore()
+        core.registry = SimpleNamespace(
+            delivery_status_unknown_write_quarantine_status=(
+                lambda: "QUARANTINED_UNKNOWN_WRITE"
+            )
+        )
+        core.memory.rows = [
+            {
+                "id": task_id,
+                "name": task_id,
+                "tool_name": "automation.delivery_status.run",
+                "tool_params": {},
+                "cron_expression": "0 9 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+                "automation_id": "delivery_status",
+                "automation_generation": 1,
+            }
+            for task_id in sorted(definition.scheduled_task_ids)
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )
+        try:
+            with self.assertLogs("agent", level="WARNING") as captured:
+                scheduler_module._load_tasks_from_db(core)
+            self.assertEqual(0, len(scheduler_module._scheduler.get_jobs()))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+
+        self.assertIn(
+            "Delivery unknown-write quarantine scheduled tasks were not registered",
+            "\n".join(captured.output),
+        )
+
+        normal_core = _AgentCore()
+        normal_core.registry = SimpleNamespace(
+            delivery_status_unknown_write_quarantine_status=lambda: None
+        )
+        normal_core.memory.rows = [core.memory.rows[0]]
+        previous_scheduler = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )
+        try:
+            scheduler_module._load_tasks_from_db(normal_core)
+            self.assertEqual(1, len(scheduler_module._scheduler.get_jobs()))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+
+    def test_delivery_unknown_write_quarantine_drift_blocks_scheduler_loading(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.registry = SimpleNamespace(
+            delivery_status_unknown_write_quarantine_status=(
+                lambda: "QUARANTINED_UNKNOWN_WRITE"
+            )
+        )
+        core.memory.rows = [
+            {
+                "id": "delivery_status_0900",
+                "name": "Delivery status",
+                "tool_name": "automation.delivery_status.run",
+                "tool_params": {},
+                "cron_expression": "0 9 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+                "automation_id": "delivery_status",
+                "automation_generation": 2,
+            }
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )
+        try:
+            with self.assertRaisesRegex(
+                scheduler_module.DeliveryStatusQuarantineIdentityError,
+                "audited quarantine identity",
+            ):
+                scheduler_module._load_tasks_from_db(core)
+            self.assertEqual(0, len(scheduler_module._scheduler.get_jobs()))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+
     def test_plugin_schedule_fails_closed_without_explicit_project_identity(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")

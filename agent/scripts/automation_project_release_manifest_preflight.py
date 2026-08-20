@@ -87,6 +87,9 @@ def _load_release_contract() -> dict[str, Any]:
     release_scope_path = (
         PROJECT_ROOT / "agent" / "automation_plugins" / "release_scope.py"
     )
+    quarantine_path = (
+        PROJECT_ROOT / "agent" / "automation_plugins" / "quarantine.py"
+    )
     if not all(
         path.is_file()
         for path in (
@@ -95,6 +98,7 @@ def _load_release_contract() -> dict[str, Any]:
             repository_path,
             policy_repository_path,
             release_scope_path,
+            quarantine_path,
         )
     ):
         raise AutomationProjectReleaseManifestError(
@@ -103,8 +107,10 @@ def _load_release_contract() -> dict[str, Any]:
 
     previous_shared = _shared_module_snapshot()
     previous_scope = sys.modules.get("_boyi_release_manifest_scope")
+    previous_quarantine = sys.modules.get("_boyi_delivery_status_quarantine")
     _clear_shared_modules()
     sys.modules.pop("_boyi_release_manifest_scope", None)
+    sys.modules.pop("_boyi_delivery_status_quarantine", None)
     try:
         _load_exact_module(
             "shared",
@@ -126,6 +132,10 @@ def _load_release_contract() -> dict[str, Any]:
         release_scope = _load_exact_module(
             "_boyi_release_manifest_scope",
             release_scope_path,
+        )
+        quarantine = _load_exact_module(
+            "_boyi_delivery_status_quarantine",
+            quarantine_path,
         )
         templates = getattr(
             manifest,
@@ -155,6 +165,11 @@ def _load_release_contract() -> dict[str, Any]:
         validate_generation_row = getattr(
             repository,
             "_validated_generation_row",
+            None,
+        )
+        matches_delivery_status_quarantine_project = getattr(
+            quarantine,
+            "matches_delivery_status_quarantine_project",
             None,
         )
         evidence_function_names = (
@@ -229,6 +244,7 @@ def _load_release_contract() -> dict[str, Any]:
             or deferred_generation <= 0
             or not callable(stable_schedule_task_id)
             or not callable(validate_generation_row)
+            or not callable(matches_delivery_status_quarantine_project)
             or any(
                 not callable(bootstrap_evidence[name])
                 for name in evidence_function_names
@@ -297,8 +313,11 @@ def _load_release_contract() -> dict[str, Any]:
         _clear_shared_modules()
         sys.modules.update(previous_shared)
         sys.modules.pop("_boyi_release_manifest_scope", None)
+        sys.modules.pop("_boyi_delivery_status_quarantine", None)
         if previous_scope is not None:
             sys.modules["_boyi_release_manifest_scope"] = previous_scope
+        if previous_quarantine is not None:
+            sys.modules["_boyi_delivery_status_quarantine"] = previous_quarantine
 
     release_projects = frozenset(
         automation_id
@@ -348,6 +367,9 @@ def _load_release_contract() -> dict[str, Any]:
         "deferred_generation": deferred_generation,
         "stable_schedule_task_id": stable_schedule_task_id,
         "validate_generation_row": validate_generation_row,
+        "matches_delivery_status_quarantine_project": (
+            matches_delivery_status_quarantine_project
+        ),
         "bootstrap_evidence": bootstrap_evidence,
         "release_projects": release_projects,
         "deferred_projects": deferred_projects,
@@ -1004,6 +1026,34 @@ def _verify_deferred_projects_absent(cursor: Any, contract: Mapping[str, Any]) -
         )
 
 
+def _is_exact_delivery_status_quarantine_project(
+    contract: Mapping[str, Any],
+    *,
+    automation_id: str,
+    project: Mapping[str, Any],
+    generation: Mapping[str, Any] | None = None,
+) -> bool:
+    """Reuse the incident contract without widening the 018 manifest scope.
+
+    Lease proof is deliberately owned by the typed runtime diagnostic that the
+    release script runs immediately before this read-only manifest check.  The
+    manifest has no repository adapter and must not duplicate its SQL.
+    """
+
+    row = project if generation is None else generation
+    return bool(
+        contract["matches_delivery_status_quarantine_project"](
+            automation_id=automation_id,
+            plugin_id=project.get("plugin_id"),
+            target_generation=project.get("target_generation"),
+            committed_generation=project.get("committed_generation"),
+            reconcile_state=project.get("reconcile_state"),
+            generation=row.get("generation"),
+            generation_state=row.get("generation_state"),
+        )
+    )
+
+
 def _validate_release_projects_and_tasks(
     contract: Mapping[str, Any],
     *,
@@ -1066,10 +1116,14 @@ def _validate_release_projects_and_tasks(
     for automation_id in sorted(contract["release_projects"]):
         project = projects[automation_id]
         template = contract["templates"][automation_id]
+        exact_delivery_quarantine = _is_exact_delivery_status_quarantine_project(
+            contract,
+            automation_id=automation_id,
+            project=project,
+        )
         if (
             project.get("plugin_id") != template["tool_name"]
             or project.get("project_state") != "ENABLED"
-            or project.get("reconcile_state") != "STABLE"
             or not _boolean(
                 project.get("enabled"),
                 code="AUTOMATION_PROJECT_STATE_INVALID",
@@ -1078,7 +1132,13 @@ def _validate_release_projects_and_tasks(
                 project.get("configured"),
                 code="AUTOMATION_PROJECT_CONFIG_INVALID",
             )
-            or project.get("generation_state") != "COMMITTED"
+            or (
+                not exact_delivery_quarantine
+                and (
+                    project.get("reconcile_state") != "STABLE"
+                    or project.get("generation_state") != "COMMITTED"
+                )
+            )
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_STATE_INVALID"
@@ -1298,6 +1358,7 @@ def _validate_bootstrap_generation_source(
     contract: Mapping[str, Any],
     *,
     automation_id: str,
+    project: Mapping[str, Any],
     source: Mapping[str, Any],
     generation_row: Mapping[str, Any],
     backups: Mapping[str, Mapping[str, Any]],
@@ -1317,9 +1378,22 @@ def _validate_bootstrap_generation_source(
         else None
     )
     template = contract["templates"][automation_id]
+    exact_delivery_quarantine = _is_exact_delivery_status_quarantine_project(
+        contract,
+        automation_id=automation_id,
+        project=project,
+        generation=generation_row,
+    )
+    allowed_generation_states = {
+        "COMMITTED",
+        "DRAINING",
+        "DISPOSING",
+        "DISPOSED",
+    }
+    if exact_delivery_quarantine:
+        allowed_generation_states.add("BLOCKED")
     if (
-        generation_row.get("generation_state")
-        not in {"COMMITTED", "DRAINING", "DISPOSING", "DISPOSED"}
+        generation_row.get("generation_state") not in allowed_generation_states
         or generation_row.get("committed_at") is None
         or generation_row.get("generation")
         != source.get("automation_generation")
@@ -1973,6 +2047,7 @@ def _validate_bootstrap_and_policy_state(
         _validate_bootstrap_generation_source(
             contract,
             automation_id=automation_id,
+            project=project,
             source=source,
             generation_row=generation_row,
             backups=backups,

@@ -67,8 +67,14 @@ def _entry(**overrides: Any) -> SimpleNamespace:
 
 
 class _Catalog:
-    def __init__(self, entry: SimpleNamespace | None = None) -> None:
+    def __init__(
+        self,
+        entry: SimpleNamespace | None = None,
+        *,
+        quarantine_status: str | None = None,
+    ) -> None:
         self.current = entry or _entry()
+        self.quarantine_status = quarantine_status
 
     def require(self, automation_id: str) -> SimpleNamespace:
         if automation_id != self.current.automation_id:
@@ -78,6 +84,9 @@ class _Catalog:
     @staticmethod
     def safe_projection() -> dict[str, Any]:
         return {"plugins": [{"plugin_id": "example_action"}], "instances": []}
+
+    def delivery_status_unknown_write_quarantine_status(self, **_kwargs: Any) -> str | None:
+        return self.quarantine_status
 
 
 class _ApiService:
@@ -136,6 +145,7 @@ class _ApiService:
             "lease_reason": "WRITE_OUTCOME_UNKNOWN",
             "lease_id": "11111111-1111-1111-1111-111111111111",
             "lease_generation": 7,
+            "quarantine_status": "QUARANTINED_UNKNOWN_WRITE",
         }
 
 
@@ -164,6 +174,10 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
     )
     assert diagnostic.status_code == 200
     assert diagnostic.json()["data"]["lease_reason"] == "WRITE_OUTCOME_UNKNOWN"
+    assert (
+        diagnostic.json()["data"]["quarantine_status"]
+        == "QUARANTINED_UNKNOWN_WRITE"
+    )
     installed = client.post(
         "/internal/v1/automation/plugins/install",
         data={
@@ -318,6 +332,44 @@ def test_management_identity_and_worker_projection_are_fail_closed() -> None:
             actor=_console_actor(super_admin=False),
         )
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
+
+
+def test_delivery_generation_diagnostic_reports_only_the_exact_quarantine() -> None:
+    entry = _entry(
+        automation_id="delivery_status",
+        plugin_id="sync_delivery_status",
+        target_generation=1,
+        committed_generation=1,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    catalog = _Catalog(
+        entry,
+        quarantine_status="QUARANTINED_UNKNOWN_WRITE",
+    )
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(
+            current_unknown_write_identity=lambda _automation_id: {
+                "generation": 1,
+                "lease_id": "9918420e-b5c1-41c7-a4ee-543e131272be",
+            }
+        ),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    diagnostic = service.delivery_status_generation_diagnostic(actor=_console_actor())
+
+    assert diagnostic["quarantine_status"] == "QUARANTINED_UNKNOWN_WRITE"
+    assert diagnostic["lease_reason"] == "WRITE_OUTCOME_UNKNOWN"
+
+    catalog.quarantine_status = None
+    with pytest.raises(PluginConflictError) as raised:
+        service.delivery_status_generation_diagnostic(actor=_console_actor())
+    assert raised.value.code == "DELIVERY_STATUS_QUARANTINE_MISMATCH"
 
 
 @pytest.mark.parametrize(

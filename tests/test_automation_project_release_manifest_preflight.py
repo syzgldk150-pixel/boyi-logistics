@@ -720,6 +720,65 @@ def test_arrival_stats_unknown_write_remains_blocked_until_managed_recovery(
     assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
 
 
+def test_exact_delivery_unknown_write_quarantine_keeps_manifest_scope_closed(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects["delivery_status"]
+    project.update(
+        reconcile_state="BLOCKED_UNKNOWN_WRITE",
+        generation_state="BLOCKED",
+    )
+
+    preflight._validate_release_projects_and_tasks(
+        contract,
+        schedules=schedules,
+        backups=backups,
+        projects=projects,
+        expect_initial_production_manifest=True,
+    )
+    assert len(contract["release_projects"]) == 16
+    assert len(contract["release_tasks"]) == 57
+    assert len(contract["deferred_projects"]) == 2
+    assert len(contract["deferred_tasks"]) == 14
+    assert len(contract["all_tasks"]) == 71
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda project: project.update(target_generation=2),
+        lambda project: project.update(committed_generation=2),
+        lambda project: project.update(plugin_id="sync_arrival_stats"),
+        lambda project: project.update(generation=2),
+        lambda project: project.update(generation_state="COMMITTED"),
+    ),
+)
+def test_delivery_unknown_write_quarantine_identity_drift_remains_blocked(
+    preflight,
+    mutation,
+):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects["delivery_status"]
+    project.update(
+        reconcile_state="BLOCKED_UNKNOWN_WRITE",
+        generation_state="BLOCKED",
+    )
+    mutation(project)
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=True,
+        )
+
+    assert error.value.code in {
+        "AUTOMATION_PROJECT_STATE_INVALID",
+        "AUTOMATION_PROJECT_GENERATION_MISMATCH",
+    }
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     (

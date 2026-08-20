@@ -20,6 +20,12 @@ from agent.automation_plugins.release_scope import (
     DEFERRED_R7_LEGACY_SCHEDULE_GENERATION,
     DEFERRED_R7_PLUGIN_IDS,
 )
+from agent.automation_plugins.quarantine import (
+    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+    DELIVERY_STATUS_QUARANTINE_GENERATION,
+    DELIVERY_STATUS_QUARANTINE_PLUGIN_ID,
+    DELIVERY_STATUS_QUARANTINE_STATUS,
+)
 from agent.orchestration.models import Actor, ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from shared.automation_project_manifest import get_first_party_automation_project
@@ -42,6 +48,10 @@ class DeferredR7ScheduleIdentityError(RuntimeError):
     """A persisted R7 row no longer matches the reviewed migration identity."""
 
 
+class DeliveryStatusQuarantineIdentityError(RuntimeError):
+    """A delivery schedule row is not the one audited unknown-write incident."""
+
+
 def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
     task_ids: set[str] = set()
     for automation_id in DEFERRED_R7_PLUGIN_IDS:
@@ -53,6 +63,26 @@ def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
 
 
 DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS = _deferred_r7_legacy_schedule_task_ids()
+
+
+def _delivery_status_quarantine_schedule_task_ids() -> frozenset[str]:
+    definition = get_first_party_automation_project(
+        DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+    )
+    if (
+        definition is None
+        or definition.tool_name != DELIVERY_STATUS_QUARANTINE_PLUGIN_ID
+    ):
+        raise RuntimeError("Delivery quarantine has no reviewed migration template")
+    return frozenset(definition.scheduled_task_ids)
+
+
+DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS = (
+    _delivery_status_quarantine_schedule_task_ids()
+)
+_DELIVERY_STATUS_QUARANTINE_TOOL_NAME = (
+    f"automation.{DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID}.run"
+)
 
 
 def _enabled_finance_platform_filter() -> dict[str, str]:
@@ -115,6 +145,70 @@ def _deferred_r7_schedule_must_not_register(task: dict[str, Any]) -> bool:
     )
 
 
+def _is_delivery_status_quarantine_schedule(
+    *,
+    task_id: str,
+    tool_name: str,
+    automation_id: str,
+    automation_generation: int | None,
+) -> bool:
+    return (
+        task_id in DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS
+        and tool_name == _DELIVERY_STATUS_QUARANTINE_TOOL_NAME
+        and automation_id == DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+        and type(automation_generation) is int
+        and automation_generation == DELIVERY_STATUS_QUARANTINE_GENERATION
+    )
+
+
+def _delivery_status_quarantine_schedule_must_not_register(
+    task: dict[str, Any],
+    *,
+    agent_core: Any,
+) -> bool:
+    """Skip precisely the audited delivery schedules, never a name match."""
+
+    task_id = str(task.get("id") or "")
+    normalized_task_id = task_id.strip()
+    tool_name = str(task.get("tool_name") or "")
+    normalized_tool_name = tool_name.strip()
+    automation_id = str(task.get("automation_id") or "")
+    normalized_automation_id = automation_id.strip()
+    if (
+        normalized_task_id not in DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS
+        and normalized_tool_name != _DELIVERY_STATUS_QUARANTINE_TOOL_NAME
+        and normalized_automation_id != DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+    ):
+        return False
+    if not _is_delivery_status_quarantine_schedule(
+        task_id=task_id,
+        tool_name=tool_name,
+        automation_id=automation_id,
+        automation_generation=task.get("automation_generation"),
+    ):
+        raise DeliveryStatusQuarantineIdentityError(
+            "Delivery scheduled task does not match the audited quarantine identity"
+        )
+    registry = getattr(agent_core, "registry", None)
+    status_reader = getattr(
+        registry,
+        "delivery_status_unknown_write_quarantine_status",
+        None,
+    )
+    if not callable(status_reader):
+        raise DeliveryStatusQuarantineIdentityError(
+            "Delivery quarantine status reader is unavailable"
+        )
+    status = status_reader()
+    if status is None:
+        return False
+    if status == DELIVERY_STATUS_QUARANTINE_STATUS:
+        return True
+    raise DeliveryStatusQuarantineIdentityError(
+        "Delivery quarantine status is not the audited unknown-write incident"
+    )
+
+
 def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime | None:
     """Return the latest fire time still inside the configured misfire window."""
 
@@ -150,7 +244,7 @@ def init_scheduler(
             agent_core,
             automation_project_invoker=automation_project_invoker,
         )
-    except DeferredR7ScheduleIdentityError:
+    except (DeferredR7ScheduleIdentityError, DeliveryStatusQuarantineIdentityError):
         raise
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
@@ -320,24 +414,41 @@ def _load_tasks_from_db(
     *,
     automation_project_invoker: Any | None = None,
 ) -> None:
-    classified_tasks: list[tuple[dict[str, Any], bool]] = []
+    classified_tasks: list[tuple[dict[str, Any], bool, bool]] = []
     for task in agent_core.memory.list_enabled_scheduled_tasks():
         classified_tasks.append(
-            (task, _deferred_r7_schedule_must_not_register(task))
+            (
+                task,
+                _deferred_r7_schedule_must_not_register(task),
+                _delivery_status_quarantine_schedule_must_not_register(
+                    task,
+                    agent_core=agent_core,
+                ),
+            )
         )
     deferred_task_ids = [
         str(task.get("id") or "")
-        for task, is_deferred in classified_tasks
+        for task, is_deferred, _is_quarantined in classified_tasks
         if is_deferred
+    ]
+    quarantined_task_ids = [
+        str(task.get("id") or "")
+        for task, _is_deferred, is_quarantined in classified_tasks
+        if is_quarantined
     ]
     if deferred_task_ids:
         logger.warning(
             "Deferred R7 scheduled tasks were not registered: %s",
             ", ".join(sorted(deferred_task_ids)),
         )
+    if quarantined_task_ids:
+        logger.warning(
+            "Delivery unknown-write quarantine scheduled tasks were not registered: %s",
+            ", ".join(sorted(quarantined_task_ids)),
+        )
 
-    for task, is_deferred in classified_tasks:
-        if is_deferred:
+    for task, is_deferred, is_quarantined in classified_tasks:
+        if is_deferred or is_quarantined:
             continue
         if str(task.get("id") or "") == FINANCE_STARTUP_TASK_ID:
             # ``@startup`` is a persisted special occurrence, not a cron

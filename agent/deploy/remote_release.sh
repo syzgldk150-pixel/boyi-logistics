@@ -12,6 +12,7 @@ KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT="--recover-known-arrival-stat
 EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
 KNOWN_ARRIVAL_STATS_RECOVERY=0
 KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=0
+DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=0
 if (( $# > 8 )); then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
@@ -1806,7 +1807,7 @@ PY
 
 check_service_identity_smoke() {
   local smoke_scope="${1:-full}"
-  [[ "${smoke_scope}" == "full" || "${smoke_scope}" == "recovery_transport" ]] || {
+  [[ "${smoke_scope}" == "full" || "${smoke_scope}" == "recovery_transport" || "${smoke_scope}" == "delivery_unknown_write_quarantine" ]] || {
     echo "service_identity_smoke=failed reason=identity_configuration" >&2
     return 1
   }
@@ -1852,6 +1853,8 @@ class SmokeGate(str, Enum):
     PLUGIN_CATALOG_AGGREGATE_OR_SHAPE = "plugin_catalog_aggregate_or_shape"
     PLUGIN_GENERATIONS = "plugin_generations"
     PLUGIN_AGGREGATE = "plugin_aggregate"
+    PLUGIN_UNAFFECTED_RELEASE = "plugin_unaffected_release"
+    PLUGIN_UNAFFECTED_RELEASE_SHAPE = "plugin_unaffected_release_shape"
     WORKER = "worker"
     BOOTSTRAP_SHAPE = "bootstrap_shape"
     BOOTSTRAP_INCOMPLETE = "bootstrap_incomplete"
@@ -1995,8 +1998,41 @@ try:
     if os.environ.get("BOYI_SERVICE_IDENTITY_SMOKE_SCOPE") == "recovery_transport":
         print("service_identity_smoke=recovery_transport_ok")
         raise SystemExit(0)
+    smoke_scope = os.environ.get("BOYI_SERVICE_IDENTITY_SMOKE_SCOPE")
+    scoped_plugin_catalog = automation_plugins.get("catalog")
+    scoped_plugin_generations = automation_plugins.get("generations")
+    scoped_plugin_ok = automation_plugins.get("ok")
+    if smoke_scope == "delivery_unknown_write_quarantine":
+        failure_gate = SmokeGate.PLUGIN_UNAFFECTED_RELEASE_SHAPE
+        raw_catalog = scoped_plugin_catalog
+        raw_generations = scoped_plugin_generations
+        readiness = automation_plugins.get("unaffected_release")
+        expected_unaffected_ids = tuple(
+            sorted(_CLOSED_AUTOMATION_IDS - {"delivery_status"})
+        )
+        if (
+            automation_plugins.get("ok") is not False
+            or not isinstance(raw_catalog, dict)
+            or raw_catalog.get("ok") is not False
+            or raw_catalog.get("unstable_generations") != ["delivery_status"]
+            or not isinstance(raw_generations, dict)
+            or raw_generations.get("healthy") is not False
+            or not isinstance(readiness, dict)
+            or readiness.get("ok") is not True
+            or readiness.get("quarantined_automation_ids") != ["delivery_status"]
+            or readiness.get("expected_automation_ids")
+            != list(expected_unaffected_ids)
+            or readiness.get("expected_project_count")
+            != len(expected_unaffected_ids)
+            or not isinstance(readiness.get("catalog"), dict)
+            or not isinstance(readiness.get("generations"), dict)
+        ):
+            raise RuntimeError("delivery quarantine readiness shape is invalid")
+        scoped_plugin_catalog = readiness["catalog"]
+        scoped_plugin_generations = readiness["generations"]
+        scoped_plugin_ok = readiness["ok"]
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
-    plugin_catalog = automation_plugins.get("catalog")
+    plugin_catalog = scoped_plugin_catalog
     if not isinstance(plugin_catalog, dict):
         raise RuntimeError("automation plugin catalog health shape is invalid")
     catalog_failure_fields = (
@@ -2045,12 +2081,21 @@ try:
         raise RuntimeError("automation plugin catalog aggregate is not release-ready")
     failure_gate = SmokeGate.PLUGIN_GENERATIONS
     if (
-        not isinstance(automation_plugins.get("generations"), dict)
-        or automation_plugins["generations"].get("healthy") is not True
+        not isinstance(scoped_plugin_generations, dict)
+        or scoped_plugin_generations.get("healthy") is not True
     ):
         raise RuntimeError("automation plugin generations are not release-ready")
     failure_gate = SmokeGate.PLUGIN_AGGREGATE
-    if automation_plugins.get("ok") is not True:
+    if (
+        (
+            smoke_scope != "delivery_unknown_write_quarantine"
+            and automation_plugins.get("ok") is not True
+        )
+        or (
+            smoke_scope == "delivery_unknown_write_quarantine"
+            and scoped_plugin_ok is not True
+        )
+    ):
         raise RuntimeError("automation plugin runtime is not release-ready")
     failure_gate = SmokeGate.WORKER
     if (
@@ -2215,26 +2260,138 @@ PY
 diagnose_delivery_status_generation() {
   local console_python="${PYTHON_BINS[console]}"
   [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || return 1
-  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" BOYI_DEPLOYED_ROOT="/home/boyce" "${console_python}" - <<'PY'
-import json, os, secrets, sys
+  local diagnostic
+  diagnostic="$(
+    BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" BOYI_DEPLOYED_ROOT="/home/boyce" "${console_python}" - <<'PY'
+import json
+import os
+import secrets
+import sys
 from urllib.request import Request, urlopen
+
 from dotenv import dotenv_values
+
 sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
-from shared.service_identity import build_console_identity_headers, validate_service_identity_secrets
+
+from shared.service_identity import (  # noqa: E402
+    build_console_identity_headers,
+    validate_service_identity_secrets,
+)
+
+
+AUTOMATION_ID = "delivery_status"
+GENERATION = 1
+LEASE_ID = "9918420e-b5c1-41c7-a4ee-543e131272be"
+QUARANTINE_STATUS = "QUARANTINED_UNKNOWN_WRITE"
+EXPECTED_FIELDS = {
+    "automation_id",
+    "target_generation",
+    "committed_generation",
+    "reconcile_state",
+    "lease_reason",
+    "lease_id",
+    "lease_generation",
+    "quarantine_status",
+}
+
 try:
- v=dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"]); t=str(v.get("AGENT_INTERNAL_API_TOKEN") or ""); s=str(v.get("CONSOLE_AGENT_SIGNING_SECRET") or ""); validate_service_identity_secrets(internal_api_token=t,console_signing_secret=s); p="/internal/v1/automation/instances/delivery_status/generation/diagnostic"; h=build_console_identity_headers(secret=s,method="GET",request_target=p,body=b"",principal={"actor_type":"console_admin","actor_id":"release-delivery-diagnostic","roles":["admin","super_admin"],"display_name":"Release delivery diagnostic","authenticated_by":"mysql_admin_session"},nonce=secrets.token_urlsafe(24)); h["X-Agent-Internal-Token"]=t
- with urlopen(Request("http://127.0.0.1:9000"+p,headers=h,method="GET"),timeout=20) as r: x=json.loads(r.read().decode())
- d=x.get("data") if isinstance(x,dict) else None
- if r.status!=200 or x.get("ok") is not True or not isinstance(d,dict) or set(d)!={"automation_id","target_generation","committed_generation","reconcile_state","lease_reason","lease_id","lease_generation"} or d.get("automation_id")!="delivery_status" or d.get("lease_reason") not in {"WRITE_OUTCOME_UNKNOWN","PREWRITE_OR_CONFIGURATION_FAILURE","NO_BLOCKED_WRITE_LEASE"}: raise ValueError()
-except Exception: print("delivery_status_generation_diagnostic=failed",file=sys.stderr); raise SystemExit(1)
-print("delivery_status_generation_diagnostic=ok lease_reason="+d["lease_reason"]+" reconcile_state="+str(d["reconcile_state"])+" lease_generation="+str(d["lease_generation"])+" lease_id="+d["lease_id"])
+    values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
+    internal_token = str(values.get("AGENT_INTERNAL_API_TOKEN") or "")
+    signing_secret = str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or "")
+    validate_service_identity_secrets(
+        internal_api_token=internal_token,
+        console_signing_secret=signing_secret,
+    )
+    request_target = "/internal/v1/automation/instances/delivery_status/generation/diagnostic"
+    headers = build_console_identity_headers(
+        secret=signing_secret,
+        method="GET",
+        request_target=request_target,
+        body=b"",
+        principal={
+            "actor_type": "console_admin",
+            "actor_id": "release-delivery-diagnostic",
+            "roles": ["admin", "super_admin"],
+            "display_name": "Release delivery diagnostic",
+            "authenticated_by": "mysql_admin_session",
+        },
+        nonce=secrets.token_urlsafe(24),
+    )
+    headers["X-Agent-Internal-Token"] = internal_token
+    with urlopen(
+        Request(
+            "http://127.0.0.1:9000" + request_target,
+            headers=headers,
+            method="GET",
+        ),
+        timeout=20,
+    ) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if (
+        response.status != 200
+        or payload.get("ok") is not True
+        or not isinstance(data, dict)
+        or set(data) != EXPECTED_FIELDS
+        or data.get("automation_id") != AUTOMATION_ID
+    ):
+        raise ValueError("diagnostic response shape is invalid")
+    exact_quarantine = (
+        type(data.get("target_generation")) is int
+        and data.get("target_generation") == GENERATION
+        and type(data.get("committed_generation")) is int
+        and data.get("committed_generation") == GENERATION
+        and data.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+        and data.get("lease_reason") == "WRITE_OUTCOME_UNKNOWN"
+        and data.get("lease_id") == LEASE_ID
+        and type(data.get("lease_generation")) is int
+        and data.get("lease_generation") == GENERATION
+        and data.get("quarantine_status") == QUARANTINE_STATUS
+    )
+    normal = (
+        type(data.get("target_generation")) is int
+        and data.get("target_generation") > 0
+        and type(data.get("committed_generation")) is int
+        and data.get("committed_generation") == data.get("target_generation")
+        and data.get("reconcile_state") == "STABLE"
+        and data.get("lease_reason") == "NO_BLOCKED_WRITE_LEASE"
+        and data.get("lease_id") == ""
+        and data.get("lease_generation") is None
+        and data.get("quarantine_status") is None
+    )
+    if exact_quarantine:
+        print("delivery_status_generation_diagnostic=quarantined")
+    elif normal:
+        print("delivery_status_generation_diagnostic=normal")
+    else:
+        raise ValueError("delivery diagnostic is neither normal nor the audited incident")
+except Exception:
+    print("delivery_status_generation_diagnostic=failed", file=sys.stderr)
+    raise SystemExit(1)
 PY
+  )" || return 1
+  case "${diagnostic}" in
+    delivery_status_generation_diagnostic=quarantined)
+      DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=1
+      ;;
+    delivery_status_generation_diagnostic=normal)
+      DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=0
+      ;;
+    *)
+      echo "delivery_status_generation_diagnostic=failed" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${diagnostic}"
 }
 
 check_post_restart_release_gates() {
   RELEASE_STAGE="diagnose_delivery_status_generation"
   diagnose_delivery_status_generation || return 1
-  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
+  if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" ]]; then
+    RELEASE_STAGE="check_service_identity_delivery_unknown_write_quarantine"
+    check_service_identity_smoke delivery_unknown_write_quarantine || return 1
+  elif [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
     RELEASE_STAGE="check_service_identity_recovery_transport"
     check_service_identity_smoke recovery_transport || return 1
   else
@@ -2250,8 +2407,13 @@ check_post_restart_release_gates() {
     recover_known_arrival_stats_unknown_write "71510af3-fcf1-461b-9c2e-152665f32f98" || return 1
   fi
   if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
-    RELEASE_STAGE="check_service_identity_smoke"
-    check_service_identity_smoke || return 1
+    if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" ]]; then
+      RELEASE_STAGE="check_service_identity_delivery_unknown_write_quarantine"
+      check_service_identity_smoke delivery_unknown_write_quarantine || return 1
+    else
+      RELEASE_STAGE="check_service_identity_smoke"
+      check_service_identity_smoke || return 1
+    fi
   fi
   RELEASE_STAGE="check_control_plane_release_manifest"
   check_control_plane_release_manifest || return 1

@@ -43,6 +43,7 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.production import (
     MySQLRuntimeTargetService,
+    ProductionAutomationPluginRuntime,
     ProductionRuntimeCoeffectProvider,
     ProductionRuntimeEffectPlanner,
     build_runtime_generation_snapshot,
@@ -170,6 +171,7 @@ class _RuntimeRepository:
         self.runtimes: dict[str, ProjectRuntimeRecord] = {}
         self.generations: dict[tuple[str, int], RuntimeGenerationRecord] = {}
         self.unknown_generation_writes: set[tuple[str, int]] = set()
+        self.unknown_write_identities: dict[str, dict[str, object]] = {}
 
     def get_project_runtime(self, automation_id: str) -> ProjectRuntimeRecord | None:
         return self.runtimes.get(automation_id)
@@ -183,6 +185,15 @@ class _RuntimeRepository:
         generation: int,
     ) -> RuntimeGenerationRecord | None:
         return self.generations.get((automation_id, generation))
+
+    def find_current_unknown_generation_write(
+        self,
+        automation_id: str,
+    ) -> dict[str, object]:
+        identity = self.unknown_write_identities.get(automation_id)
+        if identity is None:
+            raise ValueError("current unknown-write lease is unavailable")
+        return copy.deepcopy(identity)
 
     def list_project_generations(
         self,
@@ -809,6 +820,41 @@ def _target_service(world: SimpleNamespace) -> MySQLRuntimeTargetService:
     )
 
 
+def _quarantine_delivery_unknown_write(world: SimpleNamespace) -> PluginCatalog:
+    delivery_id = "delivery_status"
+    generation = world.runtime.get_generation(delivery_id, 1)
+    project_runtime = world.runtime.get_project_runtime(delivery_id)
+    assert generation is not None
+    assert project_runtime is not None
+    world.runtime.generations[(delivery_id, 1)] = replace(
+        generation,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    world.runtime.runtimes[delivery_id] = replace(
+        project_runtime,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    project = world.project_repository.projects[delivery_id]
+    world.project_repository.projects[delivery_id] = replace(
+        project,
+        target_generation=1,
+        committed_generation=1,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    world.runtime.unknown_generation_writes.add((delivery_id, 1))
+    world.runtime.unknown_write_identities[delivery_id] = {
+        "generation": 1,
+        "lease_id": "9918420e-b5c1-41c7-a4ee-543e131272be",
+    }
+    return PluginCatalog(
+        world.project_repository,
+        _ConfigurationRepository(world.configurations),
+        runtime_unknown_write_reader=world.runtime,
+        excluded_plugin_ids=deferred_first_party_plugin_ids(),
+        allowed_execution_platforms=("server",),
+    )
+
+
 def _route_specs(world: SimpleNamespace) -> list[tuple[AutomationEntrypoint, str, str, str]]:
     specs: list[tuple[AutomationEntrypoint, str, str, str]] = []
     for automation_id, snapshot in sorted(world.snapshots.items()):
@@ -1171,6 +1217,64 @@ def test_missing_required_delivery_resource_waits_and_catalog_fails_closed() -> 
     )
     assert health["ok"] is False
     assert health["unstable_generations"] == ["delivery_status"]
+
+
+def test_exact_delivery_unknown_write_keeps_global_health_degraded_but_releases_other_projects():
+    world = _build_release_world()
+    _reconcile_world(world)
+    catalog = _quarantine_delivery_unknown_write(world)
+
+    assert (
+        catalog.delivery_status_unknown_write_quarantine_status(fail_closed=True)
+        == "QUARANTINED_UNKNOWN_WRITE"
+    )
+    with pytest.raises(PluginConflictError, match="runtime is blocked"):
+        catalog.get_project_capability("delivery_status")
+
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
+    runtime.catalog = catalog
+    runtime.runtime_repository = world.runtime
+    runtime.required_first_party_ids = world.expected_automation_ids
+    runtime._started = True
+
+    global_health = runtime.health()
+    assert global_health["ok"] is False
+    assert global_health["catalog"]["unstable_generations"] == ["delivery_status"]
+    assert global_health["generations"]["healthy"] is False
+
+    unaffected = global_health["unaffected_release"]
+    assert unaffected["ok"] is True
+    assert unaffected["quarantined_automation_ids"] == ["delivery_status"]
+    assert unaffected["expected_project_count"] == 15
+    assert "delivery_status" not in unaffected["expected_automation_ids"]
+    assert unaffected["catalog"]["ok"] is True
+    assert unaffected["generations"]["healthy"] is True
+    assert runtime.assert_release_ready() == unaffected
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        {"generation": 2, "lease_id": "9918420e-b5c1-41c7-a4ee-543e131272be"},
+        {"generation": 1, "lease_id": "wrong-lease"},
+        {"generation": 1, "lease_id": "9918420e-b5c1-41c7-a4ee-543e131272be", "extra": 1},
+    ),
+)
+def test_delivery_unknown_write_quarantine_lease_drift_fails_closed(identity: dict[str, object]):
+    world = _build_release_world()
+    _reconcile_world(world)
+    catalog = _quarantine_delivery_unknown_write(world)
+    world.runtime.unknown_write_identities["delivery_status"] = identity
+
+    assert catalog.delivery_status_unknown_write_quarantine_status() is None
+    with pytest.raises(PluginConflictError) as raised:
+        catalog.delivery_status_unknown_write_quarantine_status(fail_closed=True)
+    assert raised.value.code == "DELIVERY_STATUS_QUARANTINE_MISMATCH"
+    assert catalog.production_unaffected_release_health(
+        tuple(world.expected_automation_ids),
+        recoverable_unknown_write_automation_ids=("arrival_stats",),
+    )["ok"] is False
 
 
 def test_committed_route_value_drift_never_retargets_transport() -> None:
