@@ -303,7 +303,7 @@ def test_management_identity_and_worker_projection_are_fail_closed() -> None:
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
 
 
-def test_arrival_stats_recovery_requires_empty_readback_and_resolves_current_lease() -> None:
+def test_known_arrival_stats_recovery_is_the_only_release_hold_exception() -> None:
     calls: list[dict[str, Any]] = []
     service = AutomationPluginManagementService(
         catalog=_Catalog(  # type: ignore[arg-type]
@@ -317,6 +317,7 @@ def test_arrival_stats_recovery_requires_empty_readback_and_resolves_current_lea
         ),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
+        release_hold_provider=lambda: True,
     )
     readback = {
         "arrival_stat_runs": 0,
@@ -340,6 +341,16 @@ def test_arrival_stats_recovery_requires_empty_readback_and_resolves_current_lea
         "actor_role",
     }
     assert len(calls[0]["evidence_sha256"]) == 64
+
+    with pytest.raises(PluginConflictError) as error:
+        service.recover_arrival_stats_not_applied(
+            "arrival_stats",
+            readback=readback,
+            request_id=str(uuid.uuid4()),
+            actor=_console_actor(),
+        )
+    assert error.value.code == "PLUGIN_RECOVERY_SCOPE_INVALID"
+
     with pytest.raises(PluginConflictError) as error:
         service.recover_arrival_stats_not_applied(
             "arrival_stats",
