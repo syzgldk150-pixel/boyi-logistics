@@ -145,7 +145,11 @@ def _project_clock_rows(contracts: dict[str, dict]) -> list[dict]:
         {
             "id": task_id,
             "tool_name": f"automation.{contract['group_id']}.run",
-            "tool_params": {},
+            "tool_params": {
+                key: value
+                for key, value in contract["canonical_arguments"].items()
+                if key != "account_id"
+            },
             "cron_expression": contract["cron_expression"],
             "enabled": 1,
         }
@@ -697,6 +701,16 @@ def test_post_018_project_clock_pair_is_current_canonical_shape(runner) -> None:
         ),
         (
             lambda rows: rows[0]["tool_params"].update(unexpected=True),
+            "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0]["tool_params"].pop("sitecode"),
+            "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED",
+        ),
+        (
+            lambda rows: rows[0]["tool_params"].update(
+                account_id="ronghui_default"
+            ),
             "CLOCK_TASK_ARGUMENTS_NOT_REVIEWED",
         ),
     ),

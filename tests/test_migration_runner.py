@@ -1448,7 +1448,11 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             {
                 "id": task_id,
                 "tool_name": f"automation.{contract['group_id']}.run",
-                "tool_params": {},
+                "tool_params": {
+                    key: value
+                    for key, value in contract["canonical_arguments"].items()
+                    if key != "account_id"
+                },
                 "cron_expression": contract["cron_expression"],
                 "enabled": 1,
             }

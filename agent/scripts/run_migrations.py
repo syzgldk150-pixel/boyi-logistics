@@ -986,13 +986,17 @@ def _validate_clock_policy(
         }:
             raise ControlPlaneTaskCutoverPreflightError("CLOCK_TASK_TOOL_NOT_REVIEWED")
         arguments = _decode_task_arguments(row.get("tool_params"))
-        # Migration 018 and every later project configuration save route the
-        # reviewed schedule through its typed automation project.  The
-        # scheduler row then carries only that exact project identity; account
-        # and action arguments live in the committed project generation.
-        # Treat it as the current canonical shape for release-window purposes,
-        # while still rejecting any other project identity or persisted args.
-        if tool_name == project_tool_name and _strict_json_equal(arguments, {}):
+        # Migration 018 routes the reviewed schedule through its typed project.
+        # The Business Account binding moves into the committed generation,
+        # while the exact reviewed action arguments remain on the schedule.
+        # Accept only that closed post-018 shape; an unknown project identity,
+        # a retained account_id, or any changed action argument still blocks.
+        project_arguments = dict(canonical_arguments)
+        project_arguments.pop("account_id")
+        if tool_name == project_tool_name and _strict_json_equal(
+            arguments,
+            project_arguments,
+        ):
             canonical_count += 1
             continue
         if tool_name == contract.get("tool_name") and _strict_json_equal(
