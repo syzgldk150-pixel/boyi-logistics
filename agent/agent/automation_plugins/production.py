@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import logging
 import os
 import uuid
 from dataclasses import dataclass, replace
@@ -97,8 +96,6 @@ from shared.finance.sources import enabled_finance_account_ids
 from shared.redaction import redact_text
 
 
-logger = logging.getLogger(__name__)
-
 CURSOR_SECRET_ENV = "BOYI_AUTOMATION_PLUGIN_CURSOR_SECRET"
 _POLICY_PROJECTION_FIELDS = (
     "automation_id",
@@ -128,6 +125,16 @@ def _required_sha(value: object, field: str) -> str:
     return text
 
 
+def _required_policy_generation(policy: Mapping[str, Any]) -> int:
+    value = policy.get("project_generation")
+    if type(value) is not int or value <= 0:
+        raise PluginConflictError(
+            "project policy is not bound to the desired runtime generation",
+            code="PLUGIN_POLICY_GENERATION_MISMATCH",
+        )
+    return value
+
+
 def _closed_policy_projection(
     policy: Mapping[str, Any],
     *,
@@ -136,10 +143,10 @@ def _closed_policy_projection(
     project_configuration_version: int,
 ) -> dict[str, Any]:
     projection = {field: policy.get(field) for field in _POLICY_PROJECTION_FIELDS}
+    policy_generation = _required_policy_generation(policy)
     if (
         str(projection["automation_id"] or "") != automation_id
-        or type(projection["project_generation"]) is not int
-        or int(projection["project_generation"]) != generation
+        or policy_generation != generation
         or not str(projection["mode"] or "")
         or type(projection["project_configuration_version"]) is not int
         or int(projection["project_configuration_version"])
@@ -825,13 +832,21 @@ class MySQLRuntimeTargetService:
             and runtime.committed_generation is not None
             and runtime.target_generation == runtime.committed_generation
             and runtime.reconcile_state == RuntimeReconcileState.STABLE
-            and policy.get("project_generation") == runtime.committed_generation
         ):
             committed = by_number.get(runtime.committed_generation)
             if (
-                committed is not None
-                and committed.state is RuntimeGenerationState.COMMITTED
+                committed is None
+                or committed.state is not RuntimeGenerationState.COMMITTED
             ):
+                raise PluginConflictError(
+                    "stable project does not point to a committed generation record",
+                    code="RUNTIME_COMMIT_INCONSISTENT",
+                )
+            policy_generation = _required_policy_generation(policy)
+            if policy_generation == runtime.committed_generation:
+                # A restart observes policy bound to the already-committed
+                # generation. Compare that exact closed material before ever
+                # asking the policy row to authorize a new generation.
                 committed_candidate = build_runtime_generation_snapshot(
                     entry,
                     desired_config_row=config,
@@ -841,6 +856,12 @@ class MySQLRuntimeTargetService:
                 )
                 if self._same_material(committed.snapshot, committed_candidate):
                     return None
+            elif policy_generation != next_generation:
+                raise PluginConflictError(
+                    "project policy is not bound to the desired runtime generation",
+                    code="PLUGIN_POLICY_GENERATION_MISMATCH",
+                )
+
         desired = build_runtime_generation_snapshot(
             entry,
             desired_config_row=config,
@@ -848,14 +869,6 @@ class MySQLRuntimeTargetService:
             generation=next_generation,
             core_catalog=self._core_catalog,
         )
-        if runtime is not None and runtime.committed_generation is not None:
-            committed = by_number.get(runtime.committed_generation)
-            if (
-                committed is not None
-                and runtime.reconcile_state == RuntimeReconcileState.STABLE
-                and self._same_material(committed.snapshot, desired)
-            ):
-                return None
         request_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
@@ -877,20 +890,7 @@ class MySQLRuntimeTargetService:
         for entry in sorted(self._catalog.list(), key=lambda item: item.automation_id):
             try:
                 result = self.reconcile_project(entry.automation_id)
-            except PluginConflictError as exc:
-                if exc.code == "PLUGIN_POLICY_GENERATION_MISMATCH":
-                    runtime = self._runtime.get_project_runtime(entry.automation_id)
-                    if (
-                        runtime is not None
-                        and runtime.committed_generation is not None
-                        and runtime.reconcile_state is RuntimeReconcileState.STABLE
-                    ):
-                        logger.warning(
-                            "keeping committed automation generation while policy "
-                            "forward binding is pending automation_id=%s",
-                            entry.automation_id,
-                        )
-                        continue
+            except PluginConflictError:
                 raise
             except Exception as exc:
                 raise PluginConflictError(
