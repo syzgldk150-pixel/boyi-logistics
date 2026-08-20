@@ -326,7 +326,7 @@ def test_arrival_stats_recovery_requires_empty_readback_and_resolves_current_lea
     recovered = service.recover_arrival_stats_not_applied(
         "arrival_stats",
         readback=readback,
-        request_id=str(uuid.uuid4()),
+        request_id="fb077840-a2d0-4e7f-8089-f68c104ab544",
         actor=_console_actor(),
     )
 

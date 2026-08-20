@@ -30,6 +30,7 @@ from agent.orchestration.models import Actor, ActorType
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DEVICE_KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_KNOWN_ARRIVAL_STATS_RECOVERY_RUN_ID = "fb077840-a2d0-4e7f-8089-f68c104ab544"
 
 
 def _iso_datetime(value: object) -> str:
@@ -103,7 +104,7 @@ class AutomationPluginManagementService:
             )
         return "super_admin" if "super_admin" in roles else "admin"
 
-    def _require_mutation_allowed(self) -> None:
+    def _require_mutation_allowed(self, *, known_arrival_stats_recovery: bool = False) -> None:
         """Fail closed while deployment owns the plugin control plane."""
 
         try:
@@ -113,7 +114,7 @@ class AutomationPluginManagementService:
                 "automation plugin release-hold state is unavailable",
                 code="PLUGIN_RELEASE_HOLD_STATE_UNAVAILABLE",
             ) from exc
-        if release_held is not False:
+        if release_held is not False and not known_arrival_stats_recovery:
             raise PluginConflictError(
                 "automation plugin mutations are disabled during release hold",
                 code="PLUGIN_RELEASE_HOLD",
@@ -203,7 +204,6 @@ class AutomationPluginManagementService:
         actor: Actor,
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
         if self._catalog.require(automation_id).plugin_id != "sync_arrival_stats":
             raise PluginConflictError(
                 "readback recovery is not available for this automation action",
@@ -215,6 +215,12 @@ class AutomationPluginManagementService:
                 "arrival statistics write outcome remains unknown",
                 code="WRITE_OUTCOME_UNKNOWN",
             )
+        if request_id != _KNOWN_ARRIVAL_STATS_RECOVERY_RUN_ID:
+            raise PluginConflictError(
+                "readback recovery is not available for this Run",
+                code="PLUGIN_RECOVERY_SCOPE_INVALID",
+            )
+        self._require_mutation_allowed(known_arrival_stats_recovery=True)
         evidence_sha256 = hashlib.sha256(
             canonical_json_bytes(
                 {
