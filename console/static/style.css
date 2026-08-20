@@ -1028,7 +1028,7 @@ body.dispatch-page .notice { display: none; }
 .automation-account-inline-code[hidden],
 .automation-account-captcha[hidden],
 .automation-account-inline-error[hidden] { display: none !important; }
-.automation-account-inline-code { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; max-width: 100%; padding: 8px; border: 1px solid #fde68a; border-radius: var(--radius-md); background: #fffbeb; box-shadow: 0 8px 18px rgba(217,119,6,0.08); }
+.automation-account-inline-code { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; max-width: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .automation-account-inline-code-main { display: flex; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; }
 .automation-account-code-input { width: 118px; min-height: 34px; padding: 0 10px; font-size: 0.82rem; font-weight: 750; text-align: center; letter-spacing: 0; }
 .automation-account-code-submit { min-height: 34px; padding: 0 10px; font-size: 0.78rem; font-weight: 850; box-shadow: none; }
