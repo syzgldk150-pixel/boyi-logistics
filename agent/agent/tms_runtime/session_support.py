@@ -83,6 +83,7 @@ YUNDA_PASSWORD_INPUT = "#password"
 YUNDA_CAPTCHA_INPUT = "#verify_code"
 YUNDA_LOGIN_BUTTON = '#login_form button[type="submit"]'
 YUNDA_SMS_PATH = "/public/sms/sms_valid"
+YUNDA_SMS_SEND_PATH = "/public/sms/send_code"
 YUNDA_SMS_CODE_INPUT = "#sms_code"
 YUNDA_SMS_SEND_BUTTON = "#send_code"
 YUNDA_SMS_CONFIRM_BUTTON = "button[type='submit']:not(#send_code), button.btn-outline-primary:not(#send_code)"

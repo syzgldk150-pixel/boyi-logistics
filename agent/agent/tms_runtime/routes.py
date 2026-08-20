@@ -220,6 +220,15 @@ def update_account_list_cache_status(status_payload: dict[str, Any]) -> bool:
             if str(account.get("account_id") or "").strip() != account_id:
                 continue
             account["status"] = copy.deepcopy(dict(status_payload))
+            for key in (
+                "auto_login_enabled",
+                "auto_login_failure_count",
+                "auto_login_failure_limit",
+                "auto_login_blocked",
+                "is_active",
+            ):
+                if key in status_payload:
+                    account[key] = copy.deepcopy(status_payload[key])
             return True
     return False
 

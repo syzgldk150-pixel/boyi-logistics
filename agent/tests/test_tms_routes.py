@@ -287,6 +287,10 @@ class TMSRoutesTests(unittest.TestCase):
                     {
                         "account_id": "ronghui_default",
                         "system": "ronghui",
+                        "auto_login_enabled": True,
+                        "auto_login_failure_count": 3,
+                        "auto_login_failure_limit": 3,
+                        "auto_login_blocked": True,
                         "status": {
                             "profile": "default",
                             "account_id": "ronghui_default",
@@ -317,6 +321,10 @@ class TMSRoutesTests(unittest.TestCase):
                 "account_id": "ronghui_default",
                 "status": "error",
                 "last_error_summary": "缺少登录配置",
+                "auto_login_enabled": True,
+                "auto_login_failure_count": 0,
+                "auto_login_failure_limit": 3,
+                "auto_login_blocked": False,
             }
         )
 
@@ -327,6 +335,8 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertTrue(payload["cached"])
         self.assertEqual(payload["accounts"][0]["status"]["status"], "error")
         self.assertEqual(payload["accounts"][0]["status"]["last_error_summary"], "缺少登录配置")
+        self.assertEqual(payload["accounts"][0]["auto_login_failure_count"], 0)
+        self.assertFalse(payload["accounts"][0]["auto_login_blocked"])
         self.assertEqual(payload["accounts"][1]["status"]["status"], "authenticated")
 
     def test_legacy_credentials_routes_use_account_manager(self):
