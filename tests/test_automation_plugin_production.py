@@ -395,7 +395,7 @@ def test_snapshot_binds_only_closed_desired_material(tmp_path: Path) -> None:
         "customer_service_source": ("ronghui-a",)
     }
     assert snapshot.execution_metadata["schedule"]["kind"] == "none"
-    assert snapshot.plugin_version == "1.0.0"
+    assert snapshot.plugin_version == "1.0.1"
     assert snapshot.trust_source == PluginTrustSource.ED25519_FIRST_PARTY
     assert snapshot.policy_contract_sha256 == _sha(policy)
 
