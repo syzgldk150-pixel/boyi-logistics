@@ -1392,9 +1392,14 @@ class AutomationProjectPolicyService:
         entry: PluginCatalogEntry,
         policy: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        configured = str((policy or {}).get("mode") or "REQUIRE_EACH_RUN")
+        configured = str(
+            (policy or {}).get("mode")
+            or AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
+        )
         browser_configured = (
-            configured if configured in _USER_POLICY_MODES else "REQUIRE_EACH_RUN"
+            configured
+            if configured in _USER_POLICY_MODES
+            else AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
         )
         effective = "REQUIRE_EACH_RUN"
         status = "ACTIVE"
@@ -1474,17 +1479,31 @@ class AutomationProjectPolicyService:
         policy: Mapping[str, Any],
         contract: CompiledAutomationProjectContract,
     ) -> bool:
+        if not contract.can_full_auto:
+            return False
+        if (
+            int(policy.get("project_generation") or 0)
+            != contract.automation_generation
+            or int(policy.get("project_configuration_version") or 0)
+            != contract.project_configuration_version
+        ):
+            return False
+        contract_fields = (
+            "contract_hash",
+            "tool_contract_hash",
+            "plugin_contract_hash",
+        )
+        if all(not str(policy.get(field) or "") for field in contract_fields):
+            # New projects and configuration changes default to the existing
+            # full-auto mode. The committed contract and plan match checks
+            # remain authoritative; no second approval flag is added.
+            return True
         return bool(
-            contract.can_full_auto
-            and str(policy.get("contract_hash") or "") == contract.contract_hash
+            str(policy.get("contract_hash") or "") == contract.contract_hash
             and str(policy.get("tool_contract_hash") or "")
             == contract.tool_contract_hash
             and str(policy.get("plugin_contract_hash") or "")
             == str(contract.plugin_contract_hash or "")
-            and int(policy.get("project_generation") or 0)
-            == contract.automation_generation
-            and int(policy.get("project_configuration_version") or 0)
-            == contract.project_configuration_version
         )
 
     @staticmethod
