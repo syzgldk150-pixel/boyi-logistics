@@ -76,6 +76,7 @@ _USER_POLICY_MODES = frozenset(
         AutomationProjectPolicyMode.REQUIRE_EACH_RUN.value,
     }
 )
+_SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH = 36
 _SOURCE_LABELS = {
     "console": "后台",
     "scheduler": "定时",
@@ -1731,8 +1732,10 @@ class AutomationProjectPolicyService:
                     comment="Project-level policy takeover",
                 )
             event_request_id = f"{request_id}:takeover:{task_id}"
-            if len(event_request_id) > 191:
-                event_request_id = f"takeover:{canonical_sha256(event_request_id)}"
+            if len(event_request_id) > _SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH:
+                event_request_id = canonical_sha256(event_request_id)[
+                    :_SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH
+                ]
             if uow.scheduled_policies.get_event_by_request(
                 task_id,
                 event_request_id,

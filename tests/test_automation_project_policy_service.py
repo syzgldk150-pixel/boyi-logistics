@@ -471,6 +471,49 @@ class AutomationProjectPolicyServiceTests(TestCase):
             self.repository.account_lock_events,
         )
 
+    def test_project_takeover_event_request_fits_legacy_char36_and_is_idempotent(self):
+        class _ScheduledPolicies:
+            def __init__(self):
+                self.events = []
+
+            def ensure_default(self, task_id):
+                return {"task_id": task_id, "mode": "REQUIRE_EACH_RUN", "version": 1}
+
+            def get_event_by_request(self, task_id, request_id):
+                return next(
+                    (
+                        event
+                        for event in self.events
+                        if event["task_id"] == task_id
+                        and event["request_id"] == request_id
+                    ),
+                    None,
+                )
+
+            def append_event(self, row):
+                self.events.append(dict(row))
+                return dict(row)
+
+        task_id = "scheduled_task_identifier_0001"
+        scheduled = _ScheduledPolicies()
+        uow = SimpleNamespace(scheduled_policies=scheduled)
+        takeover = AutomationProjectPolicyService._retire_legacy_schedule_policies
+        kwargs = {
+            "uow": uow,
+            "automation_id": AUTOMATION_ID,
+            "rows": [{"id": task_id}],
+            "actor": _admin(),
+            "request_id": "project-policy-request-with-a-longer-id",
+            "correlation_id": "correlation-id",
+            "occurred_at": datetime.now(timezone.utc),
+        }
+
+        takeover(**kwargs)
+        takeover(**kwargs)
+
+        self.assertEqual(1, len(scheduled.events))
+        self.assertLessEqual(len(scheduled.events[0]["request_id"]), 36)
+
     def test_full_auto_grant_fails_closed_during_credential_change(self):
         self.repository.block_account_locks = True
 
