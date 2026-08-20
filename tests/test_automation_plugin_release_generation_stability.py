@@ -892,6 +892,22 @@ def test_stable_material_drift_requires_forward_policy_binding() -> None:
     assert world.runtime.get_generation(automation_id, 2) is None
 
 
+def test_startup_reconcile_keeps_stable_generation_for_pending_policy_binding() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrive_list"
+    row = world.desired_rows[automation_id]
+    row["config_json"] = {**row["config_json"], "uncommitted_drift": True}
+    row["config_sha256"] = _sha(row["config_json"])
+
+    assert _target_service(world).reconcile_all() == ()
+    runtime = world.runtime.get_project_runtime(automation_id)
+    assert runtime is not None
+    assert runtime.reconcile_state is RuntimeReconcileState.STABLE
+    assert runtime.committed_generation == 1
+    assert world.runtime.get_generation(automation_id, 2) is None
+
+
 def test_missing_required_delivery_resource_waits_and_catalog_fails_closed() -> None:
     world = _build_release_world()
     world.resources.pop("phase7.delivery_status_bitable")
