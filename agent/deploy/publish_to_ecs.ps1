@@ -412,13 +412,25 @@ function Build-Payload([string]$PayloadRoot) {
     }
 }
 
+function Get-Sha256Hex([string]$PathValue) {
+    $stream = [IO.File]::OpenRead($PathValue)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return (($sha.ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) -join "")
+    }
+    finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-TreeFingerprint([string[]]$Paths) {
     $entries = [Collections.Generic.List[string]]::new()
     foreach ($pathValue in $Paths) {
         $root = Join-Path $PayloadRoot $pathValue
         foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName) {
             $relative = $file.FullName.Substring($PayloadRoot.Length).TrimStart("\", "/").Replace("\", "/")
-            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $hash = Get-Sha256Hex $file.FullName
             $entries.Add("${relative}=${hash}")
         }
     }

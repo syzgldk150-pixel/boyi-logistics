@@ -1475,6 +1475,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "[switch]$RecoverKnownArrivalStatsUnknownWrite",
             publisher,
         )
+        self.assertIn("function Get-Sha256Hex", publisher)
+        self.assertNotIn("Get-FileHash", publisher)
         self.assertIn(
             "--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544",
             publisher,
