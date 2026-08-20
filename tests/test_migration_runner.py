@@ -1442,6 +1442,48 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertNotIn(task_id, rendered)
         self.assertNotIn("TASK_PARAM_SECRET_SENTINEL", rendered)
 
+    def test_scheduled_write_window_accepts_post_018_project_clock_rows(self):
+        clocks = self.runner._load_control_plane_clock_contracts()
+        candidate_rows = [
+            {
+                "id": task_id,
+                "tool_name": f"automation.{contract['group_id']}.run",
+                "tool_params": {},
+                "cron_expression": contract["cron_expression"],
+                "enabled": 1,
+            }
+            for task_id, contract in sorted(clocks.items())
+        ]
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=candidate_rows,
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    3,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(0, result)
+        self.assertTrue(connection.closed)
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+        print_mock.assert_called_once_with(
+            "scheduled_write_window=ok checked_schedules=2"
+        )
+
     def _applied_014_yunda_window_rows(
         self,
         *,
