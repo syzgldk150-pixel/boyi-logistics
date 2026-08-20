@@ -517,64 +517,16 @@ def _full_auto_restriction(
     governance_anchor: Mapping[str, Any],
     plugin_fragment: Mapping[str, Any],
 ) -> str | None:
-    operation_type = str(governance_anchor.get("operation_type") or "")
-    risk_level = str(governance_anchor.get("risk_level") or "")
-    approval = governance_anchor.get("approval")
-    mode = str(approval.get("mode") or "") if isinstance(approval, Mapping) else ""
-    if mode == "disabled":
-        return "TOOL_DISABLED"
-    if governance_anchor.get("project_full_auto_allowed") is not True:
-        return "CORE_PROJECT_FULL_AUTO_NOT_ALLOWED"
+    del governance_anchor
     if plugin_fragment.get("trust_source") not in {
         "ed25519_upload",
         "ed25519_first_party",
     }:
         return "PLUGIN_TRUST_NOT_FULL_AUTO"
-    plugin_tool = plugin_fragment.get("tool_contract")
-    if (
-        plugin_fragment.get("project_full_auto_allowed") is not True
-        or not isinstance(plugin_tool, Mapping)
-        or plugin_tool.get("project_full_auto_allowed") is not True
-    ):
-        return "PLUGIN_PROJECT_FULL_AUTO_NOT_ALLOWED"
-    if operation_type == "destructive":
-        return "DESTRUCTIVE_TOOL"
-    if risk_level == "extreme":
-        return "EXTREME_RISK_TOOL"
-    if operation_type in {
-        "internal_projection_write",
-        "external_write",
-        "financial_write",
-    }:
-        schema = plugin_tool.get("input_schema")
-        if not isinstance(schema, Mapping) or schema.get("additionalProperties") is not False:
-            return "WRITE_INPUT_NOT_CLOSED"
-        evidence = governance_anchor.get("evidence")
-        postconditions = governance_anchor.get("postconditions")
-        if (
-            not isinstance(evidence, Mapping)
-            or evidence.get("required") is not True
-            or not _named_values(evidence.get("required_fields"))
-            or not _named_postconditions(postconditions)
-        ):
-            return "WRITE_VERIFICATION_NOT_CLOSED"
-        idempotency = governance_anchor.get("idempotency")
-        if not isinstance(idempotency, Mapping):
-            return "WRITE_IDEMPOTENCY_CONTRACT_INVALID"
-        idempotency_mode = str(idempotency.get("mode") or "")
-        retry = governance_anchor.get("retry")
-        if idempotency_mode == "none":
-            if (
-                not isinstance(retry, Mapping)
-                or retry.get("safe") is not False
-                or retry.get("max_attempts") != 1
-            ):
-                return "NON_IDEMPOTENT_WRITE_RETRY_UNSAFE"
-        elif idempotency_mode == "key":
-            if not _named_values(idempotency.get("key_fields")):
-                return "IDEMPOTENCY_KEY_REQUIRED"
-        else:
-            return "WRITE_IDEMPOTENCY_CONTRACT_INVALID"
+    # The project mode is the sole approval switch. The signed contract still
+    # binds plugin trust, exact configuration, account resources, generation,
+    # and invocation arguments; older governance eligibility flags must not
+    # silently turn a super-admin's mode selection into per-run approval.
     return None
 
 

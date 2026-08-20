@@ -483,6 +483,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertEqual(2, card.count("data-project-policy-mode"))
         self.assertIn("每次运行审批", card)
         self.assertIn("完全自动", card)
+        self.assertNotIn("data-project-policy-comment", card)
         self.assertNotIn("EXACT_SCHEDULE_EXEMPT", card)
         self.assertNotIn("clockin_daxiang_1830", card)
         self.assertNotIn("策略标识", card)
@@ -517,6 +518,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertIn("expected_policy_version", source)
         self.assertIn("expected_project_configuration_version", source)
         self.assertIn("PENDING_SET_CHANGED", source)
+        self.assertNotIn("data-project-policy-comment", source)
         batch_start = source.index("body: JSON.stringify({", source.index("async function actOnPending"))
         batch_end = source.index("}),", batch_start)
         batch_body = source[batch_start:batch_end]

@@ -83,7 +83,6 @@ def test_project_policy_route_derives_actor_and_accepts_only_cas_fields() -> Non
         json={
             "mode": "PROJECT_FULL_AUTO",
             "request_id": "request-1",
-            "comment": "reviewed",
             "expected_policy_version": 3,
             "expected_project_configuration_version": 5,
         },
@@ -94,6 +93,7 @@ def test_project_policy_route_derives_actor_and_accepts_only_cas_fields() -> Non
     assert automation_id == "project-a"
     assert payload["actor"] is actor
     assert payload["expected_policy_version"] == 3
+    assert payload["comment"] == ""
 
     rejected = client.post(
         "/internal/v1/automation-projects/project-a/approval-policy",
