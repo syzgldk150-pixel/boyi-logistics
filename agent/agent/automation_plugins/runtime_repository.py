@@ -307,7 +307,21 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 automation_id,
                 int(committed_generation),
             )
-            if generation_row is None or str(generation_row.get("state") or "") != "COMMITTED":
+            generation_state = (
+                str(generation_row.get("state") or "") if generation_row else ""
+            )
+            # A generation held by the explicit unknown-write recovery gate
+            # still contains the immutable package snapshot needed to start
+            # the control plane. Keep it visible for the recovery endpoint;
+            # execution remains blocked until managed reconciliation resolves
+            # the lease.
+            recoverable_block = (
+                generation_state == "BLOCKED"
+                and str(row.get("reconcile_state") or "") == "BLOCKED_UNKNOWN_WRITE"
+            )
+            if generation_row is None or (
+                generation_state != "COMMITTED" and not recoverable_block
+            ):
                 raise ValueError("project committed generation is missing or not committed")
             committed_snapshot = generation_from_row(generation_row).snapshot
             committed_version_row = low_level.get_version(
@@ -650,6 +664,23 @@ class MySQLAutomationPluginRuntimeAdapter:
                     generation,
                 )
             )
+
+    def find_current_unknown_generation_write(
+        self,
+        automation_id: str,
+    ) -> dict[str, Any]:
+        with self._orchestration.unit_of_work() as uow:
+            finder = getattr(
+                uow.automation_plugins,
+                "find_current_unknown_generation_write_row",
+                None,
+            )
+            if not callable(finder):
+                raise ValueError("runtime unknown-write recovery is unavailable")
+            row = finder(automation_id)
+        if not isinstance(row, Mapping):
+            raise ValueError("runtime unknown-write recovery is unavailable")
+        return dict(row)
 
     def reserve_generation_dispose(
         self,

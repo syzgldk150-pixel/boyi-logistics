@@ -118,6 +118,14 @@ class _ApiService:
         self.calls.append(("configuration", {"automation_id": automation_id, **kwargs}))
         return {"automation_id": automation_id}
 
+    def recover_arrival_stats_not_applied(
+        self,
+        automation_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append(("recovery", {"automation_id": automation_id, **kwargs}))
+        return {"automation_id": automation_id, "recovery_status": "NOT_APPLIED"}
+
 
 def _api_client(service: _ApiService) -> TestClient:
     app = FastAPI()
@@ -180,6 +188,38 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
     )
     assert state.status_code == 422
     assert not any(item[0] == "state" for item in service.calls)
+
+
+def test_recovery_api_keeps_generation_lease_control_server_side() -> None:
+    service = _ApiService()
+    client = _api_client(service)
+    payload = {
+        "readback": {
+            "arrival_stat_runs": 0,
+            "arrival_stat_items": 0,
+            "feishu_rows_created": 0,
+        },
+        "request_id": str(uuid.uuid4()),
+    }
+
+    accepted = client.post(
+        "/internal/v1/automation/instances/arrival_stats/generation/recover-not-applied",
+        json=payload,
+    )
+    assert accepted.status_code == 200
+    name, call = service.calls[-1]
+    assert name == "recovery"
+    assert call["automation_id"] == "arrival_stats"
+    assert call["readback"] == payload["readback"]
+    assert "generation" not in call
+    assert "lease_id" not in call
+
+    rejected = client.post(
+        "/internal/v1/automation/instances/arrival_stats/generation/recover-not-applied",
+        json={**payload, "lease_id": str(uuid.uuid4())},
+    )
+    assert rejected.status_code == 422
+    assert len([item for item in service.calls if item[0] == "recovery"]) == 1
 
 
 def test_worker_pair_dto_rejects_private_identity_material() -> None:
@@ -261,6 +301,54 @@ def test_management_identity_and_worker_projection_are_fail_closed() -> None:
             actor=_console_actor(super_admin=False),
         )
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
+
+
+def test_arrival_stats_recovery_requires_empty_readback_and_resolves_current_lease() -> None:
+    calls: list[dict[str, Any]] = []
+    service = AutomationPluginManagementService(
+        catalog=_Catalog(  # type: ignore[arg-type]
+            _entry(automation_id="arrival_stats", plugin_id="sync_arrival_stats")
+        ),
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(
+            resolve_current_unknown_write_not_applied=lambda **kwargs: calls.append(kwargs)
+        ),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+    readback = {
+        "arrival_stat_runs": 0,
+        "arrival_stat_items": 0,
+        "feishu_rows_created": 0,
+    }
+    recovered = service.recover_arrival_stats_not_applied(
+        "arrival_stats",
+        readback=readback,
+        request_id=str(uuid.uuid4()),
+        actor=_console_actor(),
+    )
+
+    assert recovered["recovery_status"] == "NOT_APPLIED"
+    assert len(calls) == 1
+    assert set(calls[0]) == {
+        "automation_id",
+        "evidence_sha256",
+        "request_id",
+        "actor_id",
+        "actor_role",
+    }
+    assert len(calls[0]["evidence_sha256"]) == 64
+    with pytest.raises(PluginConflictError) as error:
+        service.recover_arrival_stats_not_applied(
+            "arrival_stats",
+            readback={**readback, "arrival_stat_items": 1},
+            request_id=str(uuid.uuid4()),
+            actor=_console_actor(),
+        )
+    assert error.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert len(calls) == 1
 
 
 def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:

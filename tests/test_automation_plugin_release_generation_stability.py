@@ -919,6 +919,31 @@ def test_second_release_reconcile_reuses_identical_committed_generations() -> No
     } == {1}
 
 
+def test_current_unknown_write_block_is_left_for_managed_recovery() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrival_stats"
+    runtime = world.runtime.runtimes[automation_id]
+    blocked = world.runtime.get_generation(automation_id, 1)
+    assert blocked is not None
+    world.runtime.generations[(automation_id, 1)] = replace(
+        blocked,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    world.runtime.runtimes[automation_id] = replace(
+        runtime,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+
+    assert _target_service(world).reconcile_project(automation_id) is None
+    assert world.runtime.get_generation(automation_id, 1).state is (
+        RuntimeGenerationState.BLOCKED
+    )
+    assert world.runtime.get_project_runtime(automation_id).reconcile_state is (
+        RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
+    )
+
+
 def test_stable_policy_version_drift_reuses_committed_generation() -> None:
     world = _build_release_world()
     _reconcile_world(world)

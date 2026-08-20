@@ -2032,6 +2032,96 @@ class AutomationProjectsServiceMixin:
             },
         )
 
+    def _handle_automation_plugin_recovery(
+        self,
+        handler: BaseHTTPRequestHandler,
+        automation_id: str,
+    ) -> None:
+        automation_id = self._automation_project_id(automation_id)
+        if not automation_id:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                "AUTOMATION_PLUGIN_INSTANCE_NOT_FOUND",
+                "自动化实例不存在。",
+            )
+            return
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                "SUPER_ADMIN_REQUIRED",
+                "只有超级管理员可以恢复自动化项目。",
+            )
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        if set(values) != {"readback", "request_id"}:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "INVALID_PLUGIN_RECOVERY_FIELDS",
+                "恢复请求字段不完整或包含不支持的内容。",
+            )
+            return
+        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
+        readback = values.get("readback")
+        expected_readback = {
+            "arrival_stat_runs",
+            "arrival_stat_items",
+            "feishu_rows_created",
+        }
+        if (
+            not request_id
+            or not isinstance(readback, dict)
+            or set(readback) != expected_readback
+            or any(type(value) is not int or value < 0 for value in readback.values())
+        ):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "INVALID_PLUGIN_RECOVERY_READBACK",
+                "恢复读回证据无效。",
+            )
+            return
+        endpoint = (
+            "/internal/v1/automation/instances/"
+            f"{quote(automation_id, safe='')}/generation/recover-not-applied"
+        )
+        result = self._agent_request(
+            "POST",
+            endpoint,
+            payload={"readback": dict(readback), "request_id": request_id},
+            timeout=20,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not result.get("ok"):
+            self._automation_project_agent_error(
+                handler,
+                result,
+                automation_id=automation_id,
+                fallback_code="PLUGIN_RECOVERY_FAILED",
+                fallback_message="自动化项目恢复失败。",
+            )
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        self._send_json(
+            handler,
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "data": {
+                    "automation_id": automation_id,
+                    "recovery_status": data.get("recovery_status"),
+                },
+                "message": "自动化项目已恢复，可重新提交任务。",
+            },
+        )
+
     def _handle_automation_plugin_configuration_save(
         self,
         handler: BaseHTTPRequestHandler,

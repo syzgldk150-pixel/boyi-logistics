@@ -16,6 +16,7 @@ from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
 from agent.automation_plugins.configuration import AutomationProjectConfigurationService
 from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
 from agent.automation_plugins.lifecycle import AutomationPluginService
+from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
@@ -197,9 +198,6 @@ class AutomationPluginManagementService:
         self,
         automation_id: str,
         *,
-        generation: int,
-        lease_id: str,
-        evidence_sha256: str,
         readback: Mapping[str, object],
         request_id: str,
         actor: Actor,
@@ -211,19 +209,24 @@ class AutomationPluginManagementService:
                 "readback recovery is not available for this automation action",
                 code="PLUGIN_RECOVERY_SCOPE_INVALID",
             )
-        if not _SHA256_RE.fullmatch(str(evidence_sha256 or "").lower()):
-            raise ValueError("arrival statistics recovery evidence digest is invalid")
         outcome = classify_arrival_stats_recovery_readback(readback)
         if outcome != "NOT_APPLIED":
             raise PluginConflictError(
                 "arrival statistics write outcome remains unknown",
                 code="WRITE_OUTCOME_UNKNOWN",
             )
-        self._targets.resolve_unknown_write_not_applied(
+        evidence_sha256 = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "automation_id": automation_id,
+                    "readback": dict(readback),
+                    "recovery_outcome": "NOT_APPLIED",
+                }
+            )
+        ).hexdigest()
+        self._targets.resolve_current_unknown_write_not_applied(
             automation_id=automation_id,
-            generation=generation,
-            lease_id=lease_id,
-            evidence_sha256=str(evidence_sha256).lower(),
+            evidence_sha256=evidence_sha256,
             request_id=request_id,
             actor_id=actor.actor_id,
             actor_role=role,

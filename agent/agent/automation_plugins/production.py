@@ -814,10 +814,14 @@ class MySQLRuntimeTargetService:
                 RuntimeGenerationState.PREPARED,
             }:
                 return self._reconciler.resume_project(automation_id)
+            if runtime.reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE:
+                # Unknown external writes are never replayed during startup.
+                # Leave the project visible so the managed readback recovery
+                # endpoint can resolve it without taking the whole Agent down.
+                return None
             if runtime.reconcile_state in {
                 RuntimeReconcileState.DRAINING,
                 RuntimeReconcileState.DISPOSING,
-                RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
                 RuntimeReconcileState.ERROR,
             }:
                 return self._reconciler.resume_project(automation_id)
@@ -901,6 +905,28 @@ class MySQLRuntimeTargetService:
             automation_id=automation_id,
             generation=generation,
             lease_id=lease_id,
+            evidence_sha256=evidence_sha256,
+            request_id=request_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+
+    def resolve_current_unknown_write_not_applied(
+        self,
+        *,
+        automation_id: str,
+        evidence_sha256: str,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Recover only the sole current unknown write for one project."""
+
+        lease = self._runtime.find_current_unknown_generation_write(automation_id)
+        return self.resolve_unknown_write_not_applied(
+            automation_id=automation_id,
+            generation=int(lease["generation"]),
+            lease_id=str(lease["lease_id"]),
             evidence_sha256=evidence_sha256,
             request_id=request_id,
             actor_id=actor_id,

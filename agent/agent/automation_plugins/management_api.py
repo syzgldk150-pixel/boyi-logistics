@@ -86,9 +86,6 @@ class ArrivalStatsRecoveryReadbackRequest(BaseModel):
 class ArrivalStatsRecoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    generation: int = Field(ge=1)
-    lease_id: str = Field(min_length=1, max_length=64)
-    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     readback: ArrivalStatsRecoveryReadbackRequest
     request_id: str = Field(min_length=1, max_length=64)
 
@@ -478,9 +475,6 @@ def create_automation_plugin_management_router(
         return await _service_response(
             lambda: service_provider().recover_arrival_stats_not_applied(
                 automation_id,
-                generation=payload.generation,
-                lease_id=payload.lease_id,
-                evidence_sha256=payload.evidence_sha256,
                 readback=payload.readback.model_dump(),
                 request_id=payload.request_id,
                 actor=actor,

@@ -1762,6 +1762,35 @@ class AutomationPluginGenerationRepositoryMixin:
             raise OrchestrationPersistenceError("runtime generation lease disappeared")
         return result
 
+    def find_current_unknown_generation_write_row(
+        self,
+        automation_id: str,
+    ) -> dict[str, Any]:
+        """Return the one unresolved write lease for an administrator recovery."""
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lease_id, generation
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s AND outcome='WRITE_OUTCOME_UNKNOWN'
+                ORDER BY generation, lease_id
+                LIMIT 2
+                """,
+                (safe_automation_id,),
+            )
+            rows = _rows(cursor)
+        if len(rows) != 1:
+            raise ConcurrentUpdateError(
+                "runtime project does not have exactly one unknown write to reconcile"
+            )
+        row = rows[0]
+        return {
+            "generation": _positive_int(row.get("generation"), "generation"),
+            "lease_id": _required_text(row.get("lease_id"), "lease_id"),
+        }
+
     def finalize_generation_write_row(
         self,
         *,
