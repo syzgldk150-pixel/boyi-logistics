@@ -184,6 +184,7 @@ def _run_service_identity_smoke(
     response_status: int = 200,
     transport_failures: int = 0,
     known_arrival_stats_auth_failure_recovery: bool = False,
+    smoke_scope: str = "full",
     raw_payload: str | None = None,
     service_identity_source: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -253,6 +254,7 @@ def _run_service_identity_smoke(
                 "BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY": (
                     "1" if known_arrival_stats_auth_failure_recovery else "0"
                 ),
+                "BOYI_SERVICE_IDENTITY_SMOKE_SCOPE": smoke_scope,
                 "SMOKE_TEST_STATUS": str(response_status),
                 "SMOKE_TEST_TRANSPORT_FAILURES": str(transport_failures),
                 "SMOKE_TEST_PAYLOAD": raw_payload if raw_payload is not None else json.dumps(payload),
@@ -857,7 +859,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual("service_identity_smoke=ok", completed.stdout.strip())
         self.assertEqual("", completed.stderr)
 
-    def test_service_identity_smoke_allows_only_known_arrival_recovery_pending(self):
+    def test_service_identity_recovery_transport_smoke_defers_catalog_gate_only(self):
         payload = _healthy_service_identity_payload()
         plugins = payload["data"]["components"]["automation_plugins"]
         catalog = plugins["catalog"]
@@ -866,26 +868,22 @@ class ReleaseBoundaryTests(unittest.TestCase):
         plugins["ok"] = False
         plugins["generations"]["healthy"] = False
 
-        allowed = _run_service_identity_smoke(
-            payload,
-            known_arrival_stats_auth_failure_recovery=True,
-        )
+        allowed = _run_service_identity_smoke(payload, smoke_scope="recovery_transport")
         self.assertEqual(0, allowed.returncode, allowed.stderr)
         self.assertEqual(
-            "service_identity_smoke=recovery_pending automation_id=arrival_stats\n"
-            "service_identity_smoke=ok",
+            "service_identity_smoke=recovery_transport_ok",
             allowed.stdout.strip(),
         )
         self.assertEqual("", allowed.stderr)
 
-        rejected = _run_service_identity_smoke(payload)
+        rejected = _run_service_identity_smoke(payload, smoke_scope="full")
         self.assertEqual(1, rejected.returncode)
         self.assertEqual(
             "service_identity_smoke=failed reason=plugin_catalog_unstable_generations\n",
             rejected.stderr,
         )
 
-    def test_service_identity_smoke_rejects_any_other_pending_catalog_shape(self):
+    def test_service_identity_recovery_transport_smoke_keeps_transport_identity_gates(self):
         payload = _healthy_service_identity_payload()
         plugins = payload["data"]["components"]["automation_plugins"]
         catalog = plugins["catalog"]
@@ -894,13 +892,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
         plugins["ok"] = False
         plugins["generations"]["healthy"] = False
 
-        completed = _run_service_identity_smoke(
-            payload,
-            known_arrival_stats_auth_failure_recovery=True,
-        )
+        payload["data"]["release_sha"] = "different-release-sha"
+        completed = _run_service_identity_smoke(payload, smoke_scope="recovery_transport")
         self.assertEqual(1, completed.returncode)
         self.assertEqual(
-            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations\n",
+            "service_identity_smoke=failed reason=release_sha_mismatch\n",
             completed.stderr,
         )
 
@@ -908,7 +904,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         successful = _run_sourced_release_harness(
             r'''
             events=()
-            check_service_identity_smoke() { events+=(identity); }
+            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=(recovery); }
             check_control_plane_release_manifest() { events+=(manifest); }
             activate_scheduler_after_release() { events+=(activation); }
@@ -923,12 +919,15 @@ class ReleaseBoundaryTests(unittest.TestCase):
             '''
         )
         self.assertEqual(0, successful.returncode, successful.stderr)
-        self.assertEqual("identity recovery manifest activation", successful.stdout.strip())
+        self.assertEqual(
+            "identity:recovery_transport recovery identity:full manifest activation",
+            successful.stdout.strip(),
+        )
 
         failed = _run_sourced_release_harness(
             r'''
             events=()
-            check_service_identity_smoke() { events+=(identity); }
+            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=(recovery); return 1; }
             check_control_plane_release_manifest() { events+=(manifest); }
             activate_scheduler_after_release() { events+=(activation); }
@@ -943,12 +942,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
             '''
         )
         self.assertEqual(0, failed.returncode, failed.stderr)
-        self.assertEqual("identity recovery rollback", failed.stdout.strip())
+        self.assertEqual(
+            "identity:recovery_transport recovery rollback", failed.stdout.strip()
+        )
 
         auth_failure = _run_sourced_release_harness(
             r'''
             events=()
-            check_service_identity_smoke() { events+=(identity); }
+            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
             check_control_plane_release_manifest() { events+=(manifest); }
             KNOWN_ARRIVAL_STATS_RECOVERY=0
@@ -959,7 +960,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, auth_failure.returncode, auth_failure.stderr)
         self.assertEqual(
-            "identity recovery:71510af3-fcf1-461b-9c2e-152665f32f98 manifest",
+            "identity:recovery_transport recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
+            "identity:full manifest",
             auth_failure.stdout.strip(),
         )
 

@@ -1805,6 +1805,11 @@ PY
 }
 
 check_service_identity_smoke() {
+  local smoke_scope="${1:-full}"
+  [[ "${smoke_scope}" == "full" || "${smoke_scope}" == "recovery_transport" ]] || {
+    echo "service_identity_smoke=failed reason=identity_configuration" >&2
+    return 1
+  }
   local console_python="${PYTHON_BINS[console]}"
   [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
     echo "service_identity_smoke=failed reason=runtime_unavailable" >&2
@@ -1814,7 +1819,7 @@ check_service_identity_smoke() {
   BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
   BOYI_DEPLOYED_ROOT="/home/boyce" \
   BOYI_RELEASE_SHA="${RELEASE_SHA}" \
-  BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY="${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" \
+  BOYI_SERVICE_IDENTITY_SMOKE_SCOPE="${smoke_scope}" \
     "${console_python}" - <<'PY'
 import json
 import os
@@ -1964,6 +1969,9 @@ try:
         or automation_plugins["broker"].get("state") != "running"
     ):
         raise RuntimeError("automation plugin broker is not release-ready")
+    if os.environ.get("BOYI_SERVICE_IDENTITY_SMOKE_SCOPE") == "recovery_transport":
+        print("service_identity_smoke=recovery_transport_ok")
+        raise SystemExit(0)
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
     plugin_catalog = automation_plugins.get("catalog")
     if not isinstance(plugin_catalog, dict):
@@ -1990,39 +1998,25 @@ try:
             "invalid_enabled_runtime",
         ),
     )
-    allow_known_arrival_stats_recovery = (
-        os.environ.get("BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY") == "1"
-    )
-    recovery_pending_catalog = False
     for catalog_gate, field_name in catalog_failure_fields:
         field_value = plugin_catalog.get(field_name)
         if not isinstance(field_value, list):
             failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
             raise RuntimeError("automation plugin catalog health shape is invalid")
         if field_value:
-            if (
-                catalog_gate is SmokeGate.PLUGIN_CATALOG_UNSTABLE_GENERATIONS
-                and allow_known_arrival_stats_recovery
-                and field_value == ["arrival_stats"]
-            ):
-                recovery_pending_catalog = True
-                continue
             failure_gate = catalog_gate
             raise RuntimeError("automation plugin catalog is not release-ready")
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
-    if plugin_catalog.get("ok") is not True and not recovery_pending_catalog:
+    if plugin_catalog.get("ok") is not True:
         raise RuntimeError("automation plugin catalog aggregate is not release-ready")
     failure_gate = SmokeGate.PLUGIN_GENERATIONS
     if (
         not isinstance(automation_plugins.get("generations"), dict)
-        or (
-            automation_plugins["generations"].get("healthy") is not True
-            and not recovery_pending_catalog
-        )
+        or automation_plugins["generations"].get("healthy") is not True
     ):
         raise RuntimeError("automation plugin generations are not release-ready")
     failure_gate = SmokeGate.PLUGIN_AGGREGATE
-    if automation_plugins.get("ok") is not True and not recovery_pending_catalog:
+    if automation_plugins.get("ok") is not True:
         raise RuntimeError("automation plugin runtime is not release-ready")
     failure_gate = SmokeGate.WORKER
     if (
@@ -2055,14 +2049,14 @@ try:
     failure_gate = SmokeGate.BOOTSTRAP_REJECTED
     if rejected != 0 or created + existing + configured != reviewed:
         raise RuntimeError("scheduled approval bootstrap did not preserve reviewed tasks")
+except SystemExit:
+    raise
 except Exception:
     print(
         f"service_identity_smoke=failed reason={failure_gate.value}",
         file=sys.stderr,
     )
     raise SystemExit(1)
-if recovery_pending_catalog:
-    print("service_identity_smoke=recovery_pending automation_id=arrival_stats")
 print("service_identity_smoke=ok")
 PY
 }
@@ -2181,8 +2175,13 @@ PY
 }
 
 check_post_restart_release_gates() {
-  RELEASE_STAGE="check_service_identity_smoke"
-  check_service_identity_smoke || return 1
+  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
+    RELEASE_STAGE="check_service_identity_recovery_transport"
+    check_service_identity_smoke recovery_transport || return 1
+  else
+    RELEASE_STAGE="check_service_identity_smoke"
+    check_service_identity_smoke || return 1
+  fi
   if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" ]]; then
     RELEASE_STAGE="recover_known_arrival_stats_unknown_write"
     recover_known_arrival_stats_unknown_write "fb077840-a2d0-4e7f-8089-f68c104ab544" || return 1
@@ -2190,6 +2189,10 @@ check_post_restart_release_gates() {
   if [[ "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
     RELEASE_STAGE="recover_known_arrival_stats_auth_failure"
     recover_known_arrival_stats_unknown_write "71510af3-fcf1-461b-9c2e-152665f32f98" || return 1
+  fi
+  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
+    RELEASE_STAGE="check_service_identity_smoke"
+    check_service_identity_smoke || return 1
   fi
   RELEASE_STAGE="check_control_plane_release_manifest"
   check_control_plane_release_manifest || return 1
