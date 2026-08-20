@@ -6,9 +6,12 @@
 
 {% block page_actions %}
 {% if can_manage_plugins %}
-<button class="primary-btn automation-install-trigger" type="button" data-plugin-install-toggle aria-expanded="false" aria-controls="automation-plugin-install-panel">
-  <i data-feather="plus"></i>
-  安装自动化
+<button class="ghost-btn automation-plugin-manager-trigger" type="button" data-plugin-install-toggle aria-haspopup="dialog" aria-expanded="false" aria-controls="automation-plugin-manager-dialog" title="管理动作包">
+  <svg class="automation-plugin-manager-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 4h5.5a2.5 2.5 0 1 1 5 0H20v5.5a2.5 2.5 0 1 0 0 5V20h-5.5a2.5 2.5 0 1 0-5 0H4v-5.5a2.5 2.5 0 1 1 0-5V4Z"></path>
+  </svg>
+  <span class="sr-only">管理动作包</span>
+  <span class="automation-plugin-manager-count" aria-hidden="true">{{ automation_plugin_packages | default([], true) | length }}</span>
 </button>
 {% endif %}
 <label class="automation-toolbar-field">
@@ -105,28 +108,84 @@
 <section class="auto-page" data-reveal="tasks">
 
   {% if can_manage_plugins %}
-  <section class="automation-plugin-install-panel" id="automation-plugin-install-panel" data-plugin-install-panel hidden aria-labelledby="automation-plugin-install-title">
-    <div class="automation-plugin-install-copy">
-      <span class="auto-project-governance-kicker"><i data-feather="package"></i> 签名动作包</span>
-      <h2 id="automation-plugin-install-title">安装为新的自动化项目</h2>
-      <p>同一个动作包可以重复安装。每次安装都会生成独立项目，账号、资源、定时、权限和设备互不影响；新项目默认停用。</p>
-    </div>
-    <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
-      <label>
-        <span>项目名称</span>
-        <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" required placeholder="例如：华东仓每日签收">
-      </label>
-      <label>
-        <span>签名 ZIP</span>
-        <input class="review-input automation-plugin-file" type="file" name="package" accept=".zip,application/zip" required>
-      </label>
-      <div class="automation-plugin-install-actions">
-        <button class="primary-btn" type="submit" data-plugin-install-submit>安装新项目</button>
-        <button class="ghost-btn" type="button" data-plugin-install-cancel>取消</button>
+  <dialog class="automation-plugin-manager-dialog" id="automation-plugin-manager-dialog" data-plugin-install-panel aria-labelledby="automation-plugin-manager-title">
+    <div class="automation-plugin-manager-surface">
+      <header class="automation-plugin-manager-header">
+        <div class="automation-plugin-manager-heading">
+          <span class="automation-plugin-manager-heading-icon" aria-hidden="true"><i data-feather="package"></i></span>
+          <div>
+            <h2 id="automation-plugin-manager-title">动作包</h2>
+            <p>{{ automation_plugin_packages | default([], true) | length }} 个已验签动作包</p>
+          </div>
+        </div>
+        <button class="ghost-btn automation-plugin-manager-close" type="button" data-plugin-install-close aria-label="关闭动作包管理"><i data-feather="x"></i></button>
+      </header>
+
+      <div class="automation-plugin-manager-body">
+        <section class="automation-plugin-install-section" aria-labelledby="automation-plugin-install-title">
+          <div class="automation-plugin-install-copy">
+            <h3 id="automation-plugin-install-title">安装新的自动化项目</h3>
+            <p>拖入签名 ZIP 后立即安装。未填写项目名称时使用 ZIP 文件名，新项目默认停用。</p>
+          </div>
+          <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
+            <label class="automation-plugin-name-field">
+              <span>项目名称（可选）</span>
+              <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" placeholder="留空则使用 ZIP 文件名">
+            </label>
+            <div class="automation-plugin-drop-zone" data-plugin-drop-zone role="group" aria-label="签名 ZIP 拖放安装区">
+              <span class="automation-plugin-drop-icon" aria-hidden="true"><i data-feather="upload-cloud"></i></span>
+              <div class="automation-plugin-drop-copy">
+                <strong>把签名 ZIP 拖到这里安装</strong>
+                <span data-plugin-file-name>仅接受一个不超过 32MB 的 .zip 文件</span>
+              </div>
+              <button class="ghost-btn automation-plugin-file-choose" type="button" data-plugin-file-choose>选择 ZIP</button>
+              <input type="file" name="package" accept=".zip,application/zip" data-plugin-package-input hidden aria-hidden="true" tabindex="-1">
+            </div>
+            <div class="automation-plugin-install-actions">
+              <button class="primary-btn" type="submit" data-plugin-install-submit>安装动作包</button>
+              <button class="ghost-btn" type="button" data-plugin-install-cancel>取消</button>
+            </div>
+            <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
+          </form>
+        </section>
+
+        <section class="automation-action-catalog" aria-labelledby="automation-action-catalog-title">
+          <div class="automation-action-catalog-head">
+            <div>
+              <h3 id="automation-action-catalog-title">已验签的自动化动作</h3>
+              <p>动作包可重复安装为不同项目，账号、资源、定时、权限和设备分别保存。</p>
+            </div>
+          </div>
+          {% if automation_plugin_packages %}
+          <ul class="automation-action-catalog-list">
+            {% for package in automation_plugin_packages %}
+            <li class="automation-action-package">
+              <span class="automation-action-package-icon" aria-hidden="true"><i data-feather="package"></i></span>
+              <div class="automation-action-package-copy">
+                <div class="automation-action-package-title">
+                  <strong>{{ package.name }}</strong>
+                  <span>{{ package.version }}</span>
+                </div>
+                <p>{{ package.action_summary or '已验签动作包' }}</p>
+                <div class="automation-action-package-meta">
+                  <span>{{ package.platform_label }}</span>
+                  <span>{{ package.account_roles|length }} 个账号角色</span>
+                  <span>{{ package.resource_summary or '仅使用核心受管资源' }}</span>
+                </div>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <div class="automation-action-catalog-empty">
+            <i data-feather="package" aria-hidden="true"></i>
+            <p>还没有可用动作包。拖入验签 ZIP 安装第一个项目。</p>
+          </div>
+          {% endif %}
+        </section>
       </div>
-      <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
-    </form>
-  </section>
+    </div>
+  </dialog>
   {% endif %}
 
   {% if automation_plugin_warning %}
@@ -144,34 +203,6 @@
       <span>{{ unsupported_automation_ids | join('、') }}。这些项目禁止运行与配置，请先完成受控迁移。</span>
     </div>
   </div>
-  {% endif %}
-
-  {% if automation_plugin_packages %}
-  <section class="automation-action-catalog" aria-labelledby="automation-action-catalog-title">
-    <div class="automation-action-catalog-head">
-      <div>
-        <span class="auto-project-governance-kicker"><i data-feather="box"></i> 动作包目录</span>
-        <h2 id="automation-action-catalog-title">已验签的自动化动作</h2>
-      </div>
-      <p>动作包只定义可执行动作、平台、账号角色与资源能力；项目实例的账号、定时、权限和设备各自保存。</p>
-    </div>
-    <div class="automation-action-catalog-grid">
-      {% for package in automation_plugin_packages %}
-      <article class="automation-action-package">
-        <div class="automation-action-package-title">
-          <strong>{{ package.name }}</strong>
-          <span>{{ package.version }}</span>
-        </div>
-        <p>{{ package.action_summary or '已验签动作包' }}</p>
-        <div class="automation-action-package-meta">
-          <span>{{ package.platform_label }}</span>
-          <span>{{ package.account_roles|length }} 个账号角色</span>
-          <span>{{ package.resource_summary or '仅使用核心受管资源' }}</span>
-        </div>
-      </article>
-      {% endfor %}
-    </div>
-  </section>
   {% endif %}
 
   {% if automation_db_warning %}
@@ -2515,5 +2546,5 @@
 
   feather.replace();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260815-project-plugin4" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260821-plugin-manager1" defer></script>
 {% endblock %}
