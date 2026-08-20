@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import logging
 import os
 import uuid
 from dataclasses import dataclass, replace
@@ -95,6 +96,8 @@ from agent.automation_plugins.storage import (
 from shared.finance.sources import enabled_finance_account_ids
 from shared.redaction import redact_text
 
+
+logger = logging.getLogger(__name__)
 
 CURSOR_SECRET_ENV = "BOYI_AUTOMATION_PLUGIN_CURSOR_SECRET"
 _POLICY_PROJECTION_FIELDS = (
@@ -874,7 +877,20 @@ class MySQLRuntimeTargetService:
         for entry in sorted(self._catalog.list(), key=lambda item: item.automation_id):
             try:
                 result = self.reconcile_project(entry.automation_id)
-            except PluginConflictError:
+            except PluginConflictError as exc:
+                if exc.code == "PLUGIN_POLICY_GENERATION_MISMATCH":
+                    runtime = self._runtime.get_project_runtime(entry.automation_id)
+                    if (
+                        runtime is not None
+                        and runtime.committed_generation is not None
+                        and runtime.reconcile_state is RuntimeReconcileState.STABLE
+                    ):
+                        logger.warning(
+                            "keeping committed automation generation while policy "
+                            "forward binding is pending automation_id=%s",
+                            entry.automation_id,
+                        )
+                        continue
                 raise
             except Exception as exc:
                 raise PluginConflictError(
