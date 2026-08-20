@@ -919,6 +919,20 @@ def test_second_release_reconcile_reuses_identical_committed_generations() -> No
     } == {1}
 
 
+def test_stable_policy_version_drift_reuses_committed_generation() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "scan_codes"
+    world.policy_rows[automation_id] = {
+        **world.policy_rows[automation_id],
+        "version": 3,
+    }
+
+    assert _target_service(world).reconcile_all() == ()
+    assert world.runtime.get_project_runtime(automation_id).committed_generation == 1
+    assert world.runtime.get_generation(automation_id, 2) is None
+
+
 @pytest.mark.parametrize(
     ("target_generation", "reconcile_state"),
     (
