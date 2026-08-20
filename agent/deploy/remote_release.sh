@@ -2149,6 +2149,35 @@ READBACK = {
     "feishu_rows_created": 0,
 }
 
+diagnose_delivery_status_generation() {
+  local console_python="${PYTHON_BINS[console]}"
+  [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || return 1
+  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" BOYI_DEPLOYED_ROOT="/home/boyce" "${console_python}" - <<'PY'
+import json, os, secrets, sys
+from urllib.request import Request, urlopen
+from dotenv import dotenv_values
+sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+from shared.service_identity import build_console_identity_headers, validate_service_identity_secrets
+try:
+    values=dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
+    token=str(values.get("AGENT_INTERNAL_API_TOKEN") or "")
+    secret=str(values.get("CONSOLE_AGENT_SIGNING_SECRET") or "")
+    validate_service_identity_secrets(internal_api_token=token, console_signing_secret=secret)
+    target="/internal/v1/automation/instances/delivery_status/generation/diagnostic"
+    headers=build_console_identity_headers(secret=secret, method="GET", request_target=target, body=b"", principal={"actor_type":"console_admin","actor_id":"release-delivery-diagnostic","roles":["admin","super_admin"],"display_name":"Release delivery diagnostic","authenticated_by":"mysql_admin_session"}, nonce=secrets.token_urlsafe(24))
+    headers["X-Agent-Internal-Token"]=token
+    with urlopen(Request("http://127.0.0.1:9000"+target,headers=headers,method="GET"),timeout=20) as response:
+        payload=json.loads(response.read().decode("utf-8"))
+    data=payload.get("data") if isinstance(payload,dict) else None
+    allowed={"automation_id","target_generation","committed_generation","reconcile_state","lease_reason"}
+    if response.status != 200 or payload.get("ok") is not True or not isinstance(data,dict) or set(data)!=allowed or data.get("automation_id")!="delivery_status" or data.get("lease_reason") not in {"WRITE_OUTCOME_UNKNOWN","PREWRITE_OR_CONFIGURATION_FAILURE","NO_BLOCKED_WRITE_LEASE"}:
+        raise ValueError()
+except Exception:
+    print("delivery_status_generation_diagnostic=failed",file=sys.stderr); raise SystemExit(1)
+print("delivery_status_generation_diagnostic=ok lease_reason="+data["lease_reason"]+" reconcile_state="+str(data["reconcile_state"]))
+PY
+}
+
 
 try:
     values = dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"])
@@ -2214,6 +2243,8 @@ PY
 }
 
 check_post_restart_release_gates() {
+  RELEASE_STAGE="diagnose_delivery_status_generation"
+  diagnose_delivery_status_generation || return 1
   if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
     RELEASE_STAGE="check_service_identity_recovery_transport"
     check_service_identity_smoke recovery_transport || return 1
