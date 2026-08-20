@@ -3,14 +3,16 @@ from __future__ import annotations
 import copy
 import hashlib
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import pytest
 
 from agent.automation_plugins.binding_resolver import ProductionProjectBindingResolver
 from agent.automation_plugins.catalog import PluginCatalog
+from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.first_party import (
     deferred_first_party_automation_ids,
     deferred_first_party_plugin_ids,
@@ -41,6 +43,7 @@ from agent.automation_plugins.models import (
 )
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.production import (
+    MySQLRuntimeTargetService,
     ProductionRuntimeCoeffectProvider,
     ProductionRuntimeEffectPlanner,
     build_runtime_generation_snapshot,
@@ -112,6 +115,31 @@ class _ConfigurationRepository:
         automation_id: str,
     ) -> AutomationProjectConfigRecord | None:
         return self.configurations.get(automation_id)
+
+
+class _DesiredStateRepository:
+    def __init__(
+        self,
+        configs: Mapping[str, Mapping[str, Any]],
+        policies: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        self._configs = configs
+        self._policies = policies
+
+    @contextmanager
+    def unit_of_work(self) -> Iterator[SimpleNamespace]:
+        yield SimpleNamespace(
+            automation_plugins=SimpleNamespace(
+                get_project_config=lambda automation_id: copy.deepcopy(
+                    self._configs.get(automation_id)
+                )
+            ),
+            automation_projects=SimpleNamespace(
+                get_policy=lambda automation_id: copy.deepcopy(
+                    self._policies.get(automation_id)
+                )
+            ),
+        )
 
 
 class _RuntimeRepository:
@@ -664,18 +692,20 @@ def _build_release_world() -> SimpleNamespace:
         excluded_plugin_ids=deferred_first_party_plugin_ids(),
         allowed_execution_platforms=("server",),
     )
+    policy_rows: dict[str, dict[str, Any]] = {}
     snapshots: dict[str, RuntimeGenerationSnapshot] = {}
     for automation_id in sorted(expected_automation_ids):
+        policy_rows[automation_id] = {
+            "automation_id": automation_id,
+            "project_generation": 1,
+            "mode": "REQUIRE_EACH_RUN",
+            "project_configuration_version": 2,
+            "version": 1,
+        }
         snapshots[automation_id] = build_runtime_generation_snapshot(
             catalog.require(automation_id),
             desired_config_row=desired_rows[automation_id],
-            policy_row={
-                "automation_id": automation_id,
-                "project_generation": 1,
-                "mode": "REQUIRE_EACH_RUN",
-                "project_configuration_version": 2,
-                "version": 1,
-            },
+            policy_row=policy_rows[automation_id],
             generation=1,
             core_catalog=core,
         )
@@ -705,6 +735,8 @@ def _build_release_world() -> SimpleNamespace:
         resources=resources,
         project_repository=project_repository,
         catalog=catalog,
+        desired_rows=desired_rows,
+        policy_rows=policy_rows,
         snapshots=snapshots,
         runtime=runtime,
         binding_resolver=binding_resolver,
@@ -741,6 +773,19 @@ def _reconcile_world(world: SimpleNamespace) -> dict[str, Any]:
             committed_snapshot=committed.snapshot if committed is not None else None,
         )
     return results
+
+
+def _target_service(world: SimpleNamespace) -> MySQLRuntimeTargetService:
+    return MySQLRuntimeTargetService(
+        orchestration_repository=_DesiredStateRepository(
+            world.desired_rows,
+            world.policy_rows,
+        ),
+        catalog=world.catalog,
+        core_catalog=world.core,
+        runtime_repository=world.runtime,
+        reconciler=world.reconciler,
+    )
 
 
 def _route_specs(world: SimpleNamespace) -> list[tuple[AutomationEntrypoint, str, str, str]]:
@@ -817,6 +862,34 @@ def test_release_generation_commits_all_instances_and_resolves_all_trusted_route
     assert not (_DEFERRED_R7_AUTOMATION_IDS & set(world.expected_automation_ids))
     assert not (_DEFERRED_R7_RESOURCE_KEYS & set(world.resources))
     assert sum("r7" in plugin_id for plugin_id in world.manifests) == 0
+
+
+def test_restart_reconcile_reuses_identical_committed_generations() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    generations_before = copy.deepcopy(world.runtime.generations)
+    runtimes_before = copy.deepcopy(world.runtime.runtimes)
+
+    assert _target_service(world).reconcile_all() == ()
+
+    assert world.runtime.generations == generations_before
+    assert world.runtime.runtimes == runtimes_before
+    assert all(generation == 1 for _automation_id, generation in generations_before)
+
+
+def test_stable_material_drift_requires_forward_policy_binding() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrive_list"
+    row = world.desired_rows[automation_id]
+    row["config_json"] = {**row["config_json"], "uncommitted_drift": True}
+    row["config_sha256"] = _sha(row["config_json"])
+
+    with pytest.raises(PluginConflictError) as raised:
+        _target_service(world).reconcile_project(automation_id)
+
+    assert raised.value.code == "PLUGIN_POLICY_GENERATION_MISMATCH"
+    assert world.runtime.get_generation(automation_id, 2) is None
 
 
 def test_missing_required_delivery_resource_waits_and_catalog_fails_closed() -> None:
