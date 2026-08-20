@@ -168,7 +168,6 @@
     governance.querySelectorAll("[data-project-policy-mode]").forEach(input => {
       if (!(input instanceof HTMLInputElement)) return;
       input.checked = input.value === policy.configured_mode;
-      if (input.value === PROJECT_FULL_AUTO) input.disabled = !policy.can_full_auto;
     });
     ["active", "stale", "unsupported", "legacy_schedule_only", "unavailable"].forEach(state => {
       governance.classList.remove(`auto-project-governance--${state}`);
@@ -180,7 +179,6 @@
     const automationId = governance.dataset.automationId || "";
     const policy = parseObject(governance.dataset.projectPolicy);
     const selected = governance.querySelector("[data-project-policy-mode]:checked");
-    const comment = governance.querySelector("[data-project-policy-comment]");
     const button = governance.querySelector("[data-project-policy-save]");
     const feedback = governance.querySelector("[data-project-policy-feedback]");
     if (
@@ -221,7 +219,7 @@
           body: JSON.stringify({
             mode: selected.value,
             request_id: requestId,
-            comment: comment instanceof HTMLInputElement ? comment.value.trim() : "",
+            comment: "",
             expected_policy_version: policy.policy_version,
             expected_project_configuration_version: policy.project_configuration_version,
           }),
@@ -233,7 +231,6 @@
       }
       renderPolicy(governance, payload?.data?.policy);
       delete governance.dataset.policyRequestId;
-      if (comment instanceof HTMLInputElement) comment.value = "";
       setFeedback(feedback, payload.message || "项目权限已保存。", "success");
       announce(governance, payload.message || "项目权限已保存。");
     } catch (error) {
@@ -389,7 +386,7 @@
     });
     cancel?.addEventListener("click", () => setPolicyPanelOpen(governance, false));
     save?.addEventListener("click", () => void savePolicy(governance));
-    governance.querySelectorAll("[data-project-policy-mode], [data-project-policy-comment]").forEach(control => {
+    governance.querySelectorAll("[data-project-policy-mode]").forEach(control => {
       control.addEventListener("input", () => {
         delete governance.dataset.policyRequestId;
         setFeedback(governance.querySelector("[data-project-policy-feedback]"), "", "");

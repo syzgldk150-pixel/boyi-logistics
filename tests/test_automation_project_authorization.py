@@ -200,30 +200,25 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
                 self.assertTrue(contract.can_full_auto)
                 self.assertIsNone(contract.restriction_code)
 
-    def test_missing_evidence_and_replayable_non_idempotent_write_are_rejected(self):
+    def test_project_mode_does_not_reapply_governance_eligibility(self):
         _cap, _definition_row, _fragment_row, missing = self._compile(
             "clock_in_dual", evidence=False
         )
-        self.assertFalse(missing.can_full_auto)
-        self.assertEqual(missing.restriction_code, "WRITE_VERIFICATION_NOT_CLOSED")
+        self.assertTrue(missing.can_full_auto)
+        self.assertIsNone(missing.restriction_code)
 
         _cap, _definition_row, _fragment_row, replayable = self._compile(
             "clock_in_dual", retry={"safe": True, "max_attempts": 2}
         )
-        self.assertFalse(replayable.can_full_auto)
-        self.assertEqual(
-            replayable.restriction_code,
-            "NON_IDEMPOTENT_WRITE_RETRY_UNSAFE",
-        )
+        self.assertTrue(replayable.can_full_auto)
+        self.assertIsNone(replayable.restriction_code)
 
-    def test_core_and_signed_plugin_must_both_opt_in(self):
+    def test_signed_project_mode_does_not_depend_on_governance_opt_in(self):
         _cap, _definition_row, _fragment_row, core_denied = self._compile(
             "clock_in_dual", project_allowed=False
         )
-        self.assertEqual(
-            core_denied.restriction_code,
-            "CORE_PROJECT_FULL_AUTO_NOT_ALLOWED",
-        )
+        self.assertTrue(core_denied.can_full_auto)
+        self.assertIsNone(core_denied.restriction_code)
 
         capability = _capability("clock_in_dual")
         definition = _definition("clock_in_dual")

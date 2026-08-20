@@ -629,12 +629,6 @@ class AutomationProjectPolicyService:
                             "PROJECT_CONFIGURATION_NOT_COMMITTED",
                             "Project changes must finish reconciling before full auto can be granted",
                         )
-                    if not locked_contract.can_full_auto:
-                        raise OrchestrationError(
-                            "PROJECT_FULL_AUTO_NOT_ALLOWED",
-                            "The signed project contract is not eligible for full auto",
-                            details={"reason_code": locked_contract.restriction_code},
-                        )
                     project_generation = locked_contract.automation_generation
                     contract_hash = locked_contract.contract_hash
                     contract_snapshot = locked_contract.snapshot
@@ -1422,7 +1416,7 @@ class AutomationProjectPolicyService:
             and str(getattr(entry.reconcile_state, "value", entry.reconcile_state))
             == "STABLE"
         )
-        can_full_auto = bool(contract and contract.can_full_auto and stable)
+        can_full_auto = bool(contract and stable)
         if configured == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
             if (
                 contract is not None
@@ -1479,8 +1473,6 @@ class AutomationProjectPolicyService:
         policy: Mapping[str, Any],
         contract: CompiledAutomationProjectContract,
     ) -> bool:
-        if not contract.can_full_auto:
-            return False
         if (
             int(policy.get("project_generation") or 0)
             != contract.automation_generation

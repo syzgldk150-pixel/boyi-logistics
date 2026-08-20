@@ -444,7 +444,7 @@
           </div>
 
           <div class="auto-project-policy-panel" id="project-policy-{{ task.task_id }}" data-project-policy-panel hidden>
-            <fieldset {% if not (policy.available and can_manage_approval_policies) or task.plugin_blocked %}disabled{% endif %}>
+            <fieldset {% if not (policy.available and can_manage_approval_policies) %}disabled{% endif %}>
               <legend>选择项目的运行方式</legend>
               <label class="auto-project-policy-option">
                 <input type="radio" value="REQUIRE_EACH_RUN" data-project-policy-mode {% if policy.configured_mode == 'REQUIRE_EACH_RUN' %}checked{% endif %}>
@@ -453,8 +453,8 @@
                   <small>项目已启用的全部可信入口，每次运行都先进入本项目待审批。</small>
                 </span>
               </label>
-              <label class="auto-project-policy-option{% if not policy.can_full_auto or task.plugin_blocked %} is-disabled{% endif %}">
-                <input type="radio" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %} {% if not policy.can_full_auto or task.plugin_blocked %}disabled{% endif %}>
+              <label class="auto-project-policy-option">
+                <input type="radio" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %}>
                 <span>
                   <strong>完全自动</strong>
                   <small>项目清单允许的定时、后台、飞书与验签 Webhook 入口按已保存配置执行。</small>
@@ -462,12 +462,8 @@
               </label>
             </fieldset>
             {% if policy.available and can_manage_approval_policies %}
-            <label class="auto-project-policy-comment">
-              <span>变更说明（可选）</span>
-              <input class="review-input compact-input" type="text" maxlength="500" autocomplete="off" placeholder="说明为什么调整项目权限" data-project-policy-comment>
-            </label>
             <div class="auto-project-policy-actions">
-              <button class="primary-btn" type="button" data-project-policy-save {% if task.plugin_blocked %}disabled{% endif %}>保存权限</button>
+              <button class="primary-btn" type="button" data-project-policy-save>保存权限</button>
               <button class="ghost-btn" type="button" data-project-policy-cancel>取消</button>
             </div>
             {% else %}
