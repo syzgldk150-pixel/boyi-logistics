@@ -211,7 +211,11 @@ from feishu.bot import (
     websocket_enabled,
     websocket_lease_active,
 )
-from feishu.message_handler import queue_bot_menu_payload, queue_im_message_payload
+from feishu.message_handler import (
+    bind_automation_project_entrypoints,
+    queue_bot_menu_payload,
+    queue_im_message_payload,
+)
 from feishu.notify import send_finance_anomaly_alert, send_tms_session_disconnected_alert
 from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
@@ -1138,6 +1142,7 @@ async def lifespan(app: FastAPI):
             resource_provider=get_workflow_resource,
         ),
     )
+    bind_automation_project_entrypoints(automation_project_entrypoints)
     policy = PolicyEngine(
         catalog,
         scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
@@ -1261,6 +1266,7 @@ async def lifespan(app: FastAPI):
     await dispatcher.stop()
     await plugin_runtime.stop()
     await runtime.close()
+    bind_automation_project_entrypoints(None)
     control_plane_service = None
     scheduled_task_approval_service = None
     scheduled_task_approval_bootstrap = {}
