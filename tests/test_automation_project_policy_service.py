@@ -491,6 +491,33 @@ class AutomationProjectPolicyServiceTests(TestCase):
         )
         self.assertEqual("REQUIRE_EACH_RUN", self.repository.state.policy["mode"])
 
+    def test_default_full_auto_mode_is_approval_free_and_toggle_requires_approval(self):
+        invocation = _invocation()
+        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
+
+        automatic = self.service.evaluate_invocation(
+            _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(automatic.allowed)
+        self.assertFalse(automatic.requires_approval)
+
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+        approval_required = self.service.evaluate_invocation(
+            _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(approval_required.allowed)
+        self.assertTrue(approval_required.requires_approval)
+
     def test_scheduler_invocation_binds_exact_row_generation_and_context(self):
         self.contract = _contract_for(AutomationEntrypoint.SCHEDULER)
         actor = Actor(

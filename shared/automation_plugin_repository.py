@@ -1693,7 +1693,7 @@ class AutomationPluginRepository(
                 """
                 INSERT INTO automation_project_policies (
                     automation_id, mode, project_configuration_version, version
-                ) VALUES (%s, 'REQUIRE_EACH_RUN', %s, 1)
+                ) VALUES (%s, 'PROJECT_FULL_AUTO', %s, 1)
                 ON DUPLICATE KEY UPDATE automation_id=automation_id
                 """,
                 (project_id, next_version),
@@ -1719,7 +1719,7 @@ class AutomationPluginRepository(
                     plugin_contract_hash, project_configuration_version,
                     actor_id, actor_role, reason, correlation_id
                 ) VALUES (
-                    %s, %s, %s, 'REQUIRE_EACH_RUN', NULL, NULL, NULL, NULL,
+                    %s, %s, %s, 'PROJECT_FULL_AUTO', NULL, NULL, NULL, NULL,
                     %s, %s, %s, 'PROJECT_CONFIGURATION_CHANGED', %s
                 )
                 """,
@@ -1736,7 +1736,7 @@ class AutomationPluginRepository(
             cursor.execute(
                 """
                 UPDATE automation_project_policies
-                SET mode='REQUIRE_EACH_RUN', contract_hash=NULL,
+                SET mode='PROJECT_FULL_AUTO', contract_hash=NULL,
                     contract_snapshot_json=NULL, tool_contract_hash=NULL,
                     plugin_contract_hash=NULL,
                     project_configuration_version=%s,

@@ -53,7 +53,7 @@ from shared.automation_project_manifest import (
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
 _MIGRATION_ACTOR_ROLE = "migration_authority"
-_REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN"
+_PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO"
 
 
 def _digest(value: Mapping[str, Any] | list[Any]) -> str:
@@ -265,7 +265,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             )
             policy = uow.automation_projects.ensure_default(
                 automation_id,
-                mode=_REQUIRE_EACH_RUN,
+                mode=_PROJECT_FULL_AUTO,
                 project_generation=1,
                 project_configuration_version=int(config["config_version"]),
             )
@@ -274,7 +274,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "automation_id": automation_id,
                     "request_id": request_id,
                     "from_mode": None,
-                    "to_mode": _REQUIRE_EACH_RUN,
+                    "to_mode": _PROJECT_FULL_AUTO,
                     "contract_hash": None,
                     "contract_snapshot_json": None,
                     "tool_contract_hash": None,
@@ -289,7 +289,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "correlation_id": request_id,
                 }
             )
-            if str(policy.get("mode") or "") != _REQUIRE_EACH_RUN:
+            if str(policy.get("mode") or "") != _PROJECT_FULL_AUTO:
                 raise PluginConflictError("new plugin instance did not fail closed")
             uow.commit()
         persisted = self.get_instance(automation_id)
@@ -490,7 +490,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 uow.automation_projects.update_policy(
                     automation_id,
                     expected_version=int(policy.get("version") or 0),
-                    mode=_REQUIRE_EACH_RUN,
+                    mode=_PROJECT_FULL_AUTO,
                     contract_hash=None,
                     contract_snapshot=None,
                     tool_contract_hash=None,
@@ -507,7 +507,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         "automation_id": automation_id,
                         "request_id": request_id,
                         "from_mode": from_mode,
-                        "to_mode": _REQUIRE_EACH_RUN,
+                        "to_mode": _PROJECT_FULL_AUTO,
                         "contract_hash": None,
                         "contract_snapshot_json": None,
                         "tool_contract_hash": None,
