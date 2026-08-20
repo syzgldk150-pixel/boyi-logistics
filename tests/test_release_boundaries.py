@@ -183,6 +183,7 @@ def _run_service_identity_smoke(
     *,
     response_status: int = 200,
     transport_failures: int = 0,
+    known_arrival_stats_auth_failure_recovery: bool = False,
     raw_payload: str | None = None,
     service_identity_source: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -249,6 +250,9 @@ def _run_service_identity_smoke(
                 "BOYI_IDENTITY_ENV_FILE": str(identity_file),
                 "BOYI_DEPLOYED_ROOT": str(temp_root),
                 "BOYI_RELEASE_SHA": "test-release-sha",
+                "BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY": (
+                    "1" if known_arrival_stats_auth_failure_recovery else "0"
+                ),
                 "SMOKE_TEST_STATUS": str(response_status),
                 "SMOKE_TEST_TRANSPORT_FAILURES": str(transport_failures),
                 "SMOKE_TEST_PAYLOAD": raw_payload if raw_payload is not None else json.dumps(payload),
@@ -852,6 +856,53 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual("service_identity_smoke=ok", completed.stdout.strip())
         self.assertEqual("", completed.stderr)
+
+    def test_service_identity_smoke_allows_only_known_arrival_recovery_pending(self):
+        payload = _healthy_service_identity_payload()
+        plugins = payload["data"]["components"]["automation_plugins"]
+        catalog = plugins["catalog"]
+        catalog["ok"] = False
+        catalog["unstable_generations"] = ["arrival_stats"]
+        plugins["ok"] = False
+        plugins["generations"]["healthy"] = False
+
+        allowed = _run_service_identity_smoke(
+            payload,
+            known_arrival_stats_auth_failure_recovery=True,
+        )
+        self.assertEqual(0, allowed.returncode, allowed.stderr)
+        self.assertEqual(
+            "service_identity_smoke=recovery_pending automation_id=arrival_stats\n"
+            "service_identity_smoke=ok",
+            allowed.stdout.strip(),
+        )
+        self.assertEqual("", allowed.stderr)
+
+        rejected = _run_service_identity_smoke(payload)
+        self.assertEqual(1, rejected.returncode)
+        self.assertEqual(
+            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations\n",
+            rejected.stderr,
+        )
+
+    def test_service_identity_smoke_rejects_any_other_pending_catalog_shape(self):
+        payload = _healthy_service_identity_payload()
+        plugins = payload["data"]["components"]["automation_plugins"]
+        catalog = plugins["catalog"]
+        catalog["ok"] = False
+        catalog["unstable_generations"] = ["arrival_stats", "delivery_status"]
+        plugins["ok"] = False
+        plugins["generations"]["healthy"] = False
+
+        completed = _run_service_identity_smoke(
+            payload,
+            known_arrival_stats_auth_failure_recovery=True,
+        )
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual(
+            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations\n",
+            completed.stderr,
+        )
 
     def test_post_restart_recovery_is_ordered_and_blocks_activation_on_failure(self):
         successful = _run_sourced_release_harness(

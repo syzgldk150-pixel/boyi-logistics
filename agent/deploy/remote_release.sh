@@ -1814,6 +1814,7 @@ check_service_identity_smoke() {
   BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
   BOYI_DEPLOYED_ROOT="/home/boyce" \
   BOYI_RELEASE_SHA="${RELEASE_SHA}" \
+  BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY="${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" \
     "${console_python}" - <<'PY'
 import json
 import os
@@ -1989,25 +1990,39 @@ try:
             "invalid_enabled_runtime",
         ),
     )
+    allow_known_arrival_stats_recovery = (
+        os.environ.get("BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY") == "1"
+    )
+    recovery_pending_catalog = False
     for catalog_gate, field_name in catalog_failure_fields:
         field_value = plugin_catalog.get(field_name)
         if not isinstance(field_value, list):
             failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
             raise RuntimeError("automation plugin catalog health shape is invalid")
         if field_value:
+            if (
+                catalog_gate is SmokeGate.PLUGIN_CATALOG_UNSTABLE_GENERATIONS
+                and allow_known_arrival_stats_recovery
+                and field_value == ["arrival_stats"]
+            ):
+                recovery_pending_catalog = True
+                continue
             failure_gate = catalog_gate
             raise RuntimeError("automation plugin catalog is not release-ready")
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
-    if plugin_catalog.get("ok") is not True:
+    if plugin_catalog.get("ok") is not True and not recovery_pending_catalog:
         raise RuntimeError("automation plugin catalog aggregate is not release-ready")
     failure_gate = SmokeGate.PLUGIN_GENERATIONS
     if (
         not isinstance(automation_plugins.get("generations"), dict)
-        or automation_plugins["generations"].get("healthy") is not True
+        or (
+            automation_plugins["generations"].get("healthy") is not True
+            and not recovery_pending_catalog
+        )
     ):
         raise RuntimeError("automation plugin generations are not release-ready")
     failure_gate = SmokeGate.PLUGIN_AGGREGATE
-    if automation_plugins.get("ok") is not True:
+    if automation_plugins.get("ok") is not True and not recovery_pending_catalog:
         raise RuntimeError("automation plugin runtime is not release-ready")
     failure_gate = SmokeGate.WORKER
     if (
@@ -2046,6 +2061,8 @@ except Exception:
         file=sys.stderr,
     )
     raise SystemExit(1)
+if recovery_pending_catalog:
+    print("service_identity_smoke=recovery_pending automation_id=arrival_stats")
 print("service_identity_smoke=ok")
 PY
 }
