@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
+import traceback
 from collections.abc import Mapping
 
 from action import ACTION_ID, run_action
@@ -38,6 +40,33 @@ def _reject_sensitive(value: object) -> None:
             _reject_sensitive(nested)
 
 
+def _action_failure_diagnostic(exc: BaseException) -> tuple[str, str]:
+    """Return fixed, non-business diagnostics for an action failure.
+
+    The subprocess boundary must not echo exception messages, request data or
+    source paths.  A frame inside the signed action module is sufficient to
+    distinguish validation/source/commit failures while remaining safe to put
+    in the redacted process stderr captured by the core.
+    """
+
+    if isinstance(exc, ValueError):
+        code = "ACTION_VALUE_ERROR"
+    elif isinstance(exc, TypeError):
+        code = "ACTION_TYPE_ERROR"
+    elif isinstance(exc, RuntimeError):
+        code = "ACTION_RUNTIME_ERROR"
+    else:
+        code = "ACTION_FAILED"
+    frame_label = "runtime"
+    for frame in reversed(traceback.extract_tb(exc.__traceback__)):
+        if Path(frame.filename).name != "action.py":
+            continue
+        function = frame.name if frame.name.isidentifier() else "unknown"
+        frame_label = f"action.py:{int(frame.lineno)}:{function}"
+        break
+    return code, frame_label
+
+
 def _read_request() -> dict[str, object]:
     request = json.load(sys.stdin)
     if not isinstance(request, dict) or set(request) != _REQUEST_FIELDS:
@@ -59,7 +88,8 @@ def main() -> int:
         json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return 0
     except Exception as exc:  # fail closed without echoing arguments or broker data
-        sys.stderr.write(f"FIRST_PARTY_ACTION_FAILED:{type(exc).__name__}\n")
+        code, frame = _action_failure_diagnostic(exc)
+        sys.stderr.write(f"FIRST_PARTY_ACTION_FAILED:{code}:FRAME={frame}\n")
         return 1
 
 
