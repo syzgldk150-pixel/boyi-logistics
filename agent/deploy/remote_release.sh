@@ -1809,7 +1809,7 @@ import os
 import secrets
 import sys
 from enum import Enum
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 class SmokeGate(str, Enum):
@@ -1867,34 +1867,41 @@ try:
         console_signing_secret=signing_secret,
     )
     request_target = "/internal/v1/health"
-    headers = build_console_identity_headers(
-        secret=signing_secret,
-        method="GET",
-        request_target=request_target,
-        body=b"",
-        principal={
-            "actor_type": "console_admin",
-            "actor_id": "release-identity-probe",
-            "roles": ["admin"],
-            "display_name": "Release identity probe",
-            "authenticated_by": "mysql_admin_session",
-        },
-        nonce=secrets.token_urlsafe(24),
-    )
-    headers["X-Agent-Internal-Token"] = internal_token
-    request = Request(
-        f"http://127.0.0.1:9000{request_target}",
-        headers=headers,
-        method="GET",
-    )
-    failure_gate = SmokeGate.HTTP_OTHER
-    try:
-        with urlopen(request, timeout=10) as response:
-            response_status = response.status
-            response_body = response.read()
-    except HTTPError as exc:
-        failure_gate = http_failure_gate(exc.code)
-        raise
+    for attempt in range(3):
+        headers = build_console_identity_headers(
+            secret=signing_secret,
+            method="GET",
+            request_target=request_target,
+            body=b"",
+            principal={
+                "actor_type": "console_admin",
+                "actor_id": "release-identity-probe",
+                "roles": ["admin"],
+                "display_name": "Release identity probe",
+                "authenticated_by": "mysql_admin_session",
+            },
+            nonce=secrets.token_urlsafe(24),
+        )
+        headers["X-Agent-Internal-Token"] = internal_token
+        request = Request(
+            f"http://127.0.0.1:9000{request_target}",
+            headers=headers,
+            method="GET",
+        )
+        failure_gate = SmokeGate.HTTP_OTHER
+        try:
+            with urlopen(request, timeout=10) as response:
+                response_status = response.status
+                response_body = response.read()
+            break
+        except HTTPError as exc:
+            failure_gate = http_failure_gate(exc.code)
+            raise
+        except URLError:
+            if attempt == 2:
+                raise
+    else:
+        raise RuntimeError("signed health probe did not return a response")
     if response_status != 200:
         failure_gate = http_failure_gate(response_status)
         raise RuntimeError("signed health probe returned an unexpected status")

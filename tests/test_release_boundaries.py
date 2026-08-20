@@ -178,6 +178,7 @@ def _run_service_identity_smoke(
     payload: object,
     *,
     response_status: int = 200,
+    transport_failures: int = 0,
     service_identity_source: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
@@ -209,7 +210,7 @@ def _run_service_identity_smoke(
             (temp_root / "sitecustomize.py").write_text(
                 "import json\n"
                 "import os\n"
-                "from urllib.error import HTTPError\n"
+                "from urllib.error import HTTPError, URLError\n"
                 "import urllib.request\n\n"
                 "class _Response:\n"
                 "    def __init__(self, status, payload):\n"
@@ -221,8 +222,13 @@ def _run_service_identity_smoke(
                 "        return False\n"
                 "    def read(self):\n"
                 "        return self._payload.encode('utf-8')\n\n"
+                "_attempts = 0\n\n"
                 "def _urlopen(request, timeout):\n"
+                "    global _attempts\n"
                 "    del timeout\n"
+                "    _attempts += 1\n"
+                "    if _attempts <= int(os.environ['SMOKE_TEST_TRANSPORT_FAILURES']):\n"
+                "        raise URLError('closed transport fixture')\n"
                 "    status = int(os.environ['SMOKE_TEST_STATUS'])\n"
                 "    if status != 200:\n"
                 "        raise HTTPError(request.full_url, status, 'closed fixture', None, None)\n"
@@ -238,6 +244,7 @@ def _run_service_identity_smoke(
                 "BOYI_IDENTITY_ENV_FILE": str(identity_file),
                 "BOYI_DEPLOYED_ROOT": str(temp_root),
                 "SMOKE_TEST_STATUS": str(response_status),
+                "SMOKE_TEST_TRANSPORT_FAILURES": str(transport_failures),
                 "SMOKE_TEST_PAYLOAD": json.dumps(payload),
             }
             for name in ("SYSTEMROOT", "WINDIR"):
@@ -667,6 +674,27 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 )
                 self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stdout)
                 self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", completed.stderr)
+
+    def test_service_identity_smoke_retries_only_bounded_transport_failures(self):
+        recovered = _run_service_identity_smoke(
+            _healthy_service_identity_payload(),
+            transport_failures=2,
+        )
+        self.assertEqual(0, recovered.returncode)
+        self.assertEqual("service_identity_smoke=ok\n", recovered.stdout)
+        self.assertEqual("", recovered.stderr)
+
+        exhausted = _run_service_identity_smoke(
+            _healthy_service_identity_payload(),
+            transport_failures=3,
+        )
+        self.assertEqual(1, exhausted.returncode)
+        self.assertEqual(
+            "service_identity_smoke=failed reason=http_other\n",
+            exhausted.stderr,
+        )
+        self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", exhausted.stdout)
+        self.assertNotIn("SMOKE_BODY_MUST_NOT_APPEAR", exhausted.stderr)
 
     def test_service_identity_smoke_reports_closed_component_gates(self):
         cases = (
