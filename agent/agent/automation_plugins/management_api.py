@@ -75,6 +75,24 @@ class PluginConfigurationRequest(BaseModel):
     expected_project_configuration_version: int = Field(ge=1)
 
 
+class ArrivalStatsRecoveryReadbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    arrival_stat_runs: int = Field(ge=0)
+    arrival_stat_items: int = Field(ge=0)
+    feishu_rows_created: int = Field(ge=0)
+
+
+class ArrivalStatsRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    generation: int = Field(ge=1)
+    lease_id: str = Field(min_length=1, max_length=64)
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    readback: ArrivalStatsRecoveryReadbackRequest
+    request_id: str = Field(min_length=1, max_length=64)
+
+
 class WorkerIdentityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -447,11 +465,35 @@ def create_automation_plugin_management_router(
             )
         )
 
+    @router.post(
+        "/internal/v1/automation/instances/{automation_id}/generation/recover-not-applied",
+        response_model=None,
+    )
+    async def recover_arrival_stats_not_applied(
+        automation_id: str,
+        payload: ArrivalStatsRecoveryRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().recover_arrival_stats_not_applied(
+                automation_id,
+                generation=payload.generation,
+                lease_id=payload.lease_id,
+                evidence_sha256=payload.evidence_sha256,
+                readback=payload.readback.model_dump(),
+                request_id=payload.request_id,
+                actor=actor,
+            )
+        )
+
     return router
 
 
 __all__ = [
     "PluginConfigurationRequest",
+    "ArrivalStatsRecoveryReadbackRequest",
+    "ArrivalStatsRecoveryRequest",
     "PluginScheduleRequest",
     "PluginStateRequest",
     "PluginUninstallRequest",

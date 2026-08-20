@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
@@ -731,6 +732,73 @@ class MySQLAutomationPluginRuntimeAdapter:
             lease.lease_id,
             outcome=outcome.value,
         )
+
+    def resolve_unknown_write_not_applied(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        evidence_sha256: str,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Resolve one externally read-back, pre-write failure atomically."""
+
+        with self._orchestration.unit_of_work() as uow:
+            resolver = getattr(
+                uow.automation_plugins,
+                "resolve_unknown_generation_write_not_applied_row",
+                None,
+            )
+            if not callable(resolver):
+                raise ValueError("runtime unknown-write recovery is unavailable")
+            result = resolver(
+                automation_id,
+                generation,
+                lease_id,
+                evidence_sha256=evidence_sha256,
+            )
+            event_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"boyi:automation-plugin-generation-recovery:{request_id}",
+                )
+            )
+            uow.events.append_with_outbox(
+                {
+                    "event_id": event_id,
+                    "event_type": "automation_plugin.generation_recovered",
+                    "schema_version": 1,
+                    "source_system": "agent",
+                    "source_event_id": f"plugin-generation-recovery:{request_id}",
+                    "entity_type": "automation_project",
+                    "entity_id": automation_id,
+                    "correlation_id": request_id,
+                    "payload": {
+                        "automation_id": automation_id,
+                        "generation": generation,
+                        "lease_id": lease_id,
+                        "outcome": "NOT_APPLIED",
+                        "evidence_sha256": evidence_sha256,
+                        "actor_id": actor_id,
+                        "actor_role": actor_role,
+                    },
+                },
+                (
+                    {
+                        "consumer_name": "orchestration.audit",
+                        "topic": "automation_plugin.generation_recovered",
+                        "partition_key": automation_id,
+                        "max_attempts": 10,
+                    },
+                ),
+            )
+            uow.commit()
+        if not isinstance(result, Mapping):
+            raise ValueError("runtime generation recovery did not persist")
+        return dict(result)
 
     def finalize_generation_write(
         self,

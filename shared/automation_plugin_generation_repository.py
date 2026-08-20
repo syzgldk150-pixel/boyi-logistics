@@ -1617,6 +1617,151 @@ class AutomationPluginGenerationRepositoryMixin:
             raise OrchestrationPersistenceError("runtime lease disappeared")
         return result
 
+    def resolve_unknown_generation_write_not_applied_row(
+        self,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        *,
+        evidence_sha256: str,
+    ) -> dict[str, Any]:
+        """Resolve one readback-proven pre-write failure in one transaction.
+
+        The persisted lease contract predates an explicit ``NOT_APPLIED``
+        outcome, so the safe terminal representation is
+        ``FAILED_BEFORE_WRITE`` plus the readback digest.  This path only
+        clears the block when the exact current generation has one unknown
+        lease and the caller supplies the already-verified empty readback.
+        Any other lease/effect shape remains blocked.
+        """
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        safe_lease_id = _required_text(lease_id, "lease_id")
+        safe_evidence = _sha256(evidence_sha256, "evidence_sha256")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM automation_project_generation_leases
+                WHERE lease_id=%s FOR UPDATE
+                """,
+                (safe_lease_id,),
+            )
+            lease = _decode_row(
+                _row_dict(cursor, cursor.fetchone()),
+                ("runtime_metadata_json",),
+            )
+            if lease is None:
+                raise OrchestrationPersistenceError("runtime generation lease does not exist")
+            if (
+                str(lease.get("automation_id") or "") != safe_automation_id
+                or int(lease.get("generation") or 0) != safe_generation
+            ):
+                raise IdempotencyConflict(
+                    "runtime recovery does not match its generation lease"
+                )
+            if str(lease.get("outcome") or "") == "FAILED_BEFORE_WRITE":
+                if str(lease.get("verification_evidence_sha256") or "") != safe_evidence:
+                    raise IdempotencyConflict(
+                        "runtime recovery was reused with different evidence"
+                    )
+                return lease
+            if str(lease.get("outcome") or "") != "WRITE_OUTCOME_UNKNOWN":
+                raise ConcurrentUpdateError(
+                    "runtime lease is not an unresolved external write"
+                )
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS unknown_count
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s AND generation=%s
+                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                FOR UPDATE
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            unknown_count = int((_row_dict(cursor, cursor.fetchone()) or {}).get("unknown_count") or 0)
+            if unknown_count != 1:
+                raise ConcurrentUpdateError(
+                    "runtime generation has another unknown write to reconcile"
+                )
+            cursor.execute(
+                """
+                SELECT state FROM automation_project_generations
+                WHERE automation_id=%s AND generation=%s FOR UPDATE
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            generation_row = _row_dict(cursor, cursor.fetchone())
+            cursor.execute(
+                """
+                SELECT target_generation, committed_generation, reconcile_state
+                FROM automation_projects
+                WHERE automation_id=%s FOR UPDATE
+                """,
+                (safe_automation_id,),
+            )
+            project = _row_dict(cursor, cursor.fetchone())
+            if (
+                generation_row is None
+                or str(generation_row.get("state") or "") != "BLOCKED"
+                or project is None
+                or int(project.get("target_generation") or 0) != safe_generation
+                or int(project.get("committed_generation") or 0) != safe_generation
+                or str(project.get("reconcile_state") or "")
+                != "BLOCKED_UNKNOWN_WRITE"
+            ):
+                raise ConcurrentUpdateError(
+                    "runtime generation is not an exact current unknown-write block"
+                )
+            cursor.execute(
+                """
+                UPDATE automation_project_generation_leases
+                SET outcome='FAILED_BEFORE_WRITE',
+                    verification_evidence_sha256=%s,
+                    released_at=NOW(6), updated_at=NOW(6)
+                WHERE lease_id=%s AND outcome='WRITE_OUTCOME_UNKNOWN'
+                """,
+                (safe_evidence, safe_lease_id),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("runtime unknown-write lease changed")
+            cursor.execute(
+                """
+                UPDATE automation_project_generations
+                SET state='COMMITTED', error_code=NULL, error_summary=NULL,
+                    committed_at=COALESCE(committed_at, NOW(6)),
+                    record_version=record_version+1, updated_at=NOW(6)
+                WHERE automation_id=%s AND generation=%s AND state='BLOCKED'
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("runtime blocked generation changed")
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET reconcile_state='STABLE', updated_at=NOW(6)
+                WHERE automation_id=%s AND target_generation=%s
+                  AND committed_generation=%s
+                  AND reconcile_state='BLOCKED_UNKNOWN_WRITE'
+                """,
+                (safe_automation_id, safe_generation, safe_generation),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("runtime project block changed")
+            cursor.execute(
+                "SELECT * FROM automation_project_generation_leases WHERE lease_id=%s",
+                (safe_lease_id,),
+            )
+            result = _decode_row(
+                _row_dict(cursor, cursor.fetchone()),
+                ("runtime_metadata_json",),
+            )
+        if result is None:
+            raise OrchestrationPersistenceError("runtime generation lease disappeared")
+        return result
+
     def finalize_generation_write_row(
         self,
         *,
