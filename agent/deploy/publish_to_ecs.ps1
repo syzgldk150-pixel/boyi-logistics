@@ -9,7 +9,8 @@ param(
     [switch]$SkipRestart,
     [switch]$SkipHealthCheck,
     [switch]$EmergencyUserAuthorizedScheduledWindowOverride,
-    [switch]$RecoverKnownArrivalStatsUnknownWrite
+    [switch]$RecoverKnownArrivalStatsUnknownWrite,
+    [switch]$RecoverKnownArrivalStatsAuthFailure
 )
 
 $ErrorActionPreference = "Stop"
@@ -544,6 +545,10 @@ try {
     if ($RecoverKnownArrivalStatsUnknownWrite) {
         Write-Warning "Known arrival_stats unknown-write recovery requested for Run fb077840-a2d0-4e7f-8089-f68c104ab544."
         $remoteReleaseCommand += " '--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544'"
+    }
+    if ($RecoverKnownArrivalStatsAuthFailure) {
+        Write-Warning "Known arrival_stats auth-failure recovery requested for Run 71510af3-fcf1-461b-9c2e-152665f32f98."
+        $remoteReleaseCommand += " '--recover-known-arrival-stats-auth-failure=71510af3-fcf1-461b-9c2e-152665f32f98'"
     }
     Invoke-Remote $remoteReleaseCommand
     $remoteStageCreated = $false

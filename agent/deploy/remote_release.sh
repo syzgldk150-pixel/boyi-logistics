@@ -8,15 +8,18 @@ SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
 EMERGENCY_SCHEDULED_WINDOW_ARGUMENT="--emergency-scheduled-window-override=emergency_user_authorized"
 KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT="--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544"
+KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT="--recover-known-arrival-stats-auth-failure=71510af3-fcf1-461b-9c2e-152665f32f98"
 EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
 KNOWN_ARRIVAL_STATS_RECOVERY=0
-if (( $# > 7 )); then
+KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=0
+if (( $# > 8 )); then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
 if (( $# == 7 )) \
   && [[ "${6}" == "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}" ]] \
-  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}" ]]; then
+  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}" ]] \
+  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT}" ]]; then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
@@ -35,6 +38,13 @@ for release_argument in "${@:6}"; do
         exit 2
       }
       KNOWN_ARRIVAL_STATS_RECOVERY=1
+      ;;
+    "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT}")
+      [[ "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "0" ]] || {
+        echo "arrival_stats_auth_failure_recovery=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
+        exit 2
+      }
+      KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=1
       ;;
     --emergency-scheduled-window-override=*)
       echo "emergency_scheduled_window_override=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
@@ -2041,16 +2051,24 @@ PY
 }
 
 recover_known_arrival_stats_unknown_write() {
-  # This is intentionally a one-shot release repair for the named incident.
-  # It never discovers or retries other unknown writes, and the managed Agent
-  # endpoint verifies the current lease before changing any generation state.
+  # This is intentionally limited to the two named, separately authorized
+  # incidents. It never discovers or retries another unknown write.
+  local run_id="${1:?known recovery Run is required}"
+  case "${run_id}" in
+    fb077840-a2d0-4e7f-8089-f68c104ab544|71510af3-fcf1-461b-9c2e-152665f32f98) ;;
+    *)
+      echo "arrival_stats_unknown_write_recovery=failed reason=scope_invalid" >&2
+      return 1
+      ;;
+  esac
   local console_python="${PYTHON_BINS[console]}"
   [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
     echo "arrival_stats_unknown_write_recovery=failed reason=runtime_unavailable" >&2
     return 1
   }
 
-  BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
+  BOYI_KNOWN_RECOVERY_RUN_ID="${run_id}" \
+    BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
     BOYI_DEPLOYED_ROOT="/home/boyce" \
     "${console_python}" - <<'PY'
 import json
@@ -2069,7 +2087,7 @@ from shared.service_identity import (
 )
 
 
-RUN_ID = "fb077840-a2d0-4e7f-8089-f68c104ab544"
+RUN_ID = os.environ["BOYI_KNOWN_RECOVERY_RUN_ID"]
 AUTOMATION_ID = "arrival_stats"
 REQUEST_TARGET = (
     f"/internal/v1/automation/instances/{AUTOMATION_ID}/generation/"
@@ -2150,7 +2168,11 @@ check_post_restart_release_gates() {
   check_service_identity_smoke || return 1
   if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" ]]; then
     RELEASE_STAGE="recover_known_arrival_stats_unknown_write"
-    recover_known_arrival_stats_unknown_write || return 1
+    recover_known_arrival_stats_unknown_write "fb077840-a2d0-4e7f-8089-f68c104ab544" || return 1
+  fi
+  if [[ "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
+    RELEASE_STAGE="recover_known_arrival_stats_auth_failure"
+    recover_known_arrival_stats_unknown_write "71510af3-fcf1-461b-9c2e-152665f32f98" || return 1
   fi
   RELEASE_STAGE="check_control_plane_release_manifest"
   check_control_plane_release_manifest || return 1

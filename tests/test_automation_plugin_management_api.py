@@ -303,7 +303,16 @@ def test_management_identity_and_worker_projection_are_fail_closed() -> None:
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
 
 
-def test_known_arrival_stats_recovery_is_the_only_release_hold_exception() -> None:
+@pytest.mark.parametrize(
+    "request_id",
+    (
+        "fb077840-a2d0-4e7f-8089-f68c104ab544",
+        "71510af3-fcf1-461b-9c2e-152665f32f98",
+    ),
+)
+def test_known_arrival_stats_recovery_is_the_only_release_hold_exception(
+    request_id: str,
+) -> None:
     calls: list[dict[str, Any]] = []
     service = AutomationPluginManagementService(
         catalog=_Catalog(  # type: ignore[arg-type]
@@ -327,7 +336,7 @@ def test_known_arrival_stats_recovery_is_the_only_release_hold_exception() -> No
     recovered = service.recover_arrival_stats_not_applied(
         "arrival_stats",
         readback=readback,
-        request_id="fb077840-a2d0-4e7f-8089-f68c104ab544",
+        request_id=request_id,
         actor=_console_actor(),
     )
 

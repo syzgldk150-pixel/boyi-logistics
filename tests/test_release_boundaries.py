@@ -52,7 +52,9 @@ def _known_arrival_stats_recovery_source() -> str:
     return function.split(marker, 1)[1].rsplit("\nPY", 1)[0]
 
 
-def _run_known_arrival_stats_recovery() -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+def _run_known_arrival_stats_recovery(
+    run_id: str = "fb077840-a2d0-4e7f-8089-f68c104ab544",
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
     task_tmp_preexisting = task_tmp_root.exists()
     task_tmp_root.mkdir(exist_ok=True)
@@ -104,6 +106,7 @@ def _run_known_arrival_stats_recovery() -> tuple[subprocess.CompletedProcess[str
                 "PYTHONPATH": str(temp_root),
                 "BOYI_IDENTITY_ENV_FILE": str(identity_file),
                 "BOYI_DEPLOYED_ROOT": str(temp_root),
+                "BOYI_KNOWN_RECOVERY_RUN_ID": run_id,
                 "RECOVERY_CAPTURE_PATH": str(capture_path),
             }
             for name in ("SYSTEMROOT", "WINDIR"):
@@ -891,6 +894,24 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(0, failed.returncode, failed.stderr)
         self.assertEqual("identity recovery rollback", failed.stdout.strip())
 
+        auth_failure = _run_sourced_release_harness(
+            r'''
+            events=()
+            check_service_identity_smoke() { events+=(identity); }
+            recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
+            check_control_plane_release_manifest() { events+=(manifest); }
+            KNOWN_ARRIVAL_STATS_RECOVERY=0
+            KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=1
+            check_post_restart_release_gates
+            printf '%s\n' "${events[*]}"
+            '''
+        )
+        self.assertEqual(0, auth_failure.returncode, auth_failure.stderr)
+        self.assertEqual(
+            "identity recovery:71510af3-fcf1-461b-9c2e-152665f32f98 manifest",
+            auth_failure.stdout.strip(),
+        )
+
     def test_known_recovery_uses_only_the_verified_zero_readback_contract(self):
         completed, request = _run_known_arrival_stats_recovery()
 
@@ -916,6 +937,22 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 "request_id": "fb077840-a2d0-4e7f-8089-f68c104ab544",
             },
             json.loads(str(request["body"])),
+        )
+
+    def test_auth_failure_recovery_uses_the_second_exact_run_only(self):
+        completed, request = _run_known_arrival_stats_recovery(
+            "71510af3-fcf1-461b-9c2e-152665f32f98"
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "arrival_stats_unknown_write_recovery=ok "
+            "run_id=71510af3-fcf1-461b-9c2e-152665f32f98 outcome=NOT_APPLIED",
+            completed.stdout.strip(),
+        )
+        self.assertEqual(
+            "71510af3-fcf1-461b-9c2e-152665f32f98",
+            json.loads(str(request["body"]))["request_id"],
         )
 
     def test_direct_dependencies_are_covered_by_exact_locks(self):

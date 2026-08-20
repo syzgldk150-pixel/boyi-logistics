@@ -30,7 +30,12 @@ from agent.orchestration.models import Actor, ActorType
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DEVICE_KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_KNOWN_ARRIVAL_STATS_RECOVERY_RUN_ID = "fb077840-a2d0-4e7f-8089-f68c104ab544"
+_KNOWN_ARRIVAL_STATS_RECOVERY_RUN_IDS = frozenset(
+    {
+        "fb077840-a2d0-4e7f-8089-f68c104ab544",
+        "71510af3-fcf1-461b-9c2e-152665f32f98",
+    }
+)
 
 
 def _iso_datetime(value: object) -> str:
@@ -215,7 +220,7 @@ class AutomationPluginManagementService:
                 "arrival statistics write outcome remains unknown",
                 code="WRITE_OUTCOME_UNKNOWN",
             )
-        if request_id != _KNOWN_ARRIVAL_STATS_RECOVERY_RUN_ID:
+        if request_id not in _KNOWN_ARRIVAL_STATS_RECOVERY_RUN_IDS:
             raise PluginConflictError(
                 "readback recovery is not available for this Run",
                 code="PLUGIN_RECOVERY_SCOPE_INVALID",
