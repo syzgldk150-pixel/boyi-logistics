@@ -49,6 +49,7 @@ class RuntimeGenerationHealth:
     committed_count: int
     active_lease_count: int
     blocked_projects: Mapping[str, tuple[str, ...]]
+    recovery_pending_projects: Mapping[str, tuple[str, ...]]
 
     def assert_release_ready(self) -> None:
         if not self.healthy:
@@ -534,11 +535,15 @@ def runtime_generation_health(
     *,
     expected_automation_ids: Collection[str],
     ignored_automation_ids: Collection[str] = (),
+    recoverable_unknown_write_automation_ids: Collection[str] = (),
 ) -> RuntimeGenerationHealth:
     """Closed release gate for generation switching and unknown writes."""
 
     expected = {str(item) for item in expected_automation_ids}
     ignored = {str(item) for item in ignored_automation_ids}
+    recovery_candidates = {
+        str(item) for item in recoverable_unknown_write_automation_ids
+    }
     if expected & ignored:
         raise ValueError("expected and ignored automation identities overlap")
     projects = tuple(
@@ -548,6 +553,7 @@ def runtime_generation_health(
     )
     by_id = {project.automation_id: project for project in projects}
     blockers: dict[str, tuple[str, ...]] = {}
+    recovery_pending: dict[str, tuple[str, ...]] = {}
     for missing in sorted(expected - set(by_id)):
         blockers[missing] = ("PROJECT_RUNTIME_MISSING",)
     committed_count = 0
@@ -581,7 +587,17 @@ def runtime_generation_health(
                 reasons.add("WRITE_OUTCOME_UNKNOWN")
             if number != project.committed_generation and generation.state != RuntimeGenerationState.DISPOSED:
                 reasons.add(f"UNDISPOSED_{generation.state.value}")
-        if reasons:
+        if (
+            automation_id in recovery_candidates
+            and reasons
+            == {
+                "RECONCILE_BLOCKED_UNKNOWN_WRITE",
+                "COMMITTED_GENERATION_INVALID",
+                "WRITE_OUTCOME_UNKNOWN",
+            }
+        ):
+            recovery_pending[automation_id] = tuple(sorted(reasons))
+        elif reasons:
             blockers[automation_id] = tuple(sorted(reasons))
     return RuntimeGenerationHealth(
         healthy=not blockers and expected <= set(by_id),
@@ -589,4 +605,5 @@ def runtime_generation_health(
         committed_count=committed_count,
         active_lease_count=active_lease_count,
         blocked_projects=blockers,
+        recovery_pending_projects=recovery_pending,
     )

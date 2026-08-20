@@ -995,12 +995,18 @@ class ProductionAutomationPluginRuntime:
         return self.target_service.reconcile_all()
 
     def health(self) -> dict[str, Any]:
-        catalog = self.catalog.production_health(tuple(self.required_first_party_ids))
+        catalog = self.catalog.production_health(
+            tuple(self.required_first_party_ids),
+            recoverable_unknown_write_automation_ids=("arrival_stats",),
+        )
         ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
         generations: RuntimeGenerationHealth = runtime_generation_health(
             self.runtime_repository,
             expected_automation_ids=self.required_first_party_ids,
             ignored_automation_ids=ignored_automation_ids,
+            recoverable_unknown_write_automation_ids=tuple(
+                catalog.get("recovery_pending_generations", ())
+            ),
         )
         return {
             "ok": bool(catalog.get("ok") is True and generations.healthy and self._started),
@@ -1015,6 +1021,10 @@ class ProductionAutomationPluginRuntime:
                 "blocked_projects": {
                     key: list(value)
                     for key, value in sorted(generations.blocked_projects.items())
+                },
+                "recovery_pending_projects": {
+                    key: list(value)
+                    for key, value in sorted(generations.recovery_pending_projects.items())
                 },
             },
         }

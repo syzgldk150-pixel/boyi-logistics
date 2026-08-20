@@ -169,6 +169,7 @@ class _RuntimeRepository:
     def __init__(self) -> None:
         self.runtimes: dict[str, ProjectRuntimeRecord] = {}
         self.generations: dict[tuple[str, int], RuntimeGenerationRecord] = {}
+        self.unknown_generation_writes: set[tuple[str, int]] = set()
 
     def get_project_runtime(self, automation_id: str) -> ProjectRuntimeRecord | None:
         return self.runtimes.get(automation_id)
@@ -353,10 +354,10 @@ class _RuntimeRepository:
 
     def has_unknown_generation_write(
         self,
-        _automation_id: str,
-        _generation: int,
+        automation_id: str,
+        generation: int,
     ) -> bool:
-        return False
+        return (automation_id, generation) in self.unknown_generation_writes
 
     def mark_generation_draining(self, automation_id: str, generation: int) -> None:
         self._generation_state(
@@ -934,6 +935,12 @@ def test_current_unknown_write_block_is_left_for_managed_recovery() -> None:
         runtime,
         reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
     )
+    world.runtime.unknown_generation_writes.add((automation_id, 1))
+    project = world.project_repository.projects[automation_id]
+    world.project_repository.projects[automation_id] = replace(
+        project,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
 
     assert _target_service(world).reconcile_project(automation_id) is None
     assert world.runtime.get_generation(automation_id, 1).state is (
@@ -942,6 +949,29 @@ def test_current_unknown_write_block_is_left_for_managed_recovery() -> None:
     assert world.runtime.get_project_runtime(automation_id).reconcile_state is (
         RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
     )
+
+    catalog_health = world.catalog.production_health(
+        tuple(sorted(world.expected_automation_ids)),
+        recoverable_unknown_write_automation_ids=(automation_id,),
+    )
+    assert catalog_health["ok"] is True
+    assert catalog_health["unstable_generations"] == []
+    assert catalog_health["recovery_pending_generations"] == [automation_id]
+
+    generation_health = runtime_generation_health(
+        world.runtime,
+        expected_automation_ids=world.expected_automation_ids,
+        recoverable_unknown_write_automation_ids=(automation_id,),
+    )
+    assert generation_health.healthy is True
+    assert generation_health.blocked_projects == {}
+    assert generation_health.recovery_pending_projects == {
+        automation_id: (
+            "COMMITTED_GENERATION_INVALID",
+            "RECONCILE_BLOCKED_UNKNOWN_WRITE",
+            "WRITE_OUTCOME_UNKNOWN",
+        )
+    }
 
 
 def test_stable_policy_version_drift_reuses_committed_generation() -> None:

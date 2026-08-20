@@ -728,11 +728,21 @@ class PluginCatalog:
                 "persisted automation projects require an installed plugin: " + ", ".join(unsupported)
             )
 
-    def production_health(self, automation_ids: Sequence[str]) -> dict[str, Any]:
+    def production_health(
+        self,
+        automation_ids: Sequence[str],
+        *,
+        recoverable_unknown_write_automation_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """Return a credential-free release projection and reject dev trust."""
 
         entries = self.list()
         expected = {str(item or "").strip() for item in automation_ids if str(item or "").strip()}
+        recovery_candidates = {
+            str(item or "").strip()
+            for item in recoverable_unknown_write_automation_ids
+            if str(item or "").strip()
+        }
         installed = {entry.automation_id for entry in entries}
         unsupported = sorted(expected - installed)
         enabled_builtin = sorted(
@@ -750,9 +760,21 @@ class PluginCatalog:
                 PluginTrustSource.ED25519_FIRST_PARTY.value,
             }
         )
+        recovery_pending = sorted(
+            entry.automation_id
+            for entry in entries
+            if entry.automation_id in recovery_candidates
+            and entry.plugin_id == "sync_arrival_stats"
+            and entry.enabled
+            and entry.committed_snapshot is not None
+            and entry.committed_generation is not None
+            and entry.target_generation == entry.committed_generation
+            and entry.reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
+        )
         unstable = sorted(
             entry.automation_id
             for entry in entries
+            if entry.automation_id not in recovery_pending
             if not (
                 not entry.enabled
                 and not entry.configured
@@ -799,6 +821,7 @@ class PluginCatalog:
             "enabled_builtin_release": enabled_builtin,
             "invalid_enabled_trust": invalid_trust,
             "unstable_generations": unstable,
+            "recovery_pending_generations": recovery_pending,
             "invalid_enabled_runtime": invalid_runtime,
         }
 
