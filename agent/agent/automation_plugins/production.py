@@ -817,6 +817,27 @@ class MySQLRuntimeTargetService:
         next_generation = max(by_number, default=0) + 1
         if not generations and runtime is not None:
             next_generation = max(1, runtime.target_generation)
+        if (
+            runtime is not None
+            and runtime.committed_generation is not None
+            and runtime.target_generation == runtime.committed_generation
+            and runtime.reconcile_state == RuntimeReconcileState.STABLE
+            and policy.get("project_generation") == runtime.committed_generation
+        ):
+            committed = by_number.get(runtime.committed_generation)
+            if (
+                committed is not None
+                and committed.state is RuntimeGenerationState.COMMITTED
+            ):
+                committed_candidate = build_runtime_generation_snapshot(
+                    entry,
+                    desired_config_row=config,
+                    policy_row=policy,
+                    generation=runtime.committed_generation,
+                    core_catalog=self._core_catalog,
+                )
+                if self._same_material(committed.snapshot, committed_candidate):
+                    return None
         desired = build_runtime_generation_snapshot(
             entry,
             desired_config_row=config,

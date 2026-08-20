@@ -1733,13 +1733,58 @@ def bootstrap_first_party_plugins(
             existing = repository.get_package_version(descriptor.plugin_id, descriptor.version)
             if existing is not None:
                 if (
-                    existing.package_sha256 != descriptor.package_sha256
+                    existing.plugin_id != descriptor.plugin_id
+                    or existing.version != descriptor.version
+                    or existing.package_sha256 != descriptor.package_sha256
                     or existing.manifest_sha256 != descriptor.manifest_sha256
+                    or existing.trust_source != descriptor.trust_source
+                    or canonical_json_bytes(existing.manifest)
+                    != canonical_json_bytes(descriptor.manifest)
                     or existing.install_root is None
                 ):
                     raise PluginPackageError(
                         f"existing first-party package is stale or not materialized: {descriptor.plugin_id}"
                     )
+                install_root = Path(existing.install_root)
+                if not install_root.exists() and not install_root.is_symlink():
+                    if (
+                        descriptor.trust_source
+                        != PluginTrustSource.ED25519_FIRST_PARTY
+                        or package_materializer is None
+                    ):
+                        raise PluginPackageError(
+                            "signed first-party package materializer is required to recover "
+                            f"a missing install root: {descriptor.plugin_id}"
+                        )
+                    rebuilt = package_materializer.materialize(descriptor)
+                    try:
+                        persisted_metadata = copy.deepcopy(dict(existing.install_metadata))
+                        rebuilt_metadata = copy.deepcopy(dict(rebuilt.install_metadata))
+                        persisted_metadata["install_root"] = existing.install_root
+                        rebuilt_metadata["install_root"] = rebuilt.install_root
+                        if (
+                            existing.install_metadata.get("install_root")
+                            not in {None, existing.install_root}
+                            or rebuilt.plugin_id != existing.plugin_id
+                            or rebuilt.version != existing.version
+                            or rebuilt.package_sha256 != existing.package_sha256
+                            or rebuilt.manifest_sha256 != existing.manifest_sha256
+                            or rebuilt.trust_source != existing.trust_source
+                            or canonical_json_bytes(rebuilt.manifest)
+                            != canonical_json_bytes(existing.manifest)
+                            or rebuilt.install_root != existing.install_root
+                            or rebuilt_metadata != persisted_metadata
+                        ):
+                            raise PluginPackageError(
+                                "rebuilt first-party install differs from the persisted record: "
+                                f"{descriptor.plugin_id}"
+                            )
+                    except Exception:
+                        package_materializer.discard(rebuilt)
+                        raise
+                    newly_materialized.append(rebuilt)
+                # Recovery proves the persisted filesystem material again; the
+                # immutable database record remains the bootstrap authority.
                 versions.append(existing)
                 continue
             if descriptor.install_root is None:

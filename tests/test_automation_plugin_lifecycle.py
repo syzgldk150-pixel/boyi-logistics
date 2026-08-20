@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from Crypto.PublicKey import ECC
 
+import agent.automation_plugins.first_party as first_party_module
 import agent.automation_plugins.storage as plugin_storage
 from agent.automation_plugins.errors import (
     PluginConflictError,
@@ -21,6 +22,7 @@ from agent.automation_plugins.errors import (
 from agent.automation_plugins.execution import FilesystemPluginIntegrityVerifier
 from agent.automation_plugins.first_party import (
     SignedFirstPartyPackageProvider,
+    bootstrap_first_party_plugins,
     resolve_first_party_manifests,
 )
 from agent.automation_plugins.lifecycle import AutomationPluginService
@@ -31,6 +33,7 @@ from agent.automation_plugins.manifest import (
 from agent.automation_plugins.models import (
     ExecutionBlock,
     ExecutionBlockKind,
+    FirstPartyInstanceSeed,
     PluginInstanceRecord,
     PluginProjectState,
     PluginTrustSource,
@@ -44,7 +47,10 @@ from agent.automation_plugins.package import (
     build_signed_plugin_zip,
     verify_signed_plugin_zip,
 )
-from agent.automation_plugins.ports import HardUninstallPreparation
+from agent.automation_plugins.ports import (
+    BootstrapPersistenceResult,
+    HardUninstallPreparation,
+)
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
 from agent.automation_plugins.storage import FilesystemPluginStorage, LockedVirtualEnvironmentBuilder
 from agent.tool_registry import ToolRegistry
@@ -433,6 +439,149 @@ def test_signed_first_party_materialization_copies_exact_archive_out_of_release(
         archive_relative,
         expected_sha256=verified.package_sha256,
     ) == package
+
+
+def _signed_existing_bootstrap_fixture(tmp_path: Path):
+    package, trust = _uploaded_package()
+    verified = verify_signed_plugin_zip(package, verifier=trust)
+    storage = FilesystemPluginStorage(tmp_path / "installed")
+    provider = SignedFirstPartyPackageProvider(
+        artifact_root=tmp_path / "release-artifacts",
+        signature_verifier=trust,
+        storage=storage,
+        environments=LockedVirtualEnvironmentBuilder(),
+    )
+    provider._verified[(verified.manifest.plugin_id, verified.manifest.version)] = (  # noqa: SLF001
+        verified
+    )
+    descriptor = PluginVersionRecord(
+        plugin_id=verified.manifest.plugin_id,
+        version=verified.manifest.version,
+        package_sha256=verified.package_sha256,
+        manifest_sha256=verified.manifest_sha256,
+        manifest=verified.manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+        install_metadata={"signing_key_id": verified.signing_key_id},
+    )
+    materialized = provider.materialize(descriptor)
+    persisted = replace(
+        materialized,
+        install_metadata={
+            **dict(materialized.install_metadata),
+            "install_root": materialized.install_root,
+        },
+    )
+    return package, verified, storage, provider, descriptor, persisted
+
+
+def _single_plugin_bootstrap_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    descriptor: PluginVersionRecord,
+) -> FirstPartyInstanceSeed:
+    seed = FirstPartyInstanceSeed(
+        automation_id="scan_codes",
+        plugin_id=descriptor.plugin_id,
+        version=descriptor.version,
+        display_name="scan",
+        allowed_entrypoints=("console",),
+    )
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_plugin_ids",
+        lambda: frozenset({descriptor.plugin_id}),
+    )
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_instance_seeds",
+        lambda: (seed,),
+    )
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_automation_ids",
+        lambda: frozenset({seed.automation_id}),
+    )
+    return seed
+
+
+def test_bootstrap_rebuilds_exact_missing_signed_root_and_keeps_database_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package, verified, storage, provider, descriptor, persisted = (
+        _signed_existing_bootstrap_fixture(tmp_path)
+    )
+    persisted_before = copy.deepcopy(persisted)
+    expected_root = Path(str(persisted.install_root))
+    storage.remove_version_root(expected_root)
+    monkeypatch.setattr(provider, "load_versions", lambda **_kwargs: (descriptor,))
+    seed = _single_plugin_bootstrap_scope(monkeypatch, descriptor)
+
+    class Repository:
+        def get_package_version(self, _plugin_id, _version):
+            return persisted
+
+        def bootstrap_missing(self, versions, instances, *, release_sha):
+            assert versions[0] is persisted
+            assert instances == (seed,)
+            assert release_sha == "b" * 40
+            return BootstrapPersistenceResult(created=(), existing=(seed.automation_id,))
+
+    result = bootstrap_first_party_plugins(
+        Repository(),
+        core_catalog=ToolRegistry(),
+        current_release_sha="b" * 40,
+        expected_release_sha="b" * 40,
+        package_provider=provider,
+    )
+
+    assert result.ok
+    assert persisted == persisted_before
+    assert expected_root.is_dir()
+    assert storage.read_verified_archive(
+        expected_root,
+        str(persisted.install_metadata["archive_relative"]),
+        expected_sha256=verified.package_sha256,
+    ) == package
+
+
+def test_bootstrap_discards_rebuild_when_persisted_install_metadata_differs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, storage, provider, descriptor, persisted = (
+        _signed_existing_bootstrap_fixture(tmp_path)
+    )
+    expected_root = Path(str(persisted.install_root))
+    storage.remove_version_root(expected_root)
+    persisted = replace(
+        persisted,
+        install_metadata={
+            **dict(persisted.install_metadata),
+            "python_relative": "venv/bin/different-python",
+        },
+    )
+    monkeypatch.setattr(provider, "load_versions", lambda **_kwargs: (descriptor,))
+    _single_plugin_bootstrap_scope(monkeypatch, descriptor)
+
+    class Repository:
+        def get_package_version(self, _plugin_id, _version):
+            return persisted
+
+        def bootstrap_missing(self, *_args, **_kwargs):
+            raise AssertionError("metadata drift must fail before repository bootstrap")
+
+    result = bootstrap_first_party_plugins(
+        Repository(),
+        core_catalog=ToolRegistry(),
+        current_release_sha="b" * 40,
+        expected_release_sha="b" * 40,
+        package_provider=provider,
+    )
+
+    assert not result.ok
+    assert "rebuilt first-party install differs" in result.rejected["*"]
+    assert not expected_root.exists()
 
 
 def test_hard_uninstall_waits_for_exact_cleanup_ack_and_deletes_db_before_fs(
