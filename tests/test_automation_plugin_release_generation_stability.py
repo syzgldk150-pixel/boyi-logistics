@@ -3,10 +3,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import uuid
-from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import pytest
 
@@ -117,6 +116,40 @@ class _ConfigurationRepository:
         return self.configurations.get(automation_id)
 
 
+class _DesiredConfigRows:
+    def __init__(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
+        self._rows = rows
+
+    def get_project_config(self, automation_id: str) -> dict[str, Any] | None:
+        row = self._rows.get(automation_id)
+        return copy.deepcopy(dict(row)) if row is not None else None
+
+
+class _DesiredPolicyRows:
+    def __init__(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
+        self._rows = rows
+
+    def get_policy(self, automation_id: str) -> dict[str, Any] | None:
+        row = self._rows.get(automation_id)
+        return copy.deepcopy(dict(row)) if row is not None else None
+
+
+class _DesiredStateUnitOfWork:
+    def __init__(
+        self,
+        configs: Mapping[str, Mapping[str, Any]],
+        policies: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        self.automation_plugins = _DesiredConfigRows(configs)
+        self.automation_projects = _DesiredPolicyRows(policies)
+
+    def __enter__(self) -> _DesiredStateUnitOfWork:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
 class _DesiredStateRepository:
     def __init__(
         self,
@@ -126,20 +159,8 @@ class _DesiredStateRepository:
         self._configs = configs
         self._policies = policies
 
-    @contextmanager
-    def unit_of_work(self) -> Iterator[SimpleNamespace]:
-        yield SimpleNamespace(
-            automation_plugins=SimpleNamespace(
-                get_project_config=lambda automation_id: copy.deepcopy(
-                    self._configs.get(automation_id)
-                )
-            ),
-            automation_projects=SimpleNamespace(
-                get_policy=lambda automation_id: copy.deepcopy(
-                    self._policies.get(automation_id)
-                )
-            ),
-        )
+    def unit_of_work(self) -> _DesiredStateUnitOfWork:
+        return _DesiredStateUnitOfWork(self._configs, self._policies)
 
 
 class _RuntimeRepository:
@@ -734,9 +755,11 @@ def _build_release_world() -> SimpleNamespace:
         accounts=accounts,
         resources=resources,
         project_repository=project_repository,
+        configurations=configurations,
         catalog=catalog,
         desired_rows=desired_rows,
         policy_rows=policy_rows,
+        orchestration=_DesiredStateRepository(desired_rows, policy_rows),
         snapshots=snapshots,
         runtime=runtime,
         binding_resolver=binding_resolver,
@@ -777,10 +800,7 @@ def _reconcile_world(world: SimpleNamespace) -> dict[str, Any]:
 
 def _target_service(world: SimpleNamespace) -> MySQLRuntimeTargetService:
     return MySQLRuntimeTargetService(
-        orchestration_repository=_DesiredStateRepository(
-            world.desired_rows,
-            world.policy_rows,
-        ),
+        orchestration_repository=world.orchestration,
         catalog=world.catalog,
         core_catalog=world.core,
         runtime_repository=world.runtime,
@@ -864,20 +884,151 @@ def test_release_generation_commits_all_instances_and_resolves_all_trusted_route
     assert sum("r7" in plugin_id for plugin_id in world.manifests) == 0
 
 
-def test_restart_reconcile_reuses_identical_committed_generations() -> None:
+def test_second_release_reconcile_reuses_identical_committed_generations() -> None:
     world = _build_release_world()
     _reconcile_world(world)
     generations_before = copy.deepcopy(world.runtime.generations)
     runtimes_before = copy.deepcopy(world.runtime.runtimes)
+    install_roots_before = {
+        automation_id: record.snapshot.execution_metadata["runtime_descriptor"][
+            "install_metadata"
+        ]["install_root"]
+        for (automation_id, generation), record in world.runtime.generations.items()
+        if generation == 1
+    }
+    assert all(
+        policy["project_generation"] == 1
+        for policy in world.policy_rows.values()
+    )
 
     assert _target_service(world).reconcile_all() == ()
 
     assert world.runtime.generations == generations_before
     assert world.runtime.runtimes == runtimes_before
-    assert all(generation == 1 for _automation_id, generation in generations_before)
+    assert {
+        automation_id: record.snapshot.execution_metadata["runtime_descriptor"][
+            "install_metadata"
+        ]["install_root"]
+        for (automation_id, generation), record in world.runtime.generations.items()
+        if generation == 1
+    } == install_roots_before
+    assert {
+        generation
+        for automation_id, generation in world.runtime.generations
+        if automation_id in world.expected_automation_ids
+    } == {1}
 
 
-def test_stable_material_drift_requires_forward_policy_binding() -> None:
+@pytest.mark.parametrize(
+    ("target_generation", "reconcile_state"),
+    (
+        (1, RuntimeReconcileState.STABLE),
+        (2, RuntimeReconcileState.PREPARING),
+    ),
+    ids=("stable-forward-policy", "staged-target"),
+)
+def test_forward_policy_reconciles_exact_next_generation(
+    target_generation: int,
+    reconcile_state: RuntimeReconcileState,
+) -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrive_list"
+    world.policy_rows[automation_id] = {
+        **world.policy_rows[automation_id],
+        "project_generation": 2,
+        "version": 2,
+    }
+    runtime = world.runtime.runtimes[automation_id]
+    world.runtime.runtimes[automation_id] = replace(
+        runtime,
+        target_generation=target_generation,
+        reconcile_state=reconcile_state,
+        record_version=runtime.record_version + 1,
+    )
+    project = world.project_repository.projects[automation_id]
+    world.project_repository.projects[automation_id] = replace(
+        project,
+        target_generation=target_generation,
+        reconcile_state=reconcile_state,
+        record_version=project.record_version + 1,
+    )
+
+    result = _target_service(world).reconcile_project(automation_id)
+
+    assert result.target_generation == 2
+    assert result.committed_generation == 2
+    assert world.runtime.get_generation(automation_id, 2).state is (
+        RuntimeGenerationState.COMMITTED
+    )
+    assert world.runtime.get_project_runtime(automation_id).reconcile_state is (
+        RuntimeReconcileState.STABLE
+    )
+
+
+def test_saved_configuration_material_reconciles_and_commits_next_generation() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrive_list"
+    config = {"dry_run": True}
+    compiled = copy.deepcopy(
+        world.desired_rows[automation_id]["compiled_invocations_json"]
+    )
+    for invocation in compiled.values():
+        invocation["arguments"] = {"dry_run": True}
+    row = world.desired_rows[automation_id]
+    row.update(
+        {
+            "config_json": config,
+            "config_sha256": _sha(config),
+            "compiled_invocations_json": compiled,
+            "compiled_invocations_sha256": _sha(compiled),
+            "config_version": 3,
+        }
+    )
+    current_config = world.configurations[automation_id]
+    world.configurations[automation_id] = replace(
+        current_config,
+        config=config,
+        config_version=3,
+        config_sha256=_sha(config),
+    )
+    world.policy_rows[automation_id] = {
+        **world.policy_rows[automation_id],
+        "project_generation": 2,
+        "project_configuration_version": 3,
+        "version": 2,
+    }
+    runtime = world.runtime.runtimes[automation_id]
+    world.runtime.runtimes[automation_id] = replace(
+        runtime,
+        target_generation=2,
+        reconcile_state=RuntimeReconcileState.PREPARING,
+        record_version=runtime.record_version + 1,
+    )
+    project = world.project_repository.projects[automation_id]
+    world.project_repository.projects[automation_id] = replace(
+        project,
+        target_generation=2,
+        reconcile_state=RuntimeReconcileState.PREPARING,
+        record_version=project.record_version + 1,
+    )
+
+    result = _target_service(world).reconcile_project(automation_id)
+
+    assert result.target_generation == 2
+    assert result.committed_generation == 2
+    committed = world.runtime.get_generation(automation_id, 2)
+    assert committed is not None
+    assert committed.state is RuntimeGenerationState.COMMITTED
+    assert committed.snapshot.project_config_sha256 == _sha(config)
+    assert committed.snapshot.execution_metadata["project_config_version"] == 3
+    assert world.runtime.get_generation(automation_id, 1).state is (
+        RuntimeGenerationState.DISPOSED
+    )
+
+
+def test_stable_material_drift_requires_next_generation_policy_binding() -> None:
     world = _build_release_world()
     _reconcile_world(world)
     automation_id = "arrive_list"
@@ -890,21 +1041,41 @@ def test_stable_material_drift_requires_forward_policy_binding() -> None:
 
     assert raised.value.code == "PLUGIN_POLICY_GENERATION_MISMATCH"
     assert world.runtime.get_generation(automation_id, 2) is None
+    runtime = world.runtime.get_project_runtime(automation_id)
+    assert runtime is not None
+    assert runtime.committed_generation == 1
+    assert runtime.target_generation == 1
+    assert runtime.reconcile_state is RuntimeReconcileState.STABLE
 
 
-def test_startup_reconcile_keeps_stable_generation_for_pending_policy_binding() -> None:
+def test_stable_pointer_requires_a_committed_generation_record() -> None:
     world = _build_release_world()
     _reconcile_world(world)
     automation_id = "arrive_list"
-    row = world.desired_rows[automation_id]
-    row["config_json"] = {**row["config_json"], "uncommitted_drift": True}
-    row["config_sha256"] = _sha(row["config_json"])
+    committed = world.runtime.get_generation(automation_id, 1)
+    assert committed is not None
+    world.runtime.generations[(automation_id, 1)] = replace(
+        committed,
+        state=RuntimeGenerationState.DISPOSED,
+    )
 
-    assert _target_service(world).reconcile_all() == ()
-    runtime = world.runtime.get_project_runtime(automation_id)
-    assert runtime is not None
-    assert runtime.reconcile_state is RuntimeReconcileState.STABLE
-    assert runtime.committed_generation == 1
+    with pytest.raises(PluginConflictError) as raised:
+        _target_service(world).reconcile_project(automation_id)
+
+    assert raised.value.code == "RUNTIME_COMMIT_INCONSISTENT"
+    assert world.runtime.get_generation(automation_id, 2) is None
+
+
+def test_stable_policy_bound_beyond_next_generation_fails_closed() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrive_list"
+    world.policy_rows[automation_id]["project_generation"] = 3
+
+    with pytest.raises(PluginConflictError) as raised:
+        _target_service(world).reconcile_project(automation_id)
+
+    assert raised.value.code == "PLUGIN_POLICY_GENERATION_MISMATCH"
     assert world.runtime.get_generation(automation_id, 2) is None
 
 
