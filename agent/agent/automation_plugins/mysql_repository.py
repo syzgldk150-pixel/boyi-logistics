@@ -53,6 +53,7 @@ from shared.automation_project_manifest import (
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
 _MIGRATION_ACTOR_ROLE = "migration_authority"
+_REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN"
 _PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO"
 
 
@@ -490,7 +491,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 uow.automation_projects.update_policy(
                     automation_id,
                     expected_version=int(policy.get("version") or 0),
-                    mode=_PROJECT_FULL_AUTO,
+                    mode=_REQUIRE_EACH_RUN,
                     contract_hash=None,
                     contract_snapshot=None,
                     tool_contract_hash=None,
@@ -507,7 +508,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         "automation_id": automation_id,
                         "request_id": request_id,
                         "from_mode": from_mode,
-                        "to_mode": _PROJECT_FULL_AUTO,
+                        "to_mode": _REQUIRE_EACH_RUN,
                         "contract_hash": None,
                         "contract_snapshot_json": None,
                         "tool_contract_hash": None,
