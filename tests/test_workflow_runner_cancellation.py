@@ -365,6 +365,28 @@ def test_cancel_request_is_checked_before_failed_step_commit():
     assert repository.work_item["status"] == "CANCELLED"
 
 
+def test_waiting_approval_validation_failure_releases_to_needs_clarification():
+    repository = _Repository()
+    repository.run["status"] = RunStatus.WAITING_APPROVAL.value
+    repository.work_item["status"] = "WAITING_APPROVAL"
+    runner = _runner(repository, {})
+
+    runner._fail_claimed(
+        repository.run["run_id"],
+        OrchestrationError(
+            "INVALID_TOOL_ARGUMENTS",
+            "Persisted arguments no longer match the tool schema",
+            details={"status": RunStatus.NEEDS_CLARIFICATION.value},
+        ),
+    )
+
+    assert repository.run["status"] == RunStatus.NEEDS_CLARIFICATION.value
+    assert repository.run["worker_id"] is None
+    assert repository.run["next_attempt_at"] is None
+    assert repository.work_item["status"] == "NEEDS_CLARIFICATION"
+    assert repository.commits == 1
+
+
 def test_forged_execution_context_cannot_override_command_identity_during_recovery_and_execute():
     repository = _Repository()
     repository.step = {

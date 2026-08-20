@@ -245,7 +245,12 @@ WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
         {WorkItemStatus.OPEN, WorkItemStatus.IN_PROGRESS, WorkItemStatus.CANCELLED}
     ),
     WorkItemStatus.WAITING_APPROVAL: frozenset(
-        {WorkItemStatus.OPEN, WorkItemStatus.IN_PROGRESS, WorkItemStatus.CANCELLED}
+        {
+            WorkItemStatus.OPEN,
+            WorkItemStatus.IN_PROGRESS,
+            WorkItemStatus.NEEDS_CLARIFICATION,
+            WorkItemStatus.CANCELLED,
+        }
     ),
     WorkItemStatus.BLOCKED_LOGIN: frozenset(
         {WorkItemStatus.OPEN, WorkItemStatus.IN_PROGRESS, WorkItemStatus.CANCELLED}
