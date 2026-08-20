@@ -924,6 +924,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         successful = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=(recovery); }
             check_control_plane_release_manifest() { events+=(manifest); }
@@ -940,13 +941,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, successful.returncode, successful.stderr)
         self.assertEqual(
-            "identity:recovery_transport recovery identity:full manifest activation",
+            "delivery_diagnostic identity:recovery_transport recovery identity:full manifest activation",
             successful.stdout.strip(),
         )
 
         failed = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=(recovery); return 1; }
             check_control_plane_release_manifest() { events+=(manifest); }
@@ -963,12 +965,13 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, failed.returncode, failed.stderr)
         self.assertEqual(
-            "identity:recovery_transport recovery rollback", failed.stdout.strip()
+            "delivery_diagnostic identity:recovery_transport recovery rollback", failed.stdout.strip()
         )
 
         auth_failure = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
             check_control_plane_release_manifest() { events+=(manifest); }
@@ -980,7 +983,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, auth_failure.returncode, auth_failure.stderr)
         self.assertEqual(
-            "identity:recovery_transport recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
+            "delivery_diagnostic identity:recovery_transport recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
             "identity:full manifest",
             auth_failure.stdout.strip(),
         )
