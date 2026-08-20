@@ -259,6 +259,16 @@ class AutomationPluginManagementService:
                 "generation diagnostic is not available for this automation action",
                 code="PLUGIN_RECOVERY_SCOPE_INVALID",
             )
+        lease_id = ""
+        lease_generation: int | None = None
+        if entry.reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE:
+            identity = self._targets.current_unknown_write_identity(
+                _DELIVERY_STATUS_AUTOMATION_ID
+            )
+            lease_id = str(identity.get("lease_id") or "")
+            lease_generation = identity.get("generation")
+            if not lease_id or type(lease_generation) is not int:
+                raise PluginConflictError("delivery unknown write identity is unavailable")
         reconcile_state = entry.reconcile_state.value
         if reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE.value:
             lease_reason = "WRITE_OUTCOME_UNKNOWN"
@@ -275,6 +285,8 @@ class AutomationPluginManagementService:
             "committed_generation": entry.committed_generation,
             "reconcile_state": reconcile_state,
             "lease_reason": lease_reason,
+            "lease_id": lease_id,
+            "lease_generation": lease_generation,
         }
 
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:

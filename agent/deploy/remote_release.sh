@@ -2225,9 +2225,9 @@ try:
  v=dotenv_values(os.environ["BOYI_IDENTITY_ENV_FILE"]); t=str(v.get("AGENT_INTERNAL_API_TOKEN") or ""); s=str(v.get("CONSOLE_AGENT_SIGNING_SECRET") or ""); validate_service_identity_secrets(internal_api_token=t,console_signing_secret=s); p="/internal/v1/automation/instances/delivery_status/generation/diagnostic"; h=build_console_identity_headers(secret=s,method="GET",request_target=p,body=b"",principal={"actor_type":"console_admin","actor_id":"release-delivery-diagnostic","roles":["admin","super_admin"],"display_name":"Release delivery diagnostic","authenticated_by":"mysql_admin_session"},nonce=secrets.token_urlsafe(24)); h["X-Agent-Internal-Token"]=t
  with urlopen(Request("http://127.0.0.1:9000"+p,headers=h,method="GET"),timeout=20) as r: x=json.loads(r.read().decode())
  d=x.get("data") if isinstance(x,dict) else None
- if r.status!=200 or x.get("ok") is not True or not isinstance(d,dict) or set(d)!={"automation_id","target_generation","committed_generation","reconcile_state","lease_reason"} or d.get("automation_id")!="delivery_status" or d.get("lease_reason") not in {"WRITE_OUTCOME_UNKNOWN","PREWRITE_OR_CONFIGURATION_FAILURE","NO_BLOCKED_WRITE_LEASE"}: raise ValueError()
+ if r.status!=200 or x.get("ok") is not True or not isinstance(d,dict) or set(d)!={"automation_id","target_generation","committed_generation","reconcile_state","lease_reason","lease_id","lease_generation"} or d.get("automation_id")!="delivery_status" or d.get("lease_reason") not in {"WRITE_OUTCOME_UNKNOWN","PREWRITE_OR_CONFIGURATION_FAILURE","NO_BLOCKED_WRITE_LEASE"}: raise ValueError()
 except Exception: print("delivery_status_generation_diagnostic=failed",file=sys.stderr); raise SystemExit(1)
-print("delivery_status_generation_diagnostic=ok lease_reason="+d["lease_reason"]+" reconcile_state="+str(d["reconcile_state"]))
+print("delivery_status_generation_diagnostic=ok lease_reason="+d["lease_reason"]+" reconcile_state="+str(d["reconcile_state"])+" lease_generation="+str(d["lease_generation"])+" lease_id="+d["lease_id"])
 PY
 }
 

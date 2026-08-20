@@ -933,6 +933,9 @@ class MySQLRuntimeTargetService:
             actor_role=actor_role,
         )
 
+    def current_unknown_write_identity(self, automation_id: str) -> dict[str, Any]:
+        return self._runtime.find_current_unknown_generation_write(automation_id)
+
     def reconcile_all(self) -> tuple[object, ...]:
         results: list[object] = []
         for entry in sorted(self._catalog.list(), key=lambda item: item.automation_id):

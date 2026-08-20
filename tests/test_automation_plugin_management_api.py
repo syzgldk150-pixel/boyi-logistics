@@ -134,6 +134,8 @@ class _ApiService:
             "committed_generation": 7,
             "reconcile_state": "BLOCKED_UNKNOWN_WRITE",
             "lease_reason": "WRITE_OUTCOME_UNKNOWN",
+            "lease_id": "11111111-1111-1111-1111-111111111111",
+            "lease_generation": 7,
         }
 
 
