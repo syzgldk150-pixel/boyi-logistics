@@ -585,6 +585,40 @@ def test_invalid_output_after_write_launch_is_outcome_unknown(tmp_path: Path) ->
     assert leases.released[0][1] == RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
 
 
+@pytest.mark.parametrize("error_code", ("AUTH_REQUIRED", "AUTH_PENDING_CODE"))
+def test_explicit_prewrite_session_failure_does_not_block_generation(
+    tmp_path: Path,
+    error_code: str,
+) -> None:
+    capability = _capability(tmp_path)
+
+    outcome = PluginExecutionRouter._lease_outcome(
+        capability,
+        {
+            "status": "FAILED",
+            "error": {"code": error_code},
+        },
+        process_launched=True,
+    )
+
+    assert outcome is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+
+
+def test_explicit_unknown_write_stays_blocked_after_plugin_launch(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+
+    outcome = PluginExecutionRouter._lease_outcome(
+        capability,
+        {
+            "status": "FAILED",
+            "error": {"code": "WRITE_OUTCOME_UNKNOWN"},
+        },
+        process_launched=True,
+    )
+
+    assert outcome is RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+
+
 def test_plugin_catalog_never_exposes_project_actions_to_llm() -> None:
     from agent.automation_plugins.catalog import PluginCatalog
 

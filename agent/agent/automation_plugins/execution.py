@@ -41,6 +41,7 @@ MAX_PLUGIN_OUTPUT_BYTES = 10 * 1024 * 1024
 MAX_PLUGIN_STDERR_BYTES = 1024 * 1024
 _WRITE_TYPES = frozenset({"internal_projection_write", "external_write", "financial_write", "destructive"})
 _FORBIDDEN_ARGUMENT_TOKENS = ("password", "cookie", "credential", "secret", "token")
+_PREWRITE_SESSION_FAILURE_CODES = frozenset({"AUTH_REQUIRED", "AUTH_PENDING_CODE"})
 
 
 class FilesystemPluginIntegrityVerifier:
@@ -296,13 +297,19 @@ class PluginExecutionRouter:
         *,
         process_launched: bool,
     ) -> RuntimeLeaseOutcome:
-        if result.get("error_code") == "WRITE_OUTCOME_UNKNOWN":
+        error_code = str(result.get("error_code") or "").upper()
+        nested_error = result.get("error")
+        if not error_code and isinstance(nested_error, Mapping):
+            error_code = str(nested_error.get("code") or "").upper()
+        if error_code == "WRITE_OUTCOME_UNKNOWN":
             return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
         process_success = result.get("success") is True or str(result.get("status") or "").upper() == "SUCCESS"
         if process_success:
             if capability.get("operation_type") in _WRITE_TYPES:
                 return RuntimeLeaseOutcome.VERIFYING
             return RuntimeLeaseOutcome.SUCCEEDED
+        if error_code in _PREWRITE_SESSION_FAILURE_CODES:
+            return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         if capability.get("operation_type") in _WRITE_TYPES and process_launched:
             return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
         return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
