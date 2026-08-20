@@ -38,6 +38,27 @@ def _iso_datetime(value: object) -> str:
     return normalized.astimezone(timezone.utc).isoformat()
 
 
+def classify_arrival_stats_recovery_readback(
+    evidence: Mapping[str, object],
+) -> str:
+    """Classify only the closed, safe readback contract for one recovery."""
+
+    expected = {
+        "arrival_stat_runs",
+        "arrival_stat_items",
+        "feishu_rows_created",
+    }
+    if set(evidence) != expected:
+        raise ValueError("arrival statistics recovery readback is incomplete")
+    values: list[int] = []
+    for field in sorted(expected):
+        value = evidence.get(field)
+        if type(value) is not int or value < 0:
+            raise ValueError("arrival statistics recovery readback count is invalid")
+        values.append(value)
+    return "NOT_APPLIED" if not any(values) else "WRITE_OUTCOME_UNKNOWN"
+
+
 class AutomationPluginManagementService:
     """Keep HTTP DTO handling outside lifecycle/configuration domain services."""
 
@@ -171,6 +192,47 @@ class AutomationPluginManagementService:
         projection["resources"] = sorted(resources, key=lambda item: item["resource_id"])
         projection["resource_pool_available"] = resource_pool_available
         return projection
+
+    def recover_arrival_stats_not_applied(
+        self,
+        automation_id: str,
+        *,
+        generation: int,
+        lease_id: str,
+        evidence_sha256: str,
+        readback: Mapping[str, object],
+        request_id: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        if self._catalog.require(automation_id).plugin_id != "sync_arrival_stats":
+            raise PluginConflictError(
+                "readback recovery is not available for this automation action",
+                code="PLUGIN_RECOVERY_SCOPE_INVALID",
+            )
+        if not _SHA256_RE.fullmatch(str(evidence_sha256 or "").lower()):
+            raise ValueError("arrival statistics recovery evidence digest is invalid")
+        outcome = classify_arrival_stats_recovery_readback(readback)
+        if outcome != "NOT_APPLIED":
+            raise PluginConflictError(
+                "arrival statistics write outcome remains unknown",
+                code="WRITE_OUTCOME_UNKNOWN",
+            )
+        self._targets.resolve_unknown_write_not_applied(
+            automation_id=automation_id,
+            generation=generation,
+            lease_id=lease_id,
+            evidence_sha256=str(evidence_sha256).lower(),
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+        )
+        entry = self._catalog.require(automation_id)
+        return {
+            **self._catalog_instance_projection(entry),
+            "recovery_status": "NOT_APPLIED",
+        }
 
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)

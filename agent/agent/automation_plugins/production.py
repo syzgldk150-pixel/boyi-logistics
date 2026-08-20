@@ -884,6 +884,29 @@ class MySQLRuntimeTargetService:
             request_id=request_id,
         )
 
+    def resolve_unknown_write_not_applied(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        evidence_sha256: str,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Use the shared recovery transaction for a verified empty readback."""
+
+        return self._runtime.resolve_unknown_write_not_applied(
+            automation_id=automation_id,
+            generation=generation,
+            lease_id=lease_id,
+            evidence_sha256=evidence_sha256,
+            request_id=request_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+
     def reconcile_all(self) -> tuple[object, ...]:
         results: list[object] = []
         for entry in sorted(self._catalog.list(), key=lambda item: item.automation_id):
