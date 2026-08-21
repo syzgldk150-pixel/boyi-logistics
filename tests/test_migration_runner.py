@@ -1865,6 +1865,64 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIn("FROM automation_project_generation_leases AS lease", typed_query)
         self.assertIn("lease.outcome='WRITE_OUTCOME_UNKNOWN'", typed_query)
 
+    def test_scheduled_write_window_excludes_unknown_write_with_missing_target(self):
+        typed_row = {
+            "task_id": "arrive_list_0500",
+            "automation_id": "arrive_list",
+            "automation_generation": 3,
+            "tool_name": "automation.arrive_list.run",
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "committed_generation": 3,
+            "target_generation": 4,
+            "project_enabled": 1,
+            "project_state": "UPGRADING",
+            "reconcile_state": "PREPARING",
+            "policy_mode": "PROJECT_FULL_AUTO",
+            "generation_state": "BLOCKED",
+            "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
+            "target_generation_state": None,
+            "target_base_generation": None,
+            "unknown_write_count": 1,
+            "snapshot_json": {
+                "automation_id": "arrive_list",
+                "generation": 3,
+                "execution_metadata": {
+                    "compiled_invocations": {"scheduler": {"arguments": {}}},
+                    "governance_anchor": {"operation_type": "external_write"},
+                },
+            },
+        }
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=[],
+            project_schema_exists=True,
+            project_rows=[typed_row],
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    5,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(0, result)
+        print_mock.assert_called_once_with(
+            "scheduled_write_window=ok checked_schedules=0"
+        )
+
     def test_scheduled_write_window_unknown_write_quarantine_fails_closed(self):
         base = {
             "task_id": "arrive_list_0500",
@@ -1928,6 +1986,16 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 "target wrong base",
                 {"target_base_generation": 2},
                 "TARGET_BASE_RELATION_BEHIND",
+            ),
+            (
+                "target state absent but base present",
+                {"target_generation_state": None},
+                "TARGET_STATE_ABSENT",
+            ),
+            (
+                "target prepared but base absent",
+                {"target_base_generation": None},
+                "TARGET_BASE_RELATION_ABSENT",
             ),
         )
         for label, mutation, expected_diagnostic in mutations:
