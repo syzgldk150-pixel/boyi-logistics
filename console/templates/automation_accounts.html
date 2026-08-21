@@ -93,6 +93,7 @@
         {% set creds = account.credentials or {} %}
         {% set status_value = status.status or '' %}
         {% set challenge_type = status.challenge_type or 'sms' %}
+        {% set has_active_challenge = status_value == 'pending_code' and not account.auto_login_blocked %}
         {% set primary_label = '已停用' if not account.is_active else '先保存凭据' if not account.has_manual_credentials else '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '重新登录' if status_value == 'authenticated' else '立即登录' if account.session_capable else '重新验证' %}
           <tr class="{% if not account.is_active %}is-disabled{% endif %}" data-account-row data-account-system="{{ account.system }}" data-account-id="{{ account.account_id }}" data-account-active="{{ 'true' if account.is_active else 'false' }}" data-account-auto-login="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-blocked="{{ 'true' if account.auto_login_blocked else 'false' }}" data-account-status="{{ status_value }}" data-account-challenge-type="{{ challenge_type }}" data-account-login-kind="{{ account.login_kind or '' }}" data-account-session-capable="{{ 'true' if account.session_capable else 'false' }}" data-account-has-credentials="{{ 'true' if account.has_saved_credentials else 'false' }}" data-account-has-manual-credentials="{{ 'true' if account.has_manual_credentials else 'false' }}"{% if account_filter and account.system != account_filter %} hidden{% endif %}>
             <td>
@@ -225,7 +226,7 @@
                   </details>
                 </div>
                 {% if account.session_capable %}
-                <form class="automation-account-inline-code" action="/automation-accounts/{{ account.account_id }}/submit-code" method="post" data-account-code-form{% if status_value != 'pending_code' %} hidden{% endif %}>
+                <form class="automation-account-inline-code" action="/automation-accounts/{{ account.account_id }}/submit-code" method="post" data-account-code-form{% if not has_active_challenge %} hidden{% endif %}>
                   <div class="automation-account-inline-code-main">
                     <input class="review-input compact-input automation-account-code-input" type="text" name="code" autocomplete="one-time-code" placeholder="{{ '输入图片验证码' if challenge_type == 'image' else '6 位验证码' }}" data-account-code-input>
                     <button class="ghost-btn automation-account-code-submit" type="submit" data-account-code-submit>
@@ -233,8 +234,8 @@
                       提交
                     </button>
                   </div>
-                  <div class="automation-account-captcha" data-account-captcha{% if not (status_value == 'pending_code' and status.captcha_image) %} hidden{% endif %}>
-                    <img src="{{ status.captcha_image or '' }}" alt="验证码" data-account-captcha-image>
+                  <div class="automation-account-captcha" data-account-captcha{% if not (has_active_challenge and status.captcha_image) %} hidden{% endif %}>
+                    <img src="{{ status.captcha_image if has_active_challenge else '' }}" alt="验证码" data-account-captcha-image>
                   </div>
                   <p class="automation-account-inline-error" data-account-inline-error hidden></p>
                 </form>
@@ -667,22 +668,23 @@
     const captcha = row.querySelector("[data-account-captcha]");
     const captchaImage = row.querySelector("[data-account-captcha-image]");
     const pending = status === "pending_code";
-    if (codeForm) codeForm.hidden = !pending;
+    const hasActiveChallenge = pending && row.dataset.accountAutoLoginBlocked !== "true";
+    if (codeForm) codeForm.hidden = !hasActiveChallenge;
     if (codeInput) {
       applyCodeInputMode(codeInput, row);
-      codeInput.disabled = !pending;
-      codeInput.required = pending;
-      if (!pending) codeInput.value = "";
+      codeInput.disabled = !hasActiveChallenge;
+      codeInput.required = hasActiveChallenge;
+      if (!hasActiveChallenge) codeInput.value = "";
     }
     const captchaSrc = String(state.captcha_image || state.captchaImage || "");
-    const showCaptcha = pending && isImageChallenge(row) && !!captchaSrc;
+    const showCaptcha = hasActiveChallenge && isImageChallenge(row) && !!captchaSrc;
     if (captcha) captcha.hidden = !showCaptcha;
     if (captchaImage) {
       if (showCaptcha) captchaImage.src = captchaSrc;
       else captchaImage.removeAttribute("src");
     }
 
-    if (pending && options.focus && codeInput) {
+    if (hasActiveChallenge && options.focus && codeInput) {
       window.requestAnimationFrame(() => {
         codeInput.focus({ preventScroll: true });
         codeInput.select();
@@ -800,7 +802,11 @@
     } finally {
       delete form.dataset.submitting;
       setButtonLoading(submitter, false);
-      if (!isCodeForm && row?.dataset.accountStatus === "pending_code") {
+      if (
+        !isCodeForm
+        && row?.dataset.accountStatus === "pending_code"
+        && row?.dataset.accountAutoLoginBlocked !== "true"
+      ) {
         const input = row.querySelector("[data-account-code-input]");
         if (input) {
           window.requestAnimationFrame(() => {

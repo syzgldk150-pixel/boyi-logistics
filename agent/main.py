@@ -142,6 +142,7 @@ from agent.orchestration.automation_project_api import (
 from agent.orchestration.automation_project_entrypoints import (
     AutomationProjectEntrypoints,
     CommittedAutomationProjectRouteResolver,
+    TrustedDynamicArgumentResolver,
 )
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
@@ -1111,6 +1112,7 @@ async def lifespan(app: FastAPI):
         plugin_runtime.catalog,
         command_gateway=gateway,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
+        dynamic_resolver=TrustedDynamicArgumentResolver(),
         release_hold_provider=scheduler_release_hold_requested,
     )
     if scheduler_release_hold_requested():

@@ -1158,6 +1158,35 @@ def test_bubblewrap_rejects_pyvenv_home_drift(tmp_path: Path) -> None:
         )
 
 
+def test_bubblewrap_accepts_agent_runtime_symlink_recorded_by_nested_venv(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "bwrap"
+    executable.write_text("binary", encoding="utf-8")
+    base_prefix = tmp_path / "base"
+    (base_prefix / "bin").mkdir(parents=True)
+    runtime_prefix = tmp_path / "runtime-real"
+    (runtime_prefix / "bin").mkdir(parents=True)
+    runtime_link = tmp_path / "runtime-link"
+    runtime_link.symlink_to(runtime_prefix, target_is_directory=True)
+    root = tmp_path / "install"
+    (root / "venv" / "bin").mkdir(parents=True)
+    (root / "venv" / "pyvenv.cfg").write_text(
+        f"home = {runtime_link / 'bin'}\n",
+        encoding="utf-8",
+    )
+    sandbox = BubblewrapPluginSandbox(
+        executable,
+        trusted_base_prefix=base_prefix,
+        trusted_runtime_prefix=runtime_link,
+    )
+
+    assert sandbox._base_prefix(  # noqa: SLF001 - security validation boundary
+        root,
+        sandbox._relative("venv/bin/python", "Python"),  # noqa: SLF001
+    ) == base_prefix
+
+
 def test_concurrent_invocation_cancel_is_bound_to_exact_run(tmp_path: Path) -> None:
     capability = _capability(tmp_path)
     leases = _LeaseRepository({"project-a": capability})

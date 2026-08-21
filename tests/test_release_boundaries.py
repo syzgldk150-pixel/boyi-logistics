@@ -742,6 +742,17 @@ def _locked_versions(path: Path) -> dict[str, str]:
 
 
 class ReleaseBoundaryTests(unittest.TestCase):
+    def test_production_policy_service_wires_trusted_dynamic_resolver(self) -> None:
+        source = (REPOSITORY_ROOT / "agent" / "main.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("TrustedDynamicArgumentResolver,", source)
+        self.assertIn(
+            "dynamic_resolver=TrustedDynamicArgumentResolver(),",
+            source,
+        )
+
     @staticmethod
     def _valid_release_environment() -> str:
         release_sha = "b53bdeeed570fbb6557a57518b5d4d73b23b3d57"
