@@ -698,6 +698,39 @@ def test_typed_and_deferred_runtime_contracts_accept_exact_world(preflight):
     )
 
 
+def test_later_release_accepts_exact_unavailable_runtime(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project["reconcile_state"] = "BLOCKED_UNKNOWN_WRITE"
+    project["generation_state"] = "BLOCKED"
+
+    preflight._validate_release_projects_and_tasks(
+        contract,
+        schedules=schedules,
+        backups=backups,
+        projects=projects,
+        expect_initial_production_manifest=False,
+    )
+
+
+def test_initial_release_rejects_unavailable_runtime(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project["reconcile_state"] = "BLOCKED_UNKNOWN_WRITE"
+    project["generation_state"] = "BLOCKED"
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=True,
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     (

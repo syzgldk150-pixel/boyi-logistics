@@ -1066,10 +1066,18 @@ def _validate_release_projects_and_tasks(
     for automation_id in sorted(contract["release_projects"]):
         project = projects[automation_id]
         template = contract["templates"][automation_id]
+        stable_runtime = (
+            project.get("reconcile_state") == "STABLE"
+            and project.get("generation_state") == "COMMITTED"
+        )
+        unavailable_runtime = (
+            not expect_initial_production_manifest
+            and project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+            and project.get("generation_state") == "BLOCKED"
+        )
         if (
             project.get("plugin_id") != template["tool_name"]
             or project.get("project_state") != "ENABLED"
-            or project.get("reconcile_state") != "STABLE"
             or not _boolean(
                 project.get("enabled"),
                 code="AUTOMATION_PROJECT_STATE_INVALID",
@@ -1078,7 +1086,7 @@ def _validate_release_projects_and_tasks(
                 project.get("configured"),
                 code="AUTOMATION_PROJECT_CONFIG_INVALID",
             )
-            or project.get("generation_state") != "COMMITTED"
+            or not (stable_runtime or unavailable_runtime)
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_STATE_INVALID"
