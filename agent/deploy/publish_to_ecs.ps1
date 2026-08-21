@@ -8,10 +8,7 @@ param(
     [string]$AutomationPluginTrustRoot,
     [switch]$SkipRestart,
     [switch]$SkipHealthCheck,
-    [switch]$EmergencyUserAuthorizedScheduledWindowOverride,
-    [switch]$RecoverKnownArrivalStatsUnknownWrite,
-    [switch]$RecoverKnownArrivalStatsAuthFailure,
-    [switch]$RecoverKnownArrivalStatsPrewriteFailure
+    [switch]$EmergencyUserAuthorizedScheduledWindowOverride
 )
 
 $ErrorActionPreference = "Stop"
@@ -542,18 +539,6 @@ try {
     if ($EmergencyUserAuthorizedScheduledWindowOverride) {
         Write-Warning "Emergency scheduled-window override requested: emergency_user_authorized=true"
         $remoteReleaseCommand += " '--emergency-scheduled-window-override=emergency_user_authorized'"
-    }
-    if ($RecoverKnownArrivalStatsUnknownWrite) {
-        Write-Warning "Known arrival_stats unknown-write recovery requested for Run fb077840-a2d0-4e7f-8089-f68c104ab544."
-        $remoteReleaseCommand += " '--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544'"
-    }
-    if ($RecoverKnownArrivalStatsAuthFailure) {
-        Write-Warning "Known arrival_stats auth-failure recovery requested for Run 71510af3-fcf1-461b-9c2e-152665f32f98."
-        $remoteReleaseCommand += " '--recover-known-arrival-stats-auth-failure=71510af3-fcf1-461b-9c2e-152665f32f98'"
-    }
-    if ($RecoverKnownArrivalStatsPrewriteFailure) {
-        Write-Warning "Known arrival_stats prewrite-failure recovery requested for Run 2a86ba4b-5c63-4bf2-93de-f61372d18274."
-        $remoteReleaseCommand += " '--recover-known-arrival-stats-prewrite-failure=2a86ba4b-5c63-4bf2-93de-f61372d18274'"
     }
     Invoke-Remote $remoteReleaseCommand
     $remoteStageCreated = $false

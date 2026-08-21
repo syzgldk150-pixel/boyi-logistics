@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-16
+updated: 2026-08-21
 ---
 
 # 数据库迁移
@@ -93,9 +93,13 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `automation_project_bootstrap_items_018/marker_018`；item 的 `source_snapshot_json` 绑定初始 committed
   generation、配置事件元数据哈希、57 条 typed schedule 与对应旧 grant/退休事件。旧失败尝试留下的空表
   可幂等补列；已有 item/marker 却缺证据列时不可重构授权来源，必须在任何后续写前阻断。
+- `019_automation_generation_lease_run_binding.sql`：为 generation lease 增加可空的
+  `orchestration_run_id` 外键。新调用必须从受信编排上下文写入精确 Run；迁移前遗留 lease 保持
+  `NULL`，禁止根据时间、任务或最近一次 Run 猜测回填。任何未知写恢复必须同时 CAS 匹配项目、代际、
+  lease 和 Run；未绑定或 Run 不一致固定拒绝恢复。
 
 生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `014`，发布器只按
-顺序补执行尚未记录的 `015`、`016`、`017`、`018`。`016`/`017`/`018` 在业务行变更前各自保存
+顺序补执行尚未记录的 `015`、`016`、`017`、`018`、`019`。`016`/`017`/`018` 在业务行变更前各自保存
 完整行备份；远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
 直接阻断，回滚只撤销本次从
 pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
@@ -117,6 +121,6 @@ pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
 CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整
-`014 -> 015 -> 016 -> 017 -> 018` 升级、部分历史、`017`/`018` 恢复后重应用、
+`014 -> 015 -> 016 -> 017 -> 018 -> 019` 升级、部分历史、`017`/`018` 恢复后重应用、
 `--check`、JSON、外键、唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码
 只接受显式 CI 环境变量，不读取项目 `.env`。

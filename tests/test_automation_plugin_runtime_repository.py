@@ -325,6 +325,7 @@ class _LowLevelRuntimeRepository:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
         lease_owner: str,
     ) -> dict[str, Any]:
@@ -337,6 +338,7 @@ class _LowLevelRuntimeRepository:
             "lease_id": lease_id,
             "automation_id": automation_id,
             "generation": expected_generation,
+            "orchestration_run_id": orchestration_run_id,
             "outcome": "RUNNING",
             "acquired_at": datetime.now(timezone.utc),
             "expires_at": expires_at,
@@ -796,6 +798,7 @@ def test_catalog_and_leases_remain_pinned_across_atomic_generation_switch() -> N
         expected_generation=1,
         expected_manifest_sha256=snapshot_v1.manifest_sha256,
         lease_id="lease-v1",
+        orchestration_run_id="11111111-1111-4111-8111-111111111111",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
 
@@ -878,11 +881,13 @@ def test_catalog_and_leases_remain_pinned_across_atomic_generation_switch() -> N
     assert old_lease.runtime_metadata["_plugin_runtime"]["account_bindings"] == {
         str(manifest_v1.account_roles[0]["role"]): "account-A"
     }
+    assert old_lease.orchestration_run_id == "11111111-1111-4111-8111-111111111111"
     new_lease = runtime.acquire_committed_generation(
         "customer-instance",
         expected_generation=2,
         expected_manifest_sha256=snapshot_v2.manifest_sha256,
         lease_id="lease-v2",
+        orchestration_run_id="22222222-2222-4222-8222-222222222222",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
     assert new_lease.runtime_metadata["_plugin_runtime"]["version"] == "2.0.0"
@@ -1013,6 +1018,7 @@ def test_failed_uncommitted_target_keeps_only_committed_capability_available() -
         expected_generation=1,
         expected_manifest_sha256=snapshot_v1.manifest_sha256,
         lease_id="failed-upgrade-old-lease",
+        orchestration_run_id="33333333-3333-4333-8333-333333333333",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
     assert old_lease.runtime_metadata["_plugin_runtime"]["version"] == "1.0.0"

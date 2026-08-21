@@ -16,7 +16,6 @@ from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
 from agent.automation_plugins.configuration import AutomationProjectConfigurationService
 from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
 from agent.automation_plugins.lifecycle import AutomationPluginService
-from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
@@ -37,39 +36,13 @@ from agent.orchestration.models import Actor, ActorType
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DEVICE_KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_KNOWN_ARRIVAL_STATS_RECOVERY_RUN_IDS = frozenset(
-    {
-        "fb077840-a2d0-4e7f-8089-f68c104ab544",
-        "71510af3-fcf1-461b-9c2e-152665f32f98",
-        "2a86ba4b-5c63-4bf2-93de-f61372d18274",
-    }
-)
+
+
 def _iso_datetime(value: object) -> str:
     if not isinstance(value, datetime):
         return ""
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     return normalized.astimezone(timezone.utc).isoformat()
-
-
-def classify_arrival_stats_recovery_readback(
-    evidence: Mapping[str, object],
-) -> str:
-    """Classify only the closed, safe readback contract for one recovery."""
-
-    expected = {
-        "arrival_stat_runs",
-        "arrival_stat_items",
-        "feishu_rows_created",
-    }
-    if set(evidence) != expected:
-        raise ValueError("arrival statistics recovery readback is incomplete")
-    values: list[int] = []
-    for field in sorted(expected):
-        value = evidence.get(field)
-        if type(value) is not int or value < 0:
-            raise ValueError("arrival statistics recovery readback count is invalid")
-        values.append(value)
-    return "NOT_APPLIED" if not any(values) else "WRITE_OUTCOME_UNKNOWN"
 
 
 class AutomationPluginManagementService:
@@ -115,7 +88,7 @@ class AutomationPluginManagementService:
             )
         return "super_admin" if "super_admin" in roles else "admin"
 
-    def _require_mutation_allowed(self, *, known_arrival_stats_recovery: bool = False) -> None:
+    def _require_mutation_allowed(self) -> None:
         """Fail closed while deployment owns the plugin control plane."""
 
         try:
@@ -125,7 +98,7 @@ class AutomationPluginManagementService:
                 "automation plugin release-hold state is unavailable",
                 code="PLUGIN_RELEASE_HOLD_STATE_UNAVAILABLE",
             ) from exc
-        if release_held is not False and not known_arrival_stats_recovery:
+        if release_held is not False:
             raise PluginConflictError(
                 "automation plugin mutations are disabled during release hold",
                 code="PLUGIN_RELEASE_HOLD",
@@ -205,54 +178,6 @@ class AutomationPluginManagementService:
         projection["resources"] = sorted(resources, key=lambda item: item["resource_id"])
         projection["resource_pool_available"] = resource_pool_available
         return projection
-
-    def recover_arrival_stats_not_applied(
-        self,
-        automation_id: str,
-        *,
-        readback: Mapping[str, object],
-        request_id: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        if self._catalog.require(automation_id).plugin_id != "sync_arrival_stats":
-            raise PluginConflictError(
-                "readback recovery is not available for this automation action",
-                code="PLUGIN_RECOVERY_SCOPE_INVALID",
-            )
-        outcome = classify_arrival_stats_recovery_readback(readback)
-        if outcome != "NOT_APPLIED":
-            raise PluginConflictError(
-                "arrival statistics write outcome remains unknown",
-                code="WRITE_OUTCOME_UNKNOWN",
-            )
-        if request_id not in _KNOWN_ARRIVAL_STATS_RECOVERY_RUN_IDS:
-            raise PluginConflictError(
-                "readback recovery is not available for this Run",
-                code="PLUGIN_RECOVERY_SCOPE_INVALID",
-            )
-        self._require_mutation_allowed(known_arrival_stats_recovery=True)
-        evidence_sha256 = hashlib.sha256(
-            canonical_json_bytes(
-                {
-                    "automation_id": automation_id,
-                    "readback": dict(readback),
-                    "recovery_outcome": "NOT_APPLIED",
-                }
-            )
-        ).hexdigest()
-        self._targets.resolve_current_unknown_write_not_applied(
-            automation_id=automation_id,
-            evidence_sha256=evidence_sha256,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role=role,
-        )
-        entry = self._catalog.require(automation_id)
-        return {
-            **self._catalog_instance_projection(entry),
-            "recovery_status": "NOT_APPLIED",
-        }
 
     def delivery_status_generation_diagnostic(self, *, actor: Actor) -> dict[str, Any]:
         """Return the fixed project's closed generation state for recovery triage."""

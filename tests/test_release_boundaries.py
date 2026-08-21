@@ -170,96 +170,6 @@ def _service_identity_smoke_source() -> str:
     return function.split(marker, 1)[1].rsplit("\nPY", 1)[0]
 
 
-def _known_arrival_stats_recovery_source() -> str:
-    release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
-        encoding="utf-8"
-    )
-    function = release.split("recover_known_arrival_stats_unknown_write() {", 1)[1].split(
-        "\nPY\n}",
-        1,
-    )[0]
-    marker = '"${console_python}" - <<\'PY\'\n'
-    return function.split(marker, 1)[1].rsplit("\nPY", 1)[0]
-
-
-def _run_known_arrival_stats_recovery(
-    run_id: str = "fb077840-a2d0-4e7f-8089-f68c104ab544",
-) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
-    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
-    task_tmp_preexisting = task_tmp_root.exists()
-    task_tmp_root.mkdir(exist_ok=True)
-    try:
-        with tempfile.TemporaryDirectory(dir=task_tmp_root) as temporary:
-            temp_root = Path(temporary)
-            (temp_root / "shared").mkdir()
-            (temp_root / "shared" / "__init__.py").write_text("", encoding="utf-8")
-            (temp_root / "dotenv.py").write_text(
-                "def dotenv_values(_path):\n"
-                "    return {\n"
-                "        'AGENT_INTERNAL_API_TOKEN': 'test-internal-token',\n"
-                "        'CONSOLE_AGENT_SIGNING_SECRET': 'test-signing-secret',\n"
-                "    }\n",
-                encoding="utf-8",
-            )
-            (temp_root / "shared" / "service_identity.py").write_text(
-                "def build_console_identity_headers(**_kwargs):\n"
-                "    return {}\n\n"
-                "def validate_service_identity_secrets(**_kwargs):\n"
-                "    return None\n",
-                encoding="utf-8",
-            )
-            capture_path = temp_root / "request.json"
-            (temp_root / "sitecustomize.py").write_text(
-                "import json\n"
-                "import os\n"
-                "import urllib.request\n\n"
-                "class _Response:\n"
-                "    status = 200\n"
-                "    def __enter__(self):\n"
-                "        return self\n"
-                "    def __exit__(self, *_args):\n"
-                "        return False\n"
-                "    def read(self):\n"
-                "        return b'{\\\"ok\\\":true,\\\"data\\\":{\\\"automation_id\\\":\\\"arrival_stats\\\",\\\"recovery_status\\\":\\\"NOT_APPLIED\\\"}}'\n\n"
-                "def _urlopen(request, timeout):\n"
-                "    del timeout\n"
-                "    with open(os.environ['RECOVERY_CAPTURE_PATH'], 'w', encoding='utf-8') as handle:\n"
-                "        json.dump({'url': request.full_url, 'method': request.get_method(), 'body': request.data.decode('utf-8')}, handle)\n"
-                "    return _Response()\n\n"
-                "urllib.request.urlopen = _urlopen\n",
-                encoding="utf-8",
-            )
-            identity_file = temp_root / "identity.env"
-            identity_file.touch()
-            environment = {
-                "PATH": os.environ.get("PATH", ""),
-                "PYTHONPATH": str(temp_root),
-                "BOYI_IDENTITY_ENV_FILE": str(identity_file),
-                "BOYI_DEPLOYED_ROOT": str(temp_root),
-                "BOYI_KNOWN_RECOVERY_RUN_ID": run_id,
-                "RECOVERY_CAPTURE_PATH": str(capture_path),
-            }
-            for name in ("SYSTEMROOT", "WINDIR"):
-                if os.environ.get(name):
-                    environment[name] = os.environ[name]
-            completed = subprocess.run(
-                [sys.executable, "-c", _known_arrival_stats_recovery_source()],
-                cwd=REPOSITORY_ROOT,
-                env=environment,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            captured = json.loads(capture_path.read_text(encoding="utf-8"))
-            return completed, captured
-    finally:
-        if not task_tmp_preexisting:
-            try:
-                task_tmp_root.rmdir()
-            except OSError:
-                pass
-
-
 def _healthy_service_identity_payload() -> dict[str, object]:
     return {
         "ok": True,
@@ -318,11 +228,15 @@ def _reviewed_unknown_write_quarantine_payload() -> dict[str, object]:
     assert isinstance(generations, dict)
     plugins["ok"] = False
     catalog["ok"] = False
-    quarantined_ids = ["arrive_list", "daily_sign", "delivery_status"]
+    quarantined_ids = [
+        "arrival_stats",
+        "arrive_list",
+        "daily_sign",
+        "delivery_status",
+    ]
     catalog["unstable_generations"] = quarantined_ids
     generations["healthy"] = False
     unaffected_ids = [
-        "arrival_stats",
         "clockin_daxiang",
         "clockin_daxiang_s",
         "customer_problems_shadow",
@@ -364,7 +278,6 @@ def _run_service_identity_smoke(
     *,
     response_status: int = 200,
     transport_failures: int = 0,
-    known_arrival_stats_auth_failure_recovery: bool = False,
     smoke_scope: str = "full",
     raw_payload: str | None = None,
     service_identity_source: str | None = None,
@@ -432,9 +345,6 @@ def _run_service_identity_smoke(
                 "BOYI_IDENTITY_ENV_FILE": str(identity_file),
                 "BOYI_DEPLOYED_ROOT": str(temp_root),
                 "BOYI_RELEASE_SHA": "test-release-sha",
-                "BOYI_KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY": (
-                    "1" if known_arrival_stats_auth_failure_recovery else "0"
-                ),
                 "BOYI_SERVICE_IDENTITY_SMOKE_SCOPE": smoke_scope,
                 "SMOKE_TEST_STATUS": str(response_status),
                 "SMOKE_TEST_TRANSPORT_FAILURES": str(transport_failures),
@@ -1137,54 +1047,12 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual("service_identity_smoke=ok", completed.stdout.strip())
         self.assertEqual("", completed.stderr)
 
-    def test_service_identity_recovery_transport_smoke_defers_catalog_gate_only(self):
-        payload = _healthy_service_identity_payload()
-        plugins = payload["data"]["components"]["automation_plugins"]
-        catalog = plugins["catalog"]
-        catalog["ok"] = False
-        catalog["unstable_generations"] = ["arrival_stats"]
-        plugins["ok"] = False
-        plugins["generations"]["healthy"] = False
-
-        allowed = _run_service_identity_smoke(payload, smoke_scope="recovery_transport")
-        self.assertEqual(0, allowed.returncode, allowed.stderr)
-        self.assertEqual(
-            "service_identity_smoke=recovery_transport_ok",
-            allowed.stdout.strip(),
-        )
-        self.assertEqual("", allowed.stderr)
-
-        rejected = _run_service_identity_smoke(payload, smoke_scope="full")
-        self.assertEqual(1, rejected.returncode)
-        self.assertEqual(
-            "service_identity_smoke=failed reason=plugin_catalog_unstable_generations "
-            "diagnostic_automation_ids=arrival_stats\n",
-            rejected.stderr,
-        )
-
-    def test_service_identity_recovery_transport_smoke_keeps_transport_identity_gates(self):
-        payload = _healthy_service_identity_payload()
-        plugins = payload["data"]["components"]["automation_plugins"]
-        catalog = plugins["catalog"]
-        catalog["ok"] = False
-        catalog["unstable_generations"] = ["arrival_stats", "delivery_status"]
-        plugins["ok"] = False
-        plugins["generations"]["healthy"] = False
-
-        payload["data"]["release_sha"] = "different-release-sha"
-        completed = _run_service_identity_smoke(payload, smoke_scope="recovery_transport")
-        self.assertEqual(1, completed.returncode)
-        self.assertEqual(
-            "service_identity_smoke=failed reason=release_sha_mismatch\n",
-            completed.stderr,
-        )
-
-    def test_service_identity_delivery_quarantine_accepts_only_the_scoped_readiness(self):
+    def test_service_identity_reviewed_quarantine_accepts_only_exact_scoped_readiness(self):
         payload = _reviewed_unknown_write_quarantine_payload()
 
         accepted = _run_service_identity_smoke(
             payload,
-            smoke_scope="delivery_unknown_write_quarantine",
+            smoke_scope="reviewed_unknown_write_quarantine",
         )
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertEqual("service_identity_smoke=ok", accepted.stdout.strip())
@@ -1193,7 +1061,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(1, full.returncode)
         self.assertEqual(
             "service_identity_smoke=failed reason=plugin_catalog_unstable_generations "
-            "diagnostic_automation_ids=arrive_list,daily_sign,delivery_status\n",
+            "diagnostic_automation_ids=arrival_stats,arrive_list,daily_sign,delivery_status\n",
             full.stderr,
         )
 
@@ -1205,7 +1073,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         readiness["quarantined_automation_ids"] = ["arrival_stats"]
         rejected = _run_service_identity_smoke(
             broken,
-            smoke_scope="delivery_unknown_write_quarantine",
+            smoke_scope="reviewed_unknown_write_quarantine",
         )
         self.assertEqual(1, rejected.returncode)
         self.assertEqual(
@@ -1213,107 +1081,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
             rejected.stderr,
         )
 
-    def test_post_restart_recovery_is_ordered_and_blocks_activation_on_failure(self):
-        successful = _run_sourced_release_harness(
-            r'''
-            events=()
-            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
-            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
-            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
-            recover_known_arrival_stats_unknown_write() { events+=(recovery); }
-            check_control_plane_release_manifest() { events+=(manifest); }
-            activate_scheduler_after_release() { events+=(activation); }
-            rollback() { events+=(rollback); }
-            KNOWN_ARRIVAL_STATS_RECOVERY=1
-            if check_post_restart_release_gates; then
-              activate_scheduler_after_release
-            else
-              rollback
-            fi
-            printf '%s\n' "${events[*]}"
-            '''
-        )
-        self.assertEqual(0, successful.returncode, successful.stderr)
-        self.assertEqual(
-            "arrival_diagnostic delivery_diagnostic identity:recovery_transport recovery identity:full manifest activation",
-            successful.stdout.strip(),
-        )
-
-        failed = _run_sourced_release_harness(
-            r'''
-            events=()
-            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
-            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
-            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
-            recover_known_arrival_stats_unknown_write() { events+=(recovery); return 1; }
-            check_control_plane_release_manifest() { events+=(manifest); }
-            activate_scheduler_after_release() { events+=(activation); }
-            rollback() { events+=(rollback); }
-            KNOWN_ARRIVAL_STATS_RECOVERY=1
-            if check_post_restart_release_gates; then
-              activate_scheduler_after_release
-            else
-              rollback
-            fi
-            printf '%s\n' "${events[*]}"
-            '''
-        )
-        self.assertEqual(0, failed.returncode, failed.stderr)
-        self.assertEqual(
-            "arrival_diagnostic delivery_diagnostic identity:recovery_transport recovery rollback",
-            failed.stdout.strip(),
-        )
-
-        auth_failure = _run_sourced_release_harness(
-            r'''
-            events=()
-            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
-            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
-            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
-            recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
-            check_control_plane_release_manifest() { events+=(manifest); }
-            KNOWN_ARRIVAL_STATS_RECOVERY=0
-            KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=1
-            check_post_restart_release_gates
-            printf '%s\n' "${events[*]}"
-            '''
-        )
-        self.assertEqual(0, auth_failure.returncode, auth_failure.stderr)
-        self.assertEqual(
-            "arrival_diagnostic delivery_diagnostic identity:recovery_transport "
-            "recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
-            "identity:full manifest",
-            auth_failure.stdout.strip(),
-        )
-
-        prewrite_failure = _run_sourced_release_harness(
-            r'''
-            events=()
-            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
-            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
-            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
-            recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
-            check_control_plane_release_manifest() { events+=(manifest); }
-            KNOWN_ARRIVAL_STATS_RECOVERY=0
-            KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=0
-            KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY=1
-            check_post_restart_release_gates
-            printf '%s\n' "${events[*]}"
-            '''
-        )
-        self.assertEqual(0, prewrite_failure.returncode, prewrite_failure.stderr)
-        self.assertEqual(
-            "arrival_diagnostic delivery_diagnostic identity:recovery_transport "
-            "recovery:2a86ba4b-5c63-4bf2-93de-f61372d18274 "
-            "identity:full manifest",
-            prewrite_failure.stdout.strip(),
-        )
-
-    def test_post_restart_delivery_quarantine_uses_scoped_publisher_gate(self):
+    def test_post_restart_diagnostics_precede_reviewed_quarantine_and_manifest(self):
         completed = _run_sourced_release_harness(
             r'''
             events=()
-            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
+            diagnose_arrival_stats_generation() {
+              ARRIVAL_STATS_UNKNOWN_WRITE_BLOCKED=1
+              events+=(arrival_diagnostic)
+            }
             diagnose_delivery_status_generation() {
               DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=1
               events+=(delivery_diagnostic)
@@ -1328,67 +1103,52 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(
             "arrival_diagnostic delivery_diagnostic "
-            "identity:delivery_unknown_write_quarantine manifest",
+            "identity:reviewed_unknown_write_quarantine manifest",
             completed.stdout.strip(),
         )
 
-    def test_known_recovery_uses_only_the_verified_zero_readback_contract(self):
-        completed, request = _run_known_arrival_stats_recovery()
-
+    def test_post_restart_without_quarantine_uses_full_gate(self):
+        completed = _run_sourced_release_harness(
+            r'''
+            events=()
+            diagnose_arrival_stats_generation() {
+              ARRIVAL_STATS_UNKNOWN_WRITE_BLOCKED=0
+              events+=(arrival_diagnostic)
+            }
+            diagnose_delivery_status_generation() {
+              DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=0
+              events+=(delivery_diagnostic)
+            }
+            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
+            check_control_plane_release_manifest() { events+=(manifest); }
+            check_post_restart_release_gates
+            printf '%s\n' "${events[*]}"
+            '''
+        )
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(
-            "arrival_stats_unknown_write_recovery=ok "
-            "run_id=fb077840-a2d0-4e7f-8089-f68c104ab544 outcome=NOT_APPLIED",
+            "arrival_diagnostic delivery_diagnostic identity:full manifest",
             completed.stdout.strip(),
         )
-        self.assertEqual("POST", request["method"])
-        self.assertEqual(
-            "http://127.0.0.1:9000/internal/v1/automation/instances/"
-            "arrival_stats/generation/recover-not-applied",
-            request["url"],
-        )
-        self.assertEqual(
-            {
-                "readback": {
-                    "arrival_stat_runs": 0,
-                    "arrival_stat_items": 0,
-                    "feishu_rows_created": 0,
-                },
-                "request_id": "fb077840-a2d0-4e7f-8089-f68c104ab544",
-            },
-            json.loads(str(request["body"])),
-        )
 
-    def test_auth_failure_recovery_uses_the_second_exact_run_only(self):
-        completed, request = _run_known_arrival_stats_recovery(
-            "71510af3-fcf1-461b-9c2e-152665f32f98"
-        )
+    def test_release_scripts_have_no_unsafe_arrival_recovery_contract(self):
+        release = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
+        ).read_text(encoding="utf-8")
+        publisher = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1"
+        ).read_text(encoding="utf-8")
+        combined = release + publisher
 
-        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertNotIn("RecoverKnownArrival", combined)
+        self.assertNotIn("recover-known-arrival", combined)
+        self.assertNotIn("recover_known_arrival_stats_unknown_write", combined)
+        self.assertNotIn("arrival_stat_runs", combined)
+        self.assertNotIn("arrival_stat_items", combined)
+        self.assertNotIn("feishu_rows_created", combined)
         self.assertEqual(
-            "arrival_stats_unknown_write_recovery=ok "
-            "run_id=71510af3-fcf1-461b-9c2e-152665f32f98 outcome=NOT_APPLIED",
-            completed.stdout.strip(),
-        )
-        self.assertEqual(
-            "71510af3-fcf1-461b-9c2e-152665f32f98",
-            json.loads(str(request["body"]))["request_id"],
-        )
-
-    def test_prewrite_failure_recovery_uses_the_third_exact_run_only(self):
-        completed, request = _run_known_arrival_stats_recovery(
-            "2a86ba4b-5c63-4bf2-93de-f61372d18274"
-        )
-
-        self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(
-            "arrival_stats_unknown_write_recovery=ok "
-            "run_id=2a86ba4b-5c63-4bf2-93de-f61372d18274 outcome=NOT_APPLIED",
-            completed.stdout.strip(),
-        )
-        self.assertEqual(
-            "2a86ba4b-5c63-4bf2-93de-f61372d18274",
-            json.loads(str(request["body"]))["request_id"],
+            1,
+            release.count('RELEASE_STAGE="diagnose_arrival_stats_generation"'),
         )
 
     def test_direct_dependencies_are_covered_by_exact_locks(self):
@@ -1725,14 +1485,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(execution.index("check_health"), execution.index("cleanup_successful_release"))
         self.assertLess(
             execution.index('RELEASE_STAGE="check_health"'),
-            release.index('RELEASE_STAGE="check_service_identity_smoke"'),
+            release.index('RELEASE_STAGE="diagnose_arrival_stats_generation"'),
         )
         self.assertLess(
-            release.index('RELEASE_STAGE="check_service_identity_smoke"'),
-            release.index('RELEASE_STAGE="recover_known_arrival_stats_unknown_write"'),
+            release.index('RELEASE_STAGE="diagnose_arrival_stats_generation"'),
+            release.index('RELEASE_STAGE="diagnose_delivery_status_generation"'),
         )
         self.assertLess(
-            release.index('RELEASE_STAGE="recover_known_arrival_stats_unknown_write"'),
+            release.index('RELEASE_STAGE="diagnose_delivery_status_generation"'),
             release.index('RELEASE_STAGE="check_control_plane_release_manifest"'),
         )
         self.assertLess(
@@ -1806,8 +1566,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "create_scheduler_release_hold",
             "restart_services",
             "check_health",
-            "check_service_identity_smoke",
-            "recover_known_arrival_stats_unknown_write",
+            "diagnose_arrival_stats_generation",
+            "diagnose_delivery_status_generation",
             "check_control_plane_release_manifest",
             "record_dependency_hashes",
             "activate_scheduler_after_release",
@@ -2044,24 +1804,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "--emergency-scheduled-window-override=emergency_user_authorized",
             publisher,
         )
-        self.assertIn(
-            "[switch]$RecoverKnownArrivalStatsUnknownWrite",
-            publisher,
-        )
-        self.assertIn(
-            "[switch]$RecoverKnownArrivalStatsPrewriteFailure",
-            publisher,
-        )
+        self.assertNotIn("RecoverKnownArrival", publisher)
         self.assertIn("function Get-Sha256Hex", publisher)
         self.assertNotIn("Get-FileHash", publisher)
-        self.assertIn(
-            "--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544",
-            publisher,
-        )
-        self.assertIn(
-            "--recover-known-arrival-stats-prewrite-failure=2a86ba4b-5c63-4bf2-93de-f61372d18274",
-            publisher,
-        )
+        self.assertNotIn("--recover-known-arrival", publisher)
         self.assertIn("one release-index.json and only its ZIP packages", publisher)
         self.assertIn('$_.Extension -cne ".pub"', publisher)
         self.assertIn('Join-Path $DestinationRoot "_plugin_artifacts"', publisher)
@@ -2119,6 +1865,16 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "emergency_scheduled_window_override=blocked "
             "reason=UNEXPECTED_ARGUMENT_COUNT\n",
             unexpected_extra.stderr,
+        )
+
+        retired_recovery = _run_remote_release_argument_harness(
+            "--recover-known-arrival-stats-unknown-write=retired"
+        )
+        self.assertEqual(2, retired_recovery.returncode)
+        self.assertEqual("", retired_recovery.stdout)
+        self.assertEqual(
+            "release_authorization=blocked reason=INVALID_AUTHORIZATION_ARGUMENT\n",
+            retired_recovery.stderr,
         )
 
     def test_emergency_scheduled_window_override_audits_both_skipped_checks(self):

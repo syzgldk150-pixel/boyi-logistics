@@ -1291,6 +1291,7 @@ def test_exact_reviewed_unknown_writes_keep_global_health_degraded_but_release_o
     global_health = runtime.health()
     assert global_health["ok"] is False
     assert global_health["catalog"]["unstable_generations"] == [
+        "arrival_stats",
         "arrive_list",
         "daily_sign",
         "delivery_status",
@@ -1300,11 +1301,12 @@ def test_exact_reviewed_unknown_writes_keep_global_health_degraded_but_release_o
     unaffected = global_health["unaffected_release"]
     assert unaffected["ok"] is True
     assert unaffected["quarantined_automation_ids"] == [
+        "arrival_stats",
         "arrive_list",
         "daily_sign",
         "delivery_status",
     ]
-    assert unaffected["expected_project_count"] == 13
+    assert unaffected["expected_project_count"] == 12
     assert not (
         set(REVIEWED_UNKNOWN_WRITE_QUARANTINES)
         & set(unaffected["expected_automation_ids"])
@@ -1376,7 +1378,34 @@ def test_delivery_unknown_write_quarantine_lease_drift_fails_closed(identity: di
     assert raised.value.code == "DELIVERY_STATUS_QUARANTINE_MISMATCH"
     assert catalog.production_unaffected_release_health(
         tuple(world.expected_automation_ids),
-        recoverable_unknown_write_automation_ids=("arrival_stats",),
+    )["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "automation_id",
+    tuple(sorted(REVIEWED_UNKNOWN_WRITE_QUARANTINES)),
+)
+def test_each_reviewed_unknown_write_quarantine_lease_drift_fails_closed(
+    automation_id: str,
+) -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    catalog = _quarantine_reviewed_unknown_writes(world)
+    identity = REVIEWED_UNKNOWN_WRITE_QUARANTINES[automation_id]
+    world.runtime.unknown_write_identities[automation_id] = {
+        "generation": identity.generation,
+        "lease_id": f"wrong-{identity.lease_id}",
+    }
+
+    assert catalog.reviewed_unknown_write_quarantine_status(automation_id) is None
+    with pytest.raises(PluginConflictError) as raised:
+        catalog.reviewed_unknown_write_quarantine_status(
+            automation_id,
+            fail_closed=True,
+        )
+    assert raised.value.code == "UNKNOWN_WRITE_QUARANTINE_MISMATCH"
+    assert catalog.production_unaffected_release_health(
+        tuple(world.expected_automation_ids),
     )["ok"] is False
 
 

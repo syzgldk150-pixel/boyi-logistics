@@ -20,6 +20,11 @@ DELIVERY_STATUS_QUARANTINE_RECONCILE_STATE = "BLOCKED_UNKNOWN_WRITE"
 DELIVERY_STATUS_QUARANTINE_GENERATION_STATE = "BLOCKED"
 DELIVERY_STATUS_QUARANTINE_STATUS = "QUARANTINED_UNKNOWN_WRITE"
 
+ARRIVAL_STATS_QUARANTINE_AUTOMATION_ID = "arrival_stats"
+ARRIVAL_STATS_QUARANTINE_PLUGIN_ID = "sync_arrival_stats"
+ARRIVAL_STATS_QUARANTINE_GENERATION = 1
+ARRIVAL_STATS_QUARANTINE_LEASE_ID = "077b97a9-497b-450b-b65e-c0a1c241e4fa"
+
 
 @dataclass(frozen=True)
 class UnknownWriteQuarantineIdentity:
@@ -30,6 +35,12 @@ class UnknownWriteQuarantineIdentity:
 
 
 REVIEWED_UNKNOWN_WRITE_QUARANTINES = {
+    ARRIVAL_STATS_QUARANTINE_AUTOMATION_ID: UnknownWriteQuarantineIdentity(
+        automation_id=ARRIVAL_STATS_QUARANTINE_AUTOMATION_ID,
+        plugin_id=ARRIVAL_STATS_QUARANTINE_PLUGIN_ID,
+        generation=ARRIVAL_STATS_QUARANTINE_GENERATION,
+        lease_id=ARRIVAL_STATS_QUARANTINE_LEASE_ID,
+    ),
     "arrive_list": UnknownWriteQuarantineIdentity(
         automation_id="arrive_list",
         plugin_id="sync_arrive_list",

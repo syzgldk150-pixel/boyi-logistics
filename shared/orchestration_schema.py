@@ -152,6 +152,7 @@ REQUIRED_COLUMNS = frozenset(
         ("automation_project_generations", "governance_anchor_sha256"),
         ("automation_project_generation_effects", "effect_sequence"),
         ("automation_project_generation_leases", "outcome"),
+        ("automation_project_generation_leases", "orchestration_run_id"),
         ("automation_plugin_versions", "package_sha256"),
         ("automation_plugin_package_events", "request_id"),
         ("automation_project_events", "request_id"),

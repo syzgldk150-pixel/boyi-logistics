@@ -198,6 +198,20 @@ class ConsoleRouteBoundaryTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual([("tracking_query", None)], self.app.calls)
 
+    def test_unsafe_automation_generation_recovery_route_is_not_exposed(self):
+        path = "/automations/plugins/arrival_stats/recover-not-applied"
+
+        handled = self.dispatcher.handle_post(
+            self.app,
+            self.handler,
+            path,
+            path,
+            {},
+        )
+
+        self.assertFalse(handled)
+        self.assertEqual([], self.app.calls)
+
     def test_unknown_waybill_print_is_owned_by_waybill_boundary(self):
         handled = self.dispatcher.handle_get(
             self.app, self.handler, "/waybills/not-a-number/print", "/waybills/not-a-number/print", {}

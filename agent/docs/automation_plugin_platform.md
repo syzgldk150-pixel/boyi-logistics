@@ -196,6 +196,9 @@ python scripts/build_first_party_plugin_release.py \
 
 外部网页、Office、飞书或财务写入不可逆，不能伪造 inverse。活跃、`VERIFYING`、过期但未定论的
 lease 或未知写结果都会阻断 dispose，直到权威读后核验或人工处置。
+每个新 lease 还必须绑定发起它的权威 orchestration Run。恢复未知写时必须精确匹配该 Run；迁移前
+没有 Run 绑定的遗留 lease 不允许按时间、任务名或“最近一次运行”推断，只能保持阻断或采用固定事故
+身份的隔离处置。
 
 这里是对 [Cordis 论文仓库](https://github.com/cordiverse/paper)《A Programming Paradigm for
 Spatiotemporal Composability》中 reversible effects、reactive coeffects 和时空组合模型的工程借鉴，
@@ -283,12 +286,14 @@ escaped client certificate 头后代理到回环 Agent，并清空 internal toke
 
 ## 发布健康门禁
 
-`delivery_status` 当前只对已审计的单个未知写事故提供临时隔离：项目、插件、代际、阻断状态和租约
-UUID 必须精确匹配，且该项目只能存在这一条 generation、不得有活动租约。普通全局健康仍保持红灯，
-发布器只可放行其余项目。移除隔离前必须由权威读后核验按正式恢复合同把该租约判定为
+当前对生产中 4 个已审计遗留未知写事故提供临时隔离：`arrival_stats`、`arrive_list`、
+`daily_sign` 和 `delivery_status`。每项的项目、插件、代际、阻断状态和租约 UUID 必须与代码审阅的
+固定身份精确匹配，且该项目只能存在这一条 generation、不得有活动租约。任何额外或漂移的未知写
+仍阻断发布。普通全局健康保持红灯，发布器只可放行其余项目。移除任一隔离前必须由权威读后核验
+按正式恢复合同把该租约判定为
 `APPLIED` 或 `NOT_APPLIED`，使项目恢复为无未知写的 `STABLE committed_generation`；随后在同一受审
 提交中删除固定事故身份、特殊发布/调度门禁及对应测试，并由普通全局健康独立通过。不得用人工改
-状态或仅删除租约记录替代核验。
+状态、硬编码零读回或仅删除租约记录替代核验。
 
 新进程先在 release hold 下启动。当前只有 allowlist 中的签名包完整、其对应已安装实例具有稳定
 committed generation、没有 `PREPARING/SWITCHING/DRAINING/BLOCKED/UNKNOWN`，且 Scheduler 与

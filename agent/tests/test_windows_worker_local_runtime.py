@@ -25,6 +25,7 @@ from agent.windows_worker.state import WindowsWorkerStateStore
 
 
 DISPATCH_AUTHORIZATION_ID = "f6d9dc71-b197-4800-bad3-4efe484406df"
+TEST_PLUGIN_VERSION = "1.0.0"
 
 
 class _Fetcher:
@@ -34,7 +35,8 @@ class _Fetcher:
 
     def fetch_package(self, url: str, *, expected_sha256: str) -> bytes:
         assert url == (
-            "/internal/v1/automation/worker/packages/sync_arrive_list/1.0.0/"
+            "/internal/v1/automation/worker/packages/sync_arrive_list/"
+            f"{TEST_PLUGIN_VERSION}/"
             f"{expected_sha256}/{DISPATCH_AUTHORIZATION_ID}"
         )
         assert hashlib.sha256(self._package).hexdigest() == expected_sha256
@@ -45,6 +47,7 @@ class _Fetcher:
 def _windows_package() -> tuple[AutomationPluginManifest, bytes, Ed25519TrustStore]:
     original = resolve_first_party_manifests(ToolRegistry())["sync_arrive_list"]
     mapping = copy.deepcopy(original.to_mapping())
+    mapping["version"] = TEST_PLUGIN_VERSION
     mapping["execution_platform"] = "windows"
     mapping["worker_requirement"] = {
         "required": True,
@@ -78,7 +81,8 @@ def _job(
     payload = (
         {
             "package_url": (
-                "/internal/v1/automation/worker/packages/sync_arrive_list/1.0.0/"
+                "/internal/v1/automation/worker/packages/sync_arrive_list/"
+                f"{TEST_PLUGIN_VERSION}/"
                 f"{package_sha256}/{DISPATCH_AUTHORIZATION_ID}"
             ),
             "package_sha256": package_sha256,
@@ -91,7 +95,7 @@ def _job(
         automation_id=automation_id,
         automation_generation=generation,
         plugin_id="sync_arrive_list",
-        plugin_version="1.0.0",
+        plugin_version=TEST_PLUGIN_VERSION,
         job_type=job_type,
         status=WorkerJobStatus.CLAIMED,
         payload=payload,
