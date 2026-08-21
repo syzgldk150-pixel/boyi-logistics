@@ -906,6 +906,27 @@ def _applied_014_clock_arguments(
     )
 
 
+def _projectized_schedule_shape(
+    contract: Mapping[str, Any],
+    *,
+    invalid_code: str,
+) -> tuple[str, dict[str, Any]]:
+    """Return the exact post-018 tool and arguments for one reviewed schedule."""
+
+    group_id = contract.get("group_id")
+    canonical_arguments = contract.get("canonical_arguments")
+    if (
+        type(group_id) is not str
+        or not group_id
+        or not isinstance(canonical_arguments, Mapping)
+        or "account_id" not in canonical_arguments
+    ):
+        raise ControlPlaneTaskCutoverPreflightError(invalid_code)
+    project_arguments = dict(canonical_arguments)
+    project_arguments.pop("account_id")
+    return f"automation.{group_id}.run", project_arguments
+
+
 def _is_clock_candidate(row: Mapping[str, Any]) -> bool:
     task_id = row.get("id")
     tool_name = row.get("tool_name")
@@ -972,14 +993,15 @@ def _validate_clock_policy(
                 "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
             )
         group_id = contract.get("group_id")
-        if type(group_id) is not str or group_id not in (
-            CONTROL_PLANE_REVIEWED_CLOCK_PROFILE_GROUPS
-        ):
+        if group_id not in CONTROL_PLANE_REVIEWED_CLOCK_PROFILE_GROUPS:
             raise ControlPlaneTaskCutoverPreflightError(
                 "REVIEWED_CLOCK_CONTRACT_SET_INVALID"
             )
         tool_name = row.get("tool_name")
-        project_tool_name = f"automation.{group_id}.run"
+        project_tool_name, project_arguments = _projectized_schedule_shape(
+            contract,
+            invalid_code="REVIEWED_CLOCK_CONTRACT_SET_INVALID",
+        )
         if type(tool_name) is not str or tool_name not in {
             *CONTROL_PLANE_CLOCK_TOOL_NAMES,
             project_tool_name,
@@ -991,8 +1013,6 @@ def _validate_clock_policy(
         # while the exact reviewed action arguments remain on the schedule.
         # Accept only that closed post-018 shape; an unknown project identity,
         # a retained account_id, or any changed action argument still blocks.
-        project_arguments = dict(canonical_arguments)
-        project_arguments.pop("account_id")
         if tool_name == project_tool_name and _strict_json_equal(
             arguments,
             project_arguments,
@@ -1593,13 +1613,29 @@ def check_scheduled_write_window(
                     cron_expression = str(internal_contract["cron_expression"])
                     if bool(enabled):
                         arguments = _decode_task_arguments(yunda_row.get("tool_params"))
-                        if (
+                        project_tool_name, project_arguments = (
+                            _projectized_schedule_shape(
+                                internal_contract,
+                                invalid_code="REVIEWED_CONTRACT_SET_INVALID",
+                            )
+                        )
+                        direct_binding_matches = (
                             yunda_row.get("tool_name")
-                            != internal_contract["tool_name"]
-                            or yunda_row.get("cron_expression") != cron_expression
-                            or not _strict_json_equal(
+                            == internal_contract["tool_name"]
+                            and _strict_json_equal(
                                 arguments,
                                 internal_contract["canonical_arguments"],
+                            )
+                        )
+                        project_binding_matches = (
+                            yunda_row.get("tool_name") == project_tool_name
+                            and _strict_json_equal(arguments, project_arguments)
+                        )
+                        if (
+                            yunda_row.get("cron_expression") != cron_expression
+                            or not (
+                                direct_binding_matches
+                                or project_binding_matches
                             )
                         ):
                             raise ControlPlaneTaskCutoverPreflightError(

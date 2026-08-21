@@ -1488,6 +1488,92 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "scheduled_write_window=ok checked_schedules=2"
         )
 
+    def _post_018_yunda_send_row(self):
+        task_id = self.runner.CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID
+        contract = self.runner._load_control_plane_reviewed_task_contracts()[task_id]
+        return {
+            "id": task_id,
+            "tool_name": f"automation.{contract['group_id']}.run",
+            "tool_params": {
+                key: value
+                for key, value in contract["canonical_arguments"].items()
+                if key != "account_id"
+            },
+            "cron_expression": contract["cron_expression"],
+            "enabled": 1,
+        }
+
+    def test_scheduled_write_window_accepts_post_018_yunda_project_row(self):
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=[self._post_018_yunda_send_row()],
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    3,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(0, result)
+        self.assertTrue(connection.closed)
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+        print_mock.assert_called_once_with(
+            "scheduled_write_window=ok checked_schedules=1"
+        )
+
+    def test_post_018_yunda_project_row_still_fails_closed(self):
+        mutations = (
+            lambda row: row.update(tool_name="automation.yunda_unknown.run"),
+            lambda row: row["tool_params"].update(unexpected=True),
+            lambda row: row["tool_params"].update(account_id="yunda_default"),
+            lambda row: row["tool_params"].update(ensure_fields=True),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                row = self._post_018_yunda_send_row()
+                mutation(row)
+                cursor = _WindowCursor(
+                    [],
+                    policy_exists=True,
+                    candidate_rows=[row],
+                )
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.check_scheduled_write_window(
+                        before_minutes=60,
+                        after_minutes=45,
+                        now=datetime(
+                            2026,
+                            8,
+                            14,
+                            3,
+                            0,
+                            tzinfo=ZoneInfo("Asia/Shanghai"),
+                        ),
+                    )
+
+                self.assertEqual(1, result)
+                rendered = " ".join(
+                    str(call) for call in print_mock.call_args_list
+                )
+                self.assertIn("TASK_ARGUMENTS_NOT_REVIEWED", rendered)
+
     def _applied_014_yunda_window_rows(
         self,
         *,
