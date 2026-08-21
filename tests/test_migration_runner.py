@@ -1894,15 +1894,43 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             },
         }
         mutations = (
-            ("missing lease", {"unknown_write_count": 0}),
-            ("duplicate lease", {"unknown_write_count": 2}),
-            ("wrong error", {"generation_error_code": "RUNTIME_ROOT_MISSING"}),
-            ("wrong generation state", {"generation_state": "COMMITTED"}),
-            ("target not newer", {"target_generation": 3}),
-            ("target not prepared", {"target_generation_state": "PREPARING"}),
-            ("target wrong base", {"target_base_generation": 2}),
+            (
+                "missing lease",
+                {"unknown_write_count": 0},
+                "UNKNOWN_WRITE_LEASES_ZERO",
+            ),
+            (
+                "duplicate lease",
+                {"unknown_write_count": 2},
+                "UNKNOWN_WRITE_LEASES_MULTIPLE",
+            ),
+            (
+                "wrong error",
+                {"generation_error_code": "RUNTIME_ROOT_MISSING"},
+                "COMMITTED_ERROR_OTHER",
+            ),
+            (
+                "wrong generation state",
+                {"generation_state": "COMMITTED"},
+                "COMMITTED_STATE_COMMITTED",
+            ),
+            (
+                "target not newer",
+                {"target_generation": 3},
+                "TARGET_RELATION_MATCH",
+            ),
+            (
+                "target not prepared",
+                {"target_generation_state": "PREPARING"},
+                "TARGET_STATE_PREPARING",
+            ),
+            (
+                "target wrong base",
+                {"target_base_generation": 2},
+                "TARGET_BASE_RELATION_BEHIND",
+            ),
         )
-        for label, mutation in mutations:
+        for label, mutation, expected_diagnostic in mutations:
             with self.subTest(label=label):
                 row = {**base, **mutation}
                 cursor = _WindowCursor(
@@ -1933,7 +1961,85 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 self.assertEqual(1, result)
                 rendered = " ".join(str(call) for call in print_mock.call_args_list)
                 self.assertIn("PROJECT_SCHEDULE_RUNTIME_INVALID", rendered)
+                self.assertIn("CHECK_PROJECT_STATE_INVALID", rendered)
+                self.assertIn("PROJECT_STATE_UPGRADING", rendered)
+                self.assertIn(expected_diagnostic, rendered)
                 self.assertNotIn("arrive_list", rendered)
+
+    def test_scheduled_write_runtime_diagnostic_redacts_unexpected_values(self):
+        row = {
+            "task_id": "SENSITIVE_TASK_ID_SENTINEL",
+            "automation_id": "SENSITIVE_PROJECT_ID_SENTINEL",
+            "automation_generation": 3,
+            "tool_name": "automation.SENSITIVE_PROJECT_ID_SENTINEL.run",
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "committed_generation": 3,
+            "target_generation": "SENSITIVE_TARGET_GENERATION_SENTINEL",
+            "project_enabled": 1,
+            "project_state": "SENSITIVE_PROJECT_STATE_SENTINEL",
+            "policy_mode": "PROJECT_FULL_AUTO",
+            "generation_state": "SENSITIVE_COMMITTED_STATE_SENTINEL",
+            "generation_error_code": "SENSITIVE_ERROR_SENTINEL",
+            "target_generation_state": "SENSITIVE_TARGET_STATE_SENTINEL",
+            "target_base_generation": "SENSITIVE_TARGET_BASE_SENTINEL",
+            "unknown_write_count": "SENSITIVE_LEASE_COUNT_SENTINEL",
+            "snapshot_json": {
+                "arguments": {"secret": "SENSITIVE_ARGUMENT_SENTINEL"},
+                "actor": "SENSITIVE_ACTOR_SENTINEL",
+                "contract_hash": "SENSITIVE_HASH_SENTINEL",
+            },
+        }
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=[],
+            project_schema_exists=True,
+            project_rows=[row],
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    3,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(1, result)
+        rendered = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("CHECK_PROJECT_STATE_INVALID", rendered)
+        self.assertIn("PROJECT_STATE_OTHER", rendered)
+        self.assertIn("TARGET_RELATION_INVALID", rendered)
+        self.assertIn("COMMITTED_STATE_OTHER", rendered)
+        self.assertIn("COMMITTED_ERROR_OTHER", rendered)
+        self.assertIn("TARGET_STATE_OTHER", rendered)
+        self.assertIn("TARGET_BASE_RELATION_INVALID", rendered)
+        self.assertIn("UNKNOWN_WRITE_LEASES_INVALID", rendered)
+        for secret in (
+            "SENSITIVE_TASK_ID_SENTINEL",
+            "SENSITIVE_PROJECT_ID_SENTINEL",
+            "SENSITIVE_TARGET_GENERATION_SENTINEL",
+            "SENSITIVE_PROJECT_STATE_SENTINEL",
+            "SENSITIVE_COMMITTED_STATE_SENTINEL",
+            "SENSITIVE_ERROR_SENTINEL",
+            "SENSITIVE_TARGET_STATE_SENTINEL",
+            "SENSITIVE_TARGET_BASE_SENTINEL",
+            "SENSITIVE_LEASE_COUNT_SENTINEL",
+            "SENSITIVE_ARGUMENT_SENTINEL",
+            "SENSITIVE_ACTOR_SENTINEL",
+            "SENSITIVE_HASH_SENTINEL",
+        ):
+            self.assertNotIn(secret, rendered)
 
     def test_unknown_write_quarantine_still_validates_signed_schedule_contract(self):
         row = {
