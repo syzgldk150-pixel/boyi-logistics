@@ -321,7 +321,9 @@ def typed_project_scheduled_write_crons(
                target_generation.state AS target_generation_state,
                target_generation.base_committed_generation AS target_base_generation,
                (
-                   SELECT COALESCE(MAX(history.generation), 0)
+                   SELECT CAST(
+                       COALESCE(MAX(history.generation), 0) AS UNSIGNED
+                   )
                    FROM automation_project_generations AS history
                    WHERE BINARY history.automation_id=BINARY project.automation_id
                ) AS max_generation,
@@ -1036,7 +1038,9 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                    AS target_base_generation,
                policy.project_generation AS policy_project_generation,
                (
-                   SELECT COALESCE(MAX(history.generation), 0)
+                   SELECT CAST(
+                       COALESCE(MAX(history.generation), 0) AS UNSIGNED
+                   )
                    FROM automation_project_generations AS history
                    WHERE BINARY history.automation_id = BINARY project.automation_id
                ) AS max_generation,

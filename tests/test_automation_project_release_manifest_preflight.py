@@ -954,6 +954,7 @@ def test_release_project_query_reads_exact_unknown_write_evidence(preflight):
 
     assert set(rows) == {"arrive_list"}
     assert "LEFT JOIN automation_project_generations AS target_generation" in cursor.sql
+    assert "COALESCE(MAX(history.generation), 0) AS UNSIGNED" in cursor.sql
     assert "FROM automation_project_generation_leases AS lease" in cursor.sql
     assert "lease.outcome = 'WRITE_OUTCOME_UNKNOWN'" in cursor.sql
     assert cursor.params == ("arrive_list",)
