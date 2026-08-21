@@ -179,6 +179,30 @@ def _service():
     )
 
 
+def test_approval_message_includes_only_the_sanitized_approval_projection():
+    message = FeishuApprovalService._approval_message(
+        {
+            "automation_id": "arrival_stats",
+            "tool_names": "arrival.scan, arrival.publish",
+            "source": "scheduler",
+            "risk_level": "HIGH",
+            "plan_hash": "a" * 64,
+            "expires_at": datetime(2026, 8, 22, 12, 30),
+            "plan_json": {"secret": "must-not-appear"},
+            "impact_json": {"customer": "must-not-appear"},
+        }
+    )
+
+    assert "项目：arrival_stats" in message
+    assert "工具：arrival.scan, arrival.publish" in message
+    assert "来源：scheduler" in message
+    assert "风险：HIGH" in message
+    assert "影响摘要：执行已签名动作，并要求写后证据核验" in message
+    assert "Plan：aaaaaaaaaaaa" in message
+    assert "过期：2026-08-22 12:30" in message
+    assert "must-not-appear" not in message
+
+
 def test_one_time_binding_and_live_super_admin_role():
     service, repository, _approvals = _service()
     challenge = service.create_binding_challenge(7)

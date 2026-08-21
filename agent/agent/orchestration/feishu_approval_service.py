@@ -281,6 +281,7 @@ class FeishuApprovalService:
     @staticmethod
     def _approval_message(active: Mapping[str, Any]) -> str:
         project = str(active.get("automation_id") or "automation")[:128]
+        tool_names = str(active.get("tool_names") or "unknown")[:256]
         source = str(active.get("source") or "unknown")[:32]
         risk = str(active.get("risk_level") or "UNKNOWN")[:16]
         plan_hash = str(active.get("plan_hash") or "")[:12]
@@ -290,9 +291,10 @@ class FeishuApprovalService:
             (
                 "【自动化审批】",
                 f"项目：{project}",
+                f"工具：{tool_names}",
                 f"来源：{source}",
                 f"风险：{risk}",
-                "影响：执行已签名动作，并要求写后证据核验",
+                "影响摘要：执行已签名动作，并要求写后证据核验",
                 f"Plan：{plan_hash}",
                 f"过期：{expires_text}",
                 "回复 1 批准，回复 2 驳回。",
