@@ -11,6 +11,7 @@ from shared.automation_plugin_repository import (
     _configuration_target_generation,
     _normalized_project_schedule,
     _normalized_worker_identity,
+    _prepared_configuration_upgrade_stage,
     _schedule_expressions,
     _schedule_from_rows,
     _stable_schedule_task_id,
@@ -73,6 +74,72 @@ class _ScriptedCursor:
 class _ScriptedConnection:
     def __init__(self, actions):
         self.cursor_instance = _ScriptedCursor(actions)
+
+    def cursor(self):
+        return self.cursor_instance
+
+
+class _BlockedUpgradeCursor:
+    def __init__(self) -> None:
+        self.rowcount = 0
+        self._row = None
+        self.executions = []
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(str(sql).split())
+        self.executions.append((normalized, params))
+        self.rowcount = 0
+        if normalized.startswith(("INSERT", "UPDATE", "DELETE")):
+            raise AssertionError(
+                f"blocked upgrade mutated persistence before rejection: {normalized}"
+            )
+        if "FROM automation_project_events" in normalized:
+            self._row = None
+        elif "FROM automation_projects" in normalized:
+            self._row = {
+                "automation_id": "instance-one",
+                "plugin_id": "plugin-one",
+                "plugin_version": "1.0.0",
+                "display_name": "Instance one",
+                "state": "ENABLED",
+                "enabled": 1,
+                "record_version": 7,
+                "target_generation": 1,
+                "committed_generation": 1,
+                "reconcile_state": "BLOCKED_UNKNOWN_WRITE",
+            }
+        elif "FROM automation_project_configs" in normalized:
+            _project, config, _policy = _configuration_save_rows()
+            self._row = config
+        elif "FROM scheduled_tasks" in normalized:
+            self._row = []
+        elif "FROM automation_plugin_versions" in normalized:
+            self._row = {"package_sha256": "b" * 64}
+        elif "COUNT(*) AS max_generation" in normalized:
+            self._row = {"max_generation": 1}
+        elif "FROM automation_project_generation_leases" in normalized:
+            self._row = {"unknown_count": 1}
+        elif "FROM automation_project_generations" in normalized:
+            if "ORDER BY generation" in normalized:
+                self._row = [{"generation": 1, "state": "BLOCKED"}]
+            else:
+                self._row = {"generation": 1, "state": "BLOCKED"}
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+
+    def fetchone(self):
+        return None if isinstance(self._row, list) else self._row
+
+    def fetchall(self):
+        return self._row if isinstance(self._row, list) else []
+
+    def close(self):
+        return None
+
+
+class _BlockedUpgradeConnection:
+    def __init__(self) -> None:
+        self.cursor_instance = _BlockedUpgradeCursor()
 
     def cursor(self):
         return self.cursor_instance
@@ -180,6 +247,145 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_generic_upgrade_replays_event_from_before_prepared_target_support(self):
+        request_id = str(uuid.uuid4())
+        payload = {
+            "plugin_id": "plugin-one",
+            "to_version": "2.0.0",
+            "package_sha256": "b" * 64,
+            "expected_record_version": 7,
+        }
+        project = {
+            "automation_id": "instance-one",
+            "plugin_id": "plugin-one",
+            "plugin_version": "2.0.0",
+            "record_version": 8,
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "PLUGIN_UPGRADE_STAGED",
+                        "metadata_json": {
+                            "request_payload_sha256": _json_hash(payload),
+                        },
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                    },
+                    0,
+                ),
+                ("FROM automation_projects", project, 0),
+            ]
+        )
+        repository = AutomationPluginRepository(connection)
+
+        replayed = repository.stage_project_upgrade(
+            "instance-one",
+            plugin_id="plugin-one",
+            from_version="1.0.0",
+            to_version="2.0.0",
+            package_sha256="b" * 64,
+            request_id=request_id,
+            actor_id="admin-one",
+            actor_role="super_admin",
+            expected_record_version=7,
+        )
+
+        self.assertFalse(replayed["_upgrade_staged_created"])
+
+    def test_upgrade_reuses_a_matching_audited_empty_configuration_target(self):
+        request_id = str(uuid.uuid4())
+        prepared_request_id = str(uuid.uuid4())
+        project, config, _policy = _configuration_save_rows()
+        project["target_generation"] = 2
+        project["reconcile_state"] = "PREPARING"
+        persisted = {
+            **project,
+            "plugin_version": "2.0.0",
+            "state": "UPGRADING",
+            "record_version": 8,
+        }
+        connection = _ScriptedConnection(
+            [
+                ("FROM automation_project_events", None, 0),
+                ("FROM automation_projects", project, 0),
+                ("FROM automation_plugin_versions", {"package_sha256": "b" * 64}, 0),
+                ("FROM automation_project_configs", config, 0),
+                ("FROM scheduled_tasks", [], 0),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "CONFIGURATION_UPDATED",
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                        "metadata_json": {
+                            "request_payload_sha256": "a" * 64,
+                            "to_project_configuration_version": 2,
+                        },
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_policies",
+                    {
+                        "project_generation": 2,
+                        "project_configuration_version": 2,
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_generations",
+                    [{"generation": 1, "state": "COMMITTED"}],
+                    0,
+                ),
+                ("INSERT INTO automation_project_events", None, 1),
+                ("UPDATE automation_projects", None, 1),
+                ("FROM automation_projects", persisted, 0),
+            ]
+        )
+        repository = AutomationPluginRepository(connection)
+
+        staged = repository.stage_project_upgrade(
+            "instance-one",
+            plugin_id="plugin-one",
+            from_version="1.0.0",
+            to_version="2.0.0",
+            package_sha256="b" * 64,
+            request_id=request_id,
+            actor_id="admin-one",
+            actor_role="super_admin",
+            expected_record_version=7,
+            prepared_configuration_request_id=prepared_request_id,
+        )
+
+        self.assertTrue(staged["_upgrade_staged_created"])
+        self.assertEqual("2.0.0", staged["plugin_version"])
+
+    def test_plugin_upgrade_rejects_blocked_committed_topology_before_mutation(self):
+        connection = _BlockedUpgradeConnection()
+        repository = AutomationPluginRepository(connection)
+
+        with self.assertRaises(ConcurrentUpdateError):
+            repository.stage_project_upgrade(
+                "instance-one",
+                plugin_id="plugin-one",
+                from_version="1.0.0",
+                to_version="2.0.0",
+                package_sha256="b" * 64,
+                request_id=str(uuid.uuid4()),
+                actor_id="admin-one",
+                actor_role="super_admin",
+                expected_record_version=7,
+            )
+
+        self.assertFalse(
+            any(
+                sql.startswith(("INSERT", "UPDATE", "DELETE"))
+                for sql, _params in connection.cursor_instance.executions
+            )
+        )
+
     def test_configuration_generation_advances_only_one_closed_stable_lineage(self):
         project, config, _policy = _configuration_save_rows()
         self.assertEqual(
@@ -190,6 +396,7 @@ class AutomationPluginRepositoryTests(TestCase):
                 ({"generation": 1, "state": "COMMITTED"},),
             ),
         )
+
         self.assertEqual(
             3,
             _configuration_target_generation(
@@ -255,6 +462,30 @@ class AutomationPluginRepositoryTests(TestCase):
             with self.subTest(rows=rows):
                 with self.assertRaises(ConcurrentUpdateError):
                     _configuration_target_generation(project, config, rows)
+
+    def test_plugin_upgrade_reuses_only_exact_empty_configuration_target(self):
+        project, config, _policy = _configuration_save_rows()
+        project["target_generation"] = 2
+        project["reconcile_state"] = "PREPARING"
+
+        stage = _prepared_configuration_upgrade_stage(
+            project,
+            config,
+            ({"generation": 1, "state": "COMMITTED"},),
+        )
+
+        self.assertEqual(2, stage.target_generation)
+        self.assertEqual(2, stage.prior_target_generation)
+        self.assertEqual("PREPARING", stage.prior_reconcile_state)
+        with self.assertRaises(ConcurrentUpdateError):
+            _prepared_configuration_upgrade_stage(
+                project,
+                config,
+                (
+                    {"generation": 1, "state": "COMMITTED"},
+                    {"generation": 2, "state": "PREPARED"},
+                ),
+            )
 
     def test_initial_configuration_stages_generation_one_and_binds_policy(self):
         project, config, _policy = _configuration_save_rows()

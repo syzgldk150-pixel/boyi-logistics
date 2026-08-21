@@ -301,6 +301,7 @@ class _LowLevelPluginRepository:
             (snapshot.automation_id, snapshot.generation): _generation_row(snapshot)
         }
         self.upgrade_requests: dict[str, dict[str, Any]] = {}
+        self.unknown_writes: set[tuple[str, int]] = set()
 
     def get_project(
         self,
@@ -336,6 +337,13 @@ class _LowLevelPluginRepository:
         del for_update
         row = self.generations.get((automation_id, generation))
         return copy.deepcopy(row) if row is not None else None
+
+    def has_unknown_generation_write_row(
+        self,
+        automation_id: str,
+        generation: int,
+    ) -> bool:
+        return (automation_id, generation) in self.unknown_writes
 
     def register_package_version(
         self,
@@ -631,6 +639,7 @@ class _OrchestrationRepository:
                 "versions": self.low_level.versions,
                 "generations": self.low_level.generations,
                 "upgrade_requests": self.low_level.upgrade_requests,
+                "unknown_writes": self.low_level.unknown_writes,
                 "policies": self.policies.policies,
                 "policy_events": self.policies.events,
                 "expired": self.policies.expired,
@@ -644,6 +653,7 @@ class _OrchestrationRepository:
         self.low_level.versions = copy.deepcopy(state["versions"])
         self.low_level.generations = copy.deepcopy(state["generations"])
         self.low_level.upgrade_requests = copy.deepcopy(state["upgrade_requests"])
+        self.low_level.unknown_writes = copy.deepcopy(state["unknown_writes"])
         self.policies.policies = copy.deepcopy(state["policies"])
         self.policies.events = copy.deepcopy(state["policy_events"])
         self.policies.expired = copy.deepcopy(state["expired"])
@@ -810,7 +820,7 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
         allowed_entrypoints=("console",),
     )
 
-    current_version, record_version = (
+    current_version, record_version, prepared_configuration_request_id = (
         repository._prepare_first_party_upgrade_configuration(
             seed=seed,
             version=version_v2,
@@ -821,6 +831,7 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
 
     assert current_version == "1.0.0"
     assert record_version == 2
+    assert prepared_configuration_request_id is None
     config = low_level.configs["upgrade-instance"]
     assert config["config_version"] == 2
     assert config["compiled_invocations_json"] == {
@@ -830,6 +841,89 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
         }
     }
     assert orchestration.policies.expired == ["upgrade-instance"]
+
+
+def test_first_party_bootstrap_defers_blocked_unknown_write_but_upgrades_stable() -> None:
+    target_version = _version(_synthetic_manifest("2.0.0"), "2")
+    seed = FirstPartyInstanceSeed(
+        automation_id="upgrade-instance",
+        plugin_id=target_version.plugin_id,
+        version=target_version.version,
+        display_name="Synthetic upgrade instance",
+        allowed_entrypoints=("console",),
+    )
+
+    blocked_repository, blocked_orchestration, _blocked_v1 = _harness(enabled=True)
+    blocked_orchestration.low_level.projects["upgrade-instance"][
+        "reconcile_state"
+    ] = "BLOCKED_UNKNOWN_WRITE"
+    blocked_orchestration.low_level.generations[("upgrade-instance", 1)][
+        "state"
+    ] = "BLOCKED"
+    blocked_orchestration.low_level.unknown_writes.add(("upgrade-instance", 1))
+    blocked_project_before = copy.deepcopy(
+        blocked_orchestration.low_level.projects["upgrade-instance"]
+    )
+    blocked_config_before = copy.deepcopy(
+        blocked_orchestration.low_level.configs["upgrade-instance"]
+    )
+    blocked_generation_before = copy.deepcopy(
+        blocked_orchestration.low_level.generations[("upgrade-instance", 1)]
+    )
+    blocked_policy_before = copy.deepcopy(
+        blocked_orchestration.policies.policies["upgrade-instance"]
+    )
+
+    blocked_result = blocked_repository.bootstrap_missing(
+        (target_version,),
+        (seed,),
+        release_sha="a" * 40,
+    )
+
+    assert blocked_result.created == ()
+    assert blocked_result.existing == ("upgrade-instance",)
+    assert (
+        target_version.plugin_id,
+        target_version.version,
+    ) in blocked_orchestration.low_level.versions
+    assert blocked_orchestration.low_level.upgrade_requests == {}
+    assert (
+        blocked_orchestration.low_level.projects["upgrade-instance"]
+        == blocked_project_before
+    )
+    assert (
+        blocked_orchestration.low_level.configs["upgrade-instance"]
+        == blocked_config_before
+    )
+    assert (
+        blocked_orchestration.low_level.generations[("upgrade-instance", 1)]
+        == blocked_generation_before
+    )
+    assert (
+        blocked_orchestration.policies.policies["upgrade-instance"]
+        == blocked_policy_before
+    )
+
+    stable_repository, stable_orchestration, _stable_v1 = _harness(enabled=True)
+
+    stable_result = stable_repository.bootstrap_missing(
+        (target_version,),
+        (seed,),
+        release_sha="b" * 40,
+    )
+
+    assert stable_result.created == ()
+    assert stable_result.existing == ("upgrade-instance",)
+    assert len(stable_orchestration.low_level.upgrade_requests) == 1
+    assert stable_orchestration.low_level.projects["upgrade-instance"][
+        "plugin_version"
+    ] == "2.0.0"
+    assert stable_orchestration.low_level.projects["upgrade-instance"][
+        "state"
+    ] == "UPGRADING"
+    assert stable_orchestration.low_level.projects["upgrade-instance"][
+        "target_generation"
+    ] == 2
 
 
 def test_incompatible_upgrade_rolls_back_registered_version_and_all_project_state() -> None:
