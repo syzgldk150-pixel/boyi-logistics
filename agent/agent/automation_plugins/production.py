@@ -87,7 +87,7 @@ from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginRuntimeAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
 )
-from agent.automation_plugins.sandbox import BubblewrapPluginSandbox
+from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, SandboxCanaryResult
 from agent.automation_plugins.storage import (
     FilesystemPluginStorage,
     LockedVirtualEnvironmentBuilder,
@@ -237,8 +237,7 @@ def build_runtime_generation_snapshot(
     )
     entrypoints = tuple(str(item) for item in desired["enabled_entrypoints_json"])
     if (
-        not entrypoints
-        or len(entrypoints) != len(set(entrypoints))
+        len(entrypoints) != len(set(entrypoints))
         or not set(entrypoints) <= set(entry.allowed_entrypoints)
         or set(desired["compiled_invocations_json"]) != set(entrypoints)
     ):
@@ -955,6 +954,7 @@ class ProductionAutomationPluginRuntime:
     configuration_service: AutomationProjectConfigurationService
     management: AutomationPluginManagementService
     required_first_party_ids: frozenset[str]
+    _sandbox_canary: SandboxCanaryResult | None = None
     _started: bool = False
 
     @property
@@ -966,6 +966,7 @@ class ProductionAutomationPluginRuntime:
             return
         await self.broker.start()
         self._started = True
+        self._sandbox_canary = await self.execution_router.startup_sandbox_canary()
 
     async def stop(self) -> None:
         if not self._started:
@@ -986,15 +987,27 @@ class ProductionAutomationPluginRuntime:
             expected_automation_ids=self.required_first_party_ids,
             ignored_automation_ids=ignored_automation_ids,
         )
+        sandbox = self._sandbox_canary
+        sandbox_ready = bool(sandbox is not None and sandbox.healthy)
         runnable = bool(
-            catalog.get("runnable") is True and generations.healthy and self._started
+            catalog.get("runnable") is True
+            and generations.healthy
+            and self._started
+            and sandbox_ready
         )
         return {
-            "ok": bool(catalog.get("ok") is True and self._started),
+            "ok": bool(catalog.get("ok") is True and self._started and sandbox_ready),
             "runnable": runnable,
             "runtime_status": "READY" if runnable else "UNAVAILABLE",
             "release_sha": self.release.verified_release_sha,
             "broker": {"state": "running" if self._started else "stopped"},
+            "sandbox": {
+                "state": "ready" if sandbox_ready else "unavailable",
+                "code": sandbox.code if sandbox is not None else "NOT_CHECKED",
+                "checked_at": (
+                    sandbox.checked_at.isoformat() if sandbox is not None else None
+                ),
+            },
             "catalog": catalog,
             "generations": {
                 "healthy": generations.healthy,

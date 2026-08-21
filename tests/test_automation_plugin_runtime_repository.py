@@ -326,6 +326,7 @@ class _LowLevelRuntimeRepository:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
         lease_owner: str,
     ) -> dict[str, Any]:
@@ -338,6 +339,7 @@ class _LowLevelRuntimeRepository:
             "lease_id": lease_id,
             "automation_id": automation_id,
             "generation": expected_generation,
+            "orchestration_run_id": orchestration_run_id,
             "outcome": "RUNNING",
             "acquired_at": datetime.now(timezone.utc),
             "expires_at": expires_at,
@@ -882,8 +884,10 @@ def test_catalog_and_leases_remain_pinned_across_atomic_generation_switch() -> N
         expected_generation=1,
         expected_manifest_sha256=snapshot_v1.manifest_sha256,
         lease_id="lease-v1",
+        orchestration_run_id="run-v1",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
+    assert old_lease.orchestration_run_id == "run-v1"
 
     project_repo.project = PluginInstanceRecord(
         automation_id="customer-instance",
@@ -969,8 +973,10 @@ def test_catalog_and_leases_remain_pinned_across_atomic_generation_switch() -> N
         expected_generation=2,
         expected_manifest_sha256=snapshot_v2.manifest_sha256,
         lease_id="lease-v2",
+        orchestration_run_id="run-v2",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
+    assert new_lease.orchestration_run_id == "run-v2"
     assert new_lease.runtime_metadata["_plugin_runtime"]["version"] == "2.0.0"
 
     runtime.release_generation(old_lease, outcome=RuntimeLeaseOutcome.VERIFYING)
@@ -1099,6 +1105,7 @@ def test_failed_uncommitted_target_keeps_only_committed_capability_available() -
         expected_generation=1,
         expected_manifest_sha256=snapshot_v1.manifest_sha256,
         lease_id="failed-upgrade-old-lease",
+        orchestration_run_id="run-old",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
     assert old_lease.runtime_metadata["_plugin_runtime"]["version"] == "1.0.0"

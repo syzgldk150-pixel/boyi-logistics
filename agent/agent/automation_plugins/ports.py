@@ -261,6 +261,9 @@ class ExecutionCapabilityIssuerPort(Protocol):
 
     def revoke(self, capability: str) -> None: ...
 
+    def consumed_call_count(self, capability: str) -> int:
+        """Return core-owned broker requests consumed by this exact capability."""
+
 
 @runtime_checkable
 class FirstPartyPackageProvider(Protocol):
@@ -559,6 +562,7 @@ class RuntimeGenerationLeasePort(Protocol):
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         """Lock the route and lease only the caller-approved exact generation."""

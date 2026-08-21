@@ -618,6 +618,77 @@ body.dispatch-page .notice { display: none; }
 .automation-action-package-title span { color: var(--muted); font-size: 0.7rem; font-weight: 700; }
 .automation-action-package p { margin: 0; color: var(--muted); font-size: 0.76rem; line-height: 1.45; }
 .automation-action-package-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 0.7rem; }
+.automation-plugin-manager-trigger { position: relative; width: 40px; min-height: 40px; padding: 0; justify-content: center; color: var(--text); }
+.automation-plugin-manager-trigger:hover { color: var(--text-strong); }
+.automation-plugin-manager-icon { width: 19px; height: 19px; }
+.automation-plugin-manager-count { position: absolute; top: -4px; right: -4px; display: grid; min-width: 18px; height: 18px; place-items: center; padding: 0 4px; border: 2px solid #fff; border-radius: var(--radius-pill); background: var(--primary); color: #fff; font-size: 0.625rem; font-weight: 700; line-height: 1; }
+.automation-plugin-manager-dialog { width: min(760px, calc(100vw - 32px)); max-width: none; max-height: min(82vh, 760px); margin: auto; padding: 0; overflow: hidden; border: 0; border-radius: var(--radius-xl); background: transparent; box-shadow: var(--shadow-overlay); }
+.automation-plugin-manager-dialog::backdrop { background: rgba(17, 17, 17, 0.46); }
+.automation-plugin-manager-surface { display: grid; grid-template-rows: auto minmax(0, 1fr); max-height: min(82vh, 760px); overflow: hidden; background: #fff; }
+.automation-plugin-manager-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 72px; padding: 14px 16px 14px 20px; border-bottom: 1px solid var(--line); }
+.automation-plugin-manager-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.automation-plugin-manager-heading-icon { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-md); background: var(--surface-muted); color: var(--text-strong); }
+.automation-plugin-manager-heading-icon .feather { width: 18px; height: 18px; }
+.automation-plugin-manager-heading h2 { margin: 0; color: var(--text-strong); font-size: 1.125rem; line-height: 1.45; }
+.automation-plugin-manager-heading p { margin: 1px 0 0; color: var(--muted); font-size: 0.75rem; }
+.automation-plugin-manager-close { width: 40px; min-height: 40px; flex: 0 0 auto; padding: 0; justify-content: center; }
+.automation-plugin-manager-close .feather { width: 17px; height: 17px; }
+.automation-plugin-manager-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.automation-plugin-install-section { display: grid; gap: 14px; padding: 20px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.automation-plugin-install-copy { display: grid; align-content: start; gap: 6px; }
+.automation-plugin-install-copy h3 { margin: 0; color: var(--text-strong); font-size: 0.9375rem; }
+.automation-plugin-install-copy p { max-width: 58ch; margin: 0; color: var(--muted); font-size: 0.8rem; line-height: 1.55; }
+.automation-plugin-install-form { display: grid; gap: 12px; }
+.automation-plugin-name-field { display: grid; gap: 5px; margin: 0; color: var(--text-strong); font-size: 0.76rem; font-weight: 700; }
+.automation-plugin-name-field input { background: #fff; }
+.automation-plugin-drop-zone { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 104px; padding: 16px; border: 1px dashed #9ca3af; border-radius: var(--radius-lg); background: #fff; transition: border-color var(--fast), background var(--fast); }
+.automation-plugin-drop-zone.is-dragging { border-color: var(--text-strong); background: var(--surface-muted); }
+.automation-plugin-drop-zone.is-ready { border-color: #93c5fd; background: var(--accent-soft); }
+.automation-plugin-drop-zone[aria-busy="true"] { pointer-events: none; opacity: 0.72; }
+.automation-plugin-drop-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: var(--radius-md); background: var(--surface-muted); color: var(--text); }
+.automation-plugin-drop-zone.is-dragging .automation-plugin-drop-icon,
+.automation-plugin-drop-zone.is-ready .automation-plugin-drop-icon { background: #fff; color: var(--text-strong); }
+.automation-plugin-drop-icon .feather { width: 18px; height: 18px; }
+.automation-plugin-drop-copy { display: grid; gap: 3px; min-width: 0; }
+.automation-plugin-drop-copy strong { color: var(--text-strong); font-size: 0.8125rem; }
+.automation-plugin-drop-copy span { overflow: hidden; color: var(--muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
+.automation-plugin-file-choose { min-height: 40px; white-space: nowrap; }
+.automation-plugin-install-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+.automation-plugin-install-actions button { min-height: 40px; }
+.automation-plugin-feedback { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; font-weight: 700; }
+.automation-plugin-feedback[data-kind="success"] { color: #047857; }
+.automation-plugin-feedback[data-kind="warning"] { color: #92400e; }
+.automation-plugin-feedback[data-kind="error"] { color: #b91c1c; }
+.automation-action-catalog { display: grid; gap: 12px; padding: 18px 20px 20px; background: #fff; }
+.automation-action-catalog-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.automation-action-catalog-head h3 { margin: 0; color: var(--text-strong); font-size: 0.9375rem; }
+.automation-action-catalog-head p { max-width: 68ch; margin: 3px 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.5; }
+.automation-action-catalog-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.automation-action-package { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; min-width: 0; padding: 14px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+.automation-action-package-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--text); }
+.automation-action-package-icon .feather { width: 17px; height: 17px; }
+.automation-action-package-copy { display: grid; gap: 5px; min-width: 0; }
+.automation-action-catalog-empty { display: grid; min-height: 112px; place-items: center; gap: 8px; color: var(--muted); text-align: center; }
+.automation-action-catalog-empty .feather { width: 22px; height: 22px; }
+.automation-action-catalog-empty p { margin: 0; font-size: 0.8rem; }
+@media (max-width: 640px) {
+  .automation-plugin-manager-trigger { width: 44px; min-height: 44px; }
+  .automation-plugin-manager-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 24px); }
+  .automation-plugin-manager-surface { max-height: calc(100dvh - 24px); }
+  .automation-plugin-manager-header { min-height: 68px; padding: 12px; }
+  .automation-plugin-manager-heading-icon { width: 36px; height: 36px; }
+  .automation-plugin-install-section,
+  .automation-action-catalog { padding: 16px; }
+  .automation-plugin-drop-zone { grid-template-columns: auto minmax(0, 1fr); min-height: 132px; }
+  .automation-plugin-file-choose { grid-column: 1 / -1; width: 100%; min-height: 44px; }
+  .automation-plugin-install-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .automation-plugin-install-actions button { min-height: 44px; }
+  .automation-action-package-meta { display: grid; gap: 3px; }
+}
+.automation-plugin-advanced-config { margin-top: 12px; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }
+.automation-plugin-advanced-config summary { cursor: pointer; color: var(--text-strong); font-size: 0.8rem; font-weight: 750; }
+.automation-plugin-advanced-config summary span, .auto-field-label small { margin-left: 6px; color: var(--muted); font-size: 0.7rem; font-weight: 650; }
+.automation-plugin-advanced-config > p { margin: 8px 0 10px; color: var(--muted); font-size: 0.74rem; line-height: 1.5; }
 
 .automation-plugin-instance { display: grid; gap: 10px; margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }
 .automation-plugin-instance--blocked { border-color: #fde68a; background: #fffdf6; }
@@ -1037,7 +1108,7 @@ body.dispatch-page .notice { display: none; }
 .automation-account-inline-code[hidden],
 .automation-account-captcha[hidden],
 .automation-account-inline-error[hidden] { display: none !important; }
-.automation-account-inline-code { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; max-width: 100%; padding: 8px; border: 1px solid #fde68a; border-radius: var(--radius-md); background: #fffbeb; box-shadow: 0 8px 18px rgba(217,119,6,0.08); }
+.automation-account-inline-code { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; max-width: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .automation-account-inline-code-main { display: flex; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; }
 .automation-account-code-input { width: 118px; min-height: 34px; padding: 0 10px; font-size: 0.82rem; font-weight: 750; text-align: center; letter-spacing: 0; }
 .automation-account-code-submit { min-height: 34px; padding: 0 10px; font-size: 0.78rem; font-weight: 850; box-shadow: none; }

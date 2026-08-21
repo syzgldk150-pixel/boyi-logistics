@@ -3,11 +3,14 @@ import io
 import json
 import re
 import sys
+import threading
 import types
 import unittest
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -94,6 +97,25 @@ class _Repository:
         return self.waybills_by_no.get(waybill_no)
 
 
+class _OriginalPageRepository(_Repository):
+    def __init__(self):
+        super().__init__()
+        self.session = {
+            "user_id": 7,
+            "username": "tester",
+            "display_name": "Tester",
+            "avatar_path": "",
+            "ui_preferences_json": "{}",
+            "control_plane_role": "super_admin",
+            "role": "super_admin",
+            "is_active": True,
+            "expires_at": datetime.now() + timedelta(hours=1),
+        }
+
+    def get_admin_session(self, session_id):
+        return dict(self.session) if session_id == "admin-session-1" else None
+
+
 class YundaEntryTemplateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -102,7 +124,7 @@ class YundaEntryTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         )
 
-    def test_document_template_does_not_render_yunda_active_original_page(self):
+    def test_document_template_renders_yunda_on_isolated_origin(self):
         template = self.env.get_template("document.html")
         html = template.render(
             app_title="Test Console",
@@ -139,18 +161,19 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('data-entry-tabs-root', html)
         self.assertIn('class="ocr-page no-scroll entry-tabs-page"', html)
         self.assertIn("/static/js/yunda_entry_mode.js", html)
-        self.assertIn('data-entry-initial-provider="boyi"', html)
+        self.assertIn('data-entry-initial-provider="yunda"', html)
         self.assertIn('data-entry-id="entry-1"', html)
-        self.assertIn('data-entry-provider="boyi"', html)
+        self.assertIn('data-entry-provider="yunda"', html)
         self.assertNotIn('data-yunda-side-root', html)
-        self.assertIn('博益 1', html)
+        self.assertIn('韵达 1', html)
         self.assertIn('min-width: 1280px', html)
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
-        self.assertIn('src="/ocr/boyi/frame"', html)
+        self.assertIn('src="/original-pages/yunda/launch"', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
-        self.assertNotIn('data-entry-add-provider="ronghui"', html)
+        self.assertIn('data-entry-add-provider="yunda"', html)
+        self.assertIn('data-entry-add-provider="ronghui"', html)
         self.assertNotIn('/ocr/ronghui/live', html)
-        self.assertIn('第三方活动原页暂时停用', html)
+        self.assertNotIn('第三方活动原页暂时停用', html)
         self.assertNotIn('data-mode-panel="yunda"', html)
         self.assertNotIn(' src="/ocr/ronghui/live"', html)
 
@@ -193,15 +216,15 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('data-entry-max-tabs="6"', html)
         self.assertIn('data-entry-single="true"', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
-        self.assertNotIn('data-entry-add-provider="yunda"', html)
-        self.assertNotIn('data-entry-add-provider="ronghui"', html)
+        self.assertIn('data-entry-add-provider="yunda"', html)
+        self.assertIn('data-entry-add-provider="ronghui"', html)
         self.assertIn('data-entry-ocr-link href="/ocr?mode=ocr"', html)
-        self.assertIn('data-entry-initial-provider="boyi"', html)
-        self.assertIn('src="/ocr/boyi/frame"', html)
+        self.assertIn('data-entry-initial-provider="yunda"', html)
+        self.assertIn('src="/original-pages/yunda/launch"', html)
         self.assertNotIn('/ocr/yunda/live', html)
         self.assertNotIn('data-mode-panel="yunda"', html)
 
-    def test_document_template_does_not_render_ronghui_active_original_page(self):
+    def test_document_template_renders_ronghui_on_isolated_origin(self):
         template = self.env.get_template("document.html")
         html = template.render(
             app_title="Test Console",
@@ -237,15 +260,15 @@ class YundaEntryTemplateTests(unittest.TestCase):
 
         self.assertIn('data-entry-tabs-root', html)
         self.assertIn('class="ocr-page no-scroll entry-tabs-page"', html)
-        self.assertIn('data-entry-initial-provider="boyi"', html)
+        self.assertIn('data-entry-initial-provider="ronghui"', html)
         self.assertIn('data-entry-id="entry-1"', html)
-        self.assertIn('data-entry-provider="boyi"', html)
+        self.assertIn('data-entry-provider="ronghui"', html)
         self.assertNotIn('/ocr/ronghui/live', html)
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
-        self.assertNotIn('data-entry-add-provider="yunda"', html)
-        self.assertIn('src="/ocr/boyi/frame"', html)
-        self.assertIn('第三方活动原页暂时停用', html)
+        self.assertIn('data-entry-add-provider="yunda"', html)
+        self.assertIn('src="/original-pages/ronghui/launch"', html)
+        self.assertNotIn('第三方活动原页暂时停用', html)
         self.assertNotIn('data-mode-panel="ronghui"', html)
         self.assertNotIn(' src="/ocr/yunda/live', html)
 
@@ -259,18 +282,34 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('entryTabsRoot.dataset.entrySingle = tabCount === 1 ? "true" : "false"', template)
         self.assertIn("function addEntryTab", template)
         self.assertIn("entryTabsRoot.dataset.entryInitialProvider", template)
-        self.assertIn('const entryFrameSrc = () => "/ocr/boyi/frame"', template)
+        self.assertIn('data-entry-src-yunda="/original-pages/yunda/launch"', template)
+        self.assertIn('data-entry-src-ronghui="/original-pages/ronghui/launch"', template)
+        self.assertIn('const ORIGINAL_PAGE_ORIGIN = "https://www.boyi.homes"', template)
         self.assertNotIn('"/ocr/ronghui/live"', template)
         self.assertNotIn('"/ocr/yunda/live', template)
-        self.assertIn('第三方活动原页已安全停用', template)
+        self.assertNotIn('第三方活动原页已安全停用', template)
 
-    def test_document_template_mode_switch_rejects_third_party_modes(self):
+    def test_document_template_enables_third_party_prefill_only_for_available_quotes(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
 
         self.assertIn('const nextMode = ["manual", "ocr"].includes(mode) ? mode : "manual"', template)
-        self.assertIn('if (["yunda", "ronghui"].includes(provider))', template)
-        self.assertIn('原页预填已停用', template)
-        self.assertIn('data-quote-provider="${escapeHtml(provider)}" disabled', template)
+        self.assertIn('if (provider === "yunda") return "选择韵达并预填"', template)
+        self.assertIn('if (provider === "ronghui") return "选择融辉并预填"', template)
+        self.assertIn('available && ["yunda", "ronghui"].includes(provider)', template)
+
+    def test_nginx_keeps_original_pages_on_isolated_www_origin(self):
+        nginx = (WORKSPACE_DIR / "agent" / "deploy" / "nginx" / "boyi.homes.conf").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("server_name www.boyi.homes;", nginx)
+        self.assertIn("location ^~ /original/", nginx)
+        self.assertIn("server_name boyi.homes;", nginx)
+        self.assertIn('add_header X-Frame-Options "SAMEORIGIN" always;', nginx)
+        self.assertNotIn(
+            'add_header X-Frame-Options "SAMEORIGIN" always;\n\n    location ^~ /original/',
+            nginx,
+        )
 
     def test_live_frontend_binds_all_ronghui_and_yunda_instances(self):
         script = (CONSOLE_DIR / "static" / "js" / "yunda_entry_mode.js").read_text(encoding="utf-8")
@@ -500,6 +539,127 @@ class YundaEntryBackendTests(unittest.TestCase):
         app._send_json = types.MethodType(capture_json, app)
         return app
 
+    def test_isolated_original_page_uses_one_time_ticket_and_path_scoped_cookie(self):
+        app = self._app(repository=_OriginalPageRepository())
+        app._session_secret = "test-session-secret"
+        main_cookie = app._encode_session_cookie("admin-session-1")
+        launch = _LiveHandler(
+            headers={
+                "Host": "boyi.homes",
+                "Cookie": f"docflow_admin_session={main_cookie}",
+            }
+        )
+
+        app._mint_isolated_original_page_ticket(launch, "yunda")
+
+        self.assertEqual(HTTPStatus.SEE_OTHER, launch.status)
+        location = launch.header_value("Location")
+        self.assertTrue(location.startswith("https://www.boyi.homes/original/yunda/?ticket="))
+        ticket = parse_qs(urlparse(location).query)["ticket"][0]
+
+        exchange = _LiveHandler(headers={"Host": "www.boyi.homes"})
+        app._handle_isolated_original_page_request(exchange, urlparse(location), method="GET")
+
+        self.assertEqual(HTTPStatus.SEE_OTHER, exchange.status)
+        self.assertEqual("/original/yunda/", exchange.header_value("Location"))
+        capability_cookie = exchange.header_value("Set-Cookie")
+        self.assertIn("shipnow_original_yunda=", capability_cookie)
+        self.assertIn("Path=/original/yunda", capability_cookie)
+        self.assertIn("HttpOnly", capability_cookie)
+        self.assertIn("Secure", capability_cookie)
+        self.assertIn("SameSite=Strict", capability_cookie)
+
+        replay = _LiveHandler(headers={"Host": "www.boyi.homes"})
+        app._handle_isolated_original_page_request(
+            replay,
+            urlparse(f"https://www.boyi.homes/original/yunda/?ticket={ticket}"),
+            method="GET",
+        )
+        self.assertEqual(HTTPStatus.UNAUTHORIZED, replay.status)
+
+    def test_isolated_origin_rejects_primary_console_cookie_without_capability(self):
+        app = self._app(repository=_OriginalPageRepository())
+        app._session_secret = "test-session-secret"
+        main_cookie = app._encode_session_cookie("admin-session-1")
+        handler = _LiveHandler(
+            headers={
+                "Host": "www.boyi.homes",
+                "Cookie": f"docflow_admin_session={main_cookie}",
+            }
+        )
+
+        handled = app._handle_isolated_original_page_request(
+            handler,
+            urlparse("https://www.boyi.homes/original/yunda/"),
+            method="GET",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(HTTPStatus.UNAUTHORIZED, handler.status)
+
+    def test_isolated_original_page_rejects_write_without_exact_origin(self):
+        app = self._app(repository=_OriginalPageRepository())
+        app._session_secret = "test-session-secret"
+        capability = "capability-token"
+        app._original_page_capabilities = {
+            capability: {
+                "provider": "yunda",
+                "session_id": "admin-session-1",
+                "expires_at": datetime.now().timestamp() + 60,
+            }
+        }
+        app._original_page_tickets = {}
+        app._original_page_state_lock = threading.Lock()
+        handler = _LiveHandler(
+            headers={
+                "Host": "www.boyi.homes",
+                "Cookie": f"shipnow_original_yunda={capability}",
+                "Origin": "https://boyi.homes",
+            }
+        )
+
+        handled = app._handle_isolated_original_page_request(
+            handler,
+            urlparse("https://www.boyi.homes/original/yunda/ky_inms/public/index.php/business/waybill/entry/indexNew.html"),
+            method="POST",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(HTTPStatus.FORBIDDEN, handler.status)
+
+    def test_isolated_original_page_does_not_let_referer_override_bad_origin(self):
+        app = self._app(repository=_OriginalPageRepository())
+        capability = "capability-token"
+        app._original_page_capabilities = {
+            capability: {
+                "provider": "yunda",
+                "session_id": "admin-session-1",
+                "expires_at": datetime.now().timestamp() + 60,
+            }
+        }
+        app._original_page_tickets = {}
+        app._original_page_state_lock = threading.Lock()
+        handler = _LiveHandler(
+            headers={
+                "Host": "www.boyi.homes",
+                "Cookie": f"shipnow_original_yunda={capability}",
+                "Origin": "https://attacker.example",
+                "Referer": "https://www.boyi.homes/original/yunda/",
+            }
+        )
+
+        handled = app._handle_isolated_original_page_request(
+            handler,
+            urlparse(
+                "https://www.boyi.homes/original/yunda/"
+                "ky_inms/public/index.php/business/waybill/entry/indexNew.html"
+            ),
+            method="POST",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(HTTPStatus.FORBIDDEN, handler.status)
+
     def test_active_original_page_prefixes_return_gone_before_auth_or_agent(self):
         prefixes = (
             "/ocr/yunda/save",
@@ -536,7 +696,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_call_yunda_entry_runtime_translates_auth_required(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -682,7 +842,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_yunda_live_proxy_returns_agent_raw_response(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -727,7 +887,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         app = self._app(repository)
         remote_body = {"info": "1", "LogisticsId": "YD777", "message": "saved"}
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -779,7 +939,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_returns_agent_raw_response(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -823,7 +983,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_forwards_redirect_headers(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -866,7 +1026,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_preserves_static_cache_headers(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             return {
                 "ok": True,
                 "status": 200,
@@ -902,7 +1062,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_auth_required_returns_readable_iframe_body(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -934,7 +1094,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_outer_auth_required_returns_readable_iframe_body(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": False,
@@ -983,7 +1143,7 @@ class YundaEntryBackendTests(unittest.TestCase):
     def test_handle_ronghui_live_proxy_allows_entry_auxiliary_paths_seen_in_live_page(self):
         app = self._app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {
                 "method": method,
                 "endpoint": endpoint,
@@ -1033,7 +1193,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         ).encode("utf-8")
         content_type = f"multipart/form-data; boundary={boundary}"
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -1070,7 +1230,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         app = self._app(repository)
         remote_body = {"success": True, "message": "保存成功"}
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,

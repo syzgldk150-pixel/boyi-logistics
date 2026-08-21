@@ -101,6 +101,29 @@ def _catalog_payload() -> dict:
 
 
 class AutomationPluginCatalogTests(unittest.TestCase):
+    def test_config_projection_separates_friendly_and_advanced_fields(self):
+        payload = _catalog_payload()
+        payload["instances"][0]["config_schema"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "target_date": {"type": "string", "title": "目标日期"},
+                "engine_retry_mode": {"type": "string", "title": "重试策略"},
+            },
+            "required": [],
+        }
+        payload["instances"][0]["config"] = {
+            "target_date": "2026-08-22", "engine_retry_mode": "strict"
+        }
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        fields = {field["path"]: field for field in instances[0]["config_fields"]}
+        self.assertEqual("业务日期", fields["target_date"]["label"])
+        self.assertFalse(fields["target_date"]["advanced"])
+        self.assertEqual("target_date", fields["target_date"]["technical_name"])
+        self.assertTrue(fields["engine_retry_mode"]["advanced"])
+
     def test_catalog_keeps_repeat_install_instances_and_safe_project_authority(self):
         packages, instances, unsupported = normalize_automation_plugin_catalog(
             _catalog_payload()
@@ -667,7 +690,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             automation_provider_counts={"ronghui": 1, "yunda": 0},
             automation_provider_enabled_counts={"ronghui": 1, "yunda": 0},
         )
-        card = html.split("<article", 2)[2].split("</article>", 1)[0]
+        card = html.split('class="auto-card"', 1)[1].split("</article>", 1)[0]
         install_form = html.split('data-plugin-install-form', 1)[1].split("</form>", 1)[0]
         account_select = card.split('data-plugin-account-role="finance_quote_source"', 1)[1]
         account_select = account_select.split("</select>", 1)[0]
@@ -675,6 +698,10 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         resource_select = resource_select.split("</select>", 1)[0]
 
         self.assertIn("已验签的自动化动作", html)
+        self.assertIn('aria-controls="automation-plugin-manager-dialog"', html)
+        self.assertIn('<dialog class="automation-plugin-manager-dialog"', html)
+        self.assertIn("data-plugin-drop-zone", install_form)
+        self.assertIn("把签名 ZIP 拖到这里安装", install_form)
         self.assertIn("华东财务同步", card)
         self.assertIn("1.2.3", card)
         self.assertEqual(1, card.count("data-project-policy-toggle"))
@@ -688,8 +715,28 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn("Token、表格 ID、文件路径和完整配置不会发送到浏览器", card)
         self.assertNotIn("data-cron-editor", card)
         self.assertNotIn("policy_hash", card)
+        self.assertIn('name="project-policy-finance_action_east"', card)
         self.assertNotIn('name="automation_id"', install_form)
         self.assertNotIn('name="package_sha256"', install_form)
+
+    def test_plugin_manager_drop_flow_uses_dialog_and_only_accepts_one_zip(self):
+        template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+        script_source = (
+            CONSOLE_DIR / "static" / "automation_approval_policy.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('aria-haspopup="dialog"', template_source)
+        self.assertIn("data-plugin-file-choose", template_source)
+        self.assertIn('accept=".zip,application/zip"', template_source)
+        self.assertIn('dropZone?.addEventListener("dragenter"', script_source)
+        self.assertIn('dropZone?.addEventListener("drop"', script_source)
+        self.assertIn('dialog.addEventListener("cancel"', script_source)
+        self.assertIn('event.key === "Escape" && dialog.open', script_source)
+        self.assertIn("files.length !== 1", script_source)
+        self.assertIn("void submitInstall(files[0])", script_source)
+        self.assertIn("filename.replace(/\\.zip$/i", script_source)
 
     def test_unstable_plugin_state_disables_conflicting_card_operations(self):
         source = (CONSOLE_DIR / "templates" / "automation.html").read_text(

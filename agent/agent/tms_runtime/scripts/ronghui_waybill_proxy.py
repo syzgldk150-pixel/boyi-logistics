@@ -17,7 +17,10 @@ from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.ronghui_user_context import decode_js_cookie_value, parse_ronghui_user_info_cookie
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
 from agent.tms_runtime.session_broker import get_session_broker
-from shared.manual_entry_contracts import canonical_manual_proxy_path
+from shared.manual_entry_contracts import (
+    RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,
+    canonical_manual_proxy_path,
+)
 
 
 ORDER_ENTRY_MENU_ID = "1622"
@@ -48,23 +51,7 @@ RONGHUI_USER_INFO_FIELDS = (
     "loginUserName",
 )
 
-ALLOWED_PATH_PREFIXES = (
-    "/widget/",
-    "/static/",
-    "/dataQuery/",
-    "/dataOperation/",
-    "/minic/",
-    "/address/",
-    "/advancePayment/",
-    "/commonOption/",
-    "/fhdquote/",
-    "/file/",
-    "/map/",
-    "/userView/",
-    "/unauth/download/",
-    "/menuTreeExtend/",
-    "/module/",
-)
+ALLOWED_PATH_PREFIXES = RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES
 RELATIVE_ALLOWED_PATH_PREFIXES = tuple(prefix.lstrip("/") for prefix in ALLOWED_PATH_PREFIXES if prefix.startswith("/"))
 STATIC_SAME_ORIGIN_SUFFIXES = (".css", ".woff", ".woff2", ".ttf", ".eot", ".otf")
 STATIC_FONT_PATH_MARKERS = ("/fonts/", "/font/", "/iconfont/")
@@ -722,6 +709,9 @@ RONGHUI_PREFILL_HELPER = """
 (function () {
   if (window.codexManualPrefill && window.codexManualPrefill.ronghui) return;
   window.codexManualPrefill = window.codexManualPrefill || {};
+  var shipnowParentOrigin = window.location.origin === "https://www.boyi.homes"
+    ? "https://boyi.homes"
+    : window.location.origin;
   function clean(value) { return String(value == null ? "" : value).trim(); }
   function namesOf(spec) {
     var names = [];
@@ -1028,7 +1018,7 @@ RONGHUI_PREFILL_HELPER = """
       window.parent.postMessage({
         type: "SHIPNOW_PREFILL_READY",
         provider: "ronghui"
-      }, window.location.origin);
+      }, shipnowParentOrigin);
     } catch (_) {}
   }
   function waitForRonghuiPrefillReady(attempt) {
@@ -1069,7 +1059,7 @@ RONGHUI_PREFILL_HELPER = """
         filled: filled,
         missing: specs.map(function (spec) { return clean(spec && spec.key) || "unknown"; }),
         error: "融辉原页尚未加载完成"
-      }, window.location.origin);
+      }, shipnowParentOrigin);
       if (serial === prefillRunSerial) activePrefillRunning = false;
       return;
     }
@@ -1089,7 +1079,7 @@ RONGHUI_PREFILL_HELPER = """
       ok: Boolean(filled.length),
       filled: filled,
       missing: missing
-    }, window.location.origin);
+    }, shipnowParentOrigin);
     if (serial === prefillRunSerial) activePrefillRunning = false;
   }
   function startPrefill(message) {
@@ -1105,7 +1095,7 @@ RONGHUI_PREFILL_HELPER = """
   }
   window.addEventListener("message", function (event) {
     var data = event.data || {};
-    if (event.origin !== window.location.origin) return;
+    if (event.origin !== shipnowParentOrigin) return;
     if (data.type !== "SHIPNOW_PREFILL" || data.provider !== "ronghui") return;
     startPrefill(data);
   });

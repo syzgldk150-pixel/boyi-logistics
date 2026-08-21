@@ -8,7 +8,7 @@
 
 Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；该 Token 只证明服务连接。涉及管理员命令、审批或账号管理时，服务端还必须用独立 `CONSOLE_AGENT_SIGNING_SECRET` 对 method、精确 path/query、原始 body 哈希、时间戳、一次性 nonce 和真实 MySQL 管理员会话快照签名；浏览器不能提交 `_console_principal`，签名密钥缺失时显式返回 503。响应在该边界统一解包 `ok/data/error`，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
-韵达/融辉活动原页同源代理暂时禁用。`/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*`、`/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，在迁移到独立来源前不得调用 Agent。
+韵达/融辉活动原页同源代理永久禁用。旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*`、`/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，不得调用 Agent。经主站 MySQL 管理员会话创建的一次性 ticket 只能在 `https://www.boyi.homes/original/{provider}/` 独立 origin 兑换为路径限定 capability；不得转发主站 Cookie，写请求必须来自该独立 origin。
 
 ## 事项中心与命令入口
 

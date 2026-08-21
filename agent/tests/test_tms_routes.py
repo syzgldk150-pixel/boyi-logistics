@@ -19,12 +19,8 @@ class TMSRoutesTests(unittest.TestCase):
         app.include_router(router, prefix="/internal/v1")
         self.client = TestClient(app)
 
-    def test_active_original_page_targets_never_execute_even_if_capability_check_would_allow(self):
-        targets = (
-            "ronghui_waybill_proxy",
-            "yunda_waybill_entry",
-            "yunda_waybill_proxy",
-        )
+    def test_legacy_yunda_entry_never_executes_even_if_capability_check_would_allow(self):
+        targets = ("yunda_waybill_entry",)
         with patch(
             "agent.tms_runtime.routes.authorize_tms_target",
             return_value=True,
@@ -44,6 +40,48 @@ class TMSRoutesTests(unittest.TestCase):
                         "ACTIVE_ORIGINAL_PAGE_DISABLED",
                         response.json()["data"]["error_code"],
                     )
+
+    def test_isolated_original_page_proxy_requires_exact_reviewed_prefix(self):
+        self.assertTrue(
+            routes_module.authorize_direct_manual_target(
+                "yunda_waybill_proxy",
+                {
+                    "method": "GET",
+                    "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
+                    "proxy_prefix": "/original/yunda",
+                },
+                console_principal_verified=True,
+            )
+        )
+        self.assertTrue(
+            routes_module.authorize_direct_manual_target(
+                "ronghui_waybill_proxy",
+                {"method": "GET", "path": "/module/index", "proxy_prefix": "/original/ronghui"},
+                console_principal_verified=True,
+            )
+        )
+        self.assertFalse(
+            routes_module.authorize_direct_manual_target(
+                "yunda_waybill_proxy",
+                {
+                    "method": "GET",
+                    "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
+                    "proxy_prefix": "/ocr/yunda/live",
+                },
+                console_principal_verified=True,
+            )
+        )
+        self.assertFalse(
+            routes_module.authorize_direct_manual_target(
+                "yunda_waybill_proxy",
+                {
+                    "method": "GET",
+                    "path": "/ky_inms/public/../private/admin",
+                    "proxy_prefix": "/original/yunda",
+                },
+                console_principal_verified=True,
+            )
+        )
 
     def test_versioned_admin_route_uses_standard_envelope(self):
         class FakeAccountManager:
@@ -199,6 +237,10 @@ class TMSRoutesTests(unittest.TestCase):
                     {
                         "account_id": "ronghui_default",
                         "system": "ronghui",
+                        "auto_login_enabled": True,
+                        "auto_login_failure_count": 3,
+                        "auto_login_failure_limit": 3,
+                        "auto_login_blocked": True,
                         "status": {
                             "profile": "default",
                             "account_id": "ronghui_default",
@@ -317,6 +359,10 @@ class TMSRoutesTests(unittest.TestCase):
                 "account_id": "ronghui_default",
                 "status": "error",
                 "last_error_summary": "缺少登录配置",
+                "auto_login_enabled": True,
+                "auto_login_failure_count": 0,
+                "auto_login_failure_limit": 3,
+                "auto_login_blocked": False,
             }
         )
 
@@ -327,6 +373,8 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertTrue(payload["cached"])
         self.assertEqual(payload["accounts"][0]["status"]["status"], "error")
         self.assertEqual(payload["accounts"][0]["status"]["last_error_summary"], "缺少登录配置")
+        self.assertEqual(payload["accounts"][0]["auto_login_failure_count"], 0)
+        self.assertFalse(payload["accounts"][0]["auto_login_blocked"])
         self.assertEqual(payload["accounts"][1]["status"]["status"], "authenticated")
 
     def test_legacy_credentials_routes_use_account_manager(self):
