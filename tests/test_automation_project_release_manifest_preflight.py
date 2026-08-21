@@ -731,6 +731,55 @@ def test_initial_release_rejects_unavailable_runtime(preflight):
     assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
 
 
+def test_bootstrap_generation_requires_explicit_blocked_allowance(preflight):
+    contract = {
+        "validate_generation_row": lambda row: row,
+        "templates": {
+            "blocked-project": {
+                "tool_name": "blocked_tool",
+                "task_ids": frozenset(),
+            }
+        },
+    }
+    source = {
+        "automation_generation": 1,
+        "project_configuration_version": 1,
+        "scheduled_tasks": [],
+    }
+    generation_row = {
+        "generation_state": "BLOCKED",
+        "committed_at": object(),
+        "generation": 1,
+        "plugin_id": "blocked_tool",
+        "snapshot_json": {
+            "execution_metadata": {
+                "project_config_version": 1,
+                "schedule": {"kind": "none", "times": [], "enabled": False},
+                "compiled_invocations": {},
+            }
+        },
+    }
+
+    preflight._validate_bootstrap_generation_source(
+        contract,
+        automation_id="blocked-project",
+        source=source,
+        generation_row=generation_row,
+        backups={},
+        allow_blocked=True,
+    )
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_bootstrap_generation_source(
+            contract,
+            automation_id="blocked-project",
+            source=source,
+            generation_row=generation_row,
+            backups={},
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_BOOTSTRAP_GENERATION_INVALID"
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     (
