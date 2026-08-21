@@ -311,6 +311,62 @@ class AutomationPluginManagementService:
             "quarantine_status": quarantine_status,
         }
 
+    def arrival_stats_generation_diagnostic(self, *, actor: Actor) -> dict[str, Any]:
+        """Return only the closed identity needed to audit the blocked write."""
+
+        self._require_console_actor(actor, super_admin=True)
+        entry = self._catalog.require("arrival_stats")
+        if entry.plugin_id != "sync_arrival_stats":
+            raise PluginConflictError(
+                "generation diagnostic is not available for this automation action",
+                code="PLUGIN_RECOVERY_SCOPE_INVALID",
+            )
+        if entry.reconcile_state != RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE:
+            return {
+                "automation_id": entry.automation_id,
+                "plugin_id": entry.plugin_id,
+                "target_generation": entry.target_generation,
+                "committed_generation": entry.committed_generation,
+                "reconcile_state": entry.reconcile_state.value,
+                "lease_id": "",
+                "lease_generation": None,
+                "lease_outcome": "NO_BLOCKED_WRITE_LEASE",
+                "lease_acquired_at": None,
+                "lease_expires_at": None,
+                "lease_released_at": None,
+            }
+        audit = self._targets.current_unknown_write_audit(entry.automation_id)
+        expected_fields = {
+            "generation",
+            "lease_id",
+            "outcome",
+            "acquired_at",
+            "expires_at",
+            "released_at",
+        }
+        if set(audit) != expected_fields or audit.get("outcome") != "WRITE_OUTCOME_UNKNOWN":
+            raise PluginConflictError(
+                "arrival statistics unknown-write audit identity is invalid",
+                code="UNKNOWN_WRITE_QUARANTINE_MISMATCH",
+            )
+        return {
+            "automation_id": entry.automation_id,
+            "plugin_id": entry.plugin_id,
+            "target_generation": entry.target_generation,
+            "committed_generation": entry.committed_generation,
+            "reconcile_state": entry.reconcile_state.value,
+            "lease_id": str(audit["lease_id"]),
+            "lease_generation": int(audit["generation"]),
+            "lease_outcome": str(audit["outcome"]),
+            "lease_acquired_at": _iso_datetime(audit["acquired_at"]),
+            "lease_expires_at": _iso_datetime(audit["expires_at"]),
+            "lease_released_at": (
+                _iso_datetime(audit["released_at"])
+                if audit["released_at"] is not None
+                else None
+            ),
+        }
+
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)
         workers: list[dict[str, Any]] = []

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -148,6 +148,22 @@ class _ApiService:
             "quarantine_status": "QUARANTINED_UNKNOWN_WRITE",
         }
 
+    def arrival_stats_generation_diagnostic(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("arrival_stats_diagnostic", kwargs))
+        return {
+            "automation_id": "arrival_stats",
+            "plugin_id": "sync_arrival_stats",
+            "target_generation": 1,
+            "committed_generation": 1,
+            "reconcile_state": "BLOCKED_UNKNOWN_WRITE",
+            "lease_id": "22222222-2222-2222-2222-222222222222",
+            "lease_generation": 1,
+            "lease_outcome": "WRITE_OUTCOME_UNKNOWN",
+            "lease_acquired_at": "2026-08-20T08:00:00+00:00",
+            "lease_expires_at": "2026-08-20T08:02:00+00:00",
+            "lease_released_at": "2026-08-20T08:00:01+00:00",
+        }
+
 
 def _api_client(service: _ApiService) -> TestClient:
     app = FastAPI()
@@ -178,6 +194,11 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
         diagnostic.json()["data"]["quarantine_status"]
         == "QUARANTINED_UNKNOWN_WRITE"
     )
+    arrival_diagnostic = client.get(
+        "/internal/v1/automation/instances/arrival_stats/generation/diagnostic"
+    )
+    assert arrival_diagnostic.status_code == 200
+    assert arrival_diagnostic.json()["data"]["lease_outcome"] == "WRITE_OUTCOME_UNKNOWN"
     installed = client.post(
         "/internal/v1/automation/plugins/install",
         data={
@@ -370,6 +391,55 @@ def test_delivery_generation_diagnostic_reports_only_the_exact_quarantine() -> N
     with pytest.raises(PluginConflictError) as raised:
         service.delivery_status_generation_diagnostic(actor=_console_actor())
     assert raised.value.code == "DELIVERY_STATUS_QUARANTINE_MISMATCH"
+
+
+def test_arrival_stats_generation_diagnostic_reports_closed_audit_identity() -> None:
+    acquired_at = datetime(2026, 8, 20, 8, 0, tzinfo=timezone.utc)
+    released_at = datetime(2026, 8, 20, 8, 0, 1, tzinfo=timezone.utc)
+    service = AutomationPluginManagementService(
+        catalog=_Catalog(  # type: ignore[arg-type]
+            _entry(
+                automation_id="arrival_stats",
+                plugin_id="sync_arrival_stats",
+                target_generation=1,
+                committed_generation=1,
+                reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+            )
+        ),
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(
+            current_unknown_write_audit=lambda _automation_id: {
+                "generation": 1,
+                "lease_id": "22222222-2222-2222-2222-222222222222",
+                "outcome": "WRITE_OUTCOME_UNKNOWN",
+                "acquired_at": acquired_at,
+                "expires_at": acquired_at + timedelta(minutes=2),
+                "released_at": released_at,
+            }
+        ),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    diagnostic = service.arrival_stats_generation_diagnostic(actor=_console_actor())
+
+    assert set(diagnostic) == {
+        "automation_id",
+        "plugin_id",
+        "target_generation",
+        "committed_generation",
+        "reconcile_state",
+        "lease_id",
+        "lease_generation",
+        "lease_outcome",
+        "lease_acquired_at",
+        "lease_expires_at",
+        "lease_released_at",
+    }
+    assert diagnostic["lease_id"] == "22222222-2222-2222-2222-222222222222"
+    assert diagnostic["lease_acquired_at"] == "2026-08-20T08:00:00+00:00"
 
 
 @pytest.mark.parametrize(

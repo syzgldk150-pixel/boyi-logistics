@@ -682,6 +682,25 @@ class MySQLAutomationPluginRuntimeAdapter:
             raise ValueError("runtime unknown-write recovery is unavailable")
         return dict(row)
 
+    def inspect_current_unknown_generation_write(
+        self,
+        automation_id: str,
+    ) -> dict[str, Any]:
+        """Read the sole unknown lease's bounded audit identity."""
+
+        with self._orchestration.unit_of_work() as uow:
+            inspector = getattr(
+                uow.automation_plugins,
+                "inspect_current_unknown_generation_write_row",
+                None,
+            )
+            if not callable(inspector):
+                raise ValueError("runtime unknown-write audit is unavailable")
+            row = inspector(automation_id)
+        if not isinstance(row, Mapping):
+            raise ValueError("runtime unknown-write audit is unavailable")
+        return dict(row)
+
     def reserve_generation_dispose(
         self,
         automation_id: str,

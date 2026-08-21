@@ -1791,6 +1791,47 @@ class AutomationPluginGenerationRepositoryMixin:
             "lease_id": _required_text(row.get("lease_id"), "lease_id"),
         }
 
+    def inspect_current_unknown_generation_write_row(
+        self,
+        automation_id: str,
+    ) -> dict[str, Any]:
+        """Return a closed, read-only audit view of the sole unknown lease."""
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lease_id, generation, outcome, acquired_at, expires_at,
+                       released_at
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s AND outcome='WRITE_OUTCOME_UNKNOWN'
+                ORDER BY generation, lease_id
+                LIMIT 2
+                """,
+                (safe_automation_id,),
+            )
+            rows = _rows(cursor)
+        if len(rows) != 1:
+            raise ConcurrentUpdateError(
+                "runtime project does not have exactly one unknown write to inspect"
+            )
+        row = rows[0]
+        outcome = _required_text(row.get("outcome"), "outcome")
+        if outcome != "WRITE_OUTCOME_UNKNOWN":
+            raise ConcurrentUpdateError("runtime unknown-write audit identity changed")
+        return {
+            "generation": _positive_int(row.get("generation"), "generation"),
+            "lease_id": _required_text(row.get("lease_id"), "lease_id"),
+            "outcome": outcome,
+            "acquired_at": _mysql_datetime(row.get("acquired_at"), "acquired_at"),
+            "expires_at": _mysql_datetime(row.get("expires_at"), "expires_at"),
+            "released_at": (
+                _mysql_datetime(row.get("released_at"), "released_at")
+                if row.get("released_at") is not None
+                else None
+            ),
+        }
+
     def finalize_generation_write_row(
         self,
         *,

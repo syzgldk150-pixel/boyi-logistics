@@ -493,6 +493,18 @@ def create_automation_plugin_management_router(
             lambda: service_provider().delivery_status_generation_diagnostic(actor=actor)
         )
 
+    @router.get(
+        "/internal/v1/automation/instances/arrival_stats/generation/diagnostic",
+        response_model=None,
+    )
+    async def arrival_stats_generation_diagnostic(
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().arrival_stats_generation_diagnostic(actor=actor)
+        )
+
     return router
 
 

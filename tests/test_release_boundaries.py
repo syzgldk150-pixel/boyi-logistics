@@ -1217,6 +1217,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         successful = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
             diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=(recovery); }
@@ -1234,13 +1235,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, successful.returncode, successful.stderr)
         self.assertEqual(
-            "delivery_diagnostic identity:recovery_transport recovery identity:full manifest activation",
+            "arrival_diagnostic delivery_diagnostic identity:recovery_transport recovery identity:full manifest activation",
             successful.stdout.strip(),
         )
 
         failed = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
             diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=(recovery); return 1; }
@@ -1258,12 +1260,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, failed.returncode, failed.stderr)
         self.assertEqual(
-            "delivery_diagnostic identity:recovery_transport recovery rollback", failed.stdout.strip()
+            "arrival_diagnostic delivery_diagnostic identity:recovery_transport recovery rollback",
+            failed.stdout.strip(),
         )
 
         auth_failure = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
             diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
@@ -1276,7 +1280,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, auth_failure.returncode, auth_failure.stderr)
         self.assertEqual(
-            "delivery_diagnostic identity:recovery_transport recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
+            "arrival_diagnostic delivery_diagnostic identity:recovery_transport "
+            "recovery:71510af3-fcf1-461b-9c2e-152665f32f98 "
             "identity:full manifest",
             auth_failure.stdout.strip(),
         )
@@ -1284,6 +1289,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         prewrite_failure = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
             diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
             check_service_identity_smoke() { events+=("identity:${1:-full}"); }
             recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
@@ -1297,7 +1303,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(0, prewrite_failure.returncode, prewrite_failure.stderr)
         self.assertEqual(
-            "delivery_diagnostic identity:recovery_transport recovery:2a86ba4b-5c63-4bf2-93de-f61372d18274 "
+            "arrival_diagnostic delivery_diagnostic identity:recovery_transport "
+            "recovery:2a86ba4b-5c63-4bf2-93de-f61372d18274 "
             "identity:full manifest",
             prewrite_failure.stdout.strip(),
         )
@@ -1306,6 +1313,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         completed = _run_sourced_release_harness(
             r'''
             events=()
+            diagnose_arrival_stats_generation() { events+=(arrival_diagnostic); }
             diagnose_delivery_status_generation() {
               DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=1
               events+=(delivery_diagnostic)
@@ -1319,7 +1327,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(
-            "delivery_diagnostic identity:delivery_unknown_write_quarantine manifest",
+            "arrival_diagnostic delivery_diagnostic "
+            "identity:delivery_unknown_write_quarantine manifest",
             completed.stdout.strip(),
         )
 
