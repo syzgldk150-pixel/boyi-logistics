@@ -844,6 +844,68 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual("7", app.last_call["payload"]["actor"]["actor_id"])
         self.assertEqual("7", app.last_call["console_principal"]["actor_id"])
 
+    def test_live_proxies_forward_closed_body_context_and_signed_principal(self):
+        app = self._app()
+        trusted_context = app._control_plane_read_context(None)
+        trusted_context["request_metadata"] = {"internal_only": "must-not-forward"}
+        trusted_context["source"] = "caller-supplied-source"
+        app._control_plane_read_context = lambda _handler: dict(trusted_context)
+        app._control_plane_write_context = lambda _handler: dict(trusted_context)
+
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.last_call = {
+                "method": method,
+                "endpoint": endpoint,
+                "payload": payload,
+                "timeout": timeout,
+                "console_principal": console_principal,
+            }
+            return {
+                "ok": True,
+                "data": {
+                    "ok": True,
+                    "data": {
+                        "ok": True,
+                        "status_code": 200,
+                        "headers": {"Content-Type": "text/html; charset=utf-8"},
+                        "body_base64": base64.b64encode(b"<html>proxy</html>").decode("ascii"),
+                    },
+                },
+            }
+
+        app._agent_request = types.MethodType(agent_request, app)
+        cases = (
+            (
+                "yunda",
+                app._handle_yunda_live_proxy,
+                "/ocr/yunda/live/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
+            ),
+            ("ronghui", app._handle_ronghui_live_proxy, "/ocr/ronghui/live"),
+        )
+
+        for provider, proxy, path in cases:
+            with self.subTest(provider=provider):
+                handler = _LiveHandler(headers={"Accept": "text/html"})
+                proxy(handler, path, method="GET", query={})
+
+                self.assertEqual(HTTPStatus.OK, handler.status)
+                self.assertEqual(
+                    {
+                        "params",
+                        "timeout_sec",
+                        "actor",
+                        "actor_roles",
+                        "source",
+                    },
+                    set(app.last_call["payload"]),
+                )
+                self.assertEqual(trusted_context["actor"], app.last_call["payload"]["actor"])
+                self.assertEqual(["super_admin"], app.last_call["payload"]["actor_roles"])
+                self.assertEqual("console", app.last_call["payload"]["source"])
+                self.assertEqual(trusted_context["_console_principal"], app.last_call["console_principal"])
+                self.assertNotIn("request_metadata", app.last_call["payload"])
+                self.assertIs(trusted_context["_console_principal"], app.last_call["console_principal"])
+
     def test_handle_yunda_live_proxy_adds_local_print_url_to_successful_save_response(self):
         repository = _Repository()
         app = self._app(repository)
