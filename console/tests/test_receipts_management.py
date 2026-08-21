@@ -252,16 +252,18 @@ def _build_app(repository):
         runtime_dir=Path(tempfile.mkdtemp()),
     )
     app.repository = repository
+    trusted_actor = {
+        "actor_type": "console_admin",
+        "actor_id": "7",
+        "roles": ["super_admin"],
+        "display_name": "tester",
+        "authenticated_by": "mysql_admin_session",
+    }
     app._control_plane_write_context = lambda handler: {
-        "actor": {
-            "actor_type": "console_admin",
-            "actor_id": "7",
-            "roles": ["super_admin"],
-            "display_name": "tester",
-            "authenticated_by": "mysql_admin_session",
-        },
+        "actor": trusted_actor,
         "actor_roles": ["super_admin"],
         "source": "console",
+        "_console_principal": trusted_actor,
     }
     app._control_plane_read_context = app._control_plane_write_context
     app.template_env = Environment(
@@ -1404,8 +1406,14 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_yunda_live_proxy_uses_receipt_prefix_and_existing_agent_endpoint(self):
         app = _build_app(_ReceiptRepo())
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
-            self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.last_call = {
+                "method": method,
+                "endpoint": endpoint,
+                "payload": payload,
+                "timeout": timeout,
+                "console_principal": console_principal,
+            }
             return {
                 "ok": True,
                 "data": {
@@ -1433,12 +1441,20 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("/internal/v1/tms/yunda_waybill_proxy", app.last_call["endpoint"])
         self.assertEqual("/receipts/yunda/live", app.last_call["payload"]["params"]["proxy_prefix"])
         self.assertEqual("/ky_inms/public/index.php/business/waybill/mailing/index.html", app.last_call["payload"]["params"]["path"])
+        self.assertNotIn("_console_principal", app.last_call["payload"])
+        self.assertEqual("7", app.last_call["console_principal"]["actor_id"])
 
     def test_receipt_ronghui_live_proxy_uses_receipt_prefix_and_existing_agent_endpoint(self):
         app = _build_app(_ReceiptRepo())
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
-            self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.last_call = {
+                "method": method,
+                "endpoint": endpoint,
+                "payload": payload,
+                "timeout": timeout,
+                "console_principal": console_principal,
+            }
             return {
                 "ok": True,
                 "data": {
@@ -1468,6 +1484,8 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("", app.last_call["payload"]["params"]["path"])
         self.assertEqual("", app.last_call["payload"]["params"]["query"])
         self.assertEqual("寄方回单跟踪", app.last_call["payload"]["params"]["entry_menu_text"])
+        self.assertNotIn("_console_principal", app.last_call["payload"])
+        self.assertEqual("7", app.last_call["console_principal"]["actor_id"])
 
     def test_receipt_live_proxies_reject_writes_without_agent_call(self):
         cases = (

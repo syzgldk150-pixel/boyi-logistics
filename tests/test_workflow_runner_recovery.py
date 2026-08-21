@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
+from agent.automation_plugins.errors import PluginConflictError
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -11,6 +12,7 @@ from agent.orchestration.models import (
     OrchestrationError,
     PlanStep,
     RiskLevel,
+    RunStatus,
 )
 from agent.orchestration.workflow_runner import WorkflowRunner
 
@@ -44,6 +46,7 @@ class _Events:
 class _Uow:
     def __init__(self, repository):
         self.steps = _Steps(repository)
+        self.runs = _Runs(repository)
         self.events = _Events(repository)
         self.committed = False
 
@@ -69,6 +72,11 @@ class _Repository:
         }
         self.events = []
         self.commits = 0
+        self.run = {
+            "run_id": "run-id",
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+        }
 
     def unit_of_work(self):
         return _Uow(self)
@@ -77,8 +85,13 @@ class _Repository:
 class _Catalog:
     def __init__(self, capability):
         self.capability = capability
+        self.blocked = False
+        self.calls = 0
 
     def get_capability(self, _tool_name):
+        self.calls += 1
+        if self.blocked:
+            raise PluginConflictError("project runtime is blocked")
         return copy.deepcopy(self.capability)
 
 
@@ -92,6 +105,48 @@ class _Execution:
     async def reconcile_step(self, *args, **kwargs):
         del args, kwargs
         return copy.deepcopy(self.reconciliation)
+
+
+class _Runs:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def get(self, run_id, *, for_update=False):
+        del for_update
+        if run_id != self.repository.run["run_id"]:
+            return None
+        return copy.deepcopy(self.repository.run)
+
+
+class _BlockingExecution(_Execution):
+    def __init__(self, catalog):
+        super().__init__()
+        self.catalog = catalog
+        self.calls = []
+
+    async def execute_step(self, step, *, run_id, step_id, execution_context):
+        self.calls.append((step, run_id, step_id, execution_context))
+        self.catalog.blocked = True
+        return {"ok": False, "error_code": "PLUGIN_EXECUTION_FAILED"}
+
+
+class _RetryableFailureVerifier:
+    def __init__(self):
+        self.capability = None
+
+    def verify(self, _step, _raw_result, capability):
+        self.capability = copy.deepcopy(capability)
+        return type(
+            "Outcome",
+            (),
+            {
+                "accepted": False,
+                "run_status": RunStatus.FAILED_RETRYABLE,
+                "code": "PLUGIN_EXECUTION_FAILED",
+                "message": "plugin returned a retryable failure",
+                "result": None,
+            },
+        )()
 
 
 class _IncompletePilotProjection:
@@ -209,6 +264,7 @@ class WorkflowRunnerRecoveryTests(unittest.IsolatedAsyncioTestCase):
         runner._pilot_projection = None
         runner._worker_id = "worker-1"
         runner._lease_seconds = 120
+        runner._active = {}
         return runner
 
     async def test_interrupted_external_write_without_reconciler_blocks_instead_of_replaying(self):
@@ -319,6 +375,45 @@ class WorkflowRunnerRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "PAGINATION_INCOMPLETE",
             pilot_projection.calls[0]["failure_code"],
         )
+
+    async def test_post_execution_block_persists_failure_with_captured_capability(self):
+        repository = _Repository()
+        repository.step["status"] = "PENDING"
+        catalog = _Catalog({"retry": {"safe": False}})
+        execution = _BlockingExecution(catalog)
+        runner = self._runner(repository, catalog.capability, execution)
+        runner._catalog = catalog
+        runner._get_or_create_step = lambda *_args: copy.deepcopy(repository.step)
+
+        async def await_execution(task, **_kwargs):
+            return await task
+
+        verifier = _RetryableFailureVerifier()
+        runner._await_with_lease_heartbeat = await_execution
+        runner._verifier = verifier
+        pilot_projection = _IncompletePilotProjection()
+        runner._pilot_projection = pilot_projection
+        plan = type("Plan", (), {"steps": (_step(OperationType.EXTERNAL_WRITE),)})()
+        run = {
+            "run_id": "run-id",
+            "work_item_id": "work-id",
+            "correlation_id": "correlation-id",
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            await runner._execute_plan(run, plan, _command())
+
+        self.assertEqual("PLUGIN_EXECUTION_FAILED", raised.exception.code)
+        self.assertEqual("FAILED_RETRYABLE", repository.step["status"])
+        self.assertEqual("PLUGIN_EXECUTION_FAILED", repository.step["error_code"])
+        self.assertEqual(
+            {"ok": False, "error_code": "PLUGIN_EXECUTION_FAILED"},
+            repository.step["result_summary"],
+        )
+        self.assertEqual(catalog.capability, verifier.capability)
+        self.assertEqual(1, catalog.calls)
+        self.assertEqual(1, len(execution.calls))
+        self.assertEqual(1, len(pilot_projection.calls))
 
 
 if __name__ == "__main__":

@@ -507,9 +507,9 @@
 
 {% if not document %}
 {% if is_entry_tabs_shell %}
-{% set entry_initial_provider = 'boyi' %}
-{% set entry_initial_label = '博益 1' %}
-{% set entry_initial_src = '/ocr/boyi/frame' %}
+{% set entry_initial_provider = 'yunda' if is_yunda_mode else ('ronghui' if is_ronghui_mode else 'boyi') %}
+{% set entry_initial_label = ('韵达' if is_yunda_mode else ('融辉' if is_ronghui_mode else '博益')) ~ ' 1' %}
+{% set entry_initial_src = '/original-pages/yunda/launch' if is_yunda_mode else ('/original-pages/ronghui/launch' if is_ronghui_mode else '/ocr/boyi/frame') %}
 <div
   class="entry-tabs-shell"
   data-entry-tabs-root
@@ -517,6 +517,8 @@
   data-entry-max-tabs="6"
   data-entry-initial-provider="{{ entry_initial_provider }}"
   data-entry-src-boyi="/ocr/boyi/frame"
+  data-entry-src-yunda="/original-pages/yunda/launch"
+  data-entry-src-ronghui="/original-pages/ronghui/launch"
 >
   <div class="entry-tabs-toolbar">
     <div class="entry-tab-list" data-entry-tab-list role="tablist" aria-label="录单页签">
@@ -529,14 +531,11 @@
     </div>
     <div class="entry-tabs-actions">
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="truck"></i> 韵达原页</button>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="truck"></i> 融辉原页</button>
       <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> OCR队列</a>
     </div>
   </div>
-  {% if active_original_page_disabled|default(false) %}
-  <div class="manual-notice is-error" role="status">
-    第三方活动原页暂时停用，待迁移到独立来源后再开放。当前仍可使用博益手工录单、OCR 队列和控制平面任务。
-  </div>
-  {% endif %}
   <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
   <div class="entry-frame-stack" data-entry-frame-stack>
     <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-session-url="/automations"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations"{% endif %}>
@@ -1028,8 +1027,14 @@
     let entryTabSerial = 1;
     const entryProviderLabels = {
       boyi: "博益",
+      yunda: "韵达",
+      ronghui: "融辉",
     };
-    const entryFrameSrc = () => "/ocr/boyi/frame";
+    const ORIGINAL_PAGE_ORIGIN = "https://www.boyi.homes";
+    const entryFrameSrc = (provider) => {
+      const key = provider === "yunda" ? "entrySrcYunda" : (provider === "ronghui" ? "entrySrcRonghui" : "entrySrcBoyi");
+      return entryTabsRoot?.dataset[key] || "/ocr/boyi/frame";
+    };
     const entryTabCount = () => entryTabsRoot ? entryTabsRoot.querySelectorAll("[data-entry-tab]").length : 0;
     const entryProviderCount = (provider) => entryTabsRoot ? entryTabsRoot.querySelectorAll(`[data-entry-tab][data-entry-provider="${provider}"]`).length : 0;
     const entryFrameForMessage = (event, provider) => {
@@ -1085,7 +1090,7 @@
     };
     function createEntryTab(provider, options = {}) {
       if (!entryTabsRoot || !entryTabList || !entryFrameStack) return null;
-      const normalizedProvider = provider === "boyi" ? provider : "boyi";
+      const normalizedProvider = ["boyi", "yunda", "ronghui"].includes(provider) ? provider : "boyi";
       if (entryTabCount() >= ENTRY_MAX_TABS) {
         updateEntryLimitState();
         return null;
@@ -1240,7 +1245,10 @@
         },
       };
       try {
-        targetFrame.contentWindow.postMessage(message, window.location.origin);
+        targetFrame.contentWindow.postMessage(
+          message,
+          ["yunda", "ronghui"].includes(mode) ? ORIGINAL_PAGE_ORIGIN : window.location.origin,
+        );
       } catch (error) {
         console.warn("SHIPNOW_PREFILL postMessage failed", error);
       }
@@ -1279,8 +1287,12 @@
       send();
     }
     window.addEventListener("message", (event) => {
-      if (event.origin !== window.location.origin) return;
       const data = event.data || {};
+      if (["SHIPNOW_PREFILL_READY", "SHIPNOW_PREFILL_RESULT", "SHIPNOW_YUNDA_LOCAL_PRINT"].includes(data.type)) {
+        if (event.origin !== ORIGINAL_PAGE_ORIGIN) return;
+      } else if (event.origin !== window.location.origin) {
+        return;
+      }
       if (data.type === "SHIPNOW_PREFILL_READY" && ["yunda", "ronghui"].includes(data.provider)) {
         prefillReadyModes.add(data.provider);
         scheduleStoredPrefillToFrame(data.provider, entryFrameForMessage(event, data.provider));
@@ -1666,7 +1678,8 @@
       pending: "待维护",
     }[status] || "失败");
     const quoteButtonText = (provider) => {
-      if (provider === "yunda" || provider === "ronghui") return "原页预填已停用";
+      if (provider === "yunda") return "选择韵达并预填";
+      if (provider === "ronghui") return "选择融辉并预填";
       return "暂不可选";
     };
     const setQuoteSummary = (message, isError = false) => {
@@ -1698,7 +1711,7 @@
               <div class="manual-quote-price">${price}</div>
             </div>
             <div class="manual-quote-meta">${meta.length ? meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("") : "<span>暂无明细</span>"}</div>
-            <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="${escapeHtml(provider)}" disabled>
+            <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="${escapeHtml(provider)}" ${available && ["yunda", "ronghui"].includes(provider) ? "" : "disabled"}>
               ${escapeHtml(quoteButtonText(provider))}
             </button>
           </article>
@@ -1752,10 +1765,6 @@
       }
     };
     const selectQuoteProvider = (provider) => {
-      if (["yunda", "ronghui"].includes(provider)) {
-        showManualNotice("第三方活动原页已安全停用；请在独立原站录入，或使用控制平面任务。", "error");
-        return;
-      }
       const quote = (lastQuotePayload?.quotes || []).find((item) => item.provider === provider);
       if (!quote || quote.status !== "available") {
         showManualNotice("当前平台没有可用报价，不能预填。");

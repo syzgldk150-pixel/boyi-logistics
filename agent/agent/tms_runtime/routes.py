@@ -24,6 +24,12 @@ from agent.tms_runtime.monitoring import (
     build_monitoring_detail_link,
     build_monitoring_snapshot,
 )
+from shared.manual_entry_contracts import (
+    RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,
+    RONGHUI_MANUAL_PROXY_SAVE_PATH,
+    YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES,
+    YUNDA_MANUAL_PROXY_SAVE_PATH,
+)
 router = APIRouter(route_class=EnvelopedRoute)
 
 ACCOUNT_LIST_CACHE_TTL_SEC = 60
@@ -38,18 +44,8 @@ _agent_command_runtime: Any | None = None
 # falling through to another compatibility route.
 DIRECT_MANUAL_TARGETS = frozenset()
 DISABLED_ACTIVE_ORIGINAL_PAGE_TARGETS = frozenset(
-    {"ronghui_waybill_proxy", "yunda_waybill_entry", "yunda_waybill_proxy"}
+    {"yunda_waybill_entry"}
 )
-
-_MANUAL_WAYBILL_PROXY_PREFIX = {
-    "ronghui_waybill_proxy": "/ocr/ronghui/live",
-    "yunda_waybill_proxy": "/ocr/yunda/live",
-}
-_READ_ONLY_RECEIPT_PROXY_PREFIX = {
-    "ronghui_waybill_proxy": "/receipts/ronghui/live",
-    "yunda_waybill_proxy": "/receipts/yunda/live",
-}
-
 
 COMPAT_TOOL_BY_TARGET: dict[str, str] = {
     "receipts_audit": "receipts_audit",
@@ -109,10 +105,27 @@ def authorize_direct_manual_target(
     *,
     console_principal_verified: bool = False,
 ) -> bool:
-    """Active third-party original pages are disabled until isolated by origin."""
+    """Allow only the reviewed isolated-origin original-page proxy contract."""
 
-    del endpoint_name, params, console_principal_verified
-    return False
+    if not console_principal_verified or endpoint_name not in {
+        "ronghui_waybill_proxy",
+        "yunda_waybill_proxy",
+    }:
+        return False
+    provider = "ronghui" if endpoint_name == "ronghui_waybill_proxy" else "yunda"
+    if str(params.get("proxy_prefix") or "") != f"/original/{provider}":
+        return False
+    method = str(params.get("method") or "GET").strip().upper()
+    remote_path = str(params.get("path") or "").strip()
+    if method == "GET":
+        if provider == "yunda":
+            return remote_path.startswith(YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES)
+        return not remote_path or remote_path.startswith(RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES)
+    if method != "POST":
+        return False
+    if provider == "yunda":
+        return remote_path == YUNDA_MANUAL_PROXY_SAVE_PATH
+    return remote_path == RONGHUI_MANUAL_PROXY_SAVE_PATH
 
 
 class SubmitCodeRequest(BaseModel):

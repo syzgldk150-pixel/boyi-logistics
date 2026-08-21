@@ -29,6 +29,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 - Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。动作包只声明验签后的动作、平台、账号/资源角色、闭合 `config_schema`、允许入口和调度能力；同一 `plugin_id` 可以重复安装为不同 `automation_id`。任何持久化定时行若无法关联到已安装实例，Console 只能显示“迁移/插件缺失”阻断卡，禁止运行和配置。
 - 安装与升级只允许同源、真实 MySQL `super_admin` 会话。浏览器安装 multipart 只含 `package/instance_name/request_id`，不能指定 `automation_id`、manifest 或摘要；Console 限制 ZIP/请求体大小，在受限临时目录暂存并及时清理，按收到的字节计算传输 SHA 后再用签名 principal 转发。重复安装生成新的停用实例，升级/启停/卸载只作用于路径中的具体实例并使用版本 CAS。
+- 插件目录与安装入口只放在页头拼图图标的模态弹层内；弹层展示已验签动作包，支持单个签名 ZIP 拖入后自动提交。项目卡只默认展示中文“常用设置”、账号和执行时间；未映射的技术参数、Webhook、运行入口和受管资源必须收在默认折叠的高级设置，但缺少必填资源时可自动展开显示阻断原因。
 - 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`schedule` 只能是 `none/daily_times/startup` 的类型化结构；浏览器不得提交 task ID、Cron、哈希或身份。Agent 按签名 manifest 重验 Schema、角色、命名 Worker 和调度能力，并在同一事务更新配置、全组定时和权限 stale 状态。
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
@@ -145,10 +146,10 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 运单录入与打印
 
-- `/ocr` 默认进入博益本地多页签录单壳，最多 6 个博益页签；完整 OCR 上传/队列从 `/ocr?mode=ocr` 打开，单据详情仍走 `/documents/{id}`，博益手工录单由内部 `/ocr/boyi/frame` 承载。`/ocr?mode=yunda` 与 `/ocr?mode=ronghui` 兼容请求回到博益壳并显示停用提示，不创建第三方活动 iframe。
-- 为避免第三方活动 HTML/JavaScript 继承 Console 管理员同源权限，`/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 对 GET/POST/PUT/PATCH/DELETE 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且必须在 Console 本地结束、不得调用 Agent。只有迁移到独立来源并完成复核后才可重新开放。
+- `/ocr` 默认进入博益本地多页签录单壳，最多 6 个页签；可新建博益、韵达原页和融辉原页。`/ocr?mode=yunda` 与 `/ocr?mode=ronghui` 分别首开对应原页，完整 OCR 上传/队列仍从 `/ocr?mode=ocr` 打开。
+- 第三方原页只能经主站 `/original-pages/{provider}/launch` 的一次性 ticket 进入 `https://www.boyi.homes/original/{provider}/`独立 origin；能力 Cookie 按 provider 路径限定，每次请求重验真实 MySQL 管理员会话，写请求还必须来自该独立 origin。Agent 只允许共享合同中的 GET 路径前缀与两个精确保存 POST；旧同源/回单原页前缀仍固定 410 且不调 Agent。
 - 手工录单提交到 `/waybills/manual`，成功后写入 `waybills`；默认自动打印仍跳转 `/waybills/{id}/print?autoprint=1`，frame 内保存失败或不打印时可通过 `return_to=/ocr/boyi/frame` 留在本 frame。
-- 手工录单页右侧地图下方保留“成本比价”只读能力；Console `POST /waybills/quote-options` 仍只展示真实返回金额并比较，但韵达/融辉原页预填按钮固定禁用，不写预填存储、不创建第三方页签。
+- 手工录单页右侧地图下方保留“成本比价”只读能力；Console `POST /waybills/quote-options` 只展示真实返回金额并比较，可在报价可用时选择韵达/融辉并向对应独立 origin 页签发送精确 origin 的预填消息。
 - 已开单寄件运单查询页为 `/waybills`，GET 严格只读本地 `waybills` 表，不得因筛选条件暗中刷新第三方数据；外部刷新必须由管理员在自动化页显式提交 Command。页面空筛选默认不展示全表，单票物流轨迹仍从 `/tracking` 查询。`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存同步来源明确返回的当前扫描状态；页面“作废运单”只写 `cancelled`，Agent 后续同步不得覆盖该状态。
 - 统一回单管理页为 `/receipts`，读取本后台 `receipt_records` 和 `receipt_attachments`；查询与审核只提交控制平面计划并显示 202 Run 回执，审批、执行、证据与结果在事项中心查看。页面不加载活动原页 iframe，回单原页前缀所有方法统一返回 410；本地照片预览、证据和控制平面审核继续可用。
 - 手工单号由 `waybill_sequences` 全局递增生成，格式为 8 位数字（从 `00000001` 开始）。
@@ -162,7 +163,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - `/automations` 不得提供任何账号登录、凭据保存、账号管理快捷入口或隐式默认绑定；只能展示业务账号池的安全名称/状态投影并按项目保存绑定。
 - 首个管理员通过环境变量 `DOCFLOW_ADMIN_USERNAME`、`DOCFLOW_ADMIN_PASSWORD` 引导创建；不要把真实账号密码写进代码或文档。
 - `DOCFLOW_SESSION_SECRET` 用于签名会话 Cookie，生产/绑定域名时必须配置为固定随机值。
-- 生产入口固定为 `https://boyi.homes`，`www.boyi.homes` 与 HTTP 请求统一跳转到根域名 HTTPS；Nginx 配置维护在 `../agent/deploy/nginx/`。
+- 生产管理站入口固定为 `https://boyi.homes`；`https://www.boyi.homes` 只保留 `/original/` 独立原页 origin，其余路径跳转到根域名 HTTPS，HTTP 也统一跳转。Nginx 配置维护在 `../agent/deploy/nginx/`。
 - Console 仅监听 `127.0.0.1:8765`，由 Nginx 反向代理，并设置 `DOCFLOW_COOKIE_SECURE=1`；公网不得直接开放 `8765`。
 - 现有 `DOCFLOW_BASIC_AUTH_USER` / `DOCFLOW_BASIC_AUTH_PASS` 只作为兼容或应急入口。
 

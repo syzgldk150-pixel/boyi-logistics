@@ -107,6 +107,9 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 ## Nginx 边界
 
 - 正式入口：`https://boyi.homes`
+- 当前完整站点配置为 `deploy/nginx/boyi.homes.conf`：主站继续发送 `X-Frame-Options: SAMEORIGIN`，
+  `https://www.boyi.homes/original/` 单独代理第三方活动原页，`www` 的其他路径重定向回主站。
+  安装时必须精确备份 `/etc/nginx/conf.d/boyi.homes.conf`，`nginx -t` 成功后才 reload，失败则恢复备份。
 - Console 和 Agent 均只监听回环地址，公网不得直接开放 `8765` 或 `9000`。
 - Nginx 配置位于 `deploy/nginx/`；发布脚本只同步源码，不自动修改 `/etc/nginx`、证书或安全组。
 - 当前发行代码常量关闭整个 Windows Worker/Tray 运行面。Agent 不装载 Worker 签名密钥或 transport、

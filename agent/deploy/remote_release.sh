@@ -9,18 +9,21 @@ SKIP_HEALTH="${5:-0}"
 EMERGENCY_SCHEDULED_WINDOW_ARGUMENT="--emergency-scheduled-window-override=emergency_user_authorized"
 KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT="--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544"
 KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT="--recover-known-arrival-stats-auth-failure=71510af3-fcf1-461b-9c2e-152665f32f98"
+KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY_ARGUMENT="--recover-known-arrival-stats-prewrite-failure=2a86ba4b-5c63-4bf2-93de-f61372d18274"
 EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
 KNOWN_ARRIVAL_STATS_RECOVERY=0
 KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=0
+KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY=0
 DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=0
-if (( $# > 8 )); then
+if (( $# > 9 )); then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
 if (( $# == 7 )) \
   && [[ "${6}" == "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}" ]] \
   && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}" ]] \
-  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT}" ]]; then
+  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT}" ]] \
+  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY_ARGUMENT}" ]]; then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
@@ -46,6 +49,13 @@ for release_argument in "${@:6}"; do
         exit 2
       }
       KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=1
+      ;;
+    "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY_ARGUMENT}")
+      [[ "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "0" ]] || {
+        echo "arrival_stats_prewrite_failure_recovery=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
+        exit 2
+      }
+      KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY=1
       ;;
     --emergency-scheduled-window-override=*)
       echo "emergency_scheduled_window_override=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
@@ -2152,11 +2162,11 @@ PY
 }
 
 recover_known_arrival_stats_unknown_write() {
-  # This is intentionally limited to the two named, separately authorized
+  # This is intentionally limited to the named, separately authorized
   # incidents. It never discovers or retries another unknown write.
   local run_id="${1:?known recovery Run is required}"
   case "${run_id}" in
-    fb077840-a2d0-4e7f-8089-f68c104ab544|71510af3-fcf1-461b-9c2e-152665f32f98) ;;
+    fb077840-a2d0-4e7f-8089-f68c104ab544|71510af3-fcf1-461b-9c2e-152665f32f98|2a86ba4b-5c63-4bf2-93de-f61372d18274) ;;
     *)
       echo "arrival_stats_unknown_write_recovery=failed reason=scope_invalid" >&2
       return 1
@@ -2397,7 +2407,7 @@ check_post_restart_release_gates() {
   if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" ]]; then
     RELEASE_STAGE="check_service_identity_delivery_unknown_write_quarantine"
     check_service_identity_smoke delivery_unknown_write_quarantine || return 1
-  elif [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
+  elif [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "1" ]]; then
     RELEASE_STAGE="check_service_identity_recovery_transport"
     check_service_identity_smoke recovery_transport || return 1
   else
@@ -2412,7 +2422,11 @@ check_post_restart_release_gates() {
     RELEASE_STAGE="recover_known_arrival_stats_auth_failure"
     recover_known_arrival_stats_unknown_write "71510af3-fcf1-461b-9c2e-152665f32f98" || return 1
   fi
-  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
+  if [[ "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "1" ]]; then
+    RELEASE_STAGE="recover_known_arrival_stats_prewrite_failure"
+    recover_known_arrival_stats_unknown_write "2a86ba4b-5c63-4bf2-93de-f61372d18274" || return 1
+  fi
+  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "1" ]]; then
     if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" ]]; then
       RELEASE_STAGE="check_service_identity_delivery_unknown_write_quarantine"
       check_service_identity_smoke delivery_unknown_write_quarantine || return 1

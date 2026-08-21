@@ -80,7 +80,7 @@
 
 - `AGENT_INTERNAL_API_TOKEN` 只证明服务调用方，不代表管理员身份；只允许由运行环境注入，不得写入源码、文档、日志或审计记录。Console 管理员身份必须使用独立 `CONSOLE_AGENT_SIGNING_SECRET` 对精确请求和真实 MySQL 会话快照签名，Agent 不信任请求体中的 actor、roles、source 或 authenticated_by。
 - Agent 仅公开精简 `/health`、`/feishu/webhook/event` 和带独立 Webhook Token 的 `/webhook/*`；其他 `/admin`、工具、知识库、调度和账号接口要求 `X-Agent-Internal-Token`。WorkflowRunner 工具子进程不得继承该 Token，只能使用按工具/target 绑定的短期执行能力访问精确 `/tms/*`。
-- 韵达/融辉活动原页不得在 Console 管理员同源上下文运行。`/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 对 GET/POST/PUT/PATCH/DELETE 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且不得调用 Agent；待迁移到独立来源后才可重新评估开放。Console 本地 OCR、博益手工运单 CRUD 与控制平面命令链路继续可用。
+- 韵达/融辉活动原页不得在 Console 管理员同源上下文运行。主站 `https://boyi.homes` 只签发 30 秒一次性 ticket，原页固定在 `https://www.boyi.homes/original/{yunda|ronghui}/` 的独立 origin 运行，交换为路径限定、HttpOnly、Secure、SameSite=Strict 能力 Cookie，并在每次请求重验真实 MySQL 管理员会话。旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 仍对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。
 - `/health` 只返回存活状态和 `release_sha`；组件、实例和工具状态只在鉴权后的 `/internal/v1/health` 返回。
 - `/internal/v1/*` 使用唯一的 `ok/data/error` 响应契约；Console 调用 Agent 必须使用该接口族。旧内部接口只为兼容保留、继续鉴权并标记 deprecated，不得新增调用方。
 - 日志、工具执行输出、MySQL 工具日志、回单审计和异常文本统一使用 `shared/redaction.py`，新增记录入口不得自建较弱的局部脱敏规则。

@@ -36,7 +36,7 @@
 - 所有日志和持久化审计通过 `shared/redaction.py` 脱敏；原始请求体、密码、Token、Cookie 和 Authorization 不得落盘。
 - `agent/agent/` 不得导入 `tools` 或 `feishu`；直接工具执行器和飞书告警回调统一在 `main.py` 注入，TMS 会话事件通过 `shared/runtime_events.py` 发布。
 - 飞书、Webhook、Phase 7、客服与回单入口只能向 Command Gateway 提交命令；旧 `/tms/*` 写入口必须提供稳定幂等键并映射到精确工具。Phase 7 签收和到货统计 Webhook 的融辉账号由受信适配器固定绑定代码批准的 `ronghui_default`，兼容旧调用方省略账号，但拒绝任何账号覆盖。底层 TMS target 只接受 WorkflowRunner 为当前工具签发的短期执行能力，宽泛 `tms_query` 不得承载写端点。
-- 韵达/融辉活动原页同源代理暂时禁用；Console 的四类原页前缀和旧 `/ocr/yunda/*` 入口固定返回 410 且不调用 Agent。Agent 的 `yunda_waybill_entry`、`yunda_waybill_proxy`、`ronghui_waybill_proxy` 在执行能力判断前固定返回 410，待独立来源隔离完成后才可重新评估。
+- 韵达/融辉活动原页只能在 `https://www.boyi.homes/original/{provider}/` 独立 origin 中运行。Console 重验路径限定能力与真实 MySQL 管理员会话；Agent 只对签名 Console principal、精确 `/original/{provider}` proxy prefix、共享 allowlist 内 GET 及两个精确保存 POST 放行。`yunda_waybill_entry` 和旧 Console 同源/回单前缀仍固定 410；不得恢复旧 whole-tool 或宽泛路径回退。
 - 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
 - `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。`fetch_dispatch` 必须从显式所选账号的已认证会话 `userInfo` 唯一解析站点身份；缺失、多候选或调用参数与会话不一致时显式失败，不得硬编码或回落到默认站点码。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
@@ -194,7 +194,7 @@ docs/
 
 - 本地入口：`http://127.0.0.1:8765/`
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
-- 韵达/融辉活动原页入口暂时禁用：`/ocr?mode=yunda` 与 `/ocr?mode=ronghui` 回到博益本地录单壳并显示提示；`/ocr/yunda/*`、`/ocr/ronghui/live/*` 以及两个回单活动原页前缀对所有方法固定返回 410 且不调用 Agent。博益手工录单、OCR、账号登录和控制平面任务继续可用。
+- 韵达/融辉活动原页已迁移到 `https://www.boyi.homes/original/{provider}/` 独立 origin；`/ocr?mode=yunda` 与 `/ocr?mode=ronghui` 首开对应原页，主站只签发一次性 ticket 与精确 origin 预填消息。旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*` 以及两个回单活动原页前缀对所有方法仍固定返回 410。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
 - 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；所有账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用，协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不会改动凭据或状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。大祥报价显式使用 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一状态；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，只能在页面保存完整凭据后开启；账号管理不得把环境变量凭据计入或展示为已保存凭据。
 - 启动脚本：`console/start_backend.sh`

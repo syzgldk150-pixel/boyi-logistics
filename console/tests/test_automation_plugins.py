@@ -101,6 +101,41 @@ def _catalog_payload() -> dict:
 
 
 class AutomationPluginCatalogTests(unittest.TestCase):
+    def test_config_projection_uses_plain_chinese_copy_and_collapses_technical_fields(self):
+        payload = _catalog_payload()
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "title": "dry_run",
+                    "description": "Do not commit scan_next writes.",
+                },
+                "internal_cursor": {
+                    "type": "string",
+                    "title": "Internal cursor",
+                    "description": "Only change with technical support.",
+                },
+            },
+            "required": [],
+        }
+        payload["plugins"][0]["config_schema"] = schema
+        payload["instances"][0]["config_schema"] = schema
+        payload["instances"][0]["config"] = {
+            "dry_run": False,
+            "internal_cursor": "cursor-1",
+        }
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        fields = {item["technical_name"]: item for item in instances[0]["config_fields"]}
+        self.assertEqual("仅预览，不写入", fields["dry_run"]["label"])
+        self.assertIn("不会真正修改业务系统", fields["dry_run"]["hint"])
+        self.assertFalse(fields["dry_run"]["advanced"])
+        self.assertEqual("Internal cursor", fields["internal_cursor"]["label"])
+        self.assertTrue(fields["internal_cursor"]["advanced"])
+
     def test_catalog_keeps_repeat_install_instances_and_safe_project_authority(self):
         packages, instances, unsupported = normalize_automation_plugin_catalog(
             _catalog_payload()
@@ -346,6 +381,23 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertFalse(role["options"][0]["binding_usable"])
         self.assertEqual("已保存账号登录态无效", role["blocked_reason"])
         self.assertTrue(task["plugin_blocked"])
+
+    def test_authenticated_boolean_keeps_logged_in_business_account_selectable(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        options = app._automation_account_options_by_system(
+            [
+                {
+                    "account_id": "ronghui-operation",
+                    "system": "ronghui",
+                    "name": "融辉操作场账号",
+                    "is_active": True,
+                    "session_capable": True,
+                    "status": {"status": "", "authenticated": True},
+                }
+            ]
+        )
+
+        self.assertTrue(options["ronghui"][0]["binding_usable"])
 
 
 class _MultipartForm(dict):
@@ -675,21 +727,39 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         resource_select = resource_select.split("</select>", 1)[0]
 
         self.assertIn("已验签的自动化动作", html)
+        self.assertIn('<dialog class="automation-plugin-manager"', html)
+        self.assertIn('aria-haspopup="dialog"', html)
+        self.assertIn("data-plugin-dropzone", html)
+        self.assertIn("拖放后自动安装", html)
         self.assertIn("华东财务同步", card)
         self.assertIn("1.2.3", card)
         self.assertEqual(1, card.count("data-project-policy-toggle"))
         self.assertEqual(2, card.count("data-project-policy-mode"))
         self.assertIn("data-plugin-configuration-save", card)
+        self.assertIn("常用设置", card)
+        self.assertIn("高级参数", card)
+        self.assertIn("region", card)
+        self.assertIn("高级设置：允许从哪里启动", card)
+        self.assertIn("高级设置：数据表与通知目标", card)
         self.assertIn("data-plugin-schedule-kind", card)
         self.assertIn('value="acct-east" selected', account_select)
         self.assertNotIn('value="acct-first" selected', account_select)
         self.assertIn('value="phase7.bound_sheet" selected', resource_select)
         self.assertNotIn('value="phase7.first_sheet" selected', resource_select)
-        self.assertIn("Token、表格 ID、文件路径和完整配置不会发送到浏览器", card)
+        self.assertIn("系统只显示可选名称，不会把 Token、表格 ID 或文件路径发送到浏览器", card)
         self.assertNotIn("data-cron-editor", card)
         self.assertNotIn("policy_hash", card)
         self.assertNotIn('name="automation_id"', install_form)
         self.assertNotIn('name="package_sha256"', install_form)
+
+        client = (CONSOLE_DIR / "static" / "automation_approval_policy.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('dropzone.addEventListener("drop"', client)
+        self.assertIn("const submitPackage = async () =>", client)
+        self.assertIn("void submitPackage();", client)
+        self.assertNotIn("form.requestSubmit()", client)
+        self.assertIn("panel.showModal()", client)
 
     def test_unstable_plugin_state_disables_conflicting_card_operations(self):
         source = (CONSOLE_DIR / "templates" / "automation.html").read_text(

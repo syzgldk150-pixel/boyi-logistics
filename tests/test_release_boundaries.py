@@ -700,6 +700,17 @@ def _locked_versions(path: Path) -> dict[str, str]:
 
 
 class ReleaseBoundaryTests(unittest.TestCase):
+    def test_nginx_keeps_original_pages_on_isolated_www_origin(self):
+        nginx = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "nginx" / "boyi.homes.conf"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("server_name www.boyi.homes;", nginx)
+        self.assertIn("location ^~ /original/", nginx)
+        self.assertIn("server_name boyi.homes;", nginx)
+        self.assertIn('add_header X-Frame-Options "SAMEORIGIN" always;', nginx)
+        self.assertNotIn('add_header X-Frame-Options "SAMEORIGIN" always;\n\n    location ^~ /original/', nginx)
+
     def test_service_identity_smoke_closes_project_import_failure(self):
         sensitive_marker = "SENSITIVE_SERVICE_IDENTITY_IMPORT_MARKER"
         completed = _run_service_identity_smoke(
@@ -1073,6 +1084,27 @@ class ReleaseBoundaryTests(unittest.TestCase):
             auth_failure.stdout.strip(),
         )
 
+        prewrite_failure = _run_sourced_release_harness(
+            r'''
+            events=()
+            diagnose_delivery_status_generation() { events+=(delivery_diagnostic); }
+            check_service_identity_smoke() { events+=("identity:${1:-full}"); }
+            recover_known_arrival_stats_unknown_write() { events+=("recovery:$1"); }
+            check_control_plane_release_manifest() { events+=(manifest); }
+            KNOWN_ARRIVAL_STATS_RECOVERY=0
+            KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=0
+            KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY=1
+            check_post_restart_release_gates
+            printf '%s\n' "${events[*]}"
+            '''
+        )
+        self.assertEqual(0, prewrite_failure.returncode, prewrite_failure.stderr)
+        self.assertEqual(
+            "delivery_diagnostic identity:recovery_transport recovery:2a86ba4b-5c63-4bf2-93de-f61372d18274 "
+            "identity:full manifest",
+            prewrite_failure.stdout.strip(),
+        )
+
     def test_post_restart_delivery_quarantine_uses_scoped_publisher_gate(self):
         completed = _run_sourced_release_harness(
             r'''
@@ -1134,6 +1166,22 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             "71510af3-fcf1-461b-9c2e-152665f32f98",
+            json.loads(str(request["body"]))["request_id"],
+        )
+
+    def test_prewrite_failure_recovery_uses_the_third_exact_run_only(self):
+        completed, request = _run_known_arrival_stats_recovery(
+            "2a86ba4b-5c63-4bf2-93de-f61372d18274"
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "arrival_stats_unknown_write_recovery=ok "
+            "run_id=2a86ba4b-5c63-4bf2-93de-f61372d18274 outcome=NOT_APPLIED",
+            completed.stdout.strip(),
+        )
+        self.assertEqual(
+            "2a86ba4b-5c63-4bf2-93de-f61372d18274",
             json.loads(str(request["body"]))["request_id"],
         )
 
@@ -1769,10 +1817,18 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "[switch]$RecoverKnownArrivalStatsUnknownWrite",
             publisher,
         )
+        self.assertIn(
+            "[switch]$RecoverKnownArrivalStatsPrewriteFailure",
+            publisher,
+        )
         self.assertIn("function Get-Sha256Hex", publisher)
         self.assertNotIn("Get-FileHash", publisher)
         self.assertIn(
             "--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544",
+            publisher,
+        )
+        self.assertIn(
+            "--recover-known-arrival-stats-prewrite-failure=2a86ba4b-5c63-4bf2-93de-f61372d18274",
             publisher,
         )
         self.assertIn("one release-index.json and only its ZIP packages", publisher)
