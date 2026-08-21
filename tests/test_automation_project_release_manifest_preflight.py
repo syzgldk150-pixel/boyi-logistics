@@ -234,6 +234,9 @@ def _valid_world(preflight):
             "generation_error_code": None,
             "target_generation_state": "COMMITTED",
             "target_base_generation": None,
+            "policy_project_generation": 1,
+            "max_generation": 1,
+            "non_disposed_other_count": 0,
             "unknown_write_count": 0,
             "generation_schedule_sha256": preflight._canonical_sha256(
                 desired_schedule
@@ -774,6 +777,9 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
         generation_error_code=None,
         target_generation_state=None,
         target_base_generation=None,
+        policy_project_generation=2,
+        max_generation=1,
+        non_disposed_other_count=0,
         unknown_write_count=0,
     )
 
@@ -791,6 +797,10 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
     (
         {"reconcile_state": "READY_TO_COMMIT"},
         {"target_generation": 1},
+        {"target_generation": 3},
+        {"policy_project_generation": 1},
+        {"max_generation": 2},
+        {"non_disposed_other_count": 1},
         {"generation_state": "BLOCKED"},
         {"generation_error_code": "RUNTIME_ROOT_MISSING"},
         {"target_generation_state": "TARGET"},
@@ -809,6 +819,9 @@ def test_staged_missing_target_runtime_fails_closed(preflight, mutation):
         generation_error_code=None,
         target_generation_state=None,
         target_base_generation=None,
+        policy_project_generation=2,
+        max_generation=1,
+        non_disposed_other_count=0,
         unknown_write_count=0,
     )
     project.update(mutation)
@@ -836,6 +849,9 @@ def test_initial_release_rejects_staged_missing_target_runtime(preflight):
         generation_error_code=None,
         target_generation_state=None,
         target_base_generation=None,
+        policy_project_generation=2,
+        max_generation=1,
+        non_disposed_other_count=0,
         unknown_write_count=0,
     )
 

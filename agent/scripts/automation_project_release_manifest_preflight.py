@@ -73,16 +73,22 @@ def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
 
     committed_generation = row.get("committed_generation")
     target_generation = row.get("target_generation")
+    max_generation = row.get("max_generation")
     return bool(
         row.get("project_state") == "UPGRADING"
         and row.get("reconcile_state") == "PREPARING"
         and type(committed_generation) is int
         and type(target_generation) is int
+        and type(max_generation) is int
+        and target_generation == max_generation + 1
         and target_generation > committed_generation
+        and row.get("policy_project_generation") == target_generation
         and row.get("generation_state") == "COMMITTED"
         and row.get("generation_error_code") is None
         and row.get("target_generation_state") is None
         and row.get("target_base_generation") is None
+        and type(row.get("non_disposed_other_count")) is int
+        and row.get("non_disposed_other_count") == 0
         and type(row.get("unknown_write_count")) is int
         and row.get("unknown_write_count") == 0
     )
@@ -261,10 +267,23 @@ def typed_project_scheduled_write_crons(
                project.state AS project_state,
                project.reconcile_state,
                policy.mode AS policy_mode,
+               policy.project_generation AS policy_project_generation,
                generation.state AS generation_state,
                generation.error_code AS generation_error_code,
                target_generation.state AS target_generation_state,
                target_generation.base_committed_generation AS target_base_generation,
+               (
+                   SELECT COALESCE(MAX(history.generation), 0)
+                   FROM automation_project_generations AS history
+                   WHERE BINARY history.automation_id=BINARY project.automation_id
+               ) AS max_generation,
+               (
+                   SELECT COUNT(*)
+                   FROM automation_project_generations AS history
+                   WHERE BINARY history.automation_id=BINARY project.automation_id
+                     AND history.generation<>project.committed_generation
+                     AND history.state<>'DISPOSED'
+               ) AS non_disposed_other_count,
                (
                    SELECT COUNT(*)
                    FROM automation_project_generation_leases AS lease
@@ -967,6 +986,19 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                target_generation.state AS target_generation_state,
                target_generation.base_committed_generation
                    AS target_base_generation,
+               policy.project_generation AS policy_project_generation,
+               (
+                   SELECT COALESCE(MAX(history.generation), 0)
+                   FROM automation_project_generations AS history
+                   WHERE BINARY history.automation_id = BINARY project.automation_id
+               ) AS max_generation,
+               (
+                   SELECT COUNT(*)
+                   FROM automation_project_generations AS history
+                   WHERE BINARY history.automation_id = BINARY project.automation_id
+                     AND history.generation <> project.committed_generation
+                     AND history.state <> 'DISPOSED'
+               ) AS non_disposed_other_count,
                (
                    SELECT COUNT(*)
                    FROM automation_project_generation_leases AS lease
@@ -982,6 +1014,8 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
         FROM automation_projects AS project
         INNER JOIN automation_project_configs AS config
           ON BINARY config.automation_id = BINARY project.automation_id
+        INNER JOIN automation_project_policies AS policy
+          ON BINARY policy.automation_id = BINARY project.automation_id
         INNER JOIN automation_project_generations AS generation
           ON BINARY generation.automation_id = BINARY project.automation_id
          AND generation.generation = project.committed_generation

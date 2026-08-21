@@ -1941,6 +1941,9 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "generation_error_code": None,
             "target_generation_state": None,
             "target_base_generation": None,
+            "policy_project_generation": 4,
+            "max_generation": 3,
+            "non_disposed_other_count": 0,
             "unknown_write_count": 0,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -1999,6 +2002,9 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "generation_error_code": None,
             "target_generation_state": None,
             "target_base_generation": None,
+            "policy_project_generation": 4,
+            "max_generation": 3,
+            "non_disposed_other_count": 0,
             "unknown_write_count": 0,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -2012,6 +2018,10 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         mutations = (
             {"reconcile_state": "READY_TO_COMMIT"},
             {"target_generation": 3},
+            {"target_generation": 5},
+            {"policy_project_generation": 3},
+            {"max_generation": 4},
+            {"non_disposed_other_count": 1},
             {"generation_state": "BLOCKED"},
             {"generation_error_code": "RUNTIME_ROOT_MISSING"},
             {"target_generation_state": "TARGET"},
@@ -2071,6 +2081,9 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "generation_error_code": None,
             "target_generation_state": None,
             "target_base_generation": None,
+            "policy_project_generation": 4,
+            "max_generation": 3,
+            "non_disposed_other_count": 0,
             "unknown_write_count": 0,
             "snapshot_json": {
                 "automation_id": "arrive_list",
