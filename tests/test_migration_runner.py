@@ -1864,6 +1864,10 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         )
         self.assertIn("FROM automation_project_generation_leases AS lease", typed_query)
         self.assertIn("lease.outcome='WRITE_OUTCOME_UNKNOWN'", typed_query)
+        self.assertIn(
+            "CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED )",
+            typed_query,
+        )
 
     def test_scheduled_write_window_excludes_unknown_write_with_missing_target(self):
         typed_row = {
