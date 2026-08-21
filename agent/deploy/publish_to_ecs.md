@@ -13,33 +13,44 @@ Agent、Console、Shared 或自动化插件平台时固定使用 `-Target all`�
    RELEASE_SHA="$(git rev-parse HEAD)"
    ```
 
-2. 在项目内 `.task_tmp/` 创建本次专用的 `0700` 临时目录和一次性 Ed25519 发布密钥；私钥固定为
-   `0600`，只在本机签名时使用。公钥文件名必须与 key ID 一致，信任根只放这一份 `.pub`：
+2. 准备上一版不可变签名 ZIP 和其公钥信任根的本地临时副本。可以从当前生产
+   `/home/boyce/.boyi-automation-plugins/releases/<current-release-sha>/` 与
+   `/home/boyce/.boyi-automation-plugins/trust/` 用固定 `boyce` + BatchMode 系统 `scp` 下载；只能下载
+   签名 ZIP、`release-index.json` 和 `.pub` 公钥，不复制任何私钥或运行态：
 
    ```bash
-   RELEASE_KEY_ID="release-${RELEASE_SHA:0:12}-$(date +%Y%m%d)"
-   RELEASE_INPUT_ROOT="$(pwd)/.task_tmp/plugin-release-${RELEASE_SHA:0:12}"
-   PRIVATE_KEY_PATH="${RELEASE_INPUT_ROOT}/private/signing-key.pem"
-   TRUST_ROOT="${RELEASE_INPUT_ROOT}/trust"
-   ARTIFACT_ROOT="${RELEASE_INPUT_ROOT}/artifacts"
-   install -d -m 700 "${RELEASE_INPUT_ROOT}/private" "${TRUST_ROOT}"
-   openssl genpkey -algorithm ED25519 -out "${PRIVATE_KEY_PATH}"
-   chmod 600 "${PRIVATE_KEY_PATH}"
-   openssl pkey -in "${PRIVATE_KEY_PATH}" -pubout -out "${TRUST_ROOT}/${RELEASE_KEY_ID}.pub"
+   REUSE_ARTIFACT_ROOT="<temporary-copy-of-previous-signed-artifact-root>"
+   TRUST_ROOT="<temporary-copy-of-public-trust-root>"
+   ARTIFACT_ROOT="$(pwd)/.task_tmp/first-party-release-${RELEASE_SHA:0:12}"
    ```
 
-   不得读取、打印或复用现有私钥，不得把本次私钥写入 Git、上传 ECS 或复制到发布包。发布器只
-   上传公钥信任根和签名 ZIP；本次私钥、信任根副本与工件在发布验收后精确清理。
-
-3. 使用已按 `agent/requirements.lock` 准备好的本地 Python 环境，从同一只读提交一次性构建完整工件：
+3. 插件 manifest/payload/SDK 未变化时固定走无私钥复用模式。构建器会逐包验签，把签名包中的
+   `manifest.json` 与所有 payload 文件逐字节摘要对比当前源码，只允许 ZIP 原字节复制并将新的
+   `release-index.json.release_sha` 绑定到最终提交；任一漂移都失败关闭：
 
    ```bash
+   PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
+     --reuse-artifact-root "${REUSE_ARTIFACT_ROOT}" \
+     --trust-root "${TRUST_ROOT}" \
+     --release-sha "${RELEASE_SHA}" \
+     --output-root "${ARTIFACT_ROOT}"
+   ```
+
+   只有插件包源码确有变化并且对应插件版本已经升级后，才允许使用固定受保护签名配置构建新版本：
+
+   ```bash
+   RELEASE_KEY_ID="boyi-first-party-2026-08-15"
+   PRIVATE_KEY_PATH="/home/deng/.config/boyi/automation-plugin-release-2026-08-15/private/release-signing.pem"
    PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
      --private-key "${PRIVATE_KEY_PATH}" \
      --key-id "${RELEASE_KEY_ID}" \
      --release-sha "${RELEASE_SHA}" \
      --output-root "${ARTIFACT_ROOT}"
    ```
+
+   普通发布不得重新签名同一 `plugin_id/version`，也不得临时生成或更换 key；同版本 ZIP 字节与
+   摘要属于不可变发行合同。key 轮换必须与插件版本升级、数据库迁移、兼容和回滚方案一起评审。
+   私钥只允许构建器按路径调用，不得读取、复制、打印或上传内容。
 
 4. 回到 Windows PowerShell，使用当前工作树中的唯一发布器；不要改用历史工作树或旧脚本：
 
@@ -53,7 +64,8 @@ Agent、Console、Shared 或自动化插件平台时固定使用 `-Target all`�
 
 5. 发布器成功后再次核验 `boyce`、Agent/Console systemd `WorkingDirectory`、两个服务状态和
    `/health.release_sha`。远端当次 stage、回滚包、上一版共享虚拟环境及数据库快照保留到业务验收
-   结束；只清理本地本次 `RELEASE_INPUT_ROOT`。若发布器在激活请求后报告状态不确定，按下文规则
+   结束；只精确清理本地本次 `ARTIFACT_ROOT`、`REUSE_ARTIFACT_ROOT` 和临时公钥副本，固定私钥
+   继续留在受保护配置目录。若发布器在激活请求后报告状态不确定，按下文规则
    人工核验，禁止自动重放业务动作或强制清除未知写隔离。
 
 标准发布入口必须显式传入与待发布 Git SHA 完全一致的签名首方插件目录，以及只含受信
@@ -67,13 +79,13 @@ powershell -ExecutionPolicy Bypass `
   -AutomationPluginTrustRoot "<public-trust-root-directory>"
 ```
 
-签名包必须在提交、推送及 CI 通过后，使用最终的 40 位提交 SHA 构建；私钥路径和 key ID
-只传给只读源树的本地构建器，不写入仓库、发布目录或命令输出：
+签名 ZIP 版本未变时，在提交、推送及 CI 通过后固定使用无私钥复用模式逐包验签、逐文件对比
+当前源码并重绑最终 SHA；包源码变化时必须先升级插件版本，之后才使用固定受保护 key 构建：
 
 ```bash
 PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
-  --private-key "<protected-private-key-path>" \
-  --key-id "<key-id>" \
+  --reuse-artifact-root "<previous-signed-artifact-directory>" \
+  --trust-root "<public-trust-root-directory>" \
   --release-sha "$(git rev-parse HEAD)" \
   --output-root "<temporary-artifact-directory>"
 ```
