@@ -1360,6 +1360,201 @@ def _full_auto_event(preflight, automation_id):
         "actor_display_name": "Admin",
         "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
         "comment": "approved",
+        "correlation_id": "admin-policy-correlation",
+    }
+
+
+def _migration_full_auto_event(automation_id):
+    return {
+        "event_id": 2,
+        "request_id": f"migration-019-full-auto:{automation_id}",
+        "from_mode": "REQUIRE_EACH_RUN",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": 1,
+        "project_configuration_version": 2,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "migration-019",
+        "actor_role": "system",
+        "actor_display_name": "Migration 019",
+        "reason": "MIGRATION_019_FULL_AUTO",
+        "comment": "Existing automation project converted to durable full auto",
+        "correlation_id": "migration-019-correlation",
+    }
+
+
+def _plugin_version_event(*, event_id=3):
+    return {
+        "event_id": event_id,
+        "request_id": "plugin-upgrade-request",
+        "from_mode": "PROJECT_FULL_AUTO",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": 2,
+        "project_configuration_version": 2,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "upgrade-admin",
+        "actor_role": "super_admin",
+        "actor_display_name": None,
+        "reason": "PLUGIN_VERSION_CHANGED",
+        "comment": None,
+        "correlation_id": "plugin-upgrade-request",
+    }
+
+
+def _joined_policy_evidence(event):
+    aliases = {
+        "event_id": "policy_event_id",
+        "from_mode": "from_mode",
+        "to_mode": "to_mode",
+        "contract_hash": "policy_contract_hash",
+        "contract_snapshot_json": "policy_contract_snapshot_json",
+        "tool_contract_hash": "policy_tool_contract_hash",
+        "plugin_contract_hash": "policy_plugin_contract_hash",
+        "project_configuration_version": "policy_configuration_version",
+        "project_generation": "policy_project_generation",
+        "actor_id": "policy_actor_id",
+        "actor_role": "policy_actor_role",
+        "actor_display_name": "policy_actor_display_name",
+        "reason": "policy_reason",
+        "comment": "policy_comment",
+        "correlation_id": "policy_correlation_id",
+    }
+    return {
+        "request_id": event["request_id"],
+        **{alias: event.get(field) for field, alias in aliases.items()},
+    }
+
+
+def _plugin_version_evidence(preflight, event, *, prepared_request_id=None):
+    metadata = {
+        "request_payload_sha256": "a" * 64,
+        "from_version": "1.0.0",
+        "to_version": "2.0.0",
+        "package_sha256": "b" * 64,
+        "target_generation": event["project_generation"],
+        "previous_state": "ENABLED",
+        "prepared_configuration_request_id": prepared_request_id,
+    }
+    return {
+        **_joined_policy_evidence(event),
+        "configuration_event_id": 30,
+        "configuration_event_type": "PLUGIN_UPGRADE_STAGED",
+        "configuration_from_state": "ENABLED",
+        "configuration_to_state": "UPGRADING",
+        "configuration_actor_id": event["actor_id"],
+        "configuration_actor_role": event["actor_role"],
+        "configuration_metadata_json": metadata,
+        "configuration_metadata_sha256": preflight._canonical_sha256(metadata),
+    }
+
+
+def _default_full_auto_event(automation_id):
+    return {
+        "event_id": 2,
+        "request_id": f"default-full-auto:{automation_id}",
+        "from_mode": "REQUIRE_EACH_RUN",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": 1,
+        "project_configuration_version": 2,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "system:migration:automation-full-auto-v1",
+        "actor_role": "system",
+        "actor_display_name": "Automation full-auto migration",
+        "reason": "AUTOMATION_DEFAULT_FULL_AUTO",
+        "comment": "Defaulted automation project to durable full auto",
+        "correlation_id": "default-full-auto-correlation",
+    }
+
+
+def _durable_admin_event(*, event_id, from_mode, to_mode, generation, config_version):
+    return {
+        "event_id": event_id,
+        "request_id": f"admin-policy-{event_id}",
+        "from_mode": from_mode,
+        "to_mode": to_mode,
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "admin-1",
+        "actor_role": "super_admin",
+        "actor_display_name": "Admin",
+        "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
+        "comment": "explicit policy choice",
+        "correlation_id": f"admin-policy-correlation-{event_id}",
+    }
+
+
+def _configuration_event(
+    *, event_id, mode, generation, config_version,
+    actor_id="config-admin", actor_role="super_admin",
+):
+    return {
+        "event_id": event_id,
+        "request_id": f"configuration-{event_id}",
+        "from_mode": mode,
+        "to_mode": mode,
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": actor_id,
+        "actor_role": actor_role,
+        "actor_display_name": None,
+        "reason": "PROJECT_CONFIGURATION_CHANGED",
+        "comment": None,
+        "correlation_id": f"configuration-{event_id}",
+    }
+
+
+def _configuration_evidence(preflight, event):
+    metadata = {
+        "request_payload_sha256": "c" * 64,
+        "from_project_configuration_version": event["project_configuration_version"] - 1,
+        "to_project_configuration_version": event["project_configuration_version"],
+        "schedule_sha256": "d" * 64,
+        "scheduled_task_count": 1,
+    }
+    return {
+        **_joined_policy_evidence(event),
+        "configuration_event_id": event["event_id"] + 100,
+        "configuration_event_type": "CONFIGURATION_UPDATED",
+        "configuration_from_state": "ENABLED",
+        "configuration_to_state": "ENABLED",
+        "configuration_actor_id": event["actor_id"],
+        "configuration_actor_role": event["actor_role"],
+        "configuration_metadata_json": metadata,
+        "configuration_metadata_sha256": preflight._canonical_sha256(metadata),
+    }
+
+
+def _durable_policy(mode, version, generation, config_version, approval_event):
+    return {
+        "mode": mode,
+        "version": version,
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "approved_by_actor_id": approval_event["actor_id"] if approval_event else None,
+        "approved_by_actor_role": approval_event["actor_role"] if approval_event else None,
+        "approved_by_actor_display_name": approval_event["actor_display_name"] if approval_event else None,
+        "approved_at": "2026-08-22T00:00:00Z" if approval_event else None,
+        "comment": approval_event["comment"] if approval_event else None,
     }
 
 
@@ -1427,6 +1622,696 @@ def test_later_manifest_accepts_safe_stale_legacy_and_full_auto_bindings(preflig
         policy_events=[require_event, full_auto_event],
         configuration_evidence=[],
     )
+
+
+def test_later_manifest_accepts_migrated_full_auto_plugin_rebind(preflight):
+    automation_id = "send_order"
+    contract = _later_policy_contract()
+    item = {
+        "automation_id": automation_id,
+        "initial_mode": "REQUIRE_EACH_RUN",
+        "policy_version": 1,
+    }
+    bootstrap = _bootstrap_policy_event(
+        automation_id,
+        to_mode="REQUIRE_EACH_RUN",
+    )
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = _plugin_version_event()
+    plugin_evidence = _plugin_version_evidence(preflight, plugin_event)
+    policy = {
+        "mode": "PROJECT_FULL_AUTO",
+        "version": 3,
+        "project_generation": 2,
+        "project_configuration_version": 2,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "approved_by_actor_id": "upgrade-admin",
+        "approved_by_actor_role": "super_admin",
+        "approved_by_actor_display_name": None,
+        "approved_at": "2026-08-22T00:00:00Z",
+        "comment": None,
+    }
+
+    preflight._validate_later_project_policy_chain(
+        contract,
+        automation_id=automation_id,
+        item=item,
+        project={"generation": 2, "config_version": 2},
+        policy=policy,
+        policy_events=[bootstrap, migration, plugin_event],
+        configuration_evidence=[plugin_evidence],
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"actor_role": "system"},
+        {"project_generation": 0},
+        {"correlation_id": "different-request"},
+        {"contract_hash": "a" * 64},
+    ),
+)
+def test_later_manifest_rejects_invalid_plugin_rebind(preflight, mutation):
+    automation_id = "send_order"
+    contract = _later_policy_contract()
+    item = {
+        "automation_id": automation_id,
+        "initial_mode": "REQUIRE_EACH_RUN",
+        "policy_version": 1,
+    }
+    bootstrap = _bootstrap_policy_event(
+        automation_id,
+        to_mode="REQUIRE_EACH_RUN",
+    )
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = {**_plugin_version_event(), **mutation}
+    plugin_evidence = _plugin_version_evidence(preflight, plugin_event)
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            contract,
+            automation_id=automation_id,
+            item=item,
+            project={"generation": 1, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin_event],
+            configuration_evidence=[plugin_evidence],
+        )
+
+
+def test_later_manifest_accepts_full_auto_configuration_rebind(preflight):
+    automation_id = "send_order"
+    contract = _later_policy_contract()
+    item = {
+        "automation_id": automation_id,
+        "initial_mode": "REQUIRE_EACH_RUN",
+        "policy_version": 1,
+    }
+    bootstrap = _bootstrap_policy_event(
+        automation_id,
+        to_mode="REQUIRE_EACH_RUN",
+    )
+    migration = _migration_full_auto_event(automation_id)
+    metadata = {
+        "request_payload_sha256": "a" * 64,
+        "from_project_configuration_version": 2,
+        "to_project_configuration_version": 3,
+        "schedule_sha256": "b" * 64,
+        "scheduled_task_count": 1,
+    }
+    configuration_event = {
+        "event_id": 3,
+        "request_id": "configuration-request",
+        "from_mode": "PROJECT_FULL_AUTO",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": 2,
+        "project_configuration_version": 3,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "config-admin",
+        "actor_role": "super_admin",
+        "actor_display_name": None,
+        "reason": "PROJECT_CONFIGURATION_CHANGED",
+        "comment": None,
+        "correlation_id": "configuration-request",
+    }
+    evidence = {
+        **_joined_policy_evidence(configuration_event),
+        "configuration_event_type": "CONFIGURATION_UPDATED",
+        "configuration_event_id": 30,
+        "configuration_from_state": "ENABLED",
+        "configuration_to_state": "ENABLED",
+        "configuration_actor_id": "config-admin",
+        "configuration_actor_role": "super_admin",
+        "configuration_metadata_json": metadata,
+        "configuration_metadata_sha256": preflight._canonical_sha256(metadata),
+    }
+    policy = {
+        "mode": "PROJECT_FULL_AUTO",
+        "version": 3,
+        "project_generation": 2,
+        "project_configuration_version": 3,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "approved_by_actor_id": "migration-019",
+        "approved_by_actor_role": "system",
+        "approved_by_actor_display_name": "Migration 019",
+        "approved_at": "2026-08-22T00:00:00Z",
+        "comment": "Existing automation project converted to durable full auto",
+    }
+
+    preflight._validate_later_project_policy_chain(
+        contract,
+        automation_id=automation_id,
+        item=item,
+        project={"generation": 2, "config_version": 3},
+        policy=policy,
+        policy_events=[bootstrap, migration, configuration_event],
+        configuration_evidence=[evidence],
+    )
+
+
+def test_later_manifest_accepts_startup_default_full_auto(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    default_event = _default_full_auto_event(automation_id)
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 1, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 2, 1, 2, default_event),
+        policy_events=[bootstrap, default_event],
+        configuration_evidence=[],
+    )
+
+
+def test_later_manifest_accepts_durable_super_admin_full_auto(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    admin_event = _durable_admin_event(
+        event_id=2,
+        from_mode="REQUIRE_EACH_RUN",
+        to_mode="PROJECT_FULL_AUTO",
+        generation=1,
+        config_version=2,
+    )
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 1, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 2, 1, 2, admin_event),
+        policy_events=[bootstrap, admin_event],
+        configuration_evidence=[],
+    )
+
+
+def test_later_manifest_preserves_admin_approval_after_require_config(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    require_event = _durable_admin_event(
+        event_id=3,
+        from_mode="PROJECT_FULL_AUTO",
+        to_mode="REQUIRE_EACH_RUN",
+        generation=1,
+        config_version=2,
+    )
+    config_event = _configuration_event(
+        event_id=4,
+        mode="REQUIRE_EACH_RUN",
+        generation=2,
+        config_version=3,
+    )
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 3},
+        policy=_durable_policy("REQUIRE_EACH_RUN", 4, 2, 3, require_event),
+        policy_events=[bootstrap, migration, require_event, config_event],
+        configuration_evidence=[_configuration_evidence(preflight, config_event)],
+    )
+
+
+def test_later_manifest_accepts_plugin_then_configuration_anchors(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = _plugin_version_event(event_id=3)
+    config_event = _configuration_event(
+        event_id=4,
+        mode="PROJECT_FULL_AUTO",
+        generation=3,
+        config_version=3,
+    )
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 3, "config_version": 3},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 4, 3, 3, plugin_event),
+        policy_events=[bootstrap, migration, plugin_event, config_event],
+        configuration_evidence=[
+            _plugin_version_evidence(preflight, plugin_event),
+            _configuration_evidence(preflight, config_event),
+        ],
+    )
+
+
+def test_later_manifest_accepts_prepared_configuration_then_plugin(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    config_event = _configuration_event(
+        event_id=3,
+        mode="PROJECT_FULL_AUTO",
+        generation=2,
+        config_version=3,
+        actor_id="upgrade-admin",
+    )
+    plugin_event = {
+        **_plugin_version_event(event_id=4),
+        "project_generation": 2,
+        "project_configuration_version": 3,
+    }
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 3},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 4, 2, 3, plugin_event),
+        policy_events=[bootstrap, migration, config_event, plugin_event],
+        configuration_evidence=[
+            _configuration_evidence(preflight, config_event),
+            _plugin_version_evidence(
+                preflight,
+                plugin_event,
+                prepared_request_id=config_event["request_id"],
+            ),
+        ],
+    )
+
+
+def test_later_manifest_accepts_prepared_config_with_admin_interleave(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    config_event = _configuration_event(
+        event_id=3,
+        mode="PROJECT_FULL_AUTO",
+        generation=2,
+        config_version=3,
+        actor_id="upgrade-admin",
+    )
+    admin_event = _durable_admin_event(
+        event_id=4,
+        from_mode="PROJECT_FULL_AUTO",
+        to_mode="PROJECT_FULL_AUTO",
+        generation=2,
+        config_version=3,
+    )
+    plugin_event = {
+        **_plugin_version_event(event_id=5),
+        "project_generation": 2,
+        "project_configuration_version": 3,
+    }
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 3},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 5, 2, 3, plugin_event),
+        policy_events=[bootstrap, migration, config_event, admin_event, plugin_event],
+        configuration_evidence=[
+            _configuration_evidence(preflight, config_event),
+            _plugin_version_evidence(
+                preflight,
+                plugin_event,
+                prepared_request_id=config_event["request_id"],
+            ),
+        ],
+    )
+
+
+def test_later_manifest_rejects_prepared_config_actor_mismatch(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    config_event = _configuration_event(
+        event_id=3,
+        mode="PROJECT_FULL_AUTO",
+        generation=2,
+        config_version=3,
+    )
+    plugin_event = {
+        **_plugin_version_event(event_id=4),
+        "project_generation": 2,
+        "project_configuration_version": 3,
+    }
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 3},
+            policy={},
+            policy_events=[bootstrap, migration, config_event, plugin_event],
+            configuration_evidence=[
+                _configuration_evidence(preflight, config_event),
+                _plugin_version_evidence(
+                    preflight,
+                    plugin_event,
+                    prepared_request_id=config_event["request_id"],
+                ),
+            ],
+        )
+
+
+def test_later_manifest_accepts_plugin_approval_after_failed_target_restore(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = _plugin_version_event()
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 1, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 3, 1, 2, plugin_event),
+        policy_events=[bootstrap, migration, plugin_event],
+        configuration_evidence=[_plugin_version_evidence(preflight, plugin_event)],
+    )
+
+
+def test_later_manifest_accepts_legacy_config_then_rebound_migration(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    legacy_config = _configuration_event(
+        event_id=2,
+        mode="REQUIRE_EACH_RUN",
+        generation=1,
+        config_version=3,
+    )
+    migration = {
+        **_migration_full_auto_event(automation_id),
+        "event_id": 3,
+        "project_generation": 2,
+        "project_configuration_version": 3,
+    }
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 3},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 3, 2, 3, migration),
+        policy_events=[bootstrap, legacy_config, migration],
+        configuration_evidence=[_configuration_evidence(preflight, legacy_config)],
+    )
+
+
+def test_later_manifest_accepts_historical_generation_one_config_full_auto(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    legacy_config = {
+        **_configuration_event(
+            event_id=2,
+            mode="PROJECT_FULL_AUTO",
+            generation=1,
+            config_version=3,
+        ),
+        "from_mode": "REQUIRE_EACH_RUN",
+    }
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 3},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 2, 1, 3, None),
+        policy_events=[bootstrap, legacy_config],
+        configuration_evidence=[_configuration_evidence(preflight, legacy_config)],
+    )
+
+
+def test_later_manifest_rejects_modern_config_driven_full_auto(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    config_event = {
+        **_configuration_event(
+            event_id=2,
+            mode="PROJECT_FULL_AUTO",
+            generation=2,
+            config_version=3,
+        ),
+        "from_mode": "REQUIRE_EACH_RUN",
+    }
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_CONFIGURATION_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 3},
+            policy={},
+            policy_events=[bootstrap, config_event],
+            configuration_evidence=[_configuration_evidence(preflight, config_event)],
+        )
+
+
+def test_later_manifest_rejects_legacy_config_after_system_epoch(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    impossible_config = _configuration_event(
+        event_id=3,
+        mode="PROJECT_FULL_AUTO",
+        generation=1,
+        config_version=3,
+    )
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 3},
+            policy={},
+            policy_events=[bootstrap, migration, impossible_config],
+            configuration_evidence=[_configuration_evidence(preflight, impossible_config)],
+        )
+
+
+def test_later_manifest_rejects_configuration_version_regression(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = {
+        **_migration_full_auto_event(automation_id),
+        "project_generation": 2,
+        "project_configuration_version": 3,
+    }
+    regressed_admin = _durable_admin_event(
+        event_id=3,
+        from_mode="PROJECT_FULL_AUTO",
+        to_mode="PROJECT_FULL_AUTO",
+        generation=2,
+        config_version=2,
+    )
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 3},
+            policy={},
+            policy_events=[bootstrap, migration, regressed_admin],
+            configuration_evidence=[],
+        )
+
+
+def test_later_manifest_rejects_unpaired_plugin_event(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = _plugin_version_event()
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin_event],
+            configuration_evidence=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("duplicate", "wrong_type", "wrong_actor", "wrong_target", "wrong_hash"),
+)
+def test_later_manifest_rejects_tampered_plugin_evidence(preflight, mutation):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = _plugin_version_event()
+    evidence = _plugin_version_evidence(preflight, plugin_event)
+    if mutation == "wrong_type":
+        evidence["configuration_event_type"] = "CONFIGURATION_UPDATED"
+    elif mutation == "wrong_actor":
+        evidence["configuration_actor_id"] = "different-admin"
+    elif mutation == "wrong_target":
+        evidence["configuration_metadata_json"]["target_generation"] = 99
+        evidence["configuration_metadata_sha256"] = preflight._canonical_sha256(
+            evidence["configuration_metadata_json"]
+        )
+    elif mutation == "wrong_hash":
+        evidence["configuration_metadata_sha256"] = "f" * 64
+    evidence_rows = [evidence, copy.deepcopy(evidence)] if mutation == "duplicate" else [evidence]
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin_event],
+            configuration_evidence=evidence_rows,
+        )
+
+
+@pytest.mark.parametrize(
+    "event",
+    (
+        {
+            **_migration_full_auto_event("send_order"),
+            "project_generation": 2,
+            "project_configuration_version": 3,
+        },
+        {
+            **_default_full_auto_event("send_order"),
+            "project_generation": 2,
+            "project_configuration_version": 3,
+        },
+    ),
+)
+def test_later_manifest_accepts_system_full_auto_after_repository_rebind(preflight, event):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 3},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 2, 2, 3, event),
+        policy_events=[bootstrap, event],
+        configuration_evidence=[],
+    )
+
+
+def test_later_manifest_rejects_default_full_auto_after_admin_choice(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    admin_event = _durable_admin_event(
+        event_id=2,
+        from_mode="REQUIRE_EACH_RUN",
+        to_mode="REQUIRE_EACH_RUN",
+        generation=1,
+        config_version=2,
+    )
+    default_event = {**_default_full_auto_event(automation_id), "event_id": 3}
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 1, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, admin_event, default_event],
+            configuration_evidence=[],
+        )
+
+
+def test_later_manifest_rejects_migration_and_default_authorities(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    admin_event = _durable_admin_event(
+        event_id=3,
+        from_mode="PROJECT_FULL_AUTO",
+        to_mode="REQUIRE_EACH_RUN",
+        generation=1,
+        config_version=2,
+    )
+    default_event = {**_default_full_auto_event(automation_id), "event_id": 4}
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 1, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, admin_event, default_event],
+            configuration_evidence=[],
+        )
+
+
+def test_later_manifest_rejects_guest_configuration_actor(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    config_event = _configuration_event(
+        event_id=3,
+        mode="PROJECT_FULL_AUTO",
+        generation=2,
+        config_version=3,
+        actor_role="guest",
+    )
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_CONFIGURATION_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 3},
+            policy={},
+            policy_events=[bootstrap, migration, config_event],
+            configuration_evidence=[_configuration_evidence(preflight, config_event)],
+        )
 
 
 def test_later_manifest_requires_current_binding_for_require_each_run(preflight):
@@ -1512,7 +2397,7 @@ def test_later_manifest_accepts_repository_rebound_require_without_new_grant_eve
     )
 
 
-def test_later_manifest_rejects_forged_current_full_auto_binding(preflight):
+def test_later_manifest_accepts_repository_rebound_legacy_full_auto(preflight):
     automation_id = "send_order"
     contract = _later_policy_contract()
     item = {
@@ -1525,7 +2410,7 @@ def test_later_manifest_rejects_forged_current_full_auto_binding(preflight):
         to_mode="REQUIRE_EACH_RUN",
     )
     full_auto_event = _full_auto_event(preflight, automation_id)
-    forged_policy = {
+    rebound_policy = {
         "mode": "PROJECT_FULL_AUTO",
         "version": 2,
         "project_generation": 2,
@@ -1540,19 +2425,15 @@ def test_later_manifest_rejects_forged_current_full_auto_binding(preflight):
         "approved_at": "2026-08-16T00:00:00Z",
         "comment": "approved",
     }
-    with pytest.raises(
-        preflight.AutomationProjectReleaseManifestError,
-        match="AUTOMATION_PROJECT_POLICY_STATE_INVALID",
-    ):
-        preflight._validate_later_project_policy_chain(
-            contract,
-            automation_id=automation_id,
-            item=item,
-            project={"generation": 2, "config_version": 3},
-            policy=forged_policy,
-            policy_events=[bootstrap_event, full_auto_event],
-            configuration_evidence=[],
-        )
+    preflight._validate_later_project_policy_chain(
+        contract,
+        automation_id=automation_id,
+        item=item,
+        project={"generation": 2, "config_version": 3},
+        policy=rebound_policy,
+        policy_events=[bootstrap_event, full_auto_event],
+        configuration_evidence=[],
+    )
 
 
 def test_deferred_r7_row_and_backup_cannot_drift_from_code_contract(preflight):

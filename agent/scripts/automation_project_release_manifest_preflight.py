@@ -2014,57 +2014,54 @@ def _validate_followup_configuration_event(
     *,
     event: Mapping[str, Any],
     configuration_evidence: Sequence[Mapping[str, Any]],
-) -> None:
+) -> bool:
     evidence = contract["bootstrap_evidence"]
     request_id = str(event.get("request_id") or "")
-    matches = [
-        row
-        for row in configuration_evidence
-        if row.get("request_id") == request_id
-    ]
+    matches = [row for row in configuration_evidence if row.get("request_id") == request_id]
     if len(matches) != 1:
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_FOLLOWUP_CONFIGURATION_EVENT_INVALID"
-        )
+        raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_FOLLOWUP_CONFIGURATION_EVENT_INVALID")
     joined = matches[0]
     metadata = joined.get("configuration_metadata_json")
+    event_mode = event.get("to_mode")
+    actor_allowed = (
+        event.get("actor_role") == "super_admin"
+        and type(event.get("actor_id")) is str
+        and bool(event.get("actor_id"))
+    ) or (
+        event.get("actor_id") == evidence["plugin_actor_id"]
+        and event.get("actor_role") == evidence["plugin_actor_role"]
+    )
+    durable_rebind = (
+        event.get("from_mode") == event_mode
+        and event_mode in _DURABLE_POLICY_MODES
+        and actor_allowed
+    )
+    legacy_rebind = (
+        event.get("from_mode") in _DURABLE_POLICY_MODES
+        and event.get("from_mode") != event_mode
+        and event_mode in {"PROJECT_FULL_AUTO", "REQUIRE_EACH_RUN"}
+        and (event_mode == "REQUIRE_EACH_RUN" or event.get("project_generation") == 1)
+        and actor_allowed
+    )
     if (
-        event.get("to_mode") != "REQUIRE_EACH_RUN"
-        or any(
-            event.get(field) is not None
-            for field in (
-                "contract_hash",
-                "contract_snapshot_json",
-                "tool_contract_hash",
-                "plugin_contract_hash",
-            )
-        )
-        or event.get("actor_id") != evidence["plugin_actor_id"]
-        or event.get("actor_role") != evidence["plugin_actor_role"]
+        not (durable_rebind or legacy_rebind)
+        or not _empty_policy_event_contract(event)
         or event.get("actor_display_name") is not None
         or event.get("reason") != evidence["plugin_reason"]
         or event.get("comment") is not None
         or event.get("correlation_id") != request_id
-        or joined.get("policy_event_id") != event.get("event_id")
-        or joined.get("policy_configuration_version")
-        != event.get("project_configuration_version")
-        or joined.get("policy_project_generation")
-        != event.get("project_generation")
+        or not _joined_policy_event_matches(joined, event)
+        or type(joined.get("configuration_event_id")) is not int or joined.get("configuration_event_id", 0) <= 0
         or joined.get("configuration_event_type") != "CONFIGURATION_UPDATED"
-        or joined.get("configuration_from_state")
-        != joined.get("configuration_to_state")
+        or not isinstance(joined.get("configuration_from_state"), str) or not joined.get("configuration_from_state") or joined.get("configuration_from_state") != joined.get("configuration_to_state")
         or joined.get("configuration_actor_id")
-        != evidence["plugin_actor_id"]
+        != event.get("actor_id")
         or joined.get("configuration_actor_role")
-        != evidence["plugin_actor_role"]
+        != event.get("actor_role")
         or not isinstance(metadata, Mapping)
-        or set(metadata)
-        != {
-            "request_payload_sha256",
-            "from_project_configuration_version",
-            "to_project_configuration_version",
-            "schedule_sha256",
-            "scheduled_task_count",
+        or set(metadata) != {
+            "request_payload_sha256", "from_project_configuration_version",
+            "to_project_configuration_version", "schedule_sha256", "scheduled_task_count",
         }
         or not _valid_sha256(metadata.get("request_payload_sha256"))
         or not _valid_sha256(metadata.get("schedule_sha256"))
@@ -2078,16 +2075,11 @@ def _validate_followup_configuration_event(
         or _canonical_sha256(metadata)
         != joined.get("configuration_metadata_sha256")
     ):
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_FOLLOWUP_CONFIGURATION_EVENT_INVALID"
-        )
+        raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_FOLLOWUP_CONFIGURATION_EVENT_INVALID")
+    return bool(legacy_rebind or event.get("project_generation") == 1)
 
 
-def _validate_full_auto_event_contract(
-    *,
-    automation_id: str,
-    event: Mapping[str, Any],
-) -> None:
+def _validate_full_auto_event_contract(*, automation_id: str, event: Mapping[str, Any]) -> None:
     snapshot = event.get("contract_snapshot_json")
     if (
         not isinstance(snapshot, Mapping)
@@ -2102,9 +2094,137 @@ def _validate_full_auto_event_contract(
         or not _valid_sha256(event.get("tool_contract_hash"))
         or not _valid_sha256(event.get("plugin_contract_hash"))
     ):
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID"
+        raise AutomationProjectReleaseManifestError(_FOLLOWUP_POLICY_INVALID)
+
+
+_POLICY_EVENT_CONTRACT_FIELDS = ("contract_hash", "contract_snapshot_json", "tool_contract_hash", "plugin_contract_hash")
+_DURABLE_POLICY_MODES = frozenset(("PROJECT_FULL_AUTO", "REQUIRE_EACH_RUN", "LEGACY_SCHEDULE_ONLY"))
+_FOLLOWUP_POLICY_INVALID = "AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID"
+_SYSTEM_FULL_AUTO_EVENTS = {
+    "MIGRATION_019_FULL_AUTO": ("migration-019-full-auto", "migration-019", "Migration 019", "Existing automation project converted to durable full auto"),
+    "AUTOMATION_DEFAULT_FULL_AUTO": ("default-full-auto", "system:migration:automation-full-auto-v1", "Automation full-auto migration", "Defaulted automation project to durable full auto"),
+}
+_JOINED_POLICY_FIELDS = {
+    "event_id": "policy_event_id", "from_mode": "from_mode", "to_mode": "to_mode",
+    "contract_hash": "policy_contract_hash", "contract_snapshot_json": "policy_contract_snapshot_json",
+    "tool_contract_hash": "policy_tool_contract_hash", "plugin_contract_hash": "policy_plugin_contract_hash",
+    "project_configuration_version": "policy_configuration_version", "project_generation": "policy_project_generation",
+    "actor_id": "policy_actor_id", "actor_role": "policy_actor_role", "actor_display_name": "policy_actor_display_name",
+    "reason": "policy_reason", "comment": "policy_comment", "correlation_id": "policy_correlation_id",
+}
+
+
+def _empty_policy_event_contract(event: Mapping[str, Any]) -> bool:
+    return all(event.get(field) is None for field in _POLICY_EVENT_CONTRACT_FIELDS)
+
+
+def _raise_followup_policy_invalid() -> None:
+    raise AutomationProjectReleaseManifestError(_FOLLOWUP_POLICY_INVALID)
+
+
+def _joined_policy_event_matches(joined: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
+    return all(event.get(field) == joined.get(alias) for field, alias in _JOINED_POLICY_FIELDS.items())
+
+
+def _policy_event_binding(event: Mapping[str, Any]) -> tuple[int, int]:
+    return (_positive_int(event.get("project_generation"), code=_FOLLOWUP_POLICY_INVALID), _positive_int(event.get("project_configuration_version"), code=_FOLLOWUP_POLICY_INVALID))
+
+
+def _validate_system_full_auto_event(*, automation_id: str, event: Mapping[str, Any]) -> None:
+    spec = _SYSTEM_FULL_AUTO_EVENTS.get(str(event.get("reason") or ""))
+    request_prefix, actor_id, display_name, comment = spec or (None, None, None, None)
+    if (
+        spec is None
+        or event.get("request_id") != f"{request_prefix}:{automation_id}"
+        or event.get("from_mode") not in {"REQUIRE_EACH_RUN", "LEGACY_SCHEDULE_ONLY"}
+        or event.get("to_mode") != "PROJECT_FULL_AUTO"
+        or not _empty_policy_event_contract(event)
+        or event.get("actor_id") != actor_id
+        or event.get("actor_role") != "system"
+        or event.get("actor_display_name") != display_name
+        or event.get("comment") != comment
+        or type(event.get("correlation_id")) is not str
+        or not event.get("correlation_id")
+    ):
+        _raise_followup_policy_invalid()
+
+
+def _validate_plugin_version_event(event: Mapping[str, Any], configuration_evidence: Sequence[Mapping[str, Any]]) -> str | None:
+    matches = [row for row in configuration_evidence if row.get("request_id") == event.get("request_id")]
+    joined = matches[0] if len(matches) == 1 else {}
+    metadata = joined.get("configuration_metadata_json")
+    prepared_request = metadata.get("prepared_configuration_request_id") if isinstance(metadata, Mapping) else None
+    if (
+        len(matches) != 1
+        or event.get("from_mode") != event.get("to_mode")
+        or event.get("to_mode") not in _DURABLE_POLICY_MODES
+        or not _empty_policy_event_contract(event)
+        or event.get("actor_role") != "super_admin"
+        or type(event.get("actor_id")) is not str
+        or not event.get("actor_id")
+        or event.get("actor_display_name") is not None
+        or event.get("comment") is not None
+        or event.get("correlation_id") != event.get("request_id")
+        or not _joined_policy_event_matches(joined, event)
+        or type(joined.get("configuration_event_id")) is not int
+        or joined.get("configuration_event_id", 0) <= 0
+        or joined.get("configuration_event_type") != "PLUGIN_UPGRADE_STAGED"
+        or joined.get("configuration_from_state") not in {"INSTALLED", "ENABLED", "DISABLED"}
+        or joined.get("configuration_to_state") != "UPGRADING"
+        or joined.get("configuration_actor_id") != event.get("actor_id")
+        or joined.get("configuration_actor_role") != event.get("actor_role")
+        or not isinstance(metadata, Mapping)
+        or set(metadata) != {
+            "request_payload_sha256", "from_version", "to_version", "package_sha256",
+            "target_generation", "previous_state", "prepared_configuration_request_id",
+        }
+        or not _valid_sha256(metadata.get("request_payload_sha256"))
+        or not _valid_sha256(metadata.get("package_sha256"))
+        or type(metadata.get("from_version")) is not str
+        or not metadata.get("from_version")
+        or type(metadata.get("to_version")) is not str
+        or not metadata.get("to_version")
+        or metadata.get("from_version") == metadata.get("to_version")
+        or metadata.get("target_generation") != event.get("project_generation")
+        or metadata.get("previous_state") != joined.get("configuration_from_state")
+        or (prepared_request is not None and (type(prepared_request) is not str or not prepared_request))
+        or _canonical_sha256(metadata) != joined.get("configuration_metadata_sha256")
+    ):
+        _raise_followup_policy_invalid()
+    return prepared_request
+
+
+def _validate_super_admin_policy_event(*, automation_id: str, event: Mapping[str, Any]) -> None:
+    if (
+        event.get("actor_role") != "super_admin"
+        or type(event.get("actor_id")) is not str
+        or not event.get("actor_id")
+        or event.get("to_mode") not in {"REQUIRE_EACH_RUN", "PROJECT_FULL_AUTO"}
+        or type(event.get("correlation_id")) is not str
+        or not event.get("correlation_id")
+    ):
+        _raise_followup_policy_invalid()
+    if _empty_policy_event_contract(event):
+        return
+    if event.get("to_mode") == "PROJECT_FULL_AUTO":
+        _validate_full_auto_event_contract(automation_id=automation_id, event=event)
+        return
+    _raise_followup_policy_invalid()
+
+
+def _policy_approval_matches(policy: Mapping[str, Any], anchor: Mapping[str, Any] | None) -> bool:
+    if anchor is None:
+        return all(
+            policy.get(field) is None
+            for field in ("approved_by_actor_id", "approved_by_actor_role", "approved_by_actor_display_name", "approved_at", "comment")
         )
+    return bool(
+        policy.get("approved_by_actor_id") == anchor.get("actor_id")
+        and policy.get("approved_by_actor_role") == anchor.get("actor_role")
+        and policy.get("approved_by_actor_display_name") == anchor.get("actor_display_name")
+        and policy.get("comment") == anchor.get("comment")
+        and policy.get("approved_at") is not None
+    )
 
 
 def _validate_later_project_policy_chain(
@@ -2137,84 +2257,76 @@ def _validate_later_project_policy_chain(
         or any(type(request_id) is not str or not request_id for request_id in request_ids)
         or len(request_ids) != len(set(request_ids))
     ):
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_POLICY_EVENT_INVALID"
-        )
+        raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_EVENT_INVALID")
     mode = str(item.get("initial_mode") or "")
     subsequent = list(policy_events[bootstrap_index + 1 :])
     previous_mode = mode
+    validated_events = [bootstrap_event]
+    _bootstrap_generation, maximum_event_configuration = _policy_event_binding(bootstrap_event)
+    full_auto_authorized = False
+    system_full_auto_reason: str | None = None
+    super_admin_seen = False
+    approval_anchor: Mapping[str, Any] | None = None
     for event in subsequent:
         if event.get("from_mode") != previous_mode:
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_POLICY_EVENT_CHAIN_INVALID"
-            )
+            raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_EVENT_CHAIN_INVALID")
         reason = str(event.get("reason") or "")
+        _event_generation, event_configuration = _policy_event_binding(event)
+        if event_configuration < maximum_event_configuration:
+            _raise_followup_policy_invalid()
+        maximum_event_configuration = event_configuration
         if reason == contract["bootstrap_evidence"]["plugin_reason"]:
-            _validate_followup_configuration_event(
+            legacy_configuration = _validate_followup_configuration_event(
                 contract,
                 event=event,
                 configuration_evidence=configuration_evidence,
             )
+            if legacy_configuration:
+                if system_full_auto_reason is not None:
+                    _raise_followup_policy_invalid()
+                full_auto_authorized = event.get("to_mode") == "PROJECT_FULL_AUTO"
+                approval_anchor = None
+        elif reason in _SYSTEM_FULL_AUTO_EVENTS:
+            if system_full_auto_reason is not None or (reason == "AUTOMATION_DEFAULT_FULL_AUTO" and super_admin_seen):
+                _raise_followup_policy_invalid()
+            _validate_system_full_auto_event(automation_id=automation_id, event=event)
+            full_auto_authorized = True
+            system_full_auto_reason = reason
+            approval_anchor = event
+        elif reason == "PLUGIN_VERSION_CHANGED":
+            prepared_request = _validate_plugin_version_event(event, configuration_evidence)
+            if prepared_request:
+                prepared_events = [row for row in validated_events if row.get("request_id") == prepared_request]
+                if (
+                    len(prepared_events) != 1
+                    or prepared_events[0].get("reason") != contract["bootstrap_evidence"]["plugin_reason"]
+                    or prepared_events[0].get("actor_id") != event.get("actor_id")
+                    or prepared_events[0].get("actor_role") != event.get("actor_role")
+                    or _policy_event_binding(prepared_events[0]) != _policy_event_binding(event)
+                ):
+                    _raise_followup_policy_invalid()
+            approval_anchor = event
         elif reason == "SUPER_ADMIN_PROJECT_POLICY_CHANGED":
-            if (
-                event.get("actor_role") != "super_admin"
-                or type(event.get("actor_id")) is not str
-                or not event.get("actor_id")
-                or event.get("to_mode")
-                not in {"REQUIRE_EACH_RUN", "PROJECT_FULL_AUTO"}
-                or _positive_int(
-                    event.get("project_generation"),
-                    code="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
-                )
-                <= 0
-                or _positive_int(
-                    event.get("project_configuration_version"),
-                    code="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
-                )
-                <= 0
-            ):
-                raise AutomationProjectReleaseManifestError(
-                    "AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID"
-                )
-            if event.get("to_mode") == "PROJECT_FULL_AUTO":
-                _validate_full_auto_event_contract(
-                    automation_id=automation_id,
-                    event=event,
-                )
-            elif any(
-                event.get(field) is not None
-                for field in (
-                    "contract_hash",
-                    "contract_snapshot_json",
-                    "tool_contract_hash",
-                    "plugin_contract_hash",
-                )
-            ):
-                raise AutomationProjectReleaseManifestError(
-                    "AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID"
-                )
-        else:
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID"
+            super_admin_seen = True
+            _validate_super_admin_policy_event(
+                automation_id=automation_id,
+                event=event,
             )
+            full_auto_authorized = event.get("to_mode") == "PROJECT_FULL_AUTO"
+            approval_anchor = event
+        else:
+            raise AutomationProjectReleaseManifestError(_FOLLOWUP_POLICY_INVALID)
         previous_mode = str(event.get("to_mode") or "")
+        validated_events.append(event)
 
-    current_generation = project.get("generation")
-    current_configuration = project.get("config_version")
     latest = subsequent[-1] if subsequent else bootstrap_event
     if (
         policy.get("mode") != previous_mode
         or policy.get("version")
         != int(item.get("policy_version") or 0) + len(subsequent)
     ):
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
-        )
-    if previous_mode == "LEGACY_SCHEDULE_ONLY":
-        if subsequent:
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_POLICY_EVENT_CHAIN_INVALID"
-            )
+        raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_STATE_INVALID")
+    if not subsequent and previous_mode == "LEGACY_SCHEDULE_ONLY":
         try:
             contract["bootstrap_evidence"][
                 "validate_initial_automation_project_bootstrap_policy"
@@ -2224,93 +2336,44 @@ def _validate_later_project_policy_chain(
                 bootstrap_event=bootstrap_event,
             )
         except contract["bootstrap_evidence"]["error_class"] as exc:
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
-            ) from exc
-    elif previous_mode == "PROJECT_FULL_AUTO":
-        if (
-            policy.get("project_generation")
-            != latest.get("project_generation")
-            or policy.get("project_configuration_version")
-            != latest.get("project_configuration_version")
-            or policy.get("contract_hash") != latest.get("contract_hash")
-            or policy.get("contract_snapshot_json")
-            != latest.get("contract_snapshot_json")
-            or policy.get("tool_contract_hash")
-            != latest.get("tool_contract_hash")
-            or policy.get("plugin_contract_hash")
-            != latest.get("plugin_contract_hash")
-            or policy.get("approved_by_actor_id") != latest.get("actor_id")
-            or policy.get("approved_by_actor_role") != "super_admin"
-            or policy.get("approved_by_actor_display_name")
-            != latest.get("actor_display_name")
-            or policy.get("comment") != latest.get("comment")
-            or policy.get("approved_at") is None
-        ):
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
+            raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_STATE_INVALID") from exc
+        return
+
+    isolated_target = is_staged_unknown_write_quarantine(project) or is_staged_missing_target_runtime(project)
+    expected_generation = project.get("target_generation") if isolated_target else project.get("generation")
+    legacy_contract_binding = (
+        previous_mode == "PROJECT_FULL_AUTO"
+        and latest.get("reason") == "SUPER_ADMIN_PROJECT_POLICY_CHANGED"
+        and not _empty_policy_event_contract(latest)
+    )
+    legacy_config_generation = (
+        previous_mode == "PROJECT_FULL_AUTO"
+        and latest.get("reason") == contract["bootstrap_evidence"]["plugin_reason"]
+        and latest.get("to_mode") == "PROJECT_FULL_AUTO"
+        and latest.get("project_generation") == 1
+        and policy.get("project_generation") == 1
+    )
+    if (
+        (
+            not legacy_contract_binding
+            and (
+                (
+                    policy.get("project_generation") != expected_generation
+                    and not legacy_config_generation
+                )
+                or policy.get("project_configuration_version") != project.get("config_version")
             )
-        _validate_full_auto_event_contract(
-            automation_id=automation_id,
-            event=latest,
         )
-    else:
-        if (
-            policy.get("project_generation") != current_generation
-            or policy.get("project_configuration_version")
-            != current_configuration
-            or any(
-                policy.get(field) is not None
-                for field in (
-                    "contract_hash",
-                    "contract_snapshot_json",
-                    "tool_contract_hash",
-                    "plugin_contract_hash",
-                )
-            )
-        ):
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
-            )
-        if latest.get("reason") == contract["bootstrap_evidence"]["plugin_reason"]:
-            if any(
-                policy.get(field) is not None
-                for field in (
-                    "approved_by_actor_id",
-                    "approved_by_actor_role",
-                    "approved_by_actor_display_name",
-                    "approved_at",
-                    "comment",
-                )
-            ):
-                raise AutomationProjectReleaseManifestError(
-                    "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
-                )
-        elif latest.get("reason") == "SUPER_ADMIN_PROJECT_POLICY_CHANGED":
-            if (
-                policy.get("approved_by_actor_id") != latest.get("actor_id")
-                or policy.get("approved_by_actor_role") != "super_admin"
-                or policy.get("approved_by_actor_display_name")
-                != latest.get("actor_display_name")
-                or policy.get("comment") != latest.get("comment")
-                or policy.get("approved_at") is None
-            ):
-                raise AutomationProjectReleaseManifestError(
-                    "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
-                )
-        elif any(
-            policy.get(field) is not None
-            for field in (
-                "approved_by_actor_id",
-                "approved_by_actor_role",
-                "approved_by_actor_display_name",
-                "approved_at",
-                "comment",
-            )
-        ):
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_POLICY_STATE_INVALID"
-            )
+        or any(policy.get(field) != latest.get(field) for field in _POLICY_EVENT_CONTRACT_FIELDS)
+        or not _policy_approval_matches(policy, approval_anchor)
+        or (previous_mode == "PROJECT_FULL_AUTO" and not full_auto_authorized)
+        or (
+            previous_mode == "PROJECT_FULL_AUTO"
+            and not _empty_policy_event_contract(latest)
+            and latest.get("reason") != "SUPER_ADMIN_PROJECT_POLICY_CHANGED"
+        )
+    ):
+        raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_STATE_INVALID")
 
 
 def _validate_bootstrap_marker_summary(summary: Any) -> None:
