@@ -167,9 +167,14 @@ def _load_release_contract() -> dict[str, Any]:
             "_validated_generation_row",
             None,
         )
-        matches_delivery_status_quarantine_project = getattr(
+        matches_reviewed_unknown_write_quarantine_project = getattr(
             quarantine,
-            "matches_delivery_status_quarantine_project",
+            "matches_reviewed_unknown_write_quarantine_project",
+            None,
+        )
+        reviewed_unknown_write_quarantine_ids = getattr(
+            quarantine,
+            "REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS",
             None,
         )
         evidence_function_names = (
@@ -244,7 +249,11 @@ def _load_release_contract() -> dict[str, Any]:
             or deferred_generation <= 0
             or not callable(stable_schedule_task_id)
             or not callable(validate_generation_row)
-            or not callable(matches_delivery_status_quarantine_project)
+            or not callable(matches_reviewed_unknown_write_quarantine_project)
+            or not isinstance(
+                reviewed_unknown_write_quarantine_ids,
+                (set, frozenset),
+            )
             or any(
                 not callable(bootstrap_evidence[name])
                 for name in evidence_function_names
@@ -367,8 +376,11 @@ def _load_release_contract() -> dict[str, Any]:
         "deferred_generation": deferred_generation,
         "stable_schedule_task_id": stable_schedule_task_id,
         "validate_generation_row": validate_generation_row,
-        "matches_delivery_status_quarantine_project": (
-            matches_delivery_status_quarantine_project
+        "matches_reviewed_unknown_write_quarantine_project": (
+            matches_reviewed_unknown_write_quarantine_project
+        ),
+        "reviewed_unknown_write_quarantine_ids": frozenset(
+            reviewed_unknown_write_quarantine_ids
         ),
         "bootstrap_evidence": bootstrap_evidence,
         "release_projects": release_projects,
@@ -1039,7 +1051,7 @@ def _verify_deferred_projects_absent(cursor: Any, contract: Mapping[str, Any]) -
         )
 
 
-def _is_exact_delivery_status_quarantine_project(
+def _is_exact_reviewed_unknown_write_quarantine_project(
     contract: Mapping[str, Any],
     *,
     automation_id: str,
@@ -1055,7 +1067,8 @@ def _is_exact_delivery_status_quarantine_project(
 
     row = project if generation is None else generation
     return bool(
-        contract["matches_delivery_status_quarantine_project"](
+        automation_id in contract["reviewed_unknown_write_quarantine_ids"]
+        and contract["matches_reviewed_unknown_write_quarantine_project"](
             automation_id=automation_id,
             plugin_id=project.get("plugin_id"),
             target_generation=project.get("target_generation"),
@@ -1131,7 +1144,7 @@ def _validate_release_projects_and_tasks(
     for automation_id in sorted(contract["release_projects"]):
         project = projects[automation_id]
         template = contract["templates"][automation_id]
-        exact_delivery_quarantine = _is_exact_delivery_status_quarantine_project(
+        exact_reviewed_quarantine = _is_exact_reviewed_unknown_write_quarantine_project(
             contract,
             automation_id=automation_id,
             project=project,
@@ -1148,7 +1161,7 @@ def _validate_release_projects_and_tasks(
                 code="AUTOMATION_PROJECT_CONFIG_INVALID",
             )
             or (
-                not exact_delivery_quarantine
+                not exact_reviewed_quarantine
                 and (
                     project.get("reconcile_state") != "STABLE"
                     or project.get("generation_state") != "COMMITTED"
@@ -1393,7 +1406,7 @@ def _validate_bootstrap_generation_source(
         else None
     )
     template = contract["templates"][automation_id]
-    exact_delivery_quarantine = _is_exact_delivery_status_quarantine_project(
+    exact_reviewed_quarantine = _is_exact_reviewed_unknown_write_quarantine_project(
         contract,
         automation_id=automation_id,
         project=project,
@@ -1405,7 +1418,7 @@ def _validate_bootstrap_generation_source(
         "DISPOSING",
         "DISPOSED",
     }
-    if exact_delivery_quarantine:
+    if exact_reviewed_quarantine:
         allowed_generation_states.add("BLOCKED")
     if (
         generation_row.get("generation_state") not in allowed_generation_states

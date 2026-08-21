@@ -23,9 +23,9 @@ from agent.automation_plugins.ports import (
 )
 from agent.automation_plugins.quarantine import (
     DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
-    DELIVERY_STATUS_QUARANTINE_GENERATION,
-    DELIVERY_STATUS_QUARANTINE_STATUS,
-    matches_delivery_status_unknown_write_quarantine,
+    REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS,
+    UNKNOWN_WRITE_QUARANTINE_STATUS,
+    matches_reviewed_unknown_write_quarantine,
 )
 from agent.tool_registry import validate_schema_instance
 
@@ -535,7 +535,7 @@ class PluginCatalog:
         return sorted(entries, key=lambda item: item.automation_id)
 
     @staticmethod
-    def _delivery_status_quarantine_project_matches(
+    def _reviewed_unknown_write_quarantine_project_matches(
         entry: PluginCatalogEntry,
         generations: Sequence[object],
         active_leases: Sequence[object],
@@ -547,7 +547,7 @@ class PluginCatalog:
             return False
         generation = generations[0]
         snapshot = getattr(generation, "snapshot", None)
-        return matches_delivery_status_unknown_write_quarantine(
+        return matches_reviewed_unknown_write_quarantine(
             automation_id=entry.automation_id,
             plugin_id=entry.plugin_id,
             target_generation=entry.target_generation,
@@ -562,12 +562,13 @@ class PluginCatalog:
             snapshot, "plugin_id", None
         ) == entry.plugin_id
 
-    def delivery_status_unknown_write_quarantine_status(
+    def reviewed_unknown_write_quarantine_status(
         self,
+        automation_id: str,
         *,
         fail_closed: bool = False,
     ) -> str | None:
-        """Return the incident status only after a typed current-lease re-read.
+        """Return one reviewed incident only after a typed current-lease re-read.
 
         A caller may opt into a raised conflict for an observed
         ``BLOCKED_UNKNOWN_WRITE`` state that does not exactly match the audited
@@ -576,57 +577,84 @@ class PluginCatalog:
         exception.
         """
 
-        entry = self.get(DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID)
+        if automation_id not in REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS:
+            if fail_closed:
+                raise PluginConflictError(
+                    "unknown-write quarantine identity is not reviewed",
+                    code="UNKNOWN_WRITE_QUARANTINE_MISMATCH",
+                )
+            return None
+        entry = self.get(automation_id)
         if entry is None or entry.reconcile_state != RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE:
             return None
         reader = self._runtime_unknown_write_reader
         if reader is None:
             if fail_closed:
                 raise PluginConflictError(
-                    "delivery unknown-write quarantine reader is unavailable",
-                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                    "unknown-write quarantine reader is unavailable",
+                    code="UNKNOWN_WRITE_QUARANTINE_MISMATCH",
                 )
             return None
         try:
             generations = tuple(
                 reader.list_project_generations(
-                    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+                    automation_id
                 )
             )
             if len(generations) != 1:
-                raise ValueError("delivery quarantine generation topology mismatched")
+                raise ValueError("unknown-write quarantine generation topology mismatched")
             generation_number = getattr(generations[0].snapshot, "generation", None)
             if type(generation_number) is not int:
-                raise ValueError("delivery quarantine generation identity mismatched")
+                raise ValueError("unknown-write quarantine generation identity mismatched")
             active_leases = tuple(
                 reader.list_active_generation_leases(
-                    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+                    automation_id,
                     generation_number,
                 )
             )
             lease = reader.find_current_unknown_generation_write(
-                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+                automation_id
             )
         except Exception as exc:
             if fail_closed:
                 raise PluginConflictError(
-                    "delivery unknown-write quarantine identity is unavailable",
-                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                    "unknown-write quarantine identity is unavailable",
+                    code="UNKNOWN_WRITE_QUARANTINE_MISMATCH",
                 ) from exc
             return None
-        if self._delivery_status_quarantine_project_matches(
+        if self._reviewed_unknown_write_quarantine_project_matches(
             entry,
             generations,
             active_leases,
             lease,
         ):
-            return DELIVERY_STATUS_QUARANTINE_STATUS
+            return UNKNOWN_WRITE_QUARANTINE_STATUS
         if fail_closed:
             raise PluginConflictError(
-                "delivery unknown-write quarantine identity mismatched",
-                code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                "unknown-write quarantine identity mismatched",
+                code="UNKNOWN_WRITE_QUARANTINE_MISMATCH",
             )
         return None
+
+    def delivery_status_unknown_write_quarantine_status(
+        self,
+        *,
+        fail_closed: bool = False,
+    ) -> str | None:
+        """Compatibility facade for the original delivery incident."""
+
+        try:
+            return self.reviewed_unknown_write_quarantine_status(
+                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+                fail_closed=fail_closed,
+            )
+        except PluginConflictError as exc:
+            if fail_closed:
+                raise PluginConflictError(
+                    str(exc),
+                    code="DELIVERY_STATUS_QUARANTINE_MISMATCH",
+                ) from exc
+            return None
 
     def production_unaffected_release_health(
         self,
@@ -634,11 +662,10 @@ class PluginCatalog:
         *,
         recoverable_unknown_write_automation_ids: Sequence[str] = (),
     ) -> dict[str, Any]:
-        """Report publisher readiness excluding only the verified incident.
+        """Report publisher readiness excluding only reviewed incidents.
 
         The normal ``production_health`` output stays untouched and degraded.
-        This projection removes only the exact delivery unstable generation;
-        every other catalog failure remains a hard release block.
+        Every other catalog failure remains a hard release block.
         """
 
         health = self.production_health(
@@ -647,23 +674,21 @@ class PluginCatalog:
                 recoverable_unknown_write_automation_ids
             ),
         )
-        quarantine_status = self.delivery_status_unknown_write_quarantine_status()
-        if quarantine_status != DELIVERY_STATUS_QUARANTINE_STATUS:
-            return {
-                **health,
-                "quarantined_unknown_write_automation_ids": [],
-            }
+        quarantined = sorted(
+            automation_id
+            for automation_id in REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS
+            if self.reviewed_unknown_write_quarantine_status(automation_id)
+            == UNKNOWN_WRITE_QUARANTINE_STATUS
+        )
         unstable = [
             automation_id
             for automation_id in health["unstable_generations"]
-            if automation_id != DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+            if automation_id not in quarantined
         ]
         result = {
             **health,
             "unstable_generations": unstable,
-            "quarantined_unknown_write_automation_ids": [
-                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
-            ],
+            "quarantined_unknown_write_automation_ids": quarantined,
         }
         result["ok"] = bool(
             not result["unsupported_automation_ids"]
@@ -722,9 +747,13 @@ class PluginCatalog:
         """
 
         entries = self.list()
-        delivery_quarantine_status = self.delivery_status_unknown_write_quarantine_status(
-            fail_closed=True
-        )
+        quarantine_statuses = {
+            automation_id: self.reviewed_unknown_write_quarantine_status(
+                automation_id,
+                fail_closed=True,
+            )
+            for automation_id in REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS
+        }
         newest: dict[str, PluginCatalogEntry] = {}
         for entry in entries:
             current = newest.get(entry.plugin_id)
@@ -767,11 +796,7 @@ class PluginCatalog:
                 "target_generation": entry.target_generation,
                 "committed_generation": entry.committed_generation,
                 "reconcile_state": entry.reconcile_state.value,
-                "quarantine_status": (
-                    delivery_quarantine_status
-                    if entry.automation_id == DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
-                    else None
-                ),
+                "quarantine_status": quarantine_statuses.get(entry.automation_id),
                 "project_configuration_version": entry.project_config_version,
                 "execution_platform": entry.execution_platform,
                 "can_schedule": entry.scheduling.get("supported") is True,
