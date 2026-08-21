@@ -94,14 +94,50 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
                     },
                     "status_label": "登录态有效",
                     "status_tone": "warning",
-                }
+                },
+                {
+                    "account_id": "ronghui_paused",
+                    "name": "融辉已暂停账号",
+                    "system": "ronghui",
+                    "system_label": "TMS融辉",
+                    "is_default": False,
+                    "is_active": True,
+                    "auto_login_enabled": True,
+                    "auto_login_blocked": True,
+                    "session_capable": True,
+                    "login_kind": "image",
+                    "has_saved_credentials": True,
+                    "has_manual_credentials": True,
+                    "has_env_credentials": False,
+                    "credential_source": "saved",
+                    "credentials_label": "已保存账号密码",
+                    "credentials_tone": "success",
+                    "status_note": "连续失败后已暂停。",
+                    "credentials": {
+                        "username": "paused-test-user",
+                        "phone": "",
+                        "has_saved_credentials": True,
+                        "has_manual_credentials": True,
+                        "has_env_credentials": False,
+                        "credential_source": "saved",
+                    },
+                    "status": {
+                        "status": "pending_code",
+                        "label": "自动登录已暂停",
+                        "status_tone": "warning",
+                        "challenge_type": "image",
+                        "captcha_image": "data:image/png;base64,stale-captcha",
+                    },
+                    "status_label": "自动登录已暂停",
+                    "status_tone": "warning",
+                },
             ],
             account_groups=[],
             accounts=[],
             account_filter="",
             account_filter_label="",
-            account_total_count=2,
-            account_system_counts={"ronghui": 2},
+            account_total_count=3,
+            account_system_counts={"ronghui": 3},
             account_tab_systems=["ronghui"],
             account_system_labels={"ronghui": "TMS融辉"},
             account_system_order=["ronghui"],
@@ -169,12 +205,23 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertNotIn("环境变量凭据", html)
         self.assertNotIn("不会删除部署环境变量", html)
 
+    def test_paused_auto_login_does_not_render_stale_captcha_or_code_entry(self):
+        html = self._render()
+        template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")
+
+        paused_row = html[html.index('data-account-id="ronghui_paused"') :]
+        paused_row = paused_row[: paused_row.index("</tr>")]
+        self.assertIn('data-account-code-form hidden', paused_row)
+        self.assertNotIn("stale-captcha", paused_row)
+        self.assertIn("has_active_challenge = status_value == 'pending_code' and not account.auto_login_blocked", template)
+        self.assertIn('const hasActiveChallenge = pending && row.dataset.accountAutoLoginBlocked !== "true";', template)
+
     def test_disabled_badge_is_hidden_for_active_accounts_and_action_is_reversible(self):
         html = self._render()
         template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")
         stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
-        self.assertEqual(2, html.count("data-account-disabled-badge hidden>已停用</span>"))
+        self.assertEqual(3, html.count("data-account-disabled-badge hidden>已停用</span>"))
         self.assertIn(".automation-account-mini-badge[hidden] { display: none !important; }", stylesheet)
         self.assertIn("'停用账号' if account.is_active else '重新启用账号'", template)
         self.assertIn('active ? "停用账号" : "重新启用账号"', template)
