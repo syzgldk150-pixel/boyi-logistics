@@ -1475,10 +1475,22 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
                task.cron_expression,
                task.enabled,
                project.committed_generation,
+               project.target_generation,
                project.enabled AS project_enabled,
                project.state AS project_state,
+               project.reconcile_state,
                policy.mode AS policy_mode,
                generation.state AS generation_state,
+               generation.error_code AS generation_error_code,
+               target_generation.state AS target_generation_state,
+               target_generation.base_committed_generation AS target_base_generation,
+               (
+                   SELECT COUNT(*)
+                   FROM automation_project_generation_leases AS lease
+                   WHERE BINARY lease.automation_id=BINARY project.automation_id
+                     AND lease.generation=project.committed_generation
+                     AND lease.outcome='WRITE_OUTCOME_UNKNOWN'
+               ) AS unknown_write_count,
                generation.snapshot_json
         FROM scheduled_tasks AS task
         INNER JOIN automation_projects AS project
@@ -1488,6 +1500,9 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
         INNER JOIN automation_project_generations AS generation
           ON BINARY generation.automation_id=BINARY project.automation_id
          AND generation.generation=project.committed_generation
+        LEFT JOIN automation_project_generations AS target_generation
+          ON BINARY target_generation.automation_id=BINARY project.automation_id
+         AND target_generation.generation=project.target_generation
         WHERE task.enabled=TRUE
           AND task.automation_id IS NOT NULL
           AND task.tool_name LIKE 'automation.%.run'
@@ -1505,6 +1520,9 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
         automation_id = row.get("automation_id")
         task_generation = row.get("automation_generation")
         committed_generation = row.get("committed_generation")
+        quarantined_unknown_write = (
+            _AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER.is_staged_unknown_write_quarantine(row)
+        )
         if (
             type(task_id) is not str
             or not task_id
@@ -1520,7 +1538,10 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
             or row.get("enabled") not in {True, 1}
             or type(row.get("project_enabled")) not in {bool, int}
             or row.get("project_enabled") not in {True, 1}
-            or row.get("project_state") != "ENABLED"
+            or (
+                row.get("project_state") != "ENABLED"
+                and not quarantined_unknown_write
+            )
             or row.get("generation_state") not in {"COMMITTED", "BLOCKED"}
         ):
             raise ControlPlaneTaskCutoverPreflightError(
@@ -1558,16 +1579,26 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
             raise ControlPlaneTaskCutoverPreflightError(
                 "PROJECT_SCHEDULE_CONTRACT_INVALID"
             )
-        if (
+        scheduled_write = (
             policy_mode in {"PROJECT_FULL_AUTO", "LEGACY_SCHEDULE_ONLY"}
             and governance_anchor.get("operation_type")
             in PROJECT_SCHEDULED_WRITE_OPERATION_TYPES
-        ):
+        )
+        if scheduled_write:
             cron_expression = row.get("cron_expression")
             if type(cron_expression) is not str or not cron_expression:
                 raise ControlPlaneTaskCutoverPreflightError(
                     "PROJECT_SCHEDULE_CRON_INVALID"
                 )
+        if quarantined_unknown_write:
+            # The runtime treats the committed BLOCKED generation plus its
+            # unresolved external-write lease as the authoritative safety
+            # fence, even when an interrupted upgrade already moved the
+            # project-level marker to UPGRADING.  The persisted schedule stays
+            # available for an explicit evidence-backed recovery, but cannot
+            # execute and therefore is not an active release write window.
+            continue
+        if scheduled_write:
             crons.append(cron_expression)
     return tuple(sorted(set(crons)))
 
@@ -1619,6 +1650,7 @@ def check_scheduled_write_window(
                     "automation_projects",
                     "automation_project_policies",
                     "automation_project_generations",
+                    "automation_project_generation_leases",
                 )
                 project_table_presence = tuple(
                     _table_exists(cursor, table_name)

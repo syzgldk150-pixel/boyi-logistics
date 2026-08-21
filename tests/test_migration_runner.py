@@ -511,6 +511,7 @@ class _WindowCursor:
                     "automation_projects",
                     "automation_project_policies",
                     "automation_project_generations",
+                    "automation_project_generation_leases",
                 }
                 and self.project_schema_exists
             )
@@ -1799,6 +1800,210 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "ON BINARY policy.automation_id=BINARY project.automation_id",
             typed_query,
         )
+
+    def test_scheduled_write_window_excludes_exact_unknown_write_quarantine(self):
+        typed_row = {
+            "task_id": "arrive_list_0500",
+            "automation_id": "arrive_list",
+            "automation_generation": 3,
+            "tool_name": "automation.arrive_list.run",
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "committed_generation": 3,
+            "target_generation": 4,
+            "project_enabled": 1,
+            "project_state": "UPGRADING",
+            "reconcile_state": "PREPARING",
+            "policy_mode": "PROJECT_FULL_AUTO",
+            "generation_state": "BLOCKED",
+            "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
+            "target_generation_state": "PREPARED",
+            "target_base_generation": 3,
+            "unknown_write_count": 1,
+            "snapshot_json": {
+                "automation_id": "arrive_list",
+                "generation": 3,
+                "execution_metadata": {
+                    "compiled_invocations": {"scheduler": {"arguments": {}}},
+                    "governance_anchor": {"operation_type": "external_write"},
+                },
+            },
+        }
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=[],
+            project_schema_exists=True,
+            project_rows=[typed_row],
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    5,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(0, result)
+        print_mock.assert_called_once_with(
+            "scheduled_write_window=ok checked_schedules=0"
+        )
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+        typed_query = next(
+            sql for sql, _ in cursor.calls if sql.startswith("SELECT task.id AS task_id")
+        )
+        self.assertIn("FROM automation_project_generation_leases AS lease", typed_query)
+        self.assertIn("lease.outcome='WRITE_OUTCOME_UNKNOWN'", typed_query)
+
+    def test_scheduled_write_window_unknown_write_quarantine_fails_closed(self):
+        base = {
+            "task_id": "arrive_list_0500",
+            "automation_id": "arrive_list",
+            "automation_generation": 3,
+            "tool_name": "automation.arrive_list.run",
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "committed_generation": 3,
+            "target_generation": 4,
+            "project_enabled": 1,
+            "project_state": "UPGRADING",
+            "reconcile_state": "READY_TO_COMMIT",
+            "policy_mode": "PROJECT_FULL_AUTO",
+            "generation_state": "BLOCKED",
+            "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
+            "target_generation_state": "PREPARED",
+            "target_base_generation": 3,
+            "unknown_write_count": 1,
+            "snapshot_json": {
+                "automation_id": "arrive_list",
+                "generation": 3,
+                "execution_metadata": {
+                    "compiled_invocations": {"scheduler": {"arguments": {}}},
+                    "governance_anchor": {"operation_type": "external_write"},
+                },
+            },
+        }
+        mutations = (
+            ("missing lease", {"unknown_write_count": 0}),
+            ("duplicate lease", {"unknown_write_count": 2}),
+            ("wrong error", {"generation_error_code": "RUNTIME_ROOT_MISSING"}),
+            ("wrong generation state", {"generation_state": "COMMITTED"}),
+            ("target not newer", {"target_generation": 3}),
+            ("target not prepared", {"target_generation_state": "PREPARING"}),
+            ("target wrong base", {"target_base_generation": 2}),
+        )
+        for label, mutation in mutations:
+            with self.subTest(label=label):
+                row = {**base, **mutation}
+                cursor = _WindowCursor(
+                    [],
+                    policy_exists=True,
+                    candidate_rows=[],
+                    project_schema_exists=True,
+                    project_rows=[row],
+                )
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.check_scheduled_write_window(
+                        before_minutes=60,
+                        after_minutes=45,
+                        now=datetime(
+                            2026,
+                            8,
+                            14,
+                            3,
+                            0,
+                            tzinfo=ZoneInfo("Asia/Shanghai"),
+                        ),
+                    )
+
+                self.assertEqual(1, result)
+                rendered = " ".join(str(call) for call in print_mock.call_args_list)
+                self.assertIn("PROJECT_SCHEDULE_RUNTIME_INVALID", rendered)
+                self.assertNotIn("arrive_list", rendered)
+
+    def test_unknown_write_quarantine_still_validates_signed_schedule_contract(self):
+        row = {
+            "task_id": "arrive_list_0500",
+            "automation_id": "arrive_list",
+            "automation_generation": 3,
+            "tool_name": "automation.arrive_list.run",
+            "cron_expression": "0 5 * * *",
+            "enabled": 1,
+            "committed_generation": 3,
+            "target_generation": 4,
+            "project_enabled": 1,
+            "project_state": "UPGRADING",
+            "reconcile_state": "READY_TO_COMMIT",
+            "policy_mode": "PROJECT_FULL_AUTO",
+            "generation_state": "BLOCKED",
+            "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
+            "target_generation_state": "PREPARED",
+            "target_base_generation": 3,
+            "unknown_write_count": 1,
+            "snapshot_json": {
+                "automation_id": "arrive_list",
+                "generation": 3,
+                "execution_metadata": {
+                    "compiled_invocations": {"scheduler": {"arguments": {}}},
+                    "governance_anchor": {"operation_type": "external_write"},
+                },
+            },
+        }
+        invalid_snapshot = deepcopy(row["snapshot_json"])
+        invalid_snapshot["execution_metadata"]["compiled_invocations"] = {}
+        mutations = (
+            (
+                "missing scheduler contract",
+                {"snapshot_json": invalid_snapshot},
+                "PROJECT_SCHEDULE_CONTRACT_INVALID",
+            ),
+            ("empty cron", {"cron_expression": ""}, "PROJECT_SCHEDULE_CRON_INVALID"),
+        )
+        for label, mutation, expected_code in mutations:
+            with self.subTest(label=label):
+                cursor = _WindowCursor(
+                    [],
+                    policy_exists=True,
+                    candidate_rows=[],
+                    project_schema_exists=True,
+                    project_rows=[{**row, **mutation}],
+                )
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.check_scheduled_write_window(
+                        before_minutes=60,
+                        after_minutes=45,
+                        now=datetime(
+                            2026,
+                            8,
+                            14,
+                            3,
+                            0,
+                            tzinfo=ZoneInfo("Asia/Shanghai"),
+                        ),
+                    )
+
+                self.assertEqual(1, result)
+                rendered = " ".join(str(call) for call in print_mock.call_args_list)
+                self.assertIn(expected_code, rendered)
+                self.assertNotIn("arrive_list", rendered)
 
     def _applied_014_yunda_window_rows(
         self,
