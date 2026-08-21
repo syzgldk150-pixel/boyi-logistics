@@ -22,9 +22,8 @@ from agent.automation_plugins.release_scope import (
 )
 from agent.automation_plugins.quarantine import (
     DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
-    DELIVERY_STATUS_QUARANTINE_GENERATION,
-    DELIVERY_STATUS_QUARANTINE_PLUGIN_ID,
-    DELIVERY_STATUS_QUARANTINE_STATUS,
+    REVIEWED_UNKNOWN_WRITE_QUARANTINES,
+    UNKNOWN_WRITE_QUARANTINE_STATUS,
 )
 from agent.orchestration.models import Actor, ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
@@ -48,8 +47,11 @@ class DeferredR7ScheduleIdentityError(RuntimeError):
     """A persisted R7 row no longer matches the reviewed migration identity."""
 
 
-class DeliveryStatusQuarantineIdentityError(RuntimeError):
-    """A delivery schedule row is not the one audited unknown-write incident."""
+class UnknownWriteQuarantineIdentityError(RuntimeError):
+    """A schedule row does not match an audited unknown-write incident."""
+
+
+DeliveryStatusQuarantineIdentityError = UnknownWriteQuarantineIdentityError
 
 
 def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
@@ -65,23 +67,25 @@ def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
 DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS = _deferred_r7_legacy_schedule_task_ids()
 
 
-def _delivery_status_quarantine_schedule_task_ids() -> frozenset[str]:
-    definition = get_first_party_automation_project(
-        DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
-    )
-    if (
-        definition is None
-        or definition.tool_name != DELIVERY_STATUS_QUARANTINE_PLUGIN_ID
-    ):
-        raise RuntimeError("Delivery quarantine has no reviewed migration template")
-    return frozenset(definition.scheduled_task_ids)
+def _reviewed_quarantine_schedule_task_ids() -> dict[str, frozenset[str]]:
+    result: dict[str, frozenset[str]] = {}
+    for automation_id, identity in REVIEWED_UNKNOWN_WRITE_QUARANTINES.items():
+        definition = get_first_party_automation_project(automation_id)
+        if definition is None or definition.tool_name != identity.plugin_id:
+            raise RuntimeError(
+                "Unknown-write quarantine has no reviewed migration template"
+            )
+        result[automation_id] = frozenset(definition.scheduled_task_ids)
+    return result
 
 
-DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS = (
-    _delivery_status_quarantine_schedule_task_ids()
+REVIEWED_UNKNOWN_WRITE_QUARANTINE_SCHEDULE_TASK_IDS = (
+    _reviewed_quarantine_schedule_task_ids()
 )
-_DELIVERY_STATUS_QUARANTINE_TOOL_NAME = (
-    f"automation.{DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID}.run"
+DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS = (
+    REVIEWED_UNKNOWN_WRITE_QUARANTINE_SCHEDULE_TASK_IDS[
+        DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+    ]
 )
 
 
@@ -145,28 +149,31 @@ def _deferred_r7_schedule_must_not_register(task: dict[str, Any]) -> bool:
     )
 
 
-def _is_delivery_status_quarantine_schedule(
+def _is_reviewed_unknown_write_quarantine_schedule(
     *,
     task_id: str,
     tool_name: str,
     automation_id: str,
     automation_generation: int | None,
 ) -> bool:
+    identity = REVIEWED_UNKNOWN_WRITE_QUARANTINES.get(automation_id)
+    if identity is None:
+        return False
     return (
-        task_id in DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS
-        and tool_name == _DELIVERY_STATUS_QUARANTINE_TOOL_NAME
-        and automation_id == DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+        task_id
+        in REVIEWED_UNKNOWN_WRITE_QUARANTINE_SCHEDULE_TASK_IDS[automation_id]
+        and tool_name == f"automation.{automation_id}.run"
         and type(automation_generation) is int
-        and automation_generation == DELIVERY_STATUS_QUARANTINE_GENERATION
+        and automation_generation == identity.generation
     )
 
 
-def _delivery_status_quarantine_schedule_must_not_register(
+def _reviewed_unknown_write_quarantine_schedule_must_not_register(
     task: dict[str, Any],
     *,
     agent_core: Any,
 ) -> bool:
-    """Skip precisely the audited delivery schedules, never a name match."""
+    """Skip precisely audited schedules, never a name match."""
 
     task_id = str(task.get("id") or "")
     normalized_task_id = task_id.strip()
@@ -174,38 +181,45 @@ def _delivery_status_quarantine_schedule_must_not_register(
     normalized_tool_name = tool_name.strip()
     automation_id = str(task.get("automation_id") or "")
     normalized_automation_id = automation_id.strip()
+    reviewed_task_ids = frozenset().union(
+        *REVIEWED_UNKNOWN_WRITE_QUARANTINE_SCHEDULE_TASK_IDS.values()
+    )
+    reviewed_tool_names = {
+        f"automation.{automation_id}.run"
+        for automation_id in REVIEWED_UNKNOWN_WRITE_QUARANTINES
+    }
     if (
-        normalized_task_id not in DELIVERY_STATUS_QUARANTINE_SCHEDULE_TASK_IDS
-        and normalized_tool_name != _DELIVERY_STATUS_QUARANTINE_TOOL_NAME
-        and normalized_automation_id != DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
+        normalized_task_id not in reviewed_task_ids
+        and normalized_tool_name not in reviewed_tool_names
+        and normalized_automation_id not in REVIEWED_UNKNOWN_WRITE_QUARANTINES
     ):
         return False
-    if not _is_delivery_status_quarantine_schedule(
+    if not _is_reviewed_unknown_write_quarantine_schedule(
         task_id=task_id,
         tool_name=tool_name,
         automation_id=automation_id,
         automation_generation=task.get("automation_generation"),
     ):
-        raise DeliveryStatusQuarantineIdentityError(
-            "Delivery scheduled task does not match the audited quarantine identity"
+        raise UnknownWriteQuarantineIdentityError(
+            "Scheduled task does not match an audited quarantine identity"
         )
     registry = getattr(agent_core, "registry", None)
     status_reader = getattr(
         registry,
-        "delivery_status_unknown_write_quarantine_status",
+        "reviewed_unknown_write_quarantine_status",
         None,
     )
     if not callable(status_reader):
-        raise DeliveryStatusQuarantineIdentityError(
-            "Delivery quarantine status reader is unavailable"
+        raise UnknownWriteQuarantineIdentityError(
+            "Unknown-write quarantine status reader is unavailable"
         )
-    status = status_reader()
+    status = status_reader(automation_id)
     if status is None:
         return False
-    if status == DELIVERY_STATUS_QUARANTINE_STATUS:
+    if status == UNKNOWN_WRITE_QUARANTINE_STATUS:
         return True
-    raise DeliveryStatusQuarantineIdentityError(
-        "Delivery quarantine status is not the audited unknown-write incident"
+    raise UnknownWriteQuarantineIdentityError(
+        "Quarantine status is not the audited unknown-write incident"
     )
 
 
@@ -420,7 +434,7 @@ def _load_tasks_from_db(
             (
                 task,
                 _deferred_r7_schedule_must_not_register(task),
-                _delivery_status_quarantine_schedule_must_not_register(
+                _reviewed_unknown_write_quarantine_schedule_must_not_register(
                     task,
                     agent_core=agent_core,
                 ),
@@ -443,7 +457,7 @@ def _load_tasks_from_db(
         )
     if quarantined_task_ids:
         logger.warning(
-            "Delivery unknown-write quarantine scheduled tasks were not registered: %s",
+            "Audited unknown-write quarantine scheduled tasks were not registered: %s",
             ", ".join(sorted(quarantined_task_ids)),
         )
 

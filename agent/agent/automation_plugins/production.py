@@ -79,8 +79,7 @@ from agent.automation_plugins.mysql_repository import (
 from agent.automation_plugins.package import load_ed25519_trust_store
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.quarantine import (
-    DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
-    DELIVERY_STATUS_QUARANTINE_STATUS,
+    REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS,
 )
 from agent.automation_plugins.release_config import (
     ProductionPluginReleaseConfig,
@@ -1023,11 +1022,11 @@ class ProductionAutomationPluginRuntime:
         }
 
     def unaffected_release_readiness(self) -> dict[str, Any]:
-        """Return the publisher gate for every project except the exact incident.
+        """Return the publisher gate excluding only exact reviewed incidents.
 
         This never changes the ordinary health result.  It exists solely so a
-        held release can start the fifteen unaffected projects without replaying
-        or reconfiguring the delivery unknown write.
+        held release can start unaffected projects without replaying or
+        reconfiguring unknown writes.
         """
 
         catalog = self.catalog.production_unaffected_release_health(
@@ -1039,18 +1038,18 @@ class ProductionAutomationPluginRuntime:
             for item in catalog.get("quarantined_unknown_write_automation_ids", ())
             if str(item)
         )
-        exact_delivery_quarantine = quarantined == (
-            DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID,
+        exact_reviewed_quarantine = quarantined == tuple(
+            sorted(REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS)
         )
         expected_automation_ids = frozenset(self.required_first_party_ids)
         ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
-        if exact_delivery_quarantine:
-            expected_automation_ids = expected_automation_ids - {
-                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
-            }
-            ignored_automation_ids = ignored_automation_ids | {
-                DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID
-            }
+        if exact_reviewed_quarantine:
+            expected_automation_ids = (
+                expected_automation_ids - REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS
+            )
+            ignored_automation_ids = (
+                ignored_automation_ids | REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS
+            )
         generations: RuntimeGenerationHealth = runtime_generation_health(
             self.runtime_repository,
             expected_automation_ids=expected_automation_ids,
@@ -1061,7 +1060,7 @@ class ProductionAutomationPluginRuntime:
         )
         return {
             "ok": bool(
-                exact_delivery_quarantine
+                exact_reviewed_quarantine
                 and catalog.get("ok") is True
                 and generations.healthy
                 and self._started
@@ -1105,7 +1104,7 @@ class ProductionAutomationPluginRuntime:
             isinstance(unaffected_release, Mapping)
             and unaffected_release.get("ok") is True
             and unaffected_release.get("quarantined_automation_ids")
-            == [DELIVERY_STATUS_QUARANTINE_AUTOMATION_ID]
+            == sorted(REVIEWED_UNKNOWN_WRITE_QUARANTINE_IDS)
         ):
             return dict(unaffected_release)
         raise PluginConflictError(

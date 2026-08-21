@@ -178,7 +178,7 @@ def _healthy_service_identity_payload() -> dict[str, object]:
     }
 
 
-def _delivery_unknown_write_quarantine_payload() -> dict[str, object]:
+def _reviewed_unknown_write_quarantine_payload() -> dict[str, object]:
     payload = _healthy_service_identity_payload()
     plugins = payload["data"]["components"]["automation_plugins"]
     assert isinstance(plugins, dict)
@@ -188,15 +188,14 @@ def _delivery_unknown_write_quarantine_payload() -> dict[str, object]:
     assert isinstance(generations, dict)
     plugins["ok"] = False
     catalog["ok"] = False
-    catalog["unstable_generations"] = ["delivery_status"]
+    quarantined_ids = ["arrive_list", "daily_sign", "delivery_status"]
+    catalog["unstable_generations"] = quarantined_ids
     generations["healthy"] = False
     unaffected_ids = [
         "arrival_stats",
-        "arrive_list",
         "clockin_daxiang",
         "clockin_daxiang_s",
         "customer_problems_shadow",
-        "daily_sign",
         "finance_bills",
         "finance_startup_catchup",
         "scan_codes",
@@ -209,14 +208,14 @@ def _delivery_unknown_write_quarantine_payload() -> dict[str, object]:
     ]
     plugins["unaffected_release"] = {
         "ok": True,
-        "quarantined_automation_ids": ["delivery_status"],
+        "quarantined_automation_ids": quarantined_ids,
         "expected_automation_ids": unaffected_ids,
         "expected_project_count": len(unaffected_ids),
         "catalog": {
             **catalog,
             "ok": True,
             "unstable_generations": [],
-            "quarantined_unknown_write_automation_ids": ["delivery_status"],
+            "quarantined_unknown_write_automation_ids": quarantined_ids,
         },
         "generations": {
             "healthy": True,
@@ -973,7 +972,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
 
     def test_service_identity_delivery_quarantine_accepts_only_the_scoped_readiness(self):
-        payload = _delivery_unknown_write_quarantine_payload()
+        payload = _reviewed_unknown_write_quarantine_payload()
 
         accepted = _run_service_identity_smoke(
             payload,
@@ -986,11 +985,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertEqual(1, full.returncode)
         self.assertEqual(
             "service_identity_smoke=failed reason=plugin_catalog_unstable_generations "
-            "diagnostic_automation_ids=delivery_status\n",
+            "diagnostic_automation_ids=arrive_list,daily_sign,delivery_status\n",
             full.stderr,
         )
 
-        broken = _delivery_unknown_write_quarantine_payload()
+        broken = _reviewed_unknown_write_quarantine_payload()
         plugins = broken["data"]["components"]["automation_plugins"]
         assert isinstance(plugins, dict)
         readiness = plugins["unaffected_release"]

@@ -682,7 +682,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         finally:
             scheduler_module._scheduler = previous_scheduler
 
-    def test_delivery_unknown_write_quarantine_skips_only_exact_reviewed_rows(self):
+    def test_reviewed_unknown_write_quarantines_skip_only_exact_reviewed_rows(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -694,24 +694,28 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         )
         core = _AgentCore()
         core.registry = SimpleNamespace(
-            delivery_status_unknown_write_quarantine_status=(
-                lambda: "QUARANTINED_UNKNOWN_WRITE"
+            reviewed_unknown_write_quarantine_status=(
+                lambda _automation_id: "QUARANTINED_UNKNOWN_WRITE"
             )
         )
-        core.memory.rows = [
-            {
-                "id": task_id,
-                "name": task_id,
-                "tool_name": "automation.delivery_status.run",
-                "tool_params": {},
-                "cron_expression": "0 9 * * *",
-                "enabled": True,
-                "configuration_version": 2,
-                "automation_id": "delivery_status",
-                "automation_generation": 1,
-            }
-            for task_id in sorted(definition.scheduled_task_ids)
-        ]
+        core.memory.rows = []
+        for automation_id, task_ids in sorted(
+            scheduler_module.REVIEWED_UNKNOWN_WRITE_QUARANTINE_SCHEDULE_TASK_IDS.items()
+        ):
+            core.memory.rows.extend(
+                {
+                    "id": task_id,
+                    "name": task_id,
+                    "tool_name": f"automation.{automation_id}.run",
+                    "tool_params": {},
+                    "cron_expression": "0 9 * * *",
+                    "enabled": True,
+                    "configuration_version": 2,
+                    "automation_id": automation_id,
+                    "automation_generation": 1,
+                }
+                for task_id in sorted(task_ids)
+            )
         previous_scheduler = scheduler_module._scheduler
         scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
             timezone="Asia/Shanghai"
@@ -724,13 +728,13 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             scheduler_module._scheduler = previous_scheduler
 
         self.assertIn(
-            "Delivery unknown-write quarantine scheduled tasks were not registered",
+            "Audited unknown-write quarantine scheduled tasks were not registered",
             "\n".join(captured.output),
         )
 
         normal_core = _AgentCore()
         normal_core.registry = SimpleNamespace(
-            delivery_status_unknown_write_quarantine_status=lambda: None
+            reviewed_unknown_write_quarantine_status=lambda _automation_id: None
         )
         normal_core.memory.rows = [core.memory.rows[0]]
         previous_scheduler = scheduler_module._scheduler
@@ -750,8 +754,8 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
 
         core = _AgentCore()
         core.registry = SimpleNamespace(
-            delivery_status_unknown_write_quarantine_status=(
-                lambda: "QUARANTINED_UNKNOWN_WRITE"
+            reviewed_unknown_write_quarantine_status=(
+                lambda _automation_id: "QUARANTINED_UNKNOWN_WRITE"
             )
         )
         core.memory.rows = [
@@ -800,11 +804,11 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         for drift in ("extra generation", "active lease"):
             core = _AgentCore()
 
-            def reject_topology(current_drift=drift):
+            def reject_topology(_automation_id, current_drift=drift):
                 raise RuntimeError(f"delivery quarantine {current_drift} mismatch")
 
             core.registry = SimpleNamespace(
-                delivery_status_unknown_write_quarantine_status=reject_topology
+                reviewed_unknown_write_quarantine_status=reject_topology
             )
             core.memory.rows = [valid]
             with self.assertRaisesRegex(RuntimeError, drift):

@@ -48,6 +48,7 @@ from agent.automation_plugins.production import (
     ProductionRuntimeEffectPlanner,
     build_runtime_generation_snapshot,
 )
+from agent.automation_plugins.quarantine import REVIEWED_UNKNOWN_WRITE_QUARANTINES
 from agent.orchestration.automation_project_entrypoints import (
     CommittedAutomationProjectRouteResolver,
 )
@@ -856,6 +857,43 @@ def _quarantine_delivery_unknown_write(world: SimpleNamespace) -> PluginCatalog:
     )
 
 
+def _quarantine_reviewed_unknown_writes(world: SimpleNamespace) -> PluginCatalog:
+    for automation_id, identity in REVIEWED_UNKNOWN_WRITE_QUARANTINES.items():
+        generation = world.runtime.get_generation(automation_id, identity.generation)
+        project_runtime = world.runtime.get_project_runtime(automation_id)
+        assert generation is not None
+        assert project_runtime is not None
+        world.runtime.generations[(automation_id, identity.generation)] = replace(
+            generation,
+            state=RuntimeGenerationState.BLOCKED,
+        )
+        world.runtime.runtimes[automation_id] = replace(
+            project_runtime,
+            reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+        )
+        project = world.project_repository.projects[automation_id]
+        world.project_repository.projects[automation_id] = replace(
+            project,
+            target_generation=identity.generation,
+            committed_generation=identity.generation,
+            reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+        )
+        world.runtime.unknown_generation_writes.add(
+            (automation_id, identity.generation)
+        )
+        world.runtime.unknown_write_identities[automation_id] = {
+            "generation": identity.generation,
+            "lease_id": identity.lease_id,
+        }
+    return PluginCatalog(
+        world.project_repository,
+        _ConfigurationRepository(world.configurations),
+        runtime_unknown_write_reader=world.runtime,
+        excluded_plugin_ids=deferred_first_party_plugin_ids(),
+        allowed_execution_platforms=("server",),
+    )
+
+
 def _route_specs(world: SimpleNamespace) -> list[tuple[AutomationEntrypoint, str, str, str]]:
     specs: list[tuple[AutomationEntrypoint, str, str, str]] = []
     for automation_id, snapshot in sorted(world.snapshots.items()):
@@ -1220,10 +1258,10 @@ def test_missing_required_delivery_resource_waits_and_catalog_fails_closed() -> 
     assert health["unstable_generations"] == ["delivery_status"]
 
 
-def test_exact_delivery_unknown_write_keeps_global_health_degraded_but_releases_other_projects():
+def test_exact_reviewed_unknown_writes_keep_global_health_degraded_but_release_other_projects():
     world = _build_release_world()
     _reconcile_world(world)
-    catalog = _quarantine_delivery_unknown_write(world)
+    catalog = _quarantine_reviewed_unknown_writes(world)
 
     assert (
         catalog.delivery_status_unknown_write_quarantine_status(fail_closed=True)
@@ -1241,14 +1279,25 @@ def test_exact_delivery_unknown_write_keeps_global_health_degraded_but_releases_
 
     global_health = runtime.health()
     assert global_health["ok"] is False
-    assert global_health["catalog"]["unstable_generations"] == ["delivery_status"]
+    assert global_health["catalog"]["unstable_generations"] == [
+        "arrive_list",
+        "daily_sign",
+        "delivery_status",
+    ]
     assert global_health["generations"]["healthy"] is False
 
     unaffected = global_health["unaffected_release"]
     assert unaffected["ok"] is True
-    assert unaffected["quarantined_automation_ids"] == ["delivery_status"]
-    assert unaffected["expected_project_count"] == 15
-    assert "delivery_status" not in unaffected["expected_automation_ids"]
+    assert unaffected["quarantined_automation_ids"] == [
+        "arrive_list",
+        "daily_sign",
+        "delivery_status",
+    ]
+    assert unaffected["expected_project_count"] == 13
+    assert not (
+        set(REVIEWED_UNKNOWN_WRITE_QUARANTINES)
+        & set(unaffected["expected_automation_ids"])
+    )
     assert unaffected["catalog"]["ok"] is True
     assert unaffected["generations"]["healthy"] is True
     assert runtime.assert_release_ready() == unaffected

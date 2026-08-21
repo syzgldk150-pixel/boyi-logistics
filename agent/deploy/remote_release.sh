@@ -1881,6 +1881,9 @@ _CLOSED_AUTOMATION_IDS = frozenset(
         "yunda_send_waybills",
     }
 )
+_QUARANTINED_AUTOMATION_IDS = frozenset(
+    {"arrive_list", "daily_sign", "delivery_status"}
+)
 
 
 def http_failure_gate(status):
@@ -2008,18 +2011,21 @@ try:
         raw_generations = scoped_plugin_generations
         readiness = automation_plugins.get("unaffected_release")
         expected_unaffected_ids = tuple(
-            sorted(_CLOSED_AUTOMATION_IDS - {"delivery_status"})
+            sorted(_CLOSED_AUTOMATION_IDS - _QUARANTINED_AUTOMATION_IDS)
         )
+        expected_quarantined_ids = sorted(_QUARANTINED_AUTOMATION_IDS)
         if (
             automation_plugins.get("ok") is not False
             or not isinstance(raw_catalog, dict)
             or raw_catalog.get("ok") is not False
-            or raw_catalog.get("unstable_generations") != ["delivery_status"]
+            or raw_catalog.get("unstable_generations")
+            != expected_quarantined_ids
             or not isinstance(raw_generations, dict)
             or raw_generations.get("healthy") is not False
             or not isinstance(readiness, dict)
             or readiness.get("ok") is not True
-            or readiness.get("quarantined_automation_ids") != ["delivery_status"]
+            or readiness.get("quarantined_automation_ids")
+            != expected_quarantined_ids
             or readiness.get("expected_automation_ids")
             != list(expected_unaffected_ids)
             or readiness.get("expected_project_count")
@@ -2027,7 +2033,7 @@ try:
             or not isinstance(readiness.get("catalog"), dict)
             or not isinstance(readiness.get("generations"), dict)
         ):
-            raise RuntimeError("delivery quarantine readiness shape is invalid")
+            raise RuntimeError("unknown-write quarantine readiness shape is invalid")
         scoped_plugin_catalog = readiness["catalog"]
         scoped_plugin_generations = readiness["generations"]
         scoped_plugin_ok = readiness["ok"]
