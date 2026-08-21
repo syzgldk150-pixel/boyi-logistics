@@ -68,6 +68,26 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
     )
 
 
+def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
+    """Recognize an un-runnable upgrade whose target row can be rebuilt."""
+
+    committed_generation = row.get("committed_generation")
+    target_generation = row.get("target_generation")
+    return bool(
+        row.get("project_state") == "UPGRADING"
+        and row.get("reconcile_state") == "PREPARING"
+        and type(committed_generation) is int
+        and type(target_generation) is int
+        and target_generation > committed_generation
+        and row.get("generation_state") == "COMMITTED"
+        and row.get("generation_error_code") is None
+        and row.get("target_generation_state") is None
+        and row.get("target_base_generation") is None
+        and type(row.get("unknown_write_count")) is int
+        and row.get("unknown_write_count") == 0
+    )
+
+
 _PROJECT_STATE_DIAGNOSTIC_VALUES = frozenset(
     {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING", "UNINSTALLING", "ERROR"}
 )
@@ -135,7 +155,7 @@ def _scheduled_write_runtime_validation_issue(
     row: Mapping[str, Any],
     *,
     seen_task_ids: set[str],
-    quarantined_unknown_write: bool,
+    isolated_runtime: bool,
 ) -> str | None:
     """Return a fixed, value-free category for the first invalid binding."""
 
@@ -167,7 +187,7 @@ def _scheduled_write_runtime_validation_issue(
         or row.get("project_enabled") not in {True, 1}
     ):
         return "PROJECT_ENABLED_INVALID"
-    if row.get("project_state") != "ENABLED" and not quarantined_unknown_write:
+    if row.get("project_state") != "ENABLED" and not isolated_runtime:
         return "PROJECT_STATE_INVALID"
     if row.get("generation_state") not in {"COMMITTED", "BLOCKED"}:
         return "COMMITTED_STATE_INVALID"
@@ -279,10 +299,12 @@ def typed_project_scheduled_write_crons(
             )
         task_id = row.get("task_id")
         quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
+        staged_missing_target = is_staged_missing_target_runtime(row)
+        isolated_runtime = quarantined_unknown_write or staged_missing_target
         runtime_issue = _scheduled_write_runtime_validation_issue(
             row,
             seen_task_ids=seen_task_ids,
-            quarantined_unknown_write=quarantined_unknown_write,
+            isolated_runtime=isolated_runtime,
         )
         if runtime_issue is not None:
             raise error_class(
@@ -336,9 +358,11 @@ def typed_project_scheduled_write_crons(
             cron_expression = row.get("cron_expression")
             if type(cron_expression) is not str or not cron_expression:
                 raise error_class("PROJECT_SCHEDULE_CRON_INVALID")
-        if quarantined_unknown_write:
-            # The committed BLOCKED generation and unresolved write lease are
-            # authoritative even after upgrade staging replaces the project marker.
+        if isolated_runtime:
+            # Both exact shapes are un-runnable: either the committed generation
+            # is fenced by an unknown write or the UPGRADING project has no target
+            # row yet. Startup reconciliation may rebuild only the latter after
+            # revalidating every persisted runtime hash.
             continue
         if scheduled_write:
             crons.append(cron_expression)
@@ -1394,11 +1418,16 @@ def _validate_release_projects_and_tasks(
             not expect_initial_production_manifest
             and is_staged_unknown_write_quarantine(project)
         )
+        staged_missing_target = (
+            not expect_initial_production_manifest
+            and is_staged_missing_target_runtime(project)
+        )
+        isolated_runtime = staged_unknown_write or staged_missing_target
         if (
             project.get("plugin_id") != template["tool_name"]
             or (
                 project.get("project_state") != "ENABLED"
-                and not staged_unknown_write
+                and not isolated_runtime
             )
             or not _boolean(
                 project.get("enabled"),
@@ -1408,7 +1437,12 @@ def _validate_release_projects_and_tasks(
                 project.get("configured"),
                 code="AUTOMATION_PROJECT_CONFIG_INVALID",
             )
-            or not (stable_runtime or unavailable_runtime or staged_unknown_write)
+            or not (
+                stable_runtime
+                or unavailable_runtime
+                or staged_unknown_write
+                or staged_missing_target
+            )
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_STATE_INVALID"
@@ -1430,7 +1464,7 @@ def _validate_release_projects_and_tasks(
             code="AUTOMATION_PROJECT_GENERATION_INVALID",
         )
         if generation != committed_generation or (
-            target_generation != generation and not staged_unknown_write
+            target_generation != generation and not isolated_runtime
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_GENERATION_MISMATCH"
