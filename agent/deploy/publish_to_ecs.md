@@ -1,5 +1,61 @@
 # 发布到 ECS
 
+## 固定速查流程
+
+接到“发布 ECS”后不再检索其它入口，始终从待发布的干净 Git 工作树执行本节。当前发布同时涉及
+Agent、Console、Shared 或自动化插件平台时固定使用 `-Target all`。
+
+1. 确认当前分支已推送、upstream 与 `HEAD` 完全一致、CI 已通过，并记录最终 40 位 SHA：
+
+   ```bash
+   git status --short
+   git rev-list --left-right --count '@{u}...HEAD'
+   RELEASE_SHA="$(git rev-parse HEAD)"
+   ```
+
+2. 在项目内 `.task_tmp/` 创建本次专用的 `0700` 临时目录和一次性 Ed25519 发布密钥；私钥固定为
+   `0600`，只在本机签名时使用。公钥文件名必须与 key ID 一致，信任根只放这一份 `.pub`：
+
+   ```bash
+   RELEASE_KEY_ID="release-${RELEASE_SHA:0:12}-$(date +%Y%m%d)"
+   RELEASE_INPUT_ROOT="$(pwd)/.task_tmp/plugin-release-${RELEASE_SHA:0:12}"
+   PRIVATE_KEY_PATH="${RELEASE_INPUT_ROOT}/private/signing-key.pem"
+   TRUST_ROOT="${RELEASE_INPUT_ROOT}/trust"
+   ARTIFACT_ROOT="${RELEASE_INPUT_ROOT}/artifacts"
+   install -d -m 700 "${RELEASE_INPUT_ROOT}/private" "${TRUST_ROOT}"
+   openssl genpkey -algorithm ED25519 -out "${PRIVATE_KEY_PATH}"
+   chmod 600 "${PRIVATE_KEY_PATH}"
+   openssl pkey -in "${PRIVATE_KEY_PATH}" -pubout -out "${TRUST_ROOT}/${RELEASE_KEY_ID}.pub"
+   ```
+
+   不得读取、打印或复用现有私钥，不得把本次私钥写入 Git、上传 ECS 或复制到发布包。发布器只
+   上传公钥信任根和签名 ZIP；本次私钥、信任根副本与工件在发布验收后精确清理。
+
+3. 使用已按 `agent/requirements.lock` 准备好的本地 Python 环境，从同一只读提交一次性构建完整工件：
+
+   ```bash
+   PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
+     --private-key "${PRIVATE_KEY_PATH}" \
+     --key-id "${RELEASE_KEY_ID}" \
+     --release-sha "${RELEASE_SHA}" \
+     --output-root "${ARTIFACT_ROOT}"
+   ```
+
+4. 回到 Windows PowerShell，使用当前工作树中的唯一发布器；不要改用历史工作树或旧脚本：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass `
+     -File "<clean-release-worktree>\agent\deploy\publish_to_ecs.ps1" `
+     -Target all `
+     -AutomationPluginArtifactRoot "<artifact-root>" `
+     -AutomationPluginTrustRoot "<trust-root>"
+   ```
+
+5. 发布器成功后再次核验 `boyce`、Agent/Console systemd `WorkingDirectory`、两个服务状态和
+   `/health.release_sha`。远端当次 stage、回滚包、上一版共享虚拟环境及数据库快照保留到业务验收
+   结束；只清理本地本次 `RELEASE_INPUT_ROOT`。若发布器在激活请求后报告状态不确定，按下文规则
+   人工核验，禁止自动重放业务动作或强制清除未知写隔离。
+
 标准发布入口必须显式传入与待发布 Git SHA 完全一致的签名首方插件目录，以及只含受信
 Ed25519 `.pub` 公钥的信任根。常规控制平面发布使用 `-Target all`：
 
@@ -87,7 +143,8 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 
 ## 发布范围
 
-默认 `-Target auto` 根据本地发布状态哈希判断范围。Shared 变化会同时影响 Agent 与 Console 的范围指纹。
+`-Target auto` 根据本地发布状态哈希判断范围，只用于已经确认不跨控制平面边界的范围发布。
+Shared、Agent/Console 协同变更或自动化插件发布固定使用 `-Target all`。
 
 ```powershell
 # 全部发布
