@@ -1309,6 +1309,7 @@ def _validate_bootstrap_generation_source(
     source: Mapping[str, Any],
     generation_row: Mapping[str, Any],
     backups: Mapping[str, Mapping[str, Any]],
+    allow_blocked: bool = False,
 ) -> None:
     try:
         validated_generation = contract["validate_generation_row"](
@@ -1325,9 +1326,11 @@ def _validate_bootstrap_generation_source(
         else None
     )
     template = contract["templates"][automation_id]
+    allowed_generation_states = {"COMMITTED", "DRAINING", "DISPOSING", "DISPOSED"}
+    if allow_blocked:
+        allowed_generation_states.add("BLOCKED")
     if (
-        generation_row.get("generation_state")
-        not in {"COMMITTED", "DRAINING", "DISPOSING", "DISPOSED"}
+        generation_row.get("generation_state") not in allowed_generation_states
         or generation_row.get("committed_at") is None
         or generation_row.get("generation")
         != source.get("automation_generation")
@@ -1984,6 +1987,12 @@ def _validate_bootstrap_and_policy_state(
             source=source,
             generation_row=generation_row,
             backups=backups,
+            allow_blocked=(
+                not expect_initial_production_manifest
+                and project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+                and project.get("generation_state") == "BLOCKED"
+                and project.get("generation") == generation_row.get("generation")
+            ),
         )
         try:
             persisted_configuration = evidence[
