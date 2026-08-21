@@ -170,24 +170,11 @@ acquire_release_lock() {
 }
 
 preflight_automation_plugin_runtime_environment() {
-  local unit_path="$1" environment_files artifact_root trust_root verified_sha line_count
+  local unit_path="$1" environment_files
   if grep -Fxq "EnvironmentFile=${PLUGIN_RUNTIME_ENV_FILE}" "${unit_path}"; then
-    [[ -f "${PLUGIN_RUNTIME_ENV_FILE}" && ! -L "${PLUGIN_RUNTIME_ENV_FILE}" ]] || {
-      echo "automation_plugin_runtime_environment=blocked reason=MANDATORY_RELEASE_ENV_MISSING_OR_UNSAFE" >&2
-      return 1
-    }
-    line_count="$(wc -l <"${PLUGIN_RUNTIME_ENV_FILE}")"
-    artifact_root="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT=//p' "${PLUGIN_RUNTIME_ENV_FILE}")"
-    trust_root="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_TRUST_ROOT=//p' "${PLUGIN_RUNTIME_ENV_FILE}")"
-    verified_sha="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA=//p' "${PLUGIN_RUNTIME_ENV_FILE}")"
-    [[ "${line_count}" == "3" \
-      && "${artifact_root}" =~ ^/home/boyce/\.boyi-automation-plugins/releases/[0-9a-f]{40}$ \
-      && "${trust_root}" == "/home/boyce/.boyi-automation-plugins/trust" \
-      && "${verified_sha}" =~ ^[0-9a-f]{40}$ \
-      && "${artifact_root##*/}" == "${verified_sha}" ]] || {
-      echo "automation_plugin_runtime_environment=blocked reason=MANDATORY_RELEASE_ENV_INVALID" >&2
-      return 1
-    }
+    validate_automation_plugin_release_environment_file \
+      "${PLUGIN_RUNTIME_ENV_FILE}" \
+      "automation_plugin_runtime_environment" || return 1
   fi
 
   environment_files="$(systemctl show agent.service -p EnvironmentFiles --value)"
@@ -217,6 +204,52 @@ preflight_automation_plugin_runtime_environment() {
     }
   fi
   echo "automation_plugin_runtime_environment=ok"
+}
+
+validate_automation_plugin_release_environment_file() {
+  local environment_path="$1" status_prefix="$2"
+  local artifact_root trust_root verified_sha line_count
+  [[ -f "${environment_path}" && ! -L "${environment_path}" ]] || {
+    echo "${status_prefix}=blocked reason=MANDATORY_RELEASE_ENV_MISSING_OR_UNSAFE" >&2
+    return 1
+  }
+  line_count="$(wc -l <"${environment_path}")"
+  artifact_root="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT=//p' "${environment_path}")"
+  trust_root="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_TRUST_ROOT=//p' "${environment_path}")"
+  verified_sha="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA=//p' "${environment_path}")"
+  [[ "${line_count}" == "3" \
+    && "${artifact_root}" =~ ^/home/boyce/\.boyi-automation-plugins/releases/[0-9a-f]{40}$ \
+    && "${trust_root}" == "/home/boyce/.boyi-automation-plugins/trust" \
+    && "${verified_sha}" =~ ^[0-9a-f]{40}$ \
+    && "${artifact_root##*/}" == "${verified_sha}" ]] || {
+    echo "${status_prefix}=blocked reason=MANDATORY_RELEASE_ENV_INVALID" >&2
+    return 1
+  }
+}
+
+validate_automation_plugin_runtime_rollback_snapshot() {
+  local rollback_unit="${UNIT_PATHS[agent]}" target
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    if [[ "${target}" == "agent" ]]; then
+      rollback_unit="${BACKUP_DIR}/agent.service"
+      break
+    fi
+  done
+  [[ -f "${rollback_unit}" && ! -L "${rollback_unit}" ]] || {
+    echo "automation_plugin_runtime_rollback_snapshot=blocked reason=ROLLBACK_UNIT_MISSING_OR_UNSAFE" >&2
+    return 1
+  }
+  if grep -Fxq "EnvironmentFile=${PLUGIN_RUNTIME_ENV_FILE}" "${rollback_unit}"; then
+    [[ ! -e "${BACKUP_DIR}/automation_plugin_release.env.absent" \
+      && ! -L "${BACKUP_DIR}/automation_plugin_release.env.absent" ]] || {
+      echo "automation_plugin_runtime_rollback_snapshot=blocked reason=MANDATORY_RELEASE_ENV_RECORDED_ABSENT" >&2
+      return 1
+    }
+    validate_automation_plugin_release_environment_file \
+      "${BACKUP_DIR}/automation_plugin_release.env" \
+      "automation_plugin_runtime_rollback_snapshot" || return 1
+  fi
+  echo "automation_plugin_runtime_rollback_snapshot=ok"
 }
 
 create_scheduler_release_hold() {
@@ -2595,6 +2628,11 @@ restore_managed_release_state() {
   local restore_status=0
   local scope root new_manifest backup_scope relative target
 
+  # The rollback unit and its mandatory release environment are one state.
+  # Recheck before restoring or deleting anything so a drifted backup cannot
+  # turn a recoverable failure into a service that systemd cannot start.
+  validate_automation_plugin_runtime_rollback_snapshot || return 1
+
   if [[ "${FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED}" == "1" ]]; then
     restore_automation_plugin_installations || {
       echo "Failed to restore automation plugin installations" >&2
@@ -2793,6 +2831,8 @@ run_release() {
   RELEASE_STAGE="backup_managed_sources"
   mkdir -p "${BACKUP_DIR}"
   backup_managed_sources
+  RELEASE_STAGE="validate_automation_plugin_runtime_rollback_snapshot"
+  validate_automation_plugin_runtime_rollback_snapshot
   RELEASE_STAGE="static_preflight"
   run_static_preflight
   RELEASE_STAGE="build_release_virtualenvs"

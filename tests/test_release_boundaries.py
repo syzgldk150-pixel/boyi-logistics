@@ -92,6 +92,72 @@ def _run_plugin_runtime_environment_preflight(
                 pass
 
 
+def _run_plugin_runtime_rollback_snapshot(*, invoke_restore: bool) -> subprocess.CompletedProcess[str]:
+    release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
+    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
+    task_tmp_preexisting = task_tmp_root.exists()
+    task_tmp_root.mkdir(exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=task_tmp_root) as temporary:
+            temp_root = Path(temporary)
+            stage_root = temp_root / "release-aaaaaaaaaaaa-20260821143000"
+            backup_dir = stage_root / "_rollback"
+            backup_dir.mkdir(parents=True)
+            live_env = temp_root / "automation_plugin_release.env"
+            live_env.write_text("live state must remain\n", encoding="utf-8")
+            unit_path = backup_dir / "agent.service"
+            unit_path.write_text(
+                f"EnvironmentFile={live_env}\n",
+                encoding="utf-8",
+            )
+            (backup_dir / "automation_plugin_release.env.absent").touch()
+            harness = textwrap.dedent(
+                r"""
+                set -Eeuo pipefail
+                source "$1" "$2" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa agent 0 0
+                BACKUP_DIR="$3"
+                PLUGIN_RUNTIME_ENV_FILE="$4"
+                UNIT_PATHS[agent]="$5"
+                REQUESTED_TARGETS=(agent)
+                set +e
+                if [[ "$6" == "restore" ]]; then
+                  restore_managed_release_state
+                else
+                  validate_automation_plugin_runtime_rollback_snapshot
+                fi
+                status=$?
+                set -e
+                [[ "$status" -ne 0 ]]
+                [[ -f "${PLUGIN_RUNTIME_ENV_FILE}" ]]
+                printf 'live_env_preserved=yes\n'
+                """
+            )
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    harness,
+                    "runtime-env-rollback",
+                    _path_for_bash(release_script),
+                    _path_for_bash(stage_root),
+                    _path_for_bash(backup_dir),
+                    _path_for_bash(live_env),
+                    _path_for_bash(unit_path),
+                    "restore" if invoke_restore else "validate",
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+    finally:
+        if not task_tmp_preexisting:
+            try:
+                task_tmp_root.rmdir()
+            except OSError:
+                pass
+
+
 def _service_identity_smoke_source() -> str:
     release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
         encoding="utf-8"
@@ -466,6 +532,8 @@ def _run_rollback_fault_harness(
             RUNTIME_TARGETS=(agent console)
             SCOPES=()
             REQUESTED_TARGETS=()
+            UNIT_PATHS[agent]="${temp_root}/agent.service"
+            printf '[Service]\n' >"${UNIT_PATHS[agent]}"
             BACKUP_DIR="${stage_root}/_rollback"
             BACKUP_TREE="${BACKUP_DIR}/tree"
             DEPLOY_ROOT="${temp_root}"
@@ -816,6 +884,18 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertNotEqual(0, completed.returncode)
         self.assertIn("CURSOR_SECRET_ENV_INVALID", completed.stderr)
+
+    def test_rollback_snapshot_rejects_mandatory_unit_with_absent_environment(self):
+        completed = _run_plugin_runtime_rollback_snapshot(invoke_restore=False)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("MANDATORY_RELEASE_ENV_RECORDED_ABSENT", completed.stderr)
+        self.assertIn("live_env_preserved=yes", completed.stdout)
+
+    def test_restore_refuses_absent_mandatory_environment_before_deleting_live_file(self):
+        completed = _run_plugin_runtime_rollback_snapshot(invoke_restore=True)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("MANDATORY_RELEASE_ENV_RECORDED_ABSENT", completed.stderr)
+        self.assertIn("live_env_preserved=yes", completed.stdout)
 
     def test_nginx_keeps_original_pages_on_isolated_www_origin(self):
         nginx = (
@@ -1363,11 +1443,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertIn(
             "MANDATORY_RELEASE_ENV_MISSING_OR_UNSAFE",
-            runtime_environment_preflight,
+            release,
         )
         self.assertIn(
             "MANDATORY_RELEASE_ENV_INVALID",
-            runtime_environment_preflight,
+            release,
         )
         self.assertIn(
             "CURSOR_SECRET_ENV_INVALID",
