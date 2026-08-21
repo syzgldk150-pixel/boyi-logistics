@@ -14,6 +14,13 @@
 
 详细操作和国内网络处理见 `docs/git_workflow.md`。
 
+## ECS 固定发布流程
+
+- 用户提到“同步 ECS”“发版”“发布到 ECS”或“部署到 ECS”时，直接读取并执行 `agent/deploy/publish_to_ecs.md`，唯一发布入口是 `agent/deploy/publish_to_ecs.ps1`；不得先搜索历史命令、旧脚本或临时目录来猜测流程。
+- Agent、Console、Shared 或自动化插件平台任一发生变更时，常规控制平面发布固定使用 `-Target all`，并显式传入 `-AutomationPluginArtifactRoot` 与 `-AutomationPluginTrustRoot`。`-Target auto` 只用于已确认不跨控制平面边界的范围发布；`-SkipRestart`、`-SkipHealthCheck` 和紧急计划窗口覆盖必须由用户逐项明确授权。
+- 固定顺序为：干净且已推送的最终提交通过 CI → 以最终 40 位 Git SHA 生成一次性 Ed25519 发布密钥、公钥信任根和完整签名插件工件 → 调用固定 PowerShell 发布器 → 核验远端用户、systemd `WorkingDirectory`、服务状态与 `/health.release_sha` → 清理本地一次性私钥和工件。私钥只在项目 `.task_tmp/` 的 `0700/0600` 临时目录中生成和使用，不读取既有私钥、不进入 Git、不上传 ECS、不打印内容。
+- 发布成功后，远端当次 stage、精确回滚包、上一版共享虚拟环境和数据库快照必须保留到业务验收结束；本地一次性签名材料与构建工件在发布验收后精确清理。完整失败关闭、回滚和验收规则以 `agent/deploy/publish_to_ecs.md` 为准。
+
 # 项目结构与边界
 
 `boyi-logistics` 是私有单仓，目录职责如下：
@@ -73,7 +80,7 @@
 ## 本地与生产隔离
 
 - ECS 是飞书机器人、定时任务和生产自动化的唯一长期运行源；本地 WSL 仅用于开发调试和临时验证。
-- 部署前必须确认本地 Agent 已停止，并确认远端用户、工作目录、Git SHA、当次临时回滚材料、迁移预检、健康检查及失败回滚链路；ECS 不持久保留发布备份或旧虚拟环境。
+- 部署前必须确认本地 Agent 已停止，并确认远端用户、工作目录、Git SHA、当次临时回滚材料、迁移预检、健康检查及失败回滚链路；远端当次 stage、回滚包、上一版共享虚拟环境和数据库快照保留到业务验收结束后再独立清理。
 - 生产 Console 只监听 `127.0.0.1:8765`；Agent 默认只监听 `127.0.0.1:9000`，公网入口必须经受控代理和鉴权。
 
 ## Agent 内部接口安全基线

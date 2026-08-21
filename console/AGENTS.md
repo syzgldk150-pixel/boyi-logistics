@@ -2,11 +2,9 @@
 
 ## ECS 发布入口
 
-- 当用户提到“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”时，优先直接运行固定脚本，不要先搜索其它发布入口：
-  - `powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"`
-- 这个脚本会统一处理 `agent` 与 `console` 的 ECS 发布，默认 `auto` 模式会自动判断同步范围并执行远端健康检查。
-- 只有在用户明确指定特殊参数时，才改用 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等变体。
-- ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。健康检查成功后只保留当前共享环境。
+- 用户提到“同步 ECS”“发版”“发布到 ECS”或“部署到 ECS”时，直接执行 `../agent/deploy/publish_to_ecs.md` 的固定速查流程；唯一入口是 `../agent/deploy/publish_to_ecs.ps1`，不得搜索历史命令或旧脚本。
+- Console 与 Agent/Shared/自动化插件协同发布固定使用 `-Target all`，并显式传入与最终 SHA 对应的签名插件工件和只含 `.pub` 的公钥信任根。`-Target auto` 只用于已确认不跨控制平面边界的范围发布；跳过重启、健康检查或计划窗口必须由用户逐项明确授权。
+- ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。发布成功后保留上一版共享环境和当次精确回滚材料到业务验收结束。
 
 ## 目录职责
 

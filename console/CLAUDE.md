@@ -1,5 +1,11 @@
 # console
 
+## ECS 发布入口
+
+- 用户提到“同步 ECS”“发版”“发布到 ECS”或“部署到 ECS”时，直接执行 `../agent/deploy/publish_to_ecs.md` 的固定速查流程；唯一入口是 `../agent/deploy/publish_to_ecs.ps1`，不得搜索历史命令或旧脚本。
+- Console 与 Agent/Shared/自动化插件协同发布固定使用 `-Target all`，并显式传入与最终 SHA 对应的签名插件工件和只含 `.pub` 的公钥信任根。`-Target auto` 只用于已确认不跨控制平面边界的范围发布；跳过重启、健康检查或计划窗口必须由用户逐项明确授权。
+- ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。发布成功后保留上一版共享环境和当次精确回滚材料到业务验收结束。
+
 ## 目录定位
 
 这是与 `agent` 并列的项目级控制台目录，不属于单一业务模块。
@@ -34,7 +40,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 迁移 `014` 仅把遗留任务规范化为当前契约，不能作为免审授权；后续迁移增加任务配置版本、项目级权限与不可变审计事件。既有逐 Cron 策略只用于迁移兼容；Console 的新权限入口始终按项目配置。外部写的未知结果不能显示为成功。
 
-ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。健康检查成功后只保留当前共享环境。
+ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。发布成功后保留上一版共享环境和当次精确回滚材料到业务验收结束。
 
 - 提供本地 Web 控制台入口
 - 提供统一后台壳层（左侧导航、顶部路径、右侧辅助栏、共享动效与交互反馈）

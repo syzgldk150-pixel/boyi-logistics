@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-16
+updated: 2026-08-21
 ---
 
 # 物流 Agent 项目总览
@@ -85,7 +85,7 @@ updated: 2026-08-16
 
 ## 2026-08-11 架构基线
 
-- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖分别由精确锁文件约束；ECS 发布按两份锁文件的联合哈希复用唯一共享环境，仅在依赖变化或校验失败时重建，成功后删除所有非当前环境。
+- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖分别由精确锁文件约束；ECS 发布按两份锁文件的联合哈希复用唯一共享环境，仅在依赖变化或校验失败时重建。成功后保留上一版共享环境和当次精确回滚材料到业务验收结束，再通过独立有界操作清理。
 - Console 保留 `ThreadingHTTPServer`，`app.py` 是组合入口，业务服务位于 `console/services/`，路由识别位于 `console/routes/`。
 - TMS SessionBroker 是稳定门面，provider 执行、适配器、持久化和验证器已分层；`agent/agent/` 不再依赖 `tools` 或 `feishu`。
 - Console 到 Agent 的调用全部进入 `/internal/v1/*`，使用统一 `ok/data/error` 契约；旧接口仅作鉴权后的 deprecated 兼容层。

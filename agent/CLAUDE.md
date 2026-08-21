@@ -7,10 +7,10 @@
 
 ## ECS 发布入口
 
-- 当用户提到“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”时，默认先使用固定脚本，不要先到处搜索其它发布命令：
-  - `powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"`
-- 这个脚本是标准发布入口，默认 `auto` 模式会自动判断发布 `agent`、`console` 或两者一起发布，并执行远端健康检查。
-- 只有在用户明确要求 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等特殊参数时，才偏离这条默认命令。
+- 当用户提到“同步 ECS”“发版”“发布到 ECS”或“部署到 ECS”时，直接读取 `deploy/publish_to_ecs.md` 并使用唯一固定入口 `deploy/publish_to_ecs.ps1`；不要搜索历史命令、旧发布脚本或 `.task_tmp/` 猜测流程。
+- Agent、Console、Shared 或自动化插件平台任一变更时，常规控制平面发布固定使用 `-Target all`，并显式传入与最终 Git SHA 完全一致的 `-AutomationPluginArtifactRoot` 和只含 `.pub` 公钥的 `-AutomationPluginTrustRoot`。
+- 完整顺序固定为：最终提交已推送且 CI 通过；在项目 `.task_tmp/` 的受限临时目录中生成一次性 Ed25519 发布密钥和公钥信任根；用 `scripts/build_first_party_plugin_release.py` 构建完整签名工件；运行 PowerShell 发布器；核验服务与 `/health.release_sha`；最后精确清理本地一次性私钥和工件。不得读取或复用既有私钥，不得把私钥上传 ECS、写入 Git 或输出到终端。
+- `-Target auto` 只用于已确认不跨控制平面边界的范围发布；`-SkipRestart`、`-SkipHealthCheck` 和 `-EmergencyUserAuthorizedScheduledWindowOverride` 只有在用户逐项明确授权时才允许使用。
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
 - 当前 Linux/ECS 发行明确不包含 Windows Worker/Tray：Agent 不装载其签名密钥、transport 或路由，发布器不以 Worker mTLS、服务端身份或 dispatcher readiness 阻断其余服务端插件。版本化 `deploy/nginx/boyi-worker-mtls.conf` 仅保留为未来重新启用时的安全合同；重新启用必须在同一受审提交中恢复精确 mTLS location、身份验证、发布预检和健康门禁，不得通过环境变量旁路打开。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
