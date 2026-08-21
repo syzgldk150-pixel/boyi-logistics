@@ -307,7 +307,10 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 automation_id,
                 int(committed_generation),
             )
-            if generation_row is None or str(generation_row.get("state") or "") != "COMMITTED":
+            if generation_row is None or str(generation_row.get("state") or "") not in {
+                "COMMITTED",
+                "BLOCKED",
+            }:
                 raise ValueError("project committed generation is missing or not committed")
             committed_snapshot = generation_from_row(generation_row).snapshot
             committed_version_row = low_level.get_version(

@@ -35,6 +35,7 @@ from agent.automation_plugins.models import (
 )
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.runtime_repository import (
+    MySQLAutomationPluginCatalogRepositoryAdapter,
     MySQLAutomationPluginRuntimeAdapter,
     snapshot_from_row,
     snapshot_to_row,
@@ -735,6 +736,91 @@ class _OrchestrationRepository:
 
     def unit_of_work(self) -> _UnitOfWork:
         return _UnitOfWork(self.low_level)
+
+
+def test_catalog_accepts_blocked_committed_generation_for_reconciliation() -> None:
+    manifest = _synthetic_manifest("1.0.0")
+    snapshot = _snapshot(
+        automation_id="blocked-instance",
+        generation=1,
+        manifest=manifest,
+        package_sha256="5" * 64,
+        project_config={"marker": "A"},
+        account_id="account-A",
+        schedule_time="09:00",
+        install_root="/plugins/action/blocked",
+    )
+    generation_row = _LowLevelRuntimeRepository({1: snapshot}).get_generation_row(
+        "blocked-instance",
+        1,
+    )
+    assert generation_row is not None
+    generation_row["state"] = RuntimeGenerationState.BLOCKED.value
+    version = _version(manifest, snapshot)
+    version_row = {
+        "plugin_id": version.plugin_id,
+        "version": version.version,
+        "package_sha256": version.package_sha256,
+        "manifest_sha256": version.manifest_sha256,
+        "manifest_json": version.manifest,
+        "trust_source": version.trust_source.value,
+        "install_root_metadata_json": {
+            **version.install_metadata,
+            "install_root": version.install_root,
+        },
+        "state": version.state.value,
+        "installed_at": version.installed_at,
+    }
+
+    class _CatalogLowLevel:
+        def get_generation_row(
+            self,
+            automation_id: str,
+            generation: int,
+        ) -> Mapping[str, Any] | None:
+            if automation_id == "blocked-instance" and generation == 1:
+                return generation_row
+            return None
+
+        def get_version(
+            self,
+            plugin_id: str,
+            plugin_version: str,
+        ) -> Mapping[str, Any] | None:
+            if (plugin_id, plugin_version) == (manifest.plugin_id, manifest.version):
+                return version_row
+            return None
+
+    row = {
+        "automation_id": "blocked-instance",
+        "display_name": "blocked instance",
+        "plugin_id": manifest.plugin_id,
+        "plugin_version": manifest.version,
+        "state": PluginProjectState.ENABLED.value,
+        "enabled": 1,
+        "record_version": 1,
+        "target_generation": 1,
+        "committed_generation": 1,
+        "reconcile_state": RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE.value,
+    }
+    project = MySQLAutomationPluginCatalogRepositoryAdapter._project_from_row(
+        _CatalogLowLevel(),
+        row,
+    )
+
+    assert project.committed_generation == 1
+    assert project.committed_snapshot == snapshot
+
+    generation_row["state"] = RuntimeGenerationState.DISPOSED.value
+    try:
+        MySQLAutomationPluginCatalogRepositoryAdapter._project_from_row(
+            _CatalogLowLevel(),
+            row,
+        )
+    except ValueError as exc:
+        assert "missing or not committed" in str(exc)
+    else:
+        raise AssertionError("disposed committed generation was accepted")
 
 
 def test_catalog_and_leases_remain_pinned_across_atomic_generation_switch() -> None:
