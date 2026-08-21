@@ -18,6 +18,9 @@ from agent.automation_plugins.errors import (
     PluginConflictError,
     PluginPackageError,
 )
+from agent.automation_plugins.code_owned_fields import (
+    normalize_first_party_code_owned_config,
+)
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.configuration import (
     _closed_bindings,
@@ -53,12 +56,24 @@ from shared.automation_project_manifest import (
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
 _MIGRATION_ACTOR_ROLE = "migration_authority"
+_FIRST_PARTY_RELEASE_ACTOR_ID = "system:release:first-party-upgrade"
+_FIRST_PARTY_RELEASE_ACTOR_ROLE = "super_admin"
 _REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN"
 _PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO"
 
 
 def _digest(value: Mapping[str, Any] | list[Any]) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _semantic_version_key(value: str) -> tuple[int, int, int]:
+    try:
+        parts = tuple(int(part) for part in str(value or "").split("."))
+    except ValueError as exc:
+        raise PluginPackageError("first-party package version is not semantic") from exc
+    if len(parts) != 3 or any(part < 0 for part in parts):
+        raise PluginPackageError("first-party package version is not semantic")
+    return parts
 
 
 def _installed_metadata(version: PluginVersionRecord) -> dict[str, Any]:
@@ -413,8 +428,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 )
                 sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
                 if (
-                    not sources
-                    or any(not source for source in sources)
+                    any(not source for source in sources)
                     or len(sources) != len(set(sources))
                     or not set(sources) <= set(manifest.allowed_entrypoints)
                 ):
@@ -523,7 +537,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         "correlation_id": request_id,
                     }
                 )
-                uow.automation_projects.expire_pending_approvals(automation_id)
+                uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
+                    automation_id,
+                    event_repository=uow.events,
+                )
                 event_id = str(
                     uuid.uuid5(
                         uuid.NAMESPACE_URL,
@@ -566,6 +583,193 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             )
         return persisted
 
+    def _prepare_first_party_upgrade_configuration(
+        self,
+        *,
+        seed: FirstPartyInstanceSeed,
+        version: PluginVersionRecord,
+        release_sha: str,
+        expected_current_version: str,
+    ) -> tuple[str, int]:
+        """Recompile preserved settings against a signed first-party target.
+
+        A release may move interactive or planner-owned values out of durable
+        project configuration.  The signed target schema remains authoritative;
+        the narrow first-party normalizer only removes or injects fields owned
+        by core code for a reserved instance identity.  Saving first gives the
+        generic upgrade path a closed target configuration and leaves a fully
+        recoverable generation if the process stops between the two commits.
+        """
+
+        manifest = AutomationPluginManifest.from_mapping(version.manifest)
+        if manifest.plugin_id != seed.plugin_id or manifest.version != seed.version:
+            raise PluginPackageError("first-party upgrade target identity is invalid")
+        with self._orchestration.unit_of_work() as uow:
+            project = uow.automation_plugins.get_project(
+                seed.automation_id,
+                for_update=True,
+            )
+            config = uow.automation_plugins.get_project_config(
+                seed.automation_id,
+                for_update=True,
+            )
+            if project is None or config is None:
+                raise PluginConflictError(
+                    "first-party automation project configuration is missing",
+                    code="PLUGIN_INSTANCE_NOT_FOUND",
+                )
+            if (
+                str(project.get("plugin_id") or "") != seed.plugin_id
+                or str(project.get("plugin_version") or "")
+                != expected_current_version
+            ):
+                raise PluginConflictError(
+                    "first-party automation project changed before release upgrade",
+                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                )
+            raw_config = config.get("config_json")
+            account_bindings = config.get("account_bindings_json")
+            resource_bindings = config.get("resource_bindings_json")
+            enabled_entrypoints = config.get("enabled_entrypoints_json")
+            schedule = config.get("desired_schedule_json")
+            compiled_before = config.get("compiled_invocations_json")
+            if (
+                not isinstance(raw_config, Mapping)
+                or not isinstance(account_bindings, Mapping)
+                or not isinstance(resource_bindings, Mapping)
+                or not isinstance(enabled_entrypoints, list)
+                or not isinstance(schedule, Mapping)
+                or not isinstance(compiled_before, Mapping)
+            ):
+                raise PluginConflictError(
+                    "first-party automation project configuration is not closed",
+                    code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+                )
+            normalized_config = normalize_first_party_code_owned_config(
+                automation_id=seed.automation_id,
+                plugin_id=seed.plugin_id,
+                trust_source=version.trust_source.value,
+                config=raw_config,
+            )
+            try:
+                validate_schema_instance(
+                    f"automation.{seed.automation_id}.first_party_upgrade_config",
+                    normalized_config,
+                    manifest.config_schema,
+                )
+                accounts = _closed_bindings(
+                    account_bindings,
+                    manifest.account_roles,
+                    kind="account",
+                )
+                resources = _closed_bindings(
+                    resource_bindings,
+                    manifest.resource_roles,
+                    kind="resource",
+                )
+                normalized_schedule = normalize_project_schedule(
+                    schedule,
+                    manifest.scheduling,
+                )
+                sources = tuple(
+                    str(item or "").strip() for item in enabled_entrypoints
+                )
+                if (
+                    any(not source for source in sources)
+                    or len(sources) != len(set(sources))
+                    or not set(sources) <= set(manifest.allowed_entrypoints)
+                ):
+                    raise PluginConflictError(
+                        "enabled entrypoints differ from the release contract"
+                    )
+                worker_required = manifest.worker_requirement.get("required") is True
+                has_device = config.get("device_id") not in (None, "")
+                if worker_required != has_device:
+                    raise PluginConflictError(
+                        "Worker binding differs from the release contract"
+                    )
+                transient = _transient_entry(seed.automation_id, manifest)
+                compiled_after: dict[str, dict[str, Any]] = {}
+                for source in sources:
+                    compiled = compile_instance_arguments(
+                        transient,
+                        config=normalized_config,
+                        account_bindings=accounts,
+                        resource_bindings=resources,
+                        entrypoint=source,
+                        resolve_dynamic=False,
+                    )
+                    compiled_after[source] = {
+                        "arguments": copy.deepcopy(dict(compiled.arguments)),
+                        "dynamic_resolvers": copy.deepcopy(
+                            dict(compiled.unresolved_dynamic_resolvers)
+                        ),
+                    }
+            except PluginConflictError:
+                raise
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PluginConflictError(
+                    "first-party release is incompatible with saved project settings",
+                    code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+                ) from exc
+
+            needs_save = any(
+                canonical_json_bytes(left) != canonical_json_bytes(right)
+                for left, right in (
+                    (normalized_config, raw_config),
+                    (normalized_schedule, schedule),
+                    (compiled_after, compiled_before),
+                )
+            )
+            if needs_save:
+                save_request_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        "boyi:first-party-plugin-upgrade-config:"
+                        f"{release_sha}:{seed.automation_id}:"
+                        f"{expected_current_version}:{version.version}",
+                    )
+                )
+                device_id = config.get("device_id")
+                uow.automation_plugins.save_project_config(
+                    seed.automation_id,
+                    config=normalized_config,
+                    account_bindings=accounts,
+                    resource_bindings=resources,
+                    enabled_entrypoints=sources,
+                    schedule=normalized_schedule,
+                    compiled_invocations=compiled_after,
+                    device_binding=(
+                        {"device_id": str(device_id)}
+                        if device_id not in (None, "")
+                        else None
+                    ),
+                    actor_id=_FIRST_PARTY_RELEASE_ACTOR_ID,
+                    actor_role=_FIRST_PARTY_RELEASE_ACTOR_ROLE,
+                    request_id=save_request_id,
+                    expected_project_configuration_version=int(
+                        config.get("config_version") or 0
+                    ),
+                )
+                uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
+                    seed.automation_id,
+                    event_repository=uow.events,
+                )
+                project = uow.automation_plugins.get_project(
+                    seed.automation_id,
+                    for_update=True,
+                )
+                if project is None:
+                    raise PluginConflictError(
+                        "first-party project disappeared during release upgrade",
+                        code="PLUGIN_INSTANCE_NOT_FOUND",
+                    )
+            uow.commit()
+        return (
+            str(project.get("plugin_version") or ""),
+            int(project.get("record_version") or 0),
+        )
+
     def bootstrap_missing(
         self,
         versions: Sequence[PluginVersionRecord],
@@ -578,6 +782,9 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             raise PluginPackageError("first-party bootstrap contains duplicate versions")
         created: list[str] = []
         existing: list[str] = []
+        upgrades: list[
+            tuple[FirstPartyInstanceSeed, PluginVersionRecord, str]
+        ] = []
         with self._orchestration.unit_of_work() as uow:
             for version in versions:
                 self._register(
@@ -600,6 +807,16 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         raise PluginConflictError(
                             f"first-party instance belongs to another plugin: {seed.automation_id}"
                         )
+                    current_version = str(current.get("plugin_version") or "")
+                    current_key = _semantic_version_key(current_version)
+                    target_key = _semantic_version_key(seed.version)
+                    if current_key > target_key:
+                        raise PluginConflictError(
+                            "first-party release cannot downgrade an installed instance",
+                            code="PLUGIN_UPGRADE_VERSION_INVALID",
+                        )
+                    if current_key < target_key:
+                        upgrades.append((seed, version, current_version))
                     existing.append(seed.automation_id)
                     continue
                 manifest = AutomationPluginManifest.from_mapping(version.manifest)
@@ -730,6 +947,43 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 )
                 created.append(seed.automation_id)
             uow.commit()
+
+        # Package registration and missing-instance creation are committed
+        # before upgrades so each upgrade can retain its own idempotent audit
+        # boundary.  A crash after configuration preparation is safe: the old
+        # signed package remains active, and the same release request resumes
+        # staging on the next startup.
+        for seed, version, current_version in upgrades:
+            prepared_version, record_version = (
+                self._prepare_first_party_upgrade_configuration(
+                    seed=seed,
+                    version=version,
+                    release_sha=release_sha,
+                    expected_current_version=current_version,
+                )
+            )
+            if prepared_version != current_version or record_version <= 0:
+                raise PluginConflictError(
+                    "first-party project changed during release preparation",
+                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                )
+            upgrade_request_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "boyi:first-party-plugin-upgrade:"
+                    f"{release_sha}:{seed.automation_id}:"
+                    f"{current_version}:{version.version}",
+                )
+            )
+            self.upgrade_instance(
+                seed.automation_id,
+                version,
+                actor_id=_FIRST_PARTY_RELEASE_ACTOR_ID,
+                actor_role=_FIRST_PARTY_RELEASE_ACTOR_ROLE,
+                request_id=upgrade_request_id,
+                expected_current_version=current_version,
+                expected_record_version=record_version,
+            )
         return BootstrapPersistenceResult(
             created=tuple(sorted(created)),
             existing=tuple(sorted(existing)),

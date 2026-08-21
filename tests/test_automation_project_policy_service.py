@@ -214,6 +214,11 @@ class _AutomationProjects:
             None,
         )
 
+    def list_policy_events(self, automation_id, **_kwargs):
+        if automation_id != AUTOMATION_ID:
+            return []
+        return [copy.deepcopy(row) for row in self._state.policy_events]
+
     def update_policy(self, automation_id, *, expected_version, **values):
         if automation_id != AUTOMATION_ID or self._state.policy["version"] != expected_version:
             raise AssertionError("policy CAS mismatch")
@@ -232,6 +237,35 @@ class _AutomationProjects:
 
     def expire_pending_approvals(self, _automation_id):
         return 0
+
+    def invalidate_pending_approvals_and_wake_runs(
+        self,
+        automation_id,
+        *,
+        event_repository=None,
+    ):
+        del event_repository
+        if automation_id != AUTOMATION_ID:
+            return ()
+        run_ids = tuple(
+            str(row["run_id"])
+            for row in self._state.pending
+            if row.get("run_status", "WAITING_APPROVAL")
+            == "WAITING_APPROVAL"
+        )
+        self._state.pending = []
+        self._repository.runnable_run_ids.extend(run_ids)
+        return run_ids
+
+    def lock_waiting_approval_runs(self, automation_id):
+        if automation_id != AUTOMATION_ID:
+            return ()
+        return tuple(
+            str(row["run_id"])
+            for row in self._state.pending
+            if row.get("run_status", "WAITING_APPROVAL")
+            == "WAITING_APPROVAL"
+        )
 
     def list_pending_approvals(self, automation_id, **_kwargs):
         if automation_id != AUTOMATION_ID:
@@ -477,6 +511,36 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual("PROJECT_FULL_AUTO", result["configured_mode"])
         self.assertEqual([("commit",)], self.repository.account_lock_events)
 
+    def test_policy_change_invalidates_and_wakes_sleeping_approval_runs(self):
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+        self.repository.state.pending = [
+            {
+                "approval_id": "approval-one",
+                "run_id": "run-one",
+                "run_status": "WAITING_APPROVAL",
+            }
+        ]
+        self.service.get_policy_projection = (  # type: ignore[method-assign]
+            lambda _automation_id: {
+                "configured_mode": self.repository.state.policy["mode"]
+            }
+        )
+
+        result = self.service.update_policy(
+            AUTOMATION_ID,
+            mode="PROJECT_FULL_AUTO",
+            request_id="policy-wake-waiting-run",
+            comment="resume without stale approval",
+            expected_policy_version=1,
+            expected_project_configuration_version=1,
+            actor=_admin(),
+        )
+
+        self.assertEqual("PROJECT_FULL_AUTO", result["configured_mode"])
+        self.assertEqual([], self.repository.state.pending)
+        self.assertEqual(["run-one"], self.repository.runnable_run_ids)
+        self.assertEqual(["run-one"], self.woken_run_ids)
+
     def test_project_takeover_event_request_fits_legacy_char36_and_is_idempotent(self):
         class _ScheduledPolicies:
             def __init__(self):
@@ -561,6 +625,81 @@ class AutomationProjectPolicyServiceTests(TestCase):
 
         self.assertEqual(2, self.repository.state.policy["project_generation"])
 
+    def test_policy_projection_classifies_all_runtime_transition_states(self):
+        self.service._compile_entry = (  # type: ignore[method-assign]
+            lambda _entry, _rows: self.contract
+        )
+        policy = {
+            **self.repository.state.policy,
+            "mode": "PROJECT_FULL_AUTO",
+        }
+        transition_states = (
+            "PREPARING",
+            "WAITING_COEFFECTS",
+            "READY_TO_COMMIT",
+            "DRAINING",
+            "DISPOSING",
+        )
+
+        for reconcile_state in transition_states:
+            with self.subTest(reconcile_state=reconcile_state):
+                entry = SimpleNamespace(
+                    automation_id=AUTOMATION_ID,
+                    enabled=True,
+                    configured=True,
+                    target_generation=2,
+                    committed_generation=1,
+                    reconcile_state=reconcile_state,
+                    current_enabled_entrypoints=("console",),
+                    project_config_version=2,
+                )
+
+                projection = self.service._describe_entry(entry, policy)
+
+                self.assertEqual("PROJECT_FULL_AUTO", projection["configured_mode"])
+                self.assertEqual("PROJECT_FULL_AUTO", projection["effective_mode"])
+                self.assertEqual("RECONCILING", projection["effective_status"])
+                self.assertEqual("RECONCILING", projection["runtime_status"])
+                self.assertFalse(projection["runnable"])
+                self.assertEqual(
+                    f"RECONCILE_{reconcile_state}",
+                    projection["runtime_reason"],
+                )
+
+    def test_policy_projection_marks_failed_runtime_unavailable_without_downgrade(self):
+        self.service._compile_entry = (  # type: ignore[method-assign]
+            lambda _entry, _rows: self.contract
+        )
+        policy = {
+            **self.repository.state.policy,
+            "mode": "PROJECT_FULL_AUTO",
+        }
+
+        for reconcile_state in ("BLOCKED_UNKNOWN_WRITE", "ERROR"):
+            with self.subTest(reconcile_state=reconcile_state):
+                entry = SimpleNamespace(
+                    automation_id=AUTOMATION_ID,
+                    enabled=True,
+                    configured=True,
+                    target_generation=2,
+                    committed_generation=1,
+                    reconcile_state=reconcile_state,
+                    current_enabled_entrypoints=("console",),
+                    project_config_version=2,
+                )
+
+                projection = self.service._describe_entry(entry, policy)
+
+                self.assertEqual("PROJECT_FULL_AUTO", projection["configured_mode"])
+                self.assertEqual("PROJECT_FULL_AUTO", projection["effective_mode"])
+                self.assertEqual("UNAVAILABLE", projection["effective_status"])
+                self.assertEqual("UNAVAILABLE", projection["runtime_status"])
+                self.assertFalse(projection["runnable"])
+                self.assertEqual(
+                    f"RECONCILE_{reconcile_state}",
+                    projection["runtime_reason"],
+                )
+
     def test_startup_defaults_bootstrapped_policy_to_durable_full_auto(self):
         result = self.service.ensure_default_full_auto_policies()
 
@@ -572,8 +711,30 @@ class AutomationProjectPolicyServiceTests(TestCase):
             self.repository.state.policy_events[0]["reason"],
         )
 
+        # A later administrator choice is authoritative.  The one-time audit
+        # marker must stop every subsequent startup from changing it back.
+        self.repository.state.policy.update(
+            {"mode": "REQUIRE_EACH_RUN", "version": 3}
+        )
         replay = self.service.ensure_default_full_auto_policies()
         self.assertEqual({"changed": 0}, replay)
+        self.assertEqual("REQUIRE_EACH_RUN", self.repository.state.policy["mode"])
+        self.assertEqual(1, len(self.repository.state.policy_events))
+
+    def test_startup_default_never_overwrites_explicit_super_admin_choice(self):
+        self.repository.state.policy_events.append(
+            {
+                "automation_id": AUTOMATION_ID,
+                "request_id": "administrator-choice",
+                "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
+                "to_mode": "REQUIRE_EACH_RUN",
+            }
+        )
+
+        result = self.service.ensure_default_full_auto_policies()
+
+        self.assertEqual({"changed": 0}, result)
+        self.assertEqual("REQUIRE_EACH_RUN", self.repository.state.policy["mode"])
         self.assertEqual(1, len(self.repository.state.policy_events))
 
     def test_default_full_auto_mode_is_approval_free_and_toggle_requires_approval(self):
@@ -594,6 +755,38 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
         approval_required = self.service.evaluate_invocation(
             _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(approval_required.allowed)
+        self.assertTrue(approval_required.requires_approval)
+
+    def test_policy_version_drift_rechecks_current_durable_mode(self):
+        invocation = _invocation()
+        plan = _plan(invocation)
+
+        self.repository.state.policy.update(
+            {"mode": "PROJECT_FULL_AUTO", "version": 2}
+        )
+        automatic = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(automatic.allowed)
+        self.assertFalse(automatic.requires_approval)
+
+        self.repository.state.policy.update(
+            {"mode": "REQUIRE_EACH_RUN", "version": 3}
+        )
+        approval_required = self.service.evaluate_invocation(
+            plan,
             _admin(),
             "console",
             {},
@@ -783,6 +976,30 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 for receipt in result["run_receipts"]
             )
         )
+
+    def test_grouped_approval_survives_policy_version_drift_when_plan_is_current(self):
+        invocation = _invocation()
+        self.repository.state.pending = [_pending("approval-one", invocation)]
+        # Policy intent may be saved again while the immutable plugin/config
+        # contract remains current.  Version drift alone must not strand the
+        # approval in the matters center.
+        self.repository.state.policy.update(
+            {"mode": "REQUIRE_EACH_RUN", "version": 2}
+        )
+        pending = self.service.pending_approvals(AUTOMATION_ID, actor=_admin())
+
+        result = self.service.decide_pending_approvals(
+            AUTOMATION_ID,
+            decision="APPROVED",
+            expected_pending_set_hash=pending["pending_set_hash"],
+            request_id="batch-policy-version-drift",
+            comment="approve current plan",
+            actor=_admin(),
+        )
+
+        self.assertEqual(1, result["decided_count"])
+        self.assertEqual(["run-approval-one"], self.repository.runnable_run_ids)
+        self.assertEqual(["run-approval-one"], self.woken_run_ids)
 
     def test_grouped_approval_replay_is_exact_and_does_not_repeat_decisions(self):
         invocation = _invocation()

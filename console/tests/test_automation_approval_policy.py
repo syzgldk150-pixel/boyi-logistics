@@ -22,6 +22,9 @@ POLICY_ITEM = {
     "effective_mode": "PROJECT_FULL_AUTO",
     "effective_status": "ACTIVE",
     "can_full_auto": True,
+    "runnable": True,
+    "runtime_status": "READY",
+    "runtime_reason": "",
     "summary": "项目清单允许的入口完全自动。",
     "updated_by": "系统管理员",
     "updated_at": "2026-08-15 09:00:00",
@@ -52,6 +55,9 @@ class AutomationProjectPolicyProjectionTests(unittest.TestCase):
                 "effective_mode",
                 "effective_status",
                 "can_full_auto",
+                "runnable",
+                "runtime_status",
+                "runtime_reason",
                 "summary",
                 "updated_by",
                 "updated_at",
@@ -83,12 +89,156 @@ class AutomationProjectPolicyProjectionTests(unittest.TestCase):
         view = build_automation_project_policy_view("clockin_daxiang", normalized[0])
         self.assertEqual("旧版计划权限", view["label"])
 
-    def test_missing_dynamic_project_is_fail_closed(self):
+    def test_missing_dynamic_project_is_fail_closed_without_policy_downgrade(self):
         view = build_automation_project_policy_view("finance_startup_catchup", None)
 
         self.assertFalse(view["available"])
-        self.assertEqual("未安装 / 每次运行审批", view["label"])
+        self.assertFalse(view["runnable"])
+        self.assertEqual("UNAVAILABLE", view["runtime_status"])
+        self.assertEqual("权限状态不可用", view["label"])
         self.assertNotEqual("PROJECT_FULL_AUTO", view["effective_mode"])
+
+    def test_full_auto_runtime_transitions_preserve_policy_intent(self):
+        for status, label in (
+            ("RECONCILING", "完全自动，运行环境同步中"),
+            ("UNAVAILABLE", "完全自动，运行环境不可用"),
+        ):
+            with self.subTest(runtime_status=status):
+                normalized = normalize_automation_project_policy_items(
+                    [
+                        {
+                            **POLICY_ITEM,
+                            "effective_status": status,
+                            "runnable": False,
+                            "runtime_status": status,
+                            "runtime_reason": f"RECONCILE_{status}",
+                        }
+                    ]
+                )
+
+                self.assertEqual(1, len(normalized))
+                self.assertEqual("PROJECT_FULL_AUTO", normalized[0]["effective_mode"])
+                self.assertFalse(normalized[0]["runnable"])
+                self.assertEqual(status, normalized[0]["runtime_status"])
+                view = build_automation_project_policy_view(
+                    "clockin_daxiang", normalized[0]
+                )
+                self.assertEqual(label, view["label"])
+                self.assertEqual("PROJECT_FULL_AUTO", view["configured_mode"])
+
+
+class AutomationProjectExecutionGateTests(unittest.TestCase):
+    @staticmethod
+    def _service(response):
+        service = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        service._mysql_console_principal = lambda _user: {
+            "actor_id": "17",
+            "roles": ["super_admin"],
+        }
+        service._agent_request = lambda *args, **kwargs: response
+        return service
+
+    @staticmethod
+    def _task():
+        return {
+            "task_id": "clockin_daxiang",
+            "plugin": {"automation_id": "clockin_daxiang"},
+            "can_run_now": True,
+            "run_disabled_reason": "",
+        }
+
+    @staticmethod
+    def _handler():
+        return SimpleNamespace(current_admin_user={"id": 17})
+
+    def test_only_ready_runnable_policy_keeps_console_execution_enabled(self):
+        task = self._task()
+        service = self._service(
+            {"ok": True, "data": {"items": [{**POLICY_ITEM}]}}
+        )
+
+        warning, can_manage = service._load_automation_project_policies(
+            self._handler(), [task]
+        )
+
+        self.assertEqual("", warning)
+        self.assertTrue(can_manage)
+        self.assertTrue(task["can_run_now"])
+        self.assertEqual("READY", task["approval_policy"]["runtime_status"])
+
+    def test_reconciling_and_unavailable_runtime_disable_console_execution(self):
+        for runtime_status, reason in (
+            ("RECONCILING", "运行环境同步中"),
+            ("UNAVAILABLE", "运行环境不可用/待修复"),
+        ):
+            with self.subTest(runtime_status=runtime_status):
+                task = self._task()
+                service = self._service(
+                    {
+                        "ok": True,
+                        "data": {
+                            "items": [
+                                {
+                                    **POLICY_ITEM,
+                                    "effective_status": runtime_status,
+                                    "runnable": False,
+                                    "runtime_status": runtime_status,
+                                    "runtime_reason": "RECONCILE_READY_TO_COMMIT",
+                                }
+                            ]
+                        },
+                    }
+                )
+
+                service._load_automation_project_policies(self._handler(), [task])
+
+                self.assertFalse(task["can_run_now"])
+                self.assertEqual(reason, task["run_disabled_reason"])
+                self.assertEqual(
+                    "PROJECT_FULL_AUTO",
+                    task["approval_policy"]["configured_mode"],
+                )
+
+    def test_ready_but_non_runnable_policy_disables_console_execution(self):
+        task = self._task()
+        service = self._service(
+            {
+                "ok": True,
+                "data": {
+                    "items": [
+                        {
+                            **POLICY_ITEM,
+                            "runnable": False,
+                            "runtime_reason": "ENTRYPOINTS_DISABLED",
+                        }
+                    ]
+                },
+            }
+        )
+
+        service._load_automation_project_policies(self._handler(), [task])
+
+        self.assertFalse(task["can_run_now"])
+        self.assertEqual("项目当前不可运行", task["run_disabled_reason"])
+
+    def test_missing_or_failed_policy_load_disables_console_execution(self):
+        responses = (
+            {"ok": True, "data": {"items": []}},
+            {
+                "ok": False,
+                "error_code": "PROJECT_POLICY_SERVICE_UNAVAILABLE",
+            },
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                task = self._task()
+                service = self._service(response)
+
+                service._load_automation_project_policies(self._handler(), [task])
+
+                self.assertFalse(task["can_run_now"])
+                self.assertEqual("项目权限不可用", task["run_disabled_reason"])
+                self.assertFalse(task["approval_policy"]["available"])
 
     def test_pending_projection_is_aggregate_only(self):
         pending = normalize_automation_pending_approvals(
@@ -514,6 +664,13 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("PROJECT_FULL_AUTO", source)
+        self.assertIn(
+            'const RUNTIME_STATUSES = new Set(["READY", "RECONCILING", "UNAVAILABLE"]);',
+            source,
+        )
+        self.assertIn('"active", "reconciling", "unsupported"', source)
+        self.assertIn("完全自动权限会持续保留", source)
+        self.assertNotIn("系统会恢复为需要审批", source)
         self.assertNotIn("EXACT_SCHEDULE_EXEMPT", source)
         self.assertIn("expected_policy_version", source)
         self.assertIn("expected_project_configuration_version", source)
@@ -553,7 +710,12 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
 
         self.assertIn(".auto-project-governance", style)
         self.assertIn(".auto-pending-approvals[hidden]", style)
-        self.assertIn("style.css?v=cal-console-20260822-plugin-manager2", base)
+        self.assertIn("style.css?v=cal-console-20260822-plugin-manager3", base)
+        self.assertNotIn(".automation-plugin-install-panel", style)
+        self.assertNotIn(
+            ".automation-plugin-install-form { display: grid; grid-template-columns:",
+            style,
+        )
 
 
 if __name__ == "__main__":

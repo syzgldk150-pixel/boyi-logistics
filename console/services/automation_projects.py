@@ -15,7 +15,16 @@ AUTOMATION_PROJECT_EFFECTIVE_MODES = frozenset(
     {*AUTOMATION_PROJECT_POLICY_MODES, "LEGACY_SCHEDULE_ONLY"}
 )
 AUTOMATION_PROJECT_POLICY_STATUSES = frozenset(
-    {"ACTIVE", "STALE", "UNSUPPORTED", "LEGACY_SCHEDULE_ONLY"}
+    {
+        "ACTIVE",
+        "RECONCILING",
+        "UNAVAILABLE",
+        "UNSUPPORTED",
+        "LEGACY_SCHEDULE_ONLY",
+    }
+)
+AUTOMATION_PROJECT_RUNTIME_STATUSES = frozenset(
+    {"READY", "RECONCILING", "UNAVAILABLE"}
 )
 AUTOMATION_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 AUTOMATION_PENDING_SET_HASH_RE = re.compile(r"^[A-Za-z0-9._~-]{16,256}$")
@@ -63,6 +72,9 @@ AUTOMATION_PLUGIN_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 AUTOMATION_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 AUTOMATION_PLUGIN_BINDING_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,160}$")
 AUTOMATION_PLUGIN_CONFIG_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE = re.compile(
+    r"^_?[A-Za-z][A-Za-z0-9_]{0,62}$"
+)
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
 AUTOMATION_PLUGIN_CONFIG_MAX_FIELDS = 100
 AUTOMATION_PLUGIN_CONFIG_MAX_BYTES = 128 * 1024
@@ -183,6 +195,9 @@ def normalize_automation_project_policy_items(value: Any) -> list[dict[str, Any]
         configured_mode = str(raw.get("configured_mode") or "").strip().upper()
         effective_mode = str(raw.get("effective_mode") or configured_mode).strip().upper()
         effective_status = str(raw.get("effective_status") or "ACTIVE").strip().upper()
+        runnable = raw.get("runnable")
+        runtime_status = str(raw.get("runtime_status") or "").strip().upper()
+        raw_runtime_reason = raw.get("runtime_reason")
         can_full_auto = raw.get("can_full_auto")
         policy_version = raw.get("policy_version")
         project_configuration_version = raw.get("project_configuration_version")
@@ -192,6 +207,12 @@ def normalize_automation_project_policy_items(value: Any) -> list[dict[str, Any]
             or configured_mode not in AUTOMATION_PROJECT_POLICY_MODES
             or effective_mode not in AUTOMATION_PROJECT_EFFECTIVE_MODES
             or effective_status not in AUTOMATION_PROJECT_POLICY_STATUSES
+            or not isinstance(runnable, bool)
+            or runtime_status not in AUTOMATION_PROJECT_RUNTIME_STATUSES
+            or (
+                raw_runtime_reason is not None
+                and not isinstance(raw_runtime_reason, str)
+            )
             or not isinstance(can_full_auto, bool)
             or isinstance(policy_version, bool)
             or not isinstance(policy_version, int)
@@ -209,6 +230,11 @@ def normalize_automation_project_policy_items(value: Any) -> list[dict[str, Any]
                 "effective_mode": effective_mode,
                 "effective_status": effective_status,
                 "can_full_auto": can_full_auto,
+                "runnable": runnable,
+                "runtime_status": runtime_status,
+                "runtime_reason": normalize_feedback_text(
+                    redact_text(str(raw_runtime_reason or ""))
+                )[:160],
                 "summary": normalize_feedback_text(
                     redact_text(str(raw.get("summary") or ""))
                 )[:300],
@@ -239,6 +265,9 @@ def build_automation_project_policy_view(
         "effective_mode": "",
         "effective_status": "UNAVAILABLE",
         "can_full_auto": False,
+        "runnable": False,
+        "runtime_status": "UNAVAILABLE",
+        "runtime_reason": "PROJECT_POLICY_UNAVAILABLE",
         "label": "权限状态不可用",
         "summary": load_error or "未取得项目权限，请稍后刷新。",
         "updated_by": "",
@@ -248,29 +277,40 @@ def build_automation_project_policy_view(
     }
     if not isinstance(item, dict):
         if not load_error:
-            base["label"] = "未安装 / 每次运行审批"
-            base["summary"] = "该动态项目尚无已安装的项目权限，不能视为完全自动。"
+            base["summary"] = "未取得该项目权限，后台执行已阻断；请刷新或检查 Agent。"
         return base
 
     configured_mode = str(item["configured_mode"])
     effective_mode = str(item["effective_mode"])
     effective_status = str(item["effective_status"])
+    runtime_status = str(item.get("runtime_status") or "UNAVAILABLE")
     summary = str(item.get("summary") or "").strip()
     if effective_mode == "LEGACY_SCHEDULE_ONLY" or effective_status == "LEGACY_SCHEDULE_ONLY":
         label = "旧版计划权限"
         default_summary = "当前仍按旧版单计划权限生效；请选择新的项目权限完成迁移。"
-    elif effective_status == "UNSUPPORTED" or not bool(item.get("can_full_auto")):
-        label = "每次运行审批"
-        default_summary = "该项目不支持完全自动，每次运行都需要审批。"
-    elif effective_status == "STALE":
-        label = "配置变更，已恢复审批"
-        default_summary = "项目配置已变化；重新确认完全自动前，每次运行都需要审批。"
     elif effective_mode == "PROJECT_FULL_AUTO":
-        label = "完全自动"
-        default_summary = "项目清单允许且已启用的定时、后台、飞书与验签 Webhook 入口按当前保存配置运行。"
+        if runtime_status == "RECONCILING":
+            label = "完全自动，运行环境同步中"
+            default_summary = "完全自动权限已保留；同步完成前不会运行旧配置。"
+        elif runtime_status != "READY" or effective_status in {
+            "UNAVAILABLE",
+            "UNSUPPORTED",
+        }:
+            label = "完全自动，运行环境不可用"
+            default_summary = "完全自动权限已保留；运行环境修复前项目不可运行。"
+        else:
+            label = "完全自动"
+            default_summary = "项目清单允许且已启用的定时、后台、飞书与验签 Webhook 入口按当前保存配置运行。"
     else:
-        label = "每次运行审批"
-        default_summary = "定时与 Console 手工执行每次都先进入审批。"
+        if runtime_status == "RECONCILING":
+            label = "每次运行审批，运行环境同步中"
+            default_summary = "逐次审批权限未变；同步完成前不会运行旧配置。"
+        elif runtime_status != "READY":
+            label = "每次运行审批，运行环境不可用"
+            default_summary = "逐次审批权限未变；运行环境修复前项目不可运行。"
+        else:
+            label = "每次运行审批"
+            default_summary = "定时与 Console 手工执行每次都先进入审批。"
 
     return {
         **base,
@@ -282,6 +322,32 @@ def build_automation_project_policy_view(
         "effective_mode": effective_mode,
         "effective_status": effective_status,
     }
+
+
+def apply_automation_project_execution_gate(
+    task: dict[str, Any],
+    policy: dict[str, Any],
+) -> None:
+    """Combine plugin/entrypoint eligibility with authoritative runtime health."""
+
+    runtime_status = str(policy.get("runtime_status") or "UNAVAILABLE").upper()
+    available = bool(policy.get("available"))
+    runnable = bool(policy.get("runnable"))
+    if available and runtime_status == "READY" and runnable:
+        return
+
+    task["can_run_now"] = False
+    if not available:
+        task["run_disabled_reason"] = "项目权限不可用"
+    elif runtime_status == "RECONCILING":
+        task["run_disabled_reason"] = "运行环境同步中"
+    elif runtime_status != "READY":
+        task["run_disabled_reason"] = "运行环境不可用/待修复"
+    elif str(task.get("run_disabled_reason") or "") not in {
+        "后台入口已关闭",
+        "当前不可执行",
+    }:
+        task["run_disabled_reason"] = "项目当前不可运行"
 
 
 def normalize_automation_pending_approvals(
@@ -521,6 +587,8 @@ def _plugin_config_value(config: dict[str, Any], path: list[str]) -> tuple[bool,
 def _normalize_plugin_config_schema(
     schema: Any,
     config: Any,
+    *,
+    code_owned_fields: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], bool, str]:
     """Build native form fields from a closed JSON schema; unsupported shapes fail closed."""
 
@@ -550,6 +618,7 @@ def _normalize_plugin_config_schema(
         or len(required) != len(set(required))
         or not set(required) <= set(properties)
         or set(config) - set(properties)
+        or code_owned_fields & set(properties)
     ):
         return [], False, "配置字段或必填声明不一致"
 
@@ -669,6 +738,8 @@ def _normalize_plugin_config_schema(
         return True
 
     for key, node in properties.items():
+        if str(key) in code_owned_fields:
+            continue
         if (
             not AUTOMATION_PLUGIN_CONFIG_KEY_RE.fullmatch(str(key))
             or not isinstance(node, dict)
@@ -676,6 +747,33 @@ def _normalize_plugin_config_schema(
         ):
             return [], False, f"配置字段 {key} 使用了不支持的 Schema"
     return fields, True, ""
+
+
+def _normalize_plugin_code_owned_config_fields(
+    value: Any,
+    schema: Any,
+) -> tuple[frozenset[str], bool]:
+    """Accept only closed field names already removed from the browser schema."""
+
+    if value is None:
+        return frozenset(), True
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return frozenset(), False
+    normalized = [str(item).strip() for item in value]
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    valid = bool(
+        isinstance(properties, dict)
+        and len(normalized) == len(set(normalized))
+        and all(
+            field
+            and len(field) <= 128
+            and "." not in field
+            and AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE.fullmatch(field)
+            and field not in properties
+            for field in normalized
+        )
+    )
+    return (frozenset(normalized), True) if valid else (frozenset(), False)
 
 
 def _normalize_plugin_entrypoints(value: Any) -> tuple[list[str], bool]:
@@ -937,8 +1035,18 @@ def normalize_automation_plugin_catalog(
         schedule, schedule_valid = _normalize_plugin_schedule(
             raw.get("schedule"), scheduling
         )
+        code_owned_config_fields, code_owned_config_fields_valid = (
+            _normalize_plugin_code_owned_config_fields(
+                raw.get("code_owned_config_fields"),
+                raw.get("config_schema"),
+            )
+        )
         config_fields, config_schema_supported, config_schema_error = (
-            _normalize_plugin_config_schema(raw.get("config_schema"), raw.get("config"))
+            _normalize_plugin_config_schema(
+                raw.get("config_schema"),
+                raw.get("config"),
+                code_owned_fields=code_owned_config_fields,
+            )
         )
         account_bindings, account_bindings_valid = _normalize_plugin_binding_map(
             raw.get("account_bindings"), account_roles
@@ -1022,6 +1130,8 @@ def normalize_automation_plugin_catalog(
             projection_warnings.append("插件账号或资源角色合同不可识别")
         if not config_schema_supported:
             projection_warnings.append(config_schema_error or "配置 Schema 不受支持")
+        if not code_owned_config_fields_valid:
+            projection_warnings.append("代码拥有配置字段投影无效")
         if not account_bindings_valid:
             projection_warnings.append("账号绑定投影无效")
         if not resource_bindings_valid:
@@ -1077,6 +1187,7 @@ def normalize_automation_plugin_catalog(
                 "resource_role_bindings": resource_role_bindings,
                 "resource_pool_available": resource_pool_available,
                 "config_fields": config_fields,
+                "code_owned_config_fields": sorted(code_owned_config_fields),
                 "config_schema_supported": config_schema_supported,
                 "config_schema_error": config_schema_error,
                 "scheduling": scheduling,
@@ -1095,6 +1206,7 @@ def normalize_automation_plugin_catalog(
                     or not schedule_valid
                     or not roles_valid
                     or not config_schema_supported
+                    or not code_owned_config_fields_valid
                     or not account_bindings_valid
                     or not resource_bindings_valid
                     or not resource_bindings_ready
@@ -1233,20 +1345,24 @@ class AutomationProjectsServiceMixin:
         ]
         for task in blocked_tasks:
             automation_id = str(task.get("task_id") or "")
-            task["approval_policy"] = build_automation_project_policy_view(
+            policy = build_automation_project_policy_view(
                 automation_id,
                 None,
                 load_error="插件缺失，项目权限与运行均已阻断。",
             )
+            task["approval_policy"] = policy
+            apply_automation_project_execution_gate(task, policy)
         if principal is None:
             warning = "项目权限只对真实 MySQL 管理员会话开放。"
             for task in governed_tasks:
                 automation_id = str(task.get("task_id") or "")
-                task["approval_policy"] = build_automation_project_policy_view(
+                policy = build_automation_project_policy_view(
                     automation_id,
                     None,
                     load_error=warning,
                 )
+                task["approval_policy"] = policy
+                apply_automation_project_execution_gate(task, policy)
             return warning, False
 
         result = self._agent_request(
@@ -1272,11 +1388,13 @@ class AutomationProjectsServiceMixin:
 
         for task in governed_tasks:
             automation_id = str(task.get("task_id") or "")
-            task["approval_policy"] = build_automation_project_policy_view(
+            policy = build_automation_project_policy_view(
                 automation_id,
                 items_by_automation_id.get(automation_id),
                 load_error=warning,
             )
+            task["approval_policy"] = policy
+            apply_automation_project_execution_gate(task, policy)
         return warning, can_manage
 
     @staticmethod

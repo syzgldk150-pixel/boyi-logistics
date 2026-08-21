@@ -1173,22 +1173,27 @@ class AgentRunRepository(_RepositoryBase):
         return self.get(run_id, for_update=True) or {}
 
     def make_waiting_approval_runnable(self, run_id: str) -> dict[str, Any]:
-        """Make a decided approval claimable before the post-commit wake signal."""
+        """Make a decided approval claimable before the post-commit wake signal.
+
+        A runner may hold a short polling lease while the run remains in
+        ``WAITING_APPROVAL``.  The approval decision is the business event that
+        makes the run runnable, so it must not be rejected merely because that
+        transient lease is present.  Updating only the schedule also avoids
+        invalidating the runner's optimistic-lock version before it releases
+        the lease.
+        """
 
         with self.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE agent_runs
-                SET next_attempt_at=NOW(6), version=version+1
+                SET next_attempt_at=NOW(6)
                 WHERE run_id=%s AND status='WAITING_APPROVAL'
-                  AND worker_id IS NULL
                 """,
                 (_required_text(run_id, "run_id"),),
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise InvalidStateError(
-                    "approval run is not an unleased waiting run"
-                )
+                raise InvalidStateError("approval run is not waiting")
         return self.get(run_id, for_update=True) or {}
 
     def request_cancel(

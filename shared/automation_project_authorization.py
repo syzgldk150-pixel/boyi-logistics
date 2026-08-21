@@ -188,6 +188,7 @@ class InvocationArgumentContract:
     entrypoint: str
     expected_arguments: Mapping[str, Any]
     dynamic_argument_resolvers: Mapping[str, str]
+    input_schema: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,7 @@ class CompiledAutomationProjectContract:
     project_configuration_version: int
     snapshot: Mapping[str, Any]
     can_full_auto: bool
+    code_owned_plan_fields: frozenset[str] = frozenset()
     restriction_code: str | None = None
 
     def matches_plan(
@@ -260,6 +262,8 @@ class CompiledAutomationProjectContract:
             getattr(step, "arguments", {}),
             invocation_contract.dynamic_argument_resolvers,
             execution_context or {},
+            code_owned_plan_fields=self.code_owned_plan_fields,
+            input_schema=invocation_contract.input_schema,
             dynamic_resolver=dynamic_resolver,
         )
 
@@ -306,6 +310,9 @@ def compile_automation_project_contract(
         automation_id=automation_id,
         definition=definition,
         core_tool_contract=tool_contract_payload,
+    )
+    code_owned_plan_fields = frozenset(
+        str(item) for item in plugin_fragment.get("code_owned_plan_fields", [])
     )
     if plugin_fragment.get("enabled") is not True:
         raise AutomationProjectContractError("PLUGIN_DISABLED")
@@ -422,6 +429,9 @@ def compile_automation_project_contract(
             entrypoint=AutomationEntrypoint.SCHEDULER.value,
             expected_arguments=dict(row_arguments),
             dynamic_argument_resolvers=scheduler_resolvers,
+            input_schema=plugin_fragment["invocation_contracts"][
+                AutomationEntrypoint.SCHEDULER.value
+            ]["input_schema"],
         )
         schedule_snapshots.append(
             {
@@ -456,6 +466,9 @@ def compile_automation_project_contract(
             entrypoint=entrypoint,
             expected_arguments=dict(arguments),
             dynamic_argument_resolvers=resolvers,
+            input_schema=plugin_fragment["invocation_contracts"][entrypoint][
+                "input_schema"
+            ],
         )
 
     invocation_snapshots = [
@@ -485,6 +498,7 @@ def compile_automation_project_contract(
         "project_config_sha256": plugin_fragment["project_config_sha256"],
         "tool_contract_hash": tool_contract_hash,
         "plugin_contract_hash": plugin_contract_hash,
+        "code_owned_plan_fields": sorted(code_owned_plan_fields),
         "scheduled_configurations": schedule_snapshots,
     }
     contract_hash = canonical_sha256(snapshot)
@@ -509,6 +523,7 @@ def compile_automation_project_contract(
         project_configuration_version=project_configuration_version,
         snapshot=snapshot,
         can_full_auto=restriction is None,
+        code_owned_plan_fields=code_owned_plan_fields,
         restriction_code=restriction,
     )
 
@@ -534,6 +549,7 @@ def _full_auto_restriction(
         "internal_projection_write",
         "external_write",
         "financial_write",
+        "destructive",
     }:
         schema = plugin_tool.get("input_schema")
         if not isinstance(schema, Mapping) or schema.get("additionalProperties") is not False:
@@ -963,6 +979,34 @@ def _validate_plugin_fragment(
     if action_id != f"automation.{automation_id}.run":
         raise AutomationProjectContractError("PLUGIN_ACTION_IDENTITY_MISMATCH")
 
+    raw_code_owned_plan_fields = fragment.get("code_owned_plan_fields", [])
+    if (
+        not isinstance(raw_code_owned_plan_fields, list)
+        or any(
+            not isinstance(item, str) or not item.strip()
+            for item in raw_code_owned_plan_fields
+        )
+        or raw_code_owned_plan_fields
+        != sorted(set(raw_code_owned_plan_fields))
+    ):
+        raise AutomationProjectContractError(
+            "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID"
+        )
+    expected_code_owned_plan_fields = (
+        ["recheck_items"]
+        if (
+            fragment.get("trust_source") == "ed25519_first_party"
+            and automation_id == "customer_problems_shadow"
+            and str(fragment.get("plugin_id") or "")
+            == "sync_customer_service_problems"
+        )
+        else []
+    )
+    if raw_code_owned_plan_fields != expected_code_owned_plan_fields:
+        raise AutomationProjectContractError(
+            "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID"
+        )
+
     plugin_entrypoints = fragment.get("allowed_entrypoints")
     invocation_contracts = fragment.get("invocation_contracts")
     config_schema = fragment.get("config_schema")
@@ -1016,6 +1060,8 @@ def _arguments_match(
     execution_context: Mapping[str, Any],
     *,
     validate_dynamic: bool = True,
+    code_owned_plan_fields: frozenset[str] = frozenset(),
+    input_schema: Mapping[str, Any] | None = None,
     dynamic_resolver: Callable[[str, str, Mapping[str, Any]], Any] | None = None,
 ) -> bool:
     if not isinstance(actual, Mapping):
@@ -1056,7 +1102,75 @@ def _arguments_match(
             return False
         if not _strict_json_equal(resolved_value, actual_value):
             return False
+    if not _code_owned_plan_arguments_match(
+        expected=left,
+        actual=right,
+        fields=code_owned_plan_fields,
+        input_schema=input_schema,
+    ):
+        return False
     return _strict_json_equal(left, right)
+
+
+def _code_owned_plan_arguments_match(
+    *,
+    expected: Mapping[str, Any],
+    actual: dict[str, Any],
+    fields: frozenset[str],
+    input_schema: Mapping[str, Any] | None,
+) -> bool:
+    if not fields:
+        return True
+    if fields != frozenset({"recheck_items"}):
+        return False
+    if "recheck_items" in expected or "recheck_items" not in actual:
+        return False
+    if not isinstance(input_schema, Mapping):
+        return False
+    properties = input_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return False
+    signed_schema = properties.get("recheck_items")
+    if not isinstance(signed_schema, Mapping):
+        return False
+    recheck_items = actual.pop("recheck_items")
+    try:
+        _validate_signed_schema_value(signed_schema, recheck_items)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(recheck_items, list):
+        return False
+    dedupe_keys: list[str] = []
+    for item in recheck_items:
+        if not isinstance(item, Mapping) or _contains_argument_field(
+            item,
+            "account_id",
+        ):
+            return False
+        dedupe_key = item.get("dedupe_key")
+        if (
+            not isinstance(dedupe_key, str)
+            or not dedupe_key.strip()
+            or dedupe_key != dedupe_key.strip()
+        ):
+            return False
+        dedupe_keys.append(dedupe_key)
+    return (
+        len(dedupe_keys) == len(set(dedupe_keys))
+        and dedupe_keys == sorted(dedupe_keys)
+    )
+
+
+def _contains_argument_field(value: Any, field_name: str) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            str(key).strip().lower() == field_name
+            or _contains_argument_field(nested, field_name)
+            for key, nested in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_argument_field(item, field_name) for item in value)
+    return False
 
 
 def _parse_scheduled_for(value: Any) -> datetime | None:

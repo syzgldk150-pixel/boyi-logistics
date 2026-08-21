@@ -101,6 +101,75 @@ def _catalog_payload() -> dict:
 
 
 class AutomationPluginCatalogTests(unittest.TestCase):
+    def test_code_owned_runtime_fields_stay_out_of_browser_configuration(self):
+        payload = _catalog_payload()
+        instance = payload["instances"][0]
+        instance["config_schema"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["received", "published", "both"],
+                }
+            },
+            "required": ["direction"],
+        }
+        instance["config"] = {"direction": "both"}
+        instance["code_owned_config_fields"] = ["recheck_items"]
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(
+            payload
+        )
+
+        projected = instances[0]
+        self.assertTrue(projected["config_schema_supported"])
+        self.assertFalse(projected["blocked"])
+        self.assertEqual(["recheck_items"], projected["code_owned_config_fields"])
+        self.assertEqual(
+            ["direction"],
+            [field["path"] for field in projected["config_fields"]],
+        )
+        self.assertNotIn("recheck_items", json.dumps(projected["config_fields"]))
+
+    def test_finance_startup_marker_is_hidden_without_schema_warning(self):
+        payload = _catalog_payload()
+        instance = payload["instances"][0]
+        instance["config_schema"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mode": {"type": "string", "enum": ["sync"]},
+            },
+            "required": [],
+        }
+        instance["config"] = {"mode": "sync"}
+        instance["code_owned_config_fields"] = ["_startup_catchup"]
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(
+            payload
+        )
+
+        projected = instances[0]
+        self.assertTrue(projected["config_schema_supported"])
+        self.assertFalse(projected["blocked"])
+        self.assertEqual(["_startup_catchup"], projected["code_owned_config_fields"])
+
+    def test_code_owned_projection_must_not_overlap_browser_schema(self):
+        payload = _catalog_payload()
+        payload["instances"][0]["code_owned_config_fields"] = ["region"]
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(
+            payload
+        )
+
+        projected = instances[0]
+        self.assertTrue(projected["blocked"])
+        self.assertIn(
+            "代码拥有配置字段投影无效",
+            projected["missing_requirements"],
+        )
+
     def test_config_projection_separates_friendly_and_advanced_fields(self):
         payload = _catalog_payload()
         payload["instances"][0]["config_schema"] = {

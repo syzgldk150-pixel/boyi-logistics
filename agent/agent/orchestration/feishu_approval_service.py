@@ -134,10 +134,11 @@ class FeishuApprovalService:
                 isinstance(expires_at, datetime)
                 and expires_at <= datetime.now(timezone.utc).replace(tzinfo=None)
             ):
-                uow.feishu_approvals.finish_approval(
+                binding_ids = uow.feishu_approvals.finish_approval(
                     approval_id,
                     status="EXPIRED" if approval_status == "PENDING" else "SKIPPED",
                 )
+                self._notify_active_bindings(binding_ids, uow)
                 uow.commit()
                 return "当前审批已过期或已由其他管理员处理，已切换到下一条。"
             uow.commit()
@@ -159,10 +160,11 @@ class FeishuApprovalService:
             }:
                 raise
             with self._repository.unit_of_work() as uow:
-                uow.feishu_approvals.finish_approval(
+                binding_ids = uow.feishu_approvals.finish_approval(
                     approval_id,
                     status="EXPIRED" if exc.code == "APPROVAL_EXPIRED" else "SKIPPED",
                 )
+                self._notify_active_bindings(binding_ids, uow)
                 uow.commit()
             return "当前审批已过期或已由其他管理员处理，已切换到下一条。"
         return "已批准，原事项已恢复执行。" if decision == "APPROVED" else "已驳回该审批。"
@@ -220,21 +222,58 @@ class FeishuApprovalService:
                 status="EXPIRED",
             )
         else:
+            finished_status = (
+                "DECIDED"
+                if topic == "agent.approval.decided"
+                else (
+                    "SKIPPED"
+                    if topic == "agent.approval.invalidated"
+                    else "EXPIRED"
+                )
+            )
             binding_ids = uow.feishu_approvals.finish_approval(
                 approval_id,
-                status="DECIDED" if topic == "agent.approval.decided" else "EXPIRED",
+                status=finished_status,
             )
+        sent = self._notify_active_bindings(binding_ids, uow)
+        return {"approval_id": approval_id, "sent": sent}
+
+    def _notify_active_bindings(self, binding_ids: list[str], uow: Any) -> int:
         sent = 0
-        for binding_id in binding_ids:
+        pending_binding_ids = list(dict.fromkeys(str(item) for item in binding_ids))
+        while pending_binding_ids:
+            binding_id = pending_binding_ids.pop(0)
             active = uow.feishu_approvals.active_for_binding(binding_id, for_update=True)
-            if active is None or active.get("notified_at") is not None:
+            if active is None:
+                continue
+            approval_status = str(active.get("approval_status") or "")
+            expires_at = active.get("expires_at")
+            expired = bool(
+                isinstance(expires_at, datetime)
+                and expires_at <= datetime.now(timezone.utc).replace(tzinfo=None)
+            )
+            if approval_status != "PENDING" or expired:
+                approval_id = str(active.get("approval_id") or "")
+                if expired and approval_status == "PENDING":
+                    uow.feishu_approvals.expire_approval_if_due(approval_id)
+                activated = uow.feishu_approvals.finish_approval(
+                    approval_id,
+                    status="EXPIRED" if expired else "SKIPPED",
+                )
+                pending_binding_ids.extend(
+                    item
+                    for item in activated
+                    if item not in pending_binding_ids
+                )
+                continue
+            if active.get("notified_at") is not None:
                 continue
             message = self._approval_message(active)
             if not self._send_text(str(active["open_id"]), message, "open_id"):
                 raise RuntimeError("Feishu approval notification failed")
             uow.feishu_approvals.mark_notified(str(active["delivery_id"]))
             sent += 1
-        return {"approval_id": approval_id, "sent": sent}
+        return sent
 
     @staticmethod
     def _approval_message(active: Mapping[str, Any]) -> str:

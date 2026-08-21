@@ -99,12 +99,14 @@ class WorkflowRunner:
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._active: dict[str, tuple[str, asyncio.Task]] = {}
         self._release_hold = False
 
     async def start(self, *, held_for_release: bool = False) -> None:
         if self._task is not None:
             return
+        self._loop = asyncio.get_running_loop()
         self._release_hold = bool(held_for_release)
         self._stop.clear()
         self._task = asyncio.create_task(self._run_loop(), name=f"run-worker:{self._worker_id}")
@@ -116,9 +118,14 @@ class WorkflowRunner:
         self._task = None
         if task is not None:
             await task
+        self._loop = None
 
     def wake(self, _run_id: str | None = None) -> None:
-        self._wake.set()
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            self._wake.set()
+            return
+        loop.call_soon_threadsafe(self._wake.set)
 
     def hold_for_release(self) -> dict[str, Any]:
         """Stop new durable claims while a deployment marker is active."""
@@ -126,7 +133,7 @@ class WorkflowRunner:
         if self._task is None or self._task.done():
             raise RuntimeError("Workflow runner is not available for release hold")
         self._release_hold = True
-        self._wake.set()
+        self.wake()
         return self.runtime_status()
 
     def resume_after_release(self) -> dict[str, Any]:
@@ -135,7 +142,7 @@ class WorkflowRunner:
         if self._task is None or self._task.done():
             raise RuntimeError("Workflow runner is not available for release activation")
         self._release_hold = False
-        self._wake.set()
+        self.wake()
         return self.runtime_status()
 
     def runtime_status(self) -> dict[str, Any]:
@@ -270,13 +277,34 @@ class WorkflowRunner:
             if not decision.allowed:
                 raise OrchestrationError(decision.code, decision.reason)
             if status is RunStatus.VALIDATED and decision.requires_approval:
-                self._approval_service.request(
-                    run=run,
-                    plan=plan,
-                    policy_decision=decision,
-                    requested_by=command.actor,
-                )
                 run = self._transition(run, RunStatus.WAITING_APPROVAL)
+                request_outcome, request_detail = (
+                    self._request_approval_with_policy_fence(
+                        run=run,
+                        plan=plan,
+                        decision=decision,
+                        command=command,
+                    )
+                )
+                if request_outcome == "FAILED":
+                    exc = request_detail
+                    # Persist WAITING before creating the requested Outbox so a
+                    # fast Feishu reply can never observe a VALIDATED Run. If
+                    # request persistence itself fails, the waiting Run remains
+                    # recoverable and is retried without executing the tool.
+                    logger.error(
+                        "Approval request or policy fence failed run_id=%s error=%s",
+                        run_id,
+                        redact_text(exc)[:500],
+                    )
+                    await asyncio.to_thread(
+                        self._release,
+                        run_id,
+                        status=RunStatus.WAITING_APPROVAL.value,
+                        error_code="APPROVAL_REQUEST_PENDING",
+                        error_summary=redact_text(exc)[:500],
+                    )
+                    return
                 await asyncio.to_thread(
                     self._release,
                     run_id,
@@ -307,40 +335,105 @@ class WorkflowRunner:
                             context_hash=fresh_plan.context_fingerprint,
                         )
                         uow.commit()
-                    self._approval_service.request(
-                        run=refreshed,
-                        plan=fresh_plan,
-                        policy_decision=fresh_decision,
-                        requested_by=command.actor,
-                    )
-                    await asyncio.to_thread(
-                        self._release,
-                        run_id,
-                        status=RunStatus.WAITING_APPROVAL.value,
-                        error_code="PLAN_STALE",
-                        error_summary="Plan changed and requires a new approval",
-                    )
-                    return
-                run, approval_outcome = self._consume_approved_plan(run_id, plan.plan_hash)
-                if run is None:
-                    if approval_outcome == "REJECTED":
-                        raise OrchestrationError("APPROVAL_REJECTED", "The plan was rejected by an administrator")
-                    if approval_outcome == "PLAN_STALE":
-                        raise OrchestrationError("PLAN_STALE", "The persisted plan changed before approval consumption")
-                    if approval_outcome in {"EXPIRED", "INVALIDATED", "MISSING"}:
-                        self._approval_service.request(
-                            run=self._repository.get_run(run_id) or claimed,
-                            plan=plan,
-                            policy_decision=decision,
-                            requested_by=command.actor,
+                    plan = fresh_plan
+                    decision = fresh_decision
+                    if fresh_decision.requires_approval:
+                        request_outcome, request_detail = (
+                            self._request_approval_with_policy_fence(
+                                run=refreshed,
+                                plan=fresh_plan,
+                                decision=decision,
+                                command=command,
+                            )
                         )
-                    await asyncio.to_thread(
-                        self._release,
-                        run_id,
-                        status=RunStatus.WAITING_APPROVAL.value,
+                        if request_outcome == "FAILED":
+                            exc = request_detail
+                            logger.error(
+                                "Approval request or policy fence failed after plan refresh run_id=%s error=%s",
+                                run_id,
+                                redact_text(exc)[:500],
+                            )
+                            await asyncio.to_thread(
+                                self._release,
+                                run_id,
+                                status=RunStatus.WAITING_APPROVAL.value,
+                                error_code="APPROVAL_REQUEST_PENDING",
+                                error_summary=redact_text(exc)[:500],
+                            )
+                            return
+                        await asyncio.to_thread(
+                            self._release,
+                            run_id,
+                            status=RunStatus.WAITING_APPROVAL.value,
+                            error_code="PLAN_STALE",
+                            error_summary="Plan changed and requires a new approval",
+                        )
+                        return
+                    run = self._transition(
+                        refreshed,
+                        RunStatus.RUNNING,
+                        started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        increment_execution_attempt=True,
                     )
-                    return
-                status = RunStatus.RUNNING
+                    status = RunStatus.RUNNING
+                elif not decision.requires_approval:
+                    # A durable policy may become fully automatic while an
+                    # earlier run is waiting.  The old approval must not keep
+                    # that run parked forever or be consumed as authority for
+                    # the new policy.  Invalidate it and resume the already
+                    # validated plan through the normal run-state CAS.
+                    self._approval_service.invalidate_for_stale_plan(run_id)
+                    run = self._transition(
+                        run,
+                        RunStatus.RUNNING,
+                        started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        increment_execution_attempt=True,
+                    )
+                    status = RunStatus.RUNNING
+                else:
+                    run, approval_outcome = self._consume_approved_plan(
+                        run_id,
+                        plan.plan_hash,
+                    )
+                    if run is None:
+                        if approval_outcome == "REJECTED":
+                            raise OrchestrationError("APPROVAL_REJECTED", "The plan was rejected by an administrator")
+                        if approval_outcome == "PLAN_STALE":
+                            raise OrchestrationError("PLAN_STALE", "The persisted plan changed before approval consumption")
+                        if approval_outcome in {"EXPIRED", "INVALIDATED", "MISSING"}:
+                            request_outcome, request_detail = (
+                                self._request_approval_with_policy_fence(
+                                    run=(
+                                        self._repository.get_run(run_id)
+                                        or claimed
+                                    ),
+                                    plan=plan,
+                                    decision=decision,
+                                    command=command,
+                                )
+                            )
+                            if request_outcome == "FAILED":
+                                exc = request_detail
+                                logger.error(
+                                    "Approval request recovery or policy fence failed run_id=%s error=%s",
+                                    run_id,
+                                    redact_text(exc)[:500],
+                                )
+                                await asyncio.to_thread(
+                                    self._release,
+                                    run_id,
+                                    status=RunStatus.WAITING_APPROVAL.value,
+                                    error_code="APPROVAL_REQUEST_PENDING",
+                                    error_summary=redact_text(exc)[:500],
+                                )
+                                return
+                        await asyncio.to_thread(
+                            self._release,
+                            run_id,
+                            status=RunStatus.WAITING_APPROVAL.value,
+                        )
+                        return
+                    status = RunStatus.RUNNING
             elif status is RunStatus.VALIDATED:
                 run = self._transition(
                     run,
@@ -370,17 +463,20 @@ class WorkflowRunner:
                             plan=plan,
                         )
                 if waiting_run is not None:
-                    try:
-                        self._approval_service.request(
+                    request_outcome, request_detail = (
+                        self._request_approval_with_policy_fence(
                             run=waiting_run,
                             plan=_annotate_approval(plan, True),
-                            policy_decision=decision,
-                            requested_by=command.actor,
+                            decision=decision,
+                            command=command,
                         )
-                    except Exception as exc:
-                        logger.exception(
-                            "Approval request persistence failed after safely pausing run_id=%s",
+                    )
+                    if request_outcome == "FAILED":
+                        exc = request_detail
+                        logger.error(
+                            "Approval request or policy fence failed after safely pausing run_id=%s error=%s",
                             run_id,
+                            redact_text(exc)[:500],
                         )
                         await asyncio.to_thread(
                             self._release,
@@ -437,6 +533,46 @@ class WorkflowRunner:
             automation_invocation=command.automation_invocation,
             project_transaction=project_transaction,
         )
+
+    def _request_approval_with_policy_fence(
+        self,
+        *,
+        run: Mapping[str, Any],
+        plan: Plan,
+        decision: Any,
+        command: Command,
+    ) -> tuple[str, Any]:
+        """Create an approval, then close the project-change wakeup gap.
+
+        A project/config/plugin update can commit after the first policy read
+        but before a new approval row is created.  Its invalidation wake would
+        then precede that row and `_release` could sleep until expiry.  Reading
+        policy again after the request commit closes that gap: an obsolete
+        approval is invalidated immediately; any later update will invalidate
+        it itself while holding the Run lock.
+        """
+
+        try:
+            approval = self._approval_service.request(
+                run=dict(run),
+                plan=plan,
+                policy_decision=decision,
+                requested_by=command.actor,
+            )
+        except Exception as exc:
+            return "FAILED", exc
+        try:
+            current = self._evaluate_policy(plan, command)
+            if not current.allowed or not current.requires_approval:
+                self._approval_service.invalidate_for_stale_plan(
+                    str(run["run_id"])
+                )
+                return "SUPERSEDED", current
+        except Exception as exc:
+            # The approval is durable already, but execution must remain
+            # waiting until the post-request policy fence can be read.
+            return "FAILED", exc
+        return "PENDING", approval
 
     @staticmethod
     def _trusted_execution_context(command: Command) -> dict[str, Any]:
@@ -742,17 +878,19 @@ class WorkflowRunner:
                                 "A protected write already started before its account policy recheck",
                                 details={"status": RunStatus.BLOCKED_DATA.value},
                             )
-                        try:
-                            self._approval_service.request(
+                        request_outcome, request_detail = (
+                            self._request_approval_with_policy_fence(
                                 run=waiting_run,
                                 plan=_annotate_approval(plan, True),
-                                policy_decision=fresh_decision,
-                                requested_by=command.actor,
+                                decision=fresh_decision,
+                                command=command,
                             )
-                        except Exception:
-                            logger.exception(
-                                "Approval request persistence failed after account policy recheck run_id=%s",
+                        )
+                        if request_outcome == "FAILED":
+                            logger.error(
+                                "Approval request or policy fence failed after account policy recheck run_id=%s error=%s",
                                 run["run_id"],
+                                redact_text(request_detail)[:500],
                             )
                         return waiting_run
                 project_waiting: tuple[dict[str, Any], Any] | None = None
@@ -816,17 +954,19 @@ class WorkflowRunner:
                     uow.commit()
                 if project_waiting is not None:
                     waiting_run, project_decision = project_waiting
-                    try:
-                        self._approval_service.request(
+                    request_outcome, request_detail = (
+                        self._request_approval_with_policy_fence(
                             run=waiting_run,
                             plan=_annotate_approval(plan, True),
-                            policy_decision=project_decision,
-                            requested_by=command.actor,
+                            decision=project_decision,
+                            command=command,
                         )
-                    except Exception:
-                        logger.exception(
-                            "Approval request persistence failed after project policy recheck run_id=%s",
+                    )
+                    if request_outcome == "FAILED":
+                        logger.error(
+                            "Approval request or policy fence failed after project policy recheck run_id=%s error=%s",
                             run["run_id"],
+                            redact_text(request_detail)[:500],
                         )
                     return waiting_run
             finally:
@@ -1486,6 +1626,47 @@ class WorkflowRunner:
                     or "Run cancellation was requested"
                 )
                 finished = True
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            next_attempt_at = None
+            if status == RunStatus.WAITING_APPROVAL.value:
+                if error_code == "APPROVAL_REQUEST_PENDING":
+                    # A persistence/Outbox failure is recoverable but should
+                    # not hot-loop merely because the previous approval is
+                    # already INVALIDATED or EXPIRED.
+                    next_attempt_at = now + timedelta(seconds=5)
+                latest = uow.approvals.get_latest_for_run(
+                    run_id,
+                    for_update=False,
+                )
+                approval_status = (
+                    str(latest.get("status") or "")
+                    if isinstance(latest, Mapping)
+                    else ""
+                )
+                expires_at = (
+                    latest.get("expires_at")
+                    if isinstance(latest, Mapping)
+                    and approval_status == "PENDING"
+                    else None
+                )
+                if next_attempt_at is not None:
+                    pass
+                elif isinstance(expires_at, datetime):
+                    if expires_at.tzinfo is not None:
+                        expires_at = expires_at.astimezone(timezone.utc).replace(
+                            tzinfo=None
+                        )
+                    next_attempt_at = max(expires_at, now)
+                elif approval_status:
+                    # A decision or invalidation that raced with this worker's
+                    # short lease must remain immediately claimable.
+                    next_attempt_at = now
+                else:
+                    # No durable pending approval exists, so retry only the
+                    # approval request/recovery path after a short delay.
+                    next_attempt_at = now + timedelta(seconds=5)
+            elif status == RunStatus.FAILED_RETRYABLE.value:
+                next_attempt_at = now + timedelta(seconds=5)
             updated = uow.runs.release_or_schedule(
                 run_id,
                 worker_id=self._worker_id,
@@ -1493,12 +1674,8 @@ class WorkflowRunner:
                 error_code=error_code,
                 error_summary=error_summary,
                 retryable=status == RunStatus.FAILED_RETRYABLE.value,
-                next_attempt_at=(
-                    datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=5)
-                    if status in {RunStatus.WAITING_APPROVAL.value, RunStatus.FAILED_RETRYABLE.value}
-                    else None
-                ),
-                finished_at=datetime.now(timezone.utc).replace(tzinfo=None) if finished else None,
+                next_attempt_at=next_attempt_at,
+                finished_at=now if finished else None,
             )
             target = RunStatus(status)
             if str(current.get("status")) != status:

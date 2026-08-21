@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
 import unittest
@@ -132,6 +133,7 @@ def _fragment(definition, capability, *, enabled=True, plugin_allowed=None):
         "action_id": f"automation.{definition.automation_id}.run",
         "allowed_entrypoints": ["console"],
         "enabled_entrypoints": ["console"],
+        "code_owned_plan_fields": [],
         "config_schema": {
             "type": "object",
             "additionalProperties": False,
@@ -215,6 +217,29 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
             "NON_IDEMPOTENT_WRITE_RETRY_UNSAFE",
             replayable.restriction_code,
         )
+
+    def test_destructive_full_auto_still_requires_closed_write_evidence(self):
+        capability = _capability("clock_in_dual")
+        capability["operation_type"] = "destructive"
+        definition = _definition("clock_in_dual")
+        fragment = _fragment(definition, capability)
+
+        closed = compile_automation_project_contract(
+            definition,
+            catalog=_Catalog(capability),
+            plugin_contract_provider=lambda _automation_id: fragment,
+        )
+        self.assertTrue(closed.can_full_auto)
+
+        capability["evidence"] = {"required": False, "required_fields": []}
+        fragment = _fragment(definition, capability)
+        missing = compile_automation_project_contract(
+            definition,
+            catalog=_Catalog(capability),
+            plugin_contract_provider=lambda _automation_id: fragment,
+        )
+        self.assertFalse(missing.can_full_auto)
+        self.assertEqual("WRITE_VERIFICATION_NOT_CLOSED", missing.restriction_code)
 
     def test_signed_plugin_contract_no_longer_uses_legacy_full_auto_flag(self):
         _cap, _definition_row, _fragment_row, core_denied = self._compile(
@@ -497,6 +522,182 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
             )
         )
         self.assertFalse(contract.matches_plan(plan, invocation, source="console"))
+
+    def test_customer_recheck_plan_field_is_strictly_server_owned(self):
+        capability = _capability("sync_customer_service_problems")
+        definition = AutomationProjectInstanceDefinition(
+            automation_id="customer_problems_shadow",
+            plugin_id="sync_customer_service_problems",
+            tool_name="sync_customer_service_problems",
+            argument_templates={"console": {"direction": "both"}},
+            dynamic_argument_resolvers={},
+            account_bindings={"primary": "account_one"},
+            allowed_entrypoints=frozenset({"console"}),
+            project_config={"direction": "both"},
+            resource_bindings={},
+        )
+        fragment = _fragment(definition, capability)
+        recheck_schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "dedupe_key": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512,
+                    },
+                    "platform": {
+                        "type": "string",
+                        "enum": ["ronghui", "yunda"],
+                    },
+                    "external_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    },
+                },
+                "required": ["dedupe_key"],
+            },
+        }
+        input_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["received", "published", "both"],
+                },
+                "recheck_items": recheck_schema,
+            },
+            "required": ["direction"],
+        }
+        fragment["code_owned_plan_fields"] = ["recheck_items"]
+        fragment["config_schema"] = copy.deepcopy(input_schema)
+        fragment["tool_contract"]["input_schema"] = copy.deepcopy(input_schema)
+        fragment["invocation_contracts"]["console"] = {
+            "input_schema": copy.deepcopy(input_schema),
+            "argument_template": {
+                "direction": {"source": "project_config", "key": "direction"},
+                "recheck_items": {
+                    "source": "project_config",
+                    "key": "recheck_items",
+                },
+            },
+            "dynamic_resolvers": {},
+        }
+        contract = compile_automation_project_contract(
+            definition,
+            catalog=_Catalog(capability),
+            plugin_contract_provider=lambda _automation_id: fragment,
+        )
+        self.assertEqual(
+            frozenset({"recheck_items"}),
+            contract.code_owned_plan_fields,
+        )
+        self.assertEqual(
+            ["recheck_items"],
+            contract.snapshot["code_owned_plan_fields"],
+        )
+        self.assertEqual(canonical_sha256(fragment), contract.plugin_contract_hash)
+
+        invocation = AutomationProjectInvocation(
+            automation_id=definition.automation_id,
+            automation_generation=contract.automation_generation,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="console",
+            contract_hash=contract.contract_hash,
+            policy_version=1,
+            project_configuration_version=contract.project_configuration_version,
+            request_id="customer-recheck-request",
+        )
+
+        def plan(arguments):
+            return SimpleNamespace(
+                automation_id=definition.automation_id,
+                automation_generation=contract.automation_generation,
+                automation_contract_hash=contract.contract_hash,
+                steps=(
+                    _Step(
+                        tool_name="automation.customer_problems_shadow.run",
+                        tool_version="1.0.0",
+                        operation_type="external_write",
+                        arguments=arguments,
+                    ),
+                ),
+            )
+
+        valid_rechecks = [
+            {
+                "dedupe_key": "problem:ronghui:one",
+                "platform": "ronghui",
+                "external_id": "one",
+            },
+            {
+                "dedupe_key": "problem:yunda:two",
+                "platform": "yunda",
+                "external_id": "two",
+            },
+        ]
+        self.assertTrue(
+            contract.matches_plan(
+                plan({"direction": "both", "recheck_items": valid_rechecks}),
+                invocation,
+                source="console",
+            )
+        )
+        self.assertTrue(
+            contract.matches_plan(
+                plan({"direction": "both", "recheck_items": []}),
+                invocation,
+                source="console",
+            )
+        )
+        invalid_rechecks = (
+            list(reversed(valid_rechecks)),
+            [valid_rechecks[0], copy.deepcopy(valid_rechecks[0])],
+            [{**valid_rechecks[0], "account_id": "forged"}],
+            [{**valid_rechecks[0], "platform": "unknown"}],
+            [{**valid_rechecks[0], "dedupe_key": " padded "}],
+        )
+        for rechecks in invalid_rechecks:
+            with self.subTest(rechecks=rechecks):
+                self.assertFalse(
+                    contract.matches_plan(
+                        plan({"direction": "both", "recheck_items": rechecks}),
+                        invocation,
+                        source="console",
+                    )
+                )
+        self.assertFalse(
+            contract.matches_plan(
+                plan(
+                    {
+                        "direction": "both",
+                        "recheck_items": valid_rechecks,
+                        "unreviewed": True,
+                    }
+                ),
+                invocation,
+                source="console",
+            )
+        )
+
+    def test_code_owned_plan_claim_rejects_every_other_identity_or_trust(self):
+        capability = _capability("clock_in_dual")
+        definition = _definition("clock_in_dual")
+        fragment = _fragment(definition, capability)
+        fragment["code_owned_plan_fields"] = ["recheck_items"]
+        with self.assertRaisesRegex(
+            AutomationProjectContractError,
+            "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID",
+        ):
+            compile_automation_project_contract(
+                definition,
+                catalog=_Catalog(capability),
+                plugin_contract_provider=lambda _automation_id: fragment,
+            )
 
 
 if __name__ == "__main__":

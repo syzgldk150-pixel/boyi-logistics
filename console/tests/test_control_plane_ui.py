@@ -87,6 +87,13 @@ class ControlPlaneUiTests(unittest.TestCase):
         self.assertIn("next_poll_after_ms", self.script)
         self.assertIn("TERMINAL_RUN_STATES", self.script)
 
+    def test_stale_approval_conflicts_reload_the_current_detail(self):
+        self.assertIn("APPROVAL_REFRESH_ERROR_CODES", self.script)
+        self.assertIn('path.startsWith("/control-plane/approvals/")', self.script)
+        self.assertIn("if (approvalDialog.open) approvalDialog.close()", self.script)
+        self.assertIn("审批计划已更新，请核对最新内容后重新决定。", self.script)
+        self.assertIn("该审批已处理或已过期，页面已更新。", self.script)
+
     def test_styles_cover_keyboard_mobile_and_reduced_motion(self):
         self.assertIn(":focus-visible", self.styles)
         self.assertIn("@media (max-width: 360px)", self.styles)

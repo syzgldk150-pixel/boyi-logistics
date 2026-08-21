@@ -1967,7 +1967,11 @@ def bootstrap_first_party_plugins(
     package_materializer: FirstPartyPackageMaterializerPort | None = None,
     allow_development_builtin: bool = False,
 ) -> BootstrapResult:
-    """Insert missing legacy instances only; preserve all administrator state."""
+    """Install missing instances and stage older signed first-party versions.
+
+    Administrator bindings, schedules, enabled entrypoints (including an empty
+    set), and durable approval intent are preserved across the staged upgrade.
+    """
 
     try:
         if package_provider is None:

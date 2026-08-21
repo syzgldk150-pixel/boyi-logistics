@@ -136,6 +136,9 @@ Broker 仍在每次调用时独立重验账号登录态和精确绑定，缺失�
 018 首次项目化仍保留历史 pre-image、grant 和 typed schedule 证据，供发布边界复核；生产既有 019
 保持 generation lease / Run 绑定的原始字节，迁移 020 随后把
 所有 `REQUIRE_EACH_RUN` / `LEGACY_SCHEDULE_ONLY` 统一转换为 `PROJECT_FULL_AUTO` 并写不可变审计。
+迁移 021 再精确恢复当前策略仍为 `PROJECT_FULL_AUTO` 的 typed `WAITING_APPROVAL` Run：在同一条
+MySQL 更新中废止 `PENDING` / `APPROVED` 审批、清除遗留 Worker 租约并把 Run 调度到当前时间；管理员
+后来显式改回 `REQUIRE_EACH_RUN` 的项目不在恢复范围内。
 全新数据库因 018 bootstrap 在 SQL 迁移之后发生，启动时还会执行同等的幂等全自动初始化。管理员后续
 显式选择逐次审批优先，配置或插件代际变化不得再静默改写权限模式。
 
@@ -148,6 +151,11 @@ MySQL lifecycle 以一个事务注册不可变目标版本并 CAS 推进 desired
 权限模式。prepare 期间禁止用旧配置启动新 Run；目标包、配置、账号、资源、Worker 和可逆 effects
 全部闭合后才原子切换。相同 request UUID 的响应丢失重试只读取原目标，不会再推进一代；不兼容配置
 在任何 desired 写入前拒绝。切换后的旧 generation 等已有 lease 排空后再 dispose，全程不靠重启清场。
+
+首方 release bootstrap 会把已存在但版本较旧的保留实例一并推进到本次签名版本，而不是只登记新包。
+升级前先用精确首方 ownership 规则重编译代码拥有的配置字段，再走通用 staged upgrade 与 generation
+reconcile；配置、账号/资源绑定、入口选择（含全关）、定时和权限模式均保留，较新版本禁止降级。旧版本
+不可变目录仅在旧 generation/lease、审计或发布恢复仍引用时保留，不得继续成为活动项目版本。
 
 首方生产集合必须从同一已提交 SHA 一次性构建，禁止手工拼接或覆盖既有目录：
 
@@ -223,6 +231,14 @@ Console 超级管理员可生成 10 分钟、单次使用的高熵绑定码，�
 `agent.approval.requested` 通过事务 Outbox 为每名启用通知的绑定管理员建立持久化串行队列，每次只激活
 一条；精确回复 `1` 批准、`2` 驳回。批准事务先将 `WAITING_APPROVAL` Run 的调度时间置为当前时间，
 提交后再唤醒 Runner，避免事项状态已批准而原 Run 永久停留。过期、重复或已被他人决定会跳到下一条。
+审批请求必须在 Run/WorkItem 已提交为 `WAITING_APPROVAL` 后才创建并投递，防止飞书快速回复看到尚未
+等待的 Run。仍为 `PENDING` 的 Run 休眠到审批 `expires_at`，不参与普通 5 秒轮询；批准、驳回、策略、
+配置或插件版本变化会按 Run→Approval 的统一锁序废止旧上下文并把精确 Run 调度到当前时间。
+每次审批请求提交后 Runner 都会再读取一次当前策略；若策略/配置/插件变化恰好发生在首次评估与审批
+创建之间，刚创建的旧上下文会立即失效而不会睡到过期。飞书投递若发现当前 ACTIVE 已失效，会自动
+完成该投递并主动推送下一条，不要求管理员先回复旧消息才能推进队列。
+若 Run 等待期间项目被管理员改为完全自动，Runner 重新领取时会使旧审批失效并以当前策略恢复同一
+已验证计划；计划或合同发生变化时仍重新验证，不能拿旧审批替新计划授权。
 
 ## 升级、停用与卸载
 

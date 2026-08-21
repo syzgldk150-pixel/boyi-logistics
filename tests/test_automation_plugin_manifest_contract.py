@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from unittest.mock import patch
 
 import pytest
 
-from agent.automation_plugins.errors import PluginManifestError
+from agent.automation_plugins.errors import PluginConflictError, PluginManifestError
 from agent.automation_plugins.first_party import resolve_first_party_manifests
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.manifest import AutomationPluginManifest
@@ -279,6 +280,150 @@ def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None
         invocation["arguments"]["pending_sheet_disabled"] is True
         for invocation in saved["compiled_invocations"].values()
     )
+
+
+def test_first_party_bootstrap_stages_existing_older_instance_to_release_version() -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())["sync_arrival_stats"]
+    template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
+
+    class AutomationPlugins:
+        def get_project(self, automation_id, *, for_update):
+            assert automation_id == template.automation_id
+            assert for_update is True
+            return {
+                "automation_id": automation_id,
+                "plugin_id": manifest.plugin_id,
+                "plugin_version": "1.0.0",
+                "record_version": 4,
+            }
+
+    class UnitOfWork:
+        def __init__(self) -> None:
+            self.automation_plugins = AutomationPlugins()
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def commit(self):
+            self.committed = True
+
+    class Orchestration:
+        def __init__(self) -> None:
+            self.uow = UnitOfWork()
+
+        def unit_of_work(self):
+            return self.uow
+
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+    )
+    seed = FirstPartyInstanceSeed(
+        automation_id=template.automation_id,
+        plugin_id=template.tool_name,
+        version=manifest.version,
+        display_name=template.automation_id,
+        allowed_entrypoints=tuple(template.allowed_entrypoints),
+    )
+    repository = MySQLAutomationPluginRepositoryAdapter(Orchestration())
+
+    with (
+        patch.object(repository, "_register"),
+        patch.object(
+            repository,
+            "_prepare_first_party_upgrade_configuration",
+            return_value=("1.0.0", 5),
+        ) as prepare,
+        patch.object(repository, "upgrade_instance") as upgrade,
+    ):
+        result = repository.bootstrap_missing(
+            (version,),
+            (seed,),
+            release_sha="a" * 40,
+        )
+
+    assert result.created == ()
+    assert result.existing == (template.automation_id,)
+    prepare.assert_called_once_with(
+        seed=seed,
+        version=version,
+        release_sha="a" * 40,
+        expected_current_version="1.0.0",
+    )
+    upgrade.assert_called_once()
+    call = upgrade.call_args
+    assert call.args == (template.automation_id, version)
+    assert call.kwargs["actor_role"] == "super_admin"
+    assert call.kwargs["expected_current_version"] == "1.0.0"
+    assert call.kwargs["expected_record_version"] == 5
+    uuid.UUID(call.kwargs["request_id"])
+
+
+def test_first_party_bootstrap_never_downgrades_existing_instance() -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())["sync_arrival_stats"]
+    template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
+
+    class AutomationPlugins:
+        def get_project(self, _automation_id, *, for_update):
+            assert for_update is True
+            return {
+                "plugin_id": manifest.plugin_id,
+                "plugin_version": "9.0.0",
+                "record_version": 2,
+            }
+
+    class UnitOfWork:
+        automation_plugins = AutomationPlugins()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def commit(self):
+            raise AssertionError("downgrade candidate must abort before commit")
+
+    class Orchestration:
+        def unit_of_work(self):
+            return UnitOfWork()
+
+    repository = MySQLAutomationPluginRepositoryAdapter(Orchestration())
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+    )
+    seed = FirstPartyInstanceSeed(
+        automation_id=template.automation_id,
+        plugin_id=template.tool_name,
+        version=manifest.version,
+        display_name=template.automation_id,
+        allowed_entrypoints=tuple(template.allowed_entrypoints),
+    )
+
+    with patch.object(repository, "_register"):
+        with pytest.raises(PluginConflictError) as raised:
+            repository.bootstrap_missing(
+                (version,),
+                (seed,),
+                release_sha="b" * 40,
+            )
+
+    assert raised.value.code == "PLUGIN_UPGRADE_VERSION_INVALID"
 
 
 def test_arrive_list_contract_uses_two_exact_instance_sheet_roles() -> None:

@@ -41,6 +41,11 @@
     "CANCELLED",
     "PARTIAL",
   ]);
+  const APPROVAL_REFRESH_ERROR_CODES = new Set([
+    "PLAN_STALE",
+    "APPROVAL_NOT_PENDING",
+    "APPROVAL_EXPIRED",
+  ]);
   const SLOW_POLL_STATES = new Set([
     "WAITING_APPROVAL",
     "NEEDS_CLARIFICATION",
@@ -931,6 +936,20 @@
         await loadDetail();
         return true;
       } catch (error) {
+        if (
+          path.startsWith("/control-plane/approvals/")
+          && APPROVAL_REFRESH_ERROR_CODES.has(String(error.code || ""))
+        ) {
+          if (approvalDialog.open) approvalDialog.close();
+          await loadDetail();
+          showFeedback(
+            feedback,
+            error.code === "PLAN_STALE"
+              ? "审批计划已更新，请核对最新内容后重新决定。"
+              : "该审批已处理或已过期，页面已更新。",
+          );
+          return false;
+        }
         showFeedback(feedback, error.message || "操作提交失败。 ");
         return false;
       } finally {
