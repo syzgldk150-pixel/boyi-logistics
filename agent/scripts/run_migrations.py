@@ -31,28 +31,14 @@ CONTROL_PLANE_TASK_CUTOVER_VERSION = "014"
 CONTROL_PLANE_TASK_CUTOVER_BACKUP_TABLE = "control_plane_task_cutover_backup_014"
 CONTROL_PLANE_TASK_CUTOVER_CREATED_TABLE = "control_plane_task_cutover_created_014"
 SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION = "017"
-SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = (
-    "scheduled_task_contract_upgrade_backup_017"
-)
-SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE = (
-    "scheduled_task_contract_upgrade_created_017"
-)
+SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = "scheduled_task_contract_upgrade_backup_017"
+SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE = "scheduled_task_contract_upgrade_created_017"
 AUTOMATION_PROJECT_AUTHORIZATION_VERSION = "018"
-AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE = (
-    "scheduled_task_automation_identity_backup_018"
-)
-AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE = (
-    "automation_project_migration_capture_018"
-)
-AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE = (
-    "automation_project_reviewed_schedule_map_018"
-)
-AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE = (
-    "automation_project_reviewed_resource_map_018"
-)
-AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE = (
-    "automation_project_resource_backup_018"
-)
+AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE = "scheduled_task_automation_identity_backup_018"
+AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE = "automation_project_migration_capture_018"
+AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE = "automation_project_reviewed_schedule_map_018"
+AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE = "automation_project_reviewed_resource_map_018"
+AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE = "automation_project_resource_backup_018"
 AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = (
     "automation_plugin_purge_journal",
     "automation_worker_cleanup_directives",
