@@ -178,8 +178,9 @@ python scripts/build_first_party_plugin_release.py \
   失败、超时、取消或无效输出都由核心 Broker 的已消耗请求数分类：已启动进程且消耗至少一次请求，
   或已启动进程但该观察不可用时，进入 `WRITE_OUTCOME_UNKNOWN`；已证明零次消耗、或根本未启动时，
   为 `FAILED_BEFORE_WRITE`。未知写会阻断旧代清理和卸载。Bubblewrap 只绑定 Agent 自身受信
-  CPython base prefix（生产为 `/opt/python3.10`）；不可变 venv 的 `pyvenv.cfg` 必须精确声明
-  `<trusted-prefix>/bin`，不能借该文件扩大挂载范围。
+  CPython base prefix（生产为 `/opt/python3.10`）；不可变插件 venv 的 `pyvenv.cfg` 必须把 `home`
+  解析到 Agent 当前受信运行环境的 `bin`（允许部署使用的稳定符号链接路径），而实际挂载仍独立固定为
+  CPython base prefix，不能借该文件扩大挂载范围。
 
 ## Desired / committed generation
 
