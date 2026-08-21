@@ -1785,6 +1785,17 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
         self.assertNotIn("CLOCK_TASK_TOOL_NOT_REVIEWED", rendered)
         self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
+        typed_query = next(
+            sql for sql, _ in cursor.calls if sql.startswith("SELECT task.id AS task_id")
+        )
+        self.assertIn(
+            "ON BINARY project.automation_id=BINARY task.automation_id",
+            typed_query,
+        )
+        self.assertIn(
+            "ON BINARY policy.automation_id=BINARY project.automation_id",
+            typed_query,
+        )
 
     def _applied_014_yunda_window_rows(
         self,

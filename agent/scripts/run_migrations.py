@@ -1496,11 +1496,11 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
                generation.snapshot_json
         FROM scheduled_tasks AS task
         INNER JOIN automation_projects AS project
-          ON project.automation_id=task.automation_id
+          ON BINARY project.automation_id=BINARY task.automation_id
         INNER JOIN automation_project_policies AS policy
-          ON policy.automation_id=project.automation_id
+          ON BINARY policy.automation_id=BINARY project.automation_id
         INNER JOIN automation_project_generations AS generation
-          ON generation.automation_id=project.automation_id
+          ON BINARY generation.automation_id=BINARY project.automation_id
          AND generation.generation=project.committed_generation
         WHERE task.enabled=TRUE
           AND task.automation_id IS NOT NULL
