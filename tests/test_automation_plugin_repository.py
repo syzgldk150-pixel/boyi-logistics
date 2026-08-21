@@ -936,6 +936,8 @@ class AutomationPluginRepositoryTests(TestCase):
         self.assertNotIn("approval_requests", delivery_lock_sql)
         self.assertNotIn("agent_runs", delivery_lock_sql)
         self.assertNotIn("FOR UPDATE", projection_sql)
+        self.assertIn("command.automation_id AS automation_id", projection_sql)
+        self.assertNotIn("run.automation_id", projection_sql)
 
     def test_feishu_single_binding_finish_never_expands_to_other_bindings(self):
         connection = _ScriptedConnection(
