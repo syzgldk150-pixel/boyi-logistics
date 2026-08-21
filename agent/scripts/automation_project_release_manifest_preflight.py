@@ -49,6 +49,12 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
 
     committed_generation = row.get("committed_generation")
     target_generation = row.get("target_generation")
+    target_state = row.get("target_generation_state")
+    target_base_generation = row.get("target_base_generation")
+    target_lineage_is_safe = (
+        target_state == "PREPARED"
+        and target_base_generation == committed_generation
+    ) or (target_state is None and target_base_generation is None)
     return bool(
         row.get("project_state") == "UPGRADING"
         and type(committed_generation) is int
@@ -56,8 +62,7 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
         and target_generation > committed_generation
         and row.get("generation_state") == "BLOCKED"
         and row.get("generation_error_code") == "WRITE_OUTCOME_UNKNOWN"
-        and row.get("target_generation_state") == "PREPARED"
-        and row.get("target_base_generation") == committed_generation
+        and target_lineage_is_safe
         and type(row.get("unknown_write_count")) is int
         and row.get("unknown_write_count") == 1
     )

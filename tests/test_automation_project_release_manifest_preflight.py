@@ -740,6 +740,29 @@ def test_later_release_accepts_staged_unknown_write_quarantine(preflight):
     )
 
 
+def test_later_release_accepts_staged_unknown_write_with_missing_target(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="BLOCKED",
+        generation_error_code="WRITE_OUTCOME_UNKNOWN",
+        target_generation_state=None,
+        target_base_generation=None,
+        unknown_write_count=1,
+    )
+
+    preflight._validate_release_projects_and_tasks(
+        contract,
+        schedules=schedules,
+        backups=backups,
+        projects=projects,
+        expect_initial_production_manifest=False,
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -748,6 +771,9 @@ def test_later_release_accepts_staged_unknown_write_quarantine(preflight):
         {"generation_error_code": "RUNTIME_ROOT_MISSING"},
         {"target_generation_state": "PREPARING"},
         {"target_base_generation": 2},
+        {"target_generation_state": None},
+        {"target_generation_state": None, "target_base_generation": 1},
+        {"target_generation_state": "PREPARED", "target_base_generation": None},
     ),
 )
 def test_staged_unknown_write_quarantine_fails_closed(preflight, mutation):
