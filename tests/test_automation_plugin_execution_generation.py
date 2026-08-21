@@ -297,9 +297,24 @@ class _Issuer:
         assert capability == "test-capability"
 
 
+class _ObservedIssuer(_Issuer):
+    def __init__(self, consumed_calls: int) -> None:
+        self.consumed_calls = consumed_calls
+
+    def consumed_call_count(self, capability: str) -> int:
+        assert capability == "test-capability"
+        return self.consumed_calls
+
+
 class _Integrity:
     def verify_install_root(self, runtime_metadata: Mapping[str, object]) -> None:
         assert runtime_metadata["install_root"]
+
+
+class _FailingIntegrity:
+    def verify_install_root(self, runtime_metadata: Mapping[str, object]) -> None:
+        assert runtime_metadata["install_root"]
+        raise PluginExecutionError("install root changed", code="PLUGIN_INTEGRITY_MISMATCH")
 
 
 class _Core:
@@ -380,6 +395,84 @@ class _SleepSandbox:
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
+
+
+class _TrackedSleepSandbox:
+    def __init__(self) -> None:
+        self.process: asyncio.subprocess.Process | None = None
+
+    async def launch(self, **_: object) -> asyncio.subprocess.Process:
+        self.process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import sys,time; sys.stdin.buffer.read(); time.sleep(5)",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        return self.process
+
+
+class _NonReadingSandbox:
+    def __init__(self) -> None:
+        self.process: asyncio.subprocess.Process | None = None
+
+    async def launch(self, **_: object) -> asyncio.subprocess.Process:
+        self.process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(2)",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        return self.process
+
+
+class _LaunchRaceSandbox:
+    def __init__(self) -> None:
+        self.launch_started = asyncio.Event()
+        self.release_launch = asyncio.Event()
+        self.process: asyncio.subprocess.Process | None = None
+
+    async def launch(self, **_: object) -> asyncio.subprocess.Process:
+        self.launch_started.set()
+        await self.release_launch.wait()
+        self.process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(5)",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        return self.process
+
+
+class _BrokenPipeSandbox:
+    def __init__(self) -> None:
+        self.process: asyncio.subprocess.Process | None = None
+
+    async def launch(self, **_: object) -> asyncio.subprocess.Process:
+        self.process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import os,time; os.close(0); time.sleep(1)",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        await asyncio.sleep(0.05)
+        return self.process
+
+
+class _FailingSandbox:
+    async def launch(self, **_: object) -> asyncio.subprocess.Process:
+        raise RuntimeError("<WriteUnixTransport fd=17> closed")
 
 
 class _RunningProcess:
@@ -585,6 +678,238 @@ def test_invalid_output_after_write_launch_is_outcome_unknown(tmp_path: Path) ->
     assert leases.released[0][1] == RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
 
 
+@pytest.mark.parametrize(
+    ("consumed_calls", "expected_code", "expected_outcome"),
+    (
+        (0, "PLUGIN_OUTPUT_INVALID", RuntimeLeaseOutcome.FAILED_BEFORE_WRITE),
+        (1, "WRITE_OUTCOME_UNKNOWN", RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN),
+    ),
+)
+def test_write_failure_uses_authoritative_broker_consumption(
+    tmp_path: Path,
+    consumed_calls: int,
+    expected_code: str,
+    expected_outcome: RuntimeLeaseOutcome,
+) -> None:
+    capability = _capability(tmp_path)
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_ObservedIssuer(consumed_calls),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(b"not-json"),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(capability, {}, trusted_invocation_context=_trusted_binding(capability))
+    )
+
+    assert result["error_code"] == expected_code
+    assert leases.released[0][1] is expected_outcome
+
+
+def test_sandbox_start_failure_is_stable_and_prewrite(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_ObservedIssuer(0),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_FailingSandbox(),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(capability, {}, trusted_invocation_context=_trusted_binding(capability))
+    )
+
+    assert result["error_code"] == "PLUGIN_SANDBOX_START_FAILED"
+    assert "WriteUnixTransport" not in result["error"]
+    assert leases.released[0][1] is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+
+
+def test_write_failure_with_unavailable_observation_depends_on_launch(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+    failed = {"success": False, "error_code": "PLUGIN_SANDBOX_START_FAILED"}
+
+    assert PluginExecutionRouter._lease_outcome(
+        capability,
+        failed,
+        process_launched=False,
+        consumed_call_count=None,
+    ) is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+    assert PluginExecutionRouter._lease_outcome(
+        capability,
+        failed,
+        process_launched=True,
+        consumed_call_count=None,
+    ) is RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("consumed_calls", "expected_outcome"),
+    (
+        (0, RuntimeLeaseOutcome.FAILED_BEFORE_WRITE),
+        (1, RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN),
+    ),
+)
+def test_cancelled_plugin_reaps_child_and_classifies_consumption(
+    tmp_path: Path,
+    consumed_calls: int,
+    expected_outcome: RuntimeLeaseOutcome,
+) -> None:
+    capability = _capability(tmp_path)
+    sandbox = _TrackedSleepSandbox()
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_ObservedIssuer(consumed_calls),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=sandbox,
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            router.execute(capability, {}, trusted_invocation_context=_trusted_binding(capability))
+        )
+        while not router._running:  # noqa: SLF001 - wait for router process ownership
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+    assert sandbox.process is not None and sandbox.process.returncode is not None
+    assert leases.released[0][1] is expected_outcome
+
+
+def test_stdin_backpressure_is_bounded_and_reaped(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+    capability["timeout"] = 1
+    sandbox = _NonReadingSandbox()
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_ObservedIssuer(0),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=sandbox,
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(
+            capability,
+            {"payload": "x" * (2 * 1024 * 1024)},
+            trusted_invocation_context=_trusted_binding(capability),
+        )
+    )
+
+    assert result["error_code"] == "PLUGIN_EXECUTION_LIMIT"
+    assert sandbox.process is not None and sandbox.process.returncode is not None
+    assert leases.released[0][1] is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+
+
+@pytest.mark.parametrize(
+    ("consumed_calls", "expected_outcome"),
+    (
+        (0, RuntimeLeaseOutcome.FAILED_BEFORE_WRITE),
+        (1, RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN),
+    ),
+)
+def test_launch_cancellation_waits_for_and_reaps_returned_process(
+    tmp_path: Path,
+    consumed_calls: int,
+    expected_outcome: RuntimeLeaseOutcome,
+) -> None:
+    capability = _capability(tmp_path)
+    sandbox = _LaunchRaceSandbox()
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_ObservedIssuer(consumed_calls),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=sandbox,
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            router.execute(capability, {}, trusted_invocation_context=_trusted_binding(capability))
+        )
+        await sandbox.launch_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        sandbox.release_launch.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+    assert sandbox.process is not None and sandbox.process.returncode is not None
+    assert leases.released[0][1] is expected_outcome
+
+
+@pytest.mark.parametrize(
+    ("issuer", "expected_code", "expected_outcome"),
+    (
+        (_ObservedIssuer(0), "PLUGIN_SANDBOX_START_FAILED", RuntimeLeaseOutcome.FAILED_BEFORE_WRITE),
+        (_ObservedIssuer(1), "WRITE_OUTCOME_UNKNOWN", RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN),
+        (_Issuer(), "WRITE_OUTCOME_UNKNOWN", RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN),
+    ),
+)
+def test_broken_pipe_uses_broker_aware_failure_classification(
+    tmp_path: Path,
+    issuer: _Issuer,
+    expected_code: str,
+    expected_outcome: RuntimeLeaseOutcome,
+) -> None:
+    capability = _capability(tmp_path)
+    sandbox = _BrokenPipeSandbox()
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=issuer,
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=sandbox,
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(capability, {}, trusted_invocation_context=_trusted_binding(capability))
+    )
+
+    assert result["error_code"] == expected_code
+    assert sandbox.process is not None and sandbox.process.returncode is not None
+    assert leases.released[0][1] is expected_outcome
+
+
+def test_write_integrity_failure_before_process_launch_is_prewrite(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_ObservedIssuer(0),
+        integrity_verifier=_FailingIntegrity(),
+        sandbox_launcher=_FailingSandbox(),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    with pytest.raises(PluginExecutionError) as raised:
+        asyncio.run(router.execute(capability, {}, trusted_invocation_context=_trusted_binding(capability)))
+
+    assert raised.value.code == "PLUGIN_INTEGRITY_MISMATCH"
+    assert leases.released[0][1] is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+
+
 @pytest.mark.parametrize("error_code", ("AUTH_REQUIRED", "AUTH_PENDING_CODE"))
 def test_explicit_prewrite_session_failure_does_not_block_generation(
     tmp_path: Path,
@@ -599,6 +924,7 @@ def test_explicit_prewrite_session_failure_does_not_block_generation(
             "error": {"code": error_code},
         },
         process_launched=True,
+        consumed_call_count=0,
     )
 
     assert outcome is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
@@ -754,6 +1080,12 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     captured: dict[str, object] = {}
     sentinel = object()
 
+    monkeypatch.setattr(
+        BubblewrapPluginSandbox,
+        "_base_prefix",
+        staticmethod(lambda *_: Path("/opt/python3.10")),
+    )
+
     async def _spawn(*args: object, **kwargs: object) -> object:
         captured["args"] = args
         captured.update(kwargs)
@@ -771,6 +1103,53 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     )
     assert result is sentinel
     assert captured["start_new_session"] is True
+    command = captured["args"]
+    assert "--clearenv" not in command
+    assert ("--ro-bind", "/opt/python3.10", "/opt/python3.10") == tuple(
+        command[index:index + 3]
+        for index, value in enumerate(command)
+        if value == "--ro-bind" and tuple(command[index + 1:index + 3]) == ("/opt/python3.10", "/opt/python3.10")
+    )[0]
+
+
+@pytest.mark.parametrize("hostile_home", ("/bin", "/etc/bin"))
+def test_bubblewrap_rejects_untrusted_pyvenv_home(
+    tmp_path: Path,
+    hostile_home: str,
+) -> None:
+    executable = tmp_path / "bwrap"
+    executable.write_text("binary", encoding="utf-8")
+    root = tmp_path / "install"
+    (root / "venv" / "bin").mkdir(parents=True)
+    (root / "venv" / "pyvenv.cfg").write_text(
+        f"home = {hostile_home}\\n",
+        encoding="utf-8",
+    )
+    sandbox = BubblewrapPluginSandbox(executable)
+
+    with pytest.raises(PluginExecutionError, match="base prefix"):
+        sandbox._base_prefix(  # noqa: SLF001 - security validation boundary
+            root,
+            sandbox._relative("venv/bin/python", "Python"),  # noqa: SLF001
+        )
+
+
+def test_bubblewrap_rejects_pyvenv_home_drift(tmp_path: Path) -> None:
+    executable = tmp_path / "bwrap"
+    executable.write_text("binary", encoding="utf-8")
+    root = tmp_path / "install"
+    (root / "venv" / "bin").mkdir(parents=True)
+    sandbox = BubblewrapPluginSandbox(executable)
+    (root / "venv" / "pyvenv.cfg").write_text(
+        f"home = {sandbox._trusted_base_prefix / 'other-bin'}\\n",  # noqa: SLF001
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PluginExecutionError, match="base prefix"):
+        sandbox._base_prefix(  # noqa: SLF001 - security validation boundary
+            root,
+            sandbox._relative("venv/bin/python", "Python"),  # noqa: SLF001
+        )
 
 
 def test_concurrent_invocation_cancel_is_bound_to_exact_run(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import unittest
 from http import HTTPStatus
 from pathlib import Path
@@ -436,7 +437,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         ).get_template("automation.html")
 
-    def _render(self, *, can_manage=True):
+    def _render(self, *, can_manage=True, task_ids=("clockin_daxiang",)):
         task = {
             "task_id": "clockin_daxiang",
             "task_ids": ["clockin_daxiang_1830", "clockin_daxiang_1900"],
@@ -465,8 +466,15 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         }
         return self.template.render(
             app_title="Console",
-            scheduled_tasks=[task],
-            enabled_task_count=1,
+            scheduled_tasks=[
+                {
+                    **task,
+                    "task_id": task_id,
+                    "approval_policy": build_automation_project_policy_view(task_id, POLICY_ITEM),
+                }
+                for task_id in task_ids
+            ],
+            enabled_task_count=len(task_ids),
             automation_db_warning="",
             automation_account_warning="",
             automation_approval_policy_warning="",
@@ -488,6 +496,15 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("clockin_daxiang_1830", card)
         self.assertNotIn("策略标识", card)
         self.assertNotIn("policy_hash", card)
+
+    def test_project_policy_radios_have_one_unique_group_per_card(self):
+        html = self._render(task_ids=("clockin_daxiang", "clockin_beita"))
+        cards = html.split("<article")[1:]
+        self.assertEqual(2, len(cards))
+        for task_id, card in zip(("clockin_daxiang", "clockin_beita"), cards, strict=True):
+            names = re.findall(r'name="([^"]+)"[^>]*data-project-policy-mode', card)
+            self.assertEqual([f"project-policy-{task_id}", f"project-policy-{task_id}"], names)
+            self.assertEqual(1, len(re.findall(r'data-project-policy-mode[^>]* checked', card)))
 
     def test_pending_strip_has_aggregate_summary_and_card_actions(self):
         html = self._render()
@@ -542,7 +559,9 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertIn("async function pollApprovedBatch", template_source)
         self.assertIn("batchTerminalStatuses", template_source)
         self.assertIn("已批准，等待执行", template_source)
-        self.assertIn("20260821-plugin-manager1", template_source)
+        self.assertIn("20260821-plugin-runtime-policy2", template_source)
+        self.assertIn("name=\"project-policy-{{ task.task_id }}\"", template_source)
+        self.assertIn("renderPolicy(governance, current)", source)
 
     def test_assets_are_cache_busted_with_project_governance_styles(self):
         static_dir = Path(__file__).resolve().parents[1] / "static"

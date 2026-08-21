@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+import socket
 import subprocess
 import uuid
 import zipfile
@@ -12,7 +14,7 @@ from pathlib import Path
 import pytest
 from Crypto.PublicKey import ECC
 
-from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer
+from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
 from agent.automation_plugins.catalog import PluginCatalog, project_contract_fragment
 from agent.automation_plugins.configuration import normalize_project_schedule
 from agent.automation_plugins.core_adapter import (
@@ -497,6 +499,44 @@ def test_broker_grant_is_bounded_and_request_replay_is_rejected(
             role=role,
         )
     assert exhausted.value.code == "BROKER_CALL_LIMIT"
+    assert issuer.consumed_call_count(token) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket lifecycle test")
+def test_broker_reclaims_only_dead_agent_sibling_sockets(tmp_path: Path) -> None:
+    current = tmp_path / f"agent-{os.getpid()}.sock"
+    stale = tmp_path / "agent-999999999.sock"
+    live = tmp_path / f"agent-{os.getpid() + 1}.sock"
+    malformed = tmp_path / "agent-zero.sock"
+    regular = tmp_path / "agent-999999998.sock"
+    link = tmp_path / "agent-999999997.sock"
+    for target in (current, stale, live, malformed):
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(target))
+        server.close()
+    regular.write_text("keep", encoding="utf-8")
+    link.symlink_to(regular)
+
+    original_kill = os.kill
+
+    def liveness(pid: int, signal: int) -> None:
+        if pid == os.getpid() + 1:
+            return None
+        if pid == 999999999:
+            raise ProcessLookupError()
+        return original_kill(pid, signal)
+
+    from unittest.mock import patch
+
+    with patch("agent.automation_plugins.broker.os.kill", side_effect=liveness):
+        LocalCoreAutomationBroker._reclaim_dead_sibling_sockets(current)
+
+    assert not stale.exists()
+    assert current.exists()
+    assert live.exists()
+    assert malformed.exists()
+    assert regular.exists()
+    assert link.is_symlink()
 
 
 def test_registered_core_adapter_revalidates_exact_bound_account(

@@ -165,9 +165,12 @@
     const summary = governance.querySelector("[data-project-policy-summary]");
     if (label) label.textContent = policy.label || (policy.effective_mode === PROJECT_FULL_AUTO ? "完全自动" : "每次运行审批");
     if (summary) summary.textContent = policy.summary || "";
+    let selected = false;
     governance.querySelectorAll("[data-project-policy-mode]").forEach(input => {
       if (!(input instanceof HTMLInputElement)) return;
-      input.checked = input.value === policy.configured_mode;
+      const matches = !selected && input.value === policy.configured_mode;
+      input.checked = matches;
+      selected ||= matches;
     });
     ["active", "stale", "unsupported", "legacy_schedule_only", "unavailable"].forEach(state => {
       governance.classList.remove(`auto-project-governance--${state}`);
@@ -384,7 +387,11 @@
       const open = toggle.getAttribute("aria-expanded") !== "true";
       setPolicyPanelOpen(governance, open);
     });
-    cancel?.addEventListener("click", () => setPolicyPanelOpen(governance, false));
+    cancel?.addEventListener("click", () => {
+      const current = parseObject(governance.dataset.projectPolicy);
+      if (validPolicy(current, automationId)) renderPolicy(governance, current);
+      setPolicyPanelOpen(governance, false);
+    });
     save?.addEventListener("click", () => void savePolicy(governance));
     governance.querySelectorAll("[data-project-policy-mode]").forEach(control => {
       control.addEventListener("input", () => {
