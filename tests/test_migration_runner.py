@@ -1735,7 +1735,10 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 "project_enabled": 1,
                 "project_state": "ENABLED",
                 "policy_mode": "PROJECT_FULL_AUTO",
-                "generation_state": "COMMITTED",
+                # A release may be the operation that repairs a missing signed
+                # runtime root.  Its committed generation remains authoritative
+                # for write-window classification while reconciliation is blocked.
+                "generation_state": "BLOCKED",
                 "snapshot_json": {
                     "automation_id": "clockin_daxiang",
                     "generation": 3,

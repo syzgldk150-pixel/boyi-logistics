@@ -1535,7 +1535,7 @@ def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
             or type(row.get("project_enabled")) not in {bool, int}
             or row.get("project_enabled") not in {True, 1}
             or row.get("project_state") != "ENABLED"
-            or row.get("generation_state") != "COMMITTED"
+            or row.get("generation_state") not in {"COMMITTED", "BLOCKED"}
         ):
             raise ControlPlaneTaskCutoverPreflightError(
                 "PROJECT_SCHEDULE_RUNTIME_INVALID"
