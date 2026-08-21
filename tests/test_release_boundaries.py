@@ -57,16 +57,20 @@ def _healthy_service_identity_payload() -> dict[str, object]:
                 },
                 "automation_plugins": {
                     "ok": True,
+                    "runnable": True,
+                    "runtime_status": "READY",
                     "broker": {"state": "running"},
                     "catalog": {
                         "ok": True,
+                        "runnable": True,
+                        "runtime_status": "READY",
                         "unsupported_automation_ids": [],
                         "enabled_builtin_release": [],
                         "invalid_enabled_trust": [],
                         "unstable_generations": [],
                         "invalid_enabled_runtime": [],
                     },
-                    "generations": {"healthy": True},
+                    "generations": {"healthy": True, "blocked_projects": {}},
                 },
                 "automation_workers": {
                     "enabled": False,
@@ -598,7 +602,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             (
                 "plugin_generations",
                 ("automation_plugins", "generations", "healthy"),
-                False,
+                "invalid",
             ),
             ("plugin_aggregate", ("automation_plugins", "ok"), False),
             ("worker", ("automation_workers", "enabled"), True),
@@ -642,7 +646,6 @@ class ReleaseBoundaryTests(unittest.TestCase):
             ("plugin_catalog_unsupported", "unsupported_automation_ids"),
             ("plugin_catalog_enabled_builtin", "enabled_builtin_release"),
             ("plugin_catalog_invalid_trust", "invalid_enabled_trust"),
-            ("plugin_catalog_unstable_generations", "unstable_generations"),
             ("plugin_catalog_invalid_runtime", "invalid_enabled_runtime"),
         )
         for expected, field_name in cases:
@@ -660,6 +663,24 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 )
                 self.assertNotIn(sensitive_marker, completed.stdout)
                 self.assertNotIn(sensitive_marker, completed.stderr)
+
+    def test_service_identity_smoke_accepts_explicitly_degraded_plugins(self):
+        payload = _healthy_service_identity_payload()
+        plugins = payload["data"]["components"]["automation_plugins"]
+        plugins["runnable"] = False
+        plugins["runtime_status"] = "UNAVAILABLE"
+        plugins["catalog"]["runnable"] = False
+        plugins["catalog"]["runtime_status"] = "UNAVAILABLE"
+        plugins["catalog"]["unstable_generations"] = ["blocked-project"]
+        plugins["generations"]["healthy"] = False
+        plugins["generations"]["blocked_projects"] = {
+            "blocked-project": ["WRITE_OUTCOME_UNKNOWN"]
+        }
+
+        completed = _run_service_identity_smoke(payload)
+
+        self.assertEqual(0, completed.returncode)
+        self.assertEqual("service_identity_smoke=ok", completed.stdout.strip())
 
     def test_service_identity_smoke_closes_plugin_catalog_shape_without_leakage(self):
         sensitive_marker = "SENSITIVE_PLUGIN_CATALOG_SHAPE_MARKER"

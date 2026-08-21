@@ -2113,10 +2113,6 @@ try:
             "invalid_enabled_trust",
         ),
         (
-            SmokeGate.PLUGIN_CATALOG_UNSTABLE_GENERATIONS,
-            "unstable_generations",
-        ),
-        (
             SmokeGate.PLUGIN_CATALOG_INVALID_RUNTIME,
             "invalid_enabled_runtime",
         ),
@@ -2130,16 +2126,35 @@ try:
             failure_gate = catalog_gate
             raise RuntimeError("automation plugin catalog is not release-ready")
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
-    if plugin_catalog.get("ok") is not True:
+    unstable_generations = plugin_catalog.get("unstable_generations")
+    catalog_runnable = plugin_catalog.get("runnable")
+    catalog_runtime_status = plugin_catalog.get("runtime_status")
+    if (
+        not isinstance(unstable_generations, list)
+        or not isinstance(catalog_runnable, bool)
+        or catalog_runtime_status not in {"READY", "UNAVAILABLE"}
+        or (catalog_runtime_status == "READY") != catalog_runnable
+        or bool(unstable_generations) == catalog_runnable
+        or plugin_catalog.get("ok") is not True
+    ):
         raise RuntimeError("automation plugin catalog aggregate is not release-ready")
     failure_gate = SmokeGate.PLUGIN_GENERATIONS
+    plugin_generations = automation_plugins.get("generations")
     if (
-        not isinstance(automation_plugins.get("generations"), dict)
-        or automation_plugins["generations"].get("healthy") is not True
+        not isinstance(plugin_generations, dict)
+        or not isinstance(plugin_generations.get("healthy"), bool)
+        or not isinstance(plugin_generations.get("blocked_projects"), dict)
     ):
         raise RuntimeError("automation plugin generations are not release-ready")
     failure_gate = SmokeGate.PLUGIN_AGGREGATE
-    if automation_plugins.get("ok") is not True:
+    plugin_runnable = automation_plugins.get("runnable")
+    plugin_runtime_status = automation_plugins.get("runtime_status")
+    if (
+        automation_plugins.get("ok") is not True
+        or not isinstance(plugin_runnable, bool)
+        or plugin_runtime_status not in {"READY", "UNAVAILABLE"}
+        or (plugin_runtime_status == "READY") != plugin_runnable
+    ):
         raise RuntimeError("automation plugin runtime is not release-ready")
     failure_gate = SmokeGate.WORKER
     if (

@@ -1114,7 +1114,9 @@ def test_missing_required_delivery_resource_waits_and_catalog_fails_closed() -> 
     health = world.catalog.production_health(
         tuple(sorted(world.expected_automation_ids))
     )
-    assert health["ok"] is False
+    assert health["ok"] is True
+    assert health["runnable"] is False
+    assert health["runtime_status"] == "UNAVAILABLE"
     assert health["unstable_generations"] == ["delivery_status"]
 
 

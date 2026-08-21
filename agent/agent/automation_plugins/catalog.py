@@ -784,14 +784,17 @@ class PluginCatalog:
         trust_counts: dict[str, int] = {}
         for entry in entries:
             trust_counts[entry.trust_source] = trust_counts.get(entry.trust_source, 0) + 1
+        integrity_ok = bool(
+            not unsupported
+            and not enabled_builtin
+            and not invalid_trust
+            and not invalid_runtime
+        )
+        runnable = bool(integrity_ok and not unstable)
         return {
-            "ok": (
-                not unsupported
-                and not enabled_builtin
-                and not invalid_trust
-                and not unstable
-                and not invalid_runtime
-            ),
+            "ok": integrity_ok,
+            "runnable": runnable,
+            "runtime_status": "READY" if runnable else "UNAVAILABLE",
             "signed_packages": len(package_keys),
             "instances": len(entries),
             "trust_sources": dict(sorted(trust_counts.items())),
@@ -804,7 +807,7 @@ class PluginCatalog:
 
     def assert_production_ready(self, automation_ids: Sequence[str]) -> dict[str, Any]:
         health = self.production_health(automation_ids)
-        if health["ok"] is not True:
+        if health["runnable"] is not True:
             raise PluginConflictError("automation plugin catalog is not production ready")
         return health
 

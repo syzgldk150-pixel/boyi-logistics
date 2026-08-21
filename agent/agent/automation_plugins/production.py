@@ -821,10 +821,16 @@ class MySQLRuntimeTargetService:
             if runtime.reconcile_state in {
                 RuntimeReconcileState.DRAINING,
                 RuntimeReconcileState.DISPOSING,
+            }:
+                return self._reconciler.resume_project(automation_id)
+            if runtime.reconcile_state in {
                 RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
                 RuntimeReconcileState.ERROR,
             }:
-                return self._reconciler.resume_project(automation_id)
+                # These states require evidence or an explicit administrator
+                # repair.  Keep the affected project unavailable without
+                # preventing the rest of the Agent from starting.
+                return None
 
         config, policy = self._desired_rows(automation_id)
         next_generation = max(by_number, default=0) + 1
@@ -980,8 +986,13 @@ class ProductionAutomationPluginRuntime:
             expected_automation_ids=self.required_first_party_ids,
             ignored_automation_ids=ignored_automation_ids,
         )
+        runnable = bool(
+            catalog.get("runnable") is True and generations.healthy and self._started
+        )
         return {
-            "ok": bool(catalog.get("ok") is True and generations.healthy and self._started),
+            "ok": bool(catalog.get("ok") is True and self._started),
+            "runnable": runnable,
+            "runtime_status": "READY" if runnable else "UNAVAILABLE",
             "release_sha": self.release.verified_release_sha,
             "broker": {"state": "running" if self._started else "stopped"},
             "catalog": catalog,
@@ -999,7 +1010,7 @@ class ProductionAutomationPluginRuntime:
 
     def assert_release_ready(self) -> dict[str, Any]:
         health = self.health()
-        if health["ok"] is not True:
+        if health["runnable"] is not True:
             raise PluginConflictError(
                 "automation plugin runtime is not release-ready",
                 code="AUTOMATION_PLUGIN_RUNTIME_NOT_READY",
