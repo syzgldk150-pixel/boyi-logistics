@@ -2359,7 +2359,9 @@ async def internal_activate_scheduler_after_release(request: Request):
             release_marker_present = scheduler_release_hold_requested()
             plugin_runtime = _automation_plugins()
             await asyncio.to_thread(plugin_runtime.reconcile)
-            plugin_status = plugin_runtime.assert_release_ready()
+            plugin_status = plugin_runtime.health()
+            if plugin_status.get("ok") is not True:
+                raise RuntimeError("Automation plugin service integrity check failed")
             scheduler_status = begin_scheduler_release_activation(_release_sha())
             runner_status = runner.resume_after_release()
             if WINDOWS_WORKER_RELEASE_ENABLED:
@@ -2387,10 +2389,11 @@ async def internal_activate_scheduler_after_release(request: Request):
                 or plugin_status.get("ok") is not True
             ):
                 raise RuntimeError("Release runtimes did not enter the running state")
-            # Marker consumption is the final mutation.  Plugin invocations
-            # remain held until every in-scope runtime above has reported a
-            # stable committed generation. Windows Worker is explicitly out
-            # of scope and therefore has no route, signer or dispatcher gate.
+            # Marker consumption is the final mutation. Explicitly unavailable
+            # projects remain blocked by their own runtime status; they do not
+            # prevent healthy projects or the scheduler from being activated.
+            # Windows Worker is explicitly out of scope and therefore has no
+            # route, signer or dispatcher gate.
             scheduler_status = consume_scheduler_release_hold(_release_sha())
         except RuntimeError as exc:
             if scheduler_release_hold_requested():
