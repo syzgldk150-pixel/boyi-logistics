@@ -177,6 +177,9 @@ CONTROL_PLANE_APPLIED_014_YUNDA_DISABLED_MESSAGE_SHA256 = (
     "19129e9c68d5e20050a7d8c8e8489f4f1313f9fb6188adc55229aaeacad9c0e3"
 )
 CONTROL_PLANE_CLOCK_TOOL_NAMES = frozenset({"tms_query", "clock_in_dual"})
+PROJECT_SCHEDULED_WRITE_OPERATION_TYPES = frozenset(
+    {"external_write", "financial_write", "destructive"}
+)
 CONTROL_PLANE_TASK_CANDIDATE_SQL = """
 SELECT id, tool_name, tool_params, cron_expression, enabled
 FROM scheduled_tasks
@@ -1474,6 +1477,115 @@ def _legacy_scheduled_write_crons(
     )
 
 
+def _typed_project_scheduled_write_crons(cursor: Any) -> tuple[str, ...]:
+    """Return current signed project write schedules without exposing payloads."""
+
+    cursor.execute(
+        """
+        SELECT task.id AS task_id,
+               task.automation_id,
+               task.automation_generation,
+               task.tool_name,
+               task.cron_expression,
+               task.enabled,
+               project.committed_generation,
+               project.enabled AS project_enabled,
+               project.state AS project_state,
+               policy.mode AS policy_mode,
+               generation.state AS generation_state,
+               generation.snapshot_json
+        FROM scheduled_tasks AS task
+        INNER JOIN automation_projects AS project
+          ON project.automation_id=task.automation_id
+        INNER JOIN automation_project_policies AS policy
+          ON policy.automation_id=project.automation_id
+        INNER JOIN automation_project_generations AS generation
+          ON generation.automation_id=project.automation_id
+         AND generation.generation=project.committed_generation
+        WHERE task.enabled=TRUE
+          AND task.automation_id IS NOT NULL
+          AND task.tool_name LIKE 'automation.%.run'
+        ORDER BY BINARY task.id
+        """
+    )
+    crons: list[str] = []
+    seen_task_ids: set[str] = set()
+    for row in cursor.fetchall():
+        if not isinstance(row, Mapping):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "PROJECT_SCHEDULE_RUNTIME_INVALID"
+            )
+        task_id = row.get("task_id")
+        automation_id = row.get("automation_id")
+        task_generation = row.get("automation_generation")
+        committed_generation = row.get("committed_generation")
+        if (
+            type(task_id) is not str
+            or not task_id
+            or task_id in seen_task_ids
+            or type(automation_id) is not str
+            or not automation_id
+            or type(task_generation) is not int
+            or type(committed_generation) is not int
+            or task_generation <= 0
+            or task_generation != committed_generation
+            or row.get("tool_name") != f"automation.{automation_id}.run"
+            or type(row.get("enabled")) not in {bool, int}
+            or row.get("enabled") not in {True, 1}
+            or type(row.get("project_enabled")) not in {bool, int}
+            or row.get("project_enabled") not in {True, 1}
+            or row.get("project_state") != "ENABLED"
+            or row.get("generation_state") != "COMMITTED"
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "PROJECT_SCHEDULE_RUNTIME_INVALID"
+            )
+        seen_task_ids.add(task_id)
+        policy_mode = row.get("policy_mode")
+        if policy_mode not in {
+            "PROJECT_FULL_AUTO",
+            "LEGACY_SCHEDULE_ONLY",
+            "REQUIRE_EACH_RUN",
+        }:
+            raise ControlPlaneTaskCutoverPreflightError(
+                "PROJECT_SCHEDULE_POLICY_INVALID"
+            )
+        snapshot = _decode_task_arguments(row.get("snapshot_json"))
+        execution_metadata = snapshot.get("execution_metadata")
+        governance_anchor = (
+            execution_metadata.get("governance_anchor")
+            if isinstance(execution_metadata, Mapping)
+            else None
+        )
+        compiled_invocations = (
+            execution_metadata.get("compiled_invocations")
+            if isinstance(execution_metadata, Mapping)
+            else None
+        )
+        if (
+            snapshot.get("automation_id") != automation_id
+            or snapshot.get("generation") != committed_generation
+            or not isinstance(governance_anchor, Mapping)
+            or not isinstance(compiled_invocations, Mapping)
+            or "scheduler" not in compiled_invocations
+        ):
+            raise ControlPlaneTaskCutoverPreflightError(
+                "PROJECT_SCHEDULE_CONTRACT_INVALID"
+            )
+        if (
+            policy_mode in {"PROJECT_FULL_AUTO", "LEGACY_SCHEDULE_ONLY"}
+            and governance_anchor.get("operation_type")
+            in PROJECT_SCHEDULED_WRITE_OPERATION_TYPES
+        ):
+            cron_expression = row.get("cron_expression")
+            if type(cron_expression) is not str or not cron_expression:
+                raise ControlPlaneTaskCutoverPreflightError(
+                    "PROJECT_SCHEDULE_CRON_INVALID"
+                )
+            crons.append(cron_expression)
+    return tuple(sorted(set(crons)))
+
+
 def check_scheduled_write_window(
     *,
     before_minutes: int = SCHEDULED_WRITE_WINDOW_BEFORE_MINUTES,
@@ -1516,6 +1628,22 @@ def check_scheduled_write_window(
                     for row in cursor.fetchall()
                     if (cron := _scheduled_write_snapshot_cron(row)) is not None
                 )
+                project_crons = ()
+                project_tables = (
+                    "automation_projects",
+                    "automation_project_policies",
+                    "automation_project_generations",
+                )
+                project_table_presence = tuple(
+                    _table_exists(cursor, table_name)
+                    for table_name in project_tables
+                )
+                if any(project_table_presence) and not all(project_table_presence):
+                    raise ControlPlaneTaskCutoverPreflightError(
+                        "PROJECT_SCHEDULE_SCHEMA_INCOMPLETE"
+                    )
+                if all(project_table_presence):
+                    project_crons = _typed_project_scheduled_write_crons(cursor)
                 # A failed first control-plane release can leave additive 015
                 # tables behind while the old scheduler source is restored.
                 # In that state policy rows still default to per-run approval,
@@ -1525,16 +1653,24 @@ def check_scheduled_write_window(
                 # release window and can never authorize execution.
                 cursor.execute(CONTROL_PLANE_TASK_CANDIDATE_SQL)
                 candidate_rows = cursor.fetchall()
+                legacy_candidate_rows = tuple(
+                    row
+                    for row in candidate_rows
+                    if not str(row.get("tool_name") or "").startswith("automation.")
+                )
                 clock_contracts = _load_control_plane_clock_contracts()
                 r7_contracts = _load_control_plane_r7_contracts()
-                _validate_clock_policy(candidate_rows, contracts=clock_contracts)
+                _validate_clock_policy(
+                    legacy_candidate_rows,
+                    contracts=clock_contracts,
+                )
                 reviewed_r7_crons = _validate_r7_policy(
-                    candidate_rows,
+                    legacy_candidate_rows,
                     contracts=r7_contracts,
                 )
                 present_clock_ids = {
                     row.get("id")
-                    for row in candidate_rows
+                    for row in legacy_candidate_rows
                     if isinstance(row, Mapping) and row.get("id") in clock_contracts
                 }
                 reviewed_clock_crons = tuple(
@@ -1544,7 +1680,7 @@ def check_scheduled_write_window(
                 reviewed_yunda_crons = ()
                 yunda_rows = tuple(
                     row
-                    for row in candidate_rows
+                    for row in legacy_candidate_rows
                     if isinstance(row, Mapping)
                     and row.get("id") == CONTROL_PLANE_APPLIED_014_YUNDA_SEND_ID
                 )
@@ -1603,6 +1739,7 @@ def check_scheduled_write_window(
                         set(
                             (
                                 *policy_crons,
+                                *project_crons,
                                 *reviewed_clock_crons,
                                 *reviewed_r7_crons,
                                 *reviewed_yunda_crons,

@@ -465,6 +465,8 @@ class _WindowCursor:
         backup_rows: list[dict] | None = None,
         applied_014: bool = False,
         applied_017: bool = False,
+        project_schema_exists: bool = False,
+        project_rows: list[dict] | None = None,
     ) -> None:
         self.rows = rows
         self.candidate_rows = rows if candidate_rows is None else candidate_rows
@@ -473,6 +475,8 @@ class _WindowCursor:
         self.backup_rows = [] if backup_rows is None else backup_rows
         self.applied_014 = applied_014
         self.applied_017 = applied_017
+        self.project_schema_exists = project_schema_exists
+        self.project_rows = [] if project_rows is None else project_rows
         self.calls: list[tuple[str, object]] = []
         self._row = None
         self._rows: list[dict] = []
@@ -501,6 +505,14 @@ class _WindowCursor:
             ) or (
                 table_name == "control_plane_task_cutover_backup_014"
                 and self.cutover_backup_exists
+            ) or (
+                table_name
+                in {
+                    "automation_projects",
+                    "automation_project_policies",
+                    "automation_project_generations",
+                }
+                and self.project_schema_exists
             )
             self._row = {"exists": 1} if exists else None
         elif normalized.startswith("SELECT 1 FROM schema_migrations WHERE version="):
@@ -524,6 +536,8 @@ class _WindowCursor:
             )
         elif normalized.startswith("SELECT policy.task_id"):
             self._rows = list(self.rows)
+        elif normalized.startswith("SELECT task.id AS task_id"):
+            self._rows = list(self.project_rows)
         elif (
             "COUNT(*) AS matched_count" in normalized
             and "control_plane_task_cutover_backup_014" in normalized
@@ -1707,6 +1721,70 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
         self.assertNotIn(task_id, rendered)
         self.assertNotIn("TASK_PARAM_SECRET_SENTINEL", rendered)
+
+    def test_scheduled_write_window_accepts_typed_project_write_contracts(self):
+        typed_rows = [
+            {
+                "task_id": "clockin_daxiang_1830",
+                "automation_id": "clockin_daxiang",
+                "automation_generation": 3,
+                "tool_name": "automation.clockin_daxiang.run",
+                "cron_expression": "30 18 * * *",
+                "enabled": 1,
+                "committed_generation": 3,
+                "project_enabled": 1,
+                "project_state": "ENABLED",
+                "policy_mode": "PROJECT_FULL_AUTO",
+                "generation_state": "COMMITTED",
+                "snapshot_json": {
+                    "automation_id": "clockin_daxiang",
+                    "generation": 3,
+                    "execution_metadata": {
+                        "compiled_invocations": {"scheduler": {"arguments": {}}},
+                        "governance_anchor": {"operation_type": "external_write"},
+                    },
+                },
+            }
+        ]
+        candidate_rows = [
+            {
+                "id": "clockin_daxiang_1830",
+                "tool_name": "automation.clockin_daxiang.run",
+                "tool_params": {},
+                "cron_expression": "30 18 * * *",
+                "enabled": 1,
+            }
+        ]
+        cursor = _WindowCursor(
+            [],
+            policy_exists=True,
+            candidate_rows=candidate_rows,
+            project_schema_exists=True,
+            project_rows=typed_rows,
+        )
+        connection = _WindowConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.check_scheduled_write_window(
+                before_minutes=60,
+                after_minutes=45,
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    18,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        self.assertEqual(1, result)
+        rendered = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
+        self.assertNotIn("CLOCK_TASK_TOOL_NOT_REVIEWED", rendered)
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _ in cursor.calls))
 
     def _applied_014_yunda_window_rows(
         self,
