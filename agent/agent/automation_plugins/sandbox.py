@@ -27,6 +27,7 @@ class BubblewrapPluginSandbox:
         executable: Path | str,
         *,
         trusted_base_prefix: Path | str | None = None,
+        trusted_runtime_prefix: Path | str | None = None,
     ) -> None:
         target = Path(executable)
         if not target.is_absolute() or target.is_symlink() or not target.is_file():
@@ -42,6 +43,24 @@ class BubblewrapPluginSandbox:
         ):
             raise ValueError("trusted CPython base prefix must be one safe explicit directory")
         self._trusted_base_prefix = raw_prefix
+        raw_runtime_prefix = (
+            Path(trusted_runtime_prefix)
+            if trusted_runtime_prefix is not None
+            else (
+                raw_prefix
+                if trusted_base_prefix is not None
+                else Path(sys.prefix)
+            )
+        )
+        resolved_runtime_prefix = raw_runtime_prefix.resolve()
+        if (
+            not raw_runtime_prefix.is_absolute()
+            or resolved_runtime_prefix == Path("/")
+            or not raw_runtime_prefix.is_dir()
+            or not resolved_runtime_prefix.is_dir()
+        ):
+            raise ValueError("trusted Agent runtime prefix must be one safe explicit directory")
+        self._trusted_runtime_prefix = resolved_runtime_prefix
 
     @staticmethod
     def _relative(value: str, label: str) -> PurePosixPath:
@@ -70,10 +89,9 @@ class BubblewrapPluginSandbox:
         if len(home_values) != 1:
             raise PluginExecutionError("sandbox virtual environment base prefix is invalid")
         home = Path(home_values[0])
-        expected_home = self._trusted_base_prefix / "bin"
+        expected_home = self._trusted_runtime_prefix / "bin"
         if (
             not home.is_absolute()
-            or home != expected_home
             or home.is_symlink()
             or not home.is_dir()
             or home.resolve() != expected_home
