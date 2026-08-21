@@ -63,6 +63,157 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
     )
 
 
+_PROJECT_STATE_DIAGNOSTIC_VALUES = frozenset(
+    {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING", "UNINSTALLING", "ERROR"}
+)
+_GENERATION_STATE_DIAGNOSTIC_VALUES = frozenset(
+    {
+        "TARGET",
+        "PREPARING",
+        "WAITING_COEFFECTS",
+        "PREPARED",
+        "COMMITTED",
+        "DRAINING",
+        "DISPOSING",
+        "DISPOSED",
+        "FAILED",
+        "BLOCKED",
+    }
+)
+
+
+def _safe_enum_diagnostic(
+    value: Any,
+    *,
+    allowed: frozenset[str],
+) -> str:
+    if value is None:
+        return "ABSENT"
+    if type(value) is not str:
+        return "INVALID"
+    return value if value in allowed else "OTHER"
+
+
+def _generation_relation_diagnostic(value: Any, committed: Any) -> str:
+    if value is None:
+        return "ABSENT"
+    if type(value) is not int or type(committed) is not int:
+        return "INVALID"
+    if value > committed:
+        return "AHEAD"
+    if value == committed:
+        return "MATCH"
+    return "BEHIND"
+
+
+def _committed_error_diagnostic(value: Any) -> str:
+    if value is None:
+        return "NONE"
+    if type(value) is not str:
+        return "INVALID"
+    if value == "WRITE_OUTCOME_UNKNOWN":
+        return "WRITE_OUTCOME_UNKNOWN"
+    return "OTHER"
+
+
+def _unknown_write_lease_diagnostic(value: Any) -> str:
+    if type(value) is not int or value < 0:
+        return "INVALID"
+    if value == 0:
+        return "ZERO"
+    if value == 1:
+        return "ONE"
+    return "MULTIPLE"
+
+
+def _scheduled_write_runtime_validation_issue(
+    row: Mapping[str, Any],
+    *,
+    seen_task_ids: set[str],
+    quarantined_unknown_write: bool,
+) -> str | None:
+    """Return a fixed, value-free category for the first invalid binding."""
+
+    task_id = row.get("task_id")
+    automation_id = row.get("automation_id")
+    task_generation = row.get("automation_generation")
+    committed_generation = row.get("committed_generation")
+    if type(task_id) is not str or not task_id:
+        return "TASK_ID_INVALID"
+    if task_id in seen_task_ids:
+        return "TASK_ID_DUPLICATE"
+    if type(automation_id) is not str or not automation_id:
+        return "AUTOMATION_ID_INVALID"
+    if type(task_generation) is not int or task_generation <= 0:
+        return "TASK_GENERATION_INVALID"
+    if type(committed_generation) is not int:
+        return "COMMITTED_GENERATION_INVALID"
+    if task_generation != committed_generation:
+        return "TASK_GENERATION_MISMATCH"
+    if row.get("tool_name") != f"automation.{automation_id}.run":
+        return "TOOL_BINDING_INVALID"
+    if (
+        type(row.get("enabled")) not in {bool, int}
+        or row.get("enabled") not in {True, 1}
+    ):
+        return "TASK_ENABLED_INVALID"
+    if (
+        type(row.get("project_enabled")) not in {bool, int}
+        or row.get("project_enabled") not in {True, 1}
+    ):
+        return "PROJECT_ENABLED_INVALID"
+    if row.get("project_state") != "ENABLED" and not quarantined_unknown_write:
+        return "PROJECT_STATE_INVALID"
+    if row.get("generation_state") not in {"COMMITTED", "BLOCKED"}:
+        return "COMMITTED_STATE_INVALID"
+    return None
+
+
+def _project_schedule_runtime_invalid_code(
+    row: Mapping[str, Any],
+    *,
+    issue: str,
+) -> str:
+    """Build a bounded diagnostic code without projecting database values."""
+
+    committed_generation = row.get("committed_generation")
+    return "__".join(
+        (
+            "PROJECT_SCHEDULE_RUNTIME_INVALID",
+            f"CHECK_{issue}",
+            "PROJECT_STATE_"
+            + _safe_enum_diagnostic(
+                row.get("project_state"),
+                allowed=_PROJECT_STATE_DIAGNOSTIC_VALUES,
+            ),
+            "TARGET_RELATION_"
+            + _generation_relation_diagnostic(
+                row.get("target_generation"),
+                committed_generation,
+            ),
+            "COMMITTED_STATE_"
+            + _safe_enum_diagnostic(
+                row.get("generation_state"),
+                allowed=_GENERATION_STATE_DIAGNOSTIC_VALUES,
+            ),
+            "COMMITTED_ERROR_"
+            + _committed_error_diagnostic(row.get("generation_error_code")),
+            "TARGET_STATE_"
+            + _safe_enum_diagnostic(
+                row.get("target_generation_state"),
+                allowed=_GENERATION_STATE_DIAGNOSTIC_VALUES,
+            ),
+            "TARGET_BASE_RELATION_"
+            + _generation_relation_diagnostic(
+                row.get("target_base_generation"),
+                committed_generation,
+            ),
+            "UNKNOWN_WRITE_LEASES_"
+            + _unknown_write_lease_diagnostic(row.get("unknown_write_count")),
+        )
+    )
+
+
 def typed_project_scheduled_write_crons(
     cursor: Any,
     *,
@@ -118,35 +269,26 @@ def typed_project_scheduled_write_crons(
     seen_task_ids: set[str] = set()
     for row in cursor.fetchall():
         if not isinstance(row, Mapping):
-            raise error_class("PROJECT_SCHEDULE_RUNTIME_INVALID")
-        task_id = row.get("task_id")
-        automation_id = row.get("automation_id")
-        task_generation = row.get("automation_generation")
-        committed_generation = row.get("committed_generation")
-        quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
-        if (
-            type(task_id) is not str
-            or not task_id
-            or task_id in seen_task_ids
-            or type(automation_id) is not str
-            or not automation_id
-            or type(task_generation) is not int
-            or type(committed_generation) is not int
-            or task_generation <= 0
-            or task_generation != committed_generation
-            or row.get("tool_name") != f"automation.{automation_id}.run"
-            or type(row.get("enabled")) not in {bool, int}
-            or row.get("enabled") not in {True, 1}
-            or type(row.get("project_enabled")) not in {bool, int}
-            or row.get("project_enabled") not in {True, 1}
-            or (
-                row.get("project_state") != "ENABLED"
-                and not quarantined_unknown_write
+            raise error_class(
+                "PROJECT_SCHEDULE_RUNTIME_INVALID__CHECK_ROW_SHAPE_INVALID"
             )
-            or row.get("generation_state") not in {"COMMITTED", "BLOCKED"}
-        ):
-            raise error_class("PROJECT_SCHEDULE_RUNTIME_INVALID")
+        task_id = row.get("task_id")
+        quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
+        runtime_issue = _scheduled_write_runtime_validation_issue(
+            row,
+            seen_task_ids=seen_task_ids,
+            quarantined_unknown_write=quarantined_unknown_write,
+        )
+        if runtime_issue is not None:
+            raise error_class(
+                _project_schedule_runtime_invalid_code(
+                    row,
+                    issue=runtime_issue,
+                )
+            )
         seen_task_ids.add(task_id)
+        automation_id = row.get("automation_id")
+        committed_generation = row.get("committed_generation")
         policy_mode = row.get("policy_mode")
         if policy_mode not in {
             "PROJECT_FULL_AUTO",
