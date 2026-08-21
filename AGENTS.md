@@ -18,8 +18,8 @@
 
 - 用户提到“同步 ECS”“发版”“发布到 ECS”或“部署到 ECS”时，直接读取并执行 `agent/deploy/publish_to_ecs.md`，唯一发布入口是 `agent/deploy/publish_to_ecs.ps1`；不得先搜索历史命令、旧脚本或临时目录来猜测流程。
 - Agent、Console、Shared 或自动化插件平台任一发生变更时，常规控制平面发布固定使用 `-Target all`，并显式传入 `-AutomationPluginArtifactRoot` 与 `-AutomationPluginTrustRoot`。`-Target auto` 只用于已确认不跨控制平面边界的范围发布；`-SkipRestart`、`-SkipHealthCheck` 和紧急计划窗口覆盖必须由用户逐项明确授权。
-- 固定顺序为：干净且已推送的最终提交通过 CI → 以最终 40 位 Git SHA 生成一次性 Ed25519 发布密钥、公钥信任根和完整签名插件工件 → 调用固定 PowerShell 发布器 → 核验远端用户、systemd `WorkingDirectory`、服务状态与 `/health.release_sha` → 清理本地一次性私钥和工件。私钥只在项目 `.task_tmp/` 的 `0700/0600` 临时目录中生成和使用，不读取既有私钥、不进入 Git、不上传 ECS、不打印内容。
-- 发布成功后，远端当次 stage、精确回滚包、上一版共享虚拟环境和数据库快照必须保留到业务验收结束；本地一次性签名材料与构建工件在发布验收后精确清理。完整失败关闭、回滚和验收规则以 `agent/deploy/publish_to_ecs.md` 为准。
+- 固定顺序为：干净且已推送的最终提交通过 CI → 未改插件包源码时用 `build_first_party_plugin_release.py --reuse-artifact-root` 对上一版签名 ZIP 逐包验签、逐文件对比当前源码并只重绑最终 40 位 Git SHA；插件包源码确有变化时先升级对应插件版本，再使用固定受保护 Ed25519 key 构建 → 调用固定 PowerShell 发布器 → 核验远端用户、systemd `WorkingDirectory`、服务状态与 `/health.release_sha` → 清理本地临时工件。完整命令见 `agent/deploy/publish_to_ecs.md`。
+- 普通发布不得重新签名同一 `plugin_id/version`，也不得临时生成或更换 signing key；同版本签名包字节与摘要必须稳定。key 轮换必须与插件版本升级、迁移和回滚方案一起评审。不得读取、复制、打印或上传私钥内容。发布成功后，远端当次 stage、精确回滚包、上一版共享虚拟环境和数据库快照必须保留到业务验收结束；本地构建/复用工件在发布验收后精确清理。
 
 # 项目结构与边界
 
