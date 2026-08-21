@@ -1487,6 +1487,69 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertNotIn("_console_principal", app.last_call["payload"])
         self.assertEqual("7", app.last_call["console_principal"]["actor_id"])
 
+    def test_receipt_live_proxies_forward_closed_body_context_and_signed_principal(self):
+        app = _build_app(_ReceiptRepo())
+        trusted_context = app._control_plane_read_context(None)
+        trusted_context["request_metadata"] = {"internal_only": "must-not-forward"}
+        trusted_context["source"] = "caller-supplied-source"
+        app._control_plane_read_context = lambda _handler: dict(trusted_context)
+        app._control_plane_write_context = lambda _handler: dict(trusted_context)
+
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.last_call = {
+                "method": method,
+                "endpoint": endpoint,
+                "payload": payload,
+                "timeout": timeout,
+                "console_principal": console_principal,
+            }
+            return {
+                "ok": True,
+                "data": {
+                    "ok": True,
+                    "data": {
+                        "ok": True,
+                        "status_code": 200,
+                        "headers": {"Content-Type": "text/html; charset=utf-8"},
+                        "body_base64": base64.b64encode(b"<html>receipt</html>").decode("ascii"),
+                    },
+                },
+            }
+
+        app._agent_request = types.MethodType(agent_request, app)
+        cases = (
+            (
+                "yunda",
+                app._handle_yunda_receipt_live_proxy,
+                "/receipts/yunda/live/ky_inms/public/index.php/business/waybill/mailing/index.html",
+                {},
+            ),
+            ("ronghui", app._handle_ronghui_receipt_live_proxy, "/receipts/ronghui/live", {"receipt_entry": ["send"]}),
+        )
+
+        for provider, proxy, path, query in cases:
+            with self.subTest(provider=provider):
+                handler = _Handler(headers={"Accept": "text/html"})
+                proxy(handler, path, method="GET", query=query)
+
+                self.assertEqual(HTTPStatus.OK, handler.status)
+                self.assertEqual(
+                    {
+                        "params",
+                        "timeout_sec",
+                        "actor",
+                        "actor_roles",
+                        "source",
+                    },
+                    set(app.last_call["payload"]),
+                )
+                self.assertEqual(trusted_context["actor"], app.last_call["payload"]["actor"])
+                self.assertEqual(["super_admin"], app.last_call["payload"]["actor_roles"])
+                self.assertEqual("console", app.last_call["payload"]["source"])
+                self.assertEqual(trusted_context["_console_principal"], app.last_call["console_principal"])
+                self.assertNotIn("request_metadata", app.last_call["payload"])
+                self.assertIs(trusted_context["_console_principal"], app.last_call["console_principal"])
+
     def test_receipt_live_proxies_reject_writes_without_agent_call(self):
         cases = (
             (
