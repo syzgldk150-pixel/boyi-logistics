@@ -97,6 +97,18 @@ def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
 _PROJECT_STATE_DIAGNOSTIC_VALUES = frozenset(
     {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING", "UNINSTALLING", "ERROR"}
 )
+_RECONCILE_STATE_DIAGNOSTIC_VALUES = frozenset(
+    {
+        "STABLE",
+        "PREPARING",
+        "WAITING_COEFFECTS",
+        "READY_TO_COMMIT",
+        "DRAINING",
+        "DISPOSING",
+        "BLOCKED_UNKNOWN_WRITE",
+        "ERROR",
+    }
+)
 _GENERATION_STATE_DIAGNOSTIC_VALUES = frozenset(
     {
         "TARGET",
@@ -155,6 +167,18 @@ def _unknown_write_lease_diagnostic(value: Any) -> str:
     if value == 1:
         return "ONE"
     return "MULTIPLE"
+
+
+def _next_generation_diagnostic(value: Any, maximum: Any) -> str:
+    if value is None or maximum is None:
+        return "ABSENT"
+    if type(value) is not int or type(maximum) is not int:
+        return "INVALID"
+    if value == maximum + 1:
+        return "EXACT"
+    if value <= maximum:
+        return "NOT_AHEAD"
+    return "SKIPPED"
 
 
 def _scheduled_write_runtime_validation_issue(
@@ -217,10 +241,34 @@ def _project_schedule_runtime_invalid_code(
                 row.get("project_state"),
                 allowed=_PROJECT_STATE_DIAGNOSTIC_VALUES,
             ),
+            "RECONCILE_STATE_"
+            + _safe_enum_diagnostic(
+                row.get("reconcile_state"),
+                allowed=_RECONCILE_STATE_DIAGNOSTIC_VALUES,
+            ),
             "TARGET_RELATION_"
             + _generation_relation_diagnostic(
                 row.get("target_generation"),
                 committed_generation,
+            ),
+            "POLICY_TARGET_RELATION_"
+            + _generation_relation_diagnostic(
+                row.get("policy_project_generation"),
+                row.get("target_generation"),
+            ),
+            "MAX_COMMITTED_RELATION_"
+            + _generation_relation_diagnostic(
+                row.get("max_generation"),
+                committed_generation,
+            ),
+            "TARGET_MAX_NEXT_"
+            + _next_generation_diagnostic(
+                row.get("target_generation"),
+                row.get("max_generation"),
+            ),
+            "NON_DISPOSED_OTHERS_"
+            + _unknown_write_lease_diagnostic(
+                row.get("non_disposed_other_count")
             ),
             "COMMITTED_STATE_"
             + _safe_enum_diagnostic(
