@@ -170,6 +170,8 @@ def test_migration_023_enforces_one_active_delivery_per_binding_idempotently():
     assert "information_schema.statistics" in normalized
     assert "GENERATED ALWAYS AS" in normalized
     assert "CASE WHEN status=''ACTIVE'' THEN binding_id ELSE NULL END" in normalized
+    assert "END) VIRTUAL" in normalized
+    assert "END) STORED" not in normalized
     assert "ADD UNIQUE INDEX uq_feishu_approval_delivery_active_binding" in normalized
     assert "ADD COLUMN IF NOT EXISTS" not in normalized
     assert "ADD UNIQUE INDEX IF NOT EXISTS" not in normalized
