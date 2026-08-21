@@ -7,6 +7,10 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from agent.automation_plugins.code_owned_fields import (
+    first_party_code_owned_config_fields,
+    first_party_code_owned_plan_fields,
+)
 from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
 from agent.automation_plugins.manifest import AutomationPluginManifest, canonical_json_bytes
 from agent.automation_plugins.models import (
@@ -398,6 +402,13 @@ def project_contract_fragment(entry: PluginCatalogEntry) -> dict[str, Any]:
         "scheduling": copy.deepcopy(dict(entry.scheduling)),
         "project_full_auto_allowed": entry.project_full_auto_allowed,
         "runtime_permissions": copy.deepcopy(dict(entry.runtime_permissions)),
+        "code_owned_plan_fields": list(
+            first_party_code_owned_plan_fields(
+                automation_id=entry.automation_id,
+                plugin_id=entry.plugin_id,
+                trust_source=entry.trust_source,
+            )
+        ),
         "device_binding": (
             copy.deepcopy(committed_metadata["device_binding"])
             if committed_metadata is not None
@@ -560,6 +571,46 @@ class PluginCatalog:
             result.append(projected)
         return result
 
+    @staticmethod
+    def _code_owned_config_fields(entry: PluginCatalogEntry) -> tuple[str, ...]:
+        return first_party_code_owned_config_fields(
+            automation_id=entry.automation_id,
+            plugin_id=entry.plugin_id,
+            trust_source=entry.trust_source,
+        )
+
+    @classmethod
+    def _safe_instance_config_schema(
+        cls,
+        entry: PluginCatalogEntry,
+    ) -> dict[str, Any]:
+        schema = copy.deepcopy(dict(entry.config_schema))
+        code_owned_fields = set(cls._code_owned_config_fields(entry))
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            schema["properties"] = {
+                str(field_name): value
+                for field_name, value in properties.items()
+                if str(field_name) not in code_owned_fields
+            }
+        required = schema.get("required")
+        if isinstance(required, list):
+            schema["required"] = [
+                str(field_name)
+                for field_name in required
+                if str(field_name) not in code_owned_fields
+            ]
+        return schema
+
+    @classmethod
+    def _safe_instance_config(cls, entry: PluginCatalogEntry) -> dict[str, Any]:
+        code_owned_fields = set(cls._code_owned_config_fields(entry))
+        return {
+            str(field_name): copy.deepcopy(value)
+            for field_name, value in entry.project_config.items()
+            if str(field_name) not in code_owned_fields
+        }
+
     def safe_projection(self) -> dict[str, Any]:
         """Return the closed Console projection without integrity or filesystem data.
 
@@ -620,11 +671,14 @@ class PluginCatalog:
                 "resource_summary": self._resource_summary(entry),
                 "account_roles": self._safe_account_roles(entry),
                 "resource_roles": [copy.deepcopy(dict(role)) for role in entry.resource_roles],
-                "config_schema": copy.deepcopy(dict(entry.config_schema)),
+                "config_schema": self._safe_instance_config_schema(entry),
                 "scheduling": copy.deepcopy(dict(entry.scheduling)),
                 "entrypoints": list(entry.allowed_entrypoints),
                 "enabled_entrypoints": list(entry.current_enabled_entrypoints),
-                "config": copy.deepcopy(dict(entry.project_config)),
+                "code_owned_config_fields": list(
+                    self._code_owned_config_fields(entry)
+                ),
+                "config": self._safe_instance_config(entry),
                 "account_bindings": copy.deepcopy(dict(entry.account_bindings)),
                 "resource_bindings": copy.deepcopy(dict(entry.resource_bindings)),
                 "schedule": copy.deepcopy(dict(entry.project_schedule)),

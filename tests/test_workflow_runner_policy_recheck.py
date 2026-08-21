@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from agent.orchestration.models import (
+    Actor,
     ActorType,
     OperationType,
     Plan,
@@ -13,12 +14,19 @@ from agent.orchestration.models import (
     RiskLevel,
     RunStatus,
 )
-from agent.orchestration.policy_engine import PolicyDecision
+from agent.orchestration.approval_service import ApprovalService
+from agent.orchestration.automation_project_policy_service import (
+    AutomationProjectPolicyService,
+)
+from agent.orchestration.policy_engine import PolicyDecision, PolicyEngine
 from agent.orchestration.workflow_runner import WorkflowRunner
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectInvocation,
+    CompiledAutomationProjectContract,
+    InvocationArgumentContract,
 )
+from shared.orchestration_repository import InvalidStateError
 
 
 class _Commands:
@@ -92,6 +100,14 @@ class _Runs:
         row["lease_expires_at"] = None
         row["version"] += 1
         self.repository.trace.append(("run_release", status))
+        return copy.deepcopy(row)
+
+    def make_waiting_approval_runnable(self, run_id):
+        row = self.repository.run
+        if row["run_id"] != run_id or row["status"] != "WAITING_APPROVAL":
+            raise InvalidStateError("approval run is not waiting")
+        row["next_attempt_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.repository.trace.append(("approval_wake", run_id))
         return copy.deepcopy(row)
 
 
@@ -208,6 +224,51 @@ class _Approvals:
             "approval": copy.deepcopy(approval),
         }
 
+    def get_latest_for_run(self, run_id, *, for_update=False):
+        del for_update
+        approval = self.repository.approval
+        if approval is None or approval["run_id"] != run_id:
+            return None
+        return copy.deepcopy(approval)
+
+    def expire_stale(self, run_id, plan_hash):
+        approval = self.repository.approval
+        if (
+            approval is not None
+            and approval["run_id"] == run_id
+            and approval["plan_hash"] != plan_hash
+            and approval["status"] == "PENDING"
+        ):
+            approval["status"] = "INVALIDATED"
+
+    def create_or_get(self, row):
+        if self.repository.approval is None:
+            self.repository.approval = copy.deepcopy(dict(row))
+        return copy.deepcopy(self.repository.approval)
+
+    def invalidate_pending(self, *, run_id):
+        approval = self.repository.approval
+        if (
+            approval is not None
+            and approval["run_id"] == run_id
+            and approval["status"] == "PENDING"
+        ):
+            approval["status"] = "INVALIDATED"
+
+    def record_decision(self, row, *, expected_plan_hash):
+        approval = self.repository.approval
+        if (
+            approval is None
+            or approval["approval_id"] != row["approval_id"]
+            or approval["status"] != "PENDING"
+        ):
+            raise InvalidStateError("approval request is no longer pending")
+        if approval["plan_hash"] != expected_plan_hash:
+            raise InvalidStateError("approval plan hash is stale")
+        approval["status"] = row["decision"]
+        approval["decided_at"] = row["decided_at"]
+        return copy.deepcopy(approval)
+
 
 class _Events:
     def __init__(self, repository):
@@ -220,6 +281,17 @@ class _Events:
         self.repository.trace.append(("event", event["event_type"]))
 
 
+class _AutomationProjects:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def get_policy(self, automation_id, **_kwargs):
+        policy = self.repository.project_policy
+        if policy is None or str(policy.get("automation_id")) != automation_id:
+            return None
+        return copy.deepcopy(policy)
+
+
 class _Uow:
     def __init__(self, repository):
         self.repository = repository
@@ -229,6 +301,8 @@ class _Uow:
         self.work_items = _WorkItems(repository)
         self.approvals = _Approvals(repository)
         self.events = _Events(repository)
+        if repository.project_policy is not None:
+            self.automation_projects = _AutomationProjects(repository)
 
     def __enter__(self):
         self.repository.trace.append(("uow_enter",))
@@ -292,6 +366,7 @@ class _Repository:
         self.approval = None
         self.events = []
         self.trace = []
+        self.project_policy = None
 
     def unit_of_work(self):
         return _Uow(self)
@@ -300,6 +375,14 @@ class _Repository:
         if self.run["run_id"] != run_id:
             return None
         return copy.deepcopy(self.run)
+
+    def get_approval(self, approval_id):
+        if (
+            self.approval is None
+            or self.approval["approval_id"] != approval_id
+        ):
+            return None
+        return copy.deepcopy(self.approval)
 
     def claim_current(self):
         if self.run["worker_id"] is not None:
@@ -346,10 +429,15 @@ class _ApprovalService:
     def __init__(self, repository):
         self.repository = repository
         self.requests = 0
+        self.fail_requests = False
+        self.after_request = None
 
     def request(self, *, run, plan, policy_decision, requested_by):
         del policy_decision, requested_by
         self.requests += 1
+        self.repository.trace.append(("approval_request", run["status"]))
+        if self.fail_requests:
+            raise RuntimeError("synthetic approval persistence failure")
         if (
             self.repository.approval is not None
             and self.repository.approval["plan_hash"] == plan.plan_hash
@@ -361,7 +449,13 @@ class _ApprovalService:
             "run_id": run["run_id"],
             "plan_hash": plan.plan_hash,
             "status": "PENDING",
+            "expires_at": (
+                datetime.now(timezone.utc).replace(tzinfo=None)
+                + timedelta(minutes=15)
+            ),
         }
+        if self.after_request is not None:
+            self.after_request()
         return copy.deepcopy(self.repository.approval)
 
     def invalidate_for_stale_plan(self, _run_id):
@@ -381,6 +475,12 @@ class _Catalog:
             "name": tool_name,
             "version": "1.0.0",
             "operation_type": self.step.operation_type.value,
+            "risk_level": self.step.risk_level.value,
+            "approval": {
+                "mode": "required",
+                "required_role": "super_admin",
+            },
+            "permissions": {"required_roles": ["admin", "super_admin"]},
             "retry": {"safe": replay_safe},
             "idempotency": {"mode": "key" if replay_safe else "none"},
         }
@@ -449,6 +549,7 @@ def _runner(
     execution,
     *,
     policy=None,
+    approval_service=None,
     protected_step_start_guard=None,
 ):
     effective_policy = policy or _Policy()
@@ -460,7 +561,7 @@ def _runner(
         planner=_Planner(plan),
         validator=_Validator(),
         policy=effective_policy,
-        approval_service=_ApprovalService(repository),
+        approval_service=approval_service or _ApprovalService(repository),
         verifier=_Verifier(),
         worker_id="worker-1",
         pilot_projection=_PilotProjection(),
@@ -504,6 +605,241 @@ def test_recovered_running_run_rechecks_revoked_exact_policy_before_executor():
         ("step_transition", "PENDING", "RUNNING")
     )
     assert repository.trace[step_start_index - 1] == ("run_get", True, "RUNNING")
+
+
+def test_new_approval_waits_before_outbox_request_and_sleeps_until_expiry():
+    plan = _plan()
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.VALIDATED.value
+    execution = _Execution()
+    runner = _runner(repository, plan, execution)
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    transition_index = repository.trace.index(
+        ("run_transition", "VALIDATED", "WAITING_APPROVAL")
+    )
+    request_index = repository.trace.index(
+        ("approval_request", "WAITING_APPROVAL")
+    )
+    assert transition_index < request_index
+    assert repository.approval is not None
+    assert repository.run["next_attempt_at"] == repository.approval["expires_at"]
+    assert execution.execute_calls == 0
+
+
+def test_failed_replacement_approval_request_stays_waiting_and_retries_later():
+    plan = _plan()
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.WAITING_APPROVAL.value
+    repository.approval = {
+        "approval_id": "approval-old",
+        "run_id": repository.run["run_id"],
+        "plan_hash": plan.plan_hash,
+        "status": "INVALIDATED",
+        "expires_at": datetime.now(timezone.utc).replace(tzinfo=None),
+    }
+    approval_service = _ApprovalService(repository)
+    approval_service.fail_requests = True
+    execution = _Execution()
+    before = datetime.now(timezone.utc).replace(tzinfo=None)
+    runner = _runner(
+        repository,
+        plan,
+        execution,
+        approval_service=approval_service,
+    )
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    assert execution.execute_calls == 0
+    assert repository.run["status"] == RunStatus.WAITING_APPROVAL.value
+    assert repository.run["error_code"] == "APPROVAL_REQUEST_PENDING"
+    assert repository.run["next_attempt_at"] >= before + timedelta(seconds=5)
+
+
+def test_policy_change_during_approval_request_cannot_lose_its_wakeup():
+    plan = _plan()
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.VALIDATED.value
+    policy = _Policy()
+    approval_service = _ApprovalService(repository)
+    approval_service.after_request = lambda: setattr(
+        policy,
+        "requires_approval",
+        False,
+    )
+    execution = _Execution()
+    runner = _runner(
+        repository,
+        plan,
+        execution,
+        policy=policy,
+        approval_service=approval_service,
+    )
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    assert execution.execute_calls == 0
+    assert repository.run["status"] == RunStatus.WAITING_APPROVAL.value
+    assert repository.approval is not None
+    assert repository.approval["status"] == "INVALIDATED"
+    assert repository.run["next_attempt_at"] <= datetime.now(
+        timezone.utc
+    ).replace(tzinfo=None)
+
+    claimed = repository.claim_current()
+    asyncio.run(runner._process_claimed(claimed))
+
+    assert execution.execute_calls == 1
+    assert repository.run["status"] == RunStatus.COMPLETED.value
+
+
+def test_real_approval_decision_resumes_once_and_resolves_the_work_item():
+    class _DecisionPolicy:
+        @staticmethod
+        def can_decide(actor, *, required_role, source):
+            return (
+                source == "console"
+                and required_role in actor.roles
+                and "super_admin" in actor.roles
+            )
+
+    plan = _plan()
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.VALIDATED.value
+    execution = _Execution()
+    wakes: list[str] = []
+    approval_service = ApprovalService(
+        repository,
+        _DecisionPolicy(),
+        wake_runner=wakes.append,
+    )
+    runner = _runner(
+        repository,
+        plan,
+        execution,
+        approval_service=approval_service,
+    )
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+    approval = copy.deepcopy(repository.approval)
+    assert approval is not None
+    assert approval["status"] == "PENDING"
+
+    approval_service.decide(
+        approval_id=approval["approval_id"],
+        plan_hash=approval["plan_hash"],
+        actor=Actor(
+            ActorType.CONSOLE_ADMIN,
+            "admin-one",
+            ("admin", "super_admin"),
+        ),
+        source="console",
+        decision="APPROVED",
+    )
+    assert wakes == ["run-id"]
+
+    claimed = repository.claim_current()
+    asyncio.run(runner._process_claimed(claimed))
+
+    assert execution.execute_calls == 1
+    assert repository.run["status"] == RunStatus.COMPLETED.value
+    assert repository.work_item["status"] == "RESOLVED"
+    assert sum(
+        1
+        for item in repository.trace
+        if item == ("step_transition", "PENDING", "RUNNING")
+    ) == 1
+
+
+def test_approved_run_is_due_ahead_of_twenty_five_sleeping_pending_runs():
+    plan = _plan()
+    repositories: list[_Repository] = []
+    for index in range(26):
+        repository = _Repository(plan)
+        repository.run["run_id"] = f"run-{index:02d}"
+        repository.run["status"] = RunStatus.WAITING_APPROVAL.value
+        repository.approval = {
+            "approval_id": f"approval-{index:02d}",
+            "run_id": repository.run["run_id"],
+            "plan_hash": plan.plan_hash,
+            "status": "PENDING",
+            "expires_at": (
+                datetime.now(timezone.utc).replace(tzinfo=None)
+                + timedelta(minutes=15)
+            ),
+        }
+        runner = _runner(repository, plan, _Execution())
+        runner._release(
+            repository.run["run_id"],
+            status=RunStatus.WAITING_APPROVAL.value,
+        )
+        repositories.append(repository)
+
+    approved = repositories[-1]
+    _Runs(approved).make_waiting_approval_runnable(approved.run["run_id"])
+    due_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+        seconds=1
+    )
+    due_run_ids = [
+        repository.run["run_id"]
+        for repository in repositories
+        if repository.run["next_attempt_at"] <= due_cutoff
+    ]
+
+    assert due_run_ids == ["run-25"]
+
+
+def test_decision_racing_with_a_polling_lease_stays_immediately_due():
+    plan = _plan()
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.WAITING_APPROVAL.value
+    repository.approval = {
+        "approval_id": "approval-race",
+        "run_id": repository.run["run_id"],
+        "plan_hash": plan.plan_hash,
+        "status": "APPROVED",
+        "expires_at": (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            + timedelta(minutes=15)
+        ),
+    }
+    runner = _runner(repository, plan, _Execution())
+
+    runner._release(
+        repository.run["run_id"],
+        status=RunStatus.WAITING_APPROVAL.value,
+    )
+
+    assert repository.run["next_attempt_at"] <= (
+        datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=1)
+    )
+
+
+def test_waiting_run_resumes_when_policy_becomes_fully_automatic() -> None:
+    plan = _plan()
+    repository = _Repository(plan)
+    execution = _Execution()
+    policy = _Policy()
+    runner = _runner(repository, plan, execution, policy=policy)
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    assert repository.run["status"] == RunStatus.WAITING_APPROVAL.value
+    assert repository.approval is not None
+    assert repository.approval["status"] == "PENDING"
+    assert execution.execute_calls == 0
+
+    policy.requires_approval = False
+    claimed = repository.claim_current()
+    asyncio.run(runner._process_claimed(claimed))
+
+    assert repository.approval["status"] == "INVALIDATED"
+    assert execution.execute_calls == 1
+    assert repository.run["status"] == RunStatus.COMPLETED.value
+    assert repository.work_item["status"] == "RESOLVED"
+    assert ("run_transition", "WAITING_APPROVAL", "RUNNING") in repository.trace
 
 
 def test_recovered_inflight_external_write_reconciles_unknown_without_replay():
@@ -756,3 +1092,131 @@ def test_typed_project_policy_is_rechecked_under_project_uow_before_step_start()
     assert execution.last_execution_context["_automation_project_invocation"] == (
         invocation.to_dict()
     )
+
+
+def test_real_project_policy_service_resumes_old_waiting_run_under_current_mode():
+    invocation = AutomationProjectInvocation(
+        automation_id="instance-one",
+        automation_generation=1,
+        entrypoint=AutomationEntrypoint.CONSOLE,
+        contract_id="console",
+        contract_hash="a" * 64,
+        policy_version=1,
+        project_configuration_version=1,
+        request_id="request-policy-drift",
+    )
+    plan = Plan(
+        command_type="automation.project.invoke",
+        context_fingerprint="context",
+        tool_catalog_hash="catalog",
+        steps=(
+            PlanStep(
+                step_key="write",
+                tool_name="automation.instance-one.run",
+                tool_version="1.0.0",
+                operation_type=OperationType.EXTERNAL_WRITE,
+                arguments={"record_id": "record-1"},
+                account_id=None,
+                depends_on=(),
+                idempotency_key="step-key",
+                expected_evidence=(),
+                postconditions=(),
+                risk_level=RiskLevel.HIGH,
+            ),
+        ),
+        automation_id="instance-one",
+        automation_generation=1,
+        automation_contract_hash="a" * 64,
+    )
+    contract = CompiledAutomationProjectContract(
+        automation_id="instance-one",
+        automation_generation=1,
+        manifest_sha256="b" * 64,
+        tool_name="automation.instance-one.run",
+        tool_version="1.0.0",
+        operation_type=OperationType.EXTERNAL_WRITE.value,
+        risk_level=RiskLevel.HIGH.value,
+        invocation_contracts={
+            "console": InvocationArgumentContract(
+                contract_id="console",
+                entrypoint="console",
+                expected_arguments={"record_id": "record-1"},
+                dynamic_argument_resolvers={},
+            )
+        },
+        account_bindings={},
+        allowed_entrypoints=frozenset({"console"}),
+        contract_hash="a" * 64,
+        tool_contract_hash="c" * 64,
+        plugin_contract_hash="d" * 64,
+        project_configuration_version=1,
+        snapshot={"automation_id": "instance-one"},
+        can_full_auto=True,
+    )
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.VALIDATED.value
+    repository.project_policy = {
+        "automation_id": "instance-one",
+        "mode": "REQUIRE_EACH_RUN",
+        "version": 1,
+    }
+    repository.command.update(
+        {
+            "command_type": "automation.project.invoke",
+            "source": "console",
+            "actor_type": ActorType.CONSOLE_ADMIN.value,
+            "actor_id": "admin-one",
+            "actor_roles_json": ["admin", "super_admin"],
+            "parameters_json": {
+                "tool_name": "automation.instance-one.run",
+                "arguments": {"record_id": "record-1"},
+                "execution_context": {},
+            },
+            "automation_id": "instance-one",
+            "automation_generation": 1,
+            "automation_invocation_json": invocation.to_dict(),
+        }
+    )
+
+    class _PluginCatalog:
+        @staticmethod
+        def require(automation_id):
+            if automation_id != "instance-one":
+                raise KeyError(automation_id)
+            return SimpleNamespace(automation_id=automation_id)
+
+    project_service = AutomationProjectPolicyService(
+        repository,
+        core_catalog=SimpleNamespace(),
+        plugin_catalog=_PluginCatalog(),
+    )
+    project_service._lock_and_compile_contract = (  # type: ignore[method-assign]
+        lambda _uow, _entry, **_kwargs: (contract, {})
+    )
+    execution = _Execution()
+    runner = _runner(
+        repository,
+        plan,
+        execution,
+        policy=PolicyEngine(
+            _Catalog(plan.steps[0]),
+            project_policy_provider=project_service.evaluate_invocation,
+        ),
+    )
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    assert repository.run["status"] == RunStatus.WAITING_APPROVAL.value
+    assert repository.approval is not None
+    assert repository.approval["status"] == "PENDING"
+
+    repository.project_policy.update(
+        {"mode": "PROJECT_FULL_AUTO", "version": 2}
+    )
+    repository.approval["status"] = "INVALIDATED"
+    claimed = repository.claim_current()
+    asyncio.run(runner._process_claimed(claimed))
+
+    assert execution.execute_calls == 1
+    assert repository.run["status"] == RunStatus.COMPLETED.value
+    assert repository.work_item["status"] == "RESOLVED"

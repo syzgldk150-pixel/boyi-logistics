@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from agent.orchestration.feishu_approval_service import FeishuApprovalService
+from agent.orchestration.models import OrchestrationError
 
 
 class _Rows:
@@ -18,6 +21,10 @@ class _Rows:
         self.binding: dict | None = None
         self.failure: dict | None = None
         self.active: dict | None = None
+        self.next_active: dict | None = None
+        self.finished: list[tuple[str, str]] = []
+        self.notified: list[str] = []
+        self.sent: list[tuple[str, str, str]] = []
 
     def get_admin_user(self, admin_user_id, **_kwargs):
         return dict(self.admin) if admin_user_id == 7 else None
@@ -73,9 +80,34 @@ class _Rows:
             return None
         return dict(self.active) if self.active else None
 
-    def finish_approval(self, _approval_id, **_kwargs):
-        self.active = None
-        return []
+    def finish_approval(self, approval_id, *, status="DECIDED"):
+        self.finished.append((str(approval_id), str(status)))
+        self.active = self.next_active
+        self.next_active = None
+        if self.binding is None:
+            return []
+        return [str(self.binding["binding_id"])]
+
+    def expire_approval_if_due(self, approval_id):
+        if self.active and str(self.active.get("approval_id")) == str(approval_id):
+            self.active["approval_status"] = "EXPIRED"
+            return True
+        return False
+
+    def enqueue_for_enabled_admins(self, _approval_id, _plan_hash):
+        if self.binding is None:
+            return []
+        return [str(self.binding["binding_id"])]
+
+    def active_for_binding(self, binding_id, **_kwargs):
+        if self.binding is None or str(self.binding["binding_id"]) != str(binding_id):
+            return None
+        return dict(self.active) if self.active else None
+
+    def mark_notified(self, delivery_id):
+        self.notified.append(str(delivery_id))
+        if self.active and str(self.active.get("delivery_id")) == str(delivery_id):
+            self.active["notified_at"] = datetime.now()
 
 
 class _Uow:
@@ -103,20 +135,28 @@ class _Repository:
 class _Approvals:
     def __init__(self):
         self.decisions: list[dict] = []
+        self.error_code: str | None = None
 
     def decide(self, **kwargs):
         self.decisions.append(dict(kwargs))
+        if self.error_code:
+            raise OrchestrationError(self.error_code, "approval decision raced")
         return {"status": kwargs["decision"]}
 
 
 def _service():
     repository = _Repository()
     approvals = _Approvals()
+
+    def _send_text(receive_id, text, kind):
+        repository.rows.sent.append((str(receive_id), str(text), str(kind)))
+        return True
+
     return (
         FeishuApprovalService(
             repository,
             approvals,
-            send_text=lambda _receive_id, _text, _kind: True,
+            send_text=_send_text,
         ),
         repository,
         approvals,
@@ -161,3 +201,161 @@ def test_exact_one_decides_only_the_active_bound_approval():
     assert service.handle_text("ou-1", "oc-1", "1") == "已批准，原事项已恢复执行。"
     assert approvals.decisions[0]["decision"] == "APPROVED"
     assert approvals.decisions[0]["source"] == "feishu"
+
+
+def test_stale_active_reply_pushes_and_marks_the_next_serial_approval():
+    service, repository, _approvals = _service()
+    challenge = service.create_binding_challenge(7)
+    service.handle_text("ou-1", "oc-1", challenge["command"])
+    repository.rows.active = {
+        "approval_id": "approval-stale",
+        "plan_hash": "a" * 64,
+        "approval_status": "APPROVED",
+        "expires_at": datetime.now() + timedelta(minutes=5),
+    }
+    repository.rows.next_active = {
+        "delivery_id": "delivery-next",
+        "approval_id": "approval-next",
+        "plan_hash": "b" * 64,
+        "approval_status": "PENDING",
+        "expires_at": datetime.now() + timedelta(minutes=10),
+        "open_id": "ou-1",
+        "automation_id": "arrival_stats",
+        "source": "scheduler",
+        "risk_level": "HIGH",
+        "notified_at": None,
+    }
+
+    assert service.handle_text("ou-1", "oc-1", "1") == (
+        "当前审批已过期或已由其他管理员处理，已切换到下一条。"
+    )
+    assert repository.rows.finished == [("approval-stale", "SKIPPED")]
+    assert repository.rows.notified == ["delivery-next"]
+    assert repository.rows.sent[0][0] == "ou-1"
+    assert "项目：arrival_stats" in repository.rows.sent[0][1]
+    assert repository.rows.active["notified_at"] is not None
+
+
+def test_new_request_outbox_skips_stale_active_and_pushes_next_without_reply():
+    service, repository, _approvals = _service()
+    challenge = service.create_binding_challenge(7)
+    service.handle_text("ou-1", "oc-1", challenge["command"])
+    repository.rows.active = {
+        "delivery_id": "delivery-stale",
+        "approval_id": "approval-stale",
+        "plan_hash": "a" * 64,
+        "approval_status": "INVALIDATED",
+        "expires_at": datetime.now() + timedelta(minutes=5),
+        "open_id": "ou-1",
+        "notified_at": datetime.now(),
+    }
+    repository.rows.next_active = {
+        "delivery_id": "delivery-next",
+        "approval_id": "approval-next",
+        "plan_hash": "b" * 64,
+        "approval_status": "PENDING",
+        "expires_at": datetime.now() + timedelta(minutes=10),
+        "open_id": "ou-1",
+        "automation_id": "arrival_stats",
+        "source": "scheduler",
+        "risk_level": "HIGH",
+        "notified_at": None,
+    }
+    delivery = {
+        "topic": "agent.approval.requested",
+        "entity_id": "approval-next",
+        "payload_json": {"plan_hash": "b" * 64},
+    }
+
+    result = service.handle_outbox(delivery, _Uow(repository.rows))
+
+    assert result == {"approval_id": "approval-next", "sent": 1}
+    assert repository.rows.finished == [("approval-stale", "SKIPPED")]
+    assert repository.rows.notified == ["delivery-next"]
+    assert "项目：arrival_stats" in repository.rows.sent[0][1]
+
+
+def test_invalidation_outbox_completes_active_and_pushes_next_without_reply():
+    service, repository, _approvals = _service()
+    challenge = service.create_binding_challenge(7)
+    service.handle_text("ou-1", "oc-1", challenge["command"])
+    repository.rows.active = {
+        "delivery_id": "delivery-invalidated",
+        "approval_id": "approval-invalidated",
+        "plan_hash": "a" * 64,
+        "approval_status": "INVALIDATED",
+        "expires_at": datetime.now() + timedelta(minutes=5),
+        "open_id": "ou-1",
+        "notified_at": datetime.now(),
+    }
+    repository.rows.next_active = {
+        "delivery_id": "delivery-next",
+        "approval_id": "approval-next",
+        "plan_hash": "b" * 64,
+        "approval_status": "PENDING",
+        "expires_at": datetime.now() + timedelta(minutes=10),
+        "open_id": "ou-1",
+        "automation_id": "arrive_list",
+        "source": "scheduler",
+        "risk_level": "HIGH",
+        "notified_at": None,
+    }
+
+    result = service.handle_outbox(
+        {
+            "topic": "agent.approval.invalidated",
+            "entity_id": "approval-invalidated",
+            "payload_json": {"plan_hash": "a" * 64},
+        },
+        _Uow(repository.rows),
+    )
+
+    assert result == {"approval_id": "approval-invalidated", "sent": 1}
+    assert repository.rows.finished == [("approval-invalidated", "SKIPPED")]
+    assert repository.rows.notified == ["delivery-next"]
+    assert "项目：arrive_list" in repository.rows.sent[0][1]
+
+
+@pytest.mark.parametrize(
+    "error_code, expected_status",
+    (
+        ("APPROVAL_NOT_PENDING", "SKIPPED"),
+        ("APPROVAL_EXPIRED", "EXPIRED"),
+        ("PLAN_STALE", "SKIPPED"),
+    ),
+)
+def test_decision_race_pushes_and_marks_the_next_serial_approval(
+    error_code,
+    expected_status,
+):
+    service, repository, approvals = _service()
+    challenge = service.create_binding_challenge(7)
+    service.handle_text("ou-1", "oc-1", challenge["command"])
+    repository.rows.active = {
+        "approval_id": "approval-raced",
+        "plan_hash": "c" * 64,
+        "approval_status": "PENDING",
+        "expires_at": datetime.now() + timedelta(minutes=5),
+    }
+    repository.rows.next_active = {
+        "delivery_id": "delivery-after-race",
+        "approval_id": "approval-next",
+        "plan_hash": "d" * 64,
+        "approval_status": "PENDING",
+        "expires_at": datetime.now() + timedelta(minutes=10),
+        "open_id": "ou-1",
+        "automation_id": "arrive_list",
+        "source": "feishu",
+        "risk_level": "EXTREME",
+        "notified_at": None,
+    }
+    approvals.error_code = error_code
+
+    assert service.handle_text("ou-1", "oc-1", "1") == (
+        "当前审批已过期或已由其他管理员处理，已切换到下一条。"
+    )
+    assert repository.rows.finished == [("approval-raced", expected_status)]
+    assert repository.rows.notified == ["delivery-after-race"]
+    assert repository.rows.sent[0][0] == "ou-1"
+    assert "项目：arrive_list" in repository.rows.sent[0][1]
+    assert repository.rows.active["notified_at"] is not None

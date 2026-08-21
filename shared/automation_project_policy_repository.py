@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from shared.automation_project_authorization import canonical_sha256
@@ -589,6 +590,132 @@ class AutomationProjectPolicyRepository(RepositoryBase):
                 (_required_text(automation_id, "automation_id"),),
             )
             return int(getattr(cursor, "rowcount", 0) or 0)
+
+    def lock_waiting_approval_runs(
+        self,
+        automation_id: str,
+    ) -> tuple[str, ...]:
+        """Lock all waiting Runs for one project in deterministic order."""
+
+        safe_id = _required_text(automation_id, "automation_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT run.run_id
+                FROM agent_runs AS run
+                INNER JOIN agent_commands AS command
+                    ON command.command_id=run.command_id
+                WHERE command.automation_id=%s
+                  AND run.status='WAITING_APPROVAL'
+                ORDER BY run.run_id
+                FOR UPDATE
+                """,
+                (safe_id,),
+            )
+            return tuple(
+                str(row.get("run_id") or "").strip()
+                for row in _rows(cursor)
+                if str(row.get("run_id") or "").strip()
+            )
+
+    def invalidate_pending_approvals_and_wake_runs(
+        self,
+        automation_id: str,
+        *,
+        event_repository: Any | None = None,
+    ) -> tuple[str, ...]:
+        """Invalidate stale project approvals and schedule their Runs now.
+
+        Configuration, plugin generation, and durable policy changes all make
+        an earlier approval context stale. Runs are locked before approvals,
+        matching the decision/consumption lock order used elsewhere.
+        """
+
+        run_ids = self.lock_waiting_approval_runs(automation_id)
+        if not run_ids:
+            return ()
+        invalidated_rows: list[dict[str, Any]] = []
+        with self.cursor() as cursor:
+            placeholders = ", ".join("%s" for _ in run_ids)
+            if event_repository is not None:
+                cursor.execute(
+                    f"""
+                    SELECT approval.approval_id, approval.work_item_id,
+                           approval.run_id, approval.plan_hash,
+                           run.correlation_id, run.causation_id
+                    FROM approval_requests AS approval
+                    INNER JOIN agent_runs AS run
+                        ON run.run_id=approval.run_id
+                    WHERE approval.run_id IN ({placeholders})
+                      AND approval.status IN ('PENDING', 'APPROVED')
+                    ORDER BY approval.approval_id
+                    FOR UPDATE
+                    """,
+                    run_ids,
+                )
+                invalidated_rows = [dict(row) for row in _rows(cursor)]
+            cursor.execute(
+                f"""
+                UPDATE approval_requests
+                SET status='INVALIDATED', decided_at=NOW(6)
+                WHERE run_id IN ({placeholders})
+                  AND status IN ('PENDING', 'APPROVED')
+                """,
+                run_ids,
+            )
+            cursor.execute(
+                f"""
+                UPDATE agent_runs
+                SET next_attempt_at=NOW(6)
+                WHERE run_id IN ({placeholders})
+                  AND status='WAITING_APPROVAL'
+                """,
+                run_ids,
+            )
+        occurred_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        for row in invalidated_rows:
+            approval_id = str(row["approval_id"])
+            event_repository.append_with_outbox(
+                {
+                    "event_id": str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"boyi:approval-invalidated:{approval_id}",
+                        )
+                    ),
+                    "event_type": "agent.approval.invalidated",
+                    "schema_version": 1,
+                    "source_system": "agent",
+                    "source_event_id": f"approval-invalidated:{approval_id}",
+                    "entity_type": "approval_request",
+                    "entity_id": approval_id,
+                    "work_item_id": row["work_item_id"],
+                    "run_id": row["run_id"],
+                    "occurred_at": occurred_at,
+                    "observed_at": occurred_at,
+                    "correlation_id": row["correlation_id"],
+                    "causation_id": row.get("causation_id"),
+                    "payload": {
+                        "plan_hash": row["plan_hash"],
+                        "reason": "PROJECT_CONTEXT_CHANGED",
+                    },
+                },
+                (
+                    {
+                        "consumer_name": "orchestration.audit",
+                        "topic": "agent.approval.invalidated",
+                        "partition_key": str(row["work_item_id"]),
+                        "max_attempts": 10,
+                    },
+                    {
+                        "consumer_name": "feishu.approval",
+                        "topic": "agent.approval.invalidated",
+                        "partition_key": approval_id,
+                        "max_attempts": 20,
+                    },
+                ),
+            )
+        return run_ids
 
     def list_pending_approvals(
         self,

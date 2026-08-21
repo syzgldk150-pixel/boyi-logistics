@@ -19,6 +19,7 @@ from shared.automation_plugin_repository import (
     _worker_status_body,
 )
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
+from shared.feishu_approval_repository import FeishuApprovalRepository
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -595,6 +596,111 @@ class AutomationPluginRepositoryTests(TestCase):
             repository.list_automation_identity_backup_rows_018(
                 ("task-a", "task-a")
             )
+
+    def test_project_change_invalidates_pending_approvals_and_wakes_runs(self):
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM agent_runs AS run",
+                    [{"run_id": "run-a"}, {"run_id": "run-b"}],
+                    0,
+                ),
+                ("UPDATE approval_requests", None, 2),
+                ("UPDATE agent_runs", None, 2),
+            ]
+        )
+        repository = AutomationProjectPolicyRepository(connection)
+
+        run_ids = repository.invalidate_pending_approvals_and_wake_runs(
+            "instance-one"
+        )
+
+        self.assertEqual(("run-a", "run-b"), run_ids)
+        select_sql, _ = connection.cursor_instance.executions[0]
+        self.assertIn("ORDER BY run.run_id", " ".join(select_sql.split()))
+        self.assertIn("FOR UPDATE", select_sql)
+        approval_sql, approval_params = connection.cursor_instance.executions[1]
+        self.assertIn("status='INVALIDATED'", approval_sql)
+        self.assertIn("status IN ('PENDING', 'APPROVED')", approval_sql)
+        self.assertEqual(("run-a", "run-b"), approval_params)
+        run_sql, run_params = connection.cursor_instance.executions[2]
+        self.assertIn("next_attempt_at=NOW(6)", run_sql)
+        self.assertEqual(("run-a", "run-b"), run_params)
+
+    def test_project_change_emits_feishu_queue_completion_for_invalidated_approval(self):
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM agent_runs AS run",
+                    [{"run_id": "run-a"}],
+                    0,
+                ),
+                (
+                    "FROM approval_requests AS approval",
+                    [
+                        {
+                            "approval_id": "approval-a",
+                            "work_item_id": "work-a",
+                            "run_id": "run-a",
+                            "plan_hash": "a" * 64,
+                            "correlation_id": "correlation-a",
+                            "causation_id": None,
+                        }
+                    ],
+                    0,
+                ),
+                ("UPDATE approval_requests", None, 1),
+                ("UPDATE agent_runs", None, 1),
+            ]
+        )
+        repository = AutomationProjectPolicyRepository(connection)
+
+        class _Events:
+            def __init__(self):
+                self.rows = []
+
+            def append_with_outbox(self, event, deliveries):
+                self.rows.append((dict(event), tuple(deliveries)))
+
+        events = _Events()
+
+        run_ids = repository.invalidate_pending_approvals_and_wake_runs(
+            "instance-one",
+            event_repository=events,
+        )
+
+        self.assertEqual(("run-a",), run_ids)
+        self.assertEqual(1, len(events.rows))
+        event, deliveries = events.rows[0]
+        self.assertEqual("agent.approval.invalidated", event["event_type"])
+        self.assertEqual("approval-a", event["entity_id"])
+        self.assertEqual(
+            {"orchestration.audit", "feishu.approval"},
+            {row["consumer_name"] for row in deliveries},
+        )
+
+    def test_feishu_active_lookup_locks_only_delivery_before_reading_projection(self):
+        connection = _ScriptedConnection(
+            [
+                ("FROM feishu_approval_deliveries", {"delivery_id": "d-1"}, 0),
+                (
+                    "JOIN approval_requests AS approval",
+                    {"delivery_id": "d-1", "approval_id": "approval-a"},
+                    0,
+                ),
+            ]
+        )
+        repository = FeishuApprovalRepository(connection)
+
+        active = repository.active_for_binding("binding-a", for_update=True)
+
+        self.assertEqual("approval-a", active["approval_id"])
+        lock_sql, _ = connection.cursor_instance.executions[0]
+        projection_sql, _ = connection.cursor_instance.executions[1]
+        self.assertIn("FOR UPDATE", lock_sql)
+        self.assertNotIn("approval_requests", lock_sql)
+        self.assertNotIn("agent_runs", lock_sql)
+        self.assertNotIn("FOR UPDATE", projection_sql)
 
     def test_worker_pairing_is_request_audited_and_identity_immutable(self):
         request_id = str(uuid.uuid4())

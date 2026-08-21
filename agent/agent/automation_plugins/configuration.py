@@ -8,9 +8,13 @@ import uuid
 from typing import Any, Mapping, Sequence
 
 from agent.automation_plugins.catalog import PluginCatalog
+from agent.automation_plugins.code_owned_fields import (
+    first_party_code_owned_config_fields,
+    normalize_first_party_code_owned_config,
+)
 from agent.automation_plugins.errors import PluginConflictError
-from agent.automation_plugins.models import AutomationProjectConfigRecord, DeviceBinding
 from agent.automation_plugins.invocation import compile_instance_arguments
+from agent.automation_plugins.models import AutomationProjectConfigRecord, DeviceBinding
 from agent.automation_plugins.ports import (
     AutomationProjectConfigurationPort,
     ProjectBindingResolverPort,
@@ -155,9 +159,30 @@ class AutomationProjectConfigurationService:
         if not isinstance(config, Mapping):
             raise PluginConflictError("project config must be an object")
         entry = self._catalog.require(automation_id)
+        submitted_config = copy.deepcopy(dict(config))
+        code_owned_fields = set(
+            first_party_code_owned_config_fields(
+                automation_id=entry.automation_id,
+                plugin_id=entry.plugin_id,
+                trust_source=entry.trust_source,
+            )
+        )
+        submitted_code_owned_fields = code_owned_fields & set(submitted_config)
+        if submitted_code_owned_fields:
+            raise PluginConflictError(
+                "project config contains code-owned fields: "
+                + ", ".join(sorted(submitted_code_owned_fields)),
+                code="PROJECT_CONFIG_CODE_OWNED_FIELD",
+            )
+        normalized_config = normalize_first_party_code_owned_config(
+            automation_id=entry.automation_id,
+            plugin_id=entry.plugin_id,
+            trust_source=entry.trust_source,
+            config=submitted_config,
+        )
         validate_schema_instance(
             f"automation.{automation_id}.config",
-            dict(config),
+            normalized_config,
             entry.config_schema,
         )
         accounts = _closed_bindings(
@@ -209,7 +234,7 @@ class AutomationProjectConfigurationService:
         for source in sources:
             compiled = compile_instance_arguments(
                 entry,
-                config=dict(config),
+                config=normalized_config,
                 account_bindings=accounts,
                 resource_bindings=resources,
                 entrypoint=source,
@@ -223,7 +248,7 @@ class AutomationProjectConfigurationService:
             }
         return self._repository.save_project_config(
             automation_id,
-            config=dict(config),
+            config=normalized_config,
             account_bindings=accounts,
             resource_bindings=resources,
             enabled_entrypoints=sources,

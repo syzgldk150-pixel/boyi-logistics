@@ -192,8 +192,11 @@ def _customer_problem_recheck_context(context: ContextSnapshot) -> list[dict[str
             "INVALID_PROBLEM_RECHECK_CONTEXT",
             "Customer problem recheck context must be an object",
         )
-    raw = resources.get("customer_problem_open_refs", [])
-    if not isinstance(raw, list) or any(not isinstance(item, Mapping) for item in raw):
+    raw = resources.get("customer_problem_open_refs")
+    if (
+        not isinstance(raw, list)
+        or any(not isinstance(item, Mapping) for item in raw)
+    ):
         raise OrchestrationError(
             "INVALID_PROBLEM_RECHECK_CONTEXT",
             "Customer problem open references must be an object array",

@@ -31,8 +31,24 @@ class ApprovalService:
             raise OrchestrationError("APPROVAL_NOT_REQUIRED", "The plan does not require approval")
         now = datetime.now(timezone.utc)
         with self._repository.unit_of_work() as uow:
-            uow.approvals.expire_stale(str(run["run_id"]), plan.plan_hash)
-            latest = uow.approvals.get_latest_for_run(str(run["run_id"]), for_update=True)
+            run_id = str(run["run_id"])
+            # Every approval path takes the Run row before an Approval row.
+            # Decision, consumption, project invalidation and request creation
+            # therefore share one deterministic MySQL lock order.
+            locked_run = uow.runs.get(run_id, for_update=True)
+            if locked_run is None:
+                raise OrchestrationError(
+                    "RUN_NOT_FOUND",
+                    "Approval run was not found",
+                )
+            if str(locked_run.get("status") or "") != "WAITING_APPROVAL":
+                raise InvalidStateError("approval run is not waiting")
+            if str(locked_run.get("plan_hash") or "") != plan.plan_hash:
+                raise InvalidStateError("approval plan hash is stale")
+            if locked_run.get("cancel_requested_at"):
+                raise InvalidStateError("approval run cancellation is pending")
+            uow.approvals.expire_stale(run_id, plan.plan_hash)
+            latest = uow.approvals.get_latest_for_run(run_id, for_update=True)
             if latest and (
                 str(latest.get("plan_hash") or "") == plan.plan_hash
                 and str(latest.get("status") or "") in {"PENDING", "APPROVED", "REJECTED"}
@@ -41,12 +57,12 @@ class ApprovalService:
                 return latest
             approval_round = int((latest or {}).get("approval_round") or 0) + 1
             if latest and latest.get("status") in {"PENDING", "APPROVED"}:
-                uow.approvals.invalidate_pending(run_id=str(run["run_id"]))
+                uow.approvals.invalidate_pending(run_id=run_id)
             approval = uow.approvals.create_or_get(
                 {
                     "approval_id": new_id(),
-                    "work_item_id": run["work_item_id"],
-                    "run_id": run["run_id"],
+                    "work_item_id": locked_run["work_item_id"],
+                    "run_id": run_id,
                     "approval_round": approval_round,
                     "plan_hash": plan.plan_hash,
                     "impact": dict(plan.impact),
@@ -60,12 +76,11 @@ class ApprovalService:
                     "expires_at": (now + APPROVAL_TTL).replace(tzinfo=None),
                 }
             )
-            run_row = uow.runs.get(str(run["run_id"]), for_update=False) or run
             self._append_event(
                 uow,
                 event_type="agent.approval.requested",
                 approval=approval,
-                run=run_row,
+                run=locked_run,
                 payload={
                     "approval_round": approval_round,
                     "plan_hash": plan.plan_hash,
@@ -104,8 +119,22 @@ class ApprovalService:
         if str(approval.get("status") or "") != "PENDING":
             raise OrchestrationError("APPROVAL_NOT_PENDING", "Approval request is no longer pending")
         decision_error = ""
+        run_id = str(approval.get("run_id") or "").strip()
+        if not run_id:
+            raise OrchestrationError(
+                "INVALID_APPROVAL_REQUEST",
+                "Approval request has no run identity",
+            )
         try:
             with self._repository.unit_of_work() as uow:
+                # Keep the same Run -> Approval lock order used by execution
+                # consumption.  This prevents a polling runner and a human
+                # decision from deadlocking each other under MySQL.
+                run = uow.runs.get(run_id, for_update=True)
+                if run is None:
+                    raise OrchestrationError("RUN_NOT_FOUND", "Approval run was not found")
+                if str(run.get("status") or "") != "WAITING_APPROVAL":
+                    raise InvalidStateError("approval run is not waiting")
                 current = uow.approvals.record_decision(
                     {
                         "decision_id": new_id(),
@@ -120,10 +149,9 @@ class ApprovalService:
                     expected_plan_hash=plan_hash,
                 )
                 decision_error = str(current.get("_decision_error") or "")
-                run = uow.runs.get(str(current["run_id"]), for_update=False)
-                if run is None:
-                    raise OrchestrationError("RUN_NOT_FOUND", "Approval run was not found")
-                uow.runs.make_waiting_approval_runnable(str(current["run_id"]))
+                if str(current.get("run_id") or "") != run_id:
+                    raise InvalidStateError("approval run identity changed")
+                uow.runs.make_waiting_approval_runnable(run_id)
                 self._append_event(
                     uow,
                     event_type=(
@@ -155,7 +183,7 @@ class ApprovalService:
         if decision_error == "APPROVAL_EXPIRED":
             raise OrchestrationError("APPROVAL_EXPIRED", "Approval request has expired")
         if self._wake_runner is not None:
-            self._wake_runner(str(current["run_id"]))
+            self._wake_runner(run_id)
         return current
 
     def expire(self, approval_id: str) -> dict[str, Any]:
@@ -166,7 +194,36 @@ class ApprovalService:
 
     def invalidate_for_stale_plan(self, run_id: str) -> None:
         with self._repository.unit_of_work() as uow:
-            uow.approvals.invalidate_pending(run_id=run_id)
+            # Keep Run -> Approval order consistent with decide/consume and
+            # emit a queue-completion event so Feishu never leaves a stale
+            # ACTIVE delivery in front of another valid approval.
+            run = uow.runs.get(run_id, for_update=True)
+            if run is None:
+                raise OrchestrationError(
+                    "RUN_NOT_FOUND",
+                    "Approval run was not found during invalidation",
+                )
+            approval = uow.approvals.get_latest_for_run(
+                run_id,
+                for_update=True,
+            )
+            invalidated = uow.approvals.invalidate_pending(run_id=run_id)
+            if (
+                invalidated
+                and approval is not None
+                and str(approval.get("status") or "")
+                in {"PENDING", "APPROVED"}
+            ):
+                self._append_event(
+                    uow,
+                    event_type="agent.approval.invalidated",
+                    approval=approval,
+                    run=run,
+                    payload={
+                        "plan_hash": approval.get("plan_hash"),
+                        "reason": "PLAN_OR_POLICY_CHANGED",
+                    },
+                )
             uow.commit()
 
     @staticmethod
@@ -219,6 +276,7 @@ class ApprovalService:
                             "agent.approval.requested",
                             "agent.approval.decided",
                             "agent.approval.expired",
+                            "agent.approval.invalidated",
                         }
                         else []
                     ),

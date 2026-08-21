@@ -976,9 +976,15 @@ class AutomationProjectPolicyBootstrapTests(TestCase):
         source = (ROOT / "agent" / "main.py").read_text(encoding="utf-8")
         reconcile = source.index("plugin_runtime.reconcile")
         bootstrap = source.index("bootstrap_legacy_project_policies")
+        default_full_auto = source.index("ensure_default_full_auto_policies")
         policy_engine = source.index("PolicyEngine(")
         self.assertLess(reconcile, bootstrap)
         self.assertLess(bootstrap, policy_engine)
+        self.assertNotIn(
+            'if project_policy_bootstrap.get("status") == "created":',
+            source[bootstrap:default_full_auto],
+        )
+        self.assertLess(default_full_auto, policy_engine)
         self.assertIn("scheduler_release_hold_requested()", source)
         self.assertIn("len(bootstrap_automation_ids) != 16", source)
 
@@ -1256,7 +1262,7 @@ class AutomationProjectLegacyPolicyEngineTests(TestCase):
         self.assertTrue(stale.allowed)
         self.assertTrue(stale.requires_approval)
 
-    def test_disabled_destructive_and_extreme_reject_before_project_provider(self):
+    def test_only_explicit_disabled_rejects_before_signed_project_provider(self):
         contract = self.repository.state.contracts["send_order"]
         policy = self.repository.state.policies["send_order"]
         invocation = _invocation_for(
@@ -1270,11 +1276,29 @@ class AutomationProjectLegacyPolicyEngineTests(TestCase):
             roles=("admin", "super_admin"),
         )
         cases = (
-            ("hard-disabled", OperationType.EXTERNAL_WRITE, RiskLevel.HIGH),
-            ("hard-destructive", OperationType.DESTRUCTIVE, RiskLevel.HIGH),
-            ("hard-extreme", OperationType.EXTERNAL_WRITE, RiskLevel.EXTREME),
+            (
+                "hard-disabled",
+                OperationType.EXTERNAL_WRITE,
+                RiskLevel.HIGH,
+                "OPERATION_DISABLED",
+                0,
+            ),
+            (
+                "hard-destructive",
+                OperationType.DESTRUCTIVE,
+                RiskLevel.HIGH,
+                "PROJECT_INVOCATION_STALE",
+                1,
+            ),
+            (
+                "hard-extreme",
+                OperationType.EXTERNAL_WRITE,
+                RiskLevel.EXTREME,
+                "PROJECT_INVOCATION_STALE",
+                1,
+            ),
         )
-        for tool_name, operation_type, risk_level in cases:
+        for tool_name, operation_type, risk_level, expected_code, provider_delta in cases:
             with self.subTest(tool_name=tool_name):
                 before = self.provider_calls
                 decision = self.engine.evaluate(
@@ -1290,8 +1314,8 @@ class AutomationProjectLegacyPolicyEngineTests(TestCase):
                     automation_invocation=invocation,
                 )
                 self.assertFalse(decision.allowed)
-                self.assertEqual("OPERATION_DISABLED", decision.code)
-                self.assertEqual(before, self.provider_calls)
+                self.assertEqual(expected_code, decision.code)
+                self.assertEqual(before + provider_delta, self.provider_calls)
 
 
 class AutomationProjectBootstrapPureContractTests(TestCase):

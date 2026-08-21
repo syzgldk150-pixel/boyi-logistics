@@ -97,6 +97,10 @@ class MySQLAutomationPluginManagementRepository:
                     expected_project_configuration_version
                 ),
             )
+            uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
+                automation_id,
+                event_repository=uow.events,
+            )
             uow.commit()
         persisted = self._reader.get_project_config(automation_id)
         if persisted is None:

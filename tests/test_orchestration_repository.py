@@ -157,6 +157,20 @@ class _RunCreateCursor(_Cursor):
             self.row = dict(self.persisted)
 
 
+class _ApprovalWakeCursor(_Cursor):
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        if "UPDATE agent_runs" in sql:
+            self.rowcount = 1
+        elif "SELECT * FROM agent_runs WHERE run_id=" in sql:
+            self.row = {
+                "run_id": "run-1",
+                "status": "WAITING_APPROVAL",
+                "worker_id": "polling-worker",
+                "version": 4,
+            }
+
+
 class _LinkedRetryCursor(_Cursor):
     def __init__(self):
         super().__init__()
@@ -502,6 +516,18 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertIn("COALESCE(%s, NOW(6))", insert_sql)
         self.assertIs(scheduled_at, insert_params[20])
         self.assertTrue(created["_created"])
+
+    def test_approval_decision_wakes_a_leased_waiting_run_without_version_churn(self):
+        cursor = _ApprovalWakeCursor()
+        repository = AgentRunRepository(_Connection(cursor))
+
+        run = repository.make_waiting_approval_runnable("run-1")
+
+        update_sql = next(sql for sql, _ in cursor.calls if "UPDATE agent_runs" in sql)
+        self.assertIn("status='WAITING_APPROVAL'", update_sql)
+        self.assertNotIn("worker_id IS NULL", update_sql)
+        self.assertNotIn("version=version+1", update_sql)
+        self.assertEqual("polling-worker", run["worker_id"])
 
     def test_generic_transition_rejects_a_same_state_plan_replacement(self):
         cursor = _Cursor()

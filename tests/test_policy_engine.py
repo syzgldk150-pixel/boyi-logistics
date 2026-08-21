@@ -672,7 +672,7 @@ def test_project_full_auto_can_remove_required_approval_below_the_safety_ceiling
     assert decision.requires_approval is False
 
 
-def test_project_full_auto_cannot_override_destructive_or_extreme_ceiling() -> None:
+def test_project_full_auto_can_override_signed_destructive_or_extreme_ceiling() -> None:
     calls = 0
 
     def project_policy(*_args):
@@ -682,7 +682,7 @@ def test_project_full_auto_cannot_override_destructive_or_extreme_ceiling() -> N
             allowed=True,
             requires_approval=False,
             code="PROJECT_FULL_AUTO",
-            reason="not reachable",
+            reason="exact committed project contract",
         )
 
     engine = PolicyEngine(
@@ -695,12 +695,63 @@ def test_project_full_auto_cannot_override_destructive_or_extreme_ceiling() -> N
         ),
         project_policy_provider=project_policy,
     )
-    decision = engine.evaluate(
+    for plan in (
         _project_plan(OperationType.DESTRUCTIVE),
+        Plan(
+            command_type="automation.project.invoke",
+            context_fingerprint="context-hash",
+            tool_catalog_hash="catalog-hash",
+            steps=(
+                PlanStep(
+                    step_key="step_1",
+                    tool_name="governed_tool",
+                    tool_version="1.0.0",
+                    operation_type=OperationType.DESTRUCTIVE,
+                    arguments={},
+                    account_id=None,
+                    depends_on=(),
+                    idempotency_key="step-key",
+                    expected_evidence=(),
+                    postconditions=(),
+                    risk_level=RiskLevel.EXTREME,
+                ),
+            ),
+            automation_id="instance-one",
+            automation_generation=1,
+            automation_contract_hash="a" * 64,
+        ),
+    ):
+        decision = engine.evaluate(
+            plan,
+            Actor(
+                ActorType.CONSOLE_ADMIN,
+                "admin-one",
+                roles=("super_admin",),
+            ),
+            source="console",
+            automation_invocation=_project_invocation(),
+        )
+        assert decision.allowed is True
+        assert decision.requires_approval is False
+    assert calls == 2
+
+
+def test_unsigned_destructive_operation_keeps_the_hard_ceiling() -> None:
+    engine = PolicyEngine(
+        _Catalog(
+            _capability(
+                OperationType.DESTRUCTIVE,
+                roles=["super_admin"],
+                approval={"mode": "required", "required_role": "super_admin"},
+            )
+        )
+    )
+
+    decision = engine.evaluate(
+        _plan(OperationType.DESTRUCTIVE, RiskLevel.EXTREME),
         Actor(ActorType.CONSOLE_ADMIN, "admin-one", roles=("super_admin",)),
         source="console",
-        automation_invocation=_project_invocation(),
     )
+
     assert decision.allowed is False
     assert decision.code == "OPERATION_DISABLED"
-    assert calls == 0

@@ -17,6 +17,7 @@ from agent.automation_plugins.manifest import (
     governance_anchor_from_tool_contract,
 )
 from agent.automation_plugins.models import (
+    FirstPartyInstanceSeed,
     PluginTrustSource,
     PluginVersionRecord,
     RuntimeGenerationSnapshot,
@@ -555,6 +556,16 @@ class _PolicyRepository:
     def expire_pending_approvals(self, automation_id: str) -> None:
         self.expired.append(automation_id)
 
+    def invalidate_pending_approvals_and_wake_runs(
+        self,
+        automation_id: str,
+        *,
+        event_repository=None,
+    ) -> tuple[str, ...]:
+        del event_repository
+        self.expired.append(automation_id)
+        return ()
+
 
 class _DomainEvents:
     def __init__(self) -> None:
@@ -740,6 +751,85 @@ def test_upgrade_stages_desired_version_once_and_keeps_committed_v1() -> None:
         _upgrade(repository, version_v3, request_id=request_id)
     assert orchestration.export_state() == state_before_drift
     assert orchestration.commit_count == 2
+
+
+def test_upgrade_accepts_an_intentionally_empty_entrypoint_set() -> None:
+    repository, orchestration, _version_v1 = _harness(enabled=True)
+    config = orchestration.low_level.configs["upgrade-instance"]
+    config["enabled_entrypoints_json"] = []
+    config["compiled_invocations_json"] = {}
+    version_v2 = _version(_synthetic_manifest("2.0.0"), "2")
+
+    staged = _upgrade(
+        repository,
+        version_v2,
+        request_id=str(uuid.uuid4()),
+    )
+
+    assert staged.active_version.version == "2.0.0"
+    assert staged.state.value == "UPGRADING"
+    assert orchestration.low_level.configs["upgrade-instance"][
+        "enabled_entrypoints_json"
+    ] == []
+
+
+def test_first_party_upgrade_preparation_recompiles_preserved_configuration() -> None:
+    repository, orchestration, _version_v1 = _harness(enabled=True)
+    low_level = orchestration.low_level
+    low_level.configs["upgrade-instance"]["compiled_invocations_json"] = {}
+
+    def save_project_config(automation_id: str, **payload: Any) -> dict[str, Any]:
+        config = low_level.configs[automation_id]
+        config.update(
+            {
+                "config_json": copy.deepcopy(payload["config"]),
+                "account_bindings_json": copy.deepcopy(
+                    payload["account_bindings"]
+                ),
+                "resource_bindings_json": copy.deepcopy(
+                    payload["resource_bindings"]
+                ),
+                "enabled_entrypoints_json": list(payload["enabled_entrypoints"]),
+                "desired_schedule_json": copy.deepcopy(payload["schedule"]),
+                "compiled_invocations_json": copy.deepcopy(
+                    payload["compiled_invocations"]
+                ),
+                "config_version": int(config["config_version"]) + 1,
+            }
+        )
+        low_level.projects[automation_id]["record_version"] += 1
+        return copy.deepcopy(config)
+
+    low_level.save_project_config = save_project_config  # type: ignore[attr-defined]
+    version_v2 = _version(_synthetic_manifest("2.0.0"), "2")
+    seed = FirstPartyInstanceSeed(
+        automation_id="upgrade-instance",
+        plugin_id=version_v2.plugin_id,
+        version=version_v2.version,
+        display_name="Synthetic upgrade instance",
+        allowed_entrypoints=("console",),
+    )
+
+    current_version, record_version = (
+        repository._prepare_first_party_upgrade_configuration(
+            seed=seed,
+            version=version_v2,
+            release_sha="a" * 40,
+            expected_current_version="1.0.0",
+        )
+    )
+
+    assert current_version == "1.0.0"
+    assert record_version == 2
+    config = low_level.configs["upgrade-instance"]
+    assert config["config_version"] == 2
+    assert config["compiled_invocations_json"] == {
+        "console": {
+            "arguments": {"marker": "A"},
+            "dynamic_resolvers": {},
+        }
+    }
+    assert orchestration.policies.expired == ["upgrade-instance"]
 
 
 def test_incompatible_upgrade_rolls_back_registered_version_and_all_project_state() -> None:

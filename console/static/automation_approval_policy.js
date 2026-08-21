@@ -9,6 +9,7 @@
   const POLICY_STATUSES = new Set([
     "ACTIVE", "RECONCILING", "UNAVAILABLE", "UNSUPPORTED", LEGACY_SCHEDULE_ONLY,
   ]);
+  const RUNTIME_STATUSES = new Set(["READY", "RECONCILING", "UNAVAILABLE"]);
   const PENDING_RISKS = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
   const PENDING_HASH_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
   const RUN_RECEIPT_ID_PATTERN = /^[A-Za-z0-9_.:@-]{1,160}$/;
@@ -58,6 +59,9 @@
       && EFFECTIVE_MODES.has(policy.effective_mode)
       && POLICY_STATUSES.has(String(policy.effective_status || "").toUpperCase())
       && typeof policy.can_full_auto === "boolean"
+      && typeof policy.runnable === "boolean"
+      && RUNTIME_STATUSES.has(String(policy.runtime_status || "").toUpperCase())
+      && typeof policy.runtime_reason === "string"
       && Number.isInteger(policy.policy_version)
       && policy.policy_version > 0
       && Number.isInteger(policy.project_configuration_version)
@@ -171,7 +175,7 @@
       if (!(input instanceof HTMLInputElement)) return;
       input.checked = input.value === policy.configured_mode;
     });
-    ["active", "stale", "unsupported", "legacy_schedule_only", "unavailable"].forEach(state => {
+    ["active", "reconciling", "unsupported", "legacy_schedule_only", "unavailable"].forEach(state => {
       governance.classList.remove(`auto-project-governance--${state}`);
     });
     governance.classList.add(`auto-project-governance--${String(policy.effective_status).toLowerCase()}`);
@@ -194,7 +198,7 @@
     }
     if (selected.value === PROJECT_FULL_AUTO) {
       const confirmed = window.confirm(
-        "确认将整个项目设为“完全自动”？\n\n项目清单允许且已启用的 Scheduler、Console、飞书和验签 Webhook 入口，都会仅按当前保存的参数、账号、资源与版本直接执行；通用 API 和 LLM 入口不在授权范围内。项目配置变化时，系统会恢复为需要审批。",
+        "确认将整个项目设为“完全自动”？\n\n项目清单允许且已启用的 Scheduler、Console、飞书和验签 Webhook 入口，都会仅按当前保存的参数、账号、资源与版本直接执行；通用 API 和 LLM 入口不在授权范围内。完全自动权限会持续保留；配置或插件版本变化时先同步运行环境，同步完成前不会运行旧配置，也不会自动改回审批。",
       );
       if (!confirmed) return;
     }

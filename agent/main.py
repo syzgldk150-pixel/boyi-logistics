@@ -1129,6 +1129,7 @@ async def lifespan(app: FastAPI):
         dynamic_resolver=TrustedDynamicArgumentResolver(),
         release_hold_provider=scheduler_release_hold_requested,
     )
+    default_full_auto = {"changed": 0}
     if scheduler_release_hold_requested():
         bootstrap_automation_ids = release_first_party_automation_ids()
         if len(bootstrap_automation_ids) != 16:
@@ -1148,9 +1149,12 @@ async def lifespan(app: FastAPI):
             project_policy_bootstrap.get("require_each_run", 0),
             project_policy_bootstrap.get("retired_scheduled_exact", 0),
         )
-    default_full_auto = await asyncio.to_thread(
-        project_policy_service.ensure_default_full_auto_policies
-    )
+        # This conversion is intentionally replayable under the release hold:
+        # its per-project audit marker and super-admin event fence make it safe
+        # after a crash between the 018 bootstrap commit and this step.
+        default_full_auto = await asyncio.to_thread(
+            project_policy_service.ensure_default_full_auto_policies
+        )
     logger.info(
         "Automation project durable full-auto defaults changed=%d",
         default_full_auto.get("changed", 0),

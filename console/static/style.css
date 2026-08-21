@@ -591,33 +591,6 @@ body.dispatch-page .notice { display: none; }
 
 /* ── Project-level automation governance ── */
 /* ── Installed automation projects and signed packages ── */
-.automation-install-trigger { min-height: 40px; gap: 7px; }
-.automation-install-trigger .feather { width: 15px; height: 15px; }
-.automation-plugin-install-panel { display: grid; grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.2fr); gap: 24px; margin-bottom: 16px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fafafa; }
-.automation-plugin-install-panel[hidden] { display: none; }
-.automation-plugin-install-copy { display: grid; align-content: start; gap: 6px; }
-.automation-plugin-install-copy h2 { margin: 0; color: var(--text-strong); font-size: 1rem; }
-.automation-plugin-install-copy p { margin: 0; max-width: 58ch; color: var(--muted); font-size: 0.8rem; line-height: 1.55; }
-.automation-plugin-install-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr); align-items: end; gap: 10px; }
-.automation-plugin-install-form label { display: grid; gap: 5px; margin: 0; color: var(--text-strong); font-size: 0.76rem; font-weight: 700; }
-.automation-plugin-file { min-height: 40px; padding: 7px 9px; background: #fff; }
-.automation-plugin-install-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
-.automation-plugin-install-actions button { min-height: 40px; }
-.automation-plugin-feedback { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; font-weight: 700; }
-.automation-plugin-feedback[data-kind="success"] { color: #047857; }
-.automation-plugin-feedback[data-kind="warning"] { color: #92400e; }
-.automation-plugin-feedback[data-kind="error"] { color: #b91c1c; }
-.automation-action-catalog { display: grid; gap: 12px; margin-bottom: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; }
-.automation-action-catalog-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
-.automation-action-catalog-head h2 { margin: 4px 0 0; color: var(--text-strong); font-size: 1rem; }
-.automation-action-catalog-head p { max-width: 68ch; margin: 0; color: var(--muted); font-size: 0.78rem; line-height: 1.5; }
-.automation-action-catalog-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 9px; }
-.automation-action-package { display: grid; gap: 6px; min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }
-.automation-action-package-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.automation-action-package-title strong { overflow-wrap: anywhere; color: var(--text-strong); font-size: 0.84rem; }
-.automation-action-package-title span { color: var(--muted); font-size: 0.7rem; font-weight: 700; }
-.automation-action-package p { margin: 0; color: var(--muted); font-size: 0.76rem; line-height: 1.45; }
-.automation-action-package-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 0.7rem; }
 .automation-plugin-manager-trigger { position: relative; width: 40px; min-height: 40px; padding: 0; justify-content: center; color: var(--text); }
 .automation-plugin-manager-trigger:hover { color: var(--text-strong); }
 .automation-plugin-manager-icon { width: 19px; height: 19px; }
@@ -668,6 +641,11 @@ body.dispatch-page .notice { display: none; }
 .automation-action-package-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--text); }
 .automation-action-package-icon .feather { width: 17px; height: 17px; }
 .automation-action-package-copy { display: grid; gap: 5px; min-width: 0; }
+.automation-action-package-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.automation-action-package-title strong { overflow-wrap: anywhere; color: var(--text-strong); font-size: 0.84rem; }
+.automation-action-package-title span { color: var(--muted); font-size: 0.7rem; font-weight: 700; }
+.automation-action-package p { margin: 0; color: var(--muted); font-size: 0.76rem; line-height: 1.45; }
+.automation-action-package-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 0.7rem; }
 .automation-action-catalog-empty { display: grid; min-height: 112px; place-items: center; gap: 8px; color: var(--muted); text-align: center; }
 .automation-action-catalog-empty .feather { width: 22px; height: 22px; }
 .automation-action-catalog-empty p { margin: 0; font-size: 0.8rem; }
@@ -920,8 +898,6 @@ body.dispatch-page .notice { display: none; }
 @media (max-width: 1100px) {
   .auto-card-row { flex-direction: column; align-items: flex-start; gap: 12px; }
   .auto-card-actions { width: 100%; justify-content: flex-start; }
-  .automation-plugin-install-panel { grid-template-columns: 1fr; }
-  .automation-action-catalog-head { align-items: flex-start; flex-direction: column; gap: 6px; }
   .auto-project-policy-panel { grid-template-columns: 1fr; align-items: stretch; }
   .auto-pending-approvals { grid-template-columns: minmax(0, 1fr) auto; }
   .auto-pending-comment { grid-column: 1 / -1; grid-row: 2; }
@@ -936,10 +912,6 @@ body.dispatch-page .notice { display: none; }
   .auto-account-select-row { align-items: stretch; flex-direction: column; }
   .auto-account-role-row { grid-template-columns: 1fr; }
   .auto-account-select { max-width: none; width: 100%; }
-  .automation-install-trigger { width: 100%; min-height: 44px; justify-content: center; }
-  .automation-plugin-install-form { grid-template-columns: 1fr; }
-  .automation-plugin-install-actions { grid-column: auto; display: grid; grid-template-columns: 1fr 1fr; }
-  .automation-plugin-install-actions button { min-height: 44px; }
   .automation-plugin-instance-main { align-items: center; }
   .automation-plugin-menu-toggle { min-height: 44px; width: 44px; }
   .automation-plugin-worker-binding { grid-template-columns: 1fr; }

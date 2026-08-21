@@ -296,8 +296,33 @@ class FeishuApprovalRepository(RepositoryBase):
         return self.active_for_binding(str(binding["binding_id"]), for_update=for_update)
 
     def active_for_binding(self, binding_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
-        suffix = " FOR UPDATE" if for_update else ""
+        safe_binding_id = _required_text(binding_id, "binding_id")
         with self.cursor() as cursor:
+            if for_update:
+                # Serialize only the delivery queue row here.  Approval
+                # decisions and project invalidation consistently lock
+                # Run -> Approval; a joined FOR UPDATE across delivery,
+                # Approval and Run would let MySQL choose the reverse order
+                # and deadlock a Feishu reply against Console approval.
+                cursor.execute(
+                    """
+                    SELECT delivery_id
+                    FROM feishu_approval_deliveries
+                    WHERE binding_id=%s AND status='ACTIVE'
+                    FOR UPDATE
+                    """,
+                    (safe_binding_id,),
+                )
+                delivery = _row_dict(cursor, cursor.fetchone())
+                if delivery is None:
+                    return None
+                where_clause = "delivery.delivery_id=%s"
+                params = (str(delivery["delivery_id"]),)
+            else:
+                where_clause = (
+                    "delivery.binding_id=%s AND delivery.status='ACTIVE'"
+                )
+                params = (safe_binding_id,)
             cursor.execute(
                 f"""
                 SELECT delivery.*, binding.open_id, binding.last_chat_id,
@@ -309,9 +334,9 @@ class FeishuApprovalRepository(RepositoryBase):
                 JOIN approval_requests AS approval ON approval.approval_id=delivery.approval_id
                 JOIN agent_runs AS run ON run.run_id=approval.run_id
                 JOIN agent_commands AS command ON command.command_id=run.command_id
-                WHERE delivery.binding_id=%s AND delivery.status='ACTIVE'{suffix}
+                WHERE {where_clause}
                 """,
-                (_required_text(binding_id, "binding_id"),),
+                params,
             )
             return _row_dict(cursor, cursor.fetchone())
 

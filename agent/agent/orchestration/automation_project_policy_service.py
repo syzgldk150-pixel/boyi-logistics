@@ -481,9 +481,10 @@ class AutomationProjectPolicyService:
     def ensure_default_full_auto_policies(self) -> dict[str, int]:
         """Make legacy/default policies durable full-auto without touching runtime.
 
-        Migration 019 handles existing databases.  This idempotent startup pass
-        covers a brand-new database where the release-held 018 evidence bootstrap
-        necessarily runs after SQL migrations have completed.
+        Migration 020 handles existing databases.  This startup pass is only
+        for policies freshly created by the release-held 018 evidence
+        bootstrap after SQL migrations have completed.  Its audit marker also
+        makes a later explicit administrator choice authoritative.
         """
 
         changed = 0
@@ -507,16 +508,30 @@ class AutomationProjectPolicyService:
                     AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value,
                 }:
                     continue
+                policy_events = uow.automation_projects.list_policy_events(
+                    automation_id,
+                    for_update=True,
+                )
+                if any(
+                    str(event.get("reason") or "")
+                    == SUPER_ADMIN_PROJECT_POLICY_REASON
+                    for event in policy_events
+                ):
+                    # A real administrator choice always wins, including when
+                    # a process restarted after the 018 bootstrap but before
+                    # this one-time default marker was written.
+                    continue
                 request_id = f"default-full-auto:{automation_id}"
                 if uow.automation_projects.get_event_by_request(
                     automation_id,
                     request_id,
                     for_update=True,
                 ) is not None:
-                    raise OrchestrationError(
-                        "PROJECT_POLICY_DEFAULT_PARTIAL",
-                        "Default full-auto audit exists without its policy update",
-                    )
+                    # The one-time default was already applied.  If an
+                    # administrator later selected REQUIRE_EACH_RUN, startup
+                    # must preserve that explicit choice instead of treating
+                    # it as a partial migration or changing it back.
+                    continue
                 previous_mode = str(policy["mode"])
                 updated = uow.automation_projects.update_policy(
                     automation_id,
@@ -597,6 +612,7 @@ class AutomationProjectPolicyService:
             expected_project_configuration_version,
             "expected_project_configuration_version",
         )
+        wake_run_ids: tuple[str, ...] = ()
         correlation_id = new_id()
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
@@ -723,6 +739,12 @@ class AutomationProjectPolicyService:
                     correlation_id=correlation_id,
                     occurred_at=now,
                 )
+                wake_run_ids = (
+                    uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
+                        safe_id,
+                        event_repository=uow.events,
+                    )
+                )
                 uow.commit()
         except ConcurrentUpdateError as exc:
             raise OrchestrationError(
@@ -734,6 +756,9 @@ class AutomationProjectPolicyService:
                 "REQUEST_ID_REUSED",
                 "Request id was already used for a different project policy change",
             ) from exc
+        for run_id in wake_run_ids:
+            if self._wake_runner is not None:
+                self._wake_runner(run_id)
         return self.get_policy_projection(safe_id)
 
     def pending_approvals(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
@@ -803,6 +828,9 @@ class AutomationProjectPolicyService:
                     uow.commit()
                     return result
 
+                # Lock every waiting Run before locking approval rows, matching
+                # individual decision and execution-consumption lock order.
+                uow.automation_projects.lock_waiting_approval_runs(safe_id)
                 uow.automation_projects.expire_pending_approvals(safe_id)
                 rows = uow.automation_projects.list_pending_approvals(
                     safe_id,
@@ -1201,11 +1229,13 @@ class AutomationProjectPolicyService:
                 "PROJECT_POLICY_NOT_INITIALIZED",
                 "Automation project policy is not initialized",
             )
-        if invocation.policy_version != int(policy.get("version") or 0):
-            return _project_denied(
-                "PROJECT_INVOCATION_STALE",
-                "Automation project policy changed after command acceptance",
-            )
+        # The invocation binds the accepted command to one exact plugin and
+        # project-configuration contract.  Policy is different: it is durable
+        # administrator intent and must be re-read when a persisted Run is
+        # resumed.  Rejecting an older policy_version here would make a
+        # REQUIRE_EACH_RUN -> PROJECT_FULL_AUTO change wake a waiting Run only
+        # to fail it as stale before the current policy can take effect.
+        # Contract/generation/configuration matching below remains strict.
         if not contract.matches_plan(
             plan,
             invocation,
@@ -1476,6 +1506,8 @@ class AutomationProjectPolicyService:
         elif reconcile_state in {
             "PREPARING",
             "WAITING_COEFFECTS",
+            "READY_TO_COMMIT",
+            "DRAINING",
             "DISPOSING",
         }:
             runtime_status = "RECONCILING"
@@ -1488,6 +1520,18 @@ class AutomationProjectPolicyService:
             and contract is not None
             and getattr(entry, "current_enabled_entrypoints", ())
         )
+        if runtime_status == "READY" and not getattr(
+            entry, "current_enabled_entrypoints", ()
+        ):
+            runtime_reason = "ENTRYPOINTS_DISABLED"
+        elif contract_error is not None:
+            runtime_reason = contract_error
+        elif reconcile_state and reconcile_state != "STABLE":
+            runtime_reason = f"RECONCILE_{reconcile_state}"
+        elif runtime_status != "READY":
+            runtime_reason = "PROJECT_RUNTIME_UNAVAILABLE"
+        else:
+            runtime_reason = None
         if configured == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
             if (
                 contract is not None
@@ -1527,12 +1571,7 @@ class AutomationProjectPolicyService:
             "can_full_auto": can_full_auto,
             "runnable": runnable,
             "runtime_status": runtime_status,
-            "runtime_reason": (
-                "ENTRYPOINTS_DISABLED"
-                if runtime_status == "READY"
-                and not getattr(entry, "current_enabled_entrypoints", ())
-                else contract_error
-            ),
+            "runtime_reason": runtime_reason,
             "summary": summary,
             "updated_by": str(
                 (policy or {}).get("approved_by_actor_display_name")
@@ -1687,7 +1726,6 @@ class AutomationProjectPolicyService:
             )
             if (
                 invocation.automation_id != automation_id
-                or invocation.policy_version != int(policy.get("version") or 0)
                 or plan.automation_id != automation_id
                 or plan.automation_generation != invocation.automation_generation
                 or plan.automation_contract_hash != invocation.contract_hash

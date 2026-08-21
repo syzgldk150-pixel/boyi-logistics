@@ -70,7 +70,7 @@ class AutomationPluginRepositoryPort(Protocol):
         same (request_id, package digest, instance_name) returns that same ID;
         reuse with different inputs raises IDEMPOTENCY_CONFLICT. Package
         registration, empty account/resource bindings, unconfigured project
-        config and REQUIRE_EACH_RUN policy are one transaction or a recoverable
+        config and PROJECT_FULL_AUTO policy are one transaction or a recoverable
         journal. No default account or schedule is created.
         """
 
@@ -85,13 +85,13 @@ class AutomationPluginRepositoryPort(Protocol):
         expected_current_version: str,
         expected_record_version: int,
     ) -> PluginInstanceRecord:
-        """Stage a desired version and mark project authorization stale.
+        """Stage a desired version while preserving durable policy intent.
 
         Existing config/account/resource/device bindings are preserved.  The
         committed generation continues serving until the new package is fully
         prepared and a later generation CAS switches all entrypoints.  A
-        failure leaves the old committed generation executable and authority
-        fail-closed.
+        failure leaves the old committed generation blocked from new work and
+        reports the runtime as unavailable without rewriting the policy mode.
         """
 
     def bootstrap_missing(
@@ -101,7 +101,13 @@ class AutomationPluginRepositoryPort(Protocol):
         *,
         release_sha: str,
     ) -> BootstrapPersistenceResult:
-        """Atomically insert missing built-ins and preserve every existing row."""
+        """Insert missing built-ins and advance older first-party instances.
+
+        Administrator configuration, bindings, entrypoint choices, schedules
+        and policy mode remain durable while a newer signed release is staged
+        through the normal generation reconciler. Newer installed instances
+        are never downgraded.
+        """
 
     def set_enabled(
         self,

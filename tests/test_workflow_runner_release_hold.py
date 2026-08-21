@@ -70,6 +70,22 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not available"):
             runner.resume_after_release()
 
+    def test_worker_thread_wake_is_delivered_to_the_owner_event_loop(self):
+        async def exercise() -> None:
+            repository = _ClaimRepository()
+            runner = _runner(repository)
+            runner._poll_interval_seconds = 30
+            await runner.start(held_for_release=True)
+            try:
+                await asyncio.sleep(0.05)
+                await asyncio.to_thread(runner.resume_after_release)
+                await asyncio.sleep(0.05)
+                self.assertGreater(repository.run_claims, 0)
+            finally:
+                await runner.stop()
+
+        asyncio.run(exercise())
+
 
 if __name__ == "__main__":
     unittest.main()

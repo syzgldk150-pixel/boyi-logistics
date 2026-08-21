@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
 from agent.automation_plugins.first_party_handlers import customer_problem_identity
 from agent.orchestration.control_plane_service import _customer_problem_open_refs
-from agent.orchestration.models import Actor, ActorType, Command, ContextSnapshot
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    ContextSnapshot,
+    OrchestrationError,
+)
 from agent.orchestration.planner import DeterministicPlanner
 
 
@@ -124,3 +132,50 @@ def test_planner_overwrites_caller_rechecks_with_authoritative_context() -> None
     assert plan.steps[0].arguments["recheck_items"] == trusted_refs
     assert "account_id" not in plan.steps[0].arguments["recheck_items"][0]
     assert plan.steps[0].operation_type.value == "read"
+
+
+def test_planner_rejects_missing_authoritative_recheck_context() -> None:
+    command = Command(
+        command_type="tool.execute",
+        source="scheduler",
+        actor=Actor(ActorType.SCHEDULER, "scheduler"),
+        parameters={
+            "tool_name": "sync_customer_service_problems",
+            "arguments": {"direction": "both"},
+        },
+        idempotency_key="scheduler:customer-problems:missing-rechecks",
+    )
+
+    context = ContextSnapshot(
+        values={"resources": {}, "accounts": []},
+        account_ids=(),
+    )
+    with pytest.raises(
+        OrchestrationError,
+        match="must be an object array",
+    ):
+        DeterministicPlanner(_Catalog()).plan(command, context)
+
+
+def test_planner_accepts_empty_authoritative_recheck_context() -> None:
+    context = ContextSnapshot(
+        values={
+            "resources": {"customer_problem_open_refs": []},
+            "accounts": [],
+        },
+        account_ids=(),
+    )
+    command = Command(
+        command_type="tool.execute",
+        source="scheduler",
+        actor=Actor(ActorType.SCHEDULER, "scheduler"),
+        parameters={
+            "tool_name": "sync_customer_service_problems",
+            "arguments": {"direction": "both"},
+        },
+        idempotency_key="scheduler:customer-problems:empty-rechecks",
+    )
+
+    plan = DeterministicPlanner(_Catalog()).plan(command, context)
+
+    assert plan.steps[0].arguments["recheck_items"] == []

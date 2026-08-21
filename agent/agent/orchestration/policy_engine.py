@@ -212,7 +212,7 @@ class PolicyEngine:
                 )
 
             highest_risk = _max_risk(highest_risk, step.risk_level)
-            if mode is ApprovalMode.DISABLED or step.operation_type is OperationType.DESTRUCTIVE or step.risk_level is RiskLevel.EXTREME:
+            if mode is ApprovalMode.DISABLED:
                 return PolicyDecision(
                     allowed=False,
                     requires_approval=False,
@@ -221,6 +221,27 @@ class PolicyEngine:
                     code="OPERATION_DISABLED",
                     reason=f"Operation is disabled by tool policy: {step.tool_name}",
                 )
+            if (
+                step.operation_type is OperationType.DESTRUCTIVE
+                or step.risk_level is RiskLevel.EXTREME
+            ):
+                # Untyped tools keep the legacy hard safety ceiling.  A typed
+                # automation invocation has already been bound to an exact
+                # signed project contract, so its current project policy may
+                # require a super-admin decision or explicitly remove it.
+                # An explicit tool-level `disabled` mode remains absolute.
+                if automation_invocation is None:
+                    return PolicyDecision(
+                        allowed=False,
+                        requires_approval=False,
+                        required_role=None,
+                        risk_level=step.risk_level,
+                        code="OPERATION_DISABLED",
+                        reason=f"Operation is disabled outside a signed project: {step.tool_name}",
+                    )
+                requires_approval = True
+                required_roles.add("super_admin")
+                continue
             if step.operation_type in {OperationType.READ, OperationType.COMPUTE} and mode is ApprovalMode.NONE:
                 if actor.actor_type in {ActorType.CONSOLE_ADMIN, ActorType.LEGACY_API} and not _has_tool_role(
                     actor.roles,
