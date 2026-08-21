@@ -52,6 +52,9 @@ from agent.tool_registry import validate_schema_instance
 from shared.automation_project_manifest import (
     FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES,
 )
+from shared.automation_plugin_repository import (
+    AutomationPluginPreparedTargetOccupied,
+)
 
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
@@ -323,6 +326,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         request_id: str,
         expected_current_version: str,
         expected_record_version: int,
+        prepared_configuration_request_id: str | None = None,
     ) -> PluginInstanceRecord:
         automation_id = str(automation_id or "").strip()
         actor_id = str(actor_id or "").strip()
@@ -478,16 +482,23 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
                 ) from exc
 
+            stage_arguments: dict[str, Any] = {
+                "plugin_id": version.plugin_id,
+                "from_version": expected_current_version,
+                "to_version": version.version,
+                "package_sha256": version.package_sha256,
+                "request_id": request_id,
+                "actor_id": actor_id,
+                "actor_role": actor_role,
+                "expected_record_version": expected_record_version,
+            }
+            if prepared_configuration_request_id is not None:
+                stage_arguments["prepared_configuration_request_id"] = (
+                    prepared_configuration_request_id
+                )
             staged = uow.automation_plugins.stage_project_upgrade(
                 automation_id,
-                plugin_id=version.plugin_id,
-                from_version=expected_current_version,
-                to_version=version.version,
-                package_sha256=version.package_sha256,
-                request_id=request_id,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                expected_record_version=expected_record_version,
+                **stage_arguments,
             )
             if staged.pop("_upgrade_staged_created", False):
                 policy = uow.automation_projects.get_policy(
@@ -590,7 +601,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         version: PluginVersionRecord,
         release_sha: str,
         expected_current_version: str,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, str | None]:
         """Recompile preserved settings against a signed first-party target.
 
         A release may move interactive or planner-owned values out of durable
@@ -618,11 +629,21 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "first-party automation project configuration is missing",
                     code="PLUGIN_INSTANCE_NOT_FOUND",
                 )
-            if (
-                str(project.get("plugin_id") or "") != seed.plugin_id
-                or str(project.get("plugin_version") or "")
-                != expected_current_version
-            ):
+            persisted_plugin_id = str(project.get("plugin_id") or "")
+            persisted_version = str(project.get("plugin_version") or "")
+            if persisted_plugin_id != seed.plugin_id:
+                raise PluginConflictError(
+                    "first-party automation project changed before release upgrade",
+                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                )
+            if persisted_version == version.version:
+                uow.commit()
+                return (
+                    persisted_version,
+                    int(project.get("record_version") or 0),
+                    None,
+                )
+            if persisted_version != expected_current_version:
                 raise PluginConflictError(
                     "first-party automation project changed before release upgrade",
                     code="PLUGIN_INSTANCE_VERSION_CONFLICT",
@@ -721,15 +742,15 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     (compiled_after, compiled_before),
                 )
             )
-            if needs_save:
-                save_request_id = str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        "boyi:first-party-plugin-upgrade-config:"
-                        f"{release_sha}:{seed.automation_id}:"
-                        f"{expected_current_version}:{version.version}",
-                    )
+            save_request_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "boyi:first-party-plugin-upgrade-config:"
+                    f"{release_sha}:{seed.automation_id}:"
+                    f"{expected_current_version}:{version.version}",
                 )
+            )
+            if needs_save:
                 device_id = config.get("device_id")
                 uow.automation_plugins.save_project_config(
                     seed.automation_id,
@@ -768,6 +789,11 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         return (
             str(project.get("plugin_version") or ""),
             int(project.get("record_version") or 0),
+            (
+                save_request_id
+                if project.get("reconcile_state") == "PREPARING"
+                else None
+            ),
         )
 
     def bootstrap_missing(
@@ -816,7 +842,39 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                             code="PLUGIN_UPGRADE_VERSION_INVALID",
                         )
                     if current_key < target_key:
-                        upgrades.append((seed, version, current_version))
+                        committed_generation = current.get("committed_generation")
+                        closed_stable_lineage = bool(
+                            current.get("reconcile_state") == "STABLE"
+                            and isinstance(committed_generation, int)
+                            and not isinstance(committed_generation, bool)
+                            and committed_generation > 0
+                            and current.get("target_generation")
+                            == committed_generation
+                        )
+                        blocked_unknown_write = False
+                        if (
+                            current.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+                            and isinstance(committed_generation, int)
+                            and not isinstance(committed_generation, bool)
+                            and committed_generation > 0
+                            and current.get("target_generation")
+                            == committed_generation
+                        ):
+                            committed = uow.automation_plugins.get_generation_row(
+                                seed.automation_id,
+                                committed_generation,
+                                for_update=True,
+                            )
+                            blocked_unknown_write = bool(
+                                isinstance(committed, Mapping)
+                                and committed.get("state") == "BLOCKED"
+                                and uow.automation_plugins.has_unknown_generation_write_row(
+                                    seed.automation_id,
+                                    committed_generation,
+                                )
+                            )
+                        if closed_stable_lineage and not blocked_unknown_write:
+                            upgrades.append((seed, version, current_version))
                     existing.append(seed.automation_id)
                     continue
                 manifest = AutomationPluginManifest.from_mapping(version.manifest)
@@ -954,7 +1012,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         # signed package remains active, and the same release request resumes
         # staging on the next startup.
         for seed, version, current_version in upgrades:
-            prepared_version, record_version = (
+            prepared_version, record_version, prepared_configuration_request_id = (
                 self._prepare_first_party_upgrade_configuration(
                     seed=seed,
                     version=version,
@@ -962,6 +1020,8 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     expected_current_version=current_version,
                 )
             )
+            if prepared_version == version.version:
+                continue
             if prepared_version != current_version or record_version <= 0:
                 raise PluginConflictError(
                     "first-party project changed during release preparation",
@@ -975,15 +1035,43 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     f"{current_version}:{version.version}",
                 )
             )
-            self.upgrade_instance(
-                seed.automation_id,
-                version,
-                actor_id=_FIRST_PARTY_RELEASE_ACTOR_ID,
-                actor_role=_FIRST_PARTY_RELEASE_ACTOR_ROLE,
-                request_id=upgrade_request_id,
-                expected_current_version=current_version,
-                expected_record_version=record_version,
-            )
+            upgrade_arguments: dict[str, Any] = {
+                "actor_id": _FIRST_PARTY_RELEASE_ACTOR_ID,
+                "actor_role": _FIRST_PARTY_RELEASE_ACTOR_ROLE,
+                "request_id": upgrade_request_id,
+                "expected_current_version": current_version,
+                "expected_record_version": record_version,
+            }
+            if prepared_configuration_request_id is not None:
+                upgrade_arguments["prepared_configuration_request_id"] = (
+                    prepared_configuration_request_id
+                )
+            try:
+                self.upgrade_instance(
+                    seed.automation_id,
+                    version,
+                    **upgrade_arguments,
+                )
+            except AutomationPluginPreparedTargetOccupied:
+                # Configuration preparation and version staging use separate
+                # idempotent transactions. Another Agent may allocate the
+                # prepared target in between. Never reuse that non-empty
+                # generation or let this project prevent global startup; the
+                # normal reconciler closes it and a later bootstrap retries.
+                with self._orchestration.unit_of_work() as uow:
+                    concurrent = uow.automation_plugins.get_project(
+                        seed.automation_id,
+                        for_update=True,
+                    )
+                    if (
+                        not isinstance(concurrent, Mapping)
+                        or concurrent.get("plugin_id") != seed.plugin_id
+                        or concurrent.get("plugin_version")
+                        not in {current_version, version.version}
+                        or prepared_configuration_request_id is None
+                    ):
+                        raise
+                    uow.commit()
         return BootstrapPersistenceResult(
             created=tuple(sorted(created)),
             existing=tuple(sorted(existing)),

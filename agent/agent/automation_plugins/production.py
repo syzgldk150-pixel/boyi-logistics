@@ -809,6 +809,30 @@ class MySQLRuntimeTargetService:
             return None
         by_number = {item.snapshot.generation: item for item in generations}
         if runtime is not None:
+            committed_generation = runtime.committed_generation
+            committed = (
+                by_number.get(committed_generation)
+                if committed_generation is not None
+                else None
+            )
+            if (
+                committed_generation is not None
+                and committed is not None
+                and committed.state is RuntimeGenerationState.BLOCKED
+            ):
+                if self._runtime.has_unknown_generation_write(
+                    automation_id,
+                    committed_generation,
+                ):
+                    # A later upgrade may already have replaced the project-level
+                    # reconcile marker with PREPARING.  The committed generation
+                    # and its unknown-write lease remain the authoritative safety
+                    # fence: isolate this project before considering any target.
+                    return None
+                raise PluginConflictError(
+                    "committed runtime generation is blocked without unknown-write evidence",
+                    code="RUNTIME_COMMIT_INCONSISTENT",
+                )
             target = by_number.get(runtime.target_generation)
             if target is not None and target.state in {
                 RuntimeGenerationState.TARGET,

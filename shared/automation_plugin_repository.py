@@ -38,6 +38,10 @@ class AutomationPluginReleaseHold(RuntimeError):
     """Raised when a worker mutation is attempted during release hold."""
 
 
+class AutomationPluginPreparedTargetOccupied(ConcurrentUpdateError):
+    """A config-only target was materialized before its plugin upgrade staged."""
+
+
 class AutomationPluginPurgeBlocked(RuntimeError):
     """Raised when active or outcome-unknown execution blocks uninstall."""
 
@@ -283,6 +287,80 @@ def _configuration_target_generation(
         generation_rows,
         allow_initial=True,
     ).target_generation
+
+
+def _prepared_configuration_upgrade_stage(
+    project: Mapping[str, Any],
+    current_config: Mapping[str, Any],
+    generation_rows: Sequence[Mapping[str, Any]],
+) -> AutomationProjectGenerationStage:
+    """Reuse only the exact empty target opened by a configuration save."""
+
+    if str(project.get("reconcile_state") or "") != "PREPARING":
+        raise ConcurrentUpdateError(
+            "automation project has no prepared configuration generation"
+        )
+    try:
+        target_generation = _positive_int(
+            project.get("target_generation"),
+            "target_generation",
+        )
+        committed_generation = _positive_int(
+            project.get("committed_generation"),
+            "committed_generation",
+        )
+    except ValueError as exc:
+        raise OrchestrationPersistenceError(
+            "automation project generation pointers are invalid"
+        ) from exc
+
+    # Validate the lineage by projecting the persisted project back to the
+    # closed state from which save_project_config opened this exact target.
+    closed_project = dict(project)
+    closed_project["target_generation"] = committed_generation
+    closed_project["reconcile_state"] = "STABLE"
+    target_rows = tuple(
+        row
+        for row in generation_rows
+        if row.get("generation") == target_generation
+    )
+    lineage_rows = tuple(
+        row
+        for row in generation_rows
+        if row.get("generation") != target_generation
+    )
+    closed_stage = _project_generation_stage(
+        closed_project,
+        current_config,
+        lineage_rows,
+        allow_initial=False,
+    )
+    if closed_stage.target_generation != target_generation:
+        raise ConcurrentUpdateError(
+            "prepared configuration generation is not the next closed target"
+        )
+    if target_rows:
+        if (
+            len(target_rows) == 1
+            and target_rows[0].get("state")
+            in {"TARGET", "PREPARING", "WAITING_COEFFECTS", "PREPARED"}
+        ):
+            raise AutomationPluginPreparedTargetOccupied(
+                "prepared configuration target is already materialized"
+            )
+        raise ConcurrentUpdateError(
+            "prepared configuration target cannot be reused in its current state"
+        )
+    return AutomationProjectGenerationStage(
+        automation_id=closed_stage.automation_id,
+        target_generation=target_generation,
+        prior_target_generation=target_generation,
+        committed_generation=closed_stage.committed_generation,
+        prior_reconcile_state="PREPARING",
+        project_state=closed_stage.project_state,
+        expected_record_version=closed_stage.expected_record_version,
+        existing_generations=closed_stage.existing_generations,
+    )
 
 
 def _sha256(value: Any, field: str) -> str:
@@ -1182,6 +1260,7 @@ class AutomationPluginRepository(
         actor_id: str,
         actor_role: str,
         expected_record_version: int,
+        prepared_configuration_request_id: str | None = None,
     ) -> dict[str, Any]:
         """Stage an immutable target version without changing live execution.
 
@@ -1206,12 +1285,24 @@ class AutomationPluginRepository(
             expected_record_version,
             "expected_record_version",
         )
+        safe_prepared_configuration_request = (
+            _canonical_uuid(
+                prepared_configuration_request_id,
+                "prepared_configuration_request_id",
+            )
+            if prepared_configuration_request_id is not None
+            else None
+        )
         request_payload = {
             "plugin_id": safe_plugin_id,
             "to_version": safe_to,
             "package_sha256": safe_package_sha,
             "expected_record_version": safe_expected_version,
         }
+        if safe_prepared_configuration_request is not None:
+            request_payload["prepared_configuration_request_id"] = (
+                safe_prepared_configuration_request
+            )
         request_payload_sha256 = _json_hash(request_payload)
 
         with self.cursor() as cursor:
@@ -1286,22 +1377,92 @@ class AutomationPluginRepository(
                 raise OrchestrationPersistenceError(
                     "immutable plugin upgrade target is not registered"
                 )
-            cursor.execute(
-                """
-                SELECT COALESCE(MAX(generation), 0) AS max_generation
-                FROM automation_project_generations
-                WHERE automation_id=%s
-                """,
-                (project_id,),
-            )
-            maximum = int(
-                (_row_dict(cursor, cursor.fetchone()) or {}).get("max_generation") or 0
-            )
-            next_generation = maximum + 1
-            if next_generation <= 0:
+            current_config = self.get_project_config(project_id, for_update=True)
+            if current_config is None:
                 raise OrchestrationPersistenceError(
-                    "automation project generation could not advance"
+                    "automation project configuration is not initialized"
                 )
+            if safe_prepared_configuration_request is None:
+                generation_stage = self.lock_project_generation_stage(
+                    project_id,
+                    project=project,
+                    current_config=current_config,
+                    allow_initial=False,
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT * FROM automation_project_events
+                    WHERE automation_id=%s AND request_id=%s FOR UPDATE
+                    """,
+                    (project_id, safe_prepared_configuration_request),
+                )
+                prepared_event = _decode_row(
+                    _row_dict(cursor, cursor.fetchone()),
+                    ("metadata_json",),
+                )
+                prepared_metadata = (
+                    prepared_event.get("metadata_json")
+                    if isinstance(prepared_event, Mapping)
+                    else None
+                )
+                if (
+                    not isinstance(prepared_event, Mapping)
+                    or prepared_event.get("event_type") != "CONFIGURATION_UPDATED"
+                    or prepared_event.get("actor_id") != safe_actor
+                    or prepared_event.get("actor_role") != safe_role
+                    or not isinstance(prepared_metadata, Mapping)
+                    or prepared_metadata.get("to_project_configuration_version")
+                    != current_config.get("config_version")
+                ):
+                    raise ConcurrentUpdateError(
+                        "prepared configuration request does not match the project target"
+                    )
+                try:
+                    _sha256(
+                        prepared_metadata.get("request_payload_sha256"),
+                        "prepared_configuration.request_payload_sha256",
+                    )
+                except ValueError as exc:
+                    raise ConcurrentUpdateError(
+                        "prepared configuration request audit hash is invalid"
+                    ) from exc
+                cursor.execute(
+                    """
+                    SELECT project_generation, project_configuration_version
+                    FROM automation_project_policies
+                    WHERE automation_id=%s FOR UPDATE
+                    """,
+                    (project_id,),
+                )
+                prepared_policy = _row_dict(cursor, cursor.fetchone())
+                if (
+                    prepared_policy is None
+                    or prepared_policy.get("project_generation")
+                    != project.get("target_generation")
+                    or prepared_policy.get("project_configuration_version")
+                    != current_config.get("config_version")
+                ):
+                    raise ConcurrentUpdateError(
+                        "prepared configuration policy is not bound to the project target"
+                    )
+                with self.cursor() as generation_cursor:
+                    generation_cursor.execute(
+                        """
+                        SELECT generation, state
+                        FROM automation_project_generations
+                        WHERE automation_id=%s
+                        ORDER BY generation FOR UPDATE
+                        """,
+                        (project_id,),
+                    )
+                    generation_rows = _rows(generation_cursor)
+                generation_stage = _prepared_configuration_upgrade_stage(
+                    project,
+                    current_config,
+                    generation_rows,
+                )
+            next_generation = generation_stage.target_generation
 
             event_metadata = {
                 "request_payload_sha256": request_payload_sha256,
@@ -1310,6 +1471,9 @@ class AutomationPluginRepository(
                 "package_sha256": safe_package_sha,
                 "target_generation": next_generation,
                 "previous_state": from_state,
+                "prepared_configuration_request_id": (
+                    safe_prepared_configuration_request
+                ),
             }
             cursor.execute(
                 """
@@ -1339,7 +1503,8 @@ class AutomationPluginRepository(
                     record_version=record_version+1, updated_at=NOW(6)
                 WHERE automation_id=%s AND plugin_id=%s
                   AND plugin_version=%s AND record_version=%s
-                  AND state=%s
+                  AND state=%s AND target_generation=%s
+                  AND committed_generation <=> %s AND reconcile_state=%s
                 """,
                 (
                     safe_to,
@@ -1349,6 +1514,9 @@ class AutomationPluginRepository(
                     safe_from,
                     safe_expected_version,
                     from_state,
+                    generation_stage.prior_target_generation,
+                    generation_stage.committed_generation,
+                    generation_stage.prior_reconcile_state,
                 ),
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:

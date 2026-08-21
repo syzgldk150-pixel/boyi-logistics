@@ -169,6 +169,7 @@ class _RuntimeRepository:
     def __init__(self) -> None:
         self.runtimes: dict[str, ProjectRuntimeRecord] = {}
         self.generations: dict[tuple[str, int], RuntimeGenerationRecord] = {}
+        self.unknown_writes: set[tuple[str, int]] = set()
 
     def get_project_runtime(self, automation_id: str) -> ProjectRuntimeRecord | None:
         return self.runtimes.get(automation_id)
@@ -353,10 +354,10 @@ class _RuntimeRepository:
 
     def has_unknown_generation_write(
         self,
-        _automation_id: str,
-        _generation: int,
+        automation_id: str,
+        generation: int,
     ) -> bool:
-        return False
+        return (automation_id, generation) in self.unknown_writes
 
     def mark_generation_draining(self, automation_id: str, generation: int) -> None:
         self._generation_state(
@@ -917,6 +918,88 @@ def test_second_release_reconcile_reuses_identical_committed_generations() -> No
         for automation_id, generation in world.runtime.generations
         if automation_id in world.expected_automation_ids
     } == {1}
+
+
+def test_staged_target_over_blocked_committed_generation_is_isolated_per_project() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    blocked_id, following_id = sorted(world.expected_automation_ids)[:2]
+
+    for automation_id in (blocked_id, following_id):
+        target_snapshot = replace(
+            world.snapshots[automation_id],
+            generation=2,
+        )
+        target = world.runtime.allocate_target_generation(
+            target_snapshot,
+            expected_committed_generation=1,
+            request_id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"staged-target:{automation_id}:2",
+                )
+            ),
+        )
+        assert world.reconciler.prepare_target(target) == ()
+        assert world.runtime.get_generation(automation_id, 2).state is (
+            RuntimeGenerationState.PREPARED
+        )
+
+    blocked_generation = world.runtime.get_generation(blocked_id, 1)
+    assert blocked_generation is not None
+    world.runtime.generations[(blocked_id, 1)] = replace(
+        blocked_generation,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    world.runtime.unknown_writes.add((blocked_id, 1))
+    blocked_topology_before = copy.deepcopy(
+        {
+            "runtime": world.runtime.get_project_runtime(blocked_id),
+            "generations": tuple(
+                sorted(
+                    world.runtime.list_project_generations(blocked_id),
+                    key=lambda item: item.snapshot.generation,
+                )
+            ),
+        }
+    )
+
+    service = _target_service(world)
+    assert service.reconcile_project(blocked_id) is None
+
+    assert blocked_topology_before == {
+        "runtime": world.runtime.get_project_runtime(blocked_id),
+        "generations": tuple(
+            sorted(
+                world.runtime.list_project_generations(blocked_id),
+                key=lambda item: item.snapshot.generation,
+            )
+        ),
+    }
+
+    results = service.reconcile_all()
+
+    assert blocked_topology_before == {
+        "runtime": world.runtime.get_project_runtime(blocked_id),
+        "generations": tuple(
+            sorted(
+                world.runtime.list_project_generations(blocked_id),
+                key=lambda item: item.snapshot.generation,
+            )
+        ),
+    }
+    assert world.runtime.get_generation(blocked_id, 1).state is (
+        RuntimeGenerationState.BLOCKED
+    )
+    assert world.runtime.get_generation(blocked_id, 2).state is (
+        RuntimeGenerationState.PREPARED
+    )
+    assert world.runtime.get_project_runtime(blocked_id).committed_generation == 1
+    assert any(result.automation_id == following_id for result in results)
+    assert world.runtime.get_project_runtime(following_id).committed_generation == 2
+    assert world.runtime.get_generation(following_id, 2).state is (
+        RuntimeGenerationState.COMMITTED
+    )
 
 
 def test_stable_policy_version_drift_reuses_committed_generation() -> None:

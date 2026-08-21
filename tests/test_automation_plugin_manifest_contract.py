@@ -22,6 +22,10 @@ from agent.automation_plugins.models import (
 )
 from agent.tool_registry import ToolRegistry
 from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
+from shared.automation_plugin_repository import (
+    AutomationPluginPreparedTargetOccupied,
+)
+from shared.orchestration_repository_support import ConcurrentUpdateError
 
 
 def _manifest_mapping() -> dict:
@@ -295,6 +299,9 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
                 "plugin_id": manifest.plugin_id,
                 "plugin_version": "1.0.0",
                 "record_version": 4,
+                "target_generation": 1,
+                "committed_generation": 1,
+                "reconcile_state": "STABLE",
             }
 
     class UnitOfWork:
@@ -341,7 +348,7 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
         patch.object(
             repository,
             "_prepare_first_party_upgrade_configuration",
-            return_value=("1.0.0", 5),
+            return_value=("1.0.0", 5, None),
         ) as prepare,
         patch.object(repository, "upgrade_instance") as upgrade,
     ):
@@ -365,7 +372,69 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
     assert call.kwargs["actor_role"] == "super_admin"
     assert call.kwargs["expected_current_version"] == "1.0.0"
     assert call.kwargs["expected_record_version"] == 5
+    assert "prepared_configuration_request_id" not in call.kwargs
     uuid.UUID(call.kwargs["request_id"])
+
+    with (
+        patch.object(repository, "_register"),
+        patch.object(
+            repository,
+            "_prepare_first_party_upgrade_configuration",
+            return_value=(version.version, 6, None),
+        ),
+        patch.object(repository, "upgrade_instance") as replayed_upgrade,
+    ):
+        replayed = repository.bootstrap_missing(
+            (version,),
+            (seed,),
+            release_sha="a" * 40,
+        )
+
+    assert replayed.existing == (template.automation_id,)
+    replayed_upgrade.assert_not_called()
+
+    with (
+        patch.object(repository, "_register"),
+        patch.object(
+            repository,
+            "_prepare_first_party_upgrade_configuration",
+            return_value=("1.0.0", 5, str(uuid.uuid4())),
+        ),
+        patch.object(
+            repository,
+            "upgrade_instance",
+            side_effect=AutomationPluginPreparedTargetOccupied(
+                "prepared target is no longer empty"
+            ),
+        ),
+    ):
+        deferred = repository.bootstrap_missing(
+            (version,),
+            (seed,),
+            release_sha="a" * 40,
+        )
+
+    assert deferred.existing == (template.automation_id,)
+
+    with (
+        patch.object(repository, "_register"),
+        patch.object(
+            repository,
+            "_prepare_first_party_upgrade_configuration",
+            return_value=("1.0.0", 5, str(uuid.uuid4())),
+        ),
+        patch.object(
+            repository,
+            "upgrade_instance",
+            side_effect=ConcurrentUpdateError("policy lineage changed"),
+        ),
+        pytest.raises(ConcurrentUpdateError, match="policy lineage changed"),
+    ):
+        repository.bootstrap_missing(
+            (version,),
+            (seed,),
+            release_sha="a" * 40,
+        )
 
 
 def test_first_party_bootstrap_never_downgrades_existing_instance() -> None:
