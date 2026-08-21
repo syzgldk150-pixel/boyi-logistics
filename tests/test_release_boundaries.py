@@ -60,6 +60,11 @@ def _healthy_service_identity_payload() -> dict[str, object]:
                     "runnable": True,
                     "runtime_status": "READY",
                     "broker": {"state": "running"},
+                    "sandbox": {
+                        "state": "ready",
+                        "code": "OK",
+                        "checked_at": "2026-08-22T00:00:00+00:00",
+                    },
                     "catalog": {
                         "ok": True,
                         "runnable": True,
@@ -547,6 +552,14 @@ def _locked_versions(path: Path) -> dict[str, str]:
 
 
 class ReleaseBoundaryTests(unittest.TestCase):
+    def test_nginx_allows_the_signed_plugin_limit_plus_multipart_overhead(self):
+        nginx = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "nginx" / "boyi.homes.conf"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(2, nginx.count("client_max_body_size 34m;"))
+        self.assertNotIn("client_max_body_size 25m;", nginx)
+
     def test_service_identity_smoke_closes_project_import_failure(self):
         sensitive_marker = "SENSITIVE_SERVICE_IDENTITY_IMPORT_MARKER"
         completed = _run_service_identity_smoke(
@@ -594,6 +607,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             ("runner_hold", ("workflow_runner", "release_hold"), False),
             ("runner_active", ("workflow_runner", "active_runs"), 1),
             ("plugin_broker", ("automation_plugins", "broker", "state"), "stopped"),
+            ("plugin_sandbox", ("automation_plugins", "sandbox", "state"), "unavailable"),
             (
                 "plugin_catalog_aggregate_or_shape",
                 ("automation_plugins", "catalog", "ok"),

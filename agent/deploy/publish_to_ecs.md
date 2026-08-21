@@ -22,6 +22,21 @@ PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
   --output-root "<temporary-artifact-directory>"
 ```
 
+如果本次提交没有修改任何受签名动作包 payload，优先复用上一版已经验签的不可变 ZIP；构建器会
+使用公共信任根重新验签上一版 release index 和每个包，并逐文件比较 ZIP 内容与当前受审源码，
+只有完全一致时才为新的 Git SHA 生成 release index。此路径不会读取私钥，也不会重新签名：
+
+```bash
+PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
+  --reuse-artifact-root "<previous-signed-artifact-directory>" \
+  --trust-root "<public-trust-root-directory>" \
+  --release-sha "$(git rev-parse HEAD)" \
+  --output-root "<temporary-artifact-directory>"
+```
+
+签名模式与复用模式必须二选一。只要 payload 有任何字节变化，复用就失败关闭；此时必须提升插件
+版本并走受保护私钥的签名模式，禁止把不同源码重新绑定到旧签名 ZIP。
+
 构建目录应在发布与验收完成后精确清理；公共信任根可以长期保留。发布器会再次检查
 release index、包集合、签名、digest lock 与 Git SHA，任何漂移都在远端 mutation 前失败关闭。
 

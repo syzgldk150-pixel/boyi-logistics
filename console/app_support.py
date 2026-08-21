@@ -48,7 +48,10 @@ from console.template_store import TemplateStore
 
 from console.finance_service import FinanceError, FinanceService, FinanceValidationError
 from shared.redaction import redact_sensitive, redact_text
-from shared.manual_entry_contracts import YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS
+from shared.manual_entry_contracts import (
+    RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,
+    YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS,
+)
 from shared.customer_problem_policy import (
     CUSTOMER_SERVICE_ALLOWED_ACCOUNT_SYSTEMS,
     CUSTOMER_SERVICE_DEFAULT_SETTINGS,
@@ -300,6 +303,13 @@ YUNDA_RECEIPT_LIVE_PROXY_PREFIX = "/receipts/yunda/live"
 YUNDA_RECEIPT_LIVE_ENTRY_PATH = "/ky_inms/public/index.php/business/waybill/mailing/index.html"
 RONGHUI_LIVE_PROXY_PREFIX = "/ocr/ronghui/live"
 RONGHUI_LIVE_SAVE_PATH = "/dataOperation/saveTables"
+ORIGINAL_PAGE_PRIMARY_ORIGIN = "https://boyi.homes"
+ORIGINAL_PAGE_ISOLATED_ORIGIN = "https://www.boyi.homes"
+ORIGINAL_PAGE_ISOLATED_HOST = "www.boyi.homes"
+ORIGINAL_PAGE_PREFIXES = {
+    "yunda": "/original/yunda",
+    "ronghui": "/original/ronghui",
+}
 RONGHUI_RECEIPT_LIVE_PROXY_PREFIX = "/receipts/ronghui/live"
 RONGHUI_RECEIPT_ENTRY_MENU_TEXTS = {
     "send": "寄方回单跟踪",
@@ -319,23 +329,7 @@ RECEIPT_DETAIL_KEYS = (
     "waybill_no",
 )
 RECEIPT_DETAIL_REQUIRED_KEYS = set(RECEIPT_DETAIL_KEYS)
-RONGHUI_LIVE_ALLOWED_PREFIXES = (
-    "/widget/",
-    "/static/",
-    "/dataQuery/",
-    "/dataOperation/",
-    "/minic/",
-    "/address/",
-    "/advancePayment/",
-    "/commonOption/",
-    "/fhdquote/",
-    "/file/",
-    "/map/",
-    "/userView/",
-    "/unauth/download/",
-    "/menuTreeExtend/",
-    "/module/",
-)
+RONGHUI_LIVE_ALLOWED_PREFIXES = RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES
 RONGHUI_DIRECT_ATTACHMENT_HOSTS = {"rhk13.obs.cn-east-3.myhuaweicloud.com"}
 RECEIPT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 RECEIPT_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}

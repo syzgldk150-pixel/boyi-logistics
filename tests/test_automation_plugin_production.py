@@ -4,11 +4,14 @@ import copy
 import hashlib
 import uuid
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
 
+from agent.automation_plugins import production as production_module
 from agent.automation_plugins.catalog import PluginCatalog
 from agent.automation_plugins.binding_resolver import ProductionProjectBindingResolver
 from agent.automation_plugins.invocation import compile_instance_arguments
@@ -26,12 +29,14 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.production import (
     CURSOR_SECRET_ENV,
     MySQLRuntimeTargetService,
+    ProductionAutomationPluginRuntime,
     ProductionRuntimeCoeffectProvider,
     ProductionRuntimeEffectDriver,
     ProductionRuntimeEffectPlanner,
     build_runtime_generation_snapshot,
     production_cursor_secret,
 )
+from agent.automation_plugins.sandbox import SandboxCanaryResult
 from agent.automation_plugins.runtime_repository import snapshot_to_row
 from agent.automation_plugins.first_party import (
     FIRST_PARTY_PACKAGE_VERSION,
@@ -410,6 +415,67 @@ def test_snapshot_binds_only_closed_desired_material(tmp_path: Path) -> None:
             generation=1,
             core_catalog=core,
         )
+
+
+def test_snapshot_accepts_project_with_every_entrypoint_disabled(tmp_path: Path) -> None:
+    core, entry, row, policy = _entry_and_row(tmp_path)
+    row["enabled_entrypoints_json"] = []
+    row["enabled_entrypoints_sha256"] = _sha([])
+    row["compiled_invocations_json"] = {}
+    row["compiled_invocations_sha256"] = _sha({})
+
+    snapshot = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+
+    assert snapshot.enabled_entrypoints == ()
+    assert snapshot.execution_metadata["compiled_invocations"] == {}
+
+
+def test_runtime_health_fails_closed_when_real_sandbox_canary_failed(monkeypatch) -> None:
+    class _HealthCatalog:
+        @staticmethod
+        def production_health(_expected):
+            return {"ok": True, "runnable": True, "runtime_status": "READY"}
+
+        @staticmethod
+        def excluded_persisted_automation_ids():
+            return set()
+
+    monkeypatch.setattr(
+        production_module,
+        "runtime_generation_health",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            healthy=True,
+            project_count=1,
+            committed_count=1,
+            active_lease_count=0,
+            blocked_projects={},
+        ),
+    )
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.catalog = _HealthCatalog()
+    runtime.required_first_party_ids = frozenset({"project-a"})
+    runtime.runtime_repository = object()
+    runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
+    runtime._started = True
+    runtime._sandbox_canary = SandboxCanaryResult(
+        healthy=False,
+        code="PLUGIN_SANDBOX_CANARY_FAILED",
+        checked_at=datetime.now(timezone.utc),
+    )
+
+    health = runtime.health()
+
+    assert health["ok"] is False
+    assert health["runnable"] is False
+    assert health["runtime_status"] == "UNAVAILABLE"
+    assert health["sandbox"]["state"] == "unavailable"
+    assert health["sandbox"]["code"] == "PLUGIN_SANDBOX_CANARY_FAILED"
 
 
 def test_policy_must_target_exact_generation(tmp_path: Path) -> None:

@@ -82,6 +82,12 @@ class LocalDocFlowApp(
         )
         self.finance_service.initialize_schema()
         self.automation_virtual_task_state: dict[str, dict[str, Any]] = {}
+        # Original carrier pages execute on www.boyi.homes.  Keep the short-lived
+        # ticket and the resulting capability server-side so the Console session
+        # cookie is never shared with that independent origin.
+        self._original_page_state_lock = threading.Lock()
+        self._original_page_tickets: dict[str, dict[str, Any]] = {}
+        self._original_page_capabilities: dict[str, dict[str, Any]] = {}
         self.routes = ConsoleRouteDispatcher()
 
     def _ensure_seed_admin_user(self) -> None:
@@ -143,7 +149,8 @@ class LocalDocFlowApp(
     def handle_proxy_write(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
-        query = parse_qs(parsed.query)
+        if self._handle_isolated_original_page_request(handler, parsed, method=method):
+            return
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
@@ -159,7 +166,9 @@ class LocalDocFlowApp(
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
-        query = parse_qs(parsed.query)
+
+        if self._handle_isolated_original_page_request(handler, parsed, method="GET"):
+            return
 
         if path.startswith("/static/"):
             relpath = path[len("/static/") :]
@@ -171,6 +180,10 @@ class LocalDocFlowApp(
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
+            return
+        if path.startswith("/original-pages/") and path.endswith("/launch"):
+            provider = path[len("/original-pages/") : -len("/launch")].strip("/")
+            self._mint_isolated_original_page_ticket(handler, provider)
             return
         if self.routes.handle_get(self, handler, path, parsed.path, query):
             return
@@ -321,6 +334,8 @@ class LocalDocFlowApp(
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
 
+        if self._handle_isolated_original_page_request(handler, parsed, method="POST"):
+            return
         if path == "/login":
             self._handle_login(handler)
             return

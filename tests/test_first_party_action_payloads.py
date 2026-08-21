@@ -240,6 +240,7 @@ class _ReadGenerationLeases:
         expected_generation,
         expected_manifest_sha256,
         lease_id,
+        orchestration_run_id,
         expires_at,
     ):
         snapshot = self._snapshot()
@@ -254,6 +255,7 @@ class _ReadGenerationLeases:
             runtime_metadata=self.capability,
             acquired_at=datetime.now(timezone.utc),
             expires_at=expires_at,
+            orchestration_run_id=orchestration_run_id,
         )
 
     def release_generation(self, lease, *, outcome):

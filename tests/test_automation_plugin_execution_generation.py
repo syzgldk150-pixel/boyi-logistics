@@ -23,7 +23,7 @@ from agent.automation_plugins.models import (
     RuntimeGenerationSnapshot,
     RuntimeLeaseOutcome,
 )
-from agent.automation_plugins.sandbox import BubblewrapPluginSandbox
+from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, SandboxCanaryResult
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, sha256_json
 from agent.orchestration.result_verifier import ResultVerifier
@@ -240,6 +240,7 @@ class _LeaseRepository:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         capability = self.capabilities[automation_id]
@@ -257,6 +258,7 @@ class _LeaseRepository:
             runtime_metadata=capability,
             acquired_at=datetime.now(timezone.utc),
             expires_at=expires_at,
+            orchestration_run_id=orchestration_run_id,
         )
 
     def release_generation(
@@ -290,11 +292,18 @@ class _Issuer:
     broker_endpoint = "unix:///tmp/fake-plugin-broker.sock"
     broker_socket_path = None
 
+    def __init__(self, *, consumed_calls: int = 0) -> None:
+        self._consumed_calls = consumed_calls
+
     def issue(self, **_: object) -> str:
         return "test-capability"
 
     def revoke(self, capability: str) -> None:
         assert capability == "test-capability"
+
+    def consumed_call_count(self, capability: str) -> int:
+        assert capability == "test-capability"
+        return self._consumed_calls
 
 
 class _Integrity:
@@ -560,7 +569,7 @@ def test_router_defaults_to_release_hold_before_generation_lease(tmp_path: Path)
     assert sandbox.launch_count == 0
 
 
-def test_invalid_output_after_write_launch_is_outcome_unknown(tmp_path: Path) -> None:
+def test_invalid_output_before_broker_write_is_failed_before_write(tmp_path: Path) -> None:
     capability = _capability(tmp_path)
     leases = _LeaseRepository({"project-a": capability})
     router = PluginExecutionRouter(
@@ -581,8 +590,67 @@ def test_invalid_output_after_write_launch_is_outcome_unknown(tmp_path: Path) ->
     )
 
     assert result["success"] is False
+    assert result["error_code"] == "PLUGIN_OUTPUT_INVALID"
+    assert leases.released[0][1] == RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+
+
+def test_invalid_output_after_broker_write_is_outcome_unknown(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+    leases = _LeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(consumed_calls=1),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(b"not-json"),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(
+            capability,
+            {},
+            trusted_invocation_context=_trusted_binding(capability),
+        )
+    )
+
     assert result["error_code"] == "WRITE_OUTCOME_UNKNOWN"
     assert leases.released[0][1] == RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+
+
+def test_lease_run_binding_mismatch_blocks_before_plugin_launch(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+
+    class _MismatchedLeaseRepository(_LeaseRepository):
+        def acquire_committed_generation(self, *args: object, **kwargs: object) -> RuntimeGenerationLease:
+            lease = super().acquire_committed_generation(*args, **kwargs)
+            return RuntimeGenerationLease(
+                **{**lease.__dict__, "orchestration_run_id": "another-run"}
+            )
+
+    leases = _MismatchedLeaseRepository({"project-a": capability})
+    sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"]))))
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=sandbox,
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    with pytest.raises(PluginExecutionError) as raised:
+        asyncio.run(
+            router.execute(
+                capability,
+                {},
+                trusted_invocation_context=_trusted_binding(capability),
+            )
+        )
+
+    assert raised.value.code == "PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT"
+    assert sandbox.launch_count == 0
+    assert leases.released[0][1] == RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
 
 
 def test_plugin_catalog_never_exposes_project_actions_to_llm() -> None:
@@ -716,7 +784,12 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     executable = tmp_path / "bwrap"
     executable.write_text("binary", encoding="utf-8")
     install_root = tmp_path / "install"
-    install_root.mkdir()
+    (install_root / "venv" / "bin").mkdir(parents=True)
+    (install_root / "venv" / "bin" / "python").write_text("python", encoding="utf-8")
+    (install_root / "venv" / "pyvenv.cfg").write_text(
+        f"home = {sys.prefix}/bin\n",
+        encoding="utf-8",
+    )
     captured: dict[str, object] = {}
     sentinel = object()
 
@@ -737,6 +810,83 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     )
     assert result is sentinel
     assert captured["start_new_session"] is True
+    command = tuple(str(item) for item in captured["args"])
+    assert "--clearenv" not in command
+    assert str(sys.base_prefix) in command
+
+
+def test_router_reports_cached_sandbox_canary_from_fake_launcher() -> None:
+    checked_at = datetime.now(timezone.utc)
+
+    class _CanarySandbox:
+        def __init__(self, result: SandboxCanaryResult) -> None:
+            self.result = result
+            self.calls = 0
+
+        async def startup_canary(self) -> SandboxCanaryResult:
+            self.calls += 1
+            return self.result
+
+    good = _CanarySandbox(SandboxCanaryResult(True, "OK", checked_at))
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(),
+        sandbox_launcher=good,
+    )
+    assert asyncio.run(router.startup_sandbox_canary()) == good.result
+    assert good.calls == 1
+
+    broken = _CanarySandbox(
+        SandboxCanaryResult(False, "PLUGIN_SANDBOX_CANARY_FAILED", checked_at)
+    )
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(),
+        sandbox_launcher=broken,
+    )
+    assert asyncio.run(router.startup_sandbox_canary()).code == "PLUGIN_SANDBOX_CANARY_FAILED"
+    assert broken.calls == 1
+
+
+def test_bubblewrap_canary_caches_success_and_never_uses_broker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bwrap"
+    executable.write_text("binary", encoding="utf-8")
+    base = tmp_path / "base"
+    (base / "bin").mkdir(parents=True)
+    (base / "bin" / "python").write_text("binary", encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    captured: dict[str, object] = {}
+
+    class _CanaryProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b'{"ok": true}\n', b""
+
+    async def _spawn(*args: object, **kwargs: object) -> _CanaryProcess:
+        captured["args"] = args
+        captured.update(kwargs)
+        return _CanaryProcess()
+
+    monkeypatch.setattr("agent.automation_plugins.sandbox.asyncio.create_subprocess_exec", _spawn)
+    sandbox = BubblewrapPluginSandbox(
+        executable,
+        trusted_base_prefix=base,
+        trusted_runtime_prefix=runtime,
+    )
+    first = asyncio.run(sandbox.startup_canary())
+    second = asyncio.run(sandbox.startup_canary())
+
+    assert first.healthy is True
+    assert second == first
+    command = tuple(str(item) for item in captured["args"])
+    assert "--clearenv" not in command
+    assert str(base) in command
+    assert "BOYI_PLUGIN_EXECUTION_CAPABILITY" not in command
 
 
 def test_concurrent_invocation_cancel_is_bound_to_exact_run(tmp_path: Path) -> None:
@@ -812,9 +962,9 @@ def test_concurrent_invocation_cancel_is_bound_to_exact_run(tmp_path: Path) -> N
         return result_a, result_b
 
     result_a, result_b = asyncio.run(_exercise())
-    assert result_a["error_code"] == "WRITE_OUTCOME_UNKNOWN"
-    assert result_b["error_code"] == "WRITE_OUTCOME_UNKNOWN"
+    assert result_a["error_code"] == "PLUGIN_PROCESS_FAILED"
+    assert result_b["error_code"] == "PLUGIN_PROCESS_FAILED"
     assert [outcome for _, outcome in leases.released] == [
-        RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN,
-        RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN,
+        RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
+        RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
     ]

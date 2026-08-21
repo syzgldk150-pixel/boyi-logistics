@@ -44,9 +44,7 @@ class DocumentServiceMixin:
         if document is not None:
             pending_docs = self._pin_document_to_top(pending_docs, document["id"])
         mode_value = query.get("mode", [""])[0].strip().lower()
-        active_original_page_disabled = mode_value in {"yunda", "ronghui"}
-        if active_original_page_disabled:
-            mode_value = ""
+        active_original_page_disabled = False
         boyi_frame_mode = document is None and str(query.get("boyi_frame", [""])[0]).strip().lower() in {"1", "true", "yes"}
         ocr_mode = document is None and mode_value == "ocr"
         yunda_mode = document is None and mode_value == "yunda"

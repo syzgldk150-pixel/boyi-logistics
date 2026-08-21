@@ -840,6 +840,91 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(submit_sms.call_args.kwargs["sms_code"], "123456")
         submit_captcha.assert_not_called()
 
+    def test_yunda_sms_pending_is_saved_only_after_send_api_confirms_success(self):
+        yunda_broker = SessionBroker(
+            profile_name="yunda", login_mode="yunda_password", require_phone=False
+        )
+        self._configure_broker_state(yunda_broker, "yunda-sms-send-success")
+        yunda_config = LoginConfig(
+            base_origin="https://ky-sso.yunda56.com",
+            login_url="https://ky-sso.yunda56.com/login",
+            home_url="https://ky-client.yunda56.com/#/",
+            username="yunda-user", password="yunda-pass", phone="",
+        )
+
+        class SendButton:
+            def is_visible(self, timeout=None): return True
+            def is_enabled(self, timeout=None): return True
+            def click(self, timeout=None): return None
+
+        response = types.SimpleNamespace(
+            request=types.SimpleNamespace(method="POST"),
+            url="https://ky-sso.yunda56.com/public/sms/send_code",
+            status=200,
+            json=lambda: {"success": True},
+        )
+
+        class ExpectedResponse:
+            value = response
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, traceback): return False
+
+        page = Mock(url="https://ky-sso.yunda56.com/public/sms/sms_valid")
+        page.locator.return_value.first = SendButton()
+        page.expect_response.side_effect = lambda predicate, timeout: (
+            ExpectedResponse() if predicate(response) and timeout == 10_000 else None
+        )
+        result = yunda_broker._save_yunda_sms_pending_state_locked(
+            _FakeContext(page), page, config=yunda_config
+        )
+
+        self.assertEqual("pending_code", result["status"])
+        self.assertTrue(yunda_broker._pending_storage_state_path.exists())
+        self.assertTrue(yunda_broker._pending_login_state_path.exists())
+
+    def test_yunda_sms_send_rejection_does_not_create_pending_state(self):
+        yunda_broker = SessionBroker(
+            profile_name="yunda", login_mode="yunda_password", require_phone=False
+        )
+        self._configure_broker_state(yunda_broker, "yunda-sms-send-rejected")
+        yunda_config = LoginConfig(
+            base_origin="https://ky-sso.yunda56.com",
+            login_url="https://ky-sso.yunda56.com/login",
+            home_url="https://ky-client.yunda56.com/#/",
+            username="yunda-user", password="yunda-pass", phone="",
+        )
+
+        class SendButton:
+            def is_visible(self, timeout=None): return True
+            def is_enabled(self, timeout=None): return True
+            def click(self, timeout=None): return None
+
+        response = types.SimpleNamespace(
+            request=types.SimpleNamespace(method="POST"),
+            url="https://ky-sso.yunda56.com/public/sms/send_code",
+            status=200,
+            json=lambda: {"success": False},
+        )
+
+        class ExpectedResponse:
+            value = response
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, traceback): return False
+
+        page = Mock(url="https://ky-sso.yunda56.com/public/sms/sms_valid")
+        page.locator.return_value.first = SendButton()
+        page.expect_response.side_effect = lambda predicate, timeout: (
+            ExpectedResponse() if predicate(response) and timeout == 10_000 else None
+        )
+        with self.assertRaises(session_broker_module.TMSAuthStateError) as raised:
+            yunda_broker._save_yunda_sms_pending_state_locked(
+                _FakeContext(page), page, config=yunda_config
+            )
+
+        self.assertEqual("AUTH_REQUIRED", raised.exception.code)
+        self.assertFalse(yunda_broker._pending_storage_state_path.exists())
+        self.assertFalse(yunda_broker._pending_login_state_path.exists())
+
     def test_yunda_sms_submit_clicks_confirm_without_resending_code(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
         self._configure_broker_state(yunda_broker, "yunda-sms-submit")

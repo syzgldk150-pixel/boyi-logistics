@@ -1420,6 +1420,7 @@ class AutomationPluginGenerationRepositoryMixin:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
         lease_owner: str,
     ) -> dict[str, Any]:
@@ -1433,6 +1434,10 @@ class AutomationPluginGenerationRepositoryMixin:
             "expected_manifest_sha256",
         )
         safe_lease_id = _required_text(lease_id, "lease_id")
+        safe_orchestration_run_id = _required_text(
+            orchestration_run_id,
+            "orchestration_run_id",
+        )
         safe_expires_at = _mysql_datetime(expires_at, "expires_at")
         safe_owner = _required_text(lease_owner, "lease_owner")
         with self.cursor() as cursor:
@@ -1508,16 +1513,17 @@ class AutomationPluginGenerationRepositoryMixin:
             cursor.execute(
                 """
                 INSERT INTO automation_project_generation_leases (
-                    lease_id, automation_id, generation, lease_owner,
+                    lease_id, automation_id, generation, orchestration_run_id, lease_owner,
                     runtime_metadata_json, runtime_metadata_sha256,
                     outcome, acquired_at, expires_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'RUNNING', NOW(6), %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'RUNNING', NOW(6), %s)
                 ON DUPLICATE KEY UPDATE lease_id=lease_id
                 """,
                 (
                     safe_lease_id,
                     safe_automation_id,
                     generation,
+                    safe_orchestration_run_id,
                     safe_owner,
                     _json_param(runtime_metadata, {}),
                     metadata_hash,
@@ -1540,6 +1546,8 @@ class AutomationPluginGenerationRepositoryMixin:
         if (
             str(lease.get("automation_id") or "") != safe_automation_id
             or int(lease.get("generation") or 0) != generation
+            or str(lease.get("orchestration_run_id") or "")
+            != safe_orchestration_run_id
             or str(lease.get("lease_owner") or "") != safe_owner
             or str(lease.get("runtime_metadata_sha256") or "") != metadata_hash
             or _mysql_datetime(lease.get("expires_at"), "expires_at")

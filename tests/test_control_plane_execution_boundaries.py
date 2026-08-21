@@ -243,17 +243,31 @@ def test_customer_service_compatibility_params_flatten_one_action_only() -> None
 
 def test_only_manual_original_page_targets_bypass_command_gateway() -> None:
     assert routes.DIRECT_MANUAL_TARGETS == set()
-    assert routes.DISABLED_ACTIVE_ORIGINAL_PAGE_TARGETS == {
-        "ronghui_waybill_proxy",
-        "yunda_waybill_entry",
-        "yunda_waybill_proxy",
-    }
+    assert routes.DISABLED_ACTIVE_ORIGINAL_PAGE_TARGETS == {"yunda_waybill_entry"}
     assert "receipts_audit" not in routes.DIRECT_MANUAL_TARGETS
     assert "customer_service_problem" not in routes.DIRECT_MANUAL_TARGETS
     assert "clock_in_dual" not in routes.DIRECT_MANUAL_TARGETS
 
 
 def test_manual_proxy_bypass_is_bound_to_surface_and_http_method() -> None:
+    assert routes.authorize_direct_manual_target(
+        "ronghui_waybill_proxy",
+        {
+            "method": "GET",
+            "path": "/module/index",
+            "proxy_prefix": "/original/ronghui",
+        },
+        console_principal_verified=True,
+    )
+    assert routes.authorize_direct_manual_target(
+        "yunda_waybill_proxy",
+        {
+            "method": "POST",
+            "path": "/ky_inms/public/index.php/business/waybill/entry/save.html",
+            "proxy_prefix": "/original/yunda",
+        },
+        console_principal_verified=True,
+    )
     assert not routes.authorize_direct_manual_target(
         "ronghui_waybill_proxy",
         {

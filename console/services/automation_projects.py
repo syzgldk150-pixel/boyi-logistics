@@ -66,6 +66,40 @@ AUTOMATION_PLUGIN_CONFIG_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
 AUTOMATION_PLUGIN_CONFIG_MAX_FIELDS = 100
 AUTOMATION_PLUGIN_CONFIG_MAX_BYTES = 128 * 1024
+AUTOMATION_PLUGIN_CONFIG_COPY = {
+    "dry_run": ("仅预览，不写入", "开启后只检查和预览结果，不会真正修改业务系统或表格。"),
+    "target_date": ("业务日期", "留空时使用当天；需要补跑历史数据时再选择日期。"),
+    "start_date": ("开始日期", "需要处理日期范围时填写。"),
+    "end_date": ("结束日期", "需要处理日期范围时填写。"),
+    "batch_size": ("每批处理数量", "单次处理多少条；通常保持默认即可。"),
+    "max_batches": ("最多处理批次", "限制本次最多处理多少批，留空表示按任务默认范围。"),
+    "page_size": ("每页读取数量", "通常保持默认即可。"),
+    "max_pages": ("最多读取页数", "限制本次最多读取多少页。"),
+    "limit": ("最多处理数量", "限制本次处理总量，留空使用任务默认范围。"),
+    "skip_bill_codes": ("跳过这些单号", "每行填写一个不需要处理的扫描单号。"),
+    "selected_bill_codes": ("本次选择的单号", "每行填写一个需要处理的单号。"),
+    "bill_codes": ("运单号", "每行填写一个需要处理的运单号。"),
+    "record_ids": ("记录编号", "每行填写一个需要处理的记录编号。"),
+    "child_item_limit": ("子单处理上限", "只处理前 N 条子单，留空表示不额外限制。"),
+    "child_count_limit": ("子单统计上限", "只统计前 N 个主单的子单，留空表示不额外限制。"),
+    "missing_limit": ("缺失件检查上限", "只检查前 N 条缺失记录，留空表示不额外限制。"),
+    "export_limit": ("导出数量上限", "只导出前 N 条统计记录，留空表示不额外限制。"),
+    "scan_window_days": ("扫描日期范围", "填写 1 表示只处理当天扫描；通常保持默认即可。"),
+    "scan_codes_retention_days": ("扫描记录保留天数", "填写 0 表示不自动清理历史扫描记录。"),
+    "archive_snapshot": ("保存归档快照", "开启后保存本次统计结果的归档副本。"),
+    "pending_sheet_disabled": ("暂停写入未齐货物表", "开启后不更新“未齐货物”表。"),
+    "refresh_disabled": ("不刷新当天扫描集合", "兼容选项，通常保持关闭。"),
+    "dest_brch": ("目的网点编码", "填写本项目固定使用的目的网点编码。"),
+    "direction": ("查询方向", "选择本次查询的业务方向。"),
+    "recheck_items": ("重新检查已有问题", "开启后也会重新检查已保存的问题件。"),
+    "days": ("统计天数", "设置需要统计最近多少天。"),
+    "plate_numbers": ("车牌号", "每行填写一个需要处理的车牌号。"),
+    "mode": ("运行模式", "选择本次任务的处理方式。"),
+    "platform": ("业务平台", "选择本项目使用的平台。"),
+    "batch_id": ("批次编号", "仅在需要处理指定批次时填写。"),
+    "sync_sheet": ("同步到表格", "开启后把结果同步到项目绑定的表格。"),
+}
+AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS = frozenset(AUTOMATION_PLUGIN_CONFIG_COPY)
 
 
 def _normalize_browser_plugin_config_value(
@@ -606,11 +640,18 @@ def _normalize_plugin_config_schema(
             kind = "select" if enum is not None else "text"
         key = path[-1]
         secret = str(node.get("format") or "").lower() == "password" or key.lower() in AUTOMATION_SECRET_FIELD_NAMES or key.lower().endswith("_token")
+        raw_label = normalize_feedback_text(redact_text(str(node.get("title") or key)))[:100]
+        raw_hint = normalize_feedback_text(redact_text(str(node.get("description") or "")))[:240]
+        friendly_label, friendly_hint = AUTOMATION_PLUGIN_CONFIG_COPY.get(
+            key, (raw_label, raw_hint)
+        )
         fields.append(
             {
                 "path": ".".join(path),
-                "label": normalize_feedback_text(redact_text(str(node.get("title") or key)))[:100],
-                "hint": normalize_feedback_text(redact_text(str(node.get("description") or "")))[:240],
+                "label": friendly_label,
+                "hint": friendly_hint,
+                "technical_name": key,
+                "advanced": key not in AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS,
                 "kind": kind,
                 "value": "" if secret or not present else value,
                 "present": present and not secret,

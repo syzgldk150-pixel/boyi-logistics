@@ -1,6 +1,13 @@
 # Nginx 生产边界
 
-`boyi-worker-mtls.conf` 必须作为一个整体、且仅一次 include 在 `boyi.homes` 的 HTTPS
+当前生产站点使用 `boyi.homes.conf`。主站 `https://boyi.homes` 保留 `SAMEORIGIN`，只有
+`https://www.boyi.homes/original/` 代理到 Console，供韵达/融辉原页在独立 origin 内运行；
+`www` 的其他路径一律跳回主站。系统配置不由应用发布脚本自动覆盖，管理员必须先备份
+`/etc/nginx/conf.d/boyi.homes.conf`，安装当前提交中的同名文件，执行 `sudo -n nginx -t`，
+成功后才 reload；测试或 reload 失败时恢复备份并再次测试。
+
+`boyi-worker-mtls.conf` 是未来重新启用 Windows Worker 时的保留合同。届时必须作为一个整体、
+且仅一次 include 在 `boyi.homes` 的 HTTPS
 `server {}` 内。它使用 server 级 `ssl_verify_client optional` 保持普通 Console/内部 API 客户端
 不必提供证书，仅在精确的 `/internal/v1/automation/worker/` location 要求验证结果为 `SUCCESS`。
 

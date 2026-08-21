@@ -298,6 +298,10 @@ class RuntimeGenerationLease:
     acquired_at: datetime
     expires_at: datetime
     outcome: RuntimeLeaseOutcome = RuntimeLeaseOutcome.RUNNING
+    # Legacy rows from before migration 019 intentionally remain unbound.
+    # New runtime acquisitions always populate this from the trusted
+    # orchestration invocation context.
+    orchestration_run_id: str | None = None
 
 
 @dataclass(frozen=True)

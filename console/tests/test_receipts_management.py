@@ -262,6 +262,13 @@ def _build_app(repository):
         },
         "actor_roles": ["super_admin"],
         "source": "console",
+        "_console_principal": {
+            "actor_type": "console_admin",
+            "actor_id": "7",
+            "roles": ["super_admin"],
+            "display_name": "tester",
+            "authenticated_by": "mysql_admin_session",
+        },
     }
     app._control_plane_read_context = app._control_plane_write_context
     app.template_env = Environment(
@@ -1404,7 +1411,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_yunda_live_proxy_uses_receipt_prefix_and_existing_agent_endpoint(self):
         app = _build_app(_ReceiptRepo())
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -1437,7 +1444,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_ronghui_live_proxy_uses_receipt_prefix_and_existing_agent_endpoint(self):
         app = _build_app(_ReceiptRepo())
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,

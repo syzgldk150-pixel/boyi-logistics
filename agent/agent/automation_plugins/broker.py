@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
+import os
+import re
 import secrets
 import threading
 import uuid
@@ -57,6 +60,7 @@ class _BrokerGrantState:
     grant: BrokerGrant
     remaining_calls: int
     request_ids: set[str]
+    consumed_calls: int = 0
 
 
 @runtime_checkable
@@ -149,6 +153,17 @@ class LocalBrokerCapabilityIssuer:
         with self._lock:
             self._grants.pop(digest, None)
 
+    def consumed_call_count(self, capability: str) -> int:
+        digest = hashlib.sha256(str(capability).encode("ascii", errors="ignore")).hexdigest()
+        with self._lock:
+            state = self._grants.get(digest)
+            if state is None:
+                raise PluginExecutionError(
+                    "core broker capability observation is unavailable",
+                    code="BROKER_OBSERVATION_UNAVAILABLE",
+                )
+            return state.consumed_calls
+
     def consume(
         self,
         capability: str,
@@ -186,6 +201,7 @@ class LocalBrokerCapabilityIssuer:
             else:
                 state.request_ids.add(normalized_request_id)
                 state.remaining_calls -= 1
+                state.consumed_calls += 1
         if state is None:
             raise PluginExecutionError("core broker capability is invalid or expired", code="BROKER_CAPABILITY_INVALID")
         grant = state.grant
@@ -262,12 +278,45 @@ class LocalCoreAutomationBroker:
     async def start(self) -> None:
         path = self._issuer.broker_socket_path
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._reclaim_dead_sibling_sockets(path)
         if path.exists():
             if path.is_symlink() or not path.is_socket():
                 raise PluginExecutionError("refusing to replace an unsafe broker endpoint")
             path.unlink()
         self._server = await asyncio.start_unix_server(self._handle, path=str(path))
         path.chmod(0o600)
+
+    @staticmethod
+    def _reclaim_dead_sibling_sockets(current: Path) -> None:
+        """Remove only dead-agent sibling Unix sockets; preserve all other entries."""
+
+        pattern = re.compile(r"agent-([1-9][0-9]*)\.sock\Z")
+        try:
+            entries = tuple(current.parent.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if entry == current:
+                continue
+            matched = pattern.fullmatch(entry.name)
+            if matched is None:
+                continue
+            try:
+                if entry.is_symlink() or not entry.is_socket():
+                    continue
+                pid = int(matched.group(1))
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    entry.unlink()
+                except PermissionError:
+                    continue
+                except OSError as exc:
+                    if exc.errno != errno.ESRCH:
+                        continue
+                    entry.unlink()
+            except OSError:
+                continue
 
     async def stop(self) -> None:
         if self._server is not None:

@@ -1984,6 +1984,7 @@ class SmokeGate(str, Enum):
     RUNNER_HOLD = "runner_hold"
     RUNNER_ACTIVE = "runner_active"
     PLUGIN_BROKER = "plugin_broker"
+    PLUGIN_SANDBOX = "plugin_sandbox"
     PLUGIN_CATALOG_UNSUPPORTED = "plugin_catalog_unsupported"
     PLUGIN_CATALOG_ENABLED_BUILTIN = "plugin_catalog_enabled_builtin"
     PLUGIN_CATALOG_INVALID_TRUST = "plugin_catalog_invalid_trust"
@@ -2095,6 +2096,16 @@ try:
         or automation_plugins["broker"].get("state") != "running"
     ):
         raise RuntimeError("automation plugin broker is not release-ready")
+    failure_gate = SmokeGate.PLUGIN_SANDBOX
+    plugin_sandbox = automation_plugins.get("sandbox")
+    if (
+        not isinstance(plugin_sandbox, dict)
+        or plugin_sandbox.get("state") != "ready"
+        or plugin_sandbox.get("code") != "OK"
+        or not isinstance(plugin_sandbox.get("checked_at"), str)
+        or not plugin_sandbox["checked_at"]
+    ):
+        raise RuntimeError("automation plugin sandbox canary is not release-ready")
     failure_gate = SmokeGate.PLUGIN_CATALOG_AGGREGATE_OR_SHAPE
     plugin_catalog = automation_plugins.get("catalog")
     if not isinstance(plugin_catalog, dict):
