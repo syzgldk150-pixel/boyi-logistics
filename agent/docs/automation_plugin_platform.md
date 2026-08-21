@@ -173,9 +173,13 @@ python scripts/build_first_party_plugin_release.py \
 不得进入插件 stdin、env 或结果，结果只带服务端生成的 binding-set proof。缺绑定或登录失效返回
 `BLOCKED_CONFIG` / `BLOCKED_LOGIN`，不选择默认账号、不切换账号、不回落旧工具。
 
-插件统一输出经过签名 output Schema 验证；写动作成功只进入 `VERIFYING`，必须由核心
-ResultVerifier 验证具名 postcondition 与 Evidence 后才可成为 `WRITE_VERIFIED`。进程启动后的超时、
-取消、无效 JSON 或异常一律视为 `WRITE_OUTCOME_UNKNOWN`，未知写会阻断旧代清理和卸载。
+  插件统一输出经过签名 output Schema 验证；写动作成功只进入 `VERIFYING`，必须由核心
+  ResultVerifier 验证具名 postcondition 与 Evidence 后才可成为 `WRITE_VERIFIED`。每次写调用的
+  失败、超时、取消或无效输出都由核心 Broker 的已消耗请求数分类：已启动进程且消耗至少一次请求，
+  或已启动进程但该观察不可用时，进入 `WRITE_OUTCOME_UNKNOWN`；已证明零次消耗、或根本未启动时，
+  为 `FAILED_BEFORE_WRITE`。未知写会阻断旧代清理和卸载。Bubblewrap 只绑定 Agent 自身受信
+  CPython base prefix（生产为 `/opt/python3.10`）；不可变 venv 的 `pyvenv.cfg` 必须精确声明
+  `<trusted-prefix>/bin`，不能借该文件扩大挂载范围。
 
 ## Desired / committed generation
 

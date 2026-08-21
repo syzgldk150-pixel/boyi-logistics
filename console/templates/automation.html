@@ -472,14 +472,14 @@
             <fieldset {% if not (policy.available and can_manage_approval_policies) %}disabled{% endif %}>
               <legend>选择项目的运行方式</legend>
               <label class="auto-project-policy-option">
-                <input type="radio" value="REQUIRE_EACH_RUN" data-project-policy-mode {% if policy.configured_mode == 'REQUIRE_EACH_RUN' %}checked{% endif %}>
+                <input type="radio" name="project-policy-{{ task.task_id }}" value="REQUIRE_EACH_RUN" data-project-policy-mode {% if policy.configured_mode == 'REQUIRE_EACH_RUN' %}checked{% endif %}>
                 <span>
                   <strong>每次运行审批</strong>
                   <small>项目已启用的全部可信入口，每次运行都先进入本项目待审批。</small>
                 </span>
               </label>
               <label class="auto-project-policy-option">
-                <input type="radio" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %}>
+                <input type="radio" name="project-policy-{{ task.task_id }}" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %}>
                 <span>
                   <strong>完全自动</strong>
                   <small>项目清单允许的定时、后台、飞书与验签 Webhook 入口按已保存配置执行。</small>
@@ -2554,5 +2554,5 @@
 
   feather.replace();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260821-plugin-manager1" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260821-plugin-runtime-policy2" defer></script>
 {% endblock %}

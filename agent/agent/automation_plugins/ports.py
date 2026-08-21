@@ -252,6 +252,9 @@ class ExecutionCapabilityIssuerPort(Protocol):
 
     def revoke(self, capability: str) -> None: ...
 
+    def consumed_call_count(self, capability: str) -> int:
+        """Return core-owned broker requests consumed by this exact capability."""
+
 
 @runtime_checkable
 class FirstPartyPackageProvider(Protocol):

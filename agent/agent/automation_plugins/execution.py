@@ -41,7 +41,6 @@ MAX_PLUGIN_OUTPUT_BYTES = 10 * 1024 * 1024
 MAX_PLUGIN_STDERR_BYTES = 1024 * 1024
 _WRITE_TYPES = frozenset({"internal_projection_write", "external_write", "financial_write", "destructive"})
 _FORBIDDEN_ARGUMENT_TOKENS = ("password", "cookie", "credential", "secret", "token")
-_PREWRITE_SESSION_FAILURE_CODES = frozenset({"AUTH_REQUIRED", "AUTH_PENDING_CODE"})
 
 
 class FilesystemPluginIntegrityVerifier:
@@ -249,6 +248,26 @@ class PluginExecutionRouter:
                 raise PluginExecutionError("plugin process output exceeded the allowed limit")
             chunks.append(chunk)
 
+    @classmethod
+    async def _collect_bounded_process_output(cls, proc: asyncio.subprocess.Process) -> None:
+        """Drain failed sandbox output without exposing transport internals."""
+
+        if proc.stdout is None or proc.stderr is None:
+            return
+        await asyncio.gather(
+            cls._read_limited(proc.stdout, MAX_PLUGIN_OUTPUT_BYTES),
+            cls._read_limited(proc.stderr, MAX_PLUGIN_STDERR_BYTES),
+            return_exceptions=True,
+        )
+
+    @staticmethod
+    async def _cancel_and_reap_tasks(*tasks: asyncio.Task[bytes] | None) -> None:
+        pending = [task for task in tasks if task is not None and not task.done()]
+        for task in pending:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*(task for task in tasks if task is not None), return_exceptions=True)
+
     @staticmethod
     def _lease_capability(
         lease: RuntimeGenerationLease,
@@ -291,11 +310,31 @@ class PluginExecutionRouter:
         return result
 
     @staticmethod
+    def _write_failure_outcome(
+        capability: Mapping[str, Any],
+        *,
+        process_launched: bool,
+        consumed_call_count: int | None,
+    ) -> RuntimeLeaseOutcome:
+        if capability.get("operation_type") not in _WRITE_TYPES:
+            return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+        if consumed_call_count is not None and consumed_call_count > 0:
+            return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+        if consumed_call_count == 0:
+            return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+        return (
+            RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+            if process_launched
+            else RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+        )
+
+    @staticmethod
     def _lease_outcome(
         capability: Mapping[str, Any],
         result: Mapping[str, Any],
         *,
         process_launched: bool,
+        consumed_call_count: int | None = None,
     ) -> RuntimeLeaseOutcome:
         error_code = str(result.get("error_code") or "").upper()
         nested_error = result.get("error")
@@ -308,11 +347,43 @@ class PluginExecutionRouter:
             if capability.get("operation_type") in _WRITE_TYPES:
                 return RuntimeLeaseOutcome.VERIFYING
             return RuntimeLeaseOutcome.SUCCEEDED
-        if error_code in _PREWRITE_SESSION_FAILURE_CODES:
-            return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
-        if capability.get("operation_type") in _WRITE_TYPES and process_launched:
-            return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
-        return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+        return PluginExecutionRouter._write_failure_outcome(
+            capability,
+            process_launched=process_launched,
+            consumed_call_count=consumed_call_count,
+        )
+
+    def _observe_consumed_calls(
+        self,
+        capability: str,
+        execution_state: dict[str, object],
+    ) -> None:
+        try:
+            observed = self._issuer.consumed_call_count(capability)
+            if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
+                raise ValueError("invalid broker call count")
+            execution_state["consumed_call_count"] = observed
+        except Exception:
+            execution_state["consumed_call_count"] = None
+
+    def _failure_code(
+        self,
+        capability: Mapping[str, Any],
+        fallback: str,
+        token: str,
+        execution_state: dict[str, object] | None,
+    ) -> str:
+        if capability.get("operation_type") not in _WRITE_TYPES:
+            return fallback
+        if execution_state is None:
+            return "WRITE_OUTCOME_UNKNOWN"
+        self._observe_consumed_calls(token, execution_state)
+        outcome = self._write_failure_outcome(
+            capability,
+            process_launched=bool(execution_state["process_launched"]),
+            consumed_call_count=execution_state["consumed_call_count"],
+        )
+        return fallback if outcome is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE else "WRITE_OUTCOME_UNKNOWN"
 
     async def execute(
         self,
@@ -368,7 +439,7 @@ class PluginExecutionRouter:
         )
         resolved = self._lease_capability(lease, automation_id=automation_id)
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
-        execution_state = {"process_launched": False}
+        execution_state: dict[str, object] = {"process_launched": False, "consumed_call_count": None}
         try:
             result = await self._execute_plugin(
                 resolved,
@@ -381,7 +452,8 @@ class PluginExecutionRouter:
             outcome = self._lease_outcome(
                 resolved,
                 result,
-                process_launched=execution_state["process_launched"],
+                process_launched=bool(execution_state["process_launched"]),
+                consumed_call_count=execution_state["consumed_call_count"],
             )
             if outcome in {RuntimeLeaseOutcome.VERIFYING, RuntimeLeaseOutcome.SUCCEEDED}:
                 raw_account_bindings = resolved["_plugin_runtime"].get("account_bindings")
@@ -417,15 +489,18 @@ class PluginExecutionRouter:
                     ),
                 )
             return result
+        except asyncio.CancelledError:
+            outcome = self._write_failure_outcome(
+                resolved,
+                process_launched=bool(execution_state["process_launched"]),
+                consumed_call_count=execution_state["consumed_call_count"],
+            )
+            raise
         except Exception:
-            # Any subprocess write that passed launch reports its uncertainty
-            # as a normal result. Exceptions here are pre-write/control-plane
-            # failures and therefore safe to record as FAILED_BEFORE_WRITE.
-            outcome = (
-                RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
-                if resolved.get("operation_type") in _WRITE_TYPES
-                and execution_state["process_launched"]
-                else RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+            outcome = self._write_failure_outcome(
+                resolved,
+                process_launched=bool(execution_state["process_launched"]),
+                consumed_call_count=execution_state["consumed_call_count"],
             )
             raise
         finally:
@@ -437,7 +512,7 @@ class PluginExecutionRouter:
         params: Mapping[str, Any],
         *,
         trusted_scheduler_context: Mapping[str, object] | None = None,
-        execution_state: dict[str, bool] | None = None,
+        execution_state: dict[str, object] | None = None,
         invocation_id: str,
         run_binding: Mapping[str, str],
     ) -> Mapping[str, Any]:
@@ -517,24 +592,54 @@ class PluginExecutionRouter:
             }
         )
         proc: asyncio.subprocess.Process | None = None
+        stdout_task: asyncio.Task[bytes] | None = None
+        stderr_task: asyncio.Task[bytes] | None = None
+        launch_task: asyncio.Task[object] | None = None
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            launched = await self._sandbox.launch(
-                install_root=root,
-                python_relative=python_relative.as_posix(),
-                entrypoint_relative=entry_relative.as_posix(),
-                environment=self._minimal_environment(
-                    capability=token,
-                    automation_id=automation_id,
-                    plugin_id=plugin_id,
-                    plugin_version=version,
-                    broker_endpoint=self._issuer.broker_endpoint,
-                    broker_call_timeout_seconds=timeout,
-                ),
-                broker_socket_path=self._issuer.broker_socket_path,
-            )
+            try:
+                launch_task = asyncio.create_task(
+                    self._sandbox.launch(
+                        install_root=root,
+                        python_relative=python_relative.as_posix(),
+                        entrypoint_relative=entry_relative.as_posix(),
+                        environment=self._minimal_environment(
+                            capability=token,
+                            automation_id=automation_id,
+                            plugin_id=plugin_id,
+                            plugin_version=version,
+                            broker_endpoint=self._issuer.broker_endpoint,
+                            broker_call_timeout_seconds=timeout,
+                        ),
+                        broker_socket_path=self._issuer.broker_socket_path,
+                    ),
+                )
+                launched = await asyncio.shield(launch_task)
+            except asyncio.CancelledError:
+                if launch_task is not None:
+                    try:
+                        launched = await asyncio.shield(launch_task)
+                    except Exception:
+                        launched = None
+                    if isinstance(launched, asyncio.subprocess.Process):
+                        if execution_state is not None:
+                            execution_state["process_launched"] = True
+                        await self._terminate(launched)
+                raise
+            except Exception:
+                return {
+                    "success": False,
+                    "error": "plugin sandbox could not start safely",
+                    "error_code": "PLUGIN_SANDBOX_START_FAILED",
+                    "retryable": False,
+                }
             if not isinstance(launched, asyncio.subprocess.Process):
-                raise PluginExecutionError("sandbox launcher returned an invalid process")
+                return {
+                    "success": False,
+                    "error": "plugin sandbox could not start safely",
+                    "error_code": "PLUGIN_SANDBOX_START_FAILED",
+                    "retryable": False,
+                }
             proc = launched
             if execution_state is not None:
                 execution_state["process_launched"] = True
@@ -547,62 +652,108 @@ class PluginExecutionRouter:
                 "generation": metadata.get("generation"),
                 **dict(run_binding),
             }
-            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-            proc.stdin.write(payload)
-            await proc.stdin.drain()
-            proc.stdin.close()
+            if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+                await self._terminate(proc)
+                await self._collect_bounded_process_output(proc)
+                return {
+                    "success": False,
+                    "error": "plugin sandbox could not start safely",
+                    "error_code": "PLUGIN_SANDBOX_START_FAILED",
+                    "retryable": False,
+                }
             stdout_task = asyncio.create_task(self._read_limited(proc.stdout, MAX_PLUGIN_OUTPUT_BYTES))
             stderr_task = asyncio.create_task(self._read_limited(proc.stderr, MAX_PLUGIN_STDERR_BYTES))
+            deadline = asyncio.get_running_loop().time() + timeout
+            try:
+                async def _send_stdin() -> None:
+                    proc.stdin.write(payload)
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+
+                await asyncio.wait_for(_send_stdin(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self._terminate(proc)
+                await self._cancel_and_reap_tasks(stdout_task, stderr_task)
+                return {
+                    "success": False,
+                    "error": "plugin sandbox did not accept its request before the execution deadline",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_EXECUTION_LIMIT", token, execution_state
+                    ),
+                    "retryable": False,
+                }
+            except asyncio.CancelledError:
+                await self._terminate(proc)
+                await self._cancel_and_reap_tasks(stdout_task, stderr_task)
+                raise
+            except Exception:
+                await self._terminate(proc)
+                await self._cancel_and_reap_tasks(stdout_task, stderr_task)
+                return {
+                    "success": False,
+                    "error": "plugin sandbox could not accept its request",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_SANDBOX_START_FAILED", token, execution_state
+                    ),
+                    "retryable": False,
+                }
             try:
                 stdout, stderr, _ = await asyncio.wait_for(
                     asyncio.gather(stdout_task, stderr_task, proc.wait()),
-                    timeout=timeout,
+                    timeout=max(0.001, deadline - asyncio.get_running_loop().time()),
                 )
+            except asyncio.CancelledError:
+                await self._terminate(proc)
+                await self._cancel_and_reap_tasks(stdout_task, stderr_task)
+                raise
             except (asyncio.TimeoutError, PluginExecutionError):
                 await self._terminate(proc)
-                for task in (stdout_task, stderr_task):
-                    if not task.done():
-                        task.cancel()
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
+                await self._cancel_and_reap_tasks(stdout_task, stderr_task)
                 return {
                     "success": False,
                     "error": "plugin execution timed out or exceeded its output limit",
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_EXECUTION_LIMIT",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_EXECUTION_LIMIT", token, execution_state
+                    ),
                     "retryable": False,
                 }
             if proc.returncode != 0:
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
                 return {
                     "success": False,
                     "error": redact_text(stderr.decode("utf-8", errors="replace"))[-500:],
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_PROCESS_FAILED",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_PROCESS_FAILED", token, execution_state
+                    ),
                     "retryable": False,
                 }
             try:
                 result = json.loads(stdout.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
                 return {
                     "success": False,
                     "error": "plugin output is not one UTF-8 JSON value",
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_OUTPUT_INVALID",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_OUTPUT_INVALID", token, execution_state
+                    ),
                     "retryable": False,
                 }
             if not isinstance(result, dict):
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
                 return {
                     "success": False,
                     "error": "plugin output must be a JSON object",
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_OUTPUT_INVALID",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_OUTPUT_INVALID", token, execution_state
+                    ),
                     "retryable": False,
                 }
             output_schema = capability.get("output_schema")
             if not isinstance(output_schema, Mapping):
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
                 return {
                     "success": False,
                     "error": "signed plugin output schema is missing",
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_OUTPUT_INVALID",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_OUTPUT_INVALID", token, execution_state
+                    ),
                     "retryable": False,
                 }
             try:
@@ -612,20 +763,22 @@ class PluginExecutionRouter:
                     output_schema,
                 )
             except (KeyError, TypeError, ValueError):
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
                 return {
                     "success": False,
                     "error": "plugin output does not match its signed schema",
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_OUTPUT_INVALID",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_OUTPUT_INVALID", token, execution_state
+                    ),
                     "retryable": False,
                 }
             required_result_fields = {"status", "data", "meta", "warnings", "error"}
             if not required_result_fields <= set(result):
-                unknown_write = capability.get("operation_type") in _WRITE_TYPES
                 return {
                     "success": False,
                     "error": "plugin output does not use the unified result contract",
-                    "error_code": "WRITE_OUTCOME_UNKNOWN" if unknown_write else "PLUGIN_OUTPUT_INVALID",
+                    "error_code": self._failure_code(
+                        capability, "PLUGIN_OUTPUT_INVALID", token, execution_state
+                    ),
                     "retryable": False,
                 }
             if str(result.get("status") or "").upper() != "SUCCESS":
@@ -633,6 +786,8 @@ class PluginExecutionRouter:
             return result
         finally:
             self._running.pop(invocation_id, None)
+            if execution_state is not None:
+                self._observe_consumed_calls(token, execution_state)
             self._issuer.revoke(token)
 
     def running_tool_info(self, tool_name: str) -> dict[str, Any]:
