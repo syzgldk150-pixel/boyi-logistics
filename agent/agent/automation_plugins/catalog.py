@@ -1131,6 +1131,17 @@ class CompositeToolRegistry:
     def get_project_capability(self, automation_id: str) -> Mapping[str, Any]:
         return self._plugins.get_project_capability(automation_id)
 
+    def reviewed_unknown_write_quarantine_status(
+        self,
+        automation_id: str,
+    ) -> str | None:
+        """Expose only the catalog's strict reviewed-incident check."""
+
+        return self._plugins.reviewed_unknown_write_quarantine_status(
+            automation_id,
+            fail_closed=True,
+        )
+
     def delivery_status_unknown_write_quarantine_status(self) -> str | None:
         """Expose only the catalog's strict incident check to the scheduler."""
 

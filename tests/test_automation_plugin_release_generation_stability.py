@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 import pytest
 
 from agent.automation_plugins.binding_resolver import ProductionProjectBindingResolver
-from agent.automation_plugins.catalog import PluginCatalog
+from agent.automation_plugins.catalog import CompositeToolRegistry, PluginCatalog
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.first_party import (
     deferred_first_party_automation_ids,
@@ -1262,6 +1262,17 @@ def test_exact_reviewed_unknown_writes_keep_global_health_degraded_but_release_o
     world = _build_release_world()
     _reconcile_world(world)
     catalog = _quarantine_reviewed_unknown_writes(world)
+
+    composite = CompositeToolRegistry(world.core, catalog)
+    assert {
+        automation_id: composite.reviewed_unknown_write_quarantine_status(
+            automation_id
+        )
+        for automation_id in REVIEWED_UNKNOWN_WRITE_QUARANTINES
+    } == {
+        automation_id: "QUARANTINED_UNKNOWN_WRITE"
+        for automation_id in REVIEWED_UNKNOWN_WRITE_QUARANTINES
+    }
 
     assert (
         catalog.delivery_status_unknown_write_quarantine_status(fail_closed=True)
