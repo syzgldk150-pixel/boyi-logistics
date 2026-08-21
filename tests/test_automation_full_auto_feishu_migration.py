@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "agent" / "migrations" / "019_automation_full_auto_feishu_approvals.sql"
+MIGRATION = ROOT / "agent" / "migrations" / "020_automation_full_auto_feishu_approvals.sql"
 
 
 def test_migration_019_has_binding_queue_and_durable_full_auto_conversion():

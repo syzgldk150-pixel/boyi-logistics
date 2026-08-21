@@ -133,7 +133,8 @@ Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resou
 `base_token/table_id/view_id/view_name` 四字段。这样 generation 可在结构资源就绪时稳定提交，同时
 Broker 仍在每次调用时独立重验账号登录态和精确绑定，缺失时 fail closed。
 
-018 首次项目化仍保留历史 pre-image、grant 和 typed schedule 证据，供发布边界复核；迁移 019 随后把
+018 首次项目化仍保留历史 pre-image、grant 和 typed schedule 证据，供发布边界复核；生产既有 019
+保持 generation lease / Run 绑定的原始字节，迁移 020 随后把
 所有 `REQUIRE_EACH_RUN` / `LEGACY_SCHEDULE_ONLY` 统一转换为 `PROJECT_FULL_AUTO` 并写不可变审计。
 全新数据库因 018 bootstrap 在 SQL 迁移之后发生，启动时还会执行同等的幂等全自动初始化。管理员后续
 显式选择逐次审批优先，配置或插件代际变化不得再静默改写权限模式。
