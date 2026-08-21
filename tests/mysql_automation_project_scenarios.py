@@ -546,7 +546,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 ("integration_scan_instance",),
             )
             staged_policy = cursor.fetchone()
-            case.assertEqual("REQUIRE_EACH_RUN", staged_policy["mode"])
+            case.assertEqual("PROJECT_FULL_AUTO", staged_policy["mode"])
             case.assertEqual(1, staged_policy["project_generation"])
             case.assertEqual(2, staged_policy["project_configuration_version"])
 
