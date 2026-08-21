@@ -13,7 +13,6 @@ from fastapi import HTTPException
 import main
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.core import AgentCore
-from agent.automation_plugins.errors import PluginConflictError
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -35,21 +34,28 @@ class _Runner:
 
 
 class _PluginRuntime:
-    def __init__(self, events: list[str], *, ready: bool = True) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        service_ok: bool = True,
+        runnable: bool = True,
+    ) -> None:
         self.events = events
-        self.ready = ready
+        self.service_ok = service_ok
+        self.runnable = runnable
 
     def reconcile(self) -> None:
         self.events.append("plugins-reconciled")
 
-    def assert_release_ready(self) -> dict[str, Any]:
-        self.events.append("plugins-ready-checked")
-        if not self.ready:
-            raise PluginConflictError(
-                "plugin generation is not stable",
-                code="AUTOMATION_PLUGIN_RUNTIME_NOT_READY",
-            )
-        return {"ok": True, "generations": {"healthy": True}}
+    def health(self) -> dict[str, Any]:
+        self.events.append("plugins-health-checked")
+        return {
+            "ok": self.service_ok,
+            "runnable": self.runnable,
+            "runtime_status": "READY" if self.runnable else "UNAVAILABLE",
+            "generations": {"healthy": self.runnable},
+        }
 
 
 class _HealthExecutor:
@@ -92,13 +98,18 @@ def _install_activation_fakes(
     *,
     events: list[str],
     plugin_ready: bool,
+    plugin_runnable: bool = True,
 ) -> None:
     monkeypatch.setattr(main, "_require_console_admin_request", lambda _request: None)
     monkeypatch.setattr(main, "workflow_runner", _Runner(events))
     monkeypatch.setattr(
         main,
         "automation_plugin_runtime",
-        _PluginRuntime(events, ready=plugin_ready),
+        _PluginRuntime(
+            events,
+            service_ok=plugin_ready,
+            runnable=plugin_runnable,
+        ),
     )
     monkeypatch.setattr(main, "_release_sha", lambda: "a" * 40)
     monkeypatch.setattr(main, "scheduler_release_hold_requested", lambda: True)
@@ -134,7 +145,7 @@ def _install_activation_fakes(
     )
 
 
-def test_release_marker_is_consumed_after_all_plugin_runtimes_are_ready(
+def test_release_marker_is_consumed_when_plugin_service_is_healthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -145,14 +156,14 @@ def test_release_marker_is_consumed_after_all_plugin_runtimes_are_ready(
     assert response["ok"] is True
     assert events == [
         "plugins-reconciled",
-        "plugins-ready-checked",
+        "plugins-health-checked",
         "scheduler-running",
         "runner-running",
         "marker-consumed",
     ]
 
 
-def test_unstable_plugin_generation_keeps_every_runtime_held(
+def test_plugin_service_integrity_failure_keeps_every_runtime_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -164,11 +175,35 @@ def test_unstable_plugin_generation_keeps_every_runtime_held(
     assert raised.value.status_code == 409
     assert events == [
         "plugins-reconciled",
-        "plugins-ready-checked",
+        "plugins-health-checked",
         "runner-held",
         "scheduler-held",
     ]
     assert "marker-consumed" not in events
+
+
+def test_explicitly_unavailable_projects_do_not_block_release_activation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    _install_activation_fakes(
+        monkeypatch,
+        events=events,
+        plugin_ready=True,
+        plugin_runnable=False,
+    )
+
+    response = asyncio.run(main.internal_activate_scheduler_after_release(object()))
+
+    assert response["ok"] is True
+    assert response["data"]["automation_plugins"]["runtime_status"] == "UNAVAILABLE"
+    assert events == [
+        "plugins-reconciled",
+        "plugins-health-checked",
+        "scheduler-running",
+        "runner-running",
+        "marker-consumed",
+    ]
 
 
 def test_internal_health_accepts_plugin_execution_router_observability(

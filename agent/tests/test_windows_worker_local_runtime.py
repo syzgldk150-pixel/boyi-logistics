@@ -28,13 +28,14 @@ DISPATCH_AUTHORIZATION_ID = "f6d9dc71-b197-4800-bad3-4efe484406df"
 
 
 class _Fetcher:
-    def __init__(self, package: bytes) -> None:
+    def __init__(self, package: bytes, *, plugin_version: str) -> None:
         self._package = package
+        self._plugin_version = plugin_version
         self.calls = 0
 
     def fetch_package(self, url: str, *, expected_sha256: str) -> bytes:
         assert url == (
-            "/internal/v1/automation/worker/packages/sync_arrive_list/1.0.0/"
+            f"/internal/v1/automation/worker/packages/sync_arrive_list/{self._plugin_version}/"
             f"{expected_sha256}/{DISPATCH_AUTHORIZATION_ID}"
         )
         assert hashlib.sha256(self._package).hexdigest() == expected_sha256
@@ -72,13 +73,14 @@ def _job(
     job_type: WorkerJobType,
     generation: int,
     package_sha256: str,
+    plugin_version: str,
     cleanup_scope: str | None = None,
 ) -> WorkerJob:
     now = datetime.now(timezone.utc)
     payload = (
         {
             "package_url": (
-                "/internal/v1/automation/worker/packages/sync_arrive_list/1.0.0/"
+                f"/internal/v1/automation/worker/packages/sync_arrive_list/{plugin_version}/"
                 f"{package_sha256}/{DISPATCH_AUTHORIZATION_ID}"
             ),
             "package_sha256": package_sha256,
@@ -91,7 +93,7 @@ def _job(
         automation_id=automation_id,
         automation_generation=generation,
         plugin_id="sync_arrive_list",
-        plugin_version="1.0.0",
+        plugin_version=plugin_version,
         job_type=job_type,
         status=WorkerJobStatus.CLAIMED,
         payload=payload,
@@ -107,7 +109,7 @@ def _job(
 def test_signed_package_is_shared_but_instances_and_generations_are_isolated(tmp_path: Path) -> None:
     manifest, package, trust = _windows_package()
     verified = verify_signed_plugin_zip(package, verifier=trust)
-    fetcher = _Fetcher(package)
+    fetcher = _Fetcher(package, plugin_version=manifest.version)
     state = WindowsWorkerStateStore(tmp_path / "state")
     runtime = WindowsLocalPluginRuntime(
         state=state,
@@ -121,18 +123,21 @@ def test_signed_package_is_shared_but_instances_and_generations_are_isolated(tmp
         job_type=WorkerJobType.INSTALL,
         generation=1,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
     )
     second = _job(
         automation_id="arrive_instance_two",
         job_type=WorkerJobType.INSTALL,
         generation=1,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
     )
     upgraded = _job(
         automation_id="arrive_instance_one",
         job_type=WorkerJobType.UPGRADE,
         generation=2,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
     )
     assert runtime.install_or_upgrade(first)["installed"] is True
     assert runtime.install_or_upgrade(second)["installed"] is True
@@ -152,6 +157,7 @@ def test_signed_package_is_shared_but_instances_and_generations_are_isolated(tmp
         job_type=WorkerJobType.CLEANUP,
         generation=1,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
         cleanup_scope="GENERATION",
     )
     # BackgroundService reserves every command first. The cleanup gate must
@@ -172,13 +178,14 @@ def test_unknown_write_blocks_instance_purge_before_files_are_removed(tmp_path: 
         state=state,
         package_storage=FilesystemPluginStorage(tmp_path / "packages"),
         signature_verifier=trust,
-        package_fetcher=_Fetcher(package),
+        package_fetcher=_Fetcher(package, plugin_version=manifest.version),
     )
     install = _job(
         automation_id="arrive_instance_one",
         job_type=WorkerJobType.INSTALL,
         generation=1,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
     )
     runtime.install_or_upgrade(install)
     invoke = _job(
@@ -186,6 +193,7 @@ def test_unknown_write_blocks_instance_purge_before_files_are_removed(tmp_path: 
         job_type=WorkerJobType.INVOKE,
         generation=1,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
     )
     assert state.begin_once(invoke)
     assert state.prior_result(invoke.job_id)["status"] == "OUTCOME_UNKNOWN"
@@ -194,6 +202,7 @@ def test_unknown_write_blocks_instance_purge_before_files_are_removed(tmp_path: 
         job_type=WorkerJobType.UNINSTALL,
         generation=1,
         package_sha256=verified.package_sha256,
+        plugin_version=manifest.version,
         cleanup_scope="INSTANCE",
     )
     instance = state.get_instance("arrive_instance_one")
