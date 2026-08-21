@@ -11,7 +11,7 @@ import signal
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
@@ -41,6 +41,7 @@ MAX_PLUGIN_OUTPUT_BYTES = 10 * 1024 * 1024
 MAX_PLUGIN_STDERR_BYTES = 1024 * 1024
 _WRITE_TYPES = frozenset({"internal_projection_write", "external_write", "financial_write", "destructive"})
 _FORBIDDEN_ARGUMENT_TOKENS = ("password", "cookie", "credential", "secret", "token")
+_T = TypeVar("_T")
 
 
 class FilesystemPluginIntegrityVerifier:
@@ -267,6 +268,24 @@ class PluginExecutionRouter:
             task.cancel()
         if tasks:
             await asyncio.gather(*(task for task in tasks if task is not None), return_exceptions=True)
+
+    @staticmethod
+    async def _await_with_timeout(awaitable: Awaitable[_T], *, timeout: float) -> _T:
+        """Apply a timeout without Python 3.10 ``wait_for`` cancelling races."""
+
+        operation = asyncio.ensure_future(awaitable)
+        try:
+            done, _ = await asyncio.wait((operation,), timeout=timeout)
+        except asyncio.CancelledError:
+            if not operation.done():
+                operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+            raise
+        if not done:
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+            raise asyncio.TimeoutError
+        return operation.result()
 
     @staticmethod
     def _lease_capability(
@@ -670,7 +689,7 @@ class PluginExecutionRouter:
                     await proc.stdin.drain()
                     proc.stdin.close()
 
-                await asyncio.wait_for(_send_stdin(), timeout=timeout)
+                await self._await_with_timeout(_send_stdin(), timeout=timeout)
             except asyncio.TimeoutError:
                 await self._terminate(proc)
                 await self._cancel_and_reap_tasks(stdout_task, stderr_task)
@@ -698,7 +717,7 @@ class PluginExecutionRouter:
                     "retryable": False,
                 }
             try:
-                stdout, stderr, _ = await asyncio.wait_for(
+                stdout, stderr, _ = await self._await_with_timeout(
                     asyncio.gather(stdout_task, stderr_task, proc.wait()),
                     timeout=max(0.001, deadline - asyncio.get_running_loop().time()),
                 )
