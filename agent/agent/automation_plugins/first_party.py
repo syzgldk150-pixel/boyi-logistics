@@ -64,6 +64,7 @@ FIRST_PARTY_ROOT = Path(__file__).resolve().parents[2] / "first_party_automation
 DIGEST_LOCK_PATH = FIRST_PARTY_ROOT / "digests.json"
 FIRST_PARTY_RUNTIME_PATH = FIRST_PARTY_ROOT / "_runtime" / "main.py"
 FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
+FIRST_PARTY_PACKAGE_VERSION = "1.0.3"
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {
     "ronghui_": "ronghui",
@@ -912,7 +913,7 @@ def first_party_instance_seeds() -> tuple[FirstPartyInstanceSeed, ...]:
         FirstPartyInstanceSeed(
             automation_id=automation_id,
             plugin_id=definition.tool_name,
-            version="1.0.0",
+            version=FIRST_PARTY_PACKAGE_VERSION,
             display_name=automation_id,
             allowed_entrypoints=tuple(sorted(definition.allowed_entrypoints)),
         )
@@ -1122,7 +1123,7 @@ def resolve_first_party_manifests(
                 "schema_version": 1,
                 "plugin_id": plugin_id,
                 "name": plugin_id,
-                "version": "1.0.0",
+                "version": FIRST_PARTY_PACKAGE_VERSION,
                 "description": str(capability.get("description") or plugin_id),
                 "execution_platform": "server",
                 "runtime": {
