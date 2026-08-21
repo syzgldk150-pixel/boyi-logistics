@@ -231,6 +231,13 @@ class _Approvals:
             return None
         return copy.deepcopy(approval)
 
+    def get(self, approval_id, *, for_update=False):
+        del for_update
+        approval = self.repository.approval
+        if approval is None or approval["approval_id"] != approval_id:
+            return None
+        return copy.deepcopy(approval)
+
     def expire_stale(self, run_id, plan_hash):
         approval = self.repository.approval
         if (

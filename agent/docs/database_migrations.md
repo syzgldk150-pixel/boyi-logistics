@@ -93,9 +93,24 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `automation_project_bootstrap_items_018/marker_018`；item 的 `source_snapshot_json` 绑定初始 committed
   generation、配置事件元数据哈希、57 条 typed schedule 与对应旧 grant/退休事件。旧失败尝试留下的空表
   可幂等补列；已有 item/marker 却缺证据列时不可重构授权来源，必须在任何后续写前阻断。
+- `019_automation_generation_lease_run_binding.sql`：保留 generation lease 与 Run 的精确绑定，
+  防止热切换后旧 Run 落到错误代际。
+- `020_automation_full_auto_feishu_approvals.sql`：将迁移时尚未由管理员明确选择的现有项目统一为
+  持久 `PROJECT_FULL_AUTO`，并建立飞书管理员绑定与串行审批投递结构。
+- `021_recover_full_auto_waiting_approvals.sql`：只恢复当前策略已经是完全自动的 typed
+  `WAITING_APPROVAL` Run，不覆盖管理员后来显式选择的逐次审批。
+- `022_restore_durable_full_auto_after_credentials.sql`：只在最新不可变策略事件严格闭合为旧凭据安全
+  降权，或存在唯一且元数据哈希闭合的旧插件 `PLUGIN_UPGRADE_STAGED` 降权时，恢复完全自动并唤醒
+  typed Run；所有身份、UUID、SHA 与固定文本均大小写敏感，任何较新的管理员事件或字段漂移都不匹配。
+  当前凭据/插件变更不再改写项目意图。
+- `023_feishu_approval_queue_single_active.sql`：对历史重复 `ACTIVE` 队列先严格证明原
+  `agent.approval.requested` Outbox，再在显式事务中将受影响投递全部退回 `QUEUED`、清除歧义通知并重置
+  Outbox/消费记录；Agent 重启后只会激活并重新推送一条明确的当前审批。缺失或多份恢复证据由临时表
+  `CHECK` 约束 fail closed。随后 generated column 与唯一索引保证每个飞书管理员绑定最多一条活动审批；
+  DDL 通过 `information_schema` 条件语句支持部分应用后的安全重试。
 
-生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `014`，发布器只按
-顺序补执行尚未记录的 `015`、`016`、`017`、`018`。`016`/`017`/`018` 在业务行变更前各自保存
+生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `021`，发布器只按
+顺序补执行尚未记录的 `022`、`023`。`016`/`017`/`018` 在业务行变更前各自保存
 完整行备份；远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
 直接阻断，回滚只撤销本次从
 pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
@@ -117,6 +132,6 @@ pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
 CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整
-`014 -> 015 -> 016 -> 017 -> 018` 升级、部分历史、`017`/`018` 恢复后重应用、
+`014 -> 015 -> 016 -> 017 -> 018 -> 019 -> 020 -> 021 -> 022 -> 023` 升级、部分历史、`017`/`018` 恢复后重应用、
 `--check`、JSON、外键、唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码
 只接受显式 CI 环境变量，不读取项目 `.env`。

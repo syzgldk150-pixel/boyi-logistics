@@ -59,10 +59,6 @@ PROTECTED_CREDENTIAL_OPERATIONS = frozenset(
         OperationType.DESTRUCTIVE.value,
     }
 )
-PROJECT_CREDENTIAL_CHANGE_REASON = "ACCOUNT_CREDENTIAL_CHANGED"
-PROJECT_CREDENTIAL_CHANGE_COMMENT = (
-    "Project full-auto authorization revoked before bound credentials changed"
-)
 
 
 class ScheduledTaskApprovalService:
@@ -396,75 +392,6 @@ class ScheduledTaskApprovalService:
                         occurred_at=now,
                     )
                     revoked_task_ids.append(task_id)
-                project_rows = uow.automation_projects.list_account_binding_policy_rows(
-                    for_update=True
-                )
-                affected_projects = [
-                    row
-                    for row in project_rows
-                    if str(row.get("mode") or "") == "PROJECT_FULL_AUTO"
-                    and safe_account_id
-                    in _collect_project_account_binding_ids(
-                        row.get("account_bindings_json")
-                    )
-                ]
-                for row in affected_projects:
-                    automation_id = str(row.get("automation_id") or "").strip()
-                    event_request_id = f"{request_id}:{automation_id}"
-                    updated = uow.automation_projects.update_policy(
-                        automation_id,
-                        expected_version=int(row.get("version") or 0),
-                        mode="REQUIRE_EACH_RUN",
-                        contract_hash=None,
-                        contract_snapshot=None,
-                        tool_contract_hash=None,
-                        plugin_contract_hash=None,
-                        project_generation=int(
-                            row.get("project_generation") or 0
-                        ),
-                        project_configuration_version=int(
-                            row.get("project_configuration_version") or 0
-                        ),
-                        actor_id=ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
-                        actor_role="system",
-                        actor_display_name="Account credential safety guard",
-                        comment=PROJECT_CREDENTIAL_CHANGE_COMMENT,
-                    )
-                    uow.automation_projects.append_event(
-                        {
-                            "automation_id": automation_id,
-                            "request_id": event_request_id,
-                            "from_mode": "PROJECT_FULL_AUTO",
-                            "to_mode": "REQUIRE_EACH_RUN",
-                            "contract_hash": None,
-                            "contract_snapshot_json": None,
-                            "tool_contract_hash": None,
-                            "plugin_contract_hash": None,
-                            "project_generation": int(
-                                row.get("project_generation") or 0
-                            ),
-                            "project_configuration_version": int(
-                                row.get("project_configuration_version") or 0
-                            ),
-                            "actor_id": ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
-                            "actor_role": "system",
-                            "actor_display_name": "Account credential safety guard",
-                            "reason": PROJECT_CREDENTIAL_CHANGE_REASON,
-                            "comment": PROJECT_CREDENTIAL_CHANGE_COMMENT,
-                            "occurred_at": now,
-                            "correlation_id": correlation_id,
-                        }
-                    )
-                    self._append_project_domain_event(
-                        uow,
-                        automation_id=automation_id,
-                        request_id=event_request_id,
-                        correlation_id=correlation_id,
-                        mode="REQUIRE_EACH_RUN",
-                        version=int(updated["version"]),
-                        actor_id=ACCOUNT_CREDENTIAL_CHANGE_ACTOR_ID,
-                        occurred_at=now,
-                    )
                 uow.commit()
         except ConcurrentUpdateError as exc:
             raise OrchestrationError(
@@ -1129,49 +1056,6 @@ class ScheduledTaskApprovalService:
                 },
             ),
         )
-
-    @staticmethod
-    def _append_project_domain_event(
-        uow: Any,
-        *,
-        automation_id: str,
-        request_id: str,
-        correlation_id: str,
-        mode: str,
-        version: int,
-        actor_id: str,
-        occurred_at: datetime,
-    ) -> None:
-        uow.events.append_with_outbox(
-            {
-                "event_id": new_id(),
-                "event_type": "automation_project.approval_policy_changed",
-                "schema_version": 1,
-                "source_system": "agent",
-                "source_event_id": f"{automation_id}:{request_id}",
-                "entity_type": "automation_project",
-                "entity_id": automation_id,
-                "occurred_at": occurred_at,
-                "observed_at": occurred_at,
-                "correlation_id": correlation_id,
-                "payload": {
-                    "automation_id": automation_id,
-                    "mode": mode,
-                    "policy_version": version,
-                    "actor_id": actor_id,
-                    "reason": PROJECT_CREDENTIAL_CHANGE_REASON,
-                },
-            },
-            (
-                {
-                    "consumer_name": "orchestration.audit",
-                    "topic": "automation_project.approval_policy_changed",
-                    "partition_key": automation_id,
-                    "max_attempts": 10,
-                },
-            ),
-        )
-
 
 def _datetime_text(value: Any) -> str | None:
     if value is None:

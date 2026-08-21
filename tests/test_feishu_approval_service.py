@@ -6,6 +6,7 @@ import pytest
 
 from agent.orchestration.feishu_approval_service import FeishuApprovalService
 from agent.orchestration.models import OrchestrationError
+from shared.feishu_approval_repository import FeishuApprovalRepository
 
 
 class _Rows:
@@ -23,6 +24,7 @@ class _Rows:
         self.active: dict | None = None
         self.next_active: dict | None = None
         self.finished: list[tuple[str, str]] = []
+        self.finished_bindings: list[tuple[str, str, str]] = []
         self.notified: list[str] = []
         self.sent: list[tuple[str, str, str]] = []
 
@@ -78,7 +80,11 @@ class _Rows:
     def active_for_open_id(self, open_id, **_kwargs):
         if not self.resolve_binding(open_id):
             return None
-        return dict(self.active) if self.active else None
+        if not self.active:
+            return None
+        active = dict(self.active)
+        active.setdefault("binding_id", str(self.binding["binding_id"]))
+        return active
 
     def finish_approval(self, approval_id, *, status="DECIDED"):
         self.finished.append((str(approval_id), str(status)))
@@ -87,6 +93,12 @@ class _Rows:
         if self.binding is None:
             return []
         return [str(self.binding["binding_id"])]
+
+    def finish_active_for_binding(self, binding_id, approval_id, *, status="DECIDED"):
+        self.finished_bindings.append(
+            (str(binding_id), str(approval_id), str(status))
+        )
+        return self.finish_approval(approval_id, status=status)
 
     def expire_approval_if_due(self, approval_id):
         if self.active and str(self.active.get("approval_id")) == str(approval_id):
@@ -102,7 +114,11 @@ class _Rows:
     def active_for_binding(self, binding_id, **_kwargs):
         if self.binding is None or str(self.binding["binding_id"]) != str(binding_id):
             return None
-        return dict(self.active) if self.active else None
+        if not self.active:
+            return None
+        active = dict(self.active)
+        active.setdefault("binding_id", str(binding_id))
+        return active
 
     def mark_notified(self, delivery_id):
         self.notified.append(str(delivery_id))
@@ -138,9 +154,9 @@ class _Approvals:
         self.error_code: str | None = None
 
     def decide(self, **kwargs):
-        self.decisions.append(dict(kwargs))
         if self.error_code:
             raise OrchestrationError(self.error_code, "approval decision raced")
+        self.decisions.append(dict(kwargs))
         return {"status": kwargs["decision"]}
 
 
@@ -203,6 +219,81 @@ def test_exact_one_decides_only_the_active_bound_approval():
     assert approvals.decisions[0]["source"] == "feishu"
 
 
+def test_downgraded_feishu_actor_is_forbidden_before_a_decision_is_recorded():
+    service, repository, approvals = _service()
+    challenge = service.create_binding_challenge(7)
+    service.handle_text("ou-1", "oc-1", challenge["command"])
+    repository.rows.active = {
+        "approval_id": "approval-1",
+        "plan_hash": "a" * 64,
+        "approval_status": "PENDING",
+        "expires_at": datetime.now() + timedelta(minutes=5),
+    }
+    # This represents the binding/admin recheck performed in ApprovalService's
+    # Run -> Approval -> binding transaction after the message was accepted.
+    approvals.error_code = "APPROVAL_FORBIDDEN"
+
+    with pytest.raises(OrchestrationError) as raised:
+        service.handle_text("ou-1", "oc-1", "1")
+
+    assert raised.value.code == "APPROVAL_FORBIDDEN"
+    assert approvals.decisions == []
+
+
+def test_activate_next_locks_binding_before_any_delivery_row():
+    trace: list[str] = []
+
+    class _Cursor:
+        description = None
+        rowcount = 0
+
+        def __init__(self):
+            self.row = None
+
+        def execute(self, sql, _params=None):
+            if "FROM feishu_admin_bindings WHERE binding_id=" in sql:
+                trace.append("binding")
+                self.row = {"binding_id": "binding-1"}
+            elif "WHERE binding_id=%s AND status='ACTIVE' FOR UPDATE" in sql:
+                trace.append("active_delivery")
+                self.row = None
+            elif "WHERE binding_id=%s AND status='QUEUED'" in sql:
+                trace.append("queued_delivery")
+                self.row = {"delivery_id": "delivery-queued"}
+            elif "SET status='ACTIVE'" in sql:
+                trace.append("activate")
+                self.row = None
+            elif "WHERE delivery.binding_id=%s AND delivery.status='ACTIVE'" in sql:
+                trace.append("read_active")
+                self.row = None
+            else:
+                self.row = None
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            return None
+
+    class _Connection:
+        def __init__(self):
+            self.cursor_value = _Cursor()
+
+        def cursor(self, *_args):
+            return self.cursor_value
+
+    FeishuApprovalRepository(_Connection()).activate_next("binding-1")
+
+    assert len(trace) >= 4
+    assert trace[0] == "binding"
+    assert trace[1] == "active_delivery"
+    assert trace[2] == "queued_delivery"
+    assert trace[3] == "activate"
+
+
 def test_stale_active_reply_pushes_and_marks_the_next_serial_approval():
     service, repository, _approvals = _service()
     challenge = service.create_binding_challenge(7)
@@ -230,6 +321,9 @@ def test_stale_active_reply_pushes_and_marks_the_next_serial_approval():
         "当前审批已过期或已由其他管理员处理，已切换到下一条。"
     )
     assert repository.rows.finished == [("approval-stale", "SKIPPED")]
+    assert repository.rows.finished_bindings == [
+        (str(repository.rows.binding["binding_id"]), "approval-stale", "SKIPPED")
+    ]
     assert repository.rows.notified == ["delivery-next"]
     assert repository.rows.sent[0][0] == "ou-1"
     assert "项目：arrival_stats" in repository.rows.sent[0][1]
@@ -271,6 +365,9 @@ def test_new_request_outbox_skips_stale_active_and_pushes_next_without_reply():
 
     assert result == {"approval_id": "approval-next", "sent": 1}
     assert repository.rows.finished == [("approval-stale", "SKIPPED")]
+    assert repository.rows.finished_bindings == [
+        (str(repository.rows.binding["binding_id"]), "approval-stale", "SKIPPED")
+    ]
     assert repository.rows.notified == ["delivery-next"]
     assert "项目：arrival_stats" in repository.rows.sent[0][1]
 

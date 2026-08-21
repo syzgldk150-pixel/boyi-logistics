@@ -5,7 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from agent.orchestration.models import Actor, OrchestrationError, Plan, RiskLevel, new_id, sha256_json
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    OrchestrationError,
+    Plan,
+    RiskLevel,
+    new_id,
+    sha256_json,
+)
 from agent.orchestration.policy_engine import PolicyDecision, PolicyEngine
 from shared.orchestration_repository import InvalidStateError
 
@@ -127,14 +135,25 @@ class ApprovalService:
             )
         try:
             with self._repository.unit_of_work() as uow:
-                # Keep the same Run -> Approval lock order used by execution
-                # consumption.  This prevents a polling runner and a human
-                # decision from deadlocking each other under MySQL.
+                # Keep the cross-domain lock order Run -> Approval -> Binding.
+                # Execution consumption already uses Run -> Approval, while
+                # expiry delivery uses Approval -> sorted Bindings.
                 run = uow.runs.get(run_id, for_update=True)
                 if run is None:
                     raise OrchestrationError("RUN_NOT_FOUND", "Approval run was not found")
                 if str(run.get("status") or "") != "WAITING_APPROVAL":
                     raise InvalidStateError("approval run is not waiting")
+                locked_approval = uow.approvals.get(approval_id, for_update=True)
+                if locked_approval is None:
+                    raise OrchestrationError(
+                        "APPROVAL_NOT_FOUND",
+                        "Approval request was not found",
+                    )
+                if str(locked_approval.get("run_id") or "") != run_id:
+                    raise InvalidStateError("approval run identity changed")
+                if str(locked_approval.get("status") or "") != "PENDING":
+                    raise InvalidStateError("approval request is no longer pending")
+                self._require_current_feishu_super_admin(uow, actor)
                 current = uow.approvals.record_decision(
                     {
                         "decision_id": new_id(),
@@ -185,6 +204,40 @@ class ApprovalService:
         if self._wake_runner is not None:
             self._wake_runner(run_id)
         return current
+
+    @staticmethod
+    def _require_current_feishu_super_admin(uow: Any, actor: Actor) -> None:
+        """Revalidate a Feishu decision actor within the decision transaction.
+
+        The initial actor projection is deliberately cheap and may be stale by
+        the time a message reaches the approval decision.  Bindings and
+        Console administrator roles are therefore locked after the Run and
+        Approval rows, immediately before the decision CAS.
+        This makes an unbind, disable, or role downgrade win the same
+        transaction race rather than authorizing a stale Feishu actor.
+        """
+
+        if actor.actor_type is not ActorType.FEISHU_USER:
+            return
+        if actor.authenticated_by != "feishu_admin_binding":
+            raise OrchestrationError(
+                "APPROVAL_FORBIDDEN",
+                "The Feishu actor is not bound to an active super administrator",
+            )
+        binding = uow.feishu_approvals.resolve_binding(
+            actor.actor_id,
+            for_update=True,
+        )
+        if not (
+            binding
+            and binding.get("active") in {True, 1}
+            and binding.get("is_active") in {True, 1}
+            and str(binding.get("control_plane_role") or "") == "super_admin"
+        ):
+            raise OrchestrationError(
+                "APPROVAL_FORBIDDEN",
+                "The bound Feishu administrator no longer has super administrator access",
+            )
 
     def expire(self, approval_id: str) -> dict[str, Any]:
         with self._repository.unit_of_work() as uow:
