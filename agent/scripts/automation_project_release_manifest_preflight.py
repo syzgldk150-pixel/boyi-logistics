@@ -44,6 +44,25 @@ class AutomationProjectReleaseManifestError(RuntimeError):
         self.count = max(int(count), 1)
 
 
+def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
+    """Recognize only the lease-backed interrupted-upgrade safety fence."""
+
+    committed_generation = row.get("committed_generation")
+    target_generation = row.get("target_generation")
+    return bool(
+        row.get("project_state") == "UPGRADING"
+        and type(committed_generation) is int
+        and type(target_generation) is int
+        and target_generation > committed_generation
+        and row.get("generation_state") == "BLOCKED"
+        and row.get("generation_error_code") == "WRITE_OUTCOME_UNKNOWN"
+        and row.get("target_generation_state") == "PREPARED"
+        and row.get("target_base_generation") == committed_generation
+        and type(row.get("unknown_write_count")) is int
+        and row.get("unknown_write_count") == 1
+    )
+
+
 def _shared_module_snapshot() -> dict[str, object]:
     return {
         name: module
@@ -638,6 +657,17 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                config.device_id, config.device_binding_sha256,
                generation.generation,
                generation.state AS generation_state,
+               generation.error_code AS generation_error_code,
+               target_generation.state AS target_generation_state,
+               target_generation.base_committed_generation
+                   AS target_base_generation,
+               (
+                   SELECT COUNT(*)
+                   FROM automation_project_generation_leases AS lease
+                   WHERE BINARY lease.automation_id = BINARY project.automation_id
+                     AND lease.generation = project.committed_generation
+                     AND lease.outcome = 'WRITE_OUTCOME_UNKNOWN'
+               ) AS unknown_write_count,
                generation.schedule_sha256 AS generation_schedule_sha256,
                generation.compiled_invocations_sha256
                    AS generation_invocations_sha256,
@@ -649,6 +679,9 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
         INNER JOIN automation_project_generations AS generation
           ON BINARY generation.automation_id = BINARY project.automation_id
          AND generation.generation = project.committed_generation
+        LEFT JOIN automation_project_generations AS target_generation
+          ON BINARY target_generation.automation_id = BINARY project.automation_id
+         AND target_generation.generation = project.target_generation
         WHERE project.automation_id IN ({placeholders})
         ORDER BY project.automation_id
         """,
@@ -1075,9 +1108,16 @@ def _validate_release_projects_and_tasks(
             and project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
             and project.get("generation_state") == "BLOCKED"
         )
+        staged_unknown_write = (
+            not expect_initial_production_manifest
+            and is_staged_unknown_write_quarantine(project)
+        )
         if (
             project.get("plugin_id") != template["tool_name"]
-            or project.get("project_state") != "ENABLED"
+            or (
+                project.get("project_state") != "ENABLED"
+                and not staged_unknown_write
+            )
             or not _boolean(
                 project.get("enabled"),
                 code="AUTOMATION_PROJECT_STATE_INVALID",
@@ -1086,7 +1126,7 @@ def _validate_release_projects_and_tasks(
                 project.get("configured"),
                 code="AUTOMATION_PROJECT_CONFIG_INVALID",
             )
-            or not (stable_runtime or unavailable_runtime)
+            or not (stable_runtime or unavailable_runtime or staged_unknown_write)
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_STATE_INVALID"
@@ -1107,7 +1147,9 @@ def _validate_release_projects_and_tasks(
             project.get("target_generation"),
             code="AUTOMATION_PROJECT_GENERATION_INVALID",
         )
-        if generation != committed_generation or target_generation != generation:
+        if generation != committed_generation or (
+            target_generation != generation and not staged_unknown_write
+        ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_GENERATION_MISMATCH"
             )
@@ -1989,8 +2031,11 @@ def _validate_bootstrap_and_policy_state(
             backups=backups,
             allow_blocked=(
                 not expect_initial_production_manifest
-                and project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
                 and project.get("generation_state") == "BLOCKED"
+                and (
+                    project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+                    or is_staged_unknown_write_quarantine(project)
+                )
                 and project.get("generation") == generation_row.get("generation")
             ),
         )
@@ -2194,6 +2239,7 @@ def _check_post_018_manifest(
                 "automation_project_events",
                 "automation_project_configs",
                 "automation_project_generations",
+                "automation_project_generation_leases",
                 "automation_project_policies",
                 "automation_project_policy_events",
                 "automation_project_bootstrap_items_018",

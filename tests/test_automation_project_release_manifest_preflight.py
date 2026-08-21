@@ -231,6 +231,10 @@ def _valid_world(preflight):
             "compiled_invocations_sha256": preflight._canonical_sha256(compiled),
             "generation": 1,
             "generation_state": "COMMITTED",
+            "generation_error_code": None,
+            "target_generation_state": "COMMITTED",
+            "target_base_generation": None,
+            "unknown_write_count": 0,
             "generation_schedule_sha256": preflight._canonical_sha256(
                 desired_schedule
             ),
@@ -711,6 +715,118 @@ def test_later_release_accepts_exact_unavailable_runtime(preflight):
         projects=projects,
         expect_initial_production_manifest=False,
     )
+
+
+def test_later_release_accepts_staged_unknown_write_quarantine(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="BLOCKED",
+        generation_error_code="WRITE_OUTCOME_UNKNOWN",
+        target_generation_state="PREPARED",
+        target_base_generation=1,
+        unknown_write_count=1,
+    )
+
+    preflight._validate_release_projects_and_tasks(
+        contract,
+        schedules=schedules,
+        backups=backups,
+        projects=projects,
+        expect_initial_production_manifest=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"unknown_write_count": 0},
+        {"unknown_write_count": 2},
+        {"generation_error_code": "RUNTIME_ROOT_MISSING"},
+        {"target_generation_state": "PREPARING"},
+        {"target_base_generation": 2},
+    ),
+)
+def test_staged_unknown_write_quarantine_fails_closed(preflight, mutation):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="BLOCKED",
+        generation_error_code="WRITE_OUTCOME_UNKNOWN",
+        target_generation_state="PREPARED",
+        target_base_generation=1,
+        unknown_write_count=1,
+    )
+    project.update(mutation)
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=False,
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
+
+
+def test_initial_release_rejects_staged_unknown_write_quarantine(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="BLOCKED",
+        generation_error_code="WRITE_OUTCOME_UNKNOWN",
+        target_generation_state="PREPARED",
+        target_base_generation=1,
+        unknown_write_count=1,
+    )
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=True,
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
+
+
+def test_release_project_query_reads_exact_unknown_write_evidence(preflight):
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        def execute(self, sql, params):
+            self.sql = " ".join(str(sql).split())
+            self.params = params
+
+        def fetchall(self):
+            return [{"automation_id": "arrive_list"}]
+
+    cursor = Cursor()
+    rows = preflight._read_release_projects(
+        cursor,
+        {"release_projects": frozenset({"arrive_list"})},
+    )
+
+    assert set(rows) == {"arrive_list"}
+    assert "LEFT JOIN automation_project_generations AS target_generation" in cursor.sql
+    assert "FROM automation_project_generation_leases AS lease" in cursor.sql
+    assert "lease.outcome = 'WRITE_OUTCOME_UNKNOWN'" in cursor.sql
+    assert cursor.params == ("arrive_list",)
 
 
 def test_initial_release_rejects_unavailable_runtime(preflight):
