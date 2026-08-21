@@ -344,7 +344,7 @@ class FeishuApprovalRepository(RepositoryBase):
                 SELECT delivery.*, binding.open_id, binding.last_chat_id,
                        approval.status AS approval_status, approval.expires_at,
                        approval.risk_level, approval.required_role,
-                       run.automation_id, command.source
+                       command.automation_id AS automation_id, command.source
                 FROM feishu_approval_deliveries AS delivery
                 JOIN feishu_admin_bindings AS binding ON binding.binding_id=delivery.binding_id
                 JOIN approval_requests AS approval ON approval.approval_id=delivery.approval_id
