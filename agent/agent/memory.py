@@ -113,7 +113,7 @@ class Memory:
     def _validate_migrated_tables(self) -> None:
         conn = self._conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 cur.execute(
                     """
                     SELECT TABLE_NAME FROM information_schema.TABLES
