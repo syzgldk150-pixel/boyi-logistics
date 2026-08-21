@@ -2257,7 +2257,11 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "target_generation": "SENSITIVE_TARGET_GENERATION_SENTINEL",
             "project_enabled": 1,
             "project_state": "SENSITIVE_PROJECT_STATE_SENTINEL",
+            "reconcile_state": "SENSITIVE_RECONCILE_STATE_SENTINEL",
             "policy_mode": "PROJECT_FULL_AUTO",
+            "policy_project_generation": "SENSITIVE_POLICY_GENERATION_SENTINEL",
+            "max_generation": "SENSITIVE_MAX_GENERATION_SENTINEL",
+            "non_disposed_other_count": "SENSITIVE_OPEN_GENERATION_COUNT_SENTINEL",
             "generation_state": "SENSITIVE_COMMITTED_STATE_SENTINEL",
             "generation_error_code": "SENSITIVE_ERROR_SENTINEL",
             "target_generation_state": "SENSITIVE_TARGET_STATE_SENTINEL",
@@ -2298,7 +2302,12 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         rendered = " ".join(str(call) for call in print_mock.call_args_list)
         self.assertIn("CHECK_PROJECT_STATE_INVALID", rendered)
         self.assertIn("PROJECT_STATE_OTHER", rendered)
+        self.assertIn("RECONCILE_STATE_OTHER", rendered)
         self.assertIn("TARGET_RELATION_INVALID", rendered)
+        self.assertIn("POLICY_TARGET_RELATION_INVALID", rendered)
+        self.assertIn("MAX_COMMITTED_RELATION_INVALID", rendered)
+        self.assertIn("TARGET_MAX_NEXT_INVALID", rendered)
+        self.assertIn("NON_DISPOSED_OTHERS_INVALID", rendered)
         self.assertIn("COMMITTED_STATE_OTHER", rendered)
         self.assertIn("COMMITTED_ERROR_OTHER", rendered)
         self.assertIn("TARGET_STATE_OTHER", rendered)
@@ -2309,6 +2318,10 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "SENSITIVE_PROJECT_ID_SENTINEL",
             "SENSITIVE_TARGET_GENERATION_SENTINEL",
             "SENSITIVE_PROJECT_STATE_SENTINEL",
+            "SENSITIVE_RECONCILE_STATE_SENTINEL",
+            "SENSITIVE_POLICY_GENERATION_SENTINEL",
+            "SENSITIVE_MAX_GENERATION_SENTINEL",
+            "SENSITIVE_OPEN_GENERATION_COUNT_SENTINEL",
             "SENSITIVE_COMMITTED_STATE_SENTINEL",
             "SENSITIVE_ERROR_SENTINEL",
             "SENSITIVE_TARGET_STATE_SENTINEL",
