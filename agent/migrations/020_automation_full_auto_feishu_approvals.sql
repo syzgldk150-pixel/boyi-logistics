@@ -1,4 +1,4 @@
--- Durable full-auto intent, Feishu administrator binding, and serial approval delivery.
+-- Migration 020: durable full-auto intent, Feishu administrator binding, and serial approval delivery.
 
 CREATE TABLE IF NOT EXISTS feishu_admin_binding_challenges (
     challenge_id CHAR(36) NOT NULL,
