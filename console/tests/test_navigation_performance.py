@@ -85,7 +85,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=cal-console-20260815-project-plugin3", template)
+        self.assertIn("/static/style.css?v=cal-console-20260821-plugin-manager1", template)
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", template)

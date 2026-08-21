@@ -542,7 +542,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertIn("async function pollApprovedBatch", template_source)
         self.assertIn("batchTerminalStatuses", template_source)
         self.assertIn("已批准，等待执行", template_source)
-        self.assertIn("project-plugin4", template_source)
+        self.assertIn("20260821-plugin-manager1", template_source)
 
     def test_assets_are_cache_busted_with_project_governance_styles(self):
         static_dir = Path(__file__).resolve().parents[1] / "static"
@@ -553,7 +553,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
 
         self.assertIn(".auto-project-governance", style)
         self.assertIn(".auto-pending-approvals[hidden]", style)
-        self.assertIn("style.css?v=cal-console-20260815-project-plugin3", base)
+        self.assertIn("style.css?v=cal-console-20260821-plugin-manager1", base)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@
 - 所有日志和持久化审计通过 `shared/redaction.py` 脱敏；原始请求体、密码、Token、Cookie 和 Authorization 不得落盘。
 - `agent/agent/` 不得导入 `tools` 或 `feishu`；直接工具执行器和飞书告警回调统一在 `main.py` 注入，TMS 会话事件通过 `shared/runtime_events.py` 发布。
 - 飞书、Webhook、Phase 7、客服与回单入口只能向 Command Gateway 提交命令；旧 `/tms/*` 写入口必须提供稳定幂等键并映射到精确工具。Phase 7 签收和到货统计 Webhook 的融辉账号由受信适配器固定绑定代码批准的 `ronghui_default`，兼容旧调用方省略账号，但拒绝任何账号覆盖。底层 TMS target 只接受 WorkflowRunner 为当前工具签发的短期执行能力，宽泛 `tms_query` 不得承载写端点。
-- 韵达/融辉活动原页同源代理暂时禁用；Console 的四类原页前缀和旧 `/ocr/yunda/*` 入口固定返回 410 且不调用 Agent。Agent 的 `yunda_waybill_entry`、`yunda_waybill_proxy`、`ronghui_waybill_proxy` 在执行能力判断前固定返回 410，待独立来源隔离完成后才可重新评估。
+- 韵达/融辉活动原页只能在 `https://www.boyi.homes/original/{provider}/` 独立 origin 中运行。Console 重验路径限定能力与真实 MySQL 管理员会话；Agent 只对签名 Console principal、精确 `/original/{provider}` proxy prefix、共享 allowlist 内 GET 及两个精确保存 POST 放行。`yunda_waybill_entry` 和旧 Console 同源/回单前缀仍固定 410；不得恢复旧 whole-tool 或宽泛路径回退。
 - 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
 - `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。`fetch_dispatch` 必须从显式所选账号的已认证会话 `userInfo` 唯一解析站点身份；缺失、多候选或调用参数与会话不一致时显式失败，不得硬编码或回落到默认站点码。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。

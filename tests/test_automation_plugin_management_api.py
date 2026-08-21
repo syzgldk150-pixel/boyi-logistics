@@ -377,6 +377,7 @@ def test_delivery_generation_diagnostic_reports_only_the_exact_quarantine() -> N
     (
         "fb077840-a2d0-4e7f-8089-f68c104ab544",
         "71510af3-fcf1-461b-9c2e-152665f32f98",
+        "2a86ba4b-5c63-4bf2-93de-f61372d18274",
     ),
 )
 def test_known_arrival_stats_recovery_is_the_only_release_hold_exception(

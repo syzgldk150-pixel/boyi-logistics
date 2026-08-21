@@ -6,9 +6,10 @@
 
 {% block page_actions %}
 {% if can_manage_plugins %}
-<button class="primary-btn automation-install-trigger" type="button" data-plugin-install-toggle aria-expanded="false" aria-controls="automation-plugin-install-panel">
-  <i data-feather="plus"></i>
-  安装自动化
+<button class="ghost-btn automation-plugin-manager-trigger" type="button" data-plugin-install-toggle aria-haspopup="dialog" aria-controls="automation-plugin-manager" aria-expanded="false" aria-label="管理自动化插件" title="管理自动化插件">
+  <svg class="automation-plugin-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+    <path d="M8.5 3H5a2 2 0 0 0-2 2v3.5a2.5 2.5 0 1 1 0 5V17a2 2 0 0 0 2 2h3.5a2.5 2.5 0 1 0 5 0H17a2 2 0 0 0 2-2v-3.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 0-2-2h-3.5a2.5 2.5 0 1 1-5 0Z"></path>
+  </svg>
 </button>
 {% endif %}
 <label class="automation-toolbar-field">
@@ -65,7 +66,7 @@
 {% macro render_plugin_config_field(field, prefix) %}
   {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
   <label class="auto-field">
-    <span class="auto-field-label">{{ field.label }}{% if field.required %}<em aria-hidden="true"> *</em>{% endif %}</span>
+    <span class="auto-field-label">{{ field.label }}{% if field.required %}<em aria-hidden="true"> *</em>{% endif %}{% if field.advanced %}<small>{{ field.technical_name }}</small>{% endif %}</span>
     {% if field.kind == "checkbox" %}
     <div class="auto-checkbox-wrap">
       <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="checkbox" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" {% if field.value %}checked{% endif %}>
@@ -105,28 +106,80 @@
 <section class="auto-page" data-reveal="tasks">
 
   {% if can_manage_plugins %}
-  <section class="automation-plugin-install-panel" id="automation-plugin-install-panel" data-plugin-install-panel hidden aria-labelledby="automation-plugin-install-title">
-    <div class="automation-plugin-install-copy">
-      <span class="auto-project-governance-kicker"><i data-feather="package"></i> 签名动作包</span>
-      <h2 id="automation-plugin-install-title">安装为新的自动化项目</h2>
-      <p>同一个动作包可以重复安装。每次安装都会生成独立项目，账号、资源、定时、权限和设备互不影响；新项目默认停用。</p>
-    </div>
-    <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
-      <label>
-        <span>项目名称</span>
-        <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" required placeholder="例如：华东仓每日签收">
-      </label>
-      <label>
-        <span>签名 ZIP</span>
-        <input class="review-input automation-plugin-file" type="file" name="package" accept=".zip,application/zip" required>
-      </label>
-      <div class="automation-plugin-install-actions">
-        <button class="primary-btn" type="submit" data-plugin-install-submit>安装新项目</button>
-        <button class="ghost-btn" type="button" data-plugin-install-cancel>取消</button>
+  <dialog class="automation-plugin-manager" id="automation-plugin-manager" data-plugin-install-panel aria-labelledby="automation-plugin-manager-title">
+    <div class="automation-plugin-manager-surface">
+      <header class="automation-plugin-manager-head">
+        <div>
+          <h2 id="automation-plugin-manager-title">自动化插件</h2>
+          <p>查看已验签动作包，或把新的签名 ZIP 拖入安装。</p>
+        </div>
+        <button class="ghost-btn automation-plugin-manager-close" type="button" data-plugin-install-cancel aria-label="关闭插件管理">
+          <i data-feather="x"></i>
+        </button>
+      </header>
+
+      <div class="automation-plugin-manager-body">
+        <section class="automation-plugin-library" aria-labelledby="automation-action-catalog-title">
+          <div class="automation-plugin-section-head">
+            <div>
+              <h3 id="automation-action-catalog-title">已安装动作包</h3>
+              <p>已验签的自动化动作只声明动作、平台、账号角色与受管资源，项目配置仍各自保存。</p>
+            </div>
+            <span class="automation-plugin-count">{{ automation_plugin_packages|length }} 个</span>
+          </div>
+          {% if automation_plugin_packages %}
+          <div class="automation-action-catalog-grid">
+            {% for package in automation_plugin_packages %}
+            <article class="automation-action-package">
+              <div class="automation-action-package-title">
+                <strong>{{ package.name }}</strong>
+                <span>{{ package.version }}</span>
+              </div>
+              <p>{{ package.action_summary or '已验签动作包' }}</p>
+              <div class="automation-action-package-meta">
+                <span>{{ package.platform_label }}</span>
+                <span>{{ package.account_roles|length }} 个账号角色</span>
+                <span>{{ package.resource_summary or '仅使用核心受管资源' }}</span>
+              </div>
+            </article>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="automation-plugin-empty">
+            <i data-feather="package"></i>
+            <div><strong>尚未安装动作包</strong><span>拖入已签名 ZIP 后，动作包会显示在这里。</span></div>
+          </div>
+          {% endif %}
+        </section>
+
+        <section class="automation-plugin-installer" aria-labelledby="automation-plugin-install-title">
+          <div class="automation-plugin-section-head">
+            <div>
+              <h3 id="automation-plugin-install-title">安装动作包</h3>
+              <p>拖放会立即提交安装，点击选择文件后可先修改项目名称。</p>
+            </div>
+          </div>
+          <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
+            <label class="automation-plugin-dropzone" data-plugin-dropzone for="automation-plugin-package">
+              <span class="automation-plugin-dropzone-icon"><i data-feather="upload-cloud"></i></span>
+              <strong data-plugin-dropzone-title>拖入签名动作包</strong>
+              <span data-plugin-dropzone-copy>仅接受一个已签名 ZIP，拖放后自动安装</span>
+              <span class="ghost-btn automation-plugin-choose">选择 ZIP</span>
+              <input id="automation-plugin-package" class="sr-only" type="file" name="package" accept=".zip,application/zip" required data-plugin-package-input>
+            </label>
+            <label class="automation-plugin-name-field">
+              <span>项目名称</span>
+              <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" required placeholder="选择文件后自动填入，可修改">
+            </label>
+            <div class="automation-plugin-install-actions">
+              <button class="primary-btn" type="submit" data-plugin-install-submit>安装动作包</button>
+            </div>
+            <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
+          </form>
+        </section>
       </div>
-      <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
-    </form>
-  </section>
+    </div>
+  </dialog>
   {% endif %}
 
   {% if automation_plugin_warning %}
@@ -144,34 +197,6 @@
       <span>{{ unsupported_automation_ids | join('、') }}。这些项目禁止运行与配置，请先完成受控迁移。</span>
     </div>
   </div>
-  {% endif %}
-
-  {% if automation_plugin_packages %}
-  <section class="automation-action-catalog" aria-labelledby="automation-action-catalog-title">
-    <div class="automation-action-catalog-head">
-      <div>
-        <span class="auto-project-governance-kicker"><i data-feather="box"></i> 动作包目录</span>
-        <h2 id="automation-action-catalog-title">已验签的自动化动作</h2>
-      </div>
-      <p>动作包只定义可执行动作、平台、账号角色与资源能力；项目实例的账号、定时、权限和设备各自保存。</p>
-    </div>
-    <div class="automation-action-catalog-grid">
-      {% for package in automation_plugin_packages %}
-      <article class="automation-action-package">
-        <div class="automation-action-package-title">
-          <strong>{{ package.name }}</strong>
-          <span>{{ package.version }}</span>
-        </div>
-        <p>{{ package.action_summary or '已验签动作包' }}</p>
-        <div class="automation-action-package-meta">
-          <span>{{ package.platform_label }}</span>
-          <span>{{ package.account_roles|length }} 个账号角色</span>
-          <span>{{ package.resource_summary or '仅使用核心受管资源' }}</span>
-        </div>
-      </article>
-      {% endfor %}
-    </div>
-  </section>
   {% endif %}
 
   {% if automation_db_warning %}
@@ -541,7 +566,9 @@
 
           {% if has_webhook %}
           {# Webhook 链接展示 #}
-          <div class="auto-settings-section">
+          <details class="auto-settings-section automation-plugin-advanced">
+            <summary>高级设置：飞书 Webhook 接入</summary>
+            <p>只有在飞书或其他系统中配置自动触发时才需要使用。</p>
             <div class="auto-settings-label">
               <i data-feather="link" class="auto-settings-icon"></i>
               Webhook 地址
@@ -600,7 +627,7 @@
                 </button>
               </div>
             </div>
-          </div>
+          </details>
           {% endif %}
 
           {% if has_account_roles %}
@@ -643,19 +670,36 @@
           {% endif %}
 
           {% if task.plugin %}
+          {% set common_config_fields = task.plugin.config_fields | rejectattr('advanced') | list %}
+          {% set advanced_config_fields = task.plugin.config_fields | selectattr('advanced') | list %}
           <div class="auto-settings-section automation-plugin-config-section">
             <div class="auto-settings-label">
               <i data-feather="sliders" class="auto-settings-icon"></i>
-              项目运行配置
-              {% if task.plugin.config_fields %}<span class="auto-settings-count">{{ task.plugin.config_fields|length }}</span>{% endif %}
+              常用设置
+              {% if common_config_fields %}<span class="auto-settings-count">{{ common_config_fields|length }}</span>{% endif %}
             </div>
             {% if task.plugin.config_schema_supported %}
               {% if task.plugin.config_fields %}
+              {% if common_config_fields %}
               <div class="auto-param-grid" data-plugin-config-fields>
-                {% for field in task.plugin.config_fields %}
+                {% for field in common_config_fields %}
                 {{ render_plugin_config_field(field, 'plugin-config-' ~ task.task_id) }}
                 {% endfor %}
               </div>
+              {% else %}
+              <p class="auto-webhook-note">这个项目没有需要经常调整的设置。</p>
+              {% endif %}
+              {% if advanced_config_fields %}
+              <details class="automation-plugin-advanced">
+                <summary>高级参数 <span>{{ advanced_config_fields|length }} 项</span></summary>
+                <p>仅在排查问题或按技术说明调整时修改；日常使用保持当前值即可。</p>
+                <div class="auto-param-grid" data-plugin-config-fields>
+                  {% for field in advanced_config_fields %}
+                  {{ render_plugin_config_field(field, 'plugin-config-' ~ task.task_id) }}
+                  {% endfor %}
+                </div>
+              </details>
+              {% endif %}
               {% else %}
               <p class="auto-webhook-note">该动作包无需额外运行参数。</p>
               {% endif %}
@@ -667,28 +711,23 @@
             {% endif %}
           </div>
 
-          <div class="auto-settings-section automation-plugin-entrypoints">
-            <div class="auto-settings-label">
-              <i data-feather="git-branch" class="auto-settings-icon"></i>
-              可信运行入口
-            </div>
+          <details class="auto-settings-section automation-plugin-advanced automation-plugin-entrypoints">
+            <summary>高级设置：允许从哪里启动</summary>
+            <p>日常使用无需修改。关闭某个入口后，对应位置将不能启动这个自动化。</p>
             <div class="automation-plugin-entrypoint-grid">
               {% for entrypoint in task.plugin.entrypoints %}
               <label class="automation-plugin-entrypoint-option">
                 <input type="checkbox" value="{{ entrypoint }}" data-plugin-entrypoint {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %}>
-                <span>{{ {'scheduler': '系统定时', 'console': 'Console 后台', 'feishu': '飞书', 'webhook': '验签 Webhook'}.get(entrypoint, entrypoint) }}</span>
+                <span>{{ {'scheduler': '系统定时', 'console': '后台手动执行', 'feishu': '飞书消息', 'webhook': '外部验签请求'}.get(entrypoint, entrypoint) }}</span>
               </label>
               {% endfor %}
             </div>
-            <p class="auto-webhook-note">只允许启用签名动作包清单声明的入口；通用 API 与 LLM 不在项目完全自动授权范围内。</p>
-          </div>
+          </details>
 
           {% if has_plugin_resource_roles %}
-          <div class="auto-settings-section">
-            <div class="auto-settings-label">
-              <i data-feather="database" class="auto-settings-icon"></i>
-              受管资源
-            </div>
+          <details class="auto-settings-section automation-plugin-advanced" {% if not task.plugin.resource_bindings_ready %}open{% endif %}>
+            <summary>高级设置：数据表与通知目标</summary>
+            <p>系统只显示可选名称，不会把 Token、表格 ID 或文件路径发送到浏览器。</p>
             {% if task.plugin.resource_pool_available %}
             <div class="auto-account-role-stack">
               {% for binding in task.plugin.resource_role_bindings %}
@@ -714,14 +753,14 @@
               </label>
               {% endfor %}
             </div>
-            <p class="auto-webhook-note">这里只保存资源标识；Token、表格 ID、文件路径和完整配置不会发送到浏览器。系统不会自动选择第一项。</p>
+            <p class="auto-webhook-note">请选择这个项目实际使用的数据表或通知目标；系统不会自动选择第一项。</p>
             {% else %}
             <div class="automation-plugin-block" role="alert">
               <i data-feather="alert-triangle"></i>
               <span>受管资源池当前不可用，资源绑定与项目运行已安全阻断；不会从旧任务字段猜测或默认绑定。</span>
             </div>
             {% endif %}
-          </div>
+          </details>
           {% endif %}
           {% endif %}
 
@@ -2515,5 +2554,5 @@
 
   feather.replace();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260815-project-plugin4" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260821-plugin-manager1" defer></script>
 {% endblock %}

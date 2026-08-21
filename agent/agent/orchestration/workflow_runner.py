@@ -805,6 +805,14 @@ class WorkflowRunner:
                             )
                         project_waiting = (waiting_run, project_decision)
                     else:
+                        # Capture the capability while this run is still
+                        # authorized to start the step.  A plugin lease can
+                        # be released after execution returns, making a fresh
+                        # catalog lookup conflict even though its raw result
+                        # still must be verified and persisted.
+                        execution_capability = (
+                            self._catalog.get_capability(step.tool_name) or {}
+                        )
                         started_step = uow.steps.transition(
                             str(step_row["step_id"]),
                             expected_version=int(step_row["version"]),
@@ -848,8 +856,11 @@ class WorkflowRunner:
                 )
             finally:
                 self._active.pop(str(run["run_id"]), None)
-            capability = self._catalog.get_capability(step.tool_name) or {}
-            outcome = self._verifier.verify(step, raw_result, capability)
+            outcome = self._verifier.verify(
+                step,
+                raw_result,
+                execution_capability,
+            )
             if outcome.accepted:
                 projection_error: OrchestrationError | None = None
                 try:

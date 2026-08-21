@@ -630,7 +630,9 @@ class AuthServiceMixin:
             status = account.get("status") if isinstance(account.get("status"), dict) else {}
             session_ready = (
                 not bool(account.get("session_capable"))
-                or str(status.get("status") or "").strip() == "authenticated"
+                or str(status.get("status") or "").strip().lower() == "authenticated"
+                or status.get("authenticated") is True
+                or account.get("authenticated") is True
             )
             account["binding_usable"] = bool(account.get("is_active", True)) and session_ready
             system = str(account.get("system") or "").strip().lower()

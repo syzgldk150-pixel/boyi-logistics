@@ -412,28 +412,76 @@
     const panel = document.querySelector("[data-plugin-install-panel]");
     const cancel = document.querySelector("[data-plugin-install-cancel]");
     const form = document.querySelector("[data-plugin-install-form]");
-    if (!(toggle instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) return;
+    if (!(toggle instanceof HTMLButtonElement) || !(panel instanceof HTMLDialogElement)) return;
 
     const setOpen = open => {
       toggle.setAttribute("aria-expanded", String(open));
-      panel.hidden = !open;
-      if (open) panel.querySelector("input")?.focus();
-      else toggle.focus({ preventScroll: true });
+      if (open && !panel.open) panel.showModal();
+      if (!open && panel.open) panel.close();
     };
-    toggle.addEventListener("click", () => setOpen(toggle.getAttribute("aria-expanded") !== "true"));
+    toggle.addEventListener("click", () => setOpen(!panel.open));
     cancel?.addEventListener("click", () => setOpen(false));
+    panel.addEventListener("close", () => {
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.focus({ preventScroll: true });
+    });
+    panel.addEventListener("click", event => {
+      if (event.target === panel) setOpen(false);
+    });
     if (!(form instanceof HTMLFormElement)) return;
 
     const feedback = form.querySelector("[data-plugin-install-feedback]");
     const submit = form.querySelector("[data-plugin-install-submit]");
-    form.addEventListener("input", () => setFeedback(feedback, "", ""));
-    form.addEventListener("submit", async event => {
-      event.preventDefault();
+    const dropzone = form.querySelector("[data-plugin-dropzone]");
+    const packageInput = form.querySelector("[data-plugin-package-input]");
+    const nameInput = form.elements.namedItem("instance_name");
+    const dropzoneTitle = form.querySelector("[data-plugin-dropzone-title]");
+    const dropzoneCopy = form.querySelector("[data-plugin-dropzone-copy]");
+    let selectedFile = null;
+    let dragDepth = 0;
+
+    const resetSelection = () => {
+      selectedFile = null;
+      dragDepth = 0;
+      if (packageInput instanceof HTMLInputElement) packageInput.value = "";
+      if (nameInput instanceof HTMLInputElement) nameInput.value = "";
+      if (dropzone instanceof HTMLElement) dropzone.classList.remove("is-dragging");
+      if (dropzoneTitle instanceof HTMLElement) dropzoneTitle.textContent = "拖入签名动作包";
+      if (dropzoneCopy instanceof HTMLElement) {
+        dropzoneCopy.textContent = "仅接受一个已签名 ZIP，拖放后自动安装";
+      }
+      setFeedback(feedback, "", "");
+    };
+
+    panel.addEventListener("close", resetSelection);
+
+    const defaultInstanceName = file => {
+      const stem = file.name.replace(/\.zip$/i, "").replace(/[_-]+/g, " ").trim();
+      return (stem || "新自动化项目").slice(0, 120);
+    };
+    const selectPackage = file => {
+      if (!(file instanceof File) || !/\.zip$/i.test(file.name)) {
+        setFeedback(feedback, "仅支持一个 ZIP 格式的签名动作包。", "error");
+        return false;
+      }
+      selectedFile = file;
+      if (nameInput instanceof HTMLInputElement && !nameInput.value.trim()) {
+        nameInput.value = defaultInstanceName(file);
+      }
+      if (dropzoneTitle instanceof HTMLElement) dropzoneTitle.textContent = file.name;
+      if (dropzoneCopy instanceof HTMLElement) {
+        dropzoneCopy.textContent = "已选择动作包，安装前会由服务器验签。";
+      }
+      setFeedback(feedback, "", "");
+      return true;
+    };
+
+    const submitPackage = async () => {
       if (!(submit instanceof HTMLButtonElement)) return;
-      const nameInput = form.elements.namedItem("instance_name");
-      const packageInput = form.elements.namedItem("package");
       const instanceName = nameInput instanceof HTMLInputElement ? nameInput.value.trim() : "";
-      const packageFile = packageInput instanceof HTMLInputElement ? packageInput.files?.[0] : null;
+      const packageFile = selectedFile || (
+        packageInput instanceof HTMLInputElement ? packageInput.files?.[0] : null
+      );
       if (!instanceName || !packageFile) {
         setFeedback(feedback, "请填写项目名称并选择签名 ZIP。", "error");
         return;
@@ -469,6 +517,54 @@
       } finally {
         setBusy(submit, false, "");
       }
+    };
+
+    if (packageInput instanceof HTMLInputElement) {
+      packageInput.addEventListener("change", () => {
+        const files = packageInput.files;
+        if (!files || files.length !== 1) {
+          selectedFile = null;
+          setFeedback(feedback, "请选择一个签名 ZIP。", "error");
+          return;
+        }
+        selectPackage(files[0]);
+      });
+    }
+    if (dropzone instanceof HTMLElement) {
+      dropzone.addEventListener("dragenter", event => {
+        event.preventDefault();
+        dragDepth += 1;
+        dropzone.classList.add("is-dragging");
+      });
+      dropzone.addEventListener("dragover", event => {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      });
+      dropzone.addEventListener("dragleave", () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) dropzone.classList.remove("is-dragging");
+      });
+      dropzone.addEventListener("drop", event => {
+        event.preventDefault();
+        dragDepth = 0;
+        dropzone.classList.remove("is-dragging");
+        const files = event.dataTransfer?.files;
+        if (!files || files.length !== 1 || !selectPackage(files[0])) return;
+        void submitPackage();
+      });
+    }
+    document.addEventListener("dragover", event => {
+      if (panel.open) event.preventDefault();
+    });
+    document.addEventListener("drop", event => {
+      if (!panel.open || dropzone?.contains(event.target)) return;
+      event.preventDefault();
+      setFeedback(feedback, "请把签名 ZIP 拖到安装区域。", "error");
+    });
+    form.addEventListener("input", () => setFeedback(feedback, "", ""));
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      void submitPackage();
     });
   }
 

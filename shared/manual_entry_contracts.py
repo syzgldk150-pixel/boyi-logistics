@@ -70,3 +70,22 @@ YUNDA_MANUAL_ENTRY_ACTIONS = frozenset(YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS.values()
 # remote write is authorized by the manual-entry exclusion.
 YUNDA_MANUAL_PROXY_SAVE_PATH = "/ky_inms/public/index.php/business/waybill/entry/save.html"
 RONGHUI_MANUAL_PROXY_SAVE_PATH = "/dataOperation/saveTables"
+
+YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES = ("/ky_inms/public/",)
+RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES = (
+    "/widget/",
+    "/static/",
+    "/dataQuery/",
+    "/dataOperation/",
+    "/minic/",
+    "/address/",
+    "/advancePayment/",
+    "/commonOption/",
+    "/fhdquote/",
+    "/file/",
+    "/map/",
+    "/userView/",
+    "/unauth/download/",
+    "/menuTreeExtend/",
+    "/module/",
+)
