@@ -344,7 +344,15 @@ class FeishuApprovalRepository(RepositoryBase):
                 SELECT delivery.*, binding.open_id, binding.last_chat_id,
                        approval.status AS approval_status, approval.expires_at,
                        approval.risk_level, approval.required_role,
-                       command.automation_id AS automation_id, command.source
+                       command.automation_id AS automation_id, command.source,
+                       (
+                           SELECT GROUP_CONCAT(
+                               DISTINCT step.tool_name
+                               ORDER BY step.tool_name SEPARATOR ', '
+                           )
+                           FROM agent_run_steps AS step
+                           WHERE step.run_id=run.run_id
+                       ) AS tool_names
                 FROM feishu_approval_deliveries AS delivery
                 JOIN feishu_admin_bindings AS binding ON binding.binding_id=delivery.binding_id
                 JOIN approval_requests AS approval ON approval.approval_id=delivery.approval_id
