@@ -285,6 +285,8 @@ class RuntimeRepositoryTests(unittest.TestCase):
         self.assertIn("information_schema.statistics", migration)
         self.assertIn("ADD COLUMN active_binding_id", migration)
         self.assertIn("CASE WHEN status=''ACTIVE'' THEN binding_id ELSE NULL END", migration)
+        self.assertIn("END) VIRTUAL", migration)
+        self.assertNotIn("END) STORED", migration)
         self.assertIn("ADD UNIQUE INDEX uq_feishu_approval_delivery_active_binding", migration)
         self.assertNotIn("ADD COLUMN IF NOT EXISTS", migration)
         self.assertNotIn("ADD UNIQUE INDEX IF NOT EXISTS", migration)

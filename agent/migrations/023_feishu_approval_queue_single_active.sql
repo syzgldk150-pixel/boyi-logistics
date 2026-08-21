@@ -119,7 +119,7 @@ DROP TEMPORARY TABLE migration_023_feishu_queue_recovery;
 SET @add_feishu_active_binding_column_sql = (
     SELECT IF(
         COUNT(*)=0,
-        'ALTER TABLE feishu_approval_deliveries ADD COLUMN active_binding_id CHAR(36) GENERATED ALWAYS AS (CASE WHEN status=''ACTIVE'' THEN binding_id ELSE NULL END) STORED',
+        'ALTER TABLE feishu_approval_deliveries ADD COLUMN active_binding_id CHAR(36) GENERATED ALWAYS AS (CASE WHEN status=''ACTIVE'' THEN binding_id ELSE NULL END) VIRTUAL',
         'SELECT 1'
     )
     FROM information_schema.columns

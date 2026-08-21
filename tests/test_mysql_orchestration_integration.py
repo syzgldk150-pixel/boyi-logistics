@@ -1995,7 +1995,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             )
             column = cursor.fetchone()
             self.assertIsNotNone(column)
-            self.assertIn("STORED GENERATED", str(column["EXTRA"]).upper())
+            self.assertIn("VIRTUAL GENERATED", str(column["EXTRA"]).upper())
             self.assertIn("ACTIVE", str(column["GENERATION_EXPRESSION"]).upper())
 
             cursor.execute(
