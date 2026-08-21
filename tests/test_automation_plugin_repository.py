@@ -910,9 +910,10 @@ class AutomationPluginRepositoryTests(TestCase):
             {row["consumer_name"] for row in deliveries},
         )
 
-    def test_feishu_active_lookup_locks_only_delivery_before_reading_projection(self):
+    def test_feishu_active_lookup_locks_binding_then_delivery_before_projection(self):
         connection = _ScriptedConnection(
             [
+                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
                 ("FROM feishu_approval_deliveries", {"delivery_id": "d-1"}, 0),
                 (
                     "JOIN approval_requests AS approval",
@@ -926,12 +927,54 @@ class AutomationPluginRepositoryTests(TestCase):
         active = repository.active_for_binding("binding-a", for_update=True)
 
         self.assertEqual("approval-a", active["approval_id"])
-        lock_sql, _ = connection.cursor_instance.executions[0]
-        projection_sql, _ = connection.cursor_instance.executions[1]
-        self.assertIn("FOR UPDATE", lock_sql)
-        self.assertNotIn("approval_requests", lock_sql)
-        self.assertNotIn("agent_runs", lock_sql)
+        binding_lock_sql, _ = connection.cursor_instance.executions[0]
+        delivery_lock_sql, _ = connection.cursor_instance.executions[1]
+        projection_sql, _ = connection.cursor_instance.executions[2]
+        self.assertIn("FOR UPDATE", binding_lock_sql)
+        self.assertIn("FROM feishu_admin_bindings", binding_lock_sql)
+        self.assertIn("FOR UPDATE", delivery_lock_sql)
+        self.assertNotIn("approval_requests", delivery_lock_sql)
+        self.assertNotIn("agent_runs", delivery_lock_sql)
         self.assertNotIn("FOR UPDATE", projection_sql)
+
+    def test_feishu_single_binding_finish_never_expands_to_other_bindings(self):
+        connection = _ScriptedConnection(
+            [
+                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
+                ("UPDATE feishu_approval_deliveries", None, 1),
+                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
+                ("FROM feishu_approval_deliveries", {"delivery_id": "d-next"}, 0),
+                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
+                ("FROM feishu_approval_deliveries", {"delivery_id": "d-next"}, 0),
+                (
+                    "JOIN approval_requests AS approval",
+                    {"delivery_id": "d-next", "approval_id": "approval-next"},
+                    0,
+                ),
+            ]
+        )
+        repository = FeishuApprovalRepository(connection)
+
+        binding_ids = repository.finish_active_for_binding(
+            "binding-a",
+            "approval-stale",
+            status="SKIPPED",
+        )
+
+        self.assertEqual(["binding-a"], binding_ids)
+        statements = [
+            " ".join(str(sql).split())
+            for sql, _params in connection.cursor_instance.executions
+        ]
+        self.assertFalse(
+            any("SELECT DISTINCT binding_id" in sql for sql in statements)
+        )
+        update_sql, update_params = connection.cursor_instance.executions[1]
+        self.assertIn("WHERE binding_id=%s AND approval_id=%s", update_sql)
+        self.assertEqual(
+            ("SKIPPED", "binding-a", "approval-stale"),
+            update_params,
+        )
 
     def test_worker_pairing_is_request_audited_and_identity_immutable(self):
         request_id = str(uuid.uuid4())

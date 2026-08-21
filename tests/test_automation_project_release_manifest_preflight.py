@@ -1385,6 +1385,79 @@ def _migration_full_auto_event(automation_id):
     }
 
 
+def _credential_downgrade_event(
+    automation_id, *, event_id=3, generation=1, config_version=2
+):
+    return {
+        "event_id": event_id,
+        "request_id": (
+            f"11111111-1111-4111-a111-111111111111:{automation_id}"
+        ),
+        "from_mode": "PROJECT_FULL_AUTO",
+        "to_mode": "REQUIRE_EACH_RUN",
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "system:account-credential-change",
+        "actor_role": "system",
+        "actor_display_name": "Account credential safety guard",
+        "reason": "ACCOUNT_CREDENTIAL_CHANGED",
+        "comment": (
+            "Project full-auto authorization revoked before bound credentials changed"
+        ),
+        "correlation_id": "22222222-2222-4222-a222-222222222222",
+    }
+
+
+def _credential_restore_event(
+    automation_id, *, event_id=4, generation=1, config_version=2
+):
+    return {
+        "event_id": event_id,
+        "request_id": f"migration-022-credential-full-auto:{automation_id}",
+        "from_mode": "REQUIRE_EACH_RUN",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "system:migration:automation-credential-full-auto-v1",
+        "actor_role": "system",
+        "actor_display_name": "Migration 022",
+        "reason": "MIGRATION_022_CREDENTIAL_FULL_AUTO",
+        "comment": "Restored durable full-auto after legacy credential guard",
+        "correlation_id": "33333333-3333-4333-a333-333333333333",
+    }
+
+
+def _plugin_restore_event(
+    automation_id, *, event_id=4, generation=2, config_version=2
+):
+    return {
+        "event_id": event_id,
+        "request_id": f"migration-022-plugin-full-auto:{automation_id}",
+        "from_mode": "REQUIRE_EACH_RUN",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "system:migration:automation-plugin-full-auto-v1",
+        "actor_role": "system",
+        "actor_display_name": "Migration 022",
+        "reason": "MIGRATION_022_PLUGIN_FULL_AUTO",
+        "comment": "Restored durable full-auto after legacy plugin downgrade",
+        "correlation_id": "44444444-4444-4444-a444-444444444444",
+    }
+
+
 def _plugin_version_event(*, event_id=3):
     return {
         "event_id": event_id,
@@ -1664,6 +1737,287 @@ def test_later_manifest_accepts_migrated_full_auto_plugin_rebind(preflight):
         policy_events=[bootstrap, migration, plugin_event],
         configuration_evidence=[plugin_evidence],
     )
+
+
+def test_later_manifest_accepts_credential_downgrade_then_022_restore(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    credential = _credential_downgrade_event(automation_id)
+    restored = _credential_restore_event(automation_id)
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 1, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 4, 1, 2, restored),
+        policy_events=[bootstrap, migration, credential, restored],
+        configuration_evidence=[],
+    )
+
+
+def test_later_manifest_accepts_plugin_downgrade_then_022_restore(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin = {
+        **_plugin_version_event(event_id=3),
+        "request_id": "55555555-5555-4555-a555-555555555555",
+        "correlation_id": "55555555-5555-4555-a555-555555555555",
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+    restored = _plugin_restore_event(automation_id)
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 4, 2, 2, restored),
+        policy_events=[bootstrap, migration, plugin, restored],
+        configuration_evidence=[_plugin_version_evidence(preflight, plugin)],
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"actor_role": "system"},
+        {"actor_display_name": "Admin"},
+        {"request_id": "not-a-uuid", "correlation_id": "not-a-uuid"},
+        {"correlation_id": "66666666-6666-4666-a666-666666666666"},
+        {"contract_hash": "a" * 64},
+    ),
+)
+def test_later_manifest_rejects_tampered_plugin_downgrade_before_022_restore(
+    preflight, mutation
+):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin = {
+        **_plugin_version_event(event_id=3),
+        "request_id": "55555555-5555-4555-a555-555555555555",
+        "correlation_id": "55555555-5555-4555-a555-555555555555",
+        "to_mode": "REQUIRE_EACH_RUN",
+        **mutation,
+    }
+    restored = _plugin_restore_event(automation_id)
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin, restored],
+            configuration_evidence=[_plugin_version_evidence(preflight, plugin)],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"reason": "MIGRATION_022_CREDENTIAL_FULL_AUTO"},
+        {"actor_id": "system:migration:automation-credential-full-auto-v1"},
+        {"request_id": "migration-022-plugin-full-auto:other"},
+        {"project_generation": 1},
+    ),
+)
+def test_later_manifest_rejects_tampered_plugin_restore(preflight, mutation):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin = {
+        **_plugin_version_event(event_id=3),
+        "request_id": "55555555-5555-4555-a555-555555555555",
+        "correlation_id": "55555555-5555-4555-a555-555555555555",
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+    restored = {**_plugin_restore_event(automation_id), **mutation}
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin, restored],
+            configuration_evidence=[_plugin_version_evidence(preflight, plugin)],
+        )
+
+
+def test_later_manifest_accepts_exact_historical_credential_downgrade(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    credential = _credential_downgrade_event(automation_id)
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 1, "config_version": 2},
+        policy=_durable_policy("REQUIRE_EACH_RUN", 3, 1, 2, credential),
+        policy_events=[bootstrap, migration, credential],
+        configuration_evidence=[],
+    )
+
+
+def test_later_manifest_accepts_plugin_downgrade_then_system_full_auto(
+    preflight,
+):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    admin_event = _durable_admin_event(
+        event_id=2,
+        from_mode="REQUIRE_EACH_RUN",
+        to_mode="PROJECT_FULL_AUTO",
+        generation=1,
+        config_version=2,
+    )
+    plugin_event = {
+        **_plugin_version_event(event_id=3),
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+    migration = {
+        **_migration_full_auto_event(automation_id),
+        "event_id": 4,
+        "project_generation": 2,
+    }
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 4, 2, 2, migration),
+        policy_events=[bootstrap, admin_event, plugin_event, migration],
+        configuration_evidence=[
+            _plugin_version_evidence(preflight, plugin_event)
+        ],
+    )
+
+
+def test_later_manifest_accepts_exact_historical_plugin_downgrade(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = {
+        **_plugin_version_event(event_id=3),
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+        project={"generation": 2, "config_version": 2},
+        policy=_durable_policy("REQUIRE_EACH_RUN", 3, 2, 2, plugin_event),
+        policy_events=[bootstrap, migration, plugin_event],
+        configuration_evidence=[
+            _plugin_version_evidence(preflight, plugin_event)
+        ],
+    )
+
+
+def test_later_manifest_rejects_plugin_transition_that_grants_full_auto(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    plugin_event = {
+        **_plugin_version_event(event_id=2),
+        "from_mode": "REQUIRE_EACH_RUN",
+        "to_mode": "PROJECT_FULL_AUTO",
+    }
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, plugin_event],
+            configuration_evidence=[
+                _plugin_version_evidence(preflight, plugin_event)
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"actor_id": "system:other"},
+        {"request_id": "not-a-credential-request"},
+        {"correlation_id": "not-a-uuid"},
+        {"contract_hash": "a" * 64},
+        {"comment": "different"},
+    ),
+)
+def test_later_manifest_rejects_tampered_credential_downgrade(
+    preflight, mutation
+):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    credential = {**_credential_downgrade_event(automation_id), **mutation}
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 1, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, credential],
+            configuration_evidence=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"actor_id": "system:other"},
+        {"request_id": "migration-022-wrong"},
+        {"project_generation": 2},
+        {"correlation_id": "not-a-uuid"},
+    ),
+)
+def test_later_manifest_rejects_tampered_credential_restore(preflight, mutation):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    credential = _credential_downgrade_event(automation_id)
+    restored = {**_credential_restore_event(automation_id), **mutation}
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={"automation_id": automation_id, "initial_mode": "REQUIRE_EACH_RUN", "policy_version": 1},
+            project={"generation": 1, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, credential, restored],
+            configuration_evidence=[],
+        )
 
 
 @pytest.mark.parametrize(

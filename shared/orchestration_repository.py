@@ -1709,7 +1709,7 @@ class ApprovalRepository(_RepositoryBase):
                 """
                 UPDATE approval_requests
                 SET status='EXPIRED', decided_at=NOW(6)
-                WHERE run_id=%s AND status IN ('PENDING', 'APPROVED')
+                WHERE run_id=%s AND status='PENDING'
                   AND expires_at <= NOW(6)
                 """,
                 (run_id,),
@@ -1759,7 +1759,7 @@ class ApprovalRepository(_RepositoryBase):
                 """
                 UPDATE approval_requests
                 SET status='EXPIRED', decided_at=NOW(6)
-                WHERE approval_id=%s AND status IN ('PENDING', 'APPROVED')
+                WHERE approval_id=%s AND status='PENDING'
                   AND expires_at <= NOW(6)
                 """,
                 (approval_id,),
@@ -1880,7 +1880,7 @@ class ApprovalRepository(_RepositoryBase):
                 """
                 UPDATE approval_requests
                 SET status='EXPIRED', decided_at=NOW(6)
-                WHERE run_id=%s AND status IN ('PENDING', 'APPROVED')
+                WHERE run_id=%s AND status='PENDING'
                   AND expires_at <= NOW(6)
                 """,
                 (run_id,),
@@ -1898,7 +1898,7 @@ class ApprovalRepository(_RepositoryBase):
             invalidated_count = int(getattr(cursor, "rowcount", 0) or 0)
             cursor.execute(
                 """
-                SELECT ar.*, (ar.expires_at > NOW(6)) AS is_unexpired
+                SELECT ar.*
                 FROM approval_requests ar
                 WHERE ar.run_id=%s
                 ORDER BY ar.approval_round DESC, ar.created_at DESC
@@ -1914,7 +1914,7 @@ class ApprovalRepository(_RepositoryBase):
             outcome = "MISSING"
         elif str(approval.get("plan_hash") or "") != plan_hash:
             outcome = "INVALIDATED"
-        elif approval.get("status") == "APPROVED" and bool(approval.get("is_unexpired")):
+        elif approval.get("status") == "APPROVED":
             outcome = "APPROVED"
         else:
             outcome = str(approval.get("status") or "MISSING")

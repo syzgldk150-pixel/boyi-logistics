@@ -17,7 +17,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PROJECT_ROOT.parent
 AUTOMATION_PROJECT_AUTHORIZATION_VERSION = "018"
@@ -33,8 +32,6 @@ _QUARTER_HOUR_DAILY_TIMES = tuple(
     for hour in range(24)
     for minute in (0, 15, 30, 45)
 )
-
-
 class AutomationProjectReleaseManifestError(RuntimeError):
     """A value-free reason a post-018 release must remain held."""
 
@@ -42,8 +39,6 @@ class AutomationProjectReleaseManifestError(RuntimeError):
         super().__init__(code)
         self.code = str(code)
         self.count = max(int(count), 1)
-
-
 def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
     """Recognize only the lease-backed interrupted-upgrade safety fence."""
 
@@ -66,8 +61,6 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
         and type(row.get("unknown_write_count")) is int
         and row.get("unknown_write_count") == 1
     )
-
-
 def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
     """Recognize an un-runnable upgrade whose target row can be rebuilt."""
 
@@ -471,6 +464,7 @@ def _load_exact_module(
     return module
 
 
+credential_policy_history = _load_exact_module("_automation_project_policy_history", PROJECT_ROOT / "scripts" / "automation_project_policy_history.py")
 def _load_release_contract() -> dict[str, Any]:
     """Load staged code-owned identities without leaking ``shared`` modules."""
 
@@ -2149,14 +2143,15 @@ def _validate_system_full_auto_event(*, automation_id: str, event: Mapping[str, 
         _raise_followup_policy_invalid()
 
 
-def _validate_plugin_version_event(event: Mapping[str, Any], configuration_evidence: Sequence[Mapping[str, Any]]) -> str | None:
+def _validate_plugin_version_event(event: Mapping[str, Any], configuration_evidence: Sequence[Mapping[str, Any]]) -> tuple[str | None, bool]:
     matches = [row for row in configuration_evidence if row.get("request_id") == event.get("request_id")]
     joined = matches[0] if len(matches) == 1 else {}
     metadata = joined.get("configuration_metadata_json")
     prepared_request = metadata.get("prepared_configuration_request_id") if isinstance(metadata, Mapping) else None
+    legacy_downgrade = event.get("from_mode") in _DURABLE_POLICY_MODES and event.get("from_mode") != event.get("to_mode") and event.get("to_mode") == "REQUIRE_EACH_RUN"
     if (
         len(matches) != 1
-        or event.get("from_mode") != event.get("to_mode")
+        or (event.get("from_mode") != event.get("to_mode") and not legacy_downgrade)
         or event.get("to_mode") not in _DURABLE_POLICY_MODES
         or not _empty_policy_event_contract(event)
         or event.get("actor_role") != "super_admin"
@@ -2191,9 +2186,7 @@ def _validate_plugin_version_event(event: Mapping[str, Any], configuration_evide
         or _canonical_sha256(metadata) != joined.get("configuration_metadata_sha256")
     ):
         _raise_followup_policy_invalid()
-    return prepared_request
-
-
+    return prepared_request, legacy_downgrade
 def _validate_super_admin_policy_event(*, automation_id: str, event: Mapping[str, Any]) -> None:
     if (
         event.get("actor_role") != "super_admin"
@@ -2210,8 +2203,6 @@ def _validate_super_admin_policy_event(*, automation_id: str, event: Mapping[str
         _validate_full_auto_event_contract(automation_id=automation_id, event=event)
         return
     _raise_followup_policy_invalid()
-
-
 def _policy_approval_matches(policy: Mapping[str, Any], anchor: Mapping[str, Any] | None) -> bool:
     if anchor is None:
         return all(
@@ -2275,7 +2266,13 @@ def _validate_later_project_policy_chain(
         if event_configuration < maximum_event_configuration:
             _raise_followup_policy_invalid()
         maximum_event_configuration = event_configuration
-        if reason == contract["bootstrap_evidence"]["plugin_reason"]:
+        try:
+            credential_authority = credential_policy_history.validate_credential_policy_history_event(automation_id=automation_id, event=event, previous_event=validated_events[-1])
+        except ValueError:
+            _raise_followup_policy_invalid()
+        if credential_authority is not None:
+            full_auto_authorized, approval_anchor = credential_authority, event
+        elif reason == contract["bootstrap_evidence"]["plugin_reason"]:
             legacy_configuration = _validate_followup_configuration_event(
                 contract,
                 event=event,
@@ -2294,7 +2291,7 @@ def _validate_later_project_policy_chain(
             system_full_auto_reason = reason
             approval_anchor = event
         elif reason == "PLUGIN_VERSION_CHANGED":
-            prepared_request = _validate_plugin_version_event(event, configuration_evidence)
+            prepared_request, legacy_downgrade = _validate_plugin_version_event(event, configuration_evidence)
             if prepared_request:
                 prepared_events = [row for row in validated_events if row.get("request_id") == prepared_request]
                 if (
@@ -2305,6 +2302,8 @@ def _validate_later_project_policy_chain(
                     or _policy_event_binding(prepared_events[0]) != _policy_event_binding(event)
                 ):
                     _raise_followup_policy_invalid()
+            if legacy_downgrade:
+                full_auto_authorized = False
             approval_anchor = event
         elif reason == "SUPER_ADMIN_PROJECT_POLICY_CHANGED":
             super_admin_seen = True

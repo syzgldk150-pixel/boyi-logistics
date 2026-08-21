@@ -134,7 +134,8 @@ class FeishuApprovalService:
                 isinstance(expires_at, datetime)
                 and expires_at <= datetime.now(timezone.utc).replace(tzinfo=None)
             ):
-                binding_ids = uow.feishu_approvals.finish_approval(
+                binding_ids = uow.feishu_approvals.finish_active_for_binding(
+                    str(active["binding_id"]),
                     approval_id,
                     status="EXPIRED" if approval_status == "PENDING" else "SKIPPED",
                 )
@@ -254,9 +255,11 @@ class FeishuApprovalService:
             )
             if approval_status != "PENDING" or expired:
                 approval_id = str(active.get("approval_id") or "")
-                if expired and approval_status == "PENDING":
-                    uow.feishu_approvals.expire_approval_if_due(approval_id)
-                activated = uow.feishu_approvals.finish_approval(
+                # This path already holds one Binding+Delivery.  Advance only
+                # that queue; the expiry outbox owns the global
+                # Approval -> sorted Bindings transition.
+                activated = uow.feishu_approvals.finish_active_for_binding(
+                    binding_id,
                     approval_id,
                     status="EXPIRED" if expired else "SKIPPED",
                 )

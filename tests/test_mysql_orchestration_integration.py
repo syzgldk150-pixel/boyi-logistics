@@ -48,8 +48,18 @@ def _load_daily_sign_scenarios():
     return module
 
 
+def _load_feishu_queue_scenarios():
+    path = PROJECT_ROOT / "tests" / "mysql_feishu_queue_scenarios.py"
+    spec = importlib.util.spec_from_file_location("mysql_feishu_queue_scenarios", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 AUTOMATION_PROJECT_SCENARIOS = _load_automation_project_scenarios()
 DAILY_SIGN_SCENARIOS = _load_daily_sign_scenarios()
+FEISHU_QUEUE_SCENARIOS = _load_feishu_queue_scenarios()
 
 
 @unittest.skipUnless(RUN_MYSQL, "set RUN_MYSQL_INTEGRATION=1 for real MySQL 8 tests")
@@ -94,6 +104,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls.daily_sign_readback_database = (
             f"{cls.database[:-5]}_daily_sign_readback_test"
         )
+        cls.feishu_queue_recovery_database = (
+            f"{cls.database[:-5]}_feishu_queue_recovery_test"
+        )
         cls.databases = (
             cls.database,
             cls.upgrade_database,
@@ -115,6 +128,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             cls.project_approval_atomic_database,
             cls.worker_dispatch_database,
             cls.daily_sign_readback_database,
+            cls.feishu_queue_recovery_database,
         )
         cls.runner = _load_migration_runner()
 
@@ -159,6 +173,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls._apply_through(cls.project_approval_atomic_database, "017")
         cls._apply_through(cls.worker_dispatch_database, "017")
         cls._apply_through(cls.daily_sign_readback_database, "013")
+        cls._apply_through(cls.feishu_queue_recovery_database, "017")
+        cls._seed_required_project_resources(cls.feishu_queue_recovery_database)
+        cls._apply_through(cls.feishu_queue_recovery_database, "022")
         cls._apply_through(cls.compat_database, "013")
         cls._apply_through(cls.contract_chain_database, "013")
         cls._apply_through(cls.startup_contract_database, "015")
@@ -1962,6 +1979,43 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
                 (approval_id,),
             )
             self.assertEqual(1, cursor.fetchone()["count"])
+
+    def test_feishu_queue_has_a_database_single_active_binding_constraint(self):
+        """Migration 023 must enforce serialization even if a caller races."""
+
+        with self._connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COLUMN_NAME, EXTRA, GENERATION_EXPRESSION
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA=DATABASE()
+                  AND TABLE_NAME='feishu_approval_deliveries'
+                  AND COLUMN_NAME='active_binding_id'
+                """
+            )
+            column = cursor.fetchone()
+            self.assertIsNotNone(column)
+            self.assertIn("STORED GENERATED", str(column["EXTRA"]).upper())
+            self.assertIn("ACTIVE", str(column["GENERATION_EXPRESSION"]).upper())
+
+            cursor.execute(
+                """
+                SELECT NON_UNIQUE
+                FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA=DATABASE()
+                  AND TABLE_NAME='feishu_approval_deliveries'
+                  AND INDEX_NAME='uq_feishu_approval_delivery_active_binding'
+                  AND COLUMN_NAME='active_binding_id'
+                """
+            )
+            index = cursor.fetchone()
+            self.assertIsNotNone(index)
+            self.assertEqual(0, int(index["NON_UNIQUE"]))
+
+    def test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(self):
+        FEISHU_QUEUE_SCENARIOS.run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(
+            self
+        )
 
     def test_linked_terminal_retry_reuses_the_first_child_run(self):
         repository = self._repository()

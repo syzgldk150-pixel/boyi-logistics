@@ -651,6 +651,7 @@ body.dispatch-page .notice { display: none; }
 .automation-action-catalog-empty p { margin: 0; font-size: 0.8rem; }
 @media (max-width: 640px) {
   .automation-plugin-manager-trigger { width: 44px; min-height: 44px; }
+  .automation-plugin-manager-close { width: 44px; min-height: 44px; }
   .automation-plugin-manager-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 24px); }
   .automation-plugin-manager-surface { max-height: calc(100dvh - 24px); }
   .automation-plugin-manager-header { min-height: 68px; padding: 12px; }

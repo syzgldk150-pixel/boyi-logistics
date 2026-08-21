@@ -14,6 +14,17 @@ from shared.orchestration_repository_support import (
 
 
 class FeishuApprovalRepository(RepositoryBase):
+    def _lock_binding(self, binding_id: str) -> dict[str, Any] | None:
+        """Acquire the queue's first lock: binding before any delivery row."""
+
+        safe_binding_id = _required_text(binding_id, "binding_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                "SELECT binding_id FROM feishu_admin_bindings WHERE binding_id=%s FOR UPDATE",
+                (safe_binding_id,),
+            )
+            return _row_dict(cursor, cursor.fetchone())
+
     def get_admin_user(self, admin_user_id: int, *, for_update: bool = False) -> dict[str, Any] | None:
         suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
@@ -241,6 +252,7 @@ class FeishuApprovalRepository(RepositoryBase):
                 JOIN admin_users AS admin ON admin.id=binding.admin_user_id
                 WHERE binding.active=TRUE AND binding.notifications_enabled=TRUE
                   AND admin.is_active=1 AND admin.control_plane_role='super_admin'
+                ORDER BY binding.binding_id
                 FOR UPDATE
                 """
             )
@@ -259,6 +271,8 @@ class FeishuApprovalRepository(RepositoryBase):
 
     def activate_next(self, binding_id: str) -> dict[str, Any] | None:
         safe_binding_id = _required_text(binding_id, "binding_id")
+        if self._lock_binding(safe_binding_id) is None:
+            return None
         with self.cursor() as cursor:
             cursor.execute(
                 """
@@ -299,6 +313,8 @@ class FeishuApprovalRepository(RepositoryBase):
         safe_binding_id = _required_text(binding_id, "binding_id")
         with self.cursor() as cursor:
             if for_update:
+                if self._lock_binding(safe_binding_id) is None:
+                    return None
                 # Serialize only the delivery queue row here.  Approval
                 # decisions and project invalidation consistently lock
                 # Run -> Approval; a joined FOR UPDATE across delivery,
@@ -352,26 +368,66 @@ class FeishuApprovalRepository(RepositoryBase):
             )
 
     def finish_approval(self, approval_id: str, *, status: str = "DECIDED") -> list[str]:
+        """Finish an approval across queues when no binding lock is pre-held.
+
+        Cross-queue callers acquire every Binding in sorted order.  Code that
+        already holds one Binding must use ``finish_active_for_binding`` so it
+        cannot expand its lock set against another administrator.
+        """
+
+        safe_approval_id = _required_text(approval_id, "approval_id")
         with self.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT DISTINCT binding_id FROM feishu_approval_deliveries
-                WHERE approval_id=%s FOR UPDATE
+                WHERE approval_id=%s ORDER BY binding_id
                 """,
-                (_required_text(approval_id, "approval_id"),),
+                (safe_approval_id,),
             )
             binding_ids = [str(row["binding_id"]) for row in _rows(cursor)]
+            for binding_id in binding_ids:
+                self._lock_binding(binding_id)
             cursor.execute(
                 """
                 UPDATE feishu_approval_deliveries
                 SET status=%s, decided_at=NOW(6), updated_at=NOW(6)
                 WHERE approval_id=%s AND status IN ('ACTIVE', 'QUEUED')
                 """,
-                (_required_text(status, "status"), approval_id),
+                (_required_text(status, "status"), safe_approval_id),
             )
             for binding_id in binding_ids:
                 self.activate_next(binding_id)
             return binding_ids
+
+    def finish_active_for_binding(
+        self,
+        binding_id: str,
+        approval_id: str,
+        *,
+        status: str = "DECIDED",
+    ) -> list[str]:
+        """Finish only one binding's current delivery and advance its queue."""
+
+        safe_binding_id = _required_text(binding_id, "binding_id")
+        safe_approval_id = _required_text(approval_id, "approval_id")
+        if self._lock_binding(safe_binding_id) is None:
+            return []
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE feishu_approval_deliveries
+                SET status=%s, decided_at=NOW(6), updated_at=NOW(6)
+                WHERE binding_id=%s AND approval_id=%s
+                  AND status IN ('ACTIVE', 'QUEUED')
+                """,
+                (
+                    _required_text(status, "status"),
+                    safe_binding_id,
+                    safe_approval_id,
+                ),
+            )
+        self.activate_next(safe_binding_id)
+        return [safe_binding_id]
 
     def expire_approval_if_due(self, approval_id: str) -> bool:
         with self.cursor() as cursor:

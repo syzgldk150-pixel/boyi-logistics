@@ -45,10 +45,10 @@ class _Cursor:
 
 
 class _ApprovedExecutionCursor(_Cursor):
-    def __init__(self, *, approval_status="APPROVED", is_unexpired=1):
+    def __init__(self, *, approval_status="APPROVED", expire_pending=False):
         super().__init__()
         self.approval_status = approval_status
-        self.is_unexpired = is_unexpired
+        self.expire_pending = expire_pending
 
     def execute(self, sql, params=None):
         super().execute(sql, params)
@@ -60,14 +60,15 @@ class _ApprovedExecutionCursor(_Cursor):
                 "plan_hash": "plan-hash",
                 "plan_json": '{"steps":[]}',
             }
-        elif "SELECT ar.*, (ar.expires_at > NOW(6))" in sql:
+        elif self.expire_pending and "SET status='EXPIRED'" in sql:
+            self.approval_status = "EXPIRED"
+        elif "SELECT ar.*" in sql and "FROM approval_requests ar" in sql:
             self.row = {
                 "approval_id": "approval-1",
                 "run_id": "run-1",
                 "approval_round": 2,
                 "plan_hash": "plan-hash",
                 "status": self.approval_status,
-                "is_unexpired": self.is_unexpired,
                 "impact_json": '{}',
             }
 
@@ -810,7 +811,7 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         repository = OrchestrationRepository(lambda: connection)
         self.assertEqual("8.0.43", repository.validate_mysql8())
 
-    def test_approved_execution_uses_db_clock_and_locks_run_and_latest_approval(self):
+    def test_approved_execution_preserves_a_timely_approval_past_ttl(self):
         cursor = _ApprovedExecutionCursor()
         repository = ApprovalRepository(_Connection(cursor))
 
@@ -822,12 +823,18 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertEqual("APPROVED", prepared["outcome"])
         sql = [statement for statement, _params in cursor.calls]
         self.assertIn("SELECT * FROM agent_runs WHERE run_id=%s FOR UPDATE", sql[0])
-        self.assertTrue(any("status IN ('PENDING', 'APPROVED')" in item for item in sql))
+        expiry_sql = [item for item in sql if "SET status='EXPIRED'" in item]
+        self.assertEqual(1, len(expiry_sql))
+        self.assertIn("status='PENDING'", expiry_sql[0])
+        self.assertNotIn("'APPROVED'", expiry_sql[0])
         self.assertTrue(any("expires_at <= NOW(6)" in item for item in sql))
         self.assertTrue(any("LIMIT 1 FOR UPDATE" in item for item in sql))
 
-    def test_approved_execution_cannot_consume_expired_approval(self):
-        cursor = _ApprovedExecutionCursor(approval_status="EXPIRED", is_unexpired=0)
+    def test_approved_execution_still_expires_pending_approval(self):
+        cursor = _ApprovedExecutionCursor(
+            approval_status="PENDING",
+            expire_pending=True,
+        )
         repository = ApprovalRepository(_Connection(cursor))
 
         prepared = repository.prepare_approved_execution(

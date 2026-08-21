@@ -604,7 +604,7 @@ def test_unrelated_account_does_not_revoke_implicit_finance_exact_policy():
     assert repository.domain_events == []
 
 
-def test_credentials_change_revokes_all_full_auto_projects_bound_to_account():
+def test_credentials_change_revokes_exact_but_preserves_full_auto_projects():
     def project(automation_id, bindings, *, mode="PROJECT_FULL_AUTO"):
         return {
             "automation_id": automation_id,
@@ -618,8 +618,16 @@ def test_credentials_change_revokes_all_full_auto_projects_bound_to_account():
             "account_bindings_json": bindings,
         }
 
+    scheduled_row = _task(
+        id="target-task",
+        tool_params={"account_id": "target-account"},
+        mode="EXACT_SCHEDULE_EXEMPT",
+        policy_version=2,
+        contract_hash="target-contract",
+        tool_contract_hash="target-tool-contract",
+    )
     repository = _CredentialRepo(
-        [],
+        [scheduled_row],
         project_rows=[
             project("single", {"primary": "target-account"}),
             project("collection", {"sources": ["other", "target-account"]}),
@@ -640,6 +648,8 @@ def test_credentials_change_revokes_all_full_auto_projects_bound_to_account():
         ],
     )
 
+    project_rows_before = deepcopy(repository.project_rows)
+
     result = ScheduledTaskApprovalService(
         repository,
         ToolRegistry(),
@@ -647,21 +657,17 @@ def test_credentials_change_revokes_all_full_auto_projects_bound_to_account():
 
     assert result == {
         "account_id": "target-account",
-        "revoked_count": 0,
-        "task_ids": [],
+        "revoked_count": 1,
+        "task_ids": ["target-task"],
     }
-    by_id = {row["automation_id"]: row for row in repository.project_rows}
-    assert {
-        automation_id
-        for automation_id, row in by_id.items()
-        if row["mode"] == "REQUIRE_EACH_RUN"
-    } == {"single", "collection", "finance", "already-requires"}
-    assert by_id["unrelated"]["mode"] == "PROJECT_FULL_AUTO"
-    assert len(repository.project_policy_events) == 3
-    assert {
-        event["event_type"]
-        for event, _deliveries in repository.domain_events
-    } == {"automation_project.approval_policy_changed"}
+    assert scheduled_row["mode"] == "REQUIRE_EACH_RUN"
+    assert repository.project_rows == project_rows_before
+    assert repository.project_policy_events == []
+    assert len(repository.domain_events) == 1
+    assert (
+        repository.domain_events[0][0]["event_type"]
+        == "scheduled_task.approval_policy_changed"
+    )
 
 
 def test_credentials_change_rejects_explicit_nonterminal_protected_run():

@@ -241,12 +241,53 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "019",
                 "020",
                 "021",
+                "022",
+                "023",
             ],
             [version for version, _ in migrations],
         )
         self.assertNotIn("load_dotenv", script_path.read_text(encoding="utf-8").split("def _connect", 1)[0])
         for _, path in migrations:
             self.assertTrue(module.split_sql_statements(path.read_text(encoding="utf-8")))
+
+    def test_feishu_queue_migration_recovers_before_installing_single_active_guard(self):
+        project_root = Path(__file__).resolve().parents[1]
+        migration = (
+            project_root
+            / "agent"
+            / "migrations"
+            / "023_feishu_approval_queue_single_active.sql"
+        ).read_text(encoding="utf-8")
+
+        normalize_at = migration.index("UPDATE feishu_approval_deliveries AS delivery")
+        recovery_at = migration.index("UPDATE outbox_events AS outbox")
+        transaction_at = migration.index("START TRANSACTION")
+        commit_at = migration.index("COMMIT")
+        guard_at = migration.index("uq_feishu_approval_delivery_active_binding")
+        self.assertLess(transaction_at, normalize_at)
+        self.assertLess(normalize_at, guard_at)
+        self.assertLess(recovery_at, guard_at)
+        self.assertLess(recovery_at, commit_at)
+        self.assertLess(commit_at, guard_at)
+        self.assertIn("ROW_NUMBER() OVER", migration)
+        self.assertIn("COUNT(*) OVER (PARTITION BY delivery.binding_id)", migration)
+        self.assertIn("delivery.status='QUEUED'", migration)
+        self.assertIn("delivery.activated_at=NULL", migration)
+        self.assertIn("delivery.notified_at=NULL", migration)
+        self.assertIn("DELETE consumption", migration)
+        self.assertIn("outbox.status='PENDING'", migration)
+        self.assertIn("outbox.attempt_count=0", migration)
+        self.assertIn("outbox.published_at=NULL", migration)
+        self.assertIn("CHECK (recovery_proven=TRUE)", migration)
+        self.assertIn("requested_event.event_count=1", migration)
+        self.assertIn("requested_event.outbox_count=1", migration)
+        self.assertIn("information_schema.columns", migration)
+        self.assertIn("information_schema.statistics", migration)
+        self.assertIn("ADD COLUMN active_binding_id", migration)
+        self.assertIn("CASE WHEN status=''ACTIVE'' THEN binding_id ELSE NULL END", migration)
+        self.assertIn("ADD UNIQUE INDEX uq_feishu_approval_delivery_active_binding", migration)
+        self.assertNotIn("ADD COLUMN IF NOT EXISTS", migration)
+        self.assertNotIn("ADD UNIQUE INDEX IF NOT EXISTS", migration)
 
 
 if __name__ == "__main__":
