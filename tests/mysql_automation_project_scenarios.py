@@ -638,31 +638,32 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             case.assertEqual(0, cursor.fetchone()["n"])
 
     # The exact restore owns every 018 object and can be reapplied cleanly.
+    cleanup_instances = ("integration_scan_instance", rollback_instance)
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "DELETE FROM automation_project_events WHERE automation_id=%s",
-                ("integration_scan_instance",),
+                "DELETE FROM automation_project_events WHERE automation_id IN (%s, %s)",
+                cleanup_instances,
             )
             cursor.execute(
-                "DELETE FROM automation_project_policy_events WHERE automation_id=%s",
-                ("integration_scan_instance",),
+                "DELETE FROM automation_project_policy_events WHERE automation_id IN (%s, %s)",
+                cleanup_instances,
             )
             cursor.execute(
-                "DELETE FROM automation_project_policies WHERE automation_id=%s",
-                ("integration_scan_instance",),
+                "DELETE FROM automation_project_policies WHERE automation_id IN (%s, %s)",
+                cleanup_instances,
             )
             cursor.execute(
-                "DELETE FROM automation_project_configs WHERE automation_id=%s",
-                ("integration_scan_instance",),
+                "DELETE FROM automation_project_configs WHERE automation_id IN (%s, %s)",
+                cleanup_instances,
             )
             cursor.execute(
-                "DELETE FROM scheduled_tasks WHERE automation_id=%s",
-                ("integration_scan_instance",),
+                "DELETE FROM scheduled_tasks WHERE automation_id IN (%s, %s)",
+                cleanup_instances,
             )
             cursor.execute(
-                "DELETE FROM automation_projects WHERE automation_id=%s",
-                ("integration_scan_instance",),
+                "DELETE FROM automation_projects WHERE automation_id IN (%s, %s)",
+                cleanup_instances,
             )
             cursor.execute(
                 "DELETE FROM automation_plugin_versions WHERE plugin_id=%s",
