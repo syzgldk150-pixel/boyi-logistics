@@ -34,6 +34,7 @@ from shared.orchestration_repository_support import (
 from shared.orchestration_schema import orchestration_schema_requirements
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
+from shared.feishu_approval_repository import FeishuApprovalRepository
 from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.automation_project_authorization import AutomationProjectInvocation
 from shared.account_execution_locks import (
@@ -1169,6 +1170,25 @@ class AgentRunRepository(_RepositoryBase):
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("run lease is no longer owned by this worker")
+        return self.get(run_id, for_update=True) or {}
+
+    def make_waiting_approval_runnable(self, run_id: str) -> dict[str, Any]:
+        """Make a decided approval claimable before the post-commit wake signal."""
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE agent_runs
+                SET next_attempt_at=NOW(6), version=version+1
+                WHERE run_id=%s AND status='WAITING_APPROVAL'
+                  AND worker_id IS NULL
+                """,
+                (_required_text(run_id, "run_id"),),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise InvalidStateError(
+                    "approval run is not an unleased waiting run"
+                )
         return self.get(run_id, for_update=True) or {}
 
     def request_cancel(
@@ -2572,6 +2592,10 @@ class OrchestrationUnitOfWork:
             self._cursor_factory,
         )
         self.automation_plugins = AutomationPluginRepository(
+            connection,
+            self._cursor_factory,
+        )
+        self.feishu_approvals = FeishuApprovalRepository(
             connection,
             self._cursor_factory,
         )

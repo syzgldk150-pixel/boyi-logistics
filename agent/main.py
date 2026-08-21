@@ -149,6 +149,7 @@ from agent.orchestration.automation_project_policy_service import (
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.control_plane_service import ControlPlaneService
+from agent.orchestration.feishu_approval_service import FeishuApprovalService
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import (
     Actor,
@@ -213,10 +214,15 @@ from feishu.bot import (
 )
 from feishu.message_handler import (
     bind_automation_project_entrypoints,
+    bind_feishu_approval_runtime,
     queue_bot_menu_payload,
     queue_im_message_payload,
 )
-from feishu.notify import send_finance_anomaly_alert, send_tms_session_disconnected_alert
+from feishu.notify import (
+    send_finance_anomaly_alert,
+    send_text_sync,
+    send_tms_session_disconnected_alert,
+)
 from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
@@ -243,6 +249,7 @@ scheduled_task_approval_bootstrap: dict[str, int] = {}
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_worker_transport_service: WindowsWorkerServerTransport | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
+feishu_approval_service: FeishuApprovalService | None = None
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 AGENT_INTERNAL_API_TOKEN = ""
@@ -308,6 +315,12 @@ def _automation_project_entrypoint_service() -> AutomationProjectEntrypoints:
     if automation_project_entrypoints is None:
         raise RuntimeError("Automation project entrypoints are not initialized")
     return automation_project_entrypoints
+
+
+def _feishu_approvals() -> FeishuApprovalService:
+    if feishu_approval_service is None:
+        raise RuntimeError("Feishu approval service is not initialized")
+    return feishu_approval_service
 
 
 def _automation_plugins() -> ProductionAutomationPluginRuntime:
@@ -986,6 +999,7 @@ async def lifespan(app: FastAPI):
     global automation_plugin_runtime, automation_project_policy_service
     global automation_worker_transport_service
     global automation_project_entrypoints
+    global feishu_approval_service
     load_agent_environment()
     setup_logging()
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
@@ -1132,17 +1146,14 @@ async def lifespan(app: FastAPI):
             project_policy_bootstrap.get("require_each_run", 0),
             project_policy_bootstrap.get("retired_scheduled_exact", 0),
         )
-    automation_project_policy_service = project_policy_service
-    automation_project_entrypoints = AutomationProjectEntrypoints(
-        project_policy_service,
-        route_resolver=CommittedAutomationProjectRouteResolver(
-            catalog=plugin_runtime.catalog,
-            runtime_repository=plugin_runtime.runtime_repository,
-            binding_resolver=plugin_runtime.binding_resolver,
-            resource_provider=get_workflow_resource,
-        ),
+    default_full_auto = await asyncio.to_thread(
+        project_policy_service.ensure_default_full_auto_policies
     )
-    bind_automation_project_entrypoints(automation_project_entrypoints)
+    logger.info(
+        "Automation project durable full-auto defaults changed=%d",
+        default_full_auto.get("changed", 0),
+    )
+    automation_project_policy_service = project_policy_service
     policy = PolicyEngine(
         catalog,
         scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
@@ -1153,6 +1164,23 @@ async def lifespan(app: FastAPI):
         policy,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
     )
+    feishu_approval_service = FeishuApprovalService(
+        repository,
+        approval_service,
+        send_text=send_text_sync,
+    )
+    automation_project_entrypoints = AutomationProjectEntrypoints(
+        project_policy_service,
+        route_resolver=CommittedAutomationProjectRouteResolver(
+            catalog=plugin_runtime.catalog,
+            runtime_repository=plugin_runtime.runtime_repository,
+            binding_resolver=plugin_runtime.binding_resolver,
+            resource_provider=get_workflow_resource,
+        ),
+        feishu_actor_resolver=feishu_approval_service.resolve_actor,
+    )
+    bind_automation_project_entrypoints(automation_project_entrypoints)
+    bind_feishu_approval_runtime(feishu_approval_service)
     runner = WorkflowRunner(
         repository=repository,
         catalog=catalog,
@@ -1177,6 +1205,8 @@ async def lifespan(app: FastAPI):
         handlers={
             "orchestration.run_worker": _noop_outbox_handler,
             "orchestration.audit": _project_run_completed_event,
+            "feishu.approval": feishu_approval_service.handle_outbox,
+            "feishu.approval.expiry": feishu_approval_service.handle_outbox,
             "finance.failure_alert": _finance_sync_failure_handler,
             "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
                 runtime,
@@ -1261,6 +1291,8 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
     register_account_session_restored(None)
     bind_agent_command_runtime(None)
+    bind_automation_project_entrypoints(None)
+    bind_feishu_approval_runtime(None)
     await stop_feishu_ws()
     await runner.stop()
     await dispatcher.stop()
@@ -1273,6 +1305,7 @@ async def lifespan(app: FastAPI):
     automation_plugin_runtime = None
     automation_worker_transport_service = None
     automation_project_entrypoints = None
+    feishu_approval_service = None
     automation_project_policy_service = None
     outbox_dispatcher = None
     workflow_runner = None
@@ -1334,6 +1367,8 @@ async def orchestration_error_handler(request: Request, exc: OrchestrationError)
         "WORK_ITEM_NOT_FOUND": 404,
         "APPROVAL_NOT_FOUND": 404,
         "APPROVAL_FORBIDDEN": 403,
+        "SUPER_ADMIN_REQUIRED": 403,
+        "FEISHU_BINDING_FORBIDDEN": 403,
         "ACTION_FORBIDDEN": 403,
         "TOOL_PERMISSION_DENIED": 403,
         "OPERATION_DISABLED": 403,
@@ -1355,6 +1390,7 @@ async def orchestration_error_handler(request: Request, exc: OrchestrationError)
         "PROJECT_ROUTE_NOT_FOUND": 404,
         "PROJECT_ROUTE_AMBIGUOUS": 409,
         "PROJECT_ROUTE_STALE": 409,
+        "PROJECT_RUNTIME_RECONCILING": 409,
         "PROJECT_ENTRYPOINT_DISABLED": 409,
         "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN": 422,
         "PROJECT_ARGUMENT_OVERRIDE_FORBIDDEN": 422,
@@ -1928,6 +1964,40 @@ def _require_console_admin_request(request: Request) -> Actor:
             "This control-plane request requires an authenticated Console administrator",
         )
     return actor
+
+
+def _require_console_super_admin_request(request: Request) -> Actor:
+    actor = _require_console_admin_request(request)
+    if "super_admin" not in actor.roles:
+        raise OrchestrationError(
+            "SUPER_ADMIN_REQUIRED",
+            "This action requires a Console super administrator",
+        )
+    return actor
+
+
+@app.get("/internal/v1/admin/feishu-approval-binding")
+async def get_feishu_approval_binding(request: Request):
+    actor = _require_console_super_admin_request(request)
+    return api_success(await asyncio.to_thread(_feishu_approvals().binding_status, int(actor.actor_id)))
+
+
+@app.post("/internal/v1/admin/feishu-approval-binding/challenge")
+async def create_feishu_approval_binding_challenge(request: Request):
+    actor = _require_console_super_admin_request(request)
+    return api_success(
+        await asyncio.to_thread(
+            _feishu_approvals().create_binding_challenge,
+            int(actor.actor_id),
+        )
+    )
+
+
+@app.delete("/internal/v1/admin/feishu-approval-binding")
+async def revoke_feishu_approval_binding(request: Request):
+    actor = _require_console_super_admin_request(request)
+    await asyncio.to_thread(_feishu_approvals().revoke_binding, int(actor.actor_id))
+    return api_success({"revoked": True})
 
 
 @app.post("/internal/v1/commands", status_code=202)

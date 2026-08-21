@@ -123,6 +123,7 @@ class ApprovalService:
                 run = uow.runs.get(str(current["run_id"]), for_update=False)
                 if run is None:
                     raise OrchestrationError("RUN_NOT_FOUND", "Approval run was not found")
+                uow.runs.make_waiting_approval_runnable(str(current["run_id"]))
                 self._append_event(
                     uow,
                     event_type=(
@@ -196,12 +197,44 @@ class ApprovalService:
                 "causation_id": run.get("causation_id"),
                 "payload": payload,
             },
-            (
-                {
-                    "consumer_name": "orchestration.audit",
-                    "topic": event_type,
-                    "partition_key": str(approval["work_item_id"]),
-                    "max_attempts": 10,
-                },
+            tuple(
+                [
+                    {
+                        "consumer_name": "orchestration.audit",
+                        "topic": event_type,
+                        "partition_key": str(approval["work_item_id"]),
+                        "max_attempts": 10,
+                    },
+                    *(
+                        [
+                            {
+                                "consumer_name": "feishu.approval",
+                                "topic": event_type,
+                                "partition_key": str(approval["approval_id"]),
+                                "max_attempts": 20,
+                            }
+                        ]
+                        if event_type
+                        in {
+                            "agent.approval.requested",
+                            "agent.approval.decided",
+                            "agent.approval.expired",
+                        }
+                        else []
+                    ),
+                    *(
+                        [
+                            {
+                                "consumer_name": "feishu.approval.expiry",
+                                "topic": "agent.approval.expiry_check",
+                                "partition_key": str(approval["approval_id"]),
+                                "available_at": approval["expires_at"],
+                                "max_attempts": 10,
+                            }
+                        ]
+                        if event_type == "agent.approval.requested"
+                        else []
+                    ),
+                ]
             ),
         )

@@ -8,6 +8,7 @@ from unittest import TestCase
 
 from shared.automation_plugin_repository import (
     AutomationPluginRepository,
+    _configuration_target_generation,
     _normalized_project_schedule,
     _normalized_worker_identity,
     _schedule_expressions,
@@ -19,6 +20,7 @@ from shared.automation_plugin_repository import (
 )
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
 from shared.orchestration_repository_support import (
+    ConcurrentUpdateError,
     IdempotencyConflict,
     OrchestrationPersistenceError,
     _json_hash,
@@ -75,6 +77,92 @@ class _ScriptedConnection:
         return self.cursor_instance
 
 
+def _configuration_save_rows():
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    compiled = {
+        "console": {
+            "arguments": {"marker": "A"},
+            "dynamic_resolvers": {},
+        }
+    }
+    project = {
+        "automation_id": "instance-one",
+        "plugin_id": "plugin-one",
+        "plugin_version": "1.0.0",
+        "display_name": "Instance one",
+        "state": "ENABLED",
+        "record_version": 7,
+        "target_generation": 1,
+        "committed_generation": 1,
+        "reconcile_state": "STABLE",
+        "manifest_json": {
+            "allowed_entrypoints": ["console"],
+            "scheduling": {
+                "supported": False,
+                "allowed_kinds": [],
+                "max_daily_times": 0,
+            },
+            "tool_contract": {"name": "automation.instance-one.run"},
+            "runtime": {"kind": "python_subprocess"},
+        },
+    }
+    config = {
+        "automation_id": "instance-one",
+        "config_json": {"marker": "A"},
+        "config_sha256": _json_hash({"marker": "A"}),
+        "account_bindings_json": {},
+        "account_bindings_sha256": _json_hash({}),
+        "resource_bindings_json": {},
+        "resource_bindings_sha256": _json_hash({}),
+        "enabled_entrypoints_json": ["console"],
+        "enabled_entrypoints_sha256": _json_hash(["console"]),
+        "desired_schedule_json": schedule,
+        "desired_schedule_sha256": _json_hash(schedule),
+        "compiled_invocations_json": compiled,
+        "compiled_invocations_sha256": _json_hash(compiled),
+        "device_id": None,
+        "device_binding_sha256": _json_hash(None),
+        "configured": 1,
+        "config_version": 2,
+    }
+    policy = {
+        "automation_id": "instance-one",
+        "mode": "PROJECT_FULL_AUTO",
+        "project_generation": 1,
+        "project_configuration_version": 2,
+        "version": 4,
+        "contract_snapshot_json": {"schema_version": 1},
+    }
+    return project, config, policy
+
+
+def _save_configuration(
+    repository,
+    *,
+    request_id: str | None = None,
+    marker: str = "B",
+):
+    return repository.save_project_config(
+        "instance-one",
+        config={"marker": marker},
+        account_bindings={},
+        resource_bindings={},
+        enabled_entrypoints=("console",),
+        schedule={"kind": "none", "times": [], "enabled": False},
+        compiled_invocations={
+            "console": {
+                "arguments": {"marker": marker},
+                "dynamic_resolvers": {},
+            }
+        },
+        device_binding=None,
+        actor_id="admin-one",
+        actor_role="super_admin",
+        request_id=request_id or str(uuid.uuid4()),
+        expected_project_configuration_version=2,
+    )
+
+
 def _worker_envelope(*, kind, body, sequence=0, message_id=None):
     return {
         "schema_version": 1,
@@ -91,6 +179,385 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_configuration_generation_advances_only_one_closed_stable_lineage(self):
+        project, config, _policy = _configuration_save_rows()
+        self.assertEqual(
+            2,
+            _configuration_target_generation(
+                project,
+                config,
+                ({"generation": 1, "state": "COMMITTED"},),
+            ),
+        )
+        self.assertEqual(
+            3,
+            _configuration_target_generation(
+                project,
+                config,
+                (
+                    {"generation": 1, "state": "COMMITTED"},
+                    {"generation": 2, "state": "DISPOSED"},
+                ),
+            ),
+        )
+        self.assertEqual(
+            1,
+            _configuration_target_generation(
+                {
+                    **project,
+                    "target_generation": 1,
+                    "committed_generation": None,
+                    "reconcile_state": "WAITING_COEFFECTS",
+                },
+                {**config, "configured": 0},
+                (),
+            ),
+        )
+
+        invalid_states = (
+            ({**project, "reconcile_state": "PREPARING"}, config),
+            ({**project, "target_generation": 2}, config),
+            (
+                {
+                    **project,
+                    "committed_generation": None,
+                    "reconcile_state": "PREPARING",
+                },
+                {**config, "configured": 0},
+            ),
+        )
+        for changed_project, changed_config in invalid_states:
+            with self.subTest(project=changed_project):
+                with self.assertRaises(ConcurrentUpdateError):
+                    _configuration_target_generation(
+                        changed_project,
+                        changed_config,
+                        ({"generation": 1, "state": "COMMITTED"},),
+                    )
+        with self.assertRaises(OrchestrationPersistenceError):
+            _configuration_target_generation(
+                project,
+                config,
+                ({"generation": 1, "state": "DISPOSED"},),
+            )
+        invalid_history = (
+            (
+                {"generation": 1, "state": "COMMITTED"},
+                {"generation": 3, "state": "DISPOSED"},
+            ),
+            (
+                {"generation": 1, "state": "COMMITTED"},
+                {"generation": 2, "state": "FAILED"},
+            ),
+        )
+        for rows in invalid_history:
+            with self.subTest(rows=rows):
+                with self.assertRaises(ConcurrentUpdateError):
+                    _configuration_target_generation(project, config, rows)
+
+    def test_initial_configuration_stages_generation_one_and_binds_policy(self):
+        project, config, _policy = _configuration_save_rows()
+        initial_project = {
+            **project,
+            "record_version": 1,
+            "target_generation": 1,
+            "committed_generation": None,
+            "reconcile_state": "WAITING_COEFFECTS",
+        }
+        initial_config = {**config, "configured": 0, "config_version": 1}
+        inserted_policy = {
+            "automation_id": "instance-one",
+            "mode": "REQUIRE_EACH_RUN",
+            "project_generation": 1,
+            "project_configuration_version": 2,
+            "version": 1,
+            "contract_snapshot_json": None,
+        }
+        persisted = {
+            **initial_config,
+            "configured": 1,
+            "config_version": 2,
+            "config_json": {"marker": "B"},
+        }
+        connection = _ScriptedConnection(
+            [
+                ("FROM automation_projects AS project", initial_project, 0),
+                ("FROM automation_project_configs", initial_config, 0),
+                ("FROM automation_project_events", None, 0),
+                ("FROM automation_project_generations", [], 0),
+                ("FROM automation_project_policies", None, 0),
+                ("FROM scheduled_tasks", [], 0),
+                ("FROM scheduled_tasks AS task", [], 0),
+                ("UPDATE automation_project_configs", None, 1),
+                ("UPDATE automation_projects", None, 1),
+                ("INSERT INTO automation_project_policies", None, 1),
+                ("FROM automation_project_policies", inserted_policy, 0),
+                ("INSERT INTO automation_project_policy_events", None, 1),
+                ("UPDATE automation_project_policies", None, 1),
+                ("INSERT INTO automation_project_events", None, 1),
+                ("FROM automation_project_configs", persisted, 0),
+                ("FROM scheduled_tasks", [], 0),
+            ]
+        )
+
+        saved = AutomationPluginRepository(connection).save_project_config(
+            "instance-one",
+            config={"marker": "B"},
+            account_bindings={},
+            resource_bindings={},
+            enabled_entrypoints=("console",),
+            schedule={"kind": "none", "times": [], "enabled": False},
+            compiled_invocations={
+                "console": {
+                    "arguments": {"marker": "B"},
+                    "dynamic_resolvers": {},
+                }
+            },
+            device_binding=None,
+            actor_id="admin-one",
+            actor_role="super_admin",
+            request_id=str(uuid.uuid4()),
+            expected_project_configuration_version=1,
+        )
+
+        self.assertEqual(2, saved["config_version"])
+        project_sql, project_params = connection.cursor_instance.executions[8]
+        self.assertIn("target_generation=%s", project_sql)
+        self.assertEqual(
+            (1, "instance-one", 1, 1, None, "WAITING_COEFFECTS", "ENABLED"),
+            project_params,
+        )
+        insert_sql, insert_params = connection.cursor_instance.executions[9]
+        self.assertIn("project_generation", insert_sql)
+        self.assertEqual(("instance-one", 1, 2), insert_params)
+        policy_update_params = connection.cursor_instance.executions[12][1]
+        self.assertEqual((1, 2, "instance-one", 1), policy_update_params)
+
+    def test_save_configuration_atomically_stages_next_generation_and_policy(self):
+        project, config, policy = _configuration_save_rows()
+        persisted = {
+            **config,
+            "config_json": {"marker": "B"},
+            "config_sha256": _json_hash({"marker": "B"}),
+            "compiled_invocations_json": {
+                "console": {
+                    "arguments": {"marker": "B"},
+                    "dynamic_resolvers": {},
+                }
+            },
+            "config_version": 3,
+        }
+        connection = _ScriptedConnection(
+            [
+                ("FROM automation_projects AS project", project, 0),
+                ("FROM automation_project_configs", config, 0),
+                ("FROM automation_project_events", None, 0),
+                (
+                    "FROM automation_project_generations",
+                    [{"generation": 1, "state": "COMMITTED"}],
+                    0,
+                ),
+                ("FROM automation_project_policies", policy, 0),
+                ("FROM scheduled_tasks", [], 0),
+                ("FROM scheduled_tasks AS task", [], 0),
+                ("UPDATE automation_project_configs", None, 1),
+                ("UPDATE automation_projects", None, 1),
+                ("INSERT INTO automation_project_policy_events", None, 1),
+                ("UPDATE automation_project_policies", None, 1),
+                ("INSERT INTO automation_project_events", None, 1),
+                ("FROM automation_project_configs", persisted, 0),
+                ("FROM scheduled_tasks", [], 0),
+            ]
+        )
+
+        saved = _save_configuration(AutomationPluginRepository(connection))
+
+        self.assertEqual(3, saved["config_version"])
+        executions = connection.cursor_instance.executions
+        generation_sql, generation_params = executions[3]
+        self.assertIn("ORDER BY generation FOR UPDATE", generation_sql)
+        self.assertEqual(("instance-one",), generation_params)
+        project_sql, project_params = executions[8]
+        self.assertIn("target_generation=%s", project_sql)
+        self.assertIn("committed_generation <=> %s", project_sql)
+        self.assertEqual(
+            (2, "instance-one", 7, 1, 1, "STABLE", "ENABLED"),
+            project_params,
+        )
+        policy_event_sql, policy_event_params = executions[9]
+        self.assertIn("project_generation", policy_event_sql)
+        self.assertEqual("PROJECT_FULL_AUTO", policy_event_params[3])
+        self.assertEqual(2, policy_event_params[4])
+        policy_sql, policy_params = executions[10]
+        self.assertIn("project_generation=%s", policy_sql)
+        self.assertIn("version=%s", policy_sql)
+        self.assertEqual((2, 3, "instance-one", 4), policy_params)
+
+    def test_configuration_idempotency_does_not_advance_generation_twice(self):
+        request_id = str(uuid.uuid4())
+        project, config, _policy = _configuration_save_rows()
+        persisted = {
+            **config,
+            "config_json": {"marker": "B"},
+            "config_sha256": _json_hash({"marker": "B"}),
+            "config_version": 3,
+        }
+        request_payload = {
+            "config": {"marker": "B"},
+            "account_bindings": {},
+            "resource_bindings": {},
+            "enabled_entrypoints": ["console"],
+            "schedule": {"kind": "none", "times": [], "enabled": False},
+            "compiled_invocations": {
+                "console": {
+                    "arguments": {"marker": "B"},
+                    "dynamic_resolvers": {},
+                }
+            },
+            "device_id": None,
+            "expected_project_configuration_version": 2,
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects AS project",
+                    {
+                        **project,
+                        "target_generation": 2,
+                        "reconcile_state": "PREPARING",
+                    },
+                    0,
+                ),
+                ("FROM automation_project_configs", persisted, 0),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "CONFIGURATION_UPDATED",
+                        "metadata_json": {
+                            "request_payload_sha256": _json_hash(request_payload)
+                        },
+                    },
+                    0,
+                ),
+                ("FROM automation_project_configs", persisted, 0),
+                ("FROM scheduled_tasks", [], 0),
+            ]
+        )
+
+        saved = _save_configuration(
+            AutomationPluginRepository(connection),
+            request_id=request_id,
+        )
+
+        self.assertEqual(3, saved["config_version"])
+        sql_statements = [" ".join(sql.split()) for sql, _ in connection.cursor_instance.executions]
+        self.assertFalse(any("automation_project_generations" in sql for sql in sql_statements))
+        self.assertFalse(any(sql.startswith("UPDATE") for sql in sql_statements))
+
+    def test_configuration_change_preserves_the_selected_project_policy_mode(self):
+        for mode in ("LEGACY_SCHEDULE_ONLY", "PROJECT_FULL_AUTO"):
+            with self.subTest(mode=mode):
+                project, config, policy = _configuration_save_rows()
+                policy = {**policy, "mode": mode}
+                persisted = {**config, "config_version": 3}
+                connection = _ScriptedConnection(
+                    [
+                        ("FROM automation_projects AS project", project, 0),
+                        ("FROM automation_project_configs", config, 0),
+                        ("FROM automation_project_events", None, 0),
+                        (
+                            "FROM automation_project_generations",
+                            [{"generation": 1, "state": "COMMITTED"}],
+                            0,
+                        ),
+                        ("FROM automation_project_policies", policy, 0),
+                        ("FROM scheduled_tasks", [], 0),
+                        ("FROM scheduled_tasks AS task", [], 0),
+                        ("UPDATE automation_project_configs", None, 1),
+                        ("UPDATE automation_projects", None, 1),
+                        ("INSERT INTO automation_project_policy_events", None, 1),
+                        ("UPDATE automation_project_policies", None, 1),
+                        ("INSERT INTO automation_project_events", None, 1),
+                        ("FROM automation_project_configs", persisted, 0),
+                        ("FROM scheduled_tasks", [], 0),
+                    ]
+                )
+
+                _save_configuration(AutomationPluginRepository(connection))
+
+                event_params = connection.cursor_instance.executions[9][1]
+                self.assertEqual(mode, event_params[2])
+                update_sql, update_params = connection.cursor_instance.executions[10]
+                self.assertNotIn("SET mode=", update_sql)
+                self.assertIn("contract_hash=NULL", update_sql)
+                self.assertEqual((2, 3, "instance-one", 4), update_params)
+
+    def test_save_configuration_rejects_nonstable_or_lost_project_cas(self):
+        project, config, policy = _configuration_save_rows()
+        nonstable = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects AS project",
+                    {**project, "reconcile_state": "PREPARING"},
+                    0,
+                ),
+                ("FROM automation_project_configs", config, 0),
+                ("FROM automation_project_events", None, 0),
+                (
+                    "FROM automation_project_generations",
+                    [{"generation": 1, "state": "COMMITTED"}],
+                    0,
+                ),
+            ]
+        )
+        with self.assertRaises(ConcurrentUpdateError):
+            _save_configuration(AutomationPluginRepository(nonstable))
+        self.assertTrue(
+            all(
+                not " ".join(sql.split()).startswith("UPDATE")
+                for sql, _params in nonstable.cursor_instance.executions
+            )
+        )
+
+        lost_cas = _ScriptedConnection(
+            [
+                ("FROM automation_projects AS project", project, 0),
+                ("FROM automation_project_configs", config, 0),
+                ("FROM automation_project_events", None, 0),
+                (
+                    "FROM automation_project_generations",
+                    [{"generation": 1, "state": "COMMITTED"}],
+                    0,
+                ),
+                ("FROM automation_project_policies", policy, 0),
+                ("FROM scheduled_tasks", [], 0),
+                ("FROM scheduled_tasks AS task", [], 0),
+                ("UPDATE automation_project_configs", None, 1),
+                ("UPDATE automation_projects", None, 0),
+            ]
+        )
+        with self.assertRaises(ConcurrentUpdateError):
+            _save_configuration(AutomationPluginRepository(lost_cas))
+        self.assertFalse(
+            any(
+                "automation_project_policy_events" in sql
+                for sql, _params in lost_cas.cursor_instance.executions
+            )
+        )
+
+        upgrading = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects AS project",
+                    {**project, "state": "UPGRADING"},
+                    0,
+                )
+            ]
+        )
+        with self.assertRaises(OrchestrationPersistenceError):
+            _save_configuration(AutomationPluginRepository(upgrading))
+        self.assertEqual(1, len(upgrading.cursor_instance.executions))
+
     def test_project_policy_repository_reads_exact_018_identity_backups(self):
         connection = _ScriptedConnection(
             [

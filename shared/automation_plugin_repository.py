@@ -12,9 +12,11 @@ import binascii
 import hashlib
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from shared.automation_project_policy_repository import PROJECT_POLICY_MODES
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -139,6 +141,148 @@ def _optional_positive_int(value: Any, field: str) -> int | None:
     if value is None:
         return None
     return _positive_int(value, field)
+
+
+@dataclass(frozen=True)
+class AutomationProjectGenerationStage:
+    automation_id: str
+    target_generation: int
+    prior_target_generation: int
+    committed_generation: int | None
+    prior_reconcile_state: str
+    project_state: str
+    expected_record_version: int
+    existing_generations: frozenset[int]
+
+
+def _stageable_project_state(value: Any) -> str:
+    state = str(value or "")
+    if state not in _PROJECT_STATES:
+        raise OrchestrationPersistenceError(
+            "automation project state is invalid"
+        )
+    if state not in {"INSTALLED", "ENABLED", "DISABLED"}:
+        raise ConcurrentUpdateError(
+            "automation project cannot stage a generation in its current state"
+        )
+    return state
+
+
+def _project_generation_stage(
+    project: Mapping[str, Any],
+    current_config: Mapping[str, Any],
+    generation_rows: Sequence[Mapping[str, Any]],
+    *,
+    allow_initial: bool,
+) -> AutomationProjectGenerationStage:
+    """Plan one exact project generation without mutating persistence."""
+
+    try:
+        automation_id = _required_text(
+            project.get("automation_id"),
+            "automation_id",
+        )
+        target_generation = _positive_int(
+            project.get("target_generation"),
+            "target_generation",
+        )
+        committed_generation = _optional_positive_int(
+            project.get("committed_generation"),
+            "committed_generation",
+        )
+        record_version = _positive_int(
+            project.get("record_version"),
+            "record_version",
+        )
+    except ValueError as exc:
+        raise OrchestrationPersistenceError(
+            "automation project generation pointers are invalid"
+        ) from exc
+    project_state = _stageable_project_state(project.get("state"))
+    reconcile_state = str(project.get("reconcile_state") or "")
+    if reconcile_state not in _RECONCILE_STATES:
+        raise OrchestrationPersistenceError(
+            "automation project reconcile state is invalid"
+        )
+    configured = current_config.get("configured")
+    if configured not in {True, False, 0, 1}:
+        raise OrchestrationPersistenceError(
+            "automation project configured state is invalid"
+        )
+    normalized_rows: dict[int, str] = {}
+    try:
+        for row in generation_rows:
+            generation = _positive_int(row.get("generation"), "generation")
+            state = str(row.get("state") or "")
+            if state not in _GENERATION_STATES or generation in normalized_rows:
+                raise ValueError("invalid generation history")
+            normalized_rows[generation] = state
+    except ValueError as exc:
+        raise OrchestrationPersistenceError(
+            "automation project generation history is invalid"
+        ) from exc
+
+    if committed_generation is None:
+        if (
+            not allow_initial
+            or target_generation != 1
+            or reconcile_state != "WAITING_COEFFECTS"
+            or configured not in {False, 0}
+            or normalized_rows
+        ):
+            raise ConcurrentUpdateError(
+                "uncommitted automation project is not in its initial configuration state"
+            )
+        next_generation = 1
+    else:
+        if (
+            reconcile_state != "STABLE"
+            or target_generation != committed_generation
+            or configured not in {True, 1}
+        ):
+            raise ConcurrentUpdateError(
+                "automation project must be stable before a generation can advance"
+            )
+        if normalized_rows.get(committed_generation) != "COMMITTED":
+            raise OrchestrationPersistenceError(
+                "stable automation project has no committed generation record"
+            )
+        maximum = max(normalized_rows)
+        if set(normalized_rows) != set(range(1, maximum + 1)) or any(
+            state != "DISPOSED"
+            for generation, state in normalized_rows.items()
+            if generation != committed_generation
+        ):
+            raise ConcurrentUpdateError(
+                "automation project generation history is not fully disposed"
+            )
+        next_generation = maximum + 1
+
+    return AutomationProjectGenerationStage(
+        automation_id=automation_id,
+        target_generation=next_generation,
+        prior_target_generation=target_generation,
+        committed_generation=committed_generation,
+        prior_reconcile_state=reconcile_state,
+        project_state=project_state,
+        expected_record_version=record_version,
+        existing_generations=frozenset(normalized_rows),
+    )
+
+
+def _configuration_target_generation(
+    project: Mapping[str, Any],
+    current_config: Mapping[str, Any],
+    generation_rows: Sequence[Mapping[str, Any]],
+) -> int:
+    """Compatibility projection for the shared generation staging contract."""
+
+    return _project_generation_stage(
+        project,
+        current_config,
+        generation_rows,
+        allow_initial=True,
+    ).target_generation
 
 
 def _sha256(value: Any, field: str) -> str:
@@ -1305,6 +1449,71 @@ class AutomationPluginRepository(
             raise OrchestrationPersistenceError("automation project config did not persist")
         return config
 
+    def lock_project_generation_stage(
+        self,
+        automation_id: str,
+        *,
+        project: Mapping[str, Any],
+        current_config: Mapping[str, Any],
+        allow_initial: bool = False,
+    ) -> AutomationProjectGenerationStage:
+        project_id = _required_text(automation_id, "automation_id")
+        if str(project.get("automation_id") or "") != project_id:
+            raise OrchestrationPersistenceError(
+                "automation project generation identity changed"
+            )
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT generation, state
+                FROM automation_project_generations
+                WHERE automation_id=%s
+                ORDER BY generation FOR UPDATE
+                """,
+                (project_id,),
+            )
+            generation_rows = _rows(cursor)
+        return _project_generation_stage(
+            project,
+            current_config,
+            generation_rows,
+            allow_initial=allow_initial,
+        )
+
+    def apply_project_generation_stage(
+        self,
+        stage: AutomationProjectGenerationStage,
+    ) -> None:
+        if not isinstance(stage, AutomationProjectGenerationStage):
+            raise TypeError("stage must be an AutomationProjectGenerationStage")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET target_generation=%s, reconcile_state='PREPARING',
+                    record_version=record_version+1, updated_at=NOW(6)
+                WHERE automation_id=%s
+                  AND record_version=%s
+                  AND target_generation=%s
+                  AND committed_generation <=> %s
+                  AND reconcile_state=%s
+                  AND state=%s
+                """,
+                (
+                    stage.target_generation,
+                    stage.automation_id,
+                    stage.expected_record_version,
+                    stage.prior_target_generation,
+                    stage.committed_generation,
+                    stage.prior_reconcile_state,
+                    stage.project_state,
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError(
+                    "automation project cannot stage a generation"
+                )
+
     def save_project_config(
         self,
         automation_id: str,
@@ -1345,8 +1554,8 @@ class AutomationPluginRepository(
         entrypoints = tuple(
             sorted({_required_text(item, "entrypoint") for item in enabled_entrypoints})
         )
-        if not entrypoints or len(entrypoints) != len(tuple(enabled_entrypoints)):
-            raise ValueError("enabled_entrypoints must be a non-empty unique list")
+        if len(entrypoints) != len(tuple(enabled_entrypoints)):
+            raise ValueError("enabled_entrypoints must be a unique list")
         if set(compiled_invocations) != set(entrypoints):
             raise ValueError("compiled invocations must exactly match enabled entrypoints")
         normalized_compiled: dict[str, dict[str, Any]] = {}
@@ -1374,8 +1583,9 @@ class AutomationPluginRepository(
                 "dynamic_resolvers": dict(resolvers),
             }
         normalized_schedule = _normalized_project_schedule(schedule)
-        if normalized_schedule["kind"] != "none" and "scheduler" not in entrypoints:
-            raise ValueError("a configured schedule requires the scheduler entrypoint")
+        # Schedule times remain persisted while the scheduler entrypoint is off.
+        # Generation commit materializes those rows disabled, so re-enabling the
+        # entrypoint restores the same administrator-configured times.
         device_id = _device_binding_id(device_binding)
         request_payload = {
             "config": dict(config),
@@ -1405,10 +1615,7 @@ class AutomationPluginRepository(
             project = _row_dict(cursor, cursor.fetchone())
             if project is None:
                 raise OrchestrationPersistenceError("automation project is not installed")
-            if str(project.get("state") or "") in {"UPGRADING", "UNINSTALLING", "ERROR"}:
-                raise OrchestrationPersistenceError(
-                    "automation project cannot be configured in its current state"
-                )
+            _stageable_project_state(project.get("state"))
             manifest = _json_value(project.get("manifest_json"), {})
             if not isinstance(manifest, Mapping):
                 raise OrchestrationPersistenceError("persisted plugin manifest is invalid")
@@ -1479,6 +1686,73 @@ class AutomationPluginRepository(
             if current_version != expected_version:
                 raise ConcurrentUpdateError("automation project config version changed")
             next_version = current_version + 1
+
+            generation_stage = self.lock_project_generation_stage(
+                project_id,
+                project=project,
+                current_config=current_config,
+                allow_initial=True,
+            )
+            target_generation = generation_stage.target_generation
+            committed_generation = generation_stage.committed_generation
+            generation_numbers = generation_stage.existing_generations
+            cursor.execute(
+                """
+                SELECT * FROM automation_project_policies
+                WHERE automation_id=%s FOR UPDATE
+                """,
+                (project_id,),
+            )
+            policy = _decode_row(
+                _row_dict(cursor, cursor.fetchone()),
+                ("contract_snapshot_json",),
+            )
+            if policy is None and committed_generation is not None:
+                raise OrchestrationPersistenceError(
+                    "configured automation project policy is missing"
+                )
+            if policy is not None:
+                mode = str(policy.get("mode") or "")
+                try:
+                    policy_version = _positive_int(
+                        policy.get("version"),
+                        "policy.version",
+                    )
+                    policy_generation = _positive_int(
+                        policy.get("project_generation"),
+                        "policy.project_generation",
+                    )
+                    policy_config_version = _positive_int(
+                        policy.get("project_configuration_version"),
+                        "policy.project_configuration_version",
+                    )
+                except ValueError as exc:
+                    raise OrchestrationPersistenceError(
+                        "automation project policy binding is invalid"
+                    ) from exc
+                if mode not in PROJECT_POLICY_MODES:
+                    raise OrchestrationPersistenceError(
+                        "automation project policy mode is invalid"
+                    )
+                if committed_generation is None:
+                    if (
+                        mode != "PROJECT_FULL_AUTO"
+                        or policy_generation != target_generation
+                        or policy_config_version != current_version
+                    ):
+                        raise ConcurrentUpdateError(
+                            "initial automation project policy binding changed"
+                        )
+                elif (
+                    policy_generation > committed_generation
+                    or policy_config_version > current_version
+                    or policy_generation not in generation_numbers
+                ):
+                    raise ConcurrentUpdateError(
+                        "automation project policy is not bound to the stable lineage"
+                    )
+            else:
+                policy_version = None
 
             device_binding_sha256 = _json_hash(None)
             if device_id is not None:
@@ -1673,60 +1947,56 @@ class AutomationPluginRepository(
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("automation project config version changed")
 
-            cursor.execute(
-                """
-                UPDATE automation_projects
-                SET reconcile_state='PREPARING',
-                    record_version=record_version+1, updated_at=NOW(6)
-                WHERE automation_id=%s
-                  AND state NOT IN ('UNINSTALLING', 'ERROR')
-                  AND reconcile_state NOT IN ('DISPOSING', 'BLOCKED_UNKNOWN_WRITE')
-                """,
-                (project_id,),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError(
-                    "automation project cannot stage a configuration generation"
-                )
+            self.apply_project_generation_stage(generation_stage)
 
-            cursor.execute(
-                """
-                INSERT INTO automation_project_policies (
-                    automation_id, mode, project_configuration_version, version
-                ) VALUES (%s, 'PROJECT_FULL_AUTO', %s, 1)
-                ON DUPLICATE KEY UPDATE automation_id=automation_id
-                """,
-                (project_id, next_version),
-            )
-            cursor.execute(
-                """
-                SELECT * FROM automation_project_policies
-                WHERE automation_id=%s FOR UPDATE
-                """,
-                (project_id,),
-            )
-            policy = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                ("contract_snapshot_json",),
-            )
             if policy is None:
-                raise OrchestrationPersistenceError("project policy did not persist")
+                cursor.execute(
+                    """
+                    INSERT INTO automation_project_policies (
+                        automation_id, project_generation, mode,
+                        project_configuration_version, version
+                    ) VALUES (%s, %s, 'PROJECT_FULL_AUTO', %s, 1)
+                    """,
+                    (project_id, target_generation, next_version),
+                )
+                cursor.execute(
+                    """
+                    SELECT * FROM automation_project_policies
+                    WHERE automation_id=%s FOR UPDATE
+                    """,
+                    (project_id,),
+                )
+                policy = _decode_row(
+                    _row_dict(cursor, cursor.fetchone()),
+                    ("contract_snapshot_json",),
+                )
+                if policy is None:
+                    raise OrchestrationPersistenceError(
+                        "project policy did not persist"
+                    )
+                policy_version = _positive_int(
+                    policy.get("version"),
+                    "policy.version",
+                )
             cursor.execute(
                 """
                 INSERT INTO automation_project_policy_events (
                     automation_id, request_id, from_mode, to_mode,
                     contract_hash, contract_snapshot_json, tool_contract_hash,
-                    plugin_contract_hash, project_configuration_version,
+                    plugin_contract_hash, project_generation,
+                    project_configuration_version,
                     actor_id, actor_role, reason, correlation_id
                 ) VALUES (
-                    %s, %s, %s, 'PROJECT_FULL_AUTO', NULL, NULL, NULL, NULL,
-                    %s, %s, %s, 'PROJECT_CONFIGURATION_CHANGED', %s
+                    %s, %s, %s, %s, NULL, NULL, NULL, NULL,
+                    %s, %s, %s, %s, 'PROJECT_CONFIGURATION_CHANGED', %s
                 )
                 """,
                 (
                     project_id,
                     normalized_request,
                     policy.get("mode"),
+                    policy.get("mode"),
+                    target_generation,
                     next_version,
                     normalized_actor,
                     normalized_role,
@@ -1736,17 +2006,25 @@ class AutomationPluginRepository(
             cursor.execute(
                 """
                 UPDATE automation_project_policies
-                SET mode='PROJECT_FULL_AUTO', contract_hash=NULL,
-                    contract_snapshot_json=NULL, tool_contract_hash=NULL,
+                SET contract_hash=NULL, contract_snapshot_json=NULL,
+                    tool_contract_hash=NULL,
                     plugin_contract_hash=NULL,
+                    project_generation=%s,
                     project_configuration_version=%s,
-                    approved_by_actor_id=NULL, approved_by_actor_role=NULL,
-                    approved_by_actor_display_name=NULL, approved_at=NULL,
-                    comment=NULL, version=version+1, updated_at=NOW(6)
-                WHERE automation_id=%s
+                    version=version+1, updated_at=NOW(6)
+                WHERE automation_id=%s AND version=%s
                 """,
-                (next_version, project_id),
+                (
+                    target_generation,
+                    next_version,
+                    project_id,
+                    policy_version,
+                ),
             )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError(
+                    "automation project policy changed during configuration save"
+                )
             event_metadata = {
                 "request_payload_sha256": request_payload_sha256,
                 "from_project_configuration_version": current_version,

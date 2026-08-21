@@ -68,7 +68,7 @@ class PluginConfigurationRequest(BaseModel):
     config: dict[str, Any]
     account_bindings: dict[str, Any]
     resource_bindings: dict[str, Any]
-    enabled_entrypoints: list[str] = Field(min_length=1, max_length=4)
+    enabled_entrypoints: list[str] = Field(max_length=4)
     device_id: str | None = Field(default=None, max_length=128)
     schedule: PluginScheduleRequest
     request_id: str = Field(min_length=1, max_length=64)

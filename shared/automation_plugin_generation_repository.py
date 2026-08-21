@@ -1175,6 +1175,14 @@ class AutomationPluginGenerationRepositoryMixin:
             desired_schedule = _normalized_project_schedule(
                 execution_metadata.get("schedule")
             )
+            enabled_entrypoints = snapshot.get("enabled_entrypoints")
+            if not isinstance(enabled_entrypoints, list) or any(
+                not isinstance(item, str) for item in enabled_entrypoints
+            ):
+                raise OrchestrationPersistenceError(
+                    "runtime generation entrypoints are invalid"
+                )
+            scheduler_enabled = "scheduler" in enabled_entrypoints
             compiled_invocations = execution_metadata.get("compiled_invocations")
             if not isinstance(compiled_invocations, Mapping):
                 raise OrchestrationPersistenceError(
@@ -1187,7 +1195,11 @@ class AutomationPluginGenerationRepositoryMixin:
                 else None
             )
             expressions = _schedule_expressions(desired_schedule)
-            if expressions and not isinstance(scheduler_arguments, Mapping):
+            if (
+                expressions
+                and scheduler_enabled
+                and not isinstance(scheduler_arguments, Mapping)
+            ):
                 raise OrchestrationPersistenceError(
                     "scheduled runtime arguments are not compiled"
                 )
@@ -1253,7 +1265,7 @@ class AutomationPluginGenerationRepositoryMixin:
                         f"automation.{safe_automation_id}.run",
                         _json_param(scheduler_arguments or {}, {}),
                         item["cron_expression"],
-                        bool(desired_schedule["enabled"]),
+                        bool(desired_schedule["enabled"] and scheduler_enabled),
                         int(execution_metadata["project_config_version"]),
                     ),
                 )
@@ -1333,7 +1345,7 @@ class AutomationPluginGenerationRepositoryMixin:
                 SET project_generation=%s,
                     project_configuration_version=%s,
                     updated_at=NOW(6)
-                WHERE automation_id=%s AND mode='REQUIRE_EACH_RUN'
+                WHERE automation_id=%s
                 """,
                 (
                     safe_generation,
@@ -2234,15 +2246,13 @@ class AutomationPluginGenerationRepositoryMixin:
                     (safe_automation_id,),
                 )
                 policy = _row_dict(cursor, cursor.fetchone())
-                if policy is None or str(policy.get("mode") or "") != "REQUIRE_EACH_RUN":
-                    raise OrchestrationPersistenceError(
-                        "failed target policy is not REQUIRE_EACH_RUN"
-                    )
+                if policy is None:
+                    raise OrchestrationPersistenceError("failed target policy is missing")
                 cursor.execute(
                     """
                     UPDATE automation_project_policies
                     SET project_generation=%s, updated_at=NOW(6)
-                    WHERE automation_id=%s AND mode='REQUIRE_EACH_RUN'
+                    WHERE automation_id=%s
                     """,
                     (committed_generation, safe_automation_id),
                 )

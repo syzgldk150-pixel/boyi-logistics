@@ -181,6 +181,15 @@ class AutomationPluginRepositoryPort(Protocol):
 
 @runtime_checkable
 class PluginStoragePort(Protocol):
+    def inspect_expected_version_root(
+        self,
+        *,
+        plugin_id: str,
+        version: str,
+        manifest_sha256: str,
+    ) -> tuple[Path, bool]:
+        """Return the deterministic immutable target and whether it exists safely."""
+
     def create_staging_root(self, plugin_id: str, version: str) -> Path: ...
 
     def commit_staging_root(
@@ -271,6 +280,22 @@ class FirstPartyPackageMaterializerPort(Protocol):
 
     def discard(self, version: PluginVersionRecord) -> None:
         """Remove an unreferenced root created by ``materialize``."""
+
+
+@runtime_checkable
+class FirstPartyPackageRecoveryMaterializerPort(Protocol):
+    def recover_missing(
+        self,
+        *,
+        persisted: PluginVersionRecord,
+        descriptor: PluginVersionRecord,
+    ) -> PluginVersionRecord | None:
+        """Rebuild one safely missing exact root, or validate an existing root.
+
+        A non-``None`` result identifies the newly built filesystem material
+        only.  Callers must continue using ``persisted`` for all repository
+        registration so recovery cannot replace immutable database bytes.
+        """
 
 
 @runtime_checkable

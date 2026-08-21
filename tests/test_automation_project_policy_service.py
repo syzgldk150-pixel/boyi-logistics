@@ -295,6 +295,15 @@ class _Events:
         self._repository.state.domain_events.append(copy.deepcopy(dict(event)))
 
 
+class _Runs:
+    def __init__(self, repository: "_Repository") -> None:
+        self._repository = repository
+
+    def make_waiting_approval_runnable(self, run_id):
+        self._repository.runnable_run_ids.append(str(run_id))
+        return {"run_id": str(run_id), "status": "WAITING_APPROVAL"}
+
+
 class _Uow:
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
@@ -302,6 +311,7 @@ class _Uow:
         self.automation_plugins = _AutomationPlugins(repository)
         self.approvals = _Approvals(repository)
         self.events = _Events(repository)
+        self.runs = _Runs(repository)
         self.scheduled_policies = SimpleNamespace()
         self._snapshot: _State | None = None
 
@@ -324,6 +334,7 @@ class _Repository:
         self.state = _State()
         self.account_lock_events: list[tuple] = []
         self.block_account_locks = False
+        self.runnable_run_ids: list[str] = []
 
     def unit_of_work(self):
         return _Uow(self)
@@ -396,11 +407,13 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.contract = _contract()
         self.entry = SimpleNamespace(automation_id=AUTOMATION_ID)
         self.gateway = _Gateway(self.repository)
+        self.woken_run_ids: list[str] = []
         self.service = AutomationProjectPolicyService(
             self.repository,
             core_catalog=SimpleNamespace(),
             plugin_catalog=_Catalog(self.entry),
             command_gateway=self.gateway,
+            wake_runner=self.woken_run_ids.append,
         )
         self.service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]
             self.entry,
@@ -445,7 +458,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual("RELEASE_HELD", raised.exception.code)
         self.assertIsNone(self.gateway.command)
 
-    def test_full_auto_grant_holds_bound_account_lock_through_commit(self):
+    def test_full_auto_policy_save_does_not_lock_credentials_or_stage_runtime(self):
         self.service.get_policy_projection = (  # type: ignore[method-assign]
             lambda _automation_id: {
                 "configured_mode": self.repository.state.policy["mode"]
@@ -462,14 +475,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
         )
 
         self.assertEqual("PROJECT_FULL_AUTO", result["configured_mode"])
-        self.assertEqual(
-            [
-                ("acquire", ("account-one",)),
-                ("commit",),
-                ("release", ("account-one",)),
-            ],
-            self.repository.account_lock_events,
-        )
+        self.assertEqual([("commit",)], self.repository.account_lock_events)
 
     def test_project_takeover_event_request_fits_legacy_char36_and_is_idempotent(self):
         class _ScheduledPolicies:
@@ -514,25 +520,61 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual(1, len(scheduled.events))
         self.assertLessEqual(len(scheduled.events[0]["request_id"]), 36)
 
-    def test_full_auto_grant_fails_closed_during_credential_change(self):
+    def test_full_auto_policy_save_is_independent_of_credential_change(self):
         self.repository.block_account_locks = True
-
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.update_policy(
-                AUTOMATION_ID,
-                mode="PROJECT_FULL_AUTO",
-                request_id="policy-full-auto-blocked",
-                comment="reviewed",
-                expected_policy_version=1,
-                expected_project_configuration_version=1,
-                actor=_admin(),
-            )
-
-        self.assertEqual(
-            "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS",
-            raised.exception.code,
+        self.service.update_policy(
+            AUTOMATION_ID,
+            mode="PROJECT_FULL_AUTO",
+            request_id="policy-full-auto-blocked",
+            comment="reviewed",
+            expected_policy_version=1,
+            expected_project_configuration_version=1,
+            actor=_admin(),
         )
-        self.assertEqual("REQUIRE_EACH_RUN", self.repository.state.policy["mode"])
+        self.assertEqual("PROJECT_FULL_AUTO", self.repository.state.policy["mode"])
+
+    def test_policy_save_preserves_target_generation_while_runtime_reconciles(self):
+        self.repository.state.project.update(
+            {
+                "target_generation": 2,
+                "committed_generation": 1,
+                "reconcile_state": "PREPARING",
+            }
+        )
+        self.repository.state.config["config_version"] = 2
+        self.repository.state.policy.update(
+            {
+                "project_generation": 2,
+                "project_configuration_version": 2,
+            }
+        )
+
+        self.service.update_policy(
+            AUTOMATION_ID,
+            mode="PROJECT_FULL_AUTO",
+            request_id="policy-during-reconcile",
+            comment="keep intent",
+            expected_policy_version=1,
+            expected_project_configuration_version=2,
+            actor=_admin(),
+        )
+
+        self.assertEqual(2, self.repository.state.policy["project_generation"])
+
+    def test_startup_defaults_bootstrapped_policy_to_durable_full_auto(self):
+        result = self.service.ensure_default_full_auto_policies()
+
+        self.assertEqual({"changed": 1}, result)
+        self.assertEqual("PROJECT_FULL_AUTO", self.repository.state.policy["mode"])
+        self.assertIsNone(self.repository.state.policy["contract_hash"])
+        self.assertEqual(
+            "AUTOMATION_DEFAULT_FULL_AUTO",
+            self.repository.state.policy_events[0]["reason"],
+        )
+
+        replay = self.service.ensure_default_full_auto_policies()
+        self.assertEqual({"changed": 0}, replay)
+        self.assertEqual(1, len(self.repository.state.policy_events))
 
     def test_default_full_auto_mode_is_approval_free_and_toggle_requires_approval(self):
         invocation = _invocation()
@@ -781,6 +823,8 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertNotIn("approval_id", first["run_receipts"][0])
         self.assertNotIn("plan_hash", first["run_receipts"][0])
         self.assertEqual(1, len(self.repository.state.decisions))
+        self.assertEqual(["run-approval-one"], self.repository.runnable_run_ids)
+        self.assertEqual(["run-approval-one"], self.woken_run_ids)
         with self.assertRaises(OrchestrationError) as raised:
             self.service.decide_pending_approvals(
                 AUTOMATION_ID,

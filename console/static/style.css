@@ -650,8 +650,17 @@ body.dispatch-page .notice { display: none; }
 .automation-plugin-block .feather { width: 15px; height: 15px; flex: 0 0 auto; margin-top: 1px; }
 .automation-plugin-config-section .auto-field-label em { color: #b91c1c; font-style: normal; }
 .automation-plugin-entrypoint-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-.automation-plugin-entrypoint-option { display: flex; align-items: center; gap: 9px; min-height: 42px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; color: var(--text-strong); font-size: 0.8rem; font-weight: 700; }
-.automation-plugin-entrypoint-option input { width: 18px; height: 18px; margin: 0; accent-color: var(--brand); }
+.automation-plugin-entrypoint-option { position: relative; display: grid; grid-template-columns: 38px 1fr; align-items: center; gap: 10px; min-height: 44px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; color: var(--text-strong); cursor: pointer; }
+.automation-plugin-entrypoint-option:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.automation-plugin-entrypoint-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.automation-plugin-entrypoint-track { position: relative; width: 38px; height: 22px; border: 1px solid #9ca3af; border-radius: 999px; background: #e5e7eb; transition: background-color 120ms ease, border-color 120ms ease; }
+.automation-plugin-entrypoint-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2); transition: transform 120ms ease; }
+.automation-plugin-entrypoint-option input:checked + .automation-plugin-entrypoint-track { border-color: var(--primary); background: var(--primary); }
+.automation-plugin-entrypoint-option input:checked + .automation-plugin-entrypoint-track::after { transform: translateX(16px); }
+.automation-plugin-entrypoint-copy { display: grid; gap: 1px; }
+.automation-plugin-entrypoint-copy strong { font-size: 0.8rem; }
+.automation-plugin-entrypoint-copy small { color: var(--muted); font-size: 0.7rem; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .automation-plugin-entrypoint-track, .automation-plugin-entrypoint-track::after { transition: none; } }
 .automation-plugin-schedule-kind { max-width: 360px; margin-bottom: 10px; }
 .auto-account-select[multiple] { min-height: 118px; padding-block: 6px; }
 

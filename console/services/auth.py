@@ -338,16 +338,63 @@ class AuthServiceMixin:
             {"ok": True, "data": {"routes": list(routes)}, "error": None},
         )
 
-    def _render_admin_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
+    def _render_admin_accounts(
+        self,
+        handler: BaseHTTPRequestHandler,
+        query: dict,
+        *,
+        binding_challenge: dict[str, Any] | None = None,
+    ) -> None:
+        session_user = current_admin_user() or {}
+        is_super_admin = str(
+            session_user.get("control_plane_role") or session_user.get("role") or ""
+        ) == "super_admin"
+        binding_status: dict[str, Any] = {}
+        if is_super_admin:
+            result = self._agent_request(
+                "GET",
+                "/internal/v1/admin/feishu-approval-binding",
+                timeout=12,
+            )
+            if result.get("ok") and isinstance(result.get("data"), dict):
+                binding_status = dict(result["data"])
         template = self.template_env.get_template("admin_accounts.html")
         body = template.render(
             app_title=self.settings.app_title,
             users=self.repository.list_admin_users(),
-            is_super_admin=str((current_admin_user() or {}).get("role") or "") == "super_admin",
+            is_super_admin=is_super_admin,
+            feishu_binding=binding_status,
+            binding_challenge=binding_challenge,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )
         self._send_html(handler, body)
+
+    def _handle_feishu_approval_binding(self, handler: BaseHTTPRequestHandler, *, revoke: bool) -> None:
+        method = "DELETE" if revoke else "POST"
+        endpoint = (
+            "/internal/v1/admin/feishu-approval-binding"
+            if revoke
+            else "/internal/v1/admin/feishu-approval-binding/challenge"
+        )
+        result = self._agent_request(method, endpoint, payload={}, timeout=12)
+        if not result.get("ok") or not isinstance(result.get("data"), dict):
+            self._redirect(
+                handler,
+                "/settings/accounts?kind=warning&message=飞书审批绑定操作失败",
+            )
+            return
+        if revoke:
+            self._redirect(
+                handler,
+                "/settings/accounts?kind=success&message=飞书审批身份已解绑",
+            )
+            return
+        self._render_admin_accounts(
+            handler,
+            {},
+            binding_challenge=dict(result["data"]),
+        )
 
     def _render_automation_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         accounts, account_warning = self._fetch_automation_accounts(force=False, prefer_cached=True)

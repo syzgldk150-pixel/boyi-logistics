@@ -613,6 +613,28 @@ def test_effect_plan_and_driver_are_reversible_and_integrity_bound(
         )
 
 
+def test_disabled_scheduler_entrypoint_keeps_schedule_without_binding_effect(
+    tmp_path: Path,
+) -> None:
+    core, entry, row, policy = _entry_and_row(tmp_path)
+    schedule = {"kind": "daily", "times": ["08:30"], "enabled": True}
+    row["desired_schedule_json"] = schedule
+    row["desired_schedule_sha256"] = _sha(schedule)
+
+    snapshot = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+
+    assert snapshot.execution_metadata["schedule"] == schedule
+    assert RuntimeEffectKind.SCHEDULE_BINDING not in {
+        item.kind for item in ProductionRuntimeEffectPlanner().plan(snapshot)
+    }
+
+
 def test_effect_ack_round_trips_exact_reserved_payload_and_rejects_drift(
     tmp_path: Path,
 ) -> None:

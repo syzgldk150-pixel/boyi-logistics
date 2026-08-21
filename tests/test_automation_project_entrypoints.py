@@ -149,7 +149,9 @@ def _committed_route_fixture(*, entrypoint: str = "webhook", duplicate: bool = F
     )
     entries = [SimpleNamespace(
         automation_id="scan-instance",
+        target_generation=4,
         committed_generation=4,
+        reconcile_state="STABLE",
         committed_snapshot=snapshot,
     )]
     observation = RuntimeCoeffectSnapshot(
@@ -170,7 +172,9 @@ def _committed_route_fixture(*, entrypoint: str = "webhook", duplicate: bool = F
         entries.append(
             SimpleNamespace(
                 automation_id="scan-instance-two",
+                target_generation=4,
                 committed_generation=4,
+                reconcile_state="STABLE",
                 committed_snapshot=duplicate_snapshot,
             )
         )
@@ -480,6 +484,31 @@ class AutomationProjectEntrypointTests(TestCase):
             {"account_id": "business-account"},
             route.account_bindings,
         )
+
+    def test_disabled_committed_route_is_resolved_then_hard_blocked(self):
+        catalog, runtime, bindings, provider, _resource = _committed_route_fixture(
+            entrypoint="feishu"
+        )
+        entry = catalog.list()[0]
+        entry.committed_snapshot = replace(
+            entry.committed_snapshot,
+            enabled_entrypoints=(),
+        )
+        resolver = CommittedAutomationProjectRouteResolver(
+            catalog=catalog,
+            runtime_repository=runtime,
+            binding_resolver=bindings,
+            resource_provider=provider,
+        )
+        service = AutomationProjectEntrypoints(
+            _PolicyService(),
+            route_resolver=resolver,
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.describe_feishu_route("builtin.scan_codes")
+
+        self.assertEqual("PROJECT_ENTRYPOINT_DISABLED", raised.exception.code)
 
     def test_duplicate_committed_feishu_alias_is_ambiguous_and_never_uses_first(self):
         catalog, runtime, bindings, provider, _resource = _committed_route_fixture(

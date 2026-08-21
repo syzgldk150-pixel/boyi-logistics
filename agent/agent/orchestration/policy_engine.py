@@ -323,7 +323,17 @@ class PolicyEngine:
         )
 
     def can_decide(self, actor: Actor, *, required_role: str, source: str) -> bool:
-        if actor.actor_type is not ActorType.CONSOLE_ADMIN or source != "console":
+        console_admin = (
+            actor.actor_type is ActorType.CONSOLE_ADMIN
+            and source == "console"
+            and actor.authenticated_by == "mysql_admin_session"
+        )
+        feishu_admin = (
+            actor.actor_type is ActorType.FEISHU_USER
+            and source == "feishu"
+            and actor.authenticated_by == "feishu_admin_binding"
+        )
+        if not (console_admin or feishu_admin):
             return False
         if required_role == "super_admin":
             return "super_admin" in actor.roles

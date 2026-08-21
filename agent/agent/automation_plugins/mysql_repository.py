@@ -291,7 +291,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 }
             )
             if str(policy.get("mode") or "") != _PROJECT_FULL_AUTO:
-                raise PluginConflictError("new plugin instance did not fail closed")
+                raise PluginConflictError("new plugin instance policy did not default to full auto")
             uow.commit()
         persisted = self.get_instance(automation_id)
         if persisted is None:
@@ -485,13 +485,13 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         "automation project policy does not exist",
                         code="PLUGIN_POLICY_NOT_FOUND",
                     )
-                generation = int(staged.get("target_generation") or 0)
+                generation = int(staged["target_generation"])
                 config_version = int(config.get("config_version") or 0)
-                from_mode = str(policy.get("mode") or "")
+                durable_mode = str(policy.get("mode") or "")
                 uow.automation_projects.update_policy(
                     automation_id,
                     expected_version=int(policy.get("version") or 0),
-                    mode=_REQUIRE_EACH_RUN,
+                    mode=durable_mode,
                     contract_hash=None,
                     contract_snapshot=None,
                     tool_contract_hash=None,
@@ -507,8 +507,8 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     {
                         "automation_id": automation_id,
                         "request_id": request_id,
-                        "from_mode": from_mode,
-                        "to_mode": _REQUIRE_EACH_RUN,
+                        "from_mode": durable_mode,
+                        "to_mode": durable_mode,
                         "contract_hash": None,
                         "contract_snapshot_json": None,
                         "tool_contract_hash": None,

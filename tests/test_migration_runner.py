@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from contextlib import redirect_stdout
 import hashlib
 import importlib.util
+import io
 import json
 import re
+import sys
+import types
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -120,6 +124,268 @@ class _MigrationConnection:
 
     def close(self):
         self.closed = True
+
+
+class _PluginOwnershipCursor:
+    def __init__(self, rows: list[dict], *, table_exists: bool = True) -> None:
+        self.rows = rows
+        self.table_exists = table_exists
+        self.calls: list[tuple[str, object]] = []
+        self._row = None
+        self._rows: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        self._row = None
+        self._rows = []
+        if "FROM information_schema.TABLES" in normalized:
+            self._row = {"exists": 1} if self.table_exists else None
+        elif normalized.startswith("SELECT project.automation_id"):
+            self._rows = list(self.rows)
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._rows
+
+
+class _PluginOwnershipConnection:
+    def __init__(self, cursor: _PluginOwnershipCursor) -> None:
+        self._cursor = cursor
+        self.rolled_back = False
+        self.closed = False
+
+    def cursor(self):
+        return self._cursor
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+
+class AutomationPluginInstallOwnershipPreflightTests(unittest.TestCase):
+    @staticmethod
+    def _row(
+        *,
+        root: str = "/srv/boyi/plugins/installed",
+        automation_id: str = "legacy_action",
+        plugin_id: str = "legacy_action",
+        version: str = "1.2.3",
+        state: str = "INSTALLED",
+    ) -> dict:
+        package_sha256 = "a" * 64
+        manifest = {"plugin_id": plugin_id, "version": version}
+        manifest_sha256 = hashlib.sha256(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        metadata = {
+            "signing_key_id": "release-key",
+            "python_relative": "venv/bin/python",
+            "archive_relative": "package-archive.zip",
+            "archive_sha256": package_sha256,
+            "package_files": [],
+            "install_root": f"{root}/{plugin_id}/{version}-{manifest_sha256[:12]}",
+        }
+        metadata_sha256 = hashlib.sha256(
+            json.dumps(
+                metadata,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "automation_id": automation_id,
+            "plugin_id": plugin_id,
+            "version": version,
+            "package_sha256": package_sha256,
+            "manifest_sha256": manifest_sha256,
+            "manifest_json": json.dumps(manifest),
+            "trust_source": "ed25519_first_party",
+            "install_root_metadata_json": json.dumps(metadata),
+            "install_root_metadata_sha256": metadata_sha256,
+            "state": state,
+        }
+
+    def test_safe_identity_output_is_read_only_and_omits_metadata(self):
+        runner = _load_runner()
+        cursor = _PluginOwnershipCursor([self._row()])
+        connection = _PluginOwnershipConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            status = runner.check_automation_plugin_install_ownership(
+                lambda: connection,
+                "/srv/boyi/plugins/installed",
+            )
+
+        self.assertEqual(0, status)
+        lines = output.getvalue().splitlines()
+        self.assertEqual("automation_plugin_install_ownership=ok count=1", lines[0])
+        self.assertRegex(
+            lines[1],
+            r"^automation_plugin_install_owner plugin_id=legacy_action "
+            r"version=1\.2\.3 package_sha256=[0-9a-f]{64} "
+            r"manifest_sha256=[0-9a-f]{64}$",
+        )
+        self.assertNotIn("/srv/", output.getvalue())
+        self.assertNotIn("signing_key_id", output.getvalue())
+        self.assertTrue(connection.rolled_back)
+        self.assertTrue(connection.closed)
+        self.assertEqual("START TRANSACTION READ ONLY", cursor.calls[0][0])
+
+    def test_absent_schema_has_an_exact_empty_contract(self):
+        runner = _load_runner()
+        cursor = _PluginOwnershipCursor([], table_exists=False)
+        connection = _PluginOwnershipConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            status = runner.check_automation_plugin_install_ownership(
+                lambda: connection,
+                "/srv/boyi/plugins/installed",
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual(
+            "automation_plugin_install_ownership=ok count=0\n",
+            output.getvalue(),
+        )
+
+    def test_self_rehashed_wrong_root_is_rejected_without_value_disclosure(self):
+        runner = _load_runner()
+        row = self._row(root="/wrong/root")
+        cursor = _PluginOwnershipCursor([row])
+        connection = _PluginOwnershipConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            status = runner.check_automation_plugin_install_ownership(
+                lambda: connection,
+                "/srv/boyi/plugins/installed",
+            )
+
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "automation_plugin_install_ownership=blocked "
+            "reason=INVALID_DATABASE_STATE count=1\n",
+            output.getvalue(),
+        )
+        self.assertNotIn("wrong", output.getvalue())
+
+    def test_project_references_are_deduplicated_and_retired_orphans_are_not_queried(self):
+        runner = _load_runner()
+        rows = [
+            self._row(
+                automation_id=f"project_{index:02d}",
+                plugin_id=f"plugin_{min(index, 14):02d}",
+                version=f"1.0.{min(index, 14)}",
+            )
+            for index in range(1, 17)
+        ]
+        cursor = _PluginOwnershipCursor(rows)
+        connection = _PluginOwnershipConnection(cursor)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            status = runner.check_automation_plugin_install_ownership(
+                lambda: connection,
+                "/srv/boyi/plugins/installed",
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual(
+            "automation_plugin_install_ownership=ok count=14",
+            output.getvalue().splitlines()[0],
+        )
+        query = next(
+            sql
+            for sql, _params in cursor.calls
+            if sql.startswith("SELECT project.automation_id")
+        )
+        self.assertIn("FROM automation_projects AS project", query)
+        self.assertIn("INNER JOIN automation_plugin_versions AS version", query)
+        self.assertNotIn("RETIRED", query)
+
+        retired = self._row(state="RETIRED")
+        retired_cursor = _PluginOwnershipCursor([retired])
+        retired_connection = _PluginOwnershipConnection(retired_cursor)
+        retired_output = io.StringIO()
+        with redirect_stdout(retired_output):
+            retired_status = runner.check_automation_plugin_install_ownership(
+                lambda: retired_connection,
+                "/srv/boyi/plugins/installed",
+            )
+        self.assertEqual(1, retired_status)
+        self.assertIn("reason=INVALID_DATABASE_STATE", retired_output.getvalue())
+
+    def test_runner_cli_binds_root_only_to_the_ownership_mode(self):
+        runner = _load_runner()
+        with (
+            patch.object(
+                runner,
+                "check_automation_plugin_install_ownership",
+                return_value=7,
+            ) as check,
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "run_migrations.py",
+                    "--check-automation-plugin-install-ownership",
+                    "--automation-plugin-install-root",
+                    "/srv/boyi/plugins/installed",
+                ],
+            ),
+        ):
+            self.assertEqual(7, runner.main())
+        check.assert_called_once_with(
+            runner._connect,
+            "/srv/boyi/plugins/installed",
+        )
+
+    def test_exact_path_loader_restores_helper_and_shared_namespaces(self):
+        runner = _load_runner()
+        helper_name = (
+            "boyi_agent_scripts_automation_plugin_install_ownership_preflight"
+        )
+        helper_sentinel = types.ModuleType(helper_name)
+        shared_sentinel = types.ModuleType("shared")
+        shared_child_sentinel = types.ModuleType("shared.sentinel")
+        with patch.dict(
+            sys.modules,
+            {
+                helper_name: helper_sentinel,
+                "shared": shared_sentinel,
+                "shared.sentinel": shared_child_sentinel,
+            },
+        ):
+            loaded = runner._load_script_helper(
+                "automation_plugin_install_ownership_preflight.py"
+            )
+            self.assertTrue(
+                callable(loaded.check_automation_plugin_install_ownership)
+            )
+            self.assertIs(sys.modules[helper_name], helper_sentinel)
+            self.assertIs(sys.modules["shared"], shared_sentinel)
+            self.assertIs(sys.modules["shared.sentinel"], shared_child_sentinel)
 
 
 class _RestoreCursor:

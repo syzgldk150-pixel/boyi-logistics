@@ -265,6 +265,7 @@
         {% set is_webhook = task.task_mode == 'webhook' %}
         {% set can_save = task.can_save | default(true) %}
         {% set can_run_now = task.can_run_now | default(true) %}
+        {% set run_disabled_reason = task.run_disabled_reason | default('当前不可执行') %}
         {% set has_expandable_settings = can_save and (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles or has_plugin_resource_roles or (task.plugin and task.plugin.entrypoints)) %}
 
         {# ── 卡片主行 ── #}
@@ -318,9 +319,9 @@
               <span data-run-label>执行</span>
             </button>
             {% else %}
-            <button class="primary-btn auto-run-btn" type="button" disabled title="当前任务只按已保存的定时计划运行">
+            <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}">
               <i data-feather="lock"></i>
-              <span>仅自动执行</span>
+              <span>{{ run_disabled_reason }}</span>
             </button>
             {% endif %}
 
@@ -675,12 +676,16 @@
             <div class="automation-plugin-entrypoint-grid">
               {% for entrypoint in task.plugin.entrypoints %}
               <label class="automation-plugin-entrypoint-option">
-                <input type="checkbox" value="{{ entrypoint }}" data-plugin-entrypoint {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %}>
-                <span>{{ {'scheduler': '系统定时', 'console': 'Console 后台', 'feishu': '飞书', 'webhook': '验签 Webhook'}.get(entrypoint, entrypoint) }}</span>
+                <input type="checkbox" role="switch" value="{{ entrypoint }}" data-plugin-entrypoint {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %} aria-label="{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求'}.get(entrypoint, entrypoint) }}">
+                <span class="automation-plugin-entrypoint-track" aria-hidden="true"></span>
+                <span class="automation-plugin-entrypoint-copy">
+                  <strong>{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求'}.get(entrypoint, entrypoint) }}</strong>
+                  <small data-plugin-entrypoint-state>{% if entrypoint in task.plugin.enabled_entrypoints %}开启{% else %}关闭{% endif %}</small>
+                </span>
               </label>
               {% endfor %}
             </div>
-            <p class="auto-webhook-note">只允许启用签名动作包清单声明的入口；通用 API 与 LLM 不在项目完全自动授权范围内。</p>
+            <p class="auto-webhook-note">可全部关闭；关闭后对应入口由服务端直接拒绝，项目配置仍会保留。</p>
           </div>
 
           {% if has_plugin_resource_roles %}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 import unittest
 
@@ -204,16 +204,19 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
         _cap, _definition_row, _fragment_row, missing = self._compile(
             "clock_in_dual", evidence=False
         )
-        self.assertTrue(missing.can_full_auto)
-        self.assertIsNone(missing.restriction_code)
+        self.assertFalse(missing.can_full_auto)
+        self.assertEqual("WRITE_VERIFICATION_NOT_CLOSED", missing.restriction_code)
 
         _cap, _definition_row, _fragment_row, replayable = self._compile(
             "clock_in_dual", retry={"safe": True, "max_attempts": 2}
         )
-        self.assertTrue(replayable.can_full_auto)
-        self.assertIsNone(replayable.restriction_code)
+        self.assertFalse(replayable.can_full_auto)
+        self.assertEqual(
+            "NON_IDEMPOTENT_WRITE_RETRY_UNSAFE",
+            replayable.restriction_code,
+        )
 
-    def test_signed_project_mode_does_not_depend_on_governance_opt_in(self):
+    def test_signed_plugin_contract_no_longer_uses_legacy_full_auto_flag(self):
         _cap, _definition_row, _fragment_row, core_denied = self._compile(
             "clock_in_dual", project_allowed=False
         )
@@ -232,6 +235,41 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
                 catalog=_Catalog(capability),
                 plugin_contract_provider=lambda automation_id: fragment,
             )
+
+    def test_empty_entrypoint_subset_is_a_valid_disabled_project(self):
+        capability = _capability("clock_in_dual")
+        definition = replace(
+            _definition("clock_in_dual"),
+            argument_templates={},
+            allowed_entrypoints=frozenset(),
+        )
+        fragment = _fragment(definition, capability)
+        fragment["enabled_entrypoints"] = []
+        contract = compile_automation_project_contract(
+            definition,
+            catalog=_Catalog(capability),
+            plugin_contract_provider=lambda _automation_id: fragment,
+        )
+        self.assertEqual(frozenset(), contract.allowed_entrypoints)
+        self.assertEqual({}, contract.invocation_contracts)
+
+    def test_destructive_and_extreme_signed_actions_can_be_full_auto(self):
+        for operation_type, risk_level in (
+            ("destructive", "high"),
+            ("external_write", "extreme"),
+        ):
+            with self.subTest(operation_type=operation_type, risk_level=risk_level):
+                capability = _capability("clock_in_dual")
+                capability["operation_type"] = operation_type
+                capability["risk_level"] = risk_level
+                definition = _definition("clock_in_dual")
+                fragment = _fragment(definition, capability)
+                contract = compile_automation_project_contract(
+                    definition,
+                    catalog=_Catalog(capability),
+                    plugin_contract_provider=lambda _automation_id: fragment,
+                )
+                self.assertTrue(contract.can_full_auto)
 
     def test_missing_or_disabled_plugin_is_a_hard_contract_error(self):
         capability = _capability("clock_in_dual")

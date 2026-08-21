@@ -49,6 +49,8 @@ BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
 PLUGIN_TRUST_ADDITIONS_FILE="${BACKUP_DIR}/automation_plugin_trust.added"
 PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
 LEGACY_FINANCE_ETL_ROOT="/home/boyce/agent/finance_reconciliation"
 VENV_ROOT="/home/boyce/.boyi-venvs"
 PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
@@ -1283,11 +1285,136 @@ validate_automation_plugin_install_inventory() {
   done <"${inventory_file}"
 }
 
-capture_automation_plugin_installation_state() {
+validate_automation_plugin_owned_root_inventory() {
+  local inventory_file="$1" relative
+  [[ -f "${inventory_file}" && ! -L "${inventory_file}" ]] || return 1
+  while IFS= read -r relative || [[ -n "${relative}" ]]; do
+    [[ "${relative}" =~ ^[a-z][a-z0-9_]{1,63}/[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$ ]] || return 1
+  done <"${inventory_file}"
+  LC_ALL=C sort -c -u -- "${inventory_file}" >/dev/null 2>&1
+}
+
+validate_automation_plugin_db_ownership_inventory() {
+  local inventory_file="$1" line
+  [[ -f "${inventory_file}" && ! -L "${inventory_file}" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ ^[a-z][a-z0-9_]{1,63}\ [0-9]+\.[0-9]+\.[0-9]+\ [0-9a-f]{64}\ [0-9a-f]{64}$ ]] || return 1
+  done <"${inventory_file}"
+  LC_ALL=C sort -c -u -- "${inventory_file}" >/dev/null 2>&1
+}
+
+automation_plugin_db_owns_relative_root() {
+  local expected_relative="$1" plugin_id version package_sha256 manifest_sha256
+  while IFS=' ' read -r plugin_id version package_sha256 manifest_sha256; do
+    if [[ "${plugin_id}/${version}-${manifest_sha256:0:12}" == "${expected_relative}" ]]; then
+      return 0
+    fi
+  done <"${PLUGIN_DB_OWNERSHIP_FILE}"
+  return 1
+}
+
+write_automation_plugin_db_ownership_inventory() {
+  local destination="$1" output expected_count plugin_id version
+  local package_sha256 manifest_sha256
+  local -a lines=()
+  if ! output="$(
+    run_staged_migration_runner \
+      --check-automation-plugin-install-ownership \
+      --automation-plugin-install-root "${AUTOMATION_PLUGIN_INSTALL_ROOT}" 2>&1
+  )"; then
+    if [[ "${output}" =~ ^automation_plugin_install_ownership=blocked\ reason=(INVALID_INSTALL_ROOT|INVALID_DATABASE_STATE|PREFLIGHT_RUNTIME_ERROR)\ count=1$ ]]; then
+      echo "${output}" >&2
+    else
+      echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    fi
+    return 1
+  fi
+
+  mapfile -t lines <<<"${output}"
+  if [[ "${#lines[@]}" -lt 1 || \
+    ! "${lines[0]}" =~ ^automation_plugin_install_ownership=ok\ count=([0-9]+)$ ]]; then
+    echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+  expected_count="${BASH_REMATCH[1]}"
+  if (( expected_count > 4096 || ${#lines[@]} != expected_count + 1 )); then
+    echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+    return 1
+  fi
+
+  (umask 077; : >"${destination}")
+  local line
+  for line in "${lines[@]:1}"; do
+    if [[ ! "${line}" =~ ^automation_plugin_install_owner\ plugin_id=([a-z][a-z0-9_]{1,63})\ version=([0-9]+\.[0-9]+\.[0-9]+)\ package_sha256=([0-9a-f]{64})\ manifest_sha256=([0-9a-f]{64})$ ]]; then
+      echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+      return 1
+    fi
+    plugin_id="${BASH_REMATCH[1]}"
+    version="${BASH_REMATCH[2]}"
+    package_sha256="${BASH_REMATCH[3]}"
+    manifest_sha256="${BASH_REMATCH[4]}"
+    printf '%s %s %s %s\n' \
+      "${plugin_id}" "${version}" "${package_sha256}" "${manifest_sha256}" \
+      >>"${destination}"
+  done
+  validate_automation_plugin_db_ownership_inventory "${destination}" || {
+    echo "automation_plugin_install_ownership=blocked reason=INVALID_IDENTITY_SET count=1" >&2
+    return 1
+  }
+}
+
+capture_preexisting_automation_plugin_db_ownership() {
+  local pending
   mkdir -p "${BACKUP_DIR}"
+  pending="$(mktemp "${BACKUP_DIR}/automation_plugin_install.db_owned.XXXXXX")"
+  if ! write_automation_plugin_db_ownership_inventory "${pending}"; then
+    rm -f -- "${pending}"
+    return 1
+  fi
+  mv -- "${pending}" "${PLUGIN_DB_OWNERSHIP_FILE}"
+  echo "automation_plugin_install_ownership=captured count=$(wc -l <"${PLUGIN_DB_OWNERSHIP_FILE}")"
+}
+
+confirm_preexisting_automation_plugin_db_ownership() {
+  local confirmed
+  validate_automation_plugin_db_ownership_inventory "${PLUGIN_DB_OWNERSHIP_FILE}" || {
+    echo "automation_plugin_install_ownership=blocked reason=MISSING_PRESTATE count=1" >&2
+    return 1
+  }
+  confirmed="$(mktemp "${BACKUP_DIR}/automation_plugin_install.db_confirmed.XXXXXX")"
+  if ! write_automation_plugin_db_ownership_inventory "${confirmed}"; then
+    rm -f -- "${confirmed}"
+    return 1
+  fi
+  if ! cmp -s -- "${PLUGIN_DB_OWNERSHIP_FILE}" "${confirmed}"; then
+    rm -f -- "${confirmed}"
+    echo "automation_plugin_install_ownership=blocked reason=PRESTATE_CHANGED count=1" >&2
+    return 1
+  fi
+  rm -- "${confirmed}"
+  echo "automation_plugin_install_ownership=confirmed"
+}
+
+capture_automation_plugin_installation_state() {
+  local plugin_id version package_sha256 manifest_sha256 owned_relative owned_path
+  mkdir -p "${BACKUP_DIR}"
+  validate_automation_plugin_db_ownership_inventory "${PLUGIN_DB_OWNERSHIP_FILE}" || {
+    echo "Missing or invalid automation plugin database ownership prestate" >&2
+    return 1
+  }
   : >"${PLUGIN_INSTALL_INVENTORY_FILE}"
+  : >"${PLUGIN_DB_MISSING_ROOTS_FILE}"
   if [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}" && \
     ! -L "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]]; then
+    while IFS=' ' read -r plugin_id version package_sha256 manifest_sha256; do
+      printf '%s/%s-%s\n' \
+        "${plugin_id}" "${version}" "${manifest_sha256:0:12}" \
+        >>"${PLUGIN_DB_MISSING_ROOTS_FILE}"
+    done <"${PLUGIN_DB_OWNERSHIP_FILE}"
+    validate_automation_plugin_owned_root_inventory "${PLUGIN_DB_MISSING_ROOTS_FILE}" || {
+      echo "Automation plugin missing-root ownership state is invalid" >&2
+      return 1
+    }
     : >"${BACKUP_DIR}/automation_plugin_install_root.absent"
     return 0
   fi
@@ -1308,18 +1435,54 @@ capture_automation_plugin_installation_state() {
     echo "Automation plugin installation index is invalid" >&2
     return 1
   }
+  while IFS=' ' read -r plugin_id version package_sha256 manifest_sha256; do
+    owned_relative="${plugin_id}/${version}-${manifest_sha256:0:12}"
+    owned_path="${AUTOMATION_PLUGIN_INSTALL_ROOT}/${owned_relative}"
+    if [[ ! -e "${owned_path}" && ! -L "${owned_path}" ]]; then
+      printf '%s\n' "${owned_relative}" >>"${PLUGIN_DB_MISSING_ROOTS_FILE}"
+    elif [[ ! -d "${owned_path}" || -L "${owned_path}" ]]; then
+      echo "Automation plugin database-owned root is unsafe" >&2
+      return 1
+    fi
+  done <"${PLUGIN_DB_OWNERSHIP_FILE}"
+  validate_automation_plugin_owned_root_inventory "${PLUGIN_DB_MISSING_ROOTS_FILE}" || {
+    echo "Automation plugin missing-root ownership state is invalid" >&2
+    return 1
+  }
 }
 
 restore_automation_plugin_installations() {
-  local current_inventory new_inventory missing_inventory relative source destination
+  local current_inventory new_inventory missing_inventory preserved_projects
+  local relative source destination owned_relative
   local quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
   validate_automation_plugin_install_inventory "${PLUGIN_INSTALL_INVENTORY_FILE}" || {
     echo "Missing or invalid automation plugin installation rollback state" >&2
     return 1
   }
+  validate_automation_plugin_db_ownership_inventory "${PLUGIN_DB_OWNERSHIP_FILE}" || {
+    echo "Missing or invalid automation plugin database ownership rollback state" >&2
+    return 1
+  }
+  validate_automation_plugin_owned_root_inventory "${PLUGIN_DB_MISSING_ROOTS_FILE}" || {
+    echo "Missing or invalid automation plugin missing-root rollback state" >&2
+    return 1
+  }
+  while IFS= read -r owned_relative || [[ -n "${owned_relative}" ]]; do
+    automation_plugin_db_owns_relative_root "${owned_relative}" || {
+      echo "Automation plugin missing-root rollback state is not database-owned" >&2
+      return 1
+    }
+  done <"${PLUGIN_DB_MISSING_ROOTS_FILE}"
   if [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}" && \
     ! -L "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]]; then
-    [[ -f "${BACKUP_DIR}/automation_plugin_install_root.absent" ]] && return 0
+    if [[ -f "${BACKUP_DIR}/automation_plugin_install_root.absent" && \
+      ! -s "${PLUGIN_DB_MISSING_ROOTS_FILE}" ]]; then
+      return 0
+    fi
+    if [[ -s "${PLUGIN_DB_MISSING_ROOTS_FILE}" ]]; then
+      echo "A pre-release database-owned automation plugin root was not recovered" >&2
+      return 1
+    fi
     echo "Automation plugin installation root disappeared during release" >&2
     return 1
   fi
@@ -1331,6 +1494,7 @@ restore_automation_plugin_installations() {
   current_inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_install.current.XXXXXX")"
   new_inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_install.new.XXXXXX")"
   missing_inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_install.missing.XXXXXX")"
+  preserved_projects="$(mktemp "${BACKUP_DIR}/automation_plugin_install.preserved.XXXXXX")"
   if find "${AUTOMATION_PLUGIN_INSTALL_ROOT}" -mindepth 1 -maxdepth 2 \
     ! -type d -print -quit | grep -q .; then
     echo "Automation plugin rollback found an unsafe indexed entry" >&2
@@ -1342,6 +1506,12 @@ restore_automation_plugin_installations() {
     echo "Automation plugin rollback found an invalid path" >&2
     return 1
   }
+  while IFS= read -r owned_relative || [[ -n "${owned_relative}" ]]; do
+    grep -Fqx -- "${owned_relative}" "${current_inventory}" || {
+      echo "A pre-release database-owned automation plugin root was not recovered" >&2
+      return 1
+    }
+  done <"${PLUGIN_DB_MISSING_ROOTS_FILE}"
   if ! LC_ALL=C comm --check-order -23 \
     "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${missing_inventory}"; then
     echo "Automation plugin rollback inventory comparison failed" >&2
@@ -1363,6 +1533,14 @@ restore_automation_plugin_installations() {
   while IFS= read -r relative || [[ -n "${relative}" ]]; do
     [[ "${relative}" == */* ]] || continue
     source="${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}"
+    if grep -Fqx -- "${relative}" "${PLUGIN_DB_MISSING_ROOTS_FILE}"; then
+      [[ -d "${source}" && ! -L "${source}" ]] || {
+        echo "Unsafe recovered automation plugin rollback root" >&2
+        return 1
+      }
+      printf '%s\n' "${relative%%/*}" >>"${preserved_projects}"
+      continue
+    fi
     destination="${quarantine}/${relative}"
     [[ -d "${source}" && ! -L "${source}" && ! -e "${destination}" ]] || {
       echo "Unsafe automation plugin rollback candidate: ${relative}" >&2
@@ -1373,16 +1551,21 @@ restore_automation_plugin_installations() {
   done <"${new_inventory}"
   while IFS= read -r relative || [[ -n "${relative}" ]]; do
     [[ -n "${relative}" && "${relative}" != */* ]] || continue
+    if grep -Fqx -- "${relative}" "${preserved_projects}"; then
+      continue
+    fi
     rmdir -- "${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}" || {
       echo "New automation plugin project root is not empty: ${relative}" >&2
       return 1
     }
   done <"${new_inventory}"
   if [[ -f "${BACKUP_DIR}/automation_plugin_install_root.absent" ]]; then
-    rmdir -- "${AUTOMATION_PLUGIN_INSTALL_ROOT}" || {
-      echo "New automation plugin installation root is not empty" >&2
-      return 1
-    }
+    if [[ ! -s "${PLUGIN_DB_MISSING_ROOTS_FILE}" ]]; then
+      rmdir -- "${AUTOMATION_PLUGIN_INSTALL_ROOT}" || {
+        echo "New automation plugin installation root is not empty" >&2
+        return 1
+      }
+    fi
   elif [[ ! -f "${BACKUP_DIR}/automation_plugin_install_root.existing" ]]; then
     echo "Missing automation plugin installation root prestate" >&2
     return 1
@@ -2312,6 +2495,8 @@ run_release() {
   # emergency path below minimizes and audits its old-scheduler residual race.
   RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
   preflight_scheduled_write_window
+  RELEASE_STAGE="capture_preexisting_automation_plugin_db_ownership"
+  capture_preexisting_automation_plugin_db_ownership
   if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
     # The old scheduler does not observe this marker dynamically. Capture all
     # read-only database state before creating the marker, then make the final
@@ -2333,6 +2518,8 @@ run_release() {
   quiesce_runtime_services
   RELEASE_STAGE="verify_protected_writes_quiesced"
   preflight_running_protected_writes
+  RELEASE_STAGE="confirm_preexisting_automation_plugin_db_ownership"
+  confirm_preexisting_automation_plugin_db_ownership
   RELEASE_STAGE="capture_automation_plugin_installation_state"
   capture_automation_plugin_installation_state
   RELEASE_STAGE="install_verified_first_party_plugin_artifacts"

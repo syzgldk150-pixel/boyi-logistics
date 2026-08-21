@@ -68,6 +68,7 @@ _FEISHU_ROUTE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$")
 
 
 _AUTOMATION_PROJECT_ENTRYPOINTS: AutomationProjectEntrypoints | None = None
+_FEISHU_APPROVAL_RUNTIME: Any | None = None
 
 
 def bind_automation_project_entrypoints(
@@ -79,6 +80,13 @@ def bind_automation_project_entrypoints(
     if service is not None and not isinstance(service, AutomationProjectEntrypoints):
         raise TypeError("service must be AutomationProjectEntrypoints or None")
     _AUTOMATION_PROJECT_ENTRYPOINTS = service
+
+
+def bind_feishu_approval_runtime(service: Any | None) -> None:
+    """Bind the database-backed Feishu administrator and approval runtime."""
+
+    global _FEISHU_APPROVAL_RUNTIME
+    _FEISHU_APPROVAL_RUNTIME = service
 
 
 @dataclass(frozen=True)
@@ -1667,6 +1675,21 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     from feishu.bot import get_agent_core
     from feishu.reply_formatter import format_reply
 
+    if _FEISHU_APPROVAL_RUNTIME is not None:
+        try:
+            approval_reply = await asyncio.to_thread(
+                _FEISHU_APPROVAL_RUNTIME.handle_text,
+                str(sender_id or ""),
+                str(chat_id or ""),
+                str(text or ""),
+            )
+        except OrchestrationError as exc:
+            await _reply_text(chat_id, f"审批处理失败（{exc.code}）。")
+            return
+        if approval_reply is not None:
+            await _reply_text(chat_id, approval_reply, reply_type="feishu_approval")
+            return
+
     agent = get_agent_core()
     if not agent:
         await _reply_text(chat_id, "Agent 尚未初始化，请稍后再试")
@@ -2130,11 +2153,13 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     logger.info("feishu route | chat=%s | route=agent_llm", chat_id)
     notice_task = asyncio.create_task(_send_after_delay(chat_id, "正在处理...", 1.5))
     try:
-        result = await agent.handle_message(
-            message=text,
-            user_id=sender_id,
-            conversation_id=f"feishu_{chat_id}",
-            actor=Actor(
+        feishu_actor = (
+            await asyncio.to_thread(
+                _FEISHU_APPROVAL_RUNTIME.resolve_actor,
+                str(sender_id or ""),
+            )
+            if _FEISHU_APPROVAL_RUNTIME is not None
+            else Actor(
                 ActorType.FEISHU_USER,
                 (
                     _COMMAND_CONTEXT.get().actor_id
@@ -2143,7 +2168,13 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 ),
                 roles=(),
                 authenticated_by="feishu_event",
-            ),
+            )
+        )
+        result = await agent.handle_message(
+            message=text,
+            user_id=sender_id,
+            conversation_id=f"feishu_{chat_id}",
+            actor=feishu_actor,
             source="feishu",
             request_id=(
                 _COMMAND_CONTEXT.get().event_id

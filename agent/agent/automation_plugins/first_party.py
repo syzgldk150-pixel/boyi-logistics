@@ -10,13 +10,21 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
+import os
 import re
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
-from agent.automation_plugins.errors import AutomationPluginError, PluginPackageError
+from agent.automation_plugins.errors import (
+    AutomationPluginError,
+    PluginConflictError,
+    PluginPackageError,
+)
+from agent.automation_plugins.execution import FilesystemPluginIntegrityVerifier
 from agent.automation_plugins.manifest import AutomationPluginManifest, canonical_json_bytes
 from agent.automation_plugins.models import (
     BootstrapResult,
@@ -26,6 +34,7 @@ from agent.automation_plugins.models import (
 )
 from agent.automation_plugins.package import (
     PackageSignatureVerifier,
+    SIGNATURE_NAME,
     VerifiedPluginPackage,
     _zip_bytes,
     extract_verified_package,
@@ -35,6 +44,7 @@ from agent.automation_plugins.ports import (
     AutomationPluginRepositoryPort,
     FirstPartyPackageMaterializerPort,
     FirstPartyPackageProvider,
+    FirstPartyPackageRecoveryMaterializerPort,
     PluginEnvironmentBuilderPort,
     PluginStoragePort,
 )
@@ -42,6 +52,10 @@ from agent.automation_plugins.release_scope import (
     RUNNABLE_SERVER_FIRST_PARTY_PLUGIN_IDS,
 )
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
+from agent.automation_plugins.storage import (
+    VERIFIED_ARCHIVE_RELATIVE,
+    validate_regular_plugin_file,
+)
 from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
 from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
@@ -130,7 +144,13 @@ _CODE_OWNED_ENTRYPOINT_FIXED_RESOLVERS: Mapping[
         "scheduler": {"target_date": "current_business_day"},
     },
 }
-_CONFIG_HIDDEN_DYNAMIC_PLUGINS = frozenset({"sync_site_send_list"})
+_CONFIG_HIDDEN_DYNAMIC_PLUGINS = frozenset(
+    {
+        "sync_site_send_list",
+        "self_pickup_problem_upload",
+        "split_pending_problem_upload",
+    }
+)
 _OPTIONAL_CODE_OWNED_ENTRYPOINT_DYNAMIC_FIELDS = frozenset(
     {
         ("sync_yunda_dispatch_forecast", "feishu", "target_date"),
@@ -1032,6 +1052,24 @@ def resolve_first_party_manifests(
         signed_tool_contract = copy.deepcopy(capability)
         signed_tool_contract["executor"] = "payload/main.py"
         signed_tool_contract["input_schema"] = copy.deepcopy(invocation_schema)
+        entrypoint_input_schemas: dict[str, dict[str, Any]] = {}
+        config_field_names = set(config_schema.get("properties", {}))
+        for entrypoint in entrypoints:
+            visible_fields = config_field_names | set(
+                entrypoint_dynamic_resolvers[entrypoint]
+            )
+            entrypoint_schema = copy.deepcopy(invocation_schema)
+            entrypoint_schema["properties"] = {
+                field: schema
+                for field, schema in entrypoint_schema.get("properties", {}).items()
+                if field in visible_fields
+            }
+            entrypoint_schema["required"] = [
+                field
+                for field in entrypoint_schema.get("required", [])
+                if field in visible_fields
+            ]
+            entrypoint_input_schemas[entrypoint] = entrypoint_schema
         governance_anchor = {
             field: copy.deepcopy(signed_tool_contract[field])
             for field in _GOVERNANCE_ANCHOR_FIELDS
@@ -1111,7 +1149,9 @@ def resolve_first_party_manifests(
                 "allowed_entrypoints": entrypoints,
                 "invocation_contracts": {
                     entrypoint: {
-                        "input_schema": copy.deepcopy(invocation_schema),
+                        "input_schema": copy.deepcopy(
+                            entrypoint_input_schemas[entrypoint]
+                        ),
                         "argument_template": {
                             field: {"source": "project_config", "key": field}
                             for field in sorted(config_schema.get("properties", {}))
@@ -1365,6 +1405,184 @@ class SignedFirstPartyPackageProvider:
         self._digest_lock_path = Path(digest_lock_path)
         self._verified: dict[tuple[str, str], VerifiedPluginPackage] = {}
 
+    @staticmethod
+    def _same_immutable_identity(
+        persisted: PluginVersionRecord,
+        descriptor: PluginVersionRecord,
+    ) -> bool:
+        return (
+            persisted.plugin_id == descriptor.plugin_id
+            and persisted.version == descriptor.version
+            and persisted.package_sha256 == descriptor.package_sha256
+            and persisted.manifest_sha256 == descriptor.manifest_sha256
+            and persisted.trust_source == descriptor.trust_source
+            and canonical_json_bytes(persisted.manifest)
+            == canonical_json_bytes(descriptor.manifest)
+        )
+
+    @staticmethod
+    def _normalized_install_metadata(
+        version: PluginVersionRecord,
+    ) -> dict[str, Any]:
+        root = str(version.install_root or "")
+        if not root:
+            raise PluginPackageError(
+                "persisted first-party package has no immutable install root"
+            )
+        metadata = copy.deepcopy(dict(version.install_metadata))
+        recorded_root = metadata.get("install_root")
+        if recorded_root is not None and str(recorded_root) != root:
+            raise PluginPackageError(
+                "persisted first-party install metadata changed its root"
+            )
+        metadata["install_root"] = root
+        return metadata
+
+    @staticmethod
+    def _validate_python_relative(
+        root: Path,
+        relative: object,
+    ) -> None:
+        expected = (
+            "venv/Scripts/python.exe" if os.name == "nt" else "venv/bin/python"
+        )
+        if str(relative or "") != expected:
+            raise PluginPackageError(
+                "persisted first-party Python interpreter path is invalid"
+            )
+        pure = PurePosixPath(expected)
+        target = root.joinpath(*pure.parts)
+        if target.is_symlink():
+            raise PluginPackageError(
+                "persisted first-party Python interpreter is unsafe"
+            )
+        try:
+            resolved = target.resolve()
+            resolved.relative_to(root)
+            validate_regular_plugin_file(target)
+        except Exception as exc:
+            raise PluginPackageError(
+                "persisted first-party Python interpreter is missing or unsafe"
+            ) from exc
+
+    def _validate_persisted_materialization(
+        self,
+        *,
+        persisted: PluginVersionRecord,
+        descriptor: PluginVersionRecord,
+    ) -> bool:
+        """Return False only when the exact safe target is genuinely absent."""
+
+        if (
+            descriptor.trust_source != PluginTrustSource.ED25519_FIRST_PARTY
+            or not self._same_immutable_identity(persisted, descriptor)
+        ):
+            raise PluginPackageError(
+                "persisted first-party package differs from the verified release"
+            )
+        verified = self._verified.get((descriptor.plugin_id, descriptor.version))
+        if (
+            verified is None
+            or verified.package_sha256 != descriptor.package_sha256
+            or verified.manifest_sha256 != descriptor.manifest_sha256
+            or verified.manifest.to_mapping() != descriptor.manifest
+        ):
+            raise PluginPackageError(
+                "persisted first-party package was not verified in this release"
+            )
+        expected_root, exists = self._storage.inspect_expected_version_root(
+            plugin_id=descriptor.plugin_id,
+            version=descriptor.version,
+            manifest_sha256=descriptor.manifest_sha256,
+        )
+        metadata = self._normalized_install_metadata(persisted)
+        if (
+            Path(str(persisted.install_root)) != expected_root
+            or metadata.get("install_root") != str(expected_root)
+        ):
+            raise PluginPackageError(
+                "persisted first-party install root is not the deterministic target"
+            )
+        expected_files = [
+            {"path": item.path, "sha256": item.sha256, "size": item.size}
+            for item in verified.files
+        ]
+        if (
+            set(metadata)
+            != {
+                "signing_key_id",
+                "python_relative",
+                "archive_relative",
+                "archive_sha256",
+                "package_files",
+                "install_root",
+            }
+            or metadata.get("signing_key_id") != verified.signing_key_id
+            or metadata.get("archive_relative") != VERIFIED_ARCHIVE_RELATIVE
+            or metadata.get("archive_sha256") != verified.package_sha256
+            or metadata.get("package_files") != expected_files
+        ):
+            raise PluginPackageError(
+                "persisted first-party install metadata differs from signed bytes"
+            )
+        if not exists:
+            return False
+        try:
+            FilesystemPluginIntegrityVerifier().verify_install_root(
+                {
+                    "install_root": str(expected_root),
+                    "install_metadata": metadata,
+                }
+            )
+            if {item.name for item in expected_root.iterdir()} != {
+                "package",
+                "venv",
+                VERIFIED_ARCHIVE_RELATIVE,
+            }:
+                raise PluginPackageError(
+                    "persisted first-party immutable root has unexpected entries"
+                )
+            package_root = expected_root / "package"
+            actual_package_files = sorted(
+                path.relative_to(package_root).as_posix()
+                for path in package_root.rglob("*")
+                if path.is_file()
+            )
+            expected_package_files = sorted(
+                [*(item.path for item in verified.files), SIGNATURE_NAME]
+            )
+            if actual_package_files != expected_package_files:
+                raise PluginPackageError(
+                    "persisted first-party package tree differs from signed files"
+                )
+            with zipfile.ZipFile(
+                io.BytesIO(verified.archive_bytes),
+                mode="r",
+            ) as archive:
+                expected_signature = archive.read(SIGNATURE_NAME)
+            signature_path = package_root / SIGNATURE_NAME
+            validate_regular_plugin_file(signature_path)
+            if signature_path.read_bytes() != expected_signature:
+                raise PluginPackageError(
+                    "persisted first-party extracted signature is corrupt"
+                )
+            self._storage.read_verified_archive(
+                expected_root,
+                VERIFIED_ARCHIVE_RELATIVE,
+                expected_sha256=verified.package_sha256,
+            )
+            self._validate_python_relative(
+                expected_root,
+                metadata.get("python_relative"),
+            )
+        except PluginPackageError:
+            raise
+        except Exception as exc:
+            raise PluginPackageError(
+                "persisted first-party immutable root failed integrity verification"
+            ) from exc
+        return True
+
     def _load_index(self) -> dict[str, Any]:
         root = self._artifact_root
         if root.is_symlink() or not root.is_dir():
@@ -1537,6 +1755,55 @@ class SignedFirstPartyPackageProvider:
             else:
                 self._storage.discard_staging_root(staging)
             raise
+
+    def recover_missing(
+        self,
+        *,
+        persisted: PluginVersionRecord,
+        descriptor: PluginVersionRecord,
+    ) -> PluginVersionRecord | None:
+        """Rebuild only one verified, deterministic root that is exactly absent."""
+
+        if self._storage is None or self._environments is None:
+            raise PluginPackageError(
+                "signed first-party recovery storage is not configured"
+            )
+        if self._validate_persisted_materialization(
+            persisted=persisted,
+            descriptor=descriptor,
+        ):
+            return None
+        try:
+            rebuilt = self.materialize(descriptor)
+        except PluginConflictError as conflict:
+            # Another bootstrap may have atomically committed the same target.
+            # It is usable only after the complete persisted-byte validation;
+            # recovery never overwrites or adopts an unverified directory.
+            if self._validate_persisted_materialization(
+                persisted=persisted,
+                descriptor=descriptor,
+            ):
+                return None
+            raise PluginPackageError(
+                "first-party recovery target appeared without valid bytes"
+            ) from conflict
+        try:
+            if (
+                not self._same_immutable_identity(rebuilt, persisted)
+                or self._normalized_install_metadata(rebuilt)
+                != self._normalized_install_metadata(persisted)
+                or not self._validate_persisted_materialization(
+                    persisted=persisted,
+                    descriptor=descriptor,
+                )
+            ):
+                raise PluginPackageError(
+                    "rebuilt first-party materialization did not verify"
+                )
+        except Exception:
+            self.discard(rebuilt)
+            raise
+        return rebuilt
 
     def discard(self, version: PluginVersionRecord) -> None:
         if self._storage is None:
@@ -1745,46 +2012,24 @@ def bootstrap_first_party_plugins(
                     raise PluginPackageError(
                         f"existing first-party package is stale or not materialized: {descriptor.plugin_id}"
                     )
-                install_root = Path(existing.install_root)
-                if not install_root.exists() and not install_root.is_symlink():
-                    if (
-                        descriptor.trust_source
-                        != PluginTrustSource.ED25519_FIRST_PARTY
-                        or package_materializer is None
+                if descriptor.trust_source == PluginTrustSource.ED25519_FIRST_PARTY:
+                    if not isinstance(
+                        package_materializer,
+                        FirstPartyPackageRecoveryMaterializerPort,
                     ):
                         raise PluginPackageError(
-                            "signed first-party package materializer is required to recover "
-                            f"a missing install root: {descriptor.plugin_id}"
+                            "signed first-party recovery materializer is required: "
+                            f"{descriptor.plugin_id}"
                         )
-                    rebuilt = package_materializer.materialize(descriptor)
-                    try:
-                        persisted_metadata = copy.deepcopy(dict(existing.install_metadata))
-                        rebuilt_metadata = copy.deepcopy(dict(rebuilt.install_metadata))
-                        persisted_metadata["install_root"] = existing.install_root
-                        rebuilt_metadata["install_root"] = rebuilt.install_root
-                        if (
-                            existing.install_metadata.get("install_root")
-                            not in {None, existing.install_root}
-                            or rebuilt.plugin_id != existing.plugin_id
-                            or rebuilt.version != existing.version
-                            or rebuilt.package_sha256 != existing.package_sha256
-                            or rebuilt.manifest_sha256 != existing.manifest_sha256
-                            or rebuilt.trust_source != existing.trust_source
-                            or canonical_json_bytes(rebuilt.manifest)
-                            != canonical_json_bytes(existing.manifest)
-                            or rebuilt.install_root != existing.install_root
-                            or rebuilt_metadata != persisted_metadata
-                        ):
-                            raise PluginPackageError(
-                                "rebuilt first-party install differs from the persisted record: "
-                                f"{descriptor.plugin_id}"
-                            )
-                    except Exception:
-                        package_materializer.discard(rebuilt)
-                        raise
-                    newly_materialized.append(rebuilt)
-                # Recovery proves the persisted filesystem material again; the
-                # immutable database record remains the bootstrap authority.
+                    rebuilt = package_materializer.recover_missing(
+                        persisted=existing,
+                        descriptor=descriptor,
+                    )
+                    if rebuilt is not None:
+                        newly_materialized.append(rebuilt)
+                # ``existing`` is deliberately retained: a rebuilt record is
+                # only filesystem proof and must never replace immutable DB
+                # bytes during the idempotent registration below.
                 versions.append(existing)
                 continue
             if descriptor.install_root is None:
