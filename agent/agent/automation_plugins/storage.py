@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import os
 import re
@@ -24,6 +26,7 @@ _HASHED_REQUIREMENT_RE = re.compile(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)")
 _WINDOWS_REPARSE_POINT = 0x0400
 MAX_VERIFIED_ARCHIVE_BYTES = 256 * 1024 * 1024
 VERIFIED_ARCHIVE_RELATIVE = "package-archive.zip"
+_RENAME_NOREPLACE = 1
 
 
 def _assert_segment(value: str, pattern: re.Pattern[str], label: str) -> str:
@@ -90,6 +93,257 @@ def validate_plugin_tree(root: Path | str) -> Path:
     return target
 
 
+def _same_filesystem_entry(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and stat.S_IFMT(left.st_mode) == stat.S_IFMT(right.st_mode)
+    )
+
+
+def _linux_open_directory(
+    path: Path | str,
+    *,
+    dir_fd: int | None = None,
+) -> tuple[int, os.stat_result]:
+    """Open one directory without following it and pin its inspected inode."""
+
+    try:
+        before = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise PluginPackageError("plugin directory cannot be inspected") from exc
+    if not stat.S_ISDIR(before.st_mode):
+        raise PluginPackageError("plugin directory is unsafe")
+    flags = os.O_RDONLY
+    flags |= int(getattr(os, "O_DIRECTORY", 0) or 0)
+    flags |= int(getattr(os, "O_NOFOLLOW", 0) or 0)
+    flags |= int(getattr(os, "O_CLOEXEC", 0) or 0)
+    try:
+        descriptor = os.open(path, flags, dir_fd=dir_fd)
+    except OSError as exc:
+        raise PluginPackageError("plugin directory cannot be opened safely") from exc
+    try:
+        opened = os.fstat(descriptor)
+        after = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not _same_filesystem_entry(before, opened)
+            or not _same_filesystem_entry(opened, after)
+        ):
+            raise PluginPackageError("plugin directory changed during inspection")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor, opened
+
+
+def _linux_directory_matches(
+    path: Path | str,
+    expected: os.stat_result,
+    *,
+    dir_fd: int | None = None,
+) -> bool:
+    try:
+        current = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISDIR(current.st_mode) and _same_filesystem_entry(
+        expected,
+        current,
+    )
+
+
+def _linux_rename_no_replace(
+    source_dir_fd: int,
+    source_name: str,
+    destination_dir_fd: int,
+    destination_name: str,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise PluginPackageError("atomic no-clobber plugin publish is unavailable")
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = renameat2(
+        source_dir_fd,
+        os.fsencode(source_name),
+        destination_dir_fd,
+        os.fsencode(destination_name),
+        _RENAME_NOREPLACE,
+    )
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise PluginConflictError(
+            "immutable plugin version appeared during commit"
+        )
+    if error in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP}:
+        raise PluginPackageError("atomic no-clobber plugin publish is unavailable")
+    raise PluginPackageError(
+        f"atomic plugin publish failed: {os.strerror(error)}"
+    )
+
+
+def _linux_publish_directory_no_replace(
+    source: Path,
+    destination: Path,
+    *,
+    storage_root: Path,
+    staging_root: Path,
+) -> None:
+    if (
+        source.parent != staging_root
+        or staging_root.parent != storage_root
+        or destination.parent.parent != storage_root
+    ):
+        raise PluginPackageError("plugin publish paths are outside storage")
+    descriptors: list[int] = []
+    try:
+        root_fd, root_identity = _linux_open_directory(storage_root)
+        descriptors.append(root_fd)
+        staging_fd, staging_identity = _linux_open_directory(
+            ".staging",
+            dir_fd=root_fd,
+        )
+        descriptors.append(staging_fd)
+        project_name = destination.parent.name
+        project_fd, project_identity = _linux_open_directory(
+            project_name,
+            dir_fd=root_fd,
+        )
+        descriptors.append(project_fd)
+        source_identity = _safe_lstat(source)
+        try:
+            pinned_source = os.stat(
+                source.name,
+                dir_fd=staging_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PluginPackageError(
+                "plugin staging root cannot be pinned"
+            ) from exc
+        if (
+            not stat.S_ISDIR(pinned_source.st_mode)
+            or not _same_filesystem_entry(source_identity, pinned_source)
+        ):
+            raise PluginPackageError("plugin staging root changed before publish")
+        try:
+            os.stat(
+                destination.name,
+                dir_fd=project_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise PluginPackageError(
+                "plugin publish target cannot be inspected"
+            ) from exc
+        else:
+            raise PluginConflictError(
+                "immutable plugin version appeared during commit"
+            )
+        if not (
+            _linux_directory_matches(storage_root, root_identity)
+            and _linux_directory_matches(
+                ".staging",
+                staging_identity,
+                dir_fd=root_fd,
+            )
+            and _linux_directory_matches(
+                project_name,
+                project_identity,
+                dir_fd=root_fd,
+            )
+        ):
+            raise PluginPackageError("plugin parent directory changed before publish")
+        _linux_rename_no_replace(
+            staging_fd,
+            source.name,
+            project_fd,
+            destination.name,
+        )
+        if not (
+            _linux_directory_matches(storage_root, root_identity)
+            and _linux_directory_matches(
+                ".staging",
+                staging_identity,
+                dir_fd=root_fd,
+            )
+            and _linux_directory_matches(
+                project_name,
+                project_identity,
+                dir_fd=root_fd,
+            )
+        ):
+            try:
+                _linux_rename_no_replace(
+                    project_fd,
+                    destination.name,
+                    staging_fd,
+                    source.name,
+                )
+            except Exception as restore_exc:
+                raise PluginPackageError(
+                    "plugin parent changed and staging could not be restored"
+                ) from restore_exc
+            raise PluginPackageError("plugin parent directory changed during publish")
+    except OSError as exc:
+        raise PluginPackageError("plugin directory changed during publish") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _publish_directory_no_replace(
+    source: Path,
+    destination: Path,
+    *,
+    storage_root: Path,
+    staging_root: Path,
+) -> None:
+    """Atomically publish ``source`` without ever replacing ``destination``."""
+
+    if sys.platform.startswith("linux"):
+        _linux_publish_directory_no_replace(
+            source,
+            destination,
+            storage_root=storage_root,
+            staging_root=staging_root,
+        )
+        return
+    if os.name == "nt":
+        try:
+            # Windows rename fails when the destination already exists.
+            os.rename(source, destination)
+            return
+        except OSError as exc:
+            try:
+                destination.lstat()
+            except FileNotFoundError:
+                raise PluginPackageError("atomic plugin publish failed") from exc
+            except OSError as inspect_exc:
+                raise PluginPackageError(
+                    "plugin publish target cannot be inspected"
+                ) from inspect_exc
+            raise PluginConflictError(
+                "immutable plugin version appeared during commit"
+            ) from exc
+    raise PluginPackageError(
+        "atomic no-clobber plugin publish is unsupported on this platform"
+    )
+
+
 class FilesystemPluginStorage:
     """Keep immutable versions below one explicitly configured root."""
 
@@ -109,6 +363,67 @@ class FilesystemPluginStorage:
     @property
     def root(self) -> Path:
         return self._root
+
+    def _expected_version_root(
+        self,
+        *,
+        plugin_id: str,
+        version: str,
+        manifest_sha256: str,
+    ) -> Path:
+        safe_plugin_id = _assert_segment(
+            plugin_id,
+            _AUTOMATION_ID_RE,
+            "plugin_id",
+        )
+        safe_version = _assert_segment(version, _VERSION_RE, "plugin version")
+        digest = str(manifest_sha256 or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise PluginPackageError("plugin manifest digest is invalid")
+        root_metadata = _safe_lstat(self._root)
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise PluginPackageError("plugin storage root is unsafe")
+        project_root = self._root / safe_plugin_id
+        try:
+            project_metadata = project_root.lstat()
+        except FileNotFoundError:
+            project_metadata = None
+        except OSError as exc:
+            raise PluginPackageError(
+                "plugin project root cannot be inspected"
+            ) from exc
+        if project_metadata is not None:
+            _safe_lstat(project_root)
+            if not stat.S_ISDIR(project_metadata.st_mode):
+                raise PluginPackageError("plugin project root is unsafe")
+        return project_root / f"{safe_version}-{digest[:12]}"
+
+    def inspect_expected_version_root(
+        self,
+        *,
+        plugin_id: str,
+        version: str,
+        manifest_sha256: str,
+    ) -> tuple[Path, bool]:
+        """Inspect the one deterministic target without creating or following it."""
+
+        target = self._expected_version_root(
+            plugin_id=plugin_id,
+            version=version,
+            manifest_sha256=manifest_sha256,
+        )
+        try:
+            target_metadata = target.lstat()
+        except FileNotFoundError:
+            return target, False
+        except OSError as exc:
+            raise PluginPackageError(
+                "plugin immutable version root cannot be inspected"
+            ) from exc
+        _safe_lstat(target)
+        if not stat.S_ISDIR(target_metadata.st_mode):
+            raise PluginPackageError("plugin immutable version root is unsafe")
+        return target, True
 
     def create_staging_root(self, plugin_id: str, version: str) -> Path:
         plugin_id = _assert_segment(plugin_id, _AUTOMATION_ID_RE, "plugin_id")
@@ -131,15 +446,31 @@ class FilesystemPluginStorage:
         stage = staging_root.resolve()
         if stage.parent != self._staging or not stage.is_dir():
             raise PluginPackageError("plugin staging directory is outside the configured root")
-        project_root = self._root / plugin_id
+        destination, destination_exists = self.inspect_expected_version_root(
+            plugin_id=plugin_id,
+            version=version,
+            manifest_sha256=manifest_sha256,
+        )
+        if destination_exists:
+            raise PluginConflictError("immutable plugin version already exists on disk")
+        project_root = destination.parent
         project_root.mkdir(parents=True, exist_ok=True)
         project_metadata = _safe_lstat(project_root)
         if not stat.S_ISDIR(project_metadata.st_mode):
             raise PluginPackageError("plugin project root is unsafe")
-        destination = project_root / f"{version}-{manifest_sha256[:12]}"
-        if destination.exists():
+        confirmed_destination, destination_exists = self.inspect_expected_version_root(
+            plugin_id=plugin_id,
+            version=version,
+            manifest_sha256=manifest_sha256,
+        )
+        if confirmed_destination != destination or destination_exists:
             raise PluginConflictError("immutable plugin version already exists on disk")
-        os.replace(stage, destination)
+        _publish_directory_no_replace(
+            stage,
+            destination,
+            storage_root=self._root,
+            staging_root=self._staging,
+        )
         validate_plugin_tree(destination)
         return destination.resolve()
 

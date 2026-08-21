@@ -175,9 +175,12 @@ class CommittedAutomationProjectRouteResolver:
             if (
                 snapshot is None
                 or entry.committed_generation != snapshot.generation
-                or entrypoint.value not in snapshot.enabled_entrypoints
+                or entry.target_generation != entry.committed_generation
+                or str(getattr(entry.reconcile_state, "value", entry.reconcile_state))
+                != "STABLE"
             ):
                 continue
+            entrypoint_enabled = entrypoint.value in snapshot.enabled_entrypoints
             metadata = snapshot.execution_metadata
             project_config = metadata.get("project_config")
             account_bindings = metadata.get("account_bindings")
@@ -245,6 +248,28 @@ class CommittedAutomationProjectRouteResolver:
                 resource.get(candidate_key_field),
             )
             if candidate_key != safe_key:
+                continue
+            if not entrypoint_enabled:
+                matches.append(
+                    AutomationProjectEntrypointRoute(
+                        route_id=str(resource_id),
+                        route_key=candidate_key,
+                        entrypoint=entrypoint,
+                        automation_id=entry.automation_id,
+                        automation_generation=snapshot.generation,
+                        project_configuration_version=int(
+                            metadata.get("project_config_version") or 0
+                        ),
+                        route_revision=int(
+                            resource_descriptor.get("configuration_version") or 0
+                        ),
+                        action_fields=frozenset(),
+                        dynamic_fields=frozenset(),
+                        project_config=project_config,
+                        account_bindings=account_bindings,
+                        enabled=False,
+                    )
+                )
                 continue
             generation = self._runtime.get_generation(
                 entry.automation_id,
@@ -330,9 +355,11 @@ class AutomationProjectEntrypoints:
         policy_service: AutomationProjectPolicyService,
         *,
         route_resolver: AutomationProjectRouteResolverPort,
+        feishu_actor_resolver: Any | None = None,
     ) -> None:
         self._policy = policy_service
         self._routes = route_resolver
+        self._feishu_actor_resolver = feishu_actor_resolver
 
     async def invoke_feishu(
         self,
@@ -348,15 +375,20 @@ class AutomationProjectEntrypoints:
         safe_sender_id = _stable_identifier(sender_id, "sender_id")
         safe_chat_id = _stable_identifier(chat_id, "chat_id")
         dynamic_inputs = _extract_dynamic_inputs(route, envelope or {})
+        actor = (
+            self._feishu_actor_resolver(safe_sender_id)
+            if self._feishu_actor_resolver is not None
+            else Actor(
+                ActorType.FEISHU_USER,
+                safe_sender_id,
+                authenticated_by="feishu_verified_event",
+            )
+        )
         return await self._policy.invoke_trusted_and_wait(
             route.automation_id,
             entrypoint=AutomationEntrypoint.FEISHU,
             request_id=safe_event_id,
-            actor=Actor(
-                ActorType.FEISHU_USER,
-                safe_sender_id,
-                authenticated_by="feishu_verified_event",
-            ),
+            actor=actor,
             trusted_context={
                 "route_id": route.route_id,
                 "route_revision": route.route_revision,

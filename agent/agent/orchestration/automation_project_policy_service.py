@@ -7,6 +7,7 @@ committed plugin generation and locked orchestration rows.
 
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -62,11 +63,7 @@ from shared.automation_project_policy_repository import (
     validate_initial_automation_project_bootstrap_policy,
     validate_unconfigured_automation_project_policy,
 )
-from shared.orchestration_repository import (
-    AccountExecutionLockUnavailable,
-    ConcurrentUpdateError,
-    InvalidStateError,
-)
+from shared.orchestration_repository import ConcurrentUpdateError, InvalidStateError
 from shared.orchestration_repository_support import IdempotencyConflict
 
 
@@ -113,6 +110,8 @@ _TRUSTED_CONTEXT_FIELDS = {
         }
     ),
 }
+_DEFAULT_FULL_AUTO_ACTOR_ID = "system:migration:automation-full-auto-v1"
+_DEFAULT_FULL_AUTO_REASON = "AUTOMATION_DEFAULT_FULL_AUTO"
 _SERVER_CONTEXT_FIELDS = frozenset(
     {
         "project_request_id",
@@ -479,6 +478,95 @@ class AutomationProjectPolicyService:
             ),
         }
 
+    def ensure_default_full_auto_policies(self) -> dict[str, int]:
+        """Make legacy/default policies durable full-auto without touching runtime.
+
+        Migration 019 handles existing databases.  This idempotent startup pass
+        covers a brand-new database where the release-held 018 evidence bootstrap
+        necessarily runs after SQL migrations have completed.
+        """
+
+        changed = 0
+        with self._repository.unit_of_work() as uow:
+            policy_ids = tuple(
+                str(row.get("automation_id") or "")
+                for row in uow.automation_projects.list_policies()
+                if str(row.get("mode") or "")
+                in {
+                    AutomationProjectPolicyMode.REQUIRE_EACH_RUN.value,
+                    AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value,
+                }
+            )
+            for automation_id in policy_ids:
+                policy = uow.automation_projects.get_policy(
+                    automation_id,
+                    for_update=True,
+                )
+                if policy is None or str(policy.get("mode") or "") not in {
+                    AutomationProjectPolicyMode.REQUIRE_EACH_RUN.value,
+                    AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value,
+                }:
+                    continue
+                request_id = f"default-full-auto:{automation_id}"
+                if uow.automation_projects.get_event_by_request(
+                    automation_id,
+                    request_id,
+                    for_update=True,
+                ) is not None:
+                    raise OrchestrationError(
+                        "PROJECT_POLICY_DEFAULT_PARTIAL",
+                        "Default full-auto audit exists without its policy update",
+                    )
+                previous_mode = str(policy["mode"])
+                updated = uow.automation_projects.update_policy(
+                    automation_id,
+                    expected_version=int(policy["version"]),
+                    mode=AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value,
+                    contract_hash=None,
+                    contract_snapshot=None,
+                    tool_contract_hash=None,
+                    plugin_contract_hash=None,
+                    project_generation=int(policy["project_generation"]),
+                    project_configuration_version=int(
+                        policy["project_configuration_version"]
+                    ),
+                    actor_id=_DEFAULT_FULL_AUTO_ACTOR_ID,
+                    actor_role="system",
+                    actor_display_name="Automation full-auto migration",
+                    comment="Defaulted automation project to durable full auto",
+                )
+                correlation_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"boyi:automation-default-full-auto:{automation_id}",
+                    )
+                )
+                uow.automation_projects.append_event(
+                    {
+                        "automation_id": automation_id,
+                        "request_id": request_id,
+                        "from_mode": previous_mode,
+                        "to_mode": AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value,
+                        "contract_hash": None,
+                        "contract_snapshot_json": None,
+                        "tool_contract_hash": None,
+                        "plugin_contract_hash": None,
+                        "project_generation": updated["project_generation"],
+                        "project_configuration_version": updated[
+                            "project_configuration_version"
+                        ],
+                        "actor_id": _DEFAULT_FULL_AUTO_ACTOR_ID,
+                        "actor_role": "system",
+                        "actor_display_name": "Automation full-auto migration",
+                        "reason": _DEFAULT_FULL_AUTO_REASON,
+                        "comment": "Defaulted automation project to durable full auto",
+                        "correlation_id": correlation_id,
+                    }
+                )
+                changed += 1
+            uow.commit()
+        return {"changed": changed}
+
     def update_policy(
         self,
         automation_id: str,
@@ -509,35 +597,6 @@ class AutomationProjectPolicyService:
             expected_project_configuration_version,
             "expected_project_configuration_version",
         )
-        entry: PluginCatalogEntry | None = None
-        prepared_contract: CompiledAutomationProjectContract | None = None
-        if safe_mode == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
-            entry, prepared_contract = self._load_contract(safe_id)
-
-        account_execution_lease: Any | None = None
-        if prepared_contract is not None:
-            account_ids = _project_contract_account_ids(
-                prepared_contract.account_bindings
-            )
-            if account_ids:
-                try:
-                    account_execution_lease = (
-                        self._repository.acquire_account_execution_locks(
-                            account_ids,
-                            timeout_seconds=0,
-                        )
-                    )
-                except AccountExecutionLockUnavailable as exc:
-                    raise OrchestrationError(
-                        "ACCOUNT_CREDENTIAL_CHANGE_IN_PROGRESS",
-                        "Project full-auto cannot be granted while bound credentials are changing",
-                    ) from exc
-                except Exception as exc:
-                    raise OrchestrationError(
-                        "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
-                        "Project full-auto cannot be granted because the account guard is unavailable",
-                    ) from exc
-
         correlation_id = new_id()
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
@@ -593,49 +652,19 @@ class AutomationProjectPolicyService:
                         "Automation project policy changed; refresh and retry",
                     )
 
-                committed_generation = project.get("committed_generation")
-                project_generation = (
-                    int(committed_generation)
-                    if type(committed_generation) is int
-                    and committed_generation > 0
-                    else _positive_int(
-                        int(project.get("target_generation") or 0),
-                        "project_generation",
-                    )
+                # Approval policy is durable administrator intent.  Changing it
+                # must not create or reconcile a runtime generation: runtime
+                # lineage is owned exclusively by project/plugin configuration.
+                project_generation = int(
+                    policy.get("project_generation")
+                    or project.get("target_generation")
+                    or project.get("committed_generation")
+                    or 1
                 )
-                contract_hash: str | None = None
-                contract_snapshot: Mapping[str, Any] | None = None
-                tool_contract_hash: str | None = None
-                plugin_contract_hash: str | None = None
-                if safe_mode == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
-                    if entry is None or prepared_contract is None:
-                        raise OrchestrationError(
-                            "PROJECT_CONTRACT_UNAVAILABLE",
-                            "Automation project contract is unavailable",
-                        )
-                    locked_contract, locked_config = self._lock_and_compile_contract(
-                        uow,
-                        entry,
-                        expected=prepared_contract,
-                        require_enabled=True,
-                    )
-                    if (
-                        int(project.get("target_generation") or 0)
-                        != locked_contract.automation_generation
-                        or str(project.get("reconcile_state") or "") != "STABLE"
-                        or int(locked_config.get("config_version") or 0)
-                        != locked_contract.project_configuration_version
-                    ):
-                        raise OrchestrationError(
-                            "PROJECT_CONFIGURATION_NOT_COMMITTED",
-                            "Project changes must finish reconciling before full auto can be granted",
-                        )
-                    project_generation = locked_contract.automation_generation
-                    contract_hash = locked_contract.contract_hash
-                    contract_snapshot = locked_contract.snapshot
-                    tool_contract_hash = locked_contract.tool_contract_hash
-                    plugin_contract_hash = locked_contract.plugin_contract_hash
-
+                contract_hash = None
+                contract_snapshot = None
+                tool_contract_hash = None
+                plugin_contract_hash = None
                 updated = uow.automation_projects.update_policy(
                     safe_id,
                     expected_version=expected_policy,
@@ -705,9 +734,6 @@ class AutomationProjectPolicyService:
                 "REQUEST_ID_REUSED",
                 "Request id was already used for a different project policy change",
             ) from exc
-        finally:
-            if account_execution_lease is not None:
-                account_execution_lease.release()
         return self.get_policy_projection(safe_id)
 
     def pending_approvals(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
@@ -816,6 +842,7 @@ class AutomationProjectPolicyService:
                         raise InvalidStateError(
                             "a pending approval expired during the grouped decision"
                         )
+                    uow.runs.make_waiting_approval_runnable(str(row["run_id"]))
                     self._append_approval_domain_event(
                         uow,
                         row=row,
@@ -1209,10 +1236,12 @@ class AutomationProjectPolicyService:
                     else "Legacy project contract is stale or not a scheduler invocation"
                 ),
             )
-        if mode == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value and self._full_auto_active(
-            policy,
-            contract,
-        ):
+        if mode == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
+            if not contract.can_full_auto:
+                return _project_denied(
+                    contract.restriction_code or "PROJECT_CONTRACT_NOT_RUNNABLE",
+                    "The current signed project contract is not runnable",
+                )
             return ProjectPolicyEvaluation(
                 allowed=True,
                 requires_approval=False,
@@ -1333,6 +1362,14 @@ class AutomationProjectPolicyService:
                 "PROJECT_DISABLED",
                 "Automation project is disabled",
             )
+        if (
+            str(project.get("reconcile_state") or "") != "STABLE"
+            or project.get("committed_generation") != project.get("target_generation")
+        ):
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_RECONCILING",
+                "Automation project runtime is synchronizing; old configuration cannot run",
+            )
         committed = project.get("committed_generation")
         if type(committed) is not int or committed <= 0:
             raise OrchestrationError(
@@ -1396,7 +1433,7 @@ class AutomationProjectPolicyService:
             if configured in _USER_POLICY_MODES
             else AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
         )
-        effective = "REQUIRE_EACH_RUN"
+        effective = browser_configured
         status = "ACTIVE"
         contract: CompiledAutomationProjectContract | None = None
         contract_error: str | None = None
@@ -1412,12 +1449,45 @@ class AutomationProjectPolicyService:
             contract_error = "PROJECT_CONTRACT_UNAVAILABLE"
 
         stable = (
-            entry.committed_generation is not None
-            and entry.target_generation == entry.committed_generation
-            and str(getattr(entry.reconcile_state, "value", entry.reconcile_state))
+            getattr(entry, "committed_generation", None) is not None
+            and getattr(entry, "target_generation", None)
+            == getattr(entry, "committed_generation", None)
+            and str(
+                getattr(
+                    getattr(entry, "reconcile_state", ""),
+                    "value",
+                    getattr(entry, "reconcile_state", ""),
+                )
+            )
             == "STABLE"
         )
-        can_full_auto = bool(contract and stable)
+        # This flag means the durable administrator mode is selectable.  The
+        # separate runnable/runtime fields carry current execution health.
+        can_full_auto = True
+        reconcile_state = str(
+            getattr(
+                getattr(entry, "reconcile_state", ""),
+                "value",
+                getattr(entry, "reconcile_state", ""),
+            )
+        )
+        if stable and contract is not None:
+            runtime_status = "READY"
+        elif reconcile_state in {
+            "PREPARING",
+            "WAITING_COEFFECTS",
+            "DISPOSING",
+        }:
+            runtime_status = "RECONCILING"
+        else:
+            runtime_status = "UNAVAILABLE"
+        runnable = bool(
+            getattr(entry, "enabled", False)
+            and getattr(entry, "configured", False)
+            and runtime_status == "READY"
+            and contract is not None
+            and getattr(entry, "current_enabled_entrypoints", ())
+        )
         if configured == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
             if (
                 contract is not None
@@ -1427,12 +1497,15 @@ class AutomationProjectPolicyService:
                 effective = AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
                 status = "LEGACY_SCHEDULE_ONLY"
             else:
-                status = "STALE" if contract is not None else "UNSUPPORTED"
+                status = "RECONCILING" if runtime_status == "RECONCILING" else "UNAVAILABLE"
         elif configured == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
-            if contract is not None and self._full_auto_active(policy or {}, contract) and stable:
-                effective = AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
-            else:
-                status = "STALE" if contract is not None else "UNSUPPORTED"
+            effective = AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
+            if runtime_status == "RECONCILING":
+                status = "RECONCILING"
+            elif runtime_status != "READY" or contract is None:
+                status = "UNAVAILABLE"
+            elif not contract.can_full_auto:
+                status = "UNSUPPORTED"
         elif contract_error is not None:
             status = "UNSUPPORTED"
         elif not can_full_auto:
@@ -1452,6 +1525,14 @@ class AutomationProjectPolicyService:
             "effective_mode": effective,
             "effective_status": status,
             "can_full_auto": can_full_auto,
+            "runnable": runnable,
+            "runtime_status": runtime_status,
+            "runtime_reason": (
+                "ENTRYPOINTS_DISABLED"
+                if runtime_status == "READY"
+                and not getattr(entry, "current_enabled_entrypoints", ())
+                else contract_error
+            ),
             "summary": summary,
             "updated_by": str(
                 (policy or {}).get("approved_by_actor_display_name")
@@ -1464,7 +1545,11 @@ class AutomationProjectPolicyService:
                 "policy_version",
             ),
             "project_configuration_version": _positive_int(
-                int(entry.project_config_version or 0),
+                int(
+                    getattr(entry, "project_config_version", 0)
+                    or (policy or {}).get("project_configuration_version")
+                    or 0
+                ),
                 "project_configuration_version",
             ),
         }
@@ -1474,30 +1559,9 @@ class AutomationProjectPolicyService:
         policy: Mapping[str, Any],
         contract: CompiledAutomationProjectContract,
     ) -> bool:
-        if (
-            int(policy.get("project_generation") or 0)
-            != contract.automation_generation
-            or int(policy.get("project_configuration_version") or 0)
-            != contract.project_configuration_version
-        ):
-            return False
-        contract_fields = (
-            "contract_hash",
-            "tool_contract_hash",
-            "plugin_contract_hash",
-        )
-        if all(not str(policy.get(field) or "") for field in contract_fields):
-            # New projects and configuration changes default to the existing
-            # full-auto mode. The committed contract and plan match checks
-            # remain authoritative; no second approval flag is added.
-            return True
-        return bool(
-            str(policy.get("contract_hash") or "") == contract.contract_hash
-            and str(policy.get("tool_contract_hash") or "")
-            == contract.tool_contract_hash
-            and str(policy.get("plugin_contract_hash") or "")
-            == str(contract.plugin_contract_hash or "")
-        )
+        # PROJECT_FULL_AUTO is durable policy intent; the current invocation is
+        # still matched against the exact committed contract before evaluation.
+        return contract.can_full_auto
 
     @staticmethod
     def _legacy_schedule_active(
@@ -1842,6 +1906,12 @@ class AutomationProjectPolicyService:
                     "partition_key": str(row["work_item_id"]),
                     "max_attempts": 10,
                 },
+                {
+                    "consumer_name": "feishu.approval",
+                    "topic": "agent.approval.decided",
+                    "partition_key": str(row["approval_id"]),
+                    "max_attempts": 20,
+                },
             ),
         )
 
@@ -1911,16 +1981,27 @@ class AutomationProjectPolicyService:
         if entrypoint is AutomationEntrypoint.CONSOLE:
             cls._require_console_admin(actor)
             return
+        if entrypoint is AutomationEntrypoint.FEISHU:
+            if (
+                actor.actor_type is ActorType.FEISHU_USER
+                and (
+                    (actor.authenticated_by == "feishu_verified_event" and actor.roles == ())
+                    or (
+                        actor.authenticated_by == "feishu_admin_binding"
+                        and actor.roles == ("admin", "super_admin")
+                    )
+                )
+            ):
+                return
+            raise OrchestrationError(
+                "TRUSTED_ENTRYPOINT_REQUIRED",
+                "Automation invocation did not originate from its trusted adapter",
+            )
         expected = {
             AutomationEntrypoint.SCHEDULER: (
                 ActorType.SCHEDULER,
                 "apscheduler",
                 ("system",),
-            ),
-            AutomationEntrypoint.FEISHU: (
-                ActorType.FEISHU_USER,
-                "feishu_verified_event",
-                (),
             ),
             AutomationEntrypoint.WEBHOOK: (
                 ActorType.WEBHOOK,
@@ -2249,51 +2330,18 @@ def _policy_summary(
     reason: str | None,
 ) -> str:
     if effective == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
-        return "当前已绑定已提交插件代际、项目配置和全部入口，可完全自动运行。"
+        if status == "RECONCILING":
+            return "完全自动，运行环境同步中；同步完成前不会运行旧配置。"
+        if status in {"UNAVAILABLE", "UNSUPPORTED"}:
+            safe_reason = str(reason or "PROJECT_RUNTIME_UNAVAILABLE")[:64]
+            return f"完全自动意图已保留，但运行环境不可用，需修复后运行（{safe_reason}）。"
+        return "当前项目为完全自动；每次运行仍校验签名、配置、入口和写后证据。"
     if effective == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
         return "仍处于旧版计划权限；保存新的项目权限后由项目统一接管。"
-    if configured == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value and status == "STALE":
-        return "插件代际或项目配置已变化，当前已安全降为每次运行审批。"
     if status == "UNSUPPORTED":
         safe_reason = str(reason or "PROJECT_CONTRACT_UNAVAILABLE")[:64]
         return f"当前项目合同不可授予完全自动（{safe_reason}），每次运行均需审批。"
     return "当前项目所有入口每次运行都需要审批。"
-
-
-def _project_contract_account_ids(
-    bindings: Mapping[str, str | tuple[str, ...]],
-) -> tuple[str, ...]:
-    account_ids: set[str] = set()
-    for role, binding in bindings.items():
-        if not str(role or "").strip():
-            raise OrchestrationError(
-                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
-                "Project account binding role is invalid",
-            )
-        raw_values: Sequence[Any]
-        if isinstance(binding, str):
-            raw_values = (binding,)
-        elif isinstance(binding, (tuple, list)):
-            raw_values = binding
-        else:
-            raise OrchestrationError(
-                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
-                "Project account binding is invalid",
-            )
-        normalized = [
-            value.strip()
-            for value in raw_values
-            if isinstance(value, str) and value.strip()
-        ]
-        if len(normalized) != len(raw_values) or len(normalized) != len(
-            set(normalized)
-        ):
-            raise OrchestrationError(
-                "ACCOUNT_EXECUTION_GUARD_UNAVAILABLE",
-                "Project account binding is invalid",
-            )
-        account_ids.update(normalized)
-    return tuple(sorted(account_ids))
 
 
 def _automation_id(value: Any) -> str:

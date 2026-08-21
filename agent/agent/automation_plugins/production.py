@@ -617,7 +617,11 @@ class ProductionRuntimeEffectPlanner:
                 {"governance_anchor_sha256": snapshot.governance_anchor_sha256},
             ),
         ]
-        if isinstance(schedule, Mapping) and schedule.get("kind") != "none":
+        if (
+            "scheduler" in entrypoints
+            and isinstance(schedule, Mapping)
+            and schedule.get("kind") != "none"
+        ):
             plans.append(
                 RuntimeEffectPlan(
                     RuntimeEffectKind.SCHEDULE_BINDING,

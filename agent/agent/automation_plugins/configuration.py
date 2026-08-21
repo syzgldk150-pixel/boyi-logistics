@@ -187,8 +187,8 @@ class AutomationProjectConfigurationService:
                 resource_id=resource_id,
             )
         sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
-        if not sources or any(not item for item in sources) or len(sources) != len(set(sources)):
-            raise PluginConflictError("enabled_entrypoints must be a non-empty unique list")
+        if any(not item for item in sources) or len(sources) != len(set(sources)):
+            raise PluginConflictError("enabled_entrypoints must be a unique list")
         if not set(sources) <= set(entry.allowed_entrypoints):
             raise PluginConflictError("enabled_entrypoints exceed the signed plugin contract")
         normalized_device_id = str(device_id or "").strip()

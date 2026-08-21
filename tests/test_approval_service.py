@@ -5,6 +5,7 @@ import unittest
 
 from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
+from agent.orchestration.policy_engine import PolicyEngine
 from shared.orchestration_repository import InvalidStateError
 
 
@@ -54,6 +55,23 @@ class _Repository:
 
 
 class ApprovalServiceConcurrencyTests(unittest.TestCase):
+    def test_bound_feishu_super_admin_can_decide_but_unbound_user_cannot(self):
+        engine = PolicyEngine(object())
+        bound = Actor(
+            ActorType.FEISHU_USER,
+            "ou-bound",
+            ("admin", "super_admin"),
+            authenticated_by="feishu_admin_binding",
+        )
+        unbound = Actor(
+            ActorType.FEISHU_USER,
+            "ou-unbound",
+            (),
+            authenticated_by="feishu_verified_event",
+        )
+        self.assertTrue(engine.can_decide(bound, required_role="super_admin", source="feishu"))
+        self.assertFalse(engine.can_decide(unbound, required_role="super_admin", source="feishu"))
+
     def test_concurrent_second_decision_has_a_stable_conflict_code(self):
         service = ApprovalService(
             _Repository("approval request is no longer pending"),

@@ -2247,7 +2247,24 @@ def _load_script_helper(filename: str):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load script helper: {filename}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous_module = sys.modules.get(module_name)
+    previous_shared = {
+        name: loaded
+        for name, loaded in sys.modules.items()
+        if name == "shared" or name.startswith("shared.")
+    }
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
+        for name in tuple(sys.modules):
+            if name == "shared" or name.startswith("shared."):
+                sys.modules.pop(name, None)
+        sys.modules.update(previous_shared)
     return module
 
 
@@ -2257,6 +2274,9 @@ _AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER = _load_script_helper(
 )
 check_automation_project_required_resources = _load_script_helper("automation_project_resource_preflight.py").check_automation_project_required_resources
 check_automation_project_scheduled_task_identities = _load_script_helper("automation_project_schedule_identity_preflight.py").check_automation_project_scheduled_task_identities
+check_automation_plugin_install_ownership = _load_script_helper(
+    "automation_plugin_install_ownership_preflight.py"
+).check_automation_plugin_install_ownership
 
 def _automation_project_authorization_artifacts(cursor) -> set[str]:
     return _MIGRATION_018_HELPER._automation_project_authorization_artifacts(
@@ -2769,6 +2789,12 @@ def main() -> int:
         action="store_true",
         help="Block quiesce while an external or financial write is running",
     )
+    modes.add_argument(
+        "--check-automation-plugin-install-ownership",
+        action="store_true",
+        help="Report safe deterministic identities owned before plugin installation",
+    )
+    parser.add_argument("--automation-plugin-install-root")
     parser.add_argument(
         "--expect-initial-production-manifest",
         action="store_true",
@@ -2792,6 +2818,13 @@ def main() -> int:
         parser.error(
             "--expect-initial-production-manifest requires "
             "--check-control-plane-release-manifest"
+        )
+    if bool(args.automation_plugin_install_root) != bool(
+        args.check_automation_plugin_install_ownership
+    ):
+        parser.error(
+            "--automation-plugin-install-root requires "
+            "--check-automation-plugin-install-ownership"
         )
     if args.restore_control_plane_task_cutover:
         return restore_control_plane_task_cutover()
@@ -2829,6 +2862,11 @@ def main() -> int:
         )
     if args.check_running_protected_writes:
         return check_running_protected_writes()
+    if args.check_automation_plugin_install_ownership:
+        return check_automation_plugin_install_ownership(
+            _connect,
+            args.automation_plugin_install_root,
+        )
     return run(check_only=args.check)
 
 

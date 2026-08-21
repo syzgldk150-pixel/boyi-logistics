@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import stat
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -441,7 +442,7 @@ def test_signed_first_party_materialization_copies_exact_archive_out_of_release(
     ) == package
 
 
-def _signed_existing_bootstrap_fixture(tmp_path: Path):
+def _signed_recovery_fixture(tmp_path: Path):
     package, trust = _uploaded_package()
     verified = verify_signed_plugin_zip(package, verifier=trust)
     storage = FilesystemPluginStorage(tmp_path / "installed")
@@ -475,21 +476,247 @@ def _signed_existing_bootstrap_fixture(tmp_path: Path):
     return package, verified, storage, provider, descriptor, persisted
 
 
-def _single_plugin_bootstrap_scope(
+def test_signed_first_party_missing_root_recovery_is_exact_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    package, verified, storage, provider, descriptor, persisted = (
+        _signed_recovery_fixture(tmp_path)
+    )
+    persisted_before = copy.deepcopy(persisted)
+    expected_root = Path(str(persisted.install_root))
+    storage.remove_version_root(expected_root)
+    assert not expected_root.exists()
+
+    rebuilt = provider.recover_missing(
+        persisted=persisted,
+        descriptor=descriptor,
+    )
+
+    assert rebuilt is not None
+    assert persisted == persisted_before
+    assert rebuilt.install_root == persisted.install_root
+    assert {
+        **dict(rebuilt.install_metadata),
+        "install_root": rebuilt.install_root,
+    } == persisted.install_metadata
+    assert storage.read_verified_archive(
+        expected_root,
+        str(persisted.install_metadata["archive_relative"]),
+        expected_sha256=verified.package_sha256,
+    ) == package
+    assert provider.recover_missing(
+        persisted=persisted,
+        descriptor=descriptor,
+    ) is None
+
+
+def test_signed_first_party_recovery_rejects_wrong_or_unsafe_roots(
+    tmp_path: Path,
+) -> None:
+    _, _, storage, provider, descriptor, persisted = _signed_recovery_fixture(
+        tmp_path
+    )
+    expected_root = Path(str(persisted.install_root))
+    storage.remove_version_root(expected_root)
+    wrong_root = tmp_path / "wrong" / "missing"
+    wrong = replace(
+        persisted,
+        install_root=str(wrong_root),
+        install_metadata={
+            **dict(persisted.install_metadata),
+            "install_root": str(wrong_root),
+        },
+    )
+    with pytest.raises(PluginPackageError, match="deterministic target"):
+        provider.recover_missing(persisted=wrong, descriptor=descriptor)
+    assert not expected_root.exists()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    expected_root.parent.mkdir(parents=True, exist_ok=True)
+    expected_root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(PluginPackageError, match="symbolic links|unsafe"):
+        provider.recover_missing(persisted=persisted, descriptor=descriptor)
+    assert expected_root.is_symlink()
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("corrupt_target", ("package", "archive"))
+def test_signed_first_party_recovery_never_overwrites_corrupt_existing_tree(
+    tmp_path: Path,
+    corrupt_target: str,
+) -> None:
+    _, verified, _, provider, descriptor, persisted = _signed_recovery_fixture(
+        tmp_path
+    )
+    root = Path(str(persisted.install_root))
+    target = (
+        root / "package" / verified.files[0].path
+        if corrupt_target == "package"
+        else root / str(persisted.install_metadata["archive_relative"])
+    )
+    target.chmod(0o600)
+    target.write_bytes(b"corrupt-existing-tree")
+
+    with pytest.raises(PluginPackageError, match="integrity|archive"):
+        provider.recover_missing(persisted=persisted, descriptor=descriptor)
+
+    assert target.read_bytes() == b"corrupt-existing-tree"
+
+
+def test_signed_first_party_recovery_rejects_extra_package_module(
+    tmp_path: Path,
+) -> None:
+    _, _, _, provider, descriptor, persisted = _signed_recovery_fixture(tmp_path)
+    root = Path(str(persisted.install_root))
+    extra = root / "package" / "payload" / "json.py"
+    original_mode = extra.parent.stat().st_mode & 0o777
+    extra.parent.chmod(original_mode | stat.S_IWUSR)
+    extra.write_text("raise RuntimeError('shadow')\n", encoding="utf-8")
+    extra.parent.chmod(original_mode)
+
+    with pytest.raises(PluginPackageError, match="differs from signed files"):
+        provider.recover_missing(persisted=persisted, descriptor=descriptor)
+
+    assert extra.is_file()
+
+
+def test_signed_first_party_recovery_concurrent_commit_only_revalidates(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    descriptor: PluginVersionRecord,
-) -> FirstPartyInstanceSeed:
+) -> None:
+    _, _, storage, provider, descriptor, persisted = _signed_recovery_fixture(
+        tmp_path
+    )
+    root = Path(str(persisted.install_root))
+    storage.remove_version_root(root)
+    original_materialize = provider.materialize
+
+    def raced_materialize(version: PluginVersionRecord) -> PluginVersionRecord:
+        original_materialize(version)
+        raise PluginConflictError("simulated concurrent immutable commit")
+
+    monkeypatch.setattr(provider, "materialize", raced_materialize)
+    assert provider.recover_missing(
+        persisted=persisted,
+        descriptor=descriptor,
+    ) is None
+    assert root.is_dir()
+
+
+def test_signed_first_party_recovery_rejects_corrupt_concurrent_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, storage, provider, descriptor, persisted = _signed_recovery_fixture(
+        tmp_path
+    )
+    root = Path(str(persisted.install_root))
+    storage.remove_version_root(root)
+
+    def raced_materialize(_version: PluginVersionRecord) -> PluginVersionRecord:
+        root.mkdir(parents=True)
+        marker = root / "unverified-race"
+        marker.write_bytes(b"must-not-be-adopted-or-overwritten")
+        raise PluginConflictError("simulated corrupt concurrent commit")
+
+    monkeypatch.setattr(provider, "materialize", raced_materialize)
+    with pytest.raises(PluginPackageError, match="integrity|without valid bytes"):
+        provider.recover_missing(
+            persisted=persisted,
+            descriptor=descriptor,
+        )
+    assert (root / "unverified-race").read_bytes() == (
+        b"must-not-be-adopted-or-overwritten"
+    )
+
+
+def test_signed_first_party_recovery_discards_rebuilt_metadata_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, storage, provider, descriptor, persisted = _signed_recovery_fixture(
+        tmp_path
+    )
+    root = Path(str(persisted.install_root))
+    storage.remove_version_root(root)
+    original_materialize = provider.materialize
+
+    def drifted_materialize(version: PluginVersionRecord) -> PluginVersionRecord:
+        rebuilt = original_materialize(version)
+        return replace(
+            rebuilt,
+            install_metadata={
+                **dict(rebuilt.install_metadata),
+                "python_relative": "venv/bin/not-the-persisted-python",
+            },
+        )
+
+    monkeypatch.setattr(provider, "materialize", drifted_materialize)
+    with pytest.raises(PluginPackageError, match="did not verify"):
+        provider.recover_missing(persisted=persisted, descriptor=descriptor)
+    assert not root.exists()
+
+
+def test_bootstrap_uses_original_database_record_after_root_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())["sync_scan_codes"]
+    descriptor = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="a" * 64,
+        manifest_sha256=manifest.manifest_sha256,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+    )
+    persisted = replace(
+        descriptor,
+        install_root="/immutable/sync_scan_codes/1.0.0-exact",
+        install_metadata={
+            "install_root": "/immutable/sync_scan_codes/1.0.0-exact"
+        },
+    )
+    rebuilt = replace(persisted)
     seed = FirstPartyInstanceSeed(
         automation_id="scan_codes",
-        plugin_id=descriptor.plugin_id,
-        version=descriptor.version,
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
         display_name="scan",
         allowed_entrypoints=("console",),
     )
+
+    class RecoveryProvider:
+        def load_versions(self, **_kwargs):
+            return (descriptor,)
+
+        def materialize(self, _version):
+            raise AssertionError("existing package must use recovery")
+
+        def discard(self, _version):
+            raise AssertionError("persisted recovery root must not be discarded")
+
+        def recover_missing(self, *, persisted: PluginVersionRecord, descriptor):
+            assert persisted is database_record
+            assert descriptor is not persisted
+            return rebuilt
+
+    class Repository:
+        def get_package_version(self, _plugin_id, _version):
+            return database_record
+
+        def bootstrap_missing(self, versions, instances, *, release_sha):
+            assert versions == (database_record,)
+            assert instances == (seed,)
+            assert release_sha == "b" * 40
+            return BootstrapPersistenceResult(created=(), existing=("scan_codes",))
+
+    database_record = persisted
     monkeypatch.setattr(
         first_party_module,
         "release_first_party_plugin_ids",
-        lambda: frozenset({descriptor.plugin_id}),
+        lambda: frozenset({manifest.plugin_id}),
     )
     monkeypatch.setattr(
         first_party_module,
@@ -499,89 +726,21 @@ def _single_plugin_bootstrap_scope(
     monkeypatch.setattr(
         first_party_module,
         "release_first_party_automation_ids",
-        lambda: frozenset({seed.automation_id}),
+        lambda: frozenset({"scan_codes"}),
     )
-    return seed
-
-
-def test_bootstrap_rebuilds_exact_missing_signed_root_and_keeps_database_record(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package, verified, storage, provider, descriptor, persisted = (
-        _signed_existing_bootstrap_fixture(tmp_path)
-    )
-    persisted_before = copy.deepcopy(persisted)
-    expected_root = Path(str(persisted.install_root))
-    storage.remove_version_root(expected_root)
-    monkeypatch.setattr(provider, "load_versions", lambda **_kwargs: (descriptor,))
-    seed = _single_plugin_bootstrap_scope(monkeypatch, descriptor)
-
-    class Repository:
-        def get_package_version(self, _plugin_id, _version):
-            return persisted
-
-        def bootstrap_missing(self, versions, instances, *, release_sha):
-            assert versions[0] is persisted
-            assert instances == (seed,)
-            assert release_sha == "b" * 40
-            return BootstrapPersistenceResult(created=(), existing=(seed.automation_id,))
 
     result = bootstrap_first_party_plugins(
         Repository(),
         core_catalog=ToolRegistry(),
         current_release_sha="b" * 40,
         expected_release_sha="b" * 40,
-        package_provider=provider,
+        package_provider=RecoveryProvider(),
+        package_materializer=RecoveryProvider(),
     )
 
     assert result.ok
-    assert persisted == persisted_before
-    assert expected_root.is_dir()
-    assert storage.read_verified_archive(
-        expected_root,
-        str(persisted.install_metadata["archive_relative"]),
-        expected_sha256=verified.package_sha256,
-    ) == package
-
-
-def test_bootstrap_discards_rebuild_when_persisted_install_metadata_differs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, _, storage, provider, descriptor, persisted = (
-        _signed_existing_bootstrap_fixture(tmp_path)
-    )
-    expected_root = Path(str(persisted.install_root))
-    storage.remove_version_root(expected_root)
-    persisted = replace(
-        persisted,
-        install_metadata={
-            **dict(persisted.install_metadata),
-            "python_relative": "venv/bin/different-python",
-        },
-    )
-    monkeypatch.setattr(provider, "load_versions", lambda **_kwargs: (descriptor,))
-    _single_plugin_bootstrap_scope(monkeypatch, descriptor)
-
-    class Repository:
-        def get_package_version(self, _plugin_id, _version):
-            return persisted
-
-        def bootstrap_missing(self, *_args, **_kwargs):
-            raise AssertionError("metadata drift must fail before repository bootstrap")
-
-    result = bootstrap_first_party_plugins(
-        Repository(),
-        core_catalog=ToolRegistry(),
-        current_release_sha="b" * 40,
-        expected_release_sha="b" * 40,
-        package_provider=provider,
-    )
-
-    assert not result.ok
-    assert "rebuilt first-party install differs" in result.rejected["*"]
-    assert not expected_root.exists()
+    assert result.existing == ("scan_codes",)
+    assert database_record is persisted
 
 
 def test_hard_uninstall_waits_for_exact_cleanup_ack_and_deletes_db_before_fs(
@@ -699,6 +858,143 @@ def test_storage_refuses_symlink_or_path_escape_during_materialization(tmp_path:
     assert outside.read_text(encoding="utf-8") == "keep"
     with pytest.raises(PluginPackageError, match="outside"):
         storage.remove_version_root(outside)
+
+
+def test_storage_commit_and_recovery_share_one_expected_root_identity(
+    tmp_path: Path,
+) -> None:
+    storage = FilesystemPluginStorage(tmp_path / "plugins")
+    identity = {
+        "plugin_id": "expected_root_plugin",
+        "version": "1.2.3",
+        "manifest_sha256": "a" * 64,
+    }
+    expected, exists = storage.inspect_expected_version_root(**identity)
+    assert not exists
+    stage = storage.create_staging_root(
+        identity["plugin_id"],
+        identity["version"],
+    )
+    (stage / "payload.py").write_text("pass\n", encoding="utf-8")
+    assert storage.commit_staging_root(stage, **identity) == expected
+
+    second_stage = storage.create_staging_root(
+        identity["plugin_id"],
+        identity["version"],
+    )
+    (second_stage / "payload.py").write_text("different\n", encoding="utf-8")
+    with pytest.raises(PluginConflictError, match="already exists"):
+        storage.commit_staging_root(second_stage, **identity)
+    assert (expected / "payload.py").read_text(encoding="utf-8") == "pass\n"
+
+    storage.remove_version_root(expected)
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    expected.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(PluginPackageError, match="symbolic links"):
+        storage.inspect_expected_version_root(**identity)
+    assert expected.is_symlink()
+    assert list(outside.iterdir()) == []
+
+
+def test_storage_atomic_publish_never_replaces_racing_empty_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FilesystemPluginStorage(tmp_path / "plugins")
+    identity = {
+        "plugin_id": "atomic_publish_plugin",
+        "version": "1.2.3",
+        "manifest_sha256": "b" * 64,
+    }
+    stage = storage.create_staging_root(
+        identity["plugin_id"],
+        identity["version"],
+    )
+    (stage / "payload.py").write_text("candidate\n", encoding="utf-8")
+    original_inspect = storage.inspect_expected_version_root
+    inspect_count = 0
+    racing_inode: int | None = None
+    racing_marker: Path | None = None
+
+    def inspect_with_race(**kwargs):
+        nonlocal inspect_count, racing_inode, racing_marker
+        target, exists = original_inspect(**kwargs)
+        inspect_count += 1
+        if inspect_count == 2:
+            assert not exists
+            target.mkdir()
+            racing_inode = target.lstat().st_ino
+            racing_marker = target.parent / "concurrent-owner.marker"
+            racing_marker.write_text(str(racing_inode), encoding="ascii")
+        return target, exists
+
+    monkeypatch.setattr(
+        storage,
+        "inspect_expected_version_root",
+        inspect_with_race,
+    )
+    with pytest.raises(PluginConflictError, match="appeared during commit"):
+        storage.commit_staging_root(stage, **identity)
+
+    expected, exists = original_inspect(**identity)
+    assert exists
+    assert racing_inode is not None
+    assert expected.lstat().st_ino == racing_inode
+    assert list(expected.iterdir()) == []
+    assert racing_marker is not None
+    assert racing_marker.read_text(encoding="ascii") == str(racing_inode)
+    assert (stage / "payload.py").read_text(encoding="utf-8") == "candidate\n"
+
+
+def test_storage_atomic_publish_never_follows_racing_project_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FilesystemPluginStorage(tmp_path / "plugins")
+    identity = {
+        "plugin_id": "parent_race_plugin",
+        "version": "1.2.3",
+        "manifest_sha256": "c" * 64,
+    }
+    stage = storage.create_staging_root(
+        identity["plugin_id"],
+        identity["version"],
+    )
+    (stage / "payload.py").write_text("candidate\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_inspect = storage.inspect_expected_version_root
+    inspect_count = 0
+    displaced_project: Path | None = None
+
+    def inspect_with_parent_race(**kwargs):
+        nonlocal inspect_count, displaced_project
+        target, exists = original_inspect(**kwargs)
+        inspect_count += 1
+        if inspect_count == 2:
+            assert not exists
+            displaced_project = target.parent.with_name(
+                f"{target.parent.name}.displaced"
+            )
+            target.parent.rename(displaced_project)
+            target.parent.symlink_to(outside, target_is_directory=True)
+        return target, exists
+
+    monkeypatch.setattr(
+        storage,
+        "inspect_expected_version_root",
+        inspect_with_parent_race,
+    )
+    with pytest.raises(PluginPackageError, match="unsafe|opened safely"):
+        storage.commit_staging_root(stage, **identity)
+
+    expected_project = storage.root / identity["plugin_id"]
+    assert expected_project.is_symlink()
+    assert list(outside.iterdir()) == []
+    assert displaced_project is not None and displaced_project.is_dir()
+    assert list(displaced_project.iterdir()) == []
+    assert (stage / "payload.py").read_text(encoding="utf-8") == "candidate\n"
 
 
 def test_verified_archive_reader_rejects_tamper_hardlink_and_symlink(

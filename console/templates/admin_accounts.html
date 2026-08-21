@@ -5,6 +5,36 @@
 {% block subtitle %}管理员账号与登录安全{% endblock %}
 
 {% block content %}
+{% if is_super_admin %}
+<section class="panel account-admin-panel" aria-labelledby="feishu-approval-binding-title">
+  <div class="account-admin-toolbar">
+    <div class="account-admin-title">
+      <strong id="feishu-approval-binding-title">飞书审批身份</strong>
+      <span class="status-pill {{ 'status-pill--success' if feishu_binding.bound else 'status-pill--muted' }}">
+        {{ '已绑定' if feishu_binding.bound else '未绑定' }}
+      </span>
+    </div>
+    <div class="account-row-actions">
+      <form action="/settings/accounts/feishu-approval/challenge" method="post">
+        <button class="primary-btn" type="submit">生成一次性绑定码</button>
+      </form>
+      {% if feishu_binding.bound %}
+      <form action="/settings/accounts/feishu-approval/revoke" method="post">
+        <button class="ghost-btn" type="submit">撤销绑定</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  <p class="muted-copy">绑定后，飞书身份实时继承当前 Console 超级管理员权限；停用、降权或解绑立即失效。</p>
+  {% if binding_challenge %}
+  <div class="automation-plugin-block" role="status">
+    <i data-feather="message-square"></i>
+    <span>请在 10 分钟内向机器人发送：<strong>{{ binding_challenge.command }}</strong>。绑定码仅显示本次且只能使用一次。</span>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="panel account-admin-panel account-admin-compact" aria-label="管理员账号列表">
   <div class="account-admin-toolbar">
     <div class="account-admin-title">

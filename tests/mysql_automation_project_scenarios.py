@@ -227,6 +227,7 @@ def seed_required_project_resources(case, database: str) -> None:
 
 def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(case):
     from shared.automation_plugin_repository import AutomationPluginRepository
+    from shared.orchestration_repository_support import ConcurrentUpdateError
 
     database = case.project_authorization_database
     (
@@ -501,75 +502,140 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
         )
         connection.commit()
 
-    def save_schedule(expected_version, schedule):
-        with case._connection(database) as connection:
-            repository = AutomationPluginRepository(
-                connection,
-                cursor_factory=case.pymysql.cursors.DictCursor,
-            )
-            result = repository.save_project_config(
+    with case._connection(database) as connection:
+        repository = AutomationPluginRepository(
+            connection,
+            cursor_factory=case.pymysql.cursors.DictCursor,
+        )
+        with case.assertRaises(ConcurrentUpdateError):
+            repository.save_project_config(
                 "integration_scan_instance",
                 config={},
                 account_bindings={"primary": "integration-account"},
                 resource_bindings={},
                 enabled_entrypoints=("scheduler", "console"),
-                schedule=schedule,
+                schedule={"kind": "startup", "times": [], "enabled": False},
                 compiled_invocations=compiled,
                 device_binding=None,
                 actor_id="integration-admin",
                 actor_role="super_admin",
                 request_id=str(uuid4()),
-                expected_project_configuration_version=expected_version,
+                expected_project_configuration_version=2,
             )
-            connection.commit()
-            return result
+    with case._connection(database) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT target_generation, committed_generation, reconcile_state
+                FROM automation_projects
+                WHERE automation_id=%s
+                """,
+                ("integration_scan_instance",),
+            )
+            staged_project = cursor.fetchone()
+            case.assertEqual(1, staged_project["target_generation"])
+            case.assertIsNone(staged_project["committed_generation"])
+            case.assertEqual("PREPARING", staged_project["reconcile_state"])
+            cursor.execute(
+                """
+                SELECT mode, project_generation,
+                       project_configuration_version
+                FROM automation_project_policies
+                WHERE automation_id=%s
+                """,
+                ("integration_scan_instance",),
+            )
+            staged_policy = cursor.fetchone()
+            case.assertEqual("REQUIRE_EACH_RUN", staged_policy["mode"])
+            case.assertEqual(1, staged_policy["project_generation"])
+            case.assertEqual(2, staged_policy["project_configuration_version"])
 
-    startup = save_schedule(
-        2,
-        {"kind": "startup", "times": [], "enabled": False},
-    )
-    case.assertEqual(startup["schedule"]["kind"], "startup")
-    none = save_schedule(
-        3,
-        {"kind": "none", "times": [], "enabled": False},
-    )
-    case.assertEqual(
-        none["schedule"],
-        {"kind": "none", "times": [], "enabled": False},
-    )
-
+    rollback_instance = "integration_config_rollback_instance"
     with case._connection(database) as connection:
         repository = AutomationPluginRepository(
             connection,
             cursor_factory=case.pymysql.cursors.DictCursor,
         )
-        repository.save_project_config(
-            "integration_scan_instance",
+        repository.install_project_instance(
+            {
+                "automation_id": rollback_instance,
+                "plugin_id": "integration_scan_plugin",
+                "plugin_version": "1.0.0",
+                "display_name": "Integration rollback instance",
+                "install_request_id": str(uuid4()),
+                "install_payload_sha256": "c" * 64,
+                "installed_by_actor_id": "integration-admin",
+                "migration_authority": False,
+            }
+        )
+        repository.initialize_project_config(
+            rollback_instance,
+            enabled_entrypoints=("scheduler", "console"),
+        )
+        connection.commit()
+    with case._connection(database) as connection:
+        repository = AutomationPluginRepository(
+            connection,
+            cursor_factory=case.pymysql.cursors.DictCursor,
+        )
+        staged = repository.save_project_config(
+            rollback_instance,
             config={},
             account_bindings={"primary": "integration-account"},
             resource_bindings={},
             enabled_entrypoints=("scheduler", "console"),
-            schedule={
-                "kind": "daily_times",
-                "times": ["09:00"],
-                "enabled": True,
-            },
+            schedule={"kind": "startup", "times": [], "enabled": False},
             compiled_invocations=compiled,
             device_binding=None,
             actor_id="integration-admin",
             actor_role="super_admin",
             request_id=str(uuid4()),
-            expected_project_configuration_version=4,
+            expected_project_configuration_version=1,
         )
+        case.assertEqual(2, staged["config_version"])
         connection.rollback()
     with case._connection(database) as connection:
-        repository = AutomationPluginRepository(
-            connection,
-            cursor_factory=case.pymysql.cursors.DictCursor,
-        )
-        rolled_back = repository.get_project_config("integration_scan_instance")
-        case.assertEqual(rolled_back["config_version"], 4)
-        case.assertEqual(rolled_back["schedule"]["kind"], "none")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT target_generation, committed_generation, reconcile_state
+                FROM automation_projects WHERE automation_id=%s
+                """,
+                (rollback_instance,),
+            )
+            rolled_back_project = cursor.fetchone()
+            case.assertEqual(1, rolled_back_project["target_generation"])
+            case.assertIsNone(rolled_back_project["committed_generation"])
+            case.assertEqual(
+                "WAITING_COEFFECTS",
+                rolled_back_project["reconcile_state"],
+            )
+            cursor.execute(
+                """
+                SELECT configured, config_version
+                FROM automation_project_configs WHERE automation_id=%s
+                """,
+                (rollback_instance,),
+            )
+            rolled_back_config = cursor.fetchone()
+            case.assertEqual(0, rolled_back_config["configured"])
+            case.assertEqual(1, rolled_back_config["config_version"])
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS n FROM automation_project_policies
+                WHERE automation_id=%s
+                """,
+                (rollback_instance,),
+            )
+            case.assertEqual(0, cursor.fetchone()["n"])
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS n FROM automation_project_events
+                WHERE automation_id=%s
+                """,
+                (rollback_instance,),
+            )
+            case.assertEqual(0, cursor.fetchone()["n"])
 
     # The exact restore owns every 018 object and can be reapplied cleanly.
     with case._connection(database, autocommit=True) as connection:

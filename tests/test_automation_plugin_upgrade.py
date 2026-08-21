@@ -717,7 +717,7 @@ def test_upgrade_stages_desired_version_once_and_keeps_committed_v1() -> None:
     assert project["target_generation"] == 2
     assert project["committed_generation"] == 1
     assert orchestration.policies.policies["upgrade-instance"]["mode"] == (
-        "REQUIRE_EACH_RUN"
+        "PROJECT_FULL_AUTO"
     )
     assert orchestration.policies.policies["upgrade-instance"]["project_generation"] == 2
     assert len(orchestration.policies.events) == 1
@@ -819,7 +819,7 @@ def test_failed_uncommitted_target_dispose_atomically_restores_committed_desired
     assert len(cursor.policy_updates) == 1
     policy_sql, policy_params = cursor.policy_updates[0]
     assert "project_generation=%s" in policy_sql
-    assert "mode='REQUIRE_EACH_RUN'" in policy_sql
+    assert "mode=" not in policy_sql
     assert policy_params is not None
     assert 1 in policy_params
 
@@ -926,7 +926,7 @@ def test_aborted_upgrade_old_request_is_idempotent_and_new_request_advances() ->
     assert len(orchestration.policies.events) == 1
     assert len(orchestration.events.items) == 1
     assert orchestration.policies.policies["upgrade-instance"]["mode"] == (
-        "REQUIRE_EACH_RUN"
+        "PROJECT_FULL_AUTO"
     )
     assert orchestration.policies.policies["upgrade-instance"]["project_generation"] == 1
     assert orchestration.export_state() == state_after_abort
@@ -944,6 +944,6 @@ def test_aborted_upgrade_old_request_is_idempotent_and_new_request_advances() ->
     assert restaged.committed_generation == 1
     assert len(orchestration.low_level.upgrade_requests) == 2
     assert orchestration.policies.policies["upgrade-instance"]["mode"] == (
-        "REQUIRE_EACH_RUN"
+        "PROJECT_FULL_AUTO"
     )
     assert orchestration.policies.policies["upgrade-instance"]["project_generation"] == 3

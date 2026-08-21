@@ -780,6 +780,13 @@ class ReleaseBoundaryTests(unittest.TestCase):
             execution.index('RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"'),
             execution.index("MUTATION_STARTED=1"),
         )
+        self.assertLess(
+            execution.index(
+                'RELEASE_STAGE="capture_preexisting_automation_plugin_db_ownership"'
+            ),
+            execution.index("MUTATION_STARTED=1"),
+        )
+        self.assertIn("--check-automation-plugin-install-ownership", release)
         self.assertEqual(4, execution.count("preflight_running_protected_writes\n"))
         pre_mutation = execution.split(
             'RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"', 1
@@ -839,6 +846,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
         self.assertLess(
             execution.index("quiesce_runtime_services"),
+            execution.index("confirm_preexisting_automation_plugin_db_ownership"),
+        )
+        self.assertLess(
+            execution.index("confirm_preexisting_automation_plugin_db_ownership"),
             execution.index("capture_automation_plugin_installation_state"),
         )
         self.assertLess(
@@ -1064,9 +1075,11 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "static_preflight",
             "build_release_virtualenvs",
             "preflight_running_protected_writes",
+            "capture_preexisting_automation_plugin_db_ownership",
             "capture_control_plane_release_state",
             "quiesce_runtime_services",
             "verify_protected_writes_quiesced",
+            "confirm_preexisting_automation_plugin_db_ownership",
             "retire_legacy_finance_etl",
             "sync_scope:${scope}",
             "apply_migrations",
@@ -1777,6 +1790,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
             BACKUP_DIR="${stage_root}/_rollback"
             PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
+            mkdir -p "${BACKUP_DIR}"
+            : >"${PLUGIN_DB_OWNERSHIP_FILE}"
             mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
             capture_automation_plugin_installation_state
             mkdir -p \
@@ -1793,6 +1810,139 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_plugin_install_fault_rollback_preserves_fourteen_recovered_db_roots(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
+
+            run_staged_migration_runner() {
+              [[ "$1" == "--check-automation-plugin-install-ownership" ]]
+              [[ "$2" == "--automation-plugin-install-root" ]]
+              [[ "$3" == "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]]
+              printf 'automation_plugin_install_ownership=ok count=14\n'
+              local index plugin_id package_sha256 manifest_sha256
+              package_sha256="$(printf 'a%.0s' {1..64})"
+              for index in $(seq 1 14); do
+                printf -v plugin_id 'legacy_%02d' "${index}"
+                printf -v manifest_sha256 '%064x' "${index}"
+                printf 'automation_plugin_install_owner plugin_id=%s version=1.0.%d package_sha256=%s manifest_sha256=%s\n' \
+                  "${plugin_id}" "${index}" "${package_sha256}" "${manifest_sha256}"
+              done
+            }
+
+            capture_preexisting_automation_plugin_db_ownership
+            confirm_preexisting_automation_plugin_db_ownership
+            capture_automation_plugin_installation_state
+            [[ "$(wc -l <"${PLUGIN_DB_MISSING_ROOTS_FILE}")" == "14" ]]
+
+            while IFS= read -r relative; do
+              mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}/package"
+              printf 'recovered\n' \
+                >"${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}/package/old-runtime.py"
+            done <"${PLUGIN_DB_MISSING_ROOTS_FILE}"
+            mkdir -p \
+              "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/2.0.0-ffffffffffff/package"
+            printf 'new-release\n' \
+              >"${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/2.0.0-ffffffffffff/package/new-runtime.py"
+
+            post_release_gate() { return 73; }
+            if post_release_gate; then
+              exit 91
+            fi
+            restore_automation_plugin_installations
+
+            old_runtime_source_start() {
+              local relative
+              while IFS= read -r relative; do
+                [[ -f "${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}/package/old-runtime.py" ]]
+              done <"${PLUGIN_DB_MISSING_ROOTS_FILE}"
+              [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action" ]]
+              printf 'old_plugin_runtime=startable\n'
+            }
+            old_runtime_source_start
+            [[ -f "${BACKUP_DIR}/retired/automation_plugin_installed/new_action/2.0.0-ffffffffffff/package/new-runtime.py" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("old_plugin_runtime=startable", completed.stdout)
+
+    def test_plugin_install_rollback_fails_before_removal_when_recovery_is_incomplete(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
+            mkdir -p "${BACKUP_DIR}"
+            printf 'legacy_action 1.0.0 %s %s\n' \
+              "$(printf 'a%.0s' {1..64})" "$(printf '1%.0s' {1..64})" \
+              >"${PLUGIN_DB_OWNERSHIP_FILE}"
+            capture_automation_plugin_installation_state
+            mkdir -p \
+              "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/2.0.0-ffffffffffff/package"
+            printf 'new-release\n' \
+              >"${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/2.0.0-ffffffffffff/package/new-runtime.py"
+            if restore_automation_plugin_installations; then
+              exit 91
+            fi
+            [[ -f "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/2.0.0-ffffffffffff/package/new-runtime.py" ]]
+            [[ ! -e "${BACKUP_DIR}/retired/automation_plugin_installed/new_action" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "A pre-release database-owned automation plugin root was not recovered",
+            completed.stderr,
+        )
+
+    def test_plugin_db_ownership_change_during_quiesce_is_blocked(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            AUTOMATION_PLUGIN_ROOT="${stage_root}/production-plugins"
+            AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
+            BACKUP_DIR="${stage_root}/_rollback"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            state_file="${stage_root}/ownership-call-count"
+            run_staged_migration_runner() {
+              local count package_sha256 manifest_sha256
+              count="$(cat "${state_file}" 2>/dev/null || printf '0')"
+              count="$((count + 1))"
+              printf '%s\n' "${count}" >"${state_file}"
+              if [[ "${count}" == "1" ]]; then
+                manifest_sha256="$(printf '1%.0s' {1..64})"
+              else
+                manifest_sha256="$(printf '2%.0s' {1..64})"
+              fi
+              package_sha256="$(printf 'a%.0s' {1..64})"
+              printf 'automation_plugin_install_ownership=ok count=1\n'
+              printf 'automation_plugin_install_owner plugin_id=legacy_action version=1.0.0 package_sha256=%s manifest_sha256=%s\n' \
+                "${package_sha256}" "${manifest_sha256}"
+            }
+            capture_preexisting_automation_plugin_db_ownership
+            if confirm_preexisting_automation_plugin_db_ownership; then
+              exit 91
+            fi
+            read -r plugin_id version package_sha256 manifest_sha256 \
+              <"${PLUGIN_DB_OWNERSHIP_FILE}"
+            [[ "${plugin_id}" == "legacy_action" && "${version}" == "1.0.0" ]]
+            [[ "${package_sha256}" == "$(printf 'a%.0s' {1..64})" ]]
+            [[ "${manifest_sha256}" == "$(printf '1%.0s' {1..64})" ]]
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("reason=PRESTATE_CHANGED", completed.stderr)
+        self.assertNotIn("manifest_sha256", completed.stdout)
 
     def test_plugin_install_rollback_uses_c_locale_and_checks_comm_order(self):
         release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
@@ -1815,6 +1965,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
             BACKUP_DIR="${stage_root}/_rollback"
             PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
+            mkdir -p "${BACKUP_DIR}"
+            : >"${PLUGIN_DB_OWNERSHIP_FILE}"
             mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
             capture_automation_plugin_installation_state
             mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/1.0.0-222222222222/package"
@@ -1836,6 +1990,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
             BACKUP_DIR="${stage_root}/_rollback"
             PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
+            mkdir -p "${BACKUP_DIR}"
+            : >"${PLUGIN_DB_OWNERSHIP_FILE}"
             mkdir -p "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
             capture_automation_plugin_installation_state
             rmdir "${AUTOMATION_PLUGIN_INSTALL_ROOT}/existing_action/1.0.0-111111111111"
@@ -1858,6 +2016,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
             BACKUP_DIR="${stage_root}/_rollback"
             PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
+            PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
+            PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
+            mkdir -p "${BACKUP_DIR}"
+            : >"${PLUGIN_DB_OWNERSHIP_FILE}"
             capture_automation_plugin_installation_state
             mkdir -p \
               "${AUTOMATION_PLUGIN_INSTALL_ROOT}/new_action/1.0.0-222222222222/package" \

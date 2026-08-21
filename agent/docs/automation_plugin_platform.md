@@ -62,10 +62,17 @@ manifest、文件表和签名，再防 Zip Slip/符号链接/重解析点/硬链
 Worker 下载不依赖已经轮换的 release 目录。读取时同时校验版本目录边界、符号/硬链接、打开前后
 inode、大小和摘要；管理投影及下载响应均不暴露服务器文件路径。
 
-生产 bootstrap 若发现数据库中的首方签名版本与本次已验证 artifact 身份完全一致，但该记录的
-精确安装目录确实缺失，会复用既有 materializer 重建目录。重建后的路径与安装元数据必须与原记录
-完全一致，注册仍使用原数据库记录；目录已存在、路径为符号链接或身份不一致时不覆盖并继续 fail
-closed。
+启动 bootstrap 会对数据库中已存在的首方签名版本重新核验完整 manifest、签名身份、确定性安装
+路径、安装元数据、原始 ZIP 摘要、签名文件、payload 文件闭集和 Python 入口。若回滚曾保留精确的
+数据库版本但删除了它唯一对应的 installed 目录，只允许从本次已验证的同一签名包重建该目录，并在
+重建后逐字节匹配原数据库元数据；注册仍使用原数据库记录，不改写不可变字段。目标为符号链接、路径
+不一致或已存在但损坏/多文件时一律 fail closed，既不覆盖也不删除。
+
+远端发布器在任何插件或数据库 mutation 前通过受控只读 runner 捕获数据库已有首方版本的
+`plugin_id/version/manifest SHA-256`，并在停服务后复核同一身份集合未漂移。发布前磁盘缺失、但由新
+bootstrap 依照该身份恢复的根属于旧数据库状态，后续门禁失败时必须保留；本次新注册且不在 prestate
+ownership 中的根仍须隔离移出。任一应恢复根缺失、身份变化、清单异常或路径不安全都使 rollback
+incomplete，旧服务保持停止，stage 与 release hold 留待精确恢复。
 
 生产组合根严格读取以下变量，不提供开发兜底：
 
@@ -126,25 +133,20 @@ Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resou
 `base_token/table_id/view_id/view_name` 四字段。这样 generation 可在结构资源就绪时稳定提交，同时
 Broker 仍在每次调用时独立重验账号登录态和精确绑定，缺失时 fail closed。
 
-018 首次项目化会把当前发行的 57 条计划写成 `automation.<automation_id>.run`，账号只保留在 generation
-side-channel，typed 参数不得再带 `account_id/account_ids/_account_*`。配置保存会把旧任务级
-`EXACT_SCHEDULE_EXEMPT` 安全退休为 `REQUIRE_EACH_RUN`；只有 release hold 下的一次性策略 bootstrap
-能从 018 pre-image、原 grant、同一配置请求的退休事件、committed snapshot 与当前 typed 行恢复项目级
-`LEGACY_SCHEDULE_ONLY`。首次证据分布固定为 16 个项目、57 条 typed schedule、10 个 LEGACY、6 个
-REQUIRE 和 55 条已启用旧授权；证据 item 只保存哈希与身份，不保存账号参数、cron 明文或凭据。后续
-release SHA 不会重做 bootstrap，而是按 marker 中的首次 SHA 和不可变证据复核；配置/代际/合同变更令
-旧授权 stale 时，PolicyEngine 按逐次审批处理。
+018 首次项目化仍保留历史 pre-image、grant 和 typed schedule 证据，供发布边界复核；迁移 019 随后把
+所有 `REQUIRE_EACH_RUN` / `LEGACY_SCHEDULE_ONLY` 统一转换为 `PROJECT_FULL_AUTO` 并写不可变审计。
+全新数据库因 018 bootstrap 在 SQL 迁移之后发生，启动时还会执行同等的幂等全自动初始化。管理员后续
+显式选择逐次审批优先，配置或插件代际变化不得再静默改写权限模式。
 
 当前 018 仓储的低层 `pair_device` 没有 request UUID 审计合同，因此管理员配对入口固定返回
 `PLUGIN_WORKER_PAIRING_AUDIT_UNAVAILABLE`，不会旁路调用无审计写。只有前向迁移提供原子且幂等的
 `pair_device_with_audit` 聚合后才能开放；请求只接收 Ed25519 公钥和 TLS 客户端证书 SHA-256，绝不
 接收设备私钥或证书私钥。
 
-MySQL lifecycle 以一个事务注册不可变目标版本、CAS 推进 desired generation、把项目授权降为
-`REQUIRE_EACH_RUN`、过期待审批集合，并记录 request UUID 审计。prepare 期间旧 committed generation
-仍是所有实时入口的唯一执行来源；目标包、配置、账号、资源、Worker 和可逆 effects 全部闭合后才
-原子切换。相同 request UUID 的响应丢失重试只读取原目标，不会再推进一代；不兼容配置在任何 desired
-写入前拒绝。切换后的旧 generation 等已有 lease 排空后再 dispose，全程不靠重启进程清场。
+MySQL lifecycle 以一个事务注册不可变目标版本并 CAS 推进 desired generation，但保留管理员选择的项目
+权限模式。prepare 期间禁止用旧配置启动新 Run；目标包、配置、账号、资源、Worker 和可逆 effects
+全部闭合后才原子切换。相同 request UUID 的响应丢失重试只读取原目标，不会再推进一代；不兼容配置
+在任何 desired 写入前拒绝。切换后的旧 generation 等已有 lease 排空后再 dispose，全程不靠重启清场。
 
 首方生产集合必须从同一已提交 SHA 一次性构建，禁止手工拼接或覆盖既有目录：
 
@@ -203,13 +205,23 @@ OS sandbox、闭合 Broker、Evidence 和 fail-closed 门禁。
 ## 项目权限与就地审批
 
 审批以 `automation_id` 为单位，项目只暴露“完全自动”和“每次运行审批”两个设置；项目内所有
-Scheduler、Console、飞书和 Webhook 入口共享同一项目策略。完全自动要求签名清单与核心治理注册表
-同时明确允许，并精确绑定 committed generation、包/清单、项目配置、账号/资源/设备、入口与计划
-合同。任一绑定变化立即令授权 stale，回到逐次审批。
+Scheduler、Console、飞书和 Webhook 入口共享同一项目策略。`PROJECT_FULL_AUTO` 是持久化管理员意图，
+不绑定某代 contract hash；它覆盖签名清单内的外部写、财务写、破坏性和极高风险动作。运行时仍逐次
+校验当前 committed generation、签名、enabled action、闭合参数、账号/资源、入口和写后 Evidence；
+任一项缺失都不可运行，不得回退成审批模式。权限保存只写策略与审计，不创建 runtime generation。
+
+`enabled_entrypoints` 可为允许入口的任意子集（含空集）。关闭入口后由服务器阻断；Scheduler 关闭时
+保留管理员设置的时间，但提交代际将对应 `scheduled_tasks` 物化为 disabled，不注册或触发 Job。
 
 卡片内批量审批只提交服务端返回的待审批集合摘要和请求 UUID。服务端锁内重验项目、角色、plan
 hash 与集合；集合变化、任一计划失效或角色不足时零批准，不允许部分成功。每条 Run 仍保存独立
 审批决定和 Evidence；事项中心只负责全局检索、历史和异常处置。
+
+Console 超级管理员可生成 10 分钟、单次使用的高熵绑定码，数据库只保存摘要；飞书发送
+`绑定审批 <绑定码>` 后建立管理员关联。每次消息都实时校验后台账号 active 与 `control_plane_role`。
+`agent.approval.requested` 通过事务 Outbox 为每名启用通知的绑定管理员建立持久化串行队列，每次只激活
+一条；精确回复 `1` 批准、`2` 驳回。批准事务先将 `WAITING_APPROVAL` Run 的调度时间置为当前时间，
+提交后再唤醒 Runner，避免事项状态已批准而原 Run 永久停留。过期、重复或已被他人决定会跳到下一条。
 
 ## 升级、停用与卸载
 

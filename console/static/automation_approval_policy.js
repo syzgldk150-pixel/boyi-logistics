@@ -6,7 +6,9 @@
   const LEGACY_SCHEDULE_ONLY = "LEGACY_SCHEDULE_ONLY";
   const POLICY_MODES = new Set([REQUIRE_EACH_RUN, PROJECT_FULL_AUTO]);
   const EFFECTIVE_MODES = new Set([REQUIRE_EACH_RUN, PROJECT_FULL_AUTO, LEGACY_SCHEDULE_ONLY]);
-  const POLICY_STATUSES = new Set(["ACTIVE", "STALE", "UNSUPPORTED", LEGACY_SCHEDULE_ONLY]);
+  const POLICY_STATUSES = new Set([
+    "ACTIVE", "RECONCILING", "UNAVAILABLE", "UNSUPPORTED", LEGACY_SCHEDULE_ONLY,
+  ]);
   const PENDING_RISKS = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
   const PENDING_HASH_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
   const RUN_RECEIPT_ID_PATTERN = /^[A-Za-z0-9_.:@-]{1,160}$/;
@@ -628,8 +630,6 @@
     const enabledEntrypoints = [...form.querySelectorAll("[data-plugin-entrypoint]:checked")]
       .map(control => String(control.value || "").trim())
       .filter(Boolean);
-    if (!enabledEntrypoints.length) throw new Error("请至少启用一个可信运行入口。");
-
     const worker = instance.querySelector("[data-plugin-worker-select]");
     let deviceId = null;
     if (worker instanceof HTMLSelectElement) {
@@ -835,6 +835,16 @@
     };
     syncScheduleVisibility();
     scheduleKind?.addEventListener("change", syncScheduleVisibility);
+
+    const syncEntrypointState = control => {
+      if (!(control instanceof HTMLInputElement) || !control.matches("[data-plugin-entrypoint]")) return;
+      const state = control.closest("label")?.querySelector("[data-plugin-entrypoint-state]");
+      if (state) state.textContent = control.checked ? "开启" : "关闭";
+    };
+    form?.querySelectorAll("[data-plugin-entrypoint]").forEach(control => {
+      syncEntrypointState(control);
+      control.addEventListener("change", () => syncEntrypointState(control));
+    });
 
     const markConfigurationDirty = () => {
       if (configurationSave instanceof HTMLButtonElement) delete configurationSave.dataset.requestId;

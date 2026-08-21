@@ -642,8 +642,7 @@ def _normalize_plugin_entrypoints(value: Any) -> tuple[list[str], bool]:
         return [], False
     normalized = [str(item or "").strip().lower() for item in value]
     if (
-        not normalized
-        or len(normalized) != len(set(normalized))
+        len(normalized) != len(set(normalized))
         or not set(normalized) <= AUTOMATION_PLUGIN_ENTRYPOINTS
     ):
         return [], False
@@ -992,7 +991,7 @@ def normalize_automation_plugin_catalog(
             if binding.get("blocked_reason")
         )
         if not enabled_entrypoints_valid:
-            projection_warnings.append("至少保留一个插件清单允许的运行入口")
+            projection_warnings.append("运行入口配置无效")
         missing_requirements = list(
             dict.fromkeys([*missing_requirements, *projection_warnings])
         )[:20]

@@ -22,14 +22,15 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 浏览器通过 `X-Browser-Request-UUID` 提供每次用户动作的稳定 UUID，服务端生成 `console:{admin_id}:{command_type}:{uuid}`；缺失或格式错误显式失败。approve/reject 只转发 approval ID、plan hash 和 comment。
 - Command 成功提交保留 Agent 的 `202`、`command_id/work_item_id/run_id`、`reused` 与 `next_poll_after_ms`。前端页面隐藏时暂停轮询，等待状态降频，终态停止；Evidence 只用文本安全渲染。
 - 补充信息表单只允许显式 `note/account_id/argument_updates`；参数更新必须是 JSON 对象。普通说明只作审计 note，Console 不解析自然语言为账号或工具参数。
-- 自动化页按 `automation_id` 每个项目只有一个权限入口，新配置模式只有 `REQUIRE_EACH_RUN` 与 `PROJECT_FULL_AUTO`；旧 `EXACT_SCHEDULE_EXEMPT` 只可投影成只读兼容状态，不能出现在新 UI 或写请求。策略保存必须同时提交 `expected_policy_version` 与 `expected_project_configuration_version`，防止页面加载后配置变化造成越权。
+- 自动化页按 `automation_id` 每个项目只有一个权限入口，新装与迁移默认 `PROJECT_FULL_AUTO`，管理员仍可显式切换 `REQUIRE_EACH_RUN`。权限意图与 `runnable/runtime_status` 分开投影；保存权限不创建 runtime 代际，配置同步中显示原权限模式但禁止运行旧配置。
 - 项目卡的待审批条只展示数量、最高风险和来源摘要；“全部审批通过”与“全部驳回”只提交 `expected_pending_set_hash/request_id/comment`，不提交审批 ID、plan hash 或任务 ID。集合变化时必须在原卡刷新，事项中心不是日常审批必经入口。
 
 ## 自动化项目与插件边界
 
 - Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。动作包只声明验签后的动作、平台、账号/资源角色、闭合 `config_schema`、允许入口和调度能力；同一 `plugin_id` 可以重复安装为不同 `automation_id`。任何持久化定时行若无法关联到已安装实例，Console 只能显示“迁移/插件缺失”阻断卡，禁止运行和配置。
 - 安装与升级只允许同源、真实 MySQL `super_admin` 会话。浏览器安装 multipart 只含 `package/instance_name/request_id`，不能指定 `automation_id`、manifest 或摘要；Console 限制 ZIP/请求体大小，在受限临时目录暂存并及时清理，按收到的字节计算传输 SHA 后再用签名 principal 转发。重复安装生成新的停用实例，升级/启停/卸载只作用于路径中的具体实例并使用版本 CAS。
-- 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`schedule` 只能是 `none/daily_times/startup` 的类型化结构；浏览器不得提交 task ID、Cron、哈希或身份。Agent 按签名 manifest 重验 Schema、角色、命名 Worker 和调度能力，并在同一事务更新配置、全组定时和权限 stale 状态。
+- 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`enabled_entrypoints` 允许签名清单任意子集和空集；高级设置以标准 switch 独立控制系统定时、后台手动、飞书消息和外部验签请求。关闭定时保留时间配置但不注册 Job，关闭后台时执行按钮必须明确显示入口已关闭。
+- 后台账号页允许当前 Console 超级管理员创建/撤销飞书审批绑定码；页面不得展示 `open_id/chat_id`。绑定后飞书角色实时继承账号当前 `control_plane_role/is_active`，审批通知由 Agent 串行推送，精确回复 `1/2` 决定当前条目。
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
