@@ -82,6 +82,7 @@ FIRST_PARTY_PLUGIN_TRUST_ROOT="${AUTOMATION_PLUGIN_ROOT}/trust"
 STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT="${STAGE_ROOT}/_plugin_artifacts"
 STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT="${STAGE_ROOT}/_plugin_trust"
 PLUGIN_RUNTIME_ENV_FILE="/home/boyce/agent/runtime/automation_plugin_release.env"
+PLUGIN_CURSOR_SECRET_ENV_FILE="/etc/boyi/automation-plugin-runtime.conf"
 WORKER_NGINX_STAGED_CONFIG="${STAGE_ROOT}/agent/deploy/nginx/boyi-worker-mtls.conf"
 WORKER_NGINX_INSTALLED_CONFIG="/etc/nginx/snippets/boyi-worker-mtls.conf"
 WORKER_NGINX_SITE_CONFIG="/etc/nginx/sites-enabled/boyi.homes.conf"
@@ -166,6 +167,56 @@ acquire_release_lock() {
     return 1
   fi
   echo "release_lock=acquired"
+}
+
+preflight_automation_plugin_runtime_environment() {
+  local unit_path="$1" environment_files artifact_root trust_root verified_sha line_count
+  if grep -Fxq "EnvironmentFile=${PLUGIN_RUNTIME_ENV_FILE}" "${unit_path}"; then
+    [[ -f "${PLUGIN_RUNTIME_ENV_FILE}" && ! -L "${PLUGIN_RUNTIME_ENV_FILE}" ]] || {
+      echo "automation_plugin_runtime_environment=blocked reason=MANDATORY_RELEASE_ENV_MISSING_OR_UNSAFE" >&2
+      return 1
+    }
+    line_count="$(wc -l <"${PLUGIN_RUNTIME_ENV_FILE}")"
+    artifact_root="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT=//p' "${PLUGIN_RUNTIME_ENV_FILE}")"
+    trust_root="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_TRUST_ROOT=//p' "${PLUGIN_RUNTIME_ENV_FILE}")"
+    verified_sha="$(sed -n 's/^BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA=//p' "${PLUGIN_RUNTIME_ENV_FILE}")"
+    [[ "${line_count}" == "3" \
+      && "${artifact_root}" =~ ^/home/boyce/\.boyi-automation-plugins/releases/[0-9a-f]{40}$ \
+      && "${trust_root}" == "/home/boyce/.boyi-automation-plugins/trust" \
+      && "${verified_sha}" =~ ^[0-9a-f]{40}$ \
+      && "${artifact_root##*/}" == "${verified_sha}" ]] || {
+      echo "automation_plugin_runtime_environment=blocked reason=MANDATORY_RELEASE_ENV_INVALID" >&2
+      return 1
+    }
+  fi
+
+  environment_files="$(systemctl show agent.service -p EnvironmentFiles --value)"
+  if grep -Fq "${PLUGIN_CURSOR_SECRET_ENV_FILE}" <<<"${environment_files}"; then
+    sudo -n test -f "${PLUGIN_CURSOR_SECRET_ENV_FILE}" \
+      && sudo -n test -s "${PLUGIN_CURSOR_SECRET_ENV_FILE}" || {
+        echo "automation_plugin_runtime_environment=blocked reason=CURSOR_SECRET_ENV_MISSING_OR_EMPTY" >&2
+        return 1
+      }
+    sudo -n env LC_ALL=C awk '
+      BEGIN { found = 0 }
+      /^[[:space:]]*$/ { next }
+      /^BOYI_AUTOMATION_PLUGIN_CURSOR_SECRET=/ {
+        if (found != 0) { exit 1 }
+        value = substr($0, index($0, "=") + 1)
+        if (length(value) < 32 || length(value) > 4096 || value ~ /[[:space:]]/) {
+          exit 1
+        }
+        found = 1
+        next
+      }
+      { exit 1 }
+      END { if (found != 1) { exit 1 } }
+    ' "${PLUGIN_CURSOR_SECRET_ENV_FILE}" >/dev/null || {
+      echo "automation_plugin_runtime_environment=blocked reason=CURSOR_SECRET_ENV_INVALID" >&2
+      return 1
+    }
+  fi
+  echo "automation_plugin_runtime_environment=ok"
 }
 
 create_scheduler_release_hold() {
@@ -267,6 +318,12 @@ validate_environment() {
       return 1
     }
   done
+
+  # A running process survives deletion of an EnvironmentFile that systemd
+  # already loaded, but the next restart does not.  Refuse to enter a
+  # rollback-capable mutation when the live mandatory runtime files and the
+  # installed unit have already drifted into an unrestartable state.
+  preflight_automation_plugin_runtime_environment "${UNIT_PATHS[agent]}"
 
   if [[ -d "${STAGE_ROOT}/agent/migrations" ]]; then
     runtime_python="${PYTHON_BINS[agent]}"

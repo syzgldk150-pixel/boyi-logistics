@@ -28,6 +28,70 @@ def _path_for_bash(path: Path) -> str:
     return raw
 
 
+def _run_plugin_runtime_environment_preflight(
+    *,
+    release_environment: str,
+    cursor_environment: str,
+) -> subprocess.CompletedProcess[str]:
+    release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
+    task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
+    task_tmp_preexisting = task_tmp_root.exists()
+    task_tmp_root.mkdir(exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=task_tmp_root) as temporary:
+            temp_root = Path(temporary)
+            stage_root = temp_root / "release-aaaaaaaaaaaa-20260821143000"
+            stage_root.mkdir()
+            unit_path = temp_root / "agent.service"
+            release_env_path = temp_root / "automation_plugin_release.env"
+            cursor_env_path = temp_root / "automation-plugin-runtime.conf"
+            unit_path.write_text(
+                f"EnvironmentFile={release_env_path}\n",
+                encoding="utf-8",
+            )
+            release_env_path.write_text(release_environment, encoding="utf-8")
+            cursor_env_path.write_text(cursor_environment, encoding="utf-8")
+            harness = textwrap.dedent(
+                r"""
+                set -Eeuo pipefail
+                source "$1" "$2" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa agent 0 0
+                PLUGIN_RUNTIME_ENV_FILE="$3"
+                PLUGIN_CURSOR_SECRET_ENV_FILE="$4"
+                systemctl() {
+                  printf '%s (ignore_errors=no)\n' "${PLUGIN_CURSOR_SECRET_ENV_FILE}"
+                }
+                sudo() {
+                  if [[ "$1" == "-n" ]]; then shift; fi
+                  "$@"
+                }
+                preflight_automation_plugin_runtime_environment "$5"
+                """
+            )
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    harness,
+                    "runtime-env-preflight",
+                    _path_for_bash(release_script),
+                    _path_for_bash(stage_root),
+                    _path_for_bash(release_env_path),
+                    _path_for_bash(cursor_env_path),
+                    _path_for_bash(unit_path),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+    finally:
+        if not task_tmp_preexisting:
+            try:
+                task_tmp_root.rmdir()
+            except OSError:
+                pass
+
+
 def _service_identity_smoke_source() -> str:
     release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(
         encoding="utf-8"
@@ -700,6 +764,59 @@ def _locked_versions(path: Path) -> dict[str, str]:
 
 
 class ReleaseBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def _valid_release_environment() -> str:
+        release_sha = "b53bdeeed570fbb6557a57518b5d4d73b23b3d57"
+        return (
+            "BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT="
+            f"/home/boyce/.boyi-automation-plugins/releases/{release_sha}\n"
+            "BOYI_AUTOMATION_PLUGIN_TRUST_ROOT="
+            "/home/boyce/.boyi-automation-plugins/trust\n"
+            f"BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA={release_sha}\n"
+        )
+
+    def test_plugin_runtime_environment_preflight_accepts_exact_configuration(self):
+        completed = _run_plugin_runtime_environment_preflight(
+            release_environment=self._valid_release_environment(),
+            cursor_environment=(
+                "BOYI_AUTOMATION_PLUGIN_CURSOR_SECRET=" + ("a" * 64) + "\n"
+            ),
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            "automation_plugin_runtime_environment=ok",
+            completed.stdout.strip(),
+        )
+
+    def test_plugin_runtime_environment_preflight_rejects_mismatched_release_sha(self):
+        completed = _run_plugin_runtime_environment_preflight(
+            release_environment=self._valid_release_environment().replace(
+                "BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA=b53b",
+                "BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA=a53b",
+            ),
+            cursor_environment=(
+                "BOYI_AUTOMATION_PLUGIN_CURSOR_SECRET=" + ("a" * 64) + "\n"
+            ),
+        )
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("MANDATORY_RELEASE_ENV_INVALID", completed.stderr)
+
+    def test_plugin_runtime_environment_preflight_rejects_short_cursor_secret(self):
+        completed = _run_plugin_runtime_environment_preflight(
+            release_environment=self._valid_release_environment(),
+            cursor_environment="BOYI_AUTOMATION_PLUGIN_CURSOR_SECRET=short\n",
+        )
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("CURSOR_SECRET_ENV_INVALID", completed.stderr)
+
+    def test_plugin_runtime_environment_preflight_rejects_unrelated_cursor_file(self):
+        completed = _run_plugin_runtime_environment_preflight(
+            release_environment=self._valid_release_environment(),
+            cursor_environment="UNRELATED_RUNTIME_SETTING=" + ("a" * 64) + "\n",
+        )
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("CURSOR_SECRET_ENV_INVALID", completed.stderr)
+
     def test_nginx_keeps_original_pages_on_isolated_www_origin(self):
         nginx = (
             REPOSITORY_ROOT / "agent" / "deploy" / "nginx" / "boyi.homes.conf"
@@ -1234,6 +1351,31 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(
             execution.index("preflight_service_identity_configuration"),
             execution.index("backup_managed_sources"),
+        )
+        runtime_environment_preflight = release.split(
+            "preflight_automation_plugin_runtime_environment() {", 1
+        )[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn(
+            'grep -Fxq "EnvironmentFile=${PLUGIN_RUNTIME_ENV_FILE}"',
+            runtime_environment_preflight,
+        )
+        self.assertIn(
+            "MANDATORY_RELEASE_ENV_MISSING_OR_UNSAFE",
+            runtime_environment_preflight,
+        )
+        self.assertIn(
+            "MANDATORY_RELEASE_ENV_INVALID",
+            runtime_environment_preflight,
+        )
+        self.assertIn(
+            "CURSOR_SECRET_ENV_INVALID",
+            runtime_environment_preflight,
+        )
+        self.assertLess(
+            execution.index("validate_environment"),
+            execution.index("MUTATION_STARTED=1"),
         )
         self.assertIn(
             "--check-automation-project-required-resources",

@@ -50,7 +50,7 @@ FIRST_PARTY_ROOT = Path(__file__).resolve().parents[2] / "first_party_automation
 DIGEST_LOCK_PATH = FIRST_PARTY_ROOT / "digests.json"
 FIRST_PARTY_RUNTIME_PATH = FIRST_PARTY_ROOT / "_runtime" / "main.py"
 FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
-FIRST_PARTY_PACKAGE_VERSION = "1.0.1"
+FIRST_PARTY_PACKAGE_VERSION = "1.0.2"
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {
     "ronghui_": "ronghui",
