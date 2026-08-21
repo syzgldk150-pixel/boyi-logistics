@@ -75,21 +75,6 @@ class PluginConfigurationRequest(BaseModel):
     expected_project_configuration_version: int = Field(ge=1)
 
 
-class ArrivalStatsRecoveryReadbackRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    arrival_stat_runs: int = Field(ge=0)
-    arrival_stat_items: int = Field(ge=0)
-    feishu_rows_created: int = Field(ge=0)
-
-
-class ArrivalStatsRecoveryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    readback: ArrivalStatsRecoveryReadbackRequest
-    request_id: str = Field(min_length=1, max_length=64)
-
-
 class WorkerIdentityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -462,25 +447,6 @@ def create_automation_plugin_management_router(
             )
         )
 
-    @router.post(
-        "/internal/v1/automation/instances/{automation_id}/generation/recover-not-applied",
-        response_model=None,
-    )
-    async def recover_arrival_stats_not_applied(
-        automation_id: str,
-        payload: ArrivalStatsRecoveryRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        return await _service_response(
-            lambda: service_provider().recover_arrival_stats_not_applied(
-                automation_id,
-                readback=payload.readback.model_dump(),
-                request_id=payload.request_id,
-                actor=actor,
-            )
-        )
-
     @router.get(
         "/internal/v1/automation/instances/delivery_status/generation/diagnostic",
         response_model=None,
@@ -493,13 +459,23 @@ def create_automation_plugin_management_router(
             lambda: service_provider().delivery_status_generation_diagnostic(actor=actor)
         )
 
+    @router.get(
+        "/internal/v1/automation/instances/arrival_stats/generation/diagnostic",
+        response_model=None,
+    )
+    async def arrival_stats_generation_diagnostic(
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().arrival_stats_generation_diagnostic(actor=actor)
+        )
+
     return router
 
 
 __all__ = [
     "PluginConfigurationRequest",
-    "ArrivalStatsRecoveryReadbackRequest",
-    "ArrivalStatsRecoveryRequest",
     "PluginScheduleRequest",
     "PluginStateRequest",
     "PluginUninstallRequest",

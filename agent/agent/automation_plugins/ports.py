@@ -558,6 +558,7 @@ class RuntimeGenerationLeasePort(Protocol):
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         """Lock the route and lease only the caller-approved exact generation."""

@@ -724,7 +724,7 @@ def test_typed_and_deferred_runtime_contracts_accept_exact_world(preflight):
     )
 
 
-def test_arrival_stats_unknown_write_remains_blocked_until_managed_recovery(
+def test_exact_arrival_stats_unknown_write_quarantine_keeps_manifest_scope_closed(
     preflight,
 ):
     contract, schedules, backups, projects = _valid_world(preflight)
@@ -734,16 +734,15 @@ def test_arrival_stats_unknown_write_remains_blocked_until_managed_recovery(
         generation_state="BLOCKED",
     )
 
-    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
-        preflight._validate_release_projects_and_tasks(
-            contract,
-            schedules=schedules,
-            backups=backups,
-            projects=projects,
-            expect_initial_production_manifest=True,
-        )
-
-    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
+    preflight._validate_release_projects_and_tasks(
+        contract,
+        schedules=schedules,
+        backups=backups,
+        projects=projects,
+        expect_initial_production_manifest=True,
+    )
+    assert len(contract["release_projects"]) == 16
+    assert len(contract["release_tasks"]) == 57
 
 
 def test_exact_delivery_unknown_write_quarantine_keeps_manifest_scope_closed(preflight):

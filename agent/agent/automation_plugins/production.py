@@ -897,6 +897,7 @@ class MySQLRuntimeTargetService:
         automation_id: str,
         generation: int,
         lease_id: str,
+        expected_orchestration_run_id: str,
         evidence_sha256: str,
         request_id: str,
         actor_id: str,
@@ -908,6 +909,7 @@ class MySQLRuntimeTargetService:
             automation_id=automation_id,
             generation=generation,
             lease_id=lease_id,
+            expected_orchestration_run_id=expected_orchestration_run_id,
             evidence_sha256=evidence_sha256,
             request_id=request_id,
             actor_id=actor_id,
@@ -918,6 +920,7 @@ class MySQLRuntimeTargetService:
         self,
         *,
         automation_id: str,
+        expected_orchestration_run_id: str,
         evidence_sha256: str,
         request_id: str,
         actor_id: str,
@@ -930,6 +933,7 @@ class MySQLRuntimeTargetService:
             automation_id=automation_id,
             generation=int(lease["generation"]),
             lease_id=str(lease["lease_id"]),
+            expected_orchestration_run_id=expected_orchestration_run_id,
             evidence_sha256=evidence_sha256,
             request_id=request_id,
             actor_id=actor_id,
@@ -938,6 +942,9 @@ class MySQLRuntimeTargetService:
 
     def current_unknown_write_identity(self, automation_id: str) -> dict[str, Any]:
         return self._runtime.find_current_unknown_generation_write(automation_id)
+
+    def current_unknown_write_audit(self, automation_id: str) -> dict[str, Any]:
+        return self._runtime.inspect_current_unknown_generation_write(automation_id)
 
     def reconcile_all(self) -> tuple[object, ...]:
         results: list[object] = []
@@ -1031,7 +1038,7 @@ class ProductionAutomationPluginRuntime:
 
         catalog = self.catalog.production_unaffected_release_health(
             tuple(self.required_first_party_ids),
-            recoverable_unknown_write_automation_ids=("arrival_stats",),
+            recoverable_unknown_write_automation_ids=(),
         )
         quarantined = tuple(
             str(item)
@@ -1054,9 +1061,7 @@ class ProductionAutomationPluginRuntime:
             self.runtime_repository,
             expected_automation_ids=expected_automation_ids,
             ignored_automation_ids=ignored_automation_ids,
-            recoverable_unknown_write_automation_ids=tuple(
-                catalog.get("recovery_pending_generations", ())
-            ),
+            recoverable_unknown_write_automation_ids=(),
         )
         return {
             "ok": bool(
@@ -1075,16 +1080,14 @@ class ProductionAutomationPluginRuntime:
     def health(self) -> dict[str, Any]:
         catalog = self.catalog.production_health(
             tuple(self.required_first_party_ids),
-            recoverable_unknown_write_automation_ids=("arrival_stats",),
+            recoverable_unknown_write_automation_ids=(),
         )
         ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
         generations: RuntimeGenerationHealth = runtime_generation_health(
             self.runtime_repository,
             expected_automation_ids=self.required_first_party_ids,
             ignored_automation_ids=ignored_automation_ids,
-            recoverable_unknown_write_automation_ids=tuple(
-                catalog.get("recovery_pending_generations", ())
-            ),
+            recoverable_unknown_write_automation_ids=(),
         )
         return {
             "ok": bool(catalog.get("ok") is True and generations.healthy and self._started),

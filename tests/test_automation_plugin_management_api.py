@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -127,14 +127,6 @@ class _ApiService:
         self.calls.append(("configuration", {"automation_id": automation_id, **kwargs}))
         return {"automation_id": automation_id}
 
-    def recover_arrival_stats_not_applied(
-        self,
-        automation_id: str,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        self.calls.append(("recovery", {"automation_id": automation_id, **kwargs}))
-        return {"automation_id": automation_id, "recovery_status": "NOT_APPLIED"}
-
     def delivery_status_generation_diagnostic(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("delivery_diagnostic", kwargs))
         return {
@@ -146,6 +138,22 @@ class _ApiService:
             "lease_id": "11111111-1111-1111-1111-111111111111",
             "lease_generation": 7,
             "quarantine_status": "QUARANTINED_UNKNOWN_WRITE",
+        }
+
+    def arrival_stats_generation_diagnostic(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("arrival_stats_diagnostic", kwargs))
+        return {
+            "automation_id": "arrival_stats",
+            "plugin_id": "sync_arrival_stats",
+            "target_generation": 1,
+            "committed_generation": 1,
+            "reconcile_state": "BLOCKED_UNKNOWN_WRITE",
+            "lease_id": "22222222-2222-2222-2222-222222222222",
+            "lease_generation": 1,
+            "lease_outcome": "WRITE_OUTCOME_UNKNOWN",
+            "lease_acquired_at": "2026-08-20T08:00:00+00:00",
+            "lease_expires_at": "2026-08-20T08:02:00+00:00",
+            "lease_released_at": "2026-08-20T08:00:01+00:00",
         }
 
 
@@ -178,6 +186,11 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
         diagnostic.json()["data"]["quarantine_status"]
         == "QUARANTINED_UNKNOWN_WRITE"
     )
+    arrival_diagnostic = client.get(
+        "/internal/v1/automation/instances/arrival_stats/generation/diagnostic"
+    )
+    assert arrival_diagnostic.status_code == 200
+    assert arrival_diagnostic.json()["data"]["lease_outcome"] == "WRITE_OUTCOME_UNKNOWN"
     installed = client.post(
         "/internal/v1/automation/plugins/install",
         data={
@@ -221,36 +234,22 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
     assert not any(item[0] == "state" for item in service.calls)
 
 
-def test_recovery_api_keeps_generation_lease_control_server_side() -> None:
+def test_unsafe_arrival_stats_recovery_api_is_not_exposed() -> None:
     service = _ApiService()
     client = _api_client(service)
-    payload = {
-        "readback": {
-            "arrival_stat_runs": 0,
-            "arrival_stat_items": 0,
-            "feishu_rows_created": 0,
+    response = client.post(
+        "/internal/v1/automation/instances/arrival_stats/generation/recover-not-applied",
+        json={
+            "readback": {
+                "arrival_stat_runs": 0,
+                "arrival_stat_items": 0,
+                "feishu_rows_created": 0,
+            },
+            "request_id": str(uuid.uuid4()),
         },
-        "request_id": str(uuid.uuid4()),
-    }
-
-    accepted = client.post(
-        "/internal/v1/automation/instances/arrival_stats/generation/recover-not-applied",
-        json=payload,
     )
-    assert accepted.status_code == 200
-    name, call = service.calls[-1]
-    assert name == "recovery"
-    assert call["automation_id"] == "arrival_stats"
-    assert call["readback"] == payload["readback"]
-    assert "generation" not in call
-    assert "lease_id" not in call
-
-    rejected = client.post(
-        "/internal/v1/automation/instances/arrival_stats/generation/recover-not-applied",
-        json={**payload, "lease_id": str(uuid.uuid4())},
-    )
-    assert rejected.status_code == 422
-    assert len([item for item in service.calls if item[0] == "recovery"]) == 1
+    assert response.status_code == 404
+    assert service.calls == []
 
 
 def test_worker_pair_dto_rejects_private_identity_material() -> None:
@@ -372,73 +371,53 @@ def test_delivery_generation_diagnostic_reports_only_the_exact_quarantine() -> N
     assert raised.value.code == "DELIVERY_STATUS_QUARANTINE_MISMATCH"
 
 
-@pytest.mark.parametrize(
-    "request_id",
-    (
-        "fb077840-a2d0-4e7f-8089-f68c104ab544",
-        "71510af3-fcf1-461b-9c2e-152665f32f98",
-        "2a86ba4b-5c63-4bf2-93de-f61372d18274",
-    ),
-)
-def test_known_arrival_stats_recovery_is_the_only_release_hold_exception(
-    request_id: str,
-) -> None:
-    calls: list[dict[str, Any]] = []
+def test_arrival_stats_generation_diagnostic_reports_closed_audit_identity() -> None:
+    acquired_at = datetime(2026, 8, 20, 8, 0, tzinfo=timezone.utc)
+    released_at = datetime(2026, 8, 20, 8, 0, 1, tzinfo=timezone.utc)
     service = AutomationPluginManagementService(
         catalog=_Catalog(  # type: ignore[arg-type]
-            _entry(automation_id="arrival_stats", plugin_id="sync_arrival_stats")
+            _entry(
+                automation_id="arrival_stats",
+                plugin_id="sync_arrival_stats",
+                target_generation=1,
+                committed_generation=1,
+                reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+            )
         ),
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
         worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
-            resolve_current_unknown_write_not_applied=lambda **kwargs: calls.append(kwargs)
+            current_unknown_write_audit=lambda _automation_id: {
+                "generation": 1,
+                "lease_id": "22222222-2222-2222-2222-222222222222",
+                "outcome": "WRITE_OUTCOME_UNKNOWN",
+                "acquired_at": acquired_at,
+                "expires_at": acquired_at + timedelta(minutes=2),
+                "released_at": released_at,
+            }
         ),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
-        release_hold_provider=lambda: True,
-    )
-    readback = {
-        "arrival_stat_runs": 0,
-        "arrival_stat_items": 0,
-        "feishu_rows_created": 0,
-    }
-    recovered = service.recover_arrival_stats_not_applied(
-        "arrival_stats",
-        readback=readback,
-        request_id=request_id,
-        actor=_console_actor(),
     )
 
-    assert recovered["recovery_status"] == "NOT_APPLIED"
-    assert len(calls) == 1
-    assert set(calls[0]) == {
+    diagnostic = service.arrival_stats_generation_diagnostic(actor=_console_actor())
+
+    assert set(diagnostic) == {
         "automation_id",
-        "evidence_sha256",
-        "request_id",
-        "actor_id",
-        "actor_role",
+        "plugin_id",
+        "target_generation",
+        "committed_generation",
+        "reconcile_state",
+        "lease_id",
+        "lease_generation",
+        "lease_outcome",
+        "lease_acquired_at",
+        "lease_expires_at",
+        "lease_released_at",
     }
-    assert len(calls[0]["evidence_sha256"]) == 64
-
-    with pytest.raises(PluginConflictError) as error:
-        service.recover_arrival_stats_not_applied(
-            "arrival_stats",
-            readback=readback,
-            request_id=str(uuid.uuid4()),
-            actor=_console_actor(),
-        )
-    assert error.value.code == "PLUGIN_RECOVERY_SCOPE_INVALID"
-
-    with pytest.raises(PluginConflictError) as error:
-        service.recover_arrival_stats_not_applied(
-            "arrival_stats",
-            readback={**readback, "arrival_stat_items": 1},
-            request_id=str(uuid.uuid4()),
-            actor=_console_actor(),
-        )
-    assert error.value.code == "WRITE_OUTCOME_UNKNOWN"
-    assert len(calls) == 1
+    assert diagnostic["lease_id"] == "22222222-2222-2222-2222-222222222222"
+    assert diagnostic["lease_acquired_at"] == "2026-08-20T08:00:00+00:00"
 
 
 def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:

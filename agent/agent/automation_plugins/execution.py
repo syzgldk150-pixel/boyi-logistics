@@ -454,8 +454,18 @@ class PluginExecutionRouter:
             expected_generation=raw_generation,
             expected_manifest_sha256=str(initial_metadata.get("manifest_sha256") or ""),
             lease_id=str(uuid.uuid4()),
+            orchestration_run_id=run_binding["run_id"],
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=timeout + 60),
         )
+        if lease.orchestration_run_id != run_binding["run_id"]:
+            self._generation_leases.release_generation(
+                lease,
+                outcome=RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
+            )
+            raise PluginExecutionError(
+                "committed generation lease Run binding changed",
+                code="PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT",
+            )
         resolved = self._lease_capability(lease, automation_id=automation_id)
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         execution_state: dict[str, object] = {"process_launched": False, "consumed_call_count": None}

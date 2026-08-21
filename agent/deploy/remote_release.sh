@@ -7,23 +7,10 @@ TARGETS_CSV="${3:?target list is required}"
 SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
 EMERGENCY_SCHEDULED_WINDOW_ARGUMENT="--emergency-scheduled-window-override=emergency_user_authorized"
-KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT="--recover-known-arrival-stats-unknown-write=fb077840-a2d0-4e7f-8089-f68c104ab544"
-KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT="--recover-known-arrival-stats-auth-failure=71510af3-fcf1-461b-9c2e-152665f32f98"
-KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY_ARGUMENT="--recover-known-arrival-stats-prewrite-failure=2a86ba4b-5c63-4bf2-93de-f61372d18274"
 EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
-KNOWN_ARRIVAL_STATS_RECOVERY=0
-KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=0
-KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY=0
 DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED=0
-if (( $# > 9 )); then
-  echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
-  exit 2
-fi
-if (( $# == 7 )) \
-  && [[ "${6}" == "${EMERGENCY_SCHEDULED_WINDOW_ARGUMENT}" ]] \
-  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}" ]] \
-  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT}" ]] \
-  && [[ "${7}" != "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY_ARGUMENT}" ]]; then
+ARRIVAL_STATS_UNKNOWN_WRITE_BLOCKED=0
+if (( $# > 6 )); then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
@@ -35,27 +22,6 @@ for release_argument in "${@:6}"; do
         exit 2
       }
       EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=1
-      ;;
-    "${KNOWN_ARRIVAL_STATS_RECOVERY_ARGUMENT}")
-      [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "0" ]] || {
-        echo "arrival_stats_unknown_write_recovery=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
-        exit 2
-      }
-      KNOWN_ARRIVAL_STATS_RECOVERY=1
-      ;;
-    "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY_ARGUMENT}")
-      [[ "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "0" ]] || {
-        echo "arrival_stats_auth_failure_recovery=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
-        exit 2
-      }
-      KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY=1
-      ;;
-    "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY_ARGUMENT}")
-      [[ "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "0" ]] || {
-        echo "arrival_stats_prewrite_failure_recovery=blocked reason=DUPLICATE_AUTHORIZATION_ARGUMENT" >&2
-        exit 2
-      }
-      KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY=1
       ;;
     --emergency-scheduled-window-override=*)
       echo "emergency_scheduled_window_override=blocked reason=INVALID_AUTHORIZATION_ARGUMENT" >&2
@@ -1907,7 +1873,7 @@ PY
 
 check_service_identity_smoke() {
   local smoke_scope="${1:-full}"
-  [[ "${smoke_scope}" == "full" || "${smoke_scope}" == "recovery_transport" || "${smoke_scope}" == "delivery_unknown_write_quarantine" ]] || {
+  [[ "${smoke_scope}" == "full" || "${smoke_scope}" == "reviewed_unknown_write_quarantine" ]] || {
     echo "service_identity_smoke=failed reason=identity_configuration" >&2
     return 1
   }
@@ -1982,7 +1948,7 @@ _CLOSED_AUTOMATION_IDS = frozenset(
     }
 )
 _QUARANTINED_AUTOMATION_IDS = frozenset(
-    {"arrive_list", "daily_sign", "delivery_status"}
+    {"arrival_stats", "arrive_list", "daily_sign", "delivery_status"}
 )
 
 
@@ -2098,14 +2064,11 @@ try:
         or automation_plugins["broker"].get("state") != "running"
     ):
         raise RuntimeError("automation plugin broker is not release-ready")
-    if os.environ.get("BOYI_SERVICE_IDENTITY_SMOKE_SCOPE") == "recovery_transport":
-        print("service_identity_smoke=recovery_transport_ok")
-        raise SystemExit(0)
     smoke_scope = os.environ.get("BOYI_SERVICE_IDENTITY_SMOKE_SCOPE")
     scoped_plugin_catalog = automation_plugins.get("catalog")
     scoped_plugin_generations = automation_plugins.get("generations")
     scoped_plugin_ok = automation_plugins.get("ok")
-    if smoke_scope == "delivery_unknown_write_quarantine":
+    if smoke_scope == "reviewed_unknown_write_quarantine":
         failure_gate = SmokeGate.PLUGIN_UNAFFECTED_RELEASE_SHAPE
         raw_catalog = scoped_plugin_catalog
         raw_generations = scoped_plugin_generations
@@ -2194,11 +2157,11 @@ try:
     failure_gate = SmokeGate.PLUGIN_AGGREGATE
     if (
         (
-            smoke_scope != "delivery_unknown_write_quarantine"
+            smoke_scope != "reviewed_unknown_write_quarantine"
             and automation_plugins.get("ok") is not True
         )
         or (
-            smoke_scope == "delivery_unknown_write_quarantine"
+            smoke_scope == "reviewed_unknown_write_quarantine"
             and scoped_plugin_ok is not True
         )
     ):
@@ -2251,53 +2214,42 @@ print("service_identity_smoke=ok")
 PY
 }
 
-recover_known_arrival_stats_unknown_write() {
-  # This is intentionally limited to the named, separately authorized
-  # incidents. It never discovers or retries another unknown write.
-  local run_id="${1:?known recovery Run is required}"
-  case "${run_id}" in
-    fb077840-a2d0-4e7f-8089-f68c104ab544|71510af3-fcf1-461b-9c2e-152665f32f98|2a86ba4b-5c63-4bf2-93de-f61372d18274) ;;
-    *)
-      echo "arrival_stats_unknown_write_recovery=failed reason=scope_invalid" >&2
-      return 1
-      ;;
-  esac
+diagnose_arrival_stats_generation() {
   local console_python="${PYTHON_BINS[console]}"
-  [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || {
-    echo "arrival_stats_unknown_write_recovery=failed reason=runtime_unavailable" >&2
-    return 1
-  }
-
-  BOYI_KNOWN_RECOVERY_RUN_ID="${run_id}" \
-    BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" \
-    BOYI_DEPLOYED_ROOT="/home/boyce" \
-    "${console_python}" - <<'PY'
+  [[ -x "${console_python}" && -f "${IDENTITY_ENV_FILE}" ]] || return 1
+  local diagnostic
+  diagnostic="$(
+    BOYI_IDENTITY_ENV_FILE="${IDENTITY_ENV_FILE}" BOYI_DEPLOYED_ROOT="/home/boyce" "${console_python}" - <<'PY'
 import json
 import os
 import secrets
 import sys
-from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from dotenv import dotenv_values
 
 sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
-from shared.service_identity import (
+
+from shared.service_identity import (  # noqa: E402
     build_console_identity_headers,
     validate_service_identity_secrets,
 )
 
 
-RUN_ID = os.environ["BOYI_KNOWN_RECOVERY_RUN_ID"]
 AUTOMATION_ID = "arrival_stats"
-REQUEST_TARGET = (
-    f"/internal/v1/automation/instances/{AUTOMATION_ID}/generation/"
-    "recover-not-applied"
-)
-READBACK = {
-    "arrival_stat_runs": 0,
-    "arrival_stat_items": 0,
-    "feishu_rows_created": 0,
+PLUGIN_ID = "sync_arrival_stats"
+EXPECTED_FIELDS = {
+    "automation_id",
+    "plugin_id",
+    "target_generation",
+    "committed_generation",
+    "reconcile_state",
+    "lease_id",
+    "lease_generation",
+    "lease_outcome",
+    "lease_acquired_at",
+    "lease_expires_at",
+    "lease_released_at",
 }
 
 try:
@@ -2308,59 +2260,105 @@ try:
         internal_api_token=internal_token,
         console_signing_secret=signing_secret,
     )
-    body = json.dumps(
-        {"readback": READBACK, "request_id": RUN_ID},
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+    request_target = (
+        "/internal/v1/automation/instances/arrival_stats/generation/diagnostic"
+    )
     headers = build_console_identity_headers(
         secret=signing_secret,
-        method="POST",
-        request_target=REQUEST_TARGET,
-        body=body,
+        method="GET",
+        request_target=request_target,
+        body=b"",
         principal={
             "actor_type": "console_admin",
-            "actor_id": "release-arrival-stats-recovery",
+            "actor_id": "release-arrival-stats-diagnostic",
             "roles": ["admin", "super_admin"],
-            "display_name": "Release arrival statistics recovery",
+            "display_name": "Release arrival statistics diagnostic",
             "authenticated_by": "mysql_admin_session",
         },
         nonce=secrets.token_urlsafe(24),
     )
     headers["X-Agent-Internal-Token"] = internal_token
-    headers["Content-Type"] = "application/json"
-    request = Request(
-        f"http://127.0.0.1:9000{REQUEST_TARGET}",
-        data=body,
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=20) as response:
-            response_status = response.status
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise RuntimeError("managed recovery request was rejected") from exc
+    with urlopen(
+        Request(
+            "http://127.0.0.1:9000" + request_target,
+            headers=headers,
+            method="GET",
+        ),
+        timeout=20,
+    ) as response:
+        payload = json.loads(response.read().decode("utf-8"))
     data = payload.get("data") if isinstance(payload, dict) else None
     if (
-        response_status != 200
+        response.status != 200
         or payload.get("ok") is not True
         or not isinstance(data, dict)
+        or set(data) != EXPECTED_FIELDS
         or data.get("automation_id") != AUTOMATION_ID
-        or data.get("recovery_status") != "NOT_APPLIED"
+        or data.get("plugin_id") != PLUGIN_ID
     ):
-        raise RuntimeError("managed recovery response was invalid")
-except Exception:
-    print(
-        "arrival_stats_unknown_write_recovery=failed reason=managed_recovery_rejected",
-        file=sys.stderr,
+        raise ValueError("diagnostic response shape is invalid")
+    blocked = (
+        type(data.get("target_generation")) is int
+        and data.get("target_generation") > 0
+        and type(data.get("committed_generation")) is int
+        and data.get("committed_generation") == data.get("target_generation")
+        and data.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+        and isinstance(data.get("lease_id"), str)
+        and bool(data.get("lease_id"))
+        and type(data.get("lease_generation")) is int
+        and data.get("lease_generation") == data.get("target_generation")
+        and data.get("lease_outcome") == "WRITE_OUTCOME_UNKNOWN"
+        and isinstance(data.get("lease_acquired_at"), str)
+        and bool(data.get("lease_acquired_at"))
+        and isinstance(data.get("lease_expires_at"), str)
+        and bool(data.get("lease_expires_at"))
+        and isinstance(data.get("lease_released_at"), str)
+        and bool(data.get("lease_released_at"))
     )
+    normal = (
+        type(data.get("target_generation")) is int
+        and data.get("target_generation") > 0
+        and type(data.get("committed_generation")) is int
+        and data.get("committed_generation") == data.get("target_generation")
+        and data.get("reconcile_state") == "STABLE"
+        and data.get("lease_id") == ""
+        and data.get("lease_generation") is None
+        and data.get("lease_outcome") == "NO_BLOCKED_WRITE_LEASE"
+        and data.get("lease_acquired_at") is None
+        and data.get("lease_expires_at") is None
+        and data.get("lease_released_at") is None
+    )
+    if blocked:
+        print(
+            "arrival_stats_generation_diagnostic=blocked "
+            f"lease_id={data['lease_id']} "
+            f"generation={data['lease_generation']} "
+            f"acquired_at={data['lease_acquired_at']} "
+            f"expires_at={data['lease_expires_at']} "
+            f"released_at={data['lease_released_at']}"
+        )
+    elif normal:
+        print("arrival_stats_generation_diagnostic=normal")
+    else:
+        raise ValueError("arrival statistics diagnostic is neither normal nor blocked")
+except Exception:
+    print("arrival_stats_generation_diagnostic=failed", file=sys.stderr)
     raise SystemExit(1)
-print(
-    "arrival_stats_unknown_write_recovery=ok "
-    f"run_id={RUN_ID} outcome=NOT_APPLIED"
-)
 PY
+  )" || return 1
+  case "${diagnostic}" in
+    arrival_stats_generation_diagnostic=blocked\ *)
+      ARRIVAL_STATS_UNKNOWN_WRITE_BLOCKED=1
+      ;;
+    arrival_stats_generation_diagnostic=normal)
+      ARRIVAL_STATS_UNKNOWN_WRITE_BLOCKED=0
+      ;;
+    *)
+      echo "arrival_stats_generation_diagnostic=failed" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${diagnostic}"
 }
 
 diagnose_delivery_status_generation() {
@@ -2492,38 +2490,16 @@ PY
 }
 
 check_post_restart_release_gates() {
+  RELEASE_STAGE="diagnose_arrival_stats_generation"
+  diagnose_arrival_stats_generation || return 1
   RELEASE_STAGE="diagnose_delivery_status_generation"
   diagnose_delivery_status_generation || return 1
-  if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" ]]; then
-    RELEASE_STAGE="check_service_identity_delivery_unknown_write_quarantine"
-    check_service_identity_smoke delivery_unknown_write_quarantine || return 1
-  elif [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "1" ]]; then
-    RELEASE_STAGE="check_service_identity_recovery_transport"
-    check_service_identity_smoke recovery_transport || return 1
+  if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" || "${ARRIVAL_STATS_UNKNOWN_WRITE_BLOCKED}" == "1" ]]; then
+    RELEASE_STAGE="check_service_identity_reviewed_unknown_write_quarantine"
+    check_service_identity_smoke reviewed_unknown_write_quarantine || return 1
   else
     RELEASE_STAGE="check_service_identity_smoke"
     check_service_identity_smoke || return 1
-  fi
-  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" ]]; then
-    RELEASE_STAGE="recover_known_arrival_stats_unknown_write"
-    recover_known_arrival_stats_unknown_write "fb077840-a2d0-4e7f-8089-f68c104ab544" || return 1
-  fi
-  if [[ "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" ]]; then
-    RELEASE_STAGE="recover_known_arrival_stats_auth_failure"
-    recover_known_arrival_stats_unknown_write "71510af3-fcf1-461b-9c2e-152665f32f98" || return 1
-  fi
-  if [[ "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "1" ]]; then
-    RELEASE_STAGE="recover_known_arrival_stats_prewrite_failure"
-    recover_known_arrival_stats_unknown_write "2a86ba4b-5c63-4bf2-93de-f61372d18274" || return 1
-  fi
-  if [[ "${KNOWN_ARRIVAL_STATS_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_AUTH_FAILURE_RECOVERY}" == "1" || "${KNOWN_ARRIVAL_STATS_PREWRITE_FAILURE_RECOVERY}" == "1" ]]; then
-    if [[ "${DELIVERY_STATUS_UNKNOWN_WRITE_QUARANTINED}" == "1" ]]; then
-      RELEASE_STAGE="check_service_identity_delivery_unknown_write_quarantine"
-      check_service_identity_smoke delivery_unknown_write_quarantine || return 1
-    else
-      RELEASE_STAGE="check_service_identity_smoke"
-      check_service_identity_smoke || return 1
-    fi
   fi
   RELEASE_STAGE="check_control_plane_release_manifest"
   check_control_plane_release_manifest || return 1

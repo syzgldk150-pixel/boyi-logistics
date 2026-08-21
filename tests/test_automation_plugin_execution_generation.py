@@ -232,6 +232,7 @@ class _LeaseRepository:
         self.released: list[tuple[str, RuntimeLeaseOutcome]] = []
         self.finalized: list[tuple[str, RuntimeLeaseOutcome]] = []
         self.verifying: set[str] = set()
+        self.acquired_run_ids: list[str] = []
 
     def acquire_committed_generation(
         self,
@@ -240,6 +241,7 @@ class _LeaseRepository:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         capability = self.capabilities[automation_id]
@@ -249,6 +251,7 @@ class _LeaseRepository:
             or snapshot.manifest_sha256 != expected_manifest_sha256
         ):
             raise PluginConflictError("approved generation changed")
+        self.acquired_run_ids.append(orchestration_run_id)
         return RuntimeGenerationLease(
             lease_id=lease_id,
             automation_id=automation_id,
@@ -257,6 +260,7 @@ class _LeaseRepository:
             runtime_metadata=capability,
             acquired_at=datetime.now(timezone.utc),
             expires_at=expires_at,
+            orchestration_run_id=orchestration_run_id,
         )
 
     def release_generation(
@@ -523,10 +527,11 @@ def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path:
     adapter = RegisteredToolExecutionAdapter(catalog=_Catalog(capability), executor=router)
     step = _step(str(capability["name"]))
 
+    run_id = str(uuid.uuid4())
     raw = asyncio.run(
         adapter.execute_step(
             step,
-            run_id=str(uuid.uuid4()),
+            run_id=run_id,
             step_id=str(uuid.uuid4()),
             execution_context={
                 "source": "console",
@@ -540,6 +545,7 @@ def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path:
     assert "account_id" not in raw["meta"]
     assert leases.released[0][1] == RuntimeLeaseOutcome.VERIFYING
     assert leases.verifying
+    assert leases.acquired_run_ids == [run_id]
 
     verified = ResultVerifier(leases).verify(step, raw, capability)
 

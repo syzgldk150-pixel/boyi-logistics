@@ -682,6 +682,25 @@ class MySQLAutomationPluginRuntimeAdapter:
             raise ValueError("runtime unknown-write recovery is unavailable")
         return dict(row)
 
+    def inspect_current_unknown_generation_write(
+        self,
+        automation_id: str,
+    ) -> dict[str, Any]:
+        """Read the sole unknown lease's bounded audit identity."""
+
+        with self._orchestration.unit_of_work() as uow:
+            inspector = getattr(
+                uow.automation_plugins,
+                "inspect_current_unknown_generation_write_row",
+                None,
+            )
+            if not callable(inspector):
+                raise ValueError("runtime unknown-write audit is unavailable")
+            row = inspector(automation_id)
+        if not isinstance(row, Mapping):
+            raise ValueError("runtime unknown-write audit is unavailable")
+        return dict(row)
+
     def reserve_generation_dispose(
         self,
         automation_id: str,
@@ -730,6 +749,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
+        orchestration_run_id: str,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         with self._orchestration.unit_of_work() as uow:
@@ -738,6 +758,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 expected_generation=expected_generation,
                 expected_manifest_sha256=expected_manifest_sha256,
                 lease_id=lease_id,
+                orchestration_run_id=orchestration_run_id,
                 expires_at=expires_at,
                 lease_owner="agent-runtime",
             )
@@ -770,6 +791,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         automation_id: str,
         generation: int,
         lease_id: str,
+        expected_orchestration_run_id: str,
         evidence_sha256: str,
         request_id: str,
         actor_id: str,
@@ -789,6 +811,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 automation_id,
                 generation,
                 lease_id,
+                expected_orchestration_run_id=expected_orchestration_run_id,
                 evidence_sha256=evidence_sha256,
             )
             event_id = str(
@@ -873,6 +896,11 @@ class MySQLAutomationPluginRuntimeAdapter:
             acquired_at=_utc_datetime(row.get("acquired_at"), "acquired_at"),
             expires_at=_utc_datetime(row.get("expires_at"), "expires_at"),
             outcome=RuntimeLeaseOutcome(str(row.get("outcome") or "RUNNING")),
+            orchestration_run_id=(
+                str(row["orchestration_run_id"])
+                if row.get("orchestration_run_id") is not None
+                else None
+            ),
         )
 
 

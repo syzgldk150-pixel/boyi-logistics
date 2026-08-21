@@ -86,9 +86,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
             plugin_route[1],
         )
         return True
-    if plugin_route and plugin_route[1] == "recover-not-applied":
-        app._handle_automation_plugin_recovery(handler, plugin_route[0])
-        return True
     if plugin_route and plugin_route[1] == "configuration":
         app._handle_automation_plugin_configuration_save(handler, plugin_route[0])
         return True
