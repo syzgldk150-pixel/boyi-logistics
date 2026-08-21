@@ -763,6 +763,94 @@ def test_later_release_accepts_staged_unknown_write_with_missing_target(prefligh
     )
 
 
+def test_later_release_accepts_staged_missing_target_runtime(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="COMMITTED",
+        generation_error_code=None,
+        target_generation_state=None,
+        target_base_generation=None,
+        unknown_write_count=0,
+    )
+
+    preflight._validate_release_projects_and_tasks(
+        contract,
+        schedules=schedules,
+        backups=backups,
+        projects=projects,
+        expect_initial_production_manifest=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"reconcile_state": "READY_TO_COMMIT"},
+        {"target_generation": 1},
+        {"generation_state": "BLOCKED"},
+        {"generation_error_code": "RUNTIME_ROOT_MISSING"},
+        {"target_generation_state": "TARGET"},
+        {"target_base_generation": 1},
+        {"unknown_write_count": 1},
+    ),
+)
+def test_staged_missing_target_runtime_fails_closed(preflight, mutation):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="COMMITTED",
+        generation_error_code=None,
+        target_generation_state=None,
+        target_base_generation=None,
+        unknown_write_count=0,
+    )
+    project.update(mutation)
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=False,
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
+
+
+def test_initial_release_rejects_staged_missing_target_runtime(preflight):
+    contract, schedules, backups, projects = _valid_world(preflight)
+    project = projects[sorted(contract["release_projects"])[0]]
+    project.update(
+        project_state="UPGRADING",
+        target_generation=2,
+        reconcile_state="PREPARING",
+        generation_state="COMMITTED",
+        generation_error_code=None,
+        target_generation_state=None,
+        target_base_generation=None,
+        unknown_write_count=0,
+    )
+
+    with pytest.raises(preflight.AutomationProjectReleaseManifestError) as error:
+        preflight._validate_release_projects_and_tasks(
+            contract,
+            schedules=schedules,
+            backups=backups,
+            projects=projects,
+            expect_initial_production_manifest=True,
+        )
+
+    assert error.value.code == "AUTOMATION_PROJECT_STATE_INVALID"
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
