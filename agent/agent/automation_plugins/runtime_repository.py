@@ -332,6 +332,7 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
             committed_manifest = AutomationPluginManifest.from_mapping(
                 committed_version.manifest
             )
+            committed_signed_manifest = committed_manifest.to_signed_mapping()
             if (
                 committed_manifest.plugin_id != committed_version.plugin_id
                 or committed_manifest.version != committed_version.version
@@ -346,11 +347,15 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
             )
             committed_runtime = committed_capability.get("_plugin_runtime")
             expected_runtime_descriptor = {
-                "runtime": dict(committed_manifest.runtime),
-                "runtime_permissions": dict(committed_manifest.runtime_permissions),
-                "account_roles": [dict(item) for item in committed_manifest.account_roles],
+                "runtime": dict(committed_signed_manifest["runtime"]),
+                "runtime_permissions": dict(
+                    committed_signed_manifest["runtime_permissions"]
+                ),
+                "account_roles": [
+                    dict(item) for item in committed_signed_manifest["account_roles"]
+                ],
                 "resource_roles": [
-                    dict(item) for item in committed_manifest.resource_roles
+                    dict(item) for item in committed_signed_manifest["resource_roles"]
                 ],
                 "install_metadata": {
                     **dict(committed_version.install_metadata),

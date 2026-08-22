@@ -7,7 +7,11 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
-from agent.automation_plugins.catalog import PluginCatalog, project_contract_fragment
+from agent.automation_plugins.catalog import (
+    PluginCatalog,
+    project_capability_from_snapshot,
+    project_contract_fragment,
+)
 from agent.automation_plugins.generation import AutomationRuntimeReconciler
 from agent.automation_plugins.manifest import (
     AutomationPluginManifest,
@@ -738,6 +742,149 @@ class _OrchestrationRepository:
 
     def unit_of_work(self) -> _UnitOfWork:
         return _UnitOfWork(self.low_level)
+
+
+def test_catalog_accepts_legacy_signed_runtime_permissions_during_upgrade() -> None:
+    source = _synthetic_manifest("1.0.0").to_mapping()
+    source["runtime_permissions"] = {
+        "network": True,
+        "browser": False,
+        "office": False,
+        "file_roles": [],
+        "broker_operations": [
+            {
+                "operation": "network.request",
+                "action": "synthetic.read",
+                "roles": ["source"],
+            }
+        ],
+        "max_broker_calls": 1,
+    }
+    manifest = AutomationPluginManifest.from_mapping(source)
+    signed_manifest = manifest.to_signed_mapping()
+    assert manifest.runtime_permissions["broker_operations"][0]["effect"] == "write"
+    assert "effect" not in signed_manifest["runtime_permissions"]["broker_operations"][0]
+
+    snapshot = _snapshot(
+        automation_id="legacy-upgrade-instance",
+        generation=1,
+        manifest=manifest,
+        package_sha256="4" * 64,
+        project_config={"marker": "A"},
+        account_id="account-A",
+        schedule_time="09:00",
+        install_root="/plugins/action/legacy-v1",
+    )
+    execution_metadata = copy.deepcopy(dict(snapshot.execution_metadata))
+    execution_metadata["runtime_descriptor"]["runtime_permissions"] = copy.deepcopy(
+        signed_manifest["runtime_permissions"]
+    )
+    snapshot = replace(
+        snapshot,
+        runtime_descriptor_sha256=_sha(execution_metadata["runtime_descriptor"]),
+        execution_metadata=execution_metadata,
+    )
+    generation_row = _LowLevelRuntimeRepository({1: snapshot}).get_generation_row(
+        snapshot.automation_id,
+        snapshot.generation,
+    )
+    assert generation_row is not None
+    committed_version = replace(_version(manifest, snapshot), manifest=signed_manifest)
+    committed_version_row = {
+        "plugin_id": committed_version.plugin_id,
+        "version": committed_version.version,
+        "package_sha256": committed_version.package_sha256,
+        "manifest_sha256": committed_version.manifest_sha256,
+        "manifest_json": committed_version.manifest,
+        "trust_source": committed_version.trust_source.value,
+        "install_root_metadata_json": {
+            **committed_version.install_metadata,
+            "install_root": committed_version.install_root,
+        },
+        "state": committed_version.state.value,
+        "installed_at": committed_version.installed_at,
+    }
+    desired_manifest = _synthetic_manifest("2.0.0")
+    desired_snapshot = _snapshot(
+        automation_id=snapshot.automation_id,
+        generation=2,
+        manifest=desired_manifest,
+        package_sha256="6" * 64,
+        project_config={"marker": "A"},
+        account_id="account-A",
+        schedule_time="09:00",
+        install_root="/plugins/action/v2",
+    )
+    desired_version = _version(desired_manifest, desired_snapshot)
+    desired_version_row = {
+        "plugin_id": desired_version.plugin_id,
+        "version": desired_version.version,
+        "package_sha256": desired_version.package_sha256,
+        "manifest_sha256": desired_version.manifest_sha256,
+        "manifest_json": desired_version.manifest,
+        "trust_source": desired_version.trust_source.value,
+        "install_root_metadata_json": {
+            **desired_version.install_metadata,
+            "install_root": desired_version.install_root,
+        },
+        "state": desired_version.state.value,
+        "installed_at": desired_version.installed_at,
+    }
+
+    class _CatalogLowLevel:
+        def get_generation_row(
+            self,
+            automation_id: str,
+            generation: int,
+        ) -> Mapping[str, Any] | None:
+            if (automation_id, generation) == (
+                snapshot.automation_id,
+                snapshot.generation,
+            ):
+                return generation_row
+            return None
+
+        def get_version(
+            self,
+            plugin_id: str,
+            plugin_version: str,
+        ) -> Mapping[str, Any] | None:
+            if (plugin_id, plugin_version) == (manifest.plugin_id, manifest.version):
+                return committed_version_row
+            if (plugin_id, plugin_version) == (
+                desired_manifest.plugin_id,
+                desired_manifest.version,
+            ):
+                return desired_version_row
+            return None
+
+    row = {
+        "automation_id": snapshot.automation_id,
+        "display_name": "legacy upgrade instance",
+        "plugin_id": manifest.plugin_id,
+        "plugin_version": desired_manifest.version,
+        "state": PluginProjectState.UPGRADING.value,
+        "enabled": 1,
+        "record_version": 2,
+        "target_generation": 2,
+        "committed_generation": 1,
+        "reconcile_state": RuntimeReconcileState.PREPARING.value,
+    }
+
+    project = MySQLAutomationPluginCatalogRepositoryAdapter._project_from_row(
+        _CatalogLowLevel(),
+        row,
+    )
+
+    assert project.committed_snapshot == snapshot
+    assert project.active_version.version == desired_manifest.version
+    capability = project_capability_from_snapshot(snapshot)
+    assert capability["_plugin_runtime"]["runtime_permissions"][
+        "broker_operations"
+    ][0]["effect"] == "write"
+    assert "effect" not in snapshot.execution_metadata["runtime_descriptor"][
+        "runtime_permissions"
+    ]["broker_operations"][0]
 
 
 def test_catalog_accepts_blocked_committed_generation_for_reconciliation() -> None:
