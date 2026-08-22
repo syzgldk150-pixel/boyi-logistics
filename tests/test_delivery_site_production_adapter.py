@@ -946,10 +946,97 @@ def test_empty_site_snapshot_is_a_verified_noop_only_when_both_reads_are_empty(
             {"values": [], "target_date": "2026-08-15"},
         )
 
-    assert sync_calls == [sink]
+    assert sync_calls == (["bitable"] if sink == "bitable" else [])
     assert marks == []
     assert result["_broker_verified_write_noop_v1"] is True
     assert result["record_count"] == result["readback_count"] == result["written"] == 0
+
+
+def test_default_sheet_empty_snapshot_bypasses_clear_and_keeps_marker_unstarted() -> None:
+    reads: list[str] = []
+    marks: list[str] = []
+
+    def feishu(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        assert action == "read_sheet"
+        reads.append(action)
+        return {"values": []}
+
+    # Do not inject ``site_sheet_sync``: the production default clears before
+    # writing, so this proves the adapter's early no-op branch bypasses it.
+    handlers = _delivery_handlers(
+        build_production_delivery_site_ports(
+            account_manager=_Manager(),
+            resource_loader=lambda resource_id: {
+                "resource_kind": "feishu_sheet",
+                "spreadsheet_token": "site-sheet-token",
+                "range": "Data!A2:F100",
+                "clear_range": "Data!A2:F100",
+                "_meta": {"resource_key": resource_id},
+            },
+            feishu_operation=feishu,
+        )
+    )
+    result = handlers[("network.request", "feishu.sheet.replace")](
+        _site_context(
+            action="feishu.sheet.replace",
+            role="site_send_sheet",
+            resource_id=_SITE_SHEET_ID,
+            mark_write_started=lambda: marks.append("started"),
+        ),
+        {"values": [], "target_date": "2026-08-15"},
+    )
+
+    assert reads == ["read_sheet", "read_sheet"]
+    assert marks == []
+    assert result["_broker_verified_write_noop_v1"] is True
+
+
+@pytest.mark.parametrize("nonempty_target", [False, True])
+def test_sheet_nonempty_input_or_target_still_mutates_once(nonempty_target: bool) -> None:
+    sheet_rows: list[list[Any]] = (
+        [["OLD", "旧站", "袋", 1, 2, "旧目的"]] if nonempty_target else []
+    )
+    marks: list[str] = []
+    sync_calls: list[list[list[Any]]] = []
+
+    def feishu(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        assert action == "read_sheet"
+        return {"values": deepcopy(sheet_rows)}
+
+    def sync(_resource_id, rows, _params, marker) -> Mapping[str, Any]:
+        nonlocal sheet_rows
+        marker()
+        sync_calls.append(deepcopy(rows))
+        sheet_rows = deepcopy(rows)
+        return {"ok": True, "rows": len(rows)}
+
+    handlers = _delivery_handlers(
+        build_production_delivery_site_ports(
+            account_manager=_Manager(),
+            resource_loader=lambda resource_id: {
+                "resource_kind": "feishu_sheet",
+                "spreadsheet_token": "site-sheet-token",
+                "range": "Data!A2:F100",
+                "clear_range": "Data!A2:F100",
+                "_meta": {"resource_key": resource_id},
+            },
+            feishu_operation=feishu,
+            site_sheet_sync=sync,
+        )
+    )
+    values = [] if nonempty_target else [["WB-1", "发货站", "纸箱", 0, 0, "目的站"]]
+    handlers[("network.request", "feishu.sheet.replace")](
+        _site_context(
+            action="feishu.sheet.replace",
+            role="site_send_sheet",
+            resource_id=_SITE_SHEET_ID,
+            mark_write_started=lambda: marks.append("started"),
+        ),
+        {"values": values, "target_date": "2026-08-15"},
+    )
+
+    assert marks == ["started"]
+    assert sync_calls == [values]
 
 
 def test_delivery_bitable_marker_callback_failure_is_failed_before_write() -> None:
