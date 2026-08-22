@@ -50,6 +50,7 @@ class PluginCatalogEntry:
     scheduling: Mapping[str, Any]
     project_full_auto_allowed: bool
     runtime_permissions: Mapping[str, Any]
+    signed_runtime_permissions: Mapping[str, Any]
     enabled: bool
     configured: bool
     project_config: Mapping[str, Any]
@@ -204,7 +205,13 @@ def _committed_execution_metadata(entry: PluginCatalogEntry) -> dict[str, Any]:
         raise PluginConflictError("committed governance anchor differs from its signed manifest")
     expected_runtime_descriptor = {
         "runtime": copy.deepcopy(dict(entry.runtime)),
-        "runtime_permissions": copy.deepcopy(dict(entry.runtime_permissions)),
+        # The installed package's signed bytes are the comparison authority.
+        # Schema-v1 packages omitted the now-explicit broker ``effect`` field;
+        # manifest parsing projects that omission to a conservative write only
+        # for execution, never for immutable-descriptor equality.
+        "runtime_permissions": copy.deepcopy(
+            dict(entry.signed_runtime_permissions)
+        ),
         "account_roles": [copy.deepcopy(dict(item)) for item in entry.account_roles],
         "resource_roles": [copy.deepcopy(dict(item)) for item in entry.resource_roles],
         "install_metadata": {
@@ -276,6 +283,7 @@ def _entry_from_project(
 ) -> PluginCatalogEntry:
     version = project.active_version
     manifest = AutomationPluginManifest.from_mapping(version.manifest)
+    signed_manifest = manifest.to_signed_mapping()
     if manifest.plugin_id != project.plugin_id or version.plugin_id != project.plugin_id:
         raise PluginConflictError("persisted plugin_id does not match its manifest")
     if manifest.version != version.version:
@@ -348,6 +356,9 @@ def _entry_from_project(
         scheduling=copy.deepcopy(dict(manifest.scheduling)),
         project_full_auto_allowed=manifest.project_full_auto_allowed,
         runtime_permissions=copy.deepcopy(dict(manifest.runtime_permissions)),
+        signed_runtime_permissions=copy.deepcopy(
+            dict(signed_manifest["runtime_permissions"])
+        ),
         enabled=(
             project.enabled
             if project.enabled is not None
