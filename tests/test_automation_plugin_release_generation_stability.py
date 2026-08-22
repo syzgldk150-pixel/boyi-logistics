@@ -28,6 +28,7 @@ from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
+    BootstrapResult,
     PluginInstanceRecord,
     PluginProjectState,
     PluginTrustSource,
@@ -43,6 +44,7 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.production import (
     MySQLRuntimeTargetService,
+    ProductionAutomationPluginRuntime,
     ProductionRuntimeCoeffectProvider,
     ProductionRuntimeEffectPlanner,
     build_runtime_generation_snapshot,
@@ -942,7 +944,30 @@ def test_second_release_reconcile_reuses_identical_committed_generations() -> No
         for policy in world.policy_rows.values()
     )
 
-    assert _target_service(world).reconcile_all() == ()
+    bootstrap_calls = 0
+
+    def _idempotent_release_bootstrap() -> BootstrapResult:
+        nonlocal bootstrap_calls
+        bootstrap_calls += 1
+        assert world.runtime.generations == generations_before
+        assert world.runtime.runtimes == runtimes_before
+        return BootstrapResult(
+            created=(),
+            existing=tuple(sorted(world.expected_automation_ids)),
+            rejected={},
+        )
+
+    production_runtime = object.__new__(ProductionAutomationPluginRuntime)
+    production_runtime.bootstrap = BootstrapResult(
+        created=(),
+        existing=tuple(sorted(world.expected_automation_ids)),
+        rejected={},
+    )
+    production_runtime.target_service = _target_service(world)
+    production_runtime._bootstrap_first_party = _idempotent_release_bootstrap
+
+    assert production_runtime.reconcile() == ()
+    assert bootstrap_calls == 1
 
     assert world.runtime.generations == generations_before
     assert world.runtime.runtimes == runtimes_before
@@ -966,9 +991,16 @@ def test_staged_target_over_blocked_committed_generation_commits_and_archives() 
     blocked_id, following_id = sorted(world.expected_automation_ids)[:2]
 
     for automation_id in (blocked_id, following_id):
-        target_snapshot = replace(
-            world.snapshots[automation_id],
+        world.policy_rows[automation_id] = {
+            **world.policy_rows[automation_id],
+            "project_generation": 2,
+        }
+        target_snapshot = build_runtime_generation_snapshot(
+            world.catalog.require(automation_id),
+            desired_config_row=world.desired_rows[automation_id],
+            policy_row=world.policy_rows[automation_id],
             generation=2,
+            core_catalog=world.core,
         )
         target = world.runtime.allocate_target_generation(
             target_snapshot,
@@ -998,11 +1030,6 @@ def test_staged_target_over_blocked_committed_generation_commits_and_archives() 
     assert committed.committed_generation == 2
     assert committed.draining_generations == ()
     assert committed.disposed_generations == ()
-    world.policy_rows[blocked_id] = {
-        **world.policy_rows[blocked_id],
-        "project_generation": 2,
-    }
-
     results = service.reconcile_all()
 
     assert world.runtime.get_generation(blocked_id, 1).state is (

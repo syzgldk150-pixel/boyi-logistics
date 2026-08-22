@@ -55,7 +55,10 @@ from agent.automation_plugins.generation import (
     RuntimeGenerationHealth,
     runtime_generation_health,
 )
-from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.automation_plugins.manifest import (
+    canonical_json_bytes,
+    runtime_descriptor_matches_signed_installation,
+)
 from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.management import AutomationPluginManagementService
 from agent.automation_plugins.management_repository import (
@@ -305,7 +308,12 @@ def build_runtime_generation_snapshot(
             "install_root": entry.install_root,
         },
         "runtime": copy.deepcopy(dict(entry.runtime)),
-        "runtime_permissions": copy.deepcopy(dict(entry.runtime_permissions)),
+        # Generation identity follows the exact signed manifest bytes.  Older
+        # schema-v1 packages omitted broker ``effect``; Catalog keeps a
+        # conservative normalized view for execution separately.
+        "runtime_permissions": copy.deepcopy(
+            dict(entry.signed_runtime_permissions)
+        ),
         "account_roles": [copy.deepcopy(dict(item)) for item in entry.account_roles],
         "resource_roles": [copy.deepcopy(dict(item)) for item in entry.resource_roles],
     }
@@ -777,6 +785,8 @@ class MySQLRuntimeTargetService:
     def _same_material(
         current: RuntimeGenerationSnapshot,
         desired: RuntimeGenerationSnapshot,
+        *,
+        manifest_schema_version: int,
     ) -> bool:
         fields = (
             "plugin_id",
@@ -793,12 +803,45 @@ class MySQLRuntimeTargetService:
             "tool_contract_sha256",
             "invocation_contracts_sha256",
             "compiled_invocations_sha256",
-            "runtime_descriptor_sha256",
             "governance_anchor_sha256",
             "enabled_entrypoints",
-            "execution_metadata",
         )
-        return all(getattr(current, field) == getattr(desired, field) for field in fields)
+        if not all(
+            getattr(current, field) == getattr(desired, field) for field in fields
+        ):
+            return False
+        current_metadata = current.execution_metadata
+        desired_metadata = desired.execution_metadata
+        if not isinstance(current_metadata, Mapping) or not isinstance(
+            desired_metadata,
+            Mapping,
+        ):
+            return False
+        current_descriptor = current_metadata.get("runtime_descriptor")
+        desired_descriptor = desired_metadata.get("runtime_descriptor")
+        if not isinstance(current_descriptor, Mapping) or not isinstance(
+            desired_descriptor,
+            Mapping,
+        ):
+            return False
+        if (
+            _digest(current_descriptor) != current.runtime_descriptor_sha256
+            or _digest(desired_descriptor) != desired.runtime_descriptor_sha256
+        ):
+            return False
+        current_without_descriptor = copy.deepcopy(dict(current_metadata))
+        desired_without_descriptor = copy.deepcopy(dict(desired_metadata))
+        current_without_descriptor.pop("runtime_descriptor", None)
+        desired_without_descriptor.pop("runtime_descriptor", None)
+        if canonical_json_bytes(
+            current_without_descriptor
+        ) != canonical_json_bytes(desired_without_descriptor):
+            return False
+        return runtime_descriptor_matches_signed_installation(
+            current_descriptor,
+            desired_descriptor,
+            schema_version=manifest_schema_version,
+        )
 
     def reconcile_project(self, automation_id: str) -> object:
         entry = self._catalog.require(automation_id)
@@ -850,6 +893,29 @@ class MySQLRuntimeTargetService:
                 RuntimeGenerationState.WAITING_COEFFECTS,
                 RuntimeGenerationState.PREPARED,
             }:
+                config, policy = self._desired_rows(automation_id)
+                try:
+                    target_candidate = build_runtime_generation_snapshot(
+                        entry,
+                        desired_config_row=config,
+                        policy_row=policy,
+                        generation=target.snapshot.generation,
+                        core_catalog=self._core_catalog,
+                    )
+                except PluginConflictError as exc:
+                    raise PluginConflictError(
+                        "runtime target no longer matches current signed desired state",
+                        code="RUNTIME_TARGET_MATERIAL_MISMATCH",
+                    ) from exc
+                if not self._same_material(
+                    target.snapshot,
+                    target_candidate,
+                    manifest_schema_version=entry.manifest_schema_version,
+                ):
+                    raise PluginConflictError(
+                        "runtime target no longer matches current signed desired state",
+                        code="RUNTIME_TARGET_MATERIAL_MISMATCH",
+                    )
                 return self._reconciler.resume_project(automation_id)
             if runtime.reconcile_state in {
                 RuntimeReconcileState.DRAINING,
@@ -900,7 +966,11 @@ class MySQLRuntimeTargetService:
                     generation=runtime.committed_generation,
                     core_catalog=self._core_catalog,
                 )
-                if self._same_material(committed.snapshot, committed_candidate):
+                if self._same_material(
+                    committed.snapshot,
+                    committed_candidate,
+                    manifest_schema_version=entry.manifest_schema_version,
+                ):
                     return None
             elif policy_generation != next_generation:
                 raise PluginConflictError(
@@ -1017,6 +1087,7 @@ class ProductionAutomationPluginRuntime:
     configuration_service: AutomationProjectConfigurationService
     management: AutomationPluginManagementService
     required_first_party_ids: frozenset[str]
+    _bootstrap_first_party: Callable[[], BootstrapResult]
     _sandbox_canary: SandboxCanaryResult | None = None
     _started: bool = False
 
@@ -1040,7 +1111,22 @@ class ProductionAutomationPluginRuntime:
     def reconcile(self) -> tuple[object, ...]:
         if not self.bootstrap.ok:
             raise PluginConflictError("first-party plugin bootstrap was rejected")
-        return self.target_service.reconcile_all()
+        first_pass = self.target_service.reconcile_all()
+
+        # A release bootstrap deliberately does not replace an in-flight
+        # generation.  Finish that exact signed generation first, then let the
+        # same release bootstrap observe the newly stable lineage and stage
+        # any newer signed package before a second reconciliation pass.  This
+        # closes the normal recovery-and-upgrade path in one Agent startup
+        # without inventing a generation or relying on an operator restart.
+        # A target still waiting on a real coeffect remains unavailable and is
+        # retried by the next explicit reconciliation after that dependency is
+        # restored.
+        refreshed = self._bootstrap_first_party()
+        if not refreshed.ok:
+            raise PluginConflictError("first-party plugin bootstrap was rejected")
+        self.bootstrap = refreshed
+        return first_pass + self.target_service.reconcile_all()
 
     def health(self) -> dict[str, Any]:
         catalog = self.catalog.production_health(tuple(self.required_first_party_ids))
@@ -1214,14 +1300,17 @@ def build_production_automation_plugin_runtime(
         ),
         release_hold_provider=release_hold_provider,
     )
-    bootstrap = bootstrap_first_party_plugins(
-        repository,
-        core_catalog=core_catalog,
-        current_release_sha=runtime_release_sha,
-        expected_release_sha=release.verified_release_sha,
-        package_provider=provider,
-        package_materializer=provider,
-    )
+    def _bootstrap_first_party() -> BootstrapResult:
+        return bootstrap_first_party_plugins(
+            repository,
+            core_catalog=core_catalog,
+            current_release_sha=runtime_release_sha,
+            expected_release_sha=release.verified_release_sha,
+            package_provider=provider,
+            package_materializer=provider,
+        )
+
+    bootstrap = _bootstrap_first_party()
     if not bootstrap.ok:
         raise PluginPackageError(
             "signed first-party bootstrap failed: "
@@ -1363,6 +1452,7 @@ def build_production_automation_plugin_runtime(
         configuration_service=configuration_service,
         management=management,
         required_first_party_ids=release_first_party_automation_ids(),
+        _bootstrap_first_party=_bootstrap_first_party,
     )
 
 

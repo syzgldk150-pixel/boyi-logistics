@@ -9,9 +9,13 @@ import pytest
 from agent.automation_plugins.errors import PluginConflictError, PluginManifestError
 from agent.automation_plugins.first_party import resolve_first_party_manifests
 from agent.automation_plugins.invocation import compile_instance_arguments
-from agent.automation_plugins.manifest import AutomationPluginManifest
+from agent.automation_plugins.manifest import (
+    AutomationPluginManifest,
+    runtime_descriptor_matches_signed_installation,
+)
 from agent.automation_plugins.mysql_repository import (
     MySQLAutomationPluginRepositoryAdapter,
+    _registration_rows,
     _legacy_project_config,
     _transient_entry,
 )
@@ -60,6 +64,108 @@ def test_legacy_v1_broker_operation_without_effect_projects_conservatively_to_wr
     invalid["runtime_permissions"]["broker_operations"][0]["effect"] = "mutate"
     with pytest.raises(PluginManifestError, match="effect"):
         AutomationPluginManifest.from_mapping(invalid)
+
+
+def test_legacy_runtime_descriptor_compatibility_is_exact_and_write_only() -> None:
+    source = _manifest_mapping()
+    legacy_operations = source["runtime_permissions"]["broker_operations"][:2]
+    assert len(legacy_operations) == 2
+    for operation in legacy_operations:
+        operation.pop("effect")
+    manifest = AutomationPluginManifest.from_mapping(source)
+    signed = {
+        "runtime": copy.deepcopy(dict(manifest.runtime)),
+        "runtime_permissions": copy.deepcopy(
+            manifest.to_signed_mapping()["runtime_permissions"]
+        ),
+        "account_roles": [copy.deepcopy(dict(item)) for item in manifest.account_roles],
+        "resource_roles": [
+            copy.deepcopy(dict(item)) for item in manifest.resource_roles
+        ],
+        "install_metadata": {
+            "install_root": "/plugins/legacy",
+            "python_relative": "venv/bin/python",
+        },
+    }
+    normalized = copy.deepcopy(signed)
+    for operation in normalized["runtime_permissions"]["broker_operations"][:2]:
+        operation["effect"] = "write"
+
+    assert runtime_descriptor_matches_signed_installation(
+        normalized,
+        signed,
+        schema_version=1,
+    )
+    assert not runtime_descriptor_matches_signed_installation(
+        normalized,
+        signed,
+        schema_version=2,
+    )
+
+    mixed_projection = copy.deepcopy(normalized)
+    mixed_projection["runtime_permissions"]["broker_operations"][1].pop("effect")
+    assert not runtime_descriptor_matches_signed_installation(
+        mixed_projection,
+        signed,
+        schema_version=1,
+    )
+
+    wrong_effect = copy.deepcopy(normalized)
+    wrong_effect["runtime_permissions"]["broker_operations"][0]["effect"] = "read"
+    assert not runtime_descriptor_matches_signed_installation(
+        wrong_effect,
+        signed,
+        schema_version=1,
+    )
+
+    wrong_action = copy.deepcopy(normalized)
+    wrong_action["runtime_permissions"]["broker_operations"][0]["action"] += ".tampered"
+    assert not runtime_descriptor_matches_signed_installation(
+        wrong_action,
+        signed,
+        schema_version=1,
+    )
+
+    wrong_installation = copy.deepcopy(normalized)
+    wrong_installation["install_metadata"]["python_relative"] = "venv/bin/other"
+    assert not runtime_descriptor_matches_signed_installation(
+        wrong_installation,
+        signed,
+        schema_version=1,
+    )
+
+
+def test_registration_persists_signed_manifest_not_legacy_execution_projection() -> None:
+    for legacy_missing_effect in (False, True):
+        source = _manifest_mapping()
+        if legacy_missing_effect:
+            source["runtime_permissions"]["broker_operations"][0].pop("effect")
+        manifest = AutomationPluginManifest.from_mapping(source)
+        package_sha256 = "a" * 64
+        version = PluginVersionRecord(
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            package_sha256=package_sha256,
+            manifest_sha256=manifest.manifest_sha256,
+            manifest=manifest.to_signed_mapping(),
+            trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+            install_root="/plugins/signed",
+            install_metadata={
+                "archive_relative": "package-archive.zip",
+                "archive_sha256": package_sha256,
+                "python_relative": "venv/bin/python",
+            },
+        )
+
+        _, persisted = _registration_rows(version, actor_id="test:release")
+
+        assert persisted["manifest_json"] == manifest.to_signed_mapping()
+        if legacy_missing_effect:
+            assert "effect" not in persisted["manifest_json"][
+                "runtime_permissions"
+            ]["broker_operations"][0]
+        else:
+            assert persisted["manifest_json"] == manifest.to_mapping()
 
 
 def test_production_manifest_rejects_legacy_core_tool_ref_runtime() -> None:
@@ -446,6 +552,79 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
             (seed,),
             release_sha="a" * 40,
         )
+
+
+def test_first_party_bootstrap_leaves_same_release_version_stable() -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())["sync_arrival_stats"]
+    template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
+
+    class AutomationPlugins:
+        def get_project(self, automation_id, *, for_update):
+            assert automation_id == template.automation_id
+            assert for_update is True
+            return {
+                "automation_id": automation_id,
+                "plugin_id": manifest.plugin_id,
+                "plugin_version": manifest.version,
+                "record_version": 7,
+                "target_generation": 3,
+                "committed_generation": 3,
+                "reconcile_state": "STABLE",
+            }
+
+    class UnitOfWork:
+        automation_plugins = AutomationPlugins()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def commit(self):
+            return None
+
+    class Orchestration:
+        @staticmethod
+        def unit_of_work():
+            return UnitOfWork()
+
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        manifest=manifest.to_signed_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+    )
+    seed = FirstPartyInstanceSeed(
+        automation_id=template.automation_id,
+        plugin_id=template.tool_name,
+        version=manifest.version,
+        display_name=template.automation_id,
+        allowed_entrypoints=tuple(template.allowed_entrypoints),
+    )
+    repository = MySQLAutomationPluginRepositoryAdapter(Orchestration())
+
+    with (
+        patch.object(repository, "_register"),
+        patch.object(
+            repository,
+            "_prepare_first_party_upgrade_configuration",
+        ) as prepare,
+        patch.object(repository, "upgrade_instance") as upgrade,
+    ):
+        result = repository.bootstrap_missing(
+            (version,),
+            (seed,),
+            release_sha="b" * 40,
+        )
+
+    assert result.created == ()
+    assert result.existing == (template.automation_id,)
+    prepare.assert_not_called()
+    upgrade.assert_not_called()
 
 
 def test_first_party_bootstrap_never_downgrades_existing_instance() -> None:

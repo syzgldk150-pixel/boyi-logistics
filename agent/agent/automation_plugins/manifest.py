@@ -81,6 +81,101 @@ def canonical_json_bytes(value: Mapping[str, Any] | list[Any]) -> bytes:
         raise PluginManifestError("manifest must contain canonical JSON values") from exc
 
 
+def runtime_descriptor_matches_signed_installation(
+    observed: object,
+    signed: object,
+    *,
+    schema_version: int,
+) -> bool:
+    """Match an immutable runtime descriptor to its signed installation.
+
+    Exact canonical equality is always accepted.  Schema v1 has one narrowly
+    defined historical representation: signed broker operations could omit
+    ``effect``, while old generation builders persisted the parser's
+    conservative ``effect=write`` execution projection.  Only that exact
+    added field is compatible; the full descriptor and operation order must
+    otherwise remain byte-equivalent after canonical JSON encoding.
+    """
+
+    if not isinstance(observed, Mapping) or not isinstance(signed, Mapping):
+        return False
+    try:
+        if canonical_json_bytes(observed) == canonical_json_bytes(signed):
+            return True
+    except PluginManifestError:
+        return False
+    if isinstance(schema_version, bool) or schema_version != 1:
+        return False
+
+    observed_copy = copy.deepcopy(dict(observed))
+    signed_copy = copy.deepcopy(dict(signed))
+    observed_permissions = observed_copy.get("runtime_permissions")
+    signed_permissions = signed_copy.get("runtime_permissions")
+    if not isinstance(observed_permissions, dict) or not isinstance(
+        signed_permissions,
+        dict,
+    ):
+        return False
+    observed_operations = observed_permissions.get("broker_operations")
+    signed_operations = signed_permissions.get("broker_operations")
+    if not isinstance(observed_operations, list) or not isinstance(
+        signed_operations,
+        list,
+    ) or len(observed_operations) != len(signed_operations):
+        return False
+
+    stripped_operations: list[object] = []
+    legacy_projection_count = 0
+    for observed_operation, signed_operation in zip(
+        observed_operations,
+        signed_operations,
+        strict=True,
+    ):
+        if not isinstance(observed_operation, dict) or not isinstance(
+            signed_operation,
+            dict,
+        ):
+            return False
+        if "effect" in signed_operation:
+            try:
+                if canonical_json_bytes(observed_operation) != canonical_json_bytes(
+                    signed_operation
+                ):
+                    return False
+            except PluginManifestError:
+                return False
+            stripped_operations.append(copy.deepcopy(observed_operation))
+            continue
+        if set(signed_operation) != {"operation", "action", "roles"}:
+            return False
+        stripped = copy.deepcopy(observed_operation)
+        if (
+            set(stripped) != {*signed_operation, "effect"}
+            or stripped.get("effect") != "write"
+        ):
+            return False
+        stripped.pop("effect")
+        legacy_projection_count += 1
+        try:
+            if canonical_json_bytes(stripped) != canonical_json_bytes(
+                signed_operation
+            ):
+                return False
+        except PluginManifestError:
+            return False
+        stripped_operations.append(stripped)
+
+    if not legacy_projection_count:
+        return False
+    observed_permissions["broker_operations"] = stripped_operations
+    try:
+        return canonical_json_bytes(observed_copy) == canonical_json_bytes(
+            signed_copy
+        )
+    except PluginManifestError:
+        return False
+
+
 def _mapping(value: Any, path: str, fields: frozenset[str] | None = None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PluginManifestError(f"{path} must be an object")

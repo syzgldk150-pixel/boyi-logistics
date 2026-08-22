@@ -95,7 +95,9 @@ def _load_release_index(root: Path) -> dict[str, object]:
 
 
 def _expected_file_rows(manifest: object) -> dict[str, tuple[str, int]]:
-    manifest_bytes = canonical_json_bytes(manifest.to_mapping())  # type: ignore[attr-defined]
+    manifest_bytes = canonical_json_bytes(
+        manifest.to_signed_mapping()  # type: ignore[attr-defined]
+    )
     files = {"manifest.json": manifest_bytes, **first_party_payload_files(manifest)}
     return {
         name: (hashlib.sha256(content).hexdigest(), len(content))

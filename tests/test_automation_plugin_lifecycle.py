@@ -42,6 +42,7 @@ from agent.automation_plugins.models import (
     PluginVersionRecord,
     WorkerCleanupRequest,
 )
+from agent.automation_plugins.mysql_repository import _registration_rows
 from agent.automation_plugins.package import (
     Ed25519PackageSigner,
     Ed25519TrustStore,
@@ -61,6 +62,7 @@ def _uploaded_package(
     *,
     plugin_id: str = "lifecycle_test_action",
     execution_platform: str = "server",
+    legacy_missing_effect: bool = False,
 ) -> tuple[bytes, Ed25519TrustStore]:
     source = resolve_first_party_manifests(ToolRegistry())["sync_scan_codes"].to_mapping()
     contract = copy.deepcopy(source["invocation_contracts"]["console"])
@@ -114,6 +116,8 @@ def _uploaded_package(
         ],
         "max_broker_calls": 2,
     }
+    if legacy_missing_effect:
+        source["runtime_permissions"]["broker_operations"][0].pop("effect")
     manifest = AutomationPluginManifest.from_mapping(source)
     private_key = ECC.generate(curve="Ed25519")
     package = build_signed_plugin_zip(
@@ -395,6 +399,46 @@ def test_upload_install_is_idempotent_and_shares_immutable_version(tmp_path: Pat
             actor_role="super_admin",
             request_id=request_id,
         )
+
+
+def test_legacy_signed_upload_keeps_raw_manifest_through_registration(
+    tmp_path: Path,
+) -> None:
+    package, trust = _uploaded_package(
+        plugin_id="legacy_lifecycle_action",
+        legacy_missing_effect=True,
+    )
+    verified = verify_signed_plugin_zip(package, verifier=trust)
+    signed_manifest = verified.manifest.to_signed_mapping()
+    operation = signed_manifest["runtime_permissions"]["broker_operations"][0]
+    assert "effect" not in operation
+    assert (
+        verified.manifest.runtime_permissions["broker_operations"][0]["effect"]
+        == "write"
+    )
+
+    repository = _MemoryPluginRepository()
+    service = AutomationPluginService(
+        repository=repository,
+        storage=_LoggingStorage(tmp_path / "plugins", repository.call_log),
+        environments=LockedVirtualEnvironmentBuilder(),
+        upload_signature_verifier=trust,
+    )
+    instance = service.install_upload(
+        package,
+        instance_name="legacy instance",
+        actor_id="admin-1",
+        actor_role="super_admin",
+        request_id=str(uuid.uuid4()),
+        transport_package_sha256=hashlib.sha256(package).hexdigest(),
+    )
+
+    version = instance.active_version
+    assert version.manifest == signed_manifest
+    assert version.manifest_sha256 == verified.manifest_sha256
+    _, persisted_version = _registration_rows(version, actor_id="admin-1")
+    assert persisted_version["manifest_json"] == signed_manifest
+    assert persisted_version["manifest_sha256"] == verified.manifest_sha256
 
 
 def test_failed_install_removes_unreferenced_materialization(tmp_path: Path) -> None:

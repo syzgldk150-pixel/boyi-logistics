@@ -18,6 +18,7 @@ from agent.automation_plugins.catalog import project_capability_from_snapshot
 from agent.automation_plugins.manifest import (
     AutomationPluginManifest,
     canonical_json_bytes,
+    runtime_descriptor_matches_signed_installation,
 )
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
@@ -377,8 +378,11 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                         "_plugin_runtime": dict(committed_runtime),
                     }
                 )
-                or canonical_json_bytes(observed_runtime_descriptor)
-                != canonical_json_bytes(expected_runtime_descriptor)
+                or not runtime_descriptor_matches_signed_installation(
+                    observed_runtime_descriptor,
+                    expected_runtime_descriptor,
+                    schema_version=committed_manifest.schema_version,
+                )
                 or canonical_json_bytes(
                     committed_snapshot.execution_metadata.get("governance_anchor")
                 )
