@@ -102,10 +102,18 @@ class Memory:
     def _conn(self):
         return pymysql.connect(**self._connect_params)
 
+    @property
+    def connection_factory(self):
+        """Expose the initialized DB factory to migration-owned repositories."""
+
+        if not hasattr(self, "_connect_params"):
+            raise RuntimeError("memory database is not initialized")
+        return self._conn
+
     def _validate_migrated_tables(self) -> None:
         conn = self._conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 cur.execute(
                     """
                     SELECT TABLE_NAME FROM information_schema.TABLES

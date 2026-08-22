@@ -32,6 +32,46 @@ class TMSAuthSyncError(Exception):
         super().__init__(str(result.get("error") or result.get("error_code") or "TMS auth required"))
 
 
+def require_explicit_account_id(params: dict[str, Any], *, label: str) -> str:
+    """Return the approved account id and reject aliases that disagree with it."""
+    account_id = str(params.get("account_id") or "").strip()
+    if not account_id:
+        raise ValueError(f"{label}必须提供唯一 account_id，禁止选择隐式默认账号")
+    account_alias = str(params.get("accountId") or "").strip()
+    if account_alias and account_alias != account_id:
+        raise ValueError(f"{label}的 accountId 与 account_id 不一致")
+    return account_id
+
+
+def bind_explicit_account_id(
+    request_params: dict[str, Any],
+    account_id: str,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    """Bind one approved account to a nested request without overwriting conflicts."""
+    bound = dict(request_params)
+    nested_ids = {
+        str(bound.get(key) or "").strip()
+        for key in ("account_id", "accountId")
+        if str(bound.get(key) or "").strip()
+    }
+    if nested_ids and nested_ids != {account_id}:
+        raise ValueError(f"{label}中的账号与控制平面批准的 account_id 不一致")
+    bound.pop("accountId", None)
+    bound["account_id"] = account_id
+    return bound
+
+
+def normalize_explicit_account_params(params: dict[str, Any], *, label: str) -> dict[str, Any]:
+    """Canonicalize the top-level account field before any external call."""
+    account_id = require_explicit_account_id(params, label=label)
+    normalized = dict(params)
+    normalized.pop("accountId", None)
+    normalized["account_id"] = account_id
+    return normalized
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip()

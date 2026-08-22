@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
-from urllib.parse import unquote
 
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
+from agent.tms_runtime.ronghui_user_context import decode_js_cookie_value, parse_ronghui_user_info_cookie
 from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -195,34 +194,11 @@ class BrowserAddressResolver:
 
     @staticmethod
     def _decode_js_cookie_value(value: Any) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return ""
-
-        def replace_unicode_escape(match: re.Match[str]) -> str:
-            try:
-                return chr(int(match.group(1), 16))
-            except Exception:
-                return match.group(0)
-
-        text = re.sub(r"%u([0-9A-Fa-f]{4})", replace_unicode_escape, text)
-        return unquote(text)
+        return decode_js_cookie_value(value)
 
     @classmethod
     def _parse_user_info_cookie(cls, value: Any) -> Dict[str, Any]:
-        raw = str(value or "").strip()
-        if not raw:
-            return {}
-        for candidate in (raw, cls._decode_js_cookie_value(raw)):
-            if not candidate:
-                continue
-            try:
-                data = json.loads(candidate)
-            except Exception:
-                continue
-            if isinstance(data, dict):
-                return data
-        return {}
+        return parse_ronghui_user_info_cookie(value)
 
     @staticmethod
     def _sanitize_user_info(value: Dict[str, Any]) -> Dict[str, str]:

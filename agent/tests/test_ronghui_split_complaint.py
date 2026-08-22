@@ -76,6 +76,134 @@ class RonghuiSplitComplaintTests(unittest.TestCase):
             results = ronghui_split_complaint.upload_split_complaints(object(), ["R1"])
         self.assertEqual("duplicate", results[0]["status"])
 
+    def test_submit_requires_authoritative_readback_after_save_ack(self):
+        class Locator:
+            @property
+            def first(self):
+                return self
+
+            def wait_for(self, **_kwargs):
+                return None
+
+        class FormFrame:
+            def locator(self, _selector):
+                return Locator()
+
+        class Response:
+            status = 200
+
+            @staticmethod
+            def json():
+                return {"success": True}
+
+        expected = {
+            "BILL_CODE": "R1",
+            "CATEGORY": "违规操作类",
+            "EXCEPTION_TYPE": "分批",
+            "REMARK": "问题子单：R1-1",
+            "EXCEPTIONSITE_SIDE_CODE": "site-code",
+            "EXCEPTIONSITE_SIDE": "目标网点",
+        }
+        proof = {
+            "source": "FIND_TAB_EXCEPTION_REGISTER_CS",
+            "external_id": "exception-1",
+        }
+        with patch.object(
+            ronghui_split_complaint,
+            "_open_complaint_form_frame",
+            return_value=FormFrame(),
+        ), patch.object(
+            ronghui_split_complaint,
+            "_fill_complaint_form",
+            return_value=expected,
+        ), patch.object(
+            ronghui_split_complaint,
+            "_upload_grid_attachment",
+            side_effect=["page1.png", "page2.png", "page2.png"],
+        ), patch.object(
+            ronghui_split_complaint,
+            "_click_save_and_wait",
+            return_value=("saved", Response()),
+        ), patch.object(
+            ronghui_split_complaint,
+            "verify_complaint_registration",
+            return_value=proof,
+        ) as verify, patch.object(
+            ronghui_split_complaint,
+            "_dismiss_first_visible_text",
+        ):
+            result = ronghui_split_complaint._submit_complaint(
+                object(),
+                object(),
+                bill_code="R1",
+                accused_site="目标网点",
+                problem_bills=["R1-1"],
+                page1_path="page1.png",
+                page2_path="page2.png",
+                complaint_list_url="https://tms.ronghuiwl.com/widget/home",
+            )
+
+        self.assertTrue(result.saved)
+        self.assertTrue(result.verified)
+        self.assertEqual("exception-1", result.external_id)
+        self.assertEqual(expected, verify.call_args.kwargs["expected"])
+
+    def test_duplicate_warning_is_not_success_without_readback(self):
+        class Locator:
+            @property
+            def first(self):
+                return self
+
+            def wait_for(self, **_kwargs):
+                return None
+
+        class FormFrame:
+            def locator(self, _selector):
+                return Locator()
+
+        expected = {
+            "BILL_CODE": "R1",
+            "CATEGORY": "违规操作类",
+            "EXCEPTION_TYPE": "分批",
+            "REMARK": "问题子单：R1-1",
+            "EXCEPTIONSITE_SIDE_CODE": "site-code",
+            "EXCEPTIONSITE_SIDE": "目标网点",
+        }
+        with patch.object(
+            ronghui_split_complaint,
+            "_open_complaint_form_frame",
+            return_value=FormFrame(),
+        ), patch.object(
+            ronghui_split_complaint,
+            "_fill_complaint_form",
+            return_value=expected,
+        ), patch.object(
+            ronghui_split_complaint,
+            "_upload_grid_attachment",
+            side_effect=["page1.png", "page2.png", "page2.png"],
+        ), patch.object(
+            ronghui_split_complaint,
+            "_click_save_and_wait",
+            return_value=("duplicate", None),
+        ), patch.object(
+            ronghui_split_complaint,
+            "verify_complaint_registration",
+            side_effect=RuntimeError("not found"),
+        ), patch.object(
+            ronghui_split_complaint,
+            "_dismiss_first_visible_text",
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not confirmed"):
+                ronghui_split_complaint._submit_complaint(
+                    object(),
+                    object(),
+                    bill_code="R1",
+                    accused_site="目标网点",
+                    problem_bills=["R1-1"],
+                    page1_path="page1.png",
+                    page2_path="page2.png",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

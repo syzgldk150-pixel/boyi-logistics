@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+from contextvars import ContextVar, Token
 from concurrent.futures import Future
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from agent.direct_tool_router import (
+    FIRST_PARTY_FEISHU_ROUTE_KEYS,
     direct_tool_request_from_text,
     format_tool_reply,
     format_tool_reply_messages,
@@ -23,7 +27,11 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
     parse_verify_code,
 )
+from agent.orchestration.automation_project_entrypoints import (
+    AutomationProjectEntrypoints,
+)
 from agent.pending_actions import clear_pending, get_pending, set_pending
+from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from feishu.notify import remember_chat_id
 from shared.redaction import redact_text
@@ -52,9 +60,48 @@ R7_DEPARTURE_DEFAULT_PLATE = "湘AK6980"
 SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
 SPLIT_SELECTION_TTL = 600
 SPLIT_TOOL_NAME = "split_pending_problem_upload"
+SPLIT_PREVIEW_TOOL_NAME = "preview_split_pending_problems"
 FEISHU_SAFE_TEXT_BYTES = 3500
 ACCOUNT_AUTH_SESSION_PREFIX = "account:"
 ADMIN_REQUEST_TIMEOUT = 90.0
+_FEISHU_ROUTE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$")
+
+
+_AUTOMATION_PROJECT_ENTRYPOINTS: AutomationProjectEntrypoints | None = None
+_FEISHU_APPROVAL_RUNTIME: Any | None = None
+
+
+def bind_automation_project_entrypoints(
+    service: AutomationProjectEntrypoints | None,
+) -> None:
+    """Bind the sole trusted project invocation adapter for Feishu events."""
+
+    global _AUTOMATION_PROJECT_ENTRYPOINTS
+    if service is not None and not isinstance(service, AutomationProjectEntrypoints):
+        raise TypeError("service must be AutomationProjectEntrypoints or None")
+    _AUTOMATION_PROJECT_ENTRYPOINTS = service
+
+
+def bind_feishu_approval_runtime(service: Any | None) -> None:
+    """Bind the database-backed Feishu administrator and approval runtime."""
+
+    global _FEISHU_APPROVAL_RUNTIME
+    _FEISHU_APPROVAL_RUNTIME = service
+
+
+@dataclass(frozen=True)
+class FeishuCommandContext:
+    """Trusted event identity propagated to every command submitted for one event."""
+
+    event_id: str
+    actor_id: str
+    chat_id: str
+
+
+_COMMAND_CONTEXT: ContextVar[FeishuCommandContext | None] = ContextVar(
+    "feishu_command_context",
+    default=None,
+)
 MENU_KEY_ALIASES = {
     "scan": "扫描",
     "sync_scan": "扫描",
@@ -63,6 +110,8 @@ MENU_KEY_ALIASES = {
     "get_and_scan": "扫描",
 }
 RUNNING_CANCEL_PENDING_TTL = 300
+ACTIVE_RUN_PENDING_TTL = 21600
+RUN_TERMINAL_STATUSES = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
 TOOL_DISPLAY_NAMES = {
     "sync_scan_codes": "扫描任务",
     "sync_arrival_stats": "统计到货数据任务",
@@ -178,13 +227,143 @@ def _split_selected_lines(selected: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _split_execution_params(pending: dict[str, Any], selected_bill_codes: list[str]) -> dict[str, Any]:
+def _split_execution_inputs(
+    pending: dict[str, Any],
+    selected_bill_codes: list[str],
+) -> dict[str, Any]:
     return {
         "dry_run": False,
-        "account_id": pending.get("account_id") or "ronghui_default",
         "selected_bill_codes": selected_bill_codes,
         "preview_fingerprint": str(pending.get("preview_fingerprint") or ""),
     }
+
+
+def _account_field_name(value: Any) -> bool:
+    field_name = str(value or "").strip().lower()
+    return (
+        field_name in {"account_id", "account_ids"}
+        or field_name.endswith(("_account_id", "_account_ids"))
+    )
+
+
+def _contains_account_override(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            _account_field_name(key) or _contains_account_override(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_account_override(item) for item in value)
+    return False
+
+
+def _automation_entrypoints() -> AutomationProjectEntrypoints:
+    service = _AUTOMATION_PROJECT_ENTRYPOINTS
+    if service is None:
+        raise OrchestrationError(
+            "PROJECT_INVOKE_UNAVAILABLE",
+            "Automation project entrypoints are not initialized",
+        )
+    return service
+
+
+def _safe_feishu_route_key(value: Any) -> str:
+    route_key = str(value or "").strip()
+    if not _FEISHU_ROUTE_KEY_RE.fullmatch(route_key):
+        raise OrchestrationError(
+            "PROJECT_ROUTE_INVALID",
+            "Automation project route key is invalid",
+        )
+    return route_key
+
+
+def _project_preview_params(route_key: str, tool_name: str) -> dict[str, Any]:
+    service = _automation_entrypoints()
+    roles = (
+        ("account_id", "daxiang_s_account_id")
+        if tool_name == "preview_self_pickup_problems"
+        else ("account_id",)
+    )
+    bindings = service.require_feishu_account_bindings(route_key, *roles)
+    params: dict[str, Any] = {}
+    for role in roles:
+        binding = bindings[role]
+        if not isinstance(binding, str):
+            raise OrchestrationError(
+                "PROJECT_ACCOUNT_BINDING_INVALID",
+                "Preview requires one exact Business Account for each role",
+            )
+        params[role] = binding
+    return params
+
+
+async def _invoke_automation_project_and_reply(
+    *,
+    route_key: str,
+    dynamic_inputs: dict[str, Any] | None,
+    receive_id: str,
+    receive_id_type: str = "chat_id",
+) -> dict[str, Any] | None:
+    """Invoke one exact committed project from a verified Feishu event."""
+
+    context = _COMMAND_CONTEXT.get()
+    try:
+        safe_route_key = _safe_feishu_route_key(route_key)
+        if context is None or not context.event_id:
+            raise OrchestrationError(
+                "STABLE_EVENT_ID_REQUIRED",
+                "A stable verified Feishu event id is required",
+            )
+        inputs = dict(dynamic_inputs or {})
+        if _contains_account_override(inputs):
+            raise OrchestrationError(
+                "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN",
+                "Feishu cannot override project account bindings",
+            )
+        result = await _automation_entrypoints().invoke_feishu(
+            route_key=safe_route_key,
+            event_id=context.event_id,
+            sender_id=context.actor_id,
+            chat_id=context.chat_id,
+            envelope={"body": inputs, "query": {}},
+        )
+    except OrchestrationError as exc:
+        logger.warning(
+            "trusted Feishu automation rejected | route=%s | code=%s",
+            str(route_key or "")[:191],
+            exc.code,
+        )
+        await _reply_text(
+            receive_id,
+            f"自动化任务未提交（{exc.code}），请检查项目设置后重试。",
+            receive_id_type=receive_id_type,
+            reply_type="automation_project_rejected",
+        )
+        return None
+
+    status = str(result.get("status") or "").strip().upper()
+    run_id = str(result.get("run_id") or "").strip()
+    if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
+        reply = "自动化任务已提交，正在等待审批。"
+        reply_type = "automation_project_waiting_approval"
+    elif status == "COMPLETED":
+        reply = "自动化任务已完成。"
+        reply_type = "automation_project_completed"
+    elif status == "BLOCKED_LOGIN":
+        reply = "自动化任务已阻塞：绑定的业务账号需要恢复登录。"
+        reply_type = "automation_project_blocked_login"
+    else:
+        reply = f"自动化任务当前状态：{status or 'UNKNOWN'}。"
+        reply_type = "automation_project_status"
+    if run_id:
+        reply = f"{reply}\nRun：{run_id}"
+    await _reply_text(
+        receive_id,
+        reply,
+        receive_id_type=receive_id_type,
+        reply_type=reply_type,
+    )
+    return result
 
 
 async def _execute_split_formal(
@@ -195,16 +374,22 @@ async def _execute_split_formal(
     *,
     running_message: str,
 ) -> None:
-    if _running_tool_info(agent, SPLIT_TOOL_NAME).get("running"):
-        await _reply_text(chat_id, running_message, reply_type="split_confirmation_running")
+    del agent, running_message
+    if _contains_account_override(pending):
+        clear_pending(chat_id)
+        await _reply_text(
+            chat_id,
+            "旧版确认状态已失效，请重新发送“分批”。",
+            reply_type="split_confirmation_stale",
+        )
         return
+    route_key = str(pending.get("automation_route_key") or "").strip()
+    dynamic_inputs = _split_execution_inputs(pending, selected_bill_codes)
     clear_pending(chat_id)
-    await _reply_text(chat_id, "程序正在执行：分批差错及问题件")
-    await _execute_and_reply(
-        agent,
-        chat_id,
-        SPLIT_TOOL_NAME,
-        _split_execution_params(pending, selected_bill_codes),
+    await _invoke_automation_project_and_reply(
+        route_key=route_key,
+        dynamic_inputs=dynamic_inputs,
+        receive_id=chat_id,
     )
 
 
@@ -232,7 +417,22 @@ def _normalize_plate_numbers(value: Any, *, default: str = R7_DEPARTURE_DEFAULT_
             continue
         seen.add(plate)
         plates.append(plate)
-    return plates or [default]
+    return plates or ([default] if default else [])
+
+
+def _committed_r7_departure_config(route_key: str) -> tuple[list[str], dict[str, Any]]:
+    route = _automation_entrypoints().describe_feishu_route(route_key)
+    config = dict(route.project_config)
+    raw_plates = config.get("plate_numbers")
+    if raw_plates in (None, ""):
+        raw_plates = config.get("plate_number")
+    plate_numbers = _normalize_plate_numbers(raw_plates, default="")
+    if not plate_numbers:
+        raise OrchestrationError(
+            "PROJECT_CONFIGURATION_INVALID",
+            "R7 departure project has no configured plate number",
+        )
+    return plate_numbers, config
 
 
 def _r7_departure_saved_params(agent: Any) -> dict[str, Any]:
@@ -699,18 +899,126 @@ async def _execute_tool_with_stale_auth_retry(
     tool_name: str,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    result = await agent.execute_tool(tool_name, params)
+    result = await _submit_tool_command(agent, tool_name, params)
     if not _auth_state(result):
         return result
     auth_session = _auth_session_for_result(tool_name, params, result)
     if not await _auth_session_currently_authenticated(auth_session):
         return result
     logger.warning(
-        "Tool reported auth failure but forced admin status is authenticated; retrying once. tool=%s session=%s",
+        "Tool reported auth failure while the forced account status is authenticated; "
+        "leaving the governed Run blocked instead of retrying it. tool=%s session=%s",
         tool_name,
         auth_session,
     )
-    return await agent.execute_tool(tool_name, params)
+    # Never blind-retry a governed write. AccountManager publishes the real
+    # session transition and ControlPlaneService resumes that same blocked Run.
+    return result
+
+
+def _legacy_read_request_id(tool_name: str, params: dict[str, Any]) -> str:
+    """Stable identifier only for non-production direct helper/test calls."""
+
+    encoded = json.dumps(
+        {"tool_name": tool_name, "params": params},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return f"legacy-read-{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _tool_operation_type(agent: Any, tool_name: str) -> str:
+    registry = getattr(agent, "registry", None)
+    if registry is None or not hasattr(registry, "get_capability"):
+        return ""
+    try:
+        capability = registry.get_capability(tool_name)
+    except Exception:
+        logger.warning("Failed to resolve governed capability for tool=%s", tool_name, exc_info=True)
+        return "unknown"
+    if not isinstance(capability, dict):
+        return "unknown"
+    return str(capability.get("operation_type") or "unknown").strip()
+
+
+async def _submit_tool_command(
+    agent: Any,
+    tool_name: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Submit a Feishu command only through the injected Agent facade."""
+
+    context = _COMMAND_CONTEXT.get()
+    operation_type = _tool_operation_type(agent, tool_name)
+    is_write = operation_type not in {"", "read", "compute"}
+    if context is None and is_write:
+        return {
+            "success": False,
+            "error_code": "FEISHU_EVENT_ID_REQUIRED",
+            "error": "Feishu write commands require a stable event id",
+        }
+
+    event_id = context.event_id if context is not None else _legacy_read_request_id(tool_name, params)
+    actor_id = context.actor_id if context is not None else "feishu-legacy-read"
+    actor = Actor(
+        ActorType.FEISHU_USER,
+        actor_id,
+        roles=(),
+        authenticated_by="feishu_event",
+    )
+    keyword_arguments = {
+        "actor": actor,
+        "source": "feishu",
+        "idempotency_key": f"feishu:{event_id}",
+        "execution_context": {
+            "feishu_chat_id": context.chat_id if context is not None else "",
+            "feishu_event_id": event_id,
+        },
+    }
+
+    submitted_run_id = ""
+
+    def remember_submission(receipt: Any) -> None:
+        nonlocal submitted_run_id
+        if context is None or not isinstance(receipt, dict):
+            return
+        submitted_run_id = str(receipt.get("run_id") or "").strip()
+        if not submitted_run_id:
+            return
+        set_pending(
+            context.chat_id,
+            {
+                "type": "active_run",
+                "run_id": submitted_run_id,
+                "tool_name": tool_name,
+                "description": _tool_display_name(tool_name),
+                "originator_actor_id": context.actor_id,
+                "status": str(receipt.get("status") or "RECEIVED"),
+            },
+            ttl_sec=ACTIVE_RUN_PENDING_TTL,
+        )
+
+    result = await agent.execute_tool(
+        tool_name,
+        params,
+        **keyword_arguments,
+        on_submitted=remember_submission,
+    )
+    if context is not None and isinstance(result, dict):
+        run_id = str(result.get("run_id") or submitted_run_id).strip()
+        status = str(result.get("status") or "").strip().upper()
+        current = get_pending(context.chat_id)
+        if (
+            run_id
+            and status in RUN_TERMINAL_STATUSES
+            and isinstance(current, dict)
+            and current.get("type") == "active_run"
+            and str(current.get("run_id") or "") == run_id
+        ):
+            clear_pending(context.chat_id)
+    return result
 
 
 def _message_kind(text: str) -> str:
@@ -751,14 +1059,7 @@ def _running_tool_info(agent: Any, tool_name: str) -> dict[str, Any]:
             info = agent.running_tool_info(tool_name)
             if isinstance(info, dict):
                 return info
-        executor = getattr(agent, "executor", None)
-        if executor is not None and hasattr(executor, "running_tool_info"):
-            info = executor.running_tool_info(tool_name)
-            if isinstance(info, dict):
-                return info
         if hasattr(agent, "is_tool_running") and agent.is_tool_running(tool_name):
-            return {"running": True, "started_at": "", "cancel_requested": False}
-        if executor is not None and hasattr(executor, "is_tool_running") and executor.is_tool_running(tool_name):
             return {"running": True, "started_at": "", "cancel_requested": False}
     except Exception:
         logger.warning("检查工具运行状态失败: tool=%s", tool_name, exc_info=True)
@@ -776,19 +1077,8 @@ async def _reply_if_tool_running(
     if not info.get("running"):
         return False
     label = _tool_display_name(tool_name)
-    started_at = str(info.get("started_at") or "")
     if receive_id_type == "chat_id":
-        set_pending(
-            receive_id,
-            {
-                "type": "cancel_running_tool",
-                "tool_name": tool_name,
-                "description": label,
-                "started_at": started_at,
-            },
-            ttl_sec=RUNNING_CANCEL_PENDING_TTL,
-        )
-        suffix = '请先等待完成，或回复"取消"取消当前任务。'
+        suffix = "请由原发起人在绑定该 Run 的会话中取消，或到事项中心处理。"
     else:
         suffix = "请先等待完成，或到控制台取消当前任务。"
     await _reply_text(
@@ -817,6 +1107,36 @@ async def _cancel_running_tool_and_reply(
         return
     message = str(result.get("message") or ("已发送取消请求，正在停止脚本。" if result.get("ok") else "取消失败")).strip()
     await _reply_text(chat_id, f"{label}：{message}", reply_type=f"tool_cancel:{tool_name}")
+
+
+async def _cancel_active_run_and_reply(
+    agent: Any,
+    chat_id: str,
+    sender_id: str,
+    pending: dict[str, Any],
+) -> None:
+    run_id = str(pending.get("run_id") or "").strip()
+    originator = str(pending.get("originator_actor_id") or "").strip()
+    context = _COMMAND_CONTEXT.get()
+    if (
+        context is None
+        or context.actor_id != str(sender_id or "").strip()
+        or not run_id
+        or not originator
+        or originator != context.actor_id
+    ):
+        await _reply_text(chat_id, "取消失败：无法验证原任务发起人。", reply_type="run_cancel_forbidden")
+        return
+    result = await agent.cancel_feishu_run(run_id, actor_id=context.actor_id)
+    if result.get("ok"):
+        clear_pending(chat_id)
+        await _reply_text(chat_id, "已发送取消请求，正在停止原事项运行。", reply_type="run_cancel")
+        return
+    await _reply_text(
+        chat_id,
+        f"取消失败：{str(result.get('error') or '未知错误')[:200]}",
+        reply_type="run_cancel",
+    )
 
 
 def _is_auth_required(result: dict[str, Any]) -> bool:
@@ -952,15 +1272,11 @@ async def _send_code_and_wait(
     if authenticated and not pending_code:
         clear_pending(chat_id)
         if resume_tool:
-            if agent is None:
-                from feishu.bot import get_agent_core
-
-                agent = get_agent_core()
-            if not agent:
-                await _reply_text(chat_id, "登录成功，但 Agent 尚未初始化，请重新发送任务。", reply_type="login_success")
-                return
-            await _reply_text(chat_id, "登录成功，继续执行原任务...", reply_type="login_success")
-            await _execute_and_reply(agent, chat_id, resume_tool, resume_params or {})
+            await _reply_text(
+                chat_id,
+                "登录成功，原事项运行已恢复；请在事项中心查看进度。",
+                reply_type="login_success",
+            )
             return
         await _reply_text(chat_id, "登录成功", reply_type="login_success")
         return
@@ -1076,6 +1392,13 @@ async def _execute_and_reply(
     tool_name: str,
     params: dict[str, Any],
 ) -> None:
+    if tool_name in FIRST_PARTY_FEISHU_ROUTE_KEYS:
+        await _reply_text(
+            chat_id,
+            "旧版自动化确认已失效，请重新发起该任务。",
+            reply_type="automation_legacy_execution_rejected",
+        )
+        return
     if await _reply_if_tool_running(agent, chat_id, tool_name):
         return
     try:
@@ -1102,12 +1425,19 @@ async def _execute_and_reply(
     await _reply_tool_result(chat_id, tool_name, result)
 
 
-async def _handle_r7_departure_direct(agent: Any, chat_id: str, tool_name: str) -> None:
-    params = _r7_departure_saved_params(agent)
-    plate_numbers = _normalize_plate_numbers(
-        params.get("plate_numbers") if params.get("plate_numbers") not in (None, "") else params.get("plate_number")
-    )
-    params["_feishu"] = True
+async def _handle_r7_departure_direct(
+    chat_id: str,
+    route_key: str,
+) -> None:
+    try:
+        plate_numbers, config = _committed_r7_departure_config(route_key)
+    except OrchestrationError as exc:
+        await _reply_text(
+            chat_id,
+            f"R7 发车项目配置不可用（{exc.code}），请在自动化设置中检查。",
+            reply_type="r7_departure_project_rejected",
+        )
+        return
 
     if len(plate_numbers) > 1:
         clear_pending(chat_id)
@@ -1115,20 +1445,30 @@ async def _handle_r7_departure_direct(agent: Any, chat_id: str, tool_name: str) 
             chat_id,
             {
                 "type": "r7_departure_plate_choice",
-                "tool_name": tool_name,
-                "params": params,
+                "automation_route_key": route_key,
                 "plate_numbers": plate_numbers,
             },
             ttl_sec=R7_DEPARTURE_PENDING_TTL,
         )
-        await _reply_text(chat_id, _format_r7_departure_plate_choice(plate_numbers, params))
+        await _reply_text(
+            chat_id,
+            _format_r7_departure_plate_choice(plate_numbers, config),
+        )
         return
 
-    params["plate_numbers"] = plate_numbers
-    if await _reply_if_tool_running(agent, chat_id, tool_name):
-        return
-    await _reply_text(chat_id, "程序正在执行")
-    await _execute_and_reply(agent, chat_id, tool_name, params)
+    await _invoke_automation_project_and_reply(
+        route_key=route_key,
+        dynamic_inputs={"plate_numbers": plate_numbers},
+        receive_id=chat_id,
+    )
+
+
+def _event_id_from_sdk_event(event: Any, *, fallback: str = "") -> str:
+    header = getattr(event, "header", None)
+    if header is None:
+        header = getattr(getattr(event, "event", None), "header", None)
+    event_id = str(getattr(header, "event_id", "") or "").strip()
+    return event_id or str(fallback or "").strip()
 
 
 def handle_im_message(event):
@@ -1138,6 +1478,7 @@ def handle_im_message(event):
         msg_type = msg.message_type
         chat_id = msg.chat_id
         sender_id = event.event.sender.sender_id.open_id
+        event_id = _event_id_from_sdk_event(event)
         remember_chat_id(chat_id)
 
         logger.info("收到消息: type=%s, chat=%s, sender=%s", msg_type, chat_id, sender_id)
@@ -1146,13 +1487,14 @@ def handle_im_message(event):
             chat_id=chat_id,
             sender_id=sender_id,
             raw_content=msg.content,
+            event_id=event_id,
         ))
 
     except Exception as e:
         logger.error("消息处理异常: %s", str(e)[:200])
 
 
-def queue_im_message_payload(event_payload: dict[str, Any]) -> bool:
+def queue_im_message_payload(event_payload: dict[str, Any], *, event_id: str = "") -> bool:
     """将 Webhook 文本/图片消息投递到当前事件循环。"""
     message = event_payload.get("message") or {}
     sender = event_payload.get("sender") or {}
@@ -1160,6 +1502,7 @@ def queue_im_message_payload(event_payload: dict[str, Any]) -> bool:
     msg_type = str(message.get("message_type", "") or "").strip()
     chat_id = str(message.get("chat_id", "") or "").strip()
     sender_id = _extract_open_or_user_id(sender.get("sender_id"))
+    stable_event_id = str(event_id or "").strip()
 
     if not msg_type or not chat_id:
         logger.warning("飞书 Webhook 消息缺少 message_type/chat_id: %s", event_payload)
@@ -1172,6 +1515,7 @@ def queue_im_message_payload(event_payload: dict[str, Any]) -> bool:
         chat_id=chat_id,
         sender_id=sender_id,
         raw_content=message.get("content"),
+        event_id=stable_event_id,
     ))
     return True
 
@@ -1186,16 +1530,18 @@ def handle_bot_menu(event):
         user_id = str(getattr(operator_id, "user_id", "") or "").strip()
         receive_id = open_id or user_id
         receive_id_type = "open_id" if open_id else "user_id"
+        event_id = _event_id_from_sdk_event(event)
         _submit_with_future_callback(_handle_menu_action(
             event_key=event_key,
             receive_id=receive_id,
             receive_id_type=receive_id_type,
+            event_id=event_id,
         ))
     except Exception as e:
         logger.error("菜单事件处理异常: %s", str(e)[:200])
 
 
-def queue_bot_menu_payload(event_payload: dict[str, Any]) -> bool:
+def queue_bot_menu_payload(event_payload: dict[str, Any], *, event_id: str = "") -> bool:
     """将 Webhook 菜单事件投递到当前事件循环。"""
     event_key = str(event_payload.get("event_key", "") or "").strip()
     operator = event_payload.get("operator") or {}
@@ -1214,11 +1560,41 @@ def queue_bot_menu_payload(event_payload: dict[str, Any]) -> bool:
         event_key=event_key,
         receive_id=receive_id,
         receive_id_type=receive_id_type,
+        event_id=str(event_id or "").strip(),
     ))
     return True
 
 
 async def _handle_im_message_data(
+    *,
+    msg_type: str,
+    chat_id: str,
+    sender_id: str,
+    raw_content: Any,
+    event_id: str = "",
+):
+    stable_event_id = str(event_id or "").strip()
+    token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
+        FeishuCommandContext(
+            event_id=stable_event_id,
+            actor_id=str(sender_id or "unknown-feishu-user"),
+            chat_id=str(chat_id or ""),
+        )
+        if stable_event_id
+        else None
+    )
+    try:
+        await _handle_im_message_data_inner(
+            msg_type=msg_type,
+            chat_id=chat_id,
+            sender_id=sender_id,
+            raw_content=raw_content,
+        )
+    finally:
+        _COMMAND_CONTEXT.reset(token)
+
+
+async def _handle_im_message_data_inner(
     *,
     msg_type: str,
     chat_id: str,
@@ -1243,10 +1619,47 @@ async def _handle_menu_action(
     event_key: str,
     receive_id: str,
     receive_id_type: str,
+    event_id: str = "",
+):
+    stable_event_id = str(event_id or "").strip()
+    token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
+        FeishuCommandContext(
+            event_id=stable_event_id,
+            actor_id=str(receive_id or "unknown-feishu-user"),
+            chat_id=str(receive_id or ""),
+        )
+        if stable_event_id
+        else None
+    )
+    try:
+        await _handle_menu_action_inner(
+            event_key=event_key,
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+        )
+    finally:
+        _COMMAND_CONTEXT.reset(token)
+
+
+async def _handle_menu_action_inner(
+    *,
+    event_key: str,
+    receive_id: str,
+    receive_id_type: str,
 ):
     menu_action = _menu_action_from_key(event_key)
     if not menu_action:
         logger.warning("未识别的机器人菜单 event_key: %s", event_key)
+        return
+
+    route_key = str(menu_action.get("automation_route_key") or "").strip()
+    if route_key:
+        await _invoke_automation_project_and_reply(
+            route_key=route_key,
+            dynamic_inputs=dict(menu_action.get("dynamic_inputs") or {}),
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+        )
         return
 
     await _run_deferred_tool(
@@ -1261,6 +1674,21 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     """处理文本消息并回复。优先处理待确认动作 / 登录恢复，其次确定性命令，最后交给 Agent。"""
     from feishu.bot import get_agent_core
     from feishu.reply_formatter import format_reply
+
+    if _FEISHU_APPROVAL_RUNTIME is not None:
+        try:
+            approval_reply = await asyncio.to_thread(
+                _FEISHU_APPROVAL_RUNTIME.handle_text,
+                str(sender_id or ""),
+                str(chat_id or ""),
+                str(text or ""),
+            )
+        except OrchestrationError as exc:
+            await _reply_text(chat_id, f"审批处理失败（{exc.code}）。")
+            return
+        if approval_reply is not None:
+            await _reply_text(chat_id, approval_reply, reply_type="feishu_approval")
+            return
 
     agent = get_agent_core()
     if not agent:
@@ -1289,7 +1717,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     cancel_tool_name = _cancel_tool_name_from_text(text)
     if cancel_tool_name:
         logger.info("feishu route | chat=%s | route=cancel_running_tool | tool=%s", chat_id, cancel_tool_name)
-        await _cancel_running_tool_and_reply(agent, chat_id, cancel_tool_name)
+        if isinstance(pending, dict) and pending.get("type") == "active_run":
+            if str(pending.get("tool_name") or "") == cancel_tool_name:
+                await _cancel_active_run_and_reply(agent, chat_id, sender_id, pending)
+                return
+        await _reply_text(chat_id, "取消失败：当前消息没有绑定可取消的事项运行。")
         return
 
     if str(text or "").strip() == "分批" and pending is not None:
@@ -1302,10 +1734,30 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         ptype = str(pending.get("type") or "confirm_action")
         logger.info("feishu route | chat=%s | route=pending | pending=%s", chat_id, ptype)
 
+        if ptype == "active_run":
+            if is_cancel_text(text):
+                await _cancel_active_run_and_reply(agent, chat_id, sender_id, pending)
+                return
+            await _reply_text(
+                chat_id,
+                f"原事项仍在处理中（Run {str(pending.get('run_id') or '')}）。如需停止，请回复“取消”。",
+            )
+            return
+
         if ptype == "split_pending_selection":
             if is_cancel_text(text):
                 clear_pending(chat_id)
                 await _reply_text(chat_id, "已取消：分批差错及问题件")
+                return
+            if _contains_account_override(pending) or not str(
+                pending.get("automation_route_key") or ""
+            ).strip():
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "旧版分批预览已失效，请重新发送“分批”。",
+                    reply_type="split_preview_stale",
+                )
                 return
             candidates = pending.get("candidates") if isinstance(pending.get("candidates"), list) else []
             if is_confirm_text(text):
@@ -1344,9 +1796,9 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 {
                     "type": "split_pending_confirmation",
                     "tool_name": SPLIT_TOOL_NAME,
+                    "automation_route_key": pending.get("automation_route_key"),
                     "selected_bill_codes": selected_codes,
                     "preview_fingerprint": pending.get("preview_fingerprint"),
-                    "account_id": pending.get("account_id") or "ronghui_default",
                     "selected": selected,
                 },
                 ttl_sec=SPLIT_SELECTION_TTL,
@@ -1379,15 +1831,34 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
         if ptype == "confirm_action":
             if is_confirm_text(text):
+                route_key = str(pending.get("automation_route_key") or "").strip()
+                dynamic_inputs = dict(pending.get("dynamic_inputs") or {})
+                legacy_tool_name = str(pending.get("tool_name") or "").strip()
+                legacy_params = dict(pending.get("params") or {})
+                has_account_override = _contains_account_override(pending)
                 clear_pending(chat_id)
-                if await _reply_if_tool_running(agent, chat_id, pending["tool_name"]):
+                if route_key:
+                    if has_account_override:
+                        await _reply_text(
+                            chat_id,
+                            "旧版确认状态已失效，请重新发起自动化任务。",
+                            reply_type="automation_confirmation_stale",
+                        )
+                        return
+                    await _invoke_automation_project_and_reply(
+                        route_key=route_key,
+                        dynamic_inputs=dynamic_inputs,
+                        receive_id=chat_id,
+                    )
+                    return
+                if await _reply_if_tool_running(agent, chat_id, legacy_tool_name):
                     return
                 await _reply_text(chat_id, "程序正在执行")
                 await _execute_and_reply(
                     agent,
                     chat_id,
-                    pending["tool_name"],
-                    pending.get("params") or {},
+                    legacy_tool_name,
+                    legacy_params,
                 )
                 return
             if is_cancel_text(text):
@@ -1399,12 +1870,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         elif ptype == "cancel_running_tool":
             if is_cancel_text(text):
                 clear_pending(chat_id)
-                await _cancel_running_tool_and_reply(
-                    agent,
-                    chat_id,
-                    str(pending.get("tool_name") or ""),
-                    started_at=str(pending.get("started_at") or ""),
-                )
+                await _reply_text(chat_id, "旧取消状态已失效，请从事项中心按 Run 取消。")
                 return
             if is_confirm_text(text):
                 clear_pending(chat_id)
@@ -1439,25 +1905,46 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 clear_pending(chat_id)
                 await _reply_text(chat_id, "已取消：R7 发车打卡")
                 return
-            plate_numbers = _normalize_plate_numbers(pending.get("plate_numbers"))
+            route_key = str(pending.get("automation_route_key") or "").strip()
+            if _contains_account_override(pending) or not route_key:
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "旧版车牌选择状态已失效，请重新发送 R7 发车打卡指令。",
+                )
+                return
+            try:
+                plate_numbers, config = _committed_r7_departure_config(route_key)
+            except OrchestrationError as exc:
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    f"R7 发车项目配置已变化（{exc.code}），请重新发起。",
+                )
+                return
+            if plate_numbers != _normalize_plate_numbers(
+                pending.get("plate_numbers"),
+                default="",
+            ):
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "R7 发车项目的车牌配置已变化，请重新发起。",
+                )
+                return
             selected_plate = _resolve_r7_departure_plate_choice(text, plate_numbers)
             if selected_plate:
                 clear_pending(chat_id)
-                params = dict(pending.get("params") or {})
-                params["_feishu"] = True
-                params["plate_numbers"] = [selected_plate]
-                tool_name = pending.get("tool_name") or R7_DEPARTURE_TASK_ID
-                if await _reply_if_tool_running(agent, chat_id, tool_name):
-                    return
-                await _reply_text(chat_id, f"程序正在执行：{selected_plate}")
-                await _execute_and_reply(
-                    agent,
-                    chat_id,
-                    tool_name,
-                    params,
+                await _invoke_automation_project_and_reply(
+                    route_key=route_key,
+                    dynamic_inputs={"plate_numbers": [selected_plate]},
+                    receive_id=chat_id,
                 )
                 return
-            await _reply_text(chat_id, _format_r7_departure_plate_choice(plate_numbers, pending.get("params") or {}))
+            await _reply_text(
+                chat_id,
+                _format_r7_departure_plate_choice(plate_numbers, config),
+            )
             return
 
         elif ptype == "confirm_login_for_resume":
@@ -1515,11 +2002,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     )
                     return
                 resume_tool = pending.get("resume_tool")
-                resume_params = pending.get("resume_params") or {}
                 clear_pending(chat_id)
                 if resume_tool:
-                    await _reply_text(chat_id, "登录成功，继续执行原任务...")
-                    await _execute_and_reply(agent, chat_id, resume_tool, resume_params)
+                    await _reply_text(
+                        chat_id,
+                        "登录成功，原事项运行已恢复；请在事项中心查看进度。",
+                    )
                 else:
                     await _reply_text(chat_id, "登录成功")
                 return
@@ -1552,6 +2040,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         tool_name = direct_request["tool_name"]
         params = direct_request["params"]
         mode = direct_request["mode"]
+        automation_route_key = str(
+            direct_request.get("automation_route_key") or ""
+        ).strip()
+        dynamic_inputs = direct_request.get("dynamic_inputs")
+        if not isinstance(dynamic_inputs, dict):
+            dynamic_inputs = {}
         confirm_intent = direct_request.get("confirm_intent")
         selection_intent = direct_request.get("selection_intent")
         local_result = direct_request.get("local_result")
@@ -1562,8 +2056,27 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         if mode == "r7_departure_choice":
-            await _handle_r7_departure_direct(agent, chat_id, tool_name)
+            await _handle_r7_departure_direct(chat_id, automation_route_key)
             return
+
+        if mode == "automation_project":
+            await _invoke_automation_project_and_reply(
+                route_key=automation_route_key,
+                dynamic_inputs=dynamic_inputs,
+                receive_id=chat_id,
+            )
+            return
+
+        if mode == "automation_preview":
+            try:
+                params = _project_preview_params(automation_route_key, tool_name)
+            except OrchestrationError as exc:
+                await _reply_text(
+                    chat_id,
+                    f"自动化预览不可用（{exc.code}），请检查项目账号绑定。",
+                    reply_type="automation_preview_rejected",
+                )
+                return
 
         if mode == "deferred":
             if await _reply_if_tool_running(agent, chat_id, tool_name):
@@ -1604,11 +2117,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 {
                     "type": "confirm_action",
                     "tool_name": tool_name,
-                    "params": confirm_intent.get("execute_params") or {},
+                    "automation_route_key": automation_route_key,
+                    "dynamic_inputs": confirm_intent.get("dynamic_inputs") or {},
                     "description": confirm_intent.get("description") or tool_name,
                 },
             )
-        if selection_intent and tool_name == SPLIT_TOOL_NAME and result.get("success"):
+        if selection_intent and tool_name == SPLIT_PREVIEW_TOOL_NAME and result.get("success"):
             payload = result.get("data") if isinstance(result.get("data"), dict) else result
             candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
             fingerprint = str(payload.get("preview_fingerprint") or "")
@@ -1617,10 +2131,10 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     chat_id,
                     {
                         "type": "split_pending_selection",
-                        "tool_name": tool_name,
+                        "tool_name": SPLIT_TOOL_NAME,
+                        "automation_route_key": automation_route_key,
                         "candidates": candidates,
                         "preview_fingerprint": fingerprint,
-                        "account_id": params.get("account_id") or "ronghui_default",
                     },
                     ttl_sec=SPLIT_SELECTION_TTL,
                 )
@@ -1639,10 +2153,34 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     logger.info("feishu route | chat=%s | route=agent_llm", chat_id)
     notice_task = asyncio.create_task(_send_after_delay(chat_id, "正在处理...", 1.5))
     try:
+        feishu_actor = (
+            await asyncio.to_thread(
+                _FEISHU_APPROVAL_RUNTIME.resolve_actor,
+                str(sender_id or ""),
+            )
+            if _FEISHU_APPROVAL_RUNTIME is not None
+            else Actor(
+                ActorType.FEISHU_USER,
+                (
+                    _COMMAND_CONTEXT.get().actor_id
+                    if _COMMAND_CONTEXT.get() is not None
+                    else str(sender_id or "feishu-legacy-read")
+                ),
+                roles=(),
+                authenticated_by="feishu_event",
+            )
+        )
         result = await agent.handle_message(
             message=text,
             user_id=sender_id,
             conversation_id=f"feishu_{chat_id}",
+            actor=feishu_actor,
+            source="feishu",
+            request_id=(
+                _COMMAND_CONTEXT.get().event_id
+                if _COMMAND_CONTEXT.get() is not None
+                else _legacy_read_request_id("chat", {"message": text})
+            ),
         )
     except Exception as e:
         notice_task.cancel()
@@ -1666,6 +2204,16 @@ async def _run_deferred_tool(
     receive_id_type: str = "open_id",
 ):
     from feishu.bot import get_agent_core
+
+    if tool_name in FIRST_PARTY_FEISHU_ROUTE_KEYS:
+        if receive_id:
+            await _reply_text(
+                receive_id,
+                "自动化菜单入口缺少可信项目路由，任务未提交。",
+                receive_id_type=receive_id_type,
+                reply_type="automation_menu_route_required",
+            )
+        return
 
     agent = get_agent_core()
     if not agent:
@@ -1721,6 +2269,17 @@ def _menu_action_from_key(event_key: str) -> dict[str, Any] | None:
     key = str(event_key or "").strip()
     if not key:
         return None
+    if key.startswith("automation:"):
+        route_key = key.removeprefix("automation:").strip()
+        if not _FEISHU_ROUTE_KEY_RE.fullmatch(route_key):
+            return None
+        return {
+            "tool_name": "automation_project",
+            "params": {},
+            "mode": "automation_project",
+            "automation_route_key": route_key,
+            "dynamic_inputs": {},
+        }
     aliased_text = MENU_KEY_ALIASES.get(key.lower(), key)
     request = direct_tool_request_from_text(aliased_text)
     if not request:
@@ -1728,6 +2287,9 @@ def _menu_action_from_key(event_key: str) -> dict[str, Any] | None:
     return {
         "tool_name": request["tool_name"],
         "params": request.get("params") or {},
+        "mode": request.get("mode") or "reply",
+        "automation_route_key": request.get("automation_route_key") or "",
+        "dynamic_inputs": request.get("dynamic_inputs") or {},
     }
 
 

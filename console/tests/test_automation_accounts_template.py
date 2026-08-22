@@ -169,6 +169,16 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertNotIn("环境变量凭据", html)
         self.assertNotIn("不会删除部署环境变量", html)
 
+    def test_blocked_auto_login_hides_stale_pending_captcha(self):
+        template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(
+            encoding="utf-8"
+        )
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("has_active_challenge", template)
+        self.assertIn('row.dataset.accountAutoLoginBlocked !== "true"', template)
+        self.assertIn("padding: 0; border: 0; background: transparent; box-shadow: none;", stylesheet)
+
     def test_disabled_badge_is_hidden_for_active_accounts_and_action_is_reversible(self):
         html = self._render()
         template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")

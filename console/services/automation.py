@@ -1,9 +1,47 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from console.services.automation_projects import *  # noqa: F403
 
 
-class AutomationServiceMixin:
+def group_scheduled_rows_by_automation_id(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group only by the persisted project identity; never infer it from task IDs."""
+
+    groups: list[dict[str, Any]] = []
+    linked_groups: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        automation_id = str(row.get("automation_id") or "").strip()
+        if AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id):
+            group = linked_groups.get(automation_id)
+            if group is None:
+                group = {
+                    "storage_key": automation_id,
+                    "task_id": automation_id,
+                    "missing_automation_id": False,
+                    "rows": [],
+                }
+                linked_groups[automation_id] = group
+                groups.append(group)
+            group["rows"].append(row)
+            continue
+
+        task_id = str(row.get("id") or "").strip()
+        if not task_id:
+            task_id = f"unlinked_scheduled_task_{index + 1}"
+        groups.append(
+            {
+                "storage_key": f"__unlinked_scheduled_task__:{index}",
+                "task_id": task_id,
+                "missing_automation_id": True,
+                "rows": [row],
+            }
+        )
+    return groups
+
+
+class AutomationServiceMixin(AutomationProjectsServiceMixin):
     def _build_virtual_automation_task(
         self,
         task_id: str,
@@ -70,6 +108,7 @@ class AutomationServiceMixin:
         last_message_value = str(runtime_state.get("last_message") or "")
         task_mode_value = str(workflow.get("task_mode") or baseline.get("task_mode") or "manual")
         is_schedulable = task_mode_value == "scheduled"
+        control_plane_only = automation_task_control_plane_only(task_id)
         trigger_label = str(workflow.get("trigger_label") or "手动执行")
         override_schedule_times_raw = str(override.get("schedule_times_json", "") or "").strip()
         override_schedule_times: list[str] = []
@@ -124,6 +163,8 @@ class AutomationServiceMixin:
             "task_mode": task_mode_value,
             "display_task_id": task_id,
             "group_size": 1,
+            "task_ids": [],
+            "task_cron_expressions": {},
             "name_value": name_value,
             "tool_name_value": tool_name_value,
             "cron_expression_value": str(schedule_info.get("raw_value") or ""),
@@ -131,13 +172,19 @@ class AutomationServiceMixin:
             "tool_params_json": raw_json,
             "tool_param_fields": flatten_automation_fields(tool_params),
             "schedule_supported": schedule_supported if is_schedulable else False,
-            "schedule_editable": is_schedulable,
+            "schedule_editable": is_schedulable and not control_plane_only,
             "schedule_time_values": list(schedule_info.get("time_values") or []) if is_schedulable else [],
             "schedule_summary": schedule_summary,
             "schedule_icon": "clock" if is_schedulable else "zap",
             "schedule_warning": schedule_warning if is_schedulable else f"此流程不写入 scheduled_tasks，默认通过{trigger_label}触发。",
             "trigger_label": trigger_label,
             "is_schedulable": is_schedulable,
+            "can_save": not control_plane_only,
+            "can_run_now": not control_plane_only,
+            "control_plane_only": control_plane_only,
+            "control_plane_notice": (
+                CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE if control_plane_only else ""
+            ),
             "has_webhook": bool(webhook_info.get("path")),
             "webhook_path": str(webhook_info.get("path") or ""),
             "webhook_full_url": str(webhook_info.get("full_url") or ""),
@@ -233,7 +280,9 @@ class AutomationServiceMixin:
             error_message=error_message_value,
         )
 
-        if payload.get("task_mode") == "scheduled":
+        if payload.get("task_mode") == "scheduled" and not payload.get(
+            "project_plugin_instance"
+        ):
             self.repository.update_scheduled_task_runtime(
                 base_task_id=payload["task_id"],
                 last_run=run_time,
@@ -269,18 +318,44 @@ class AutomationServiceMixin:
         self,
         payload: dict[str, Any],
         *,
-        started_at: float,
-    ) -> None:
-        if payload["tool_name"] in AUTOMATION_LONG_RUNNING_TOOLS:
-            run_timeout = None
-        else:
-            run_timeout = max(
-                AUTOMATION_RUN_TIMEOUTS.get(payload["tool_name"], 180),
-                self.settings.agent_timeout_seconds,
-            )
+        trusted_context: dict[str, Any],
+        browser_request_uuid: str,
+    ) -> dict[str, Any]:
+        """Invoke one saved automation project; Agent resolves its trusted configuration."""
+
+        automation_id = self._automation_project_id(payload.get("task_id"))
+        request_id = self._normalize_browser_request_uuid(browser_request_uuid)
+        if not automation_id or not request_id:
+            return {
+                "ok": False,
+                "status": HTTPStatus.BAD_REQUEST,
+                "error": "自动化项目或浏览器请求标识无效。",
+                "error_code": "INVALID_AUTOMATION_PROJECT_INVOKE",
+            }
+        run_result = self._agent_request(
+            "POST",
+            f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/invoke",
+            payload={"request_id": request_id},
+            timeout=self.settings.agent_timeout_seconds,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not run_result.get("ok"):
+            return run_result
+
+        receipt = run_result.get("data")
+        run_id = str(receipt.get("run_id") or "").strip() if isinstance(receipt, dict) else ""
+        if not run_id:
+            return {
+                "ok": False,
+                "status": HTTPStatus.BAD_GATEWAY,
+                "error": "Agent 未返回可追踪的 run_id。",
+                "error_code": "INVALID_AGENT_RUN_CONTRACT",
+            }
 
         started_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if payload.get("task_mode") == "scheduled":
+        if payload.get("task_mode") == "scheduled" and not payload.get(
+            "project_plugin_instance"
+        ):
             self.repository.update_scheduled_task_runtime(
                 base_task_id=payload["task_id"],
                 last_run=started_stamp,
@@ -297,22 +372,21 @@ class AutomationServiceMixin:
                 last_duration_ms=None,
                 last_message="",
             )
-
-        def runner() -> None:
-            run_result = self._agent_request(
-                "POST",
-                "/internal/v1/tools/run",
-                payload={"tool_name": payload["tool_name"], "params": payload["tool_params"]},
-                timeout=run_timeout,
-            )
-            self._finalize_automation_task_run(payload, run_result, started_at=started_at)
-
-        thread = threading.Thread(
-            target=runner,
-            name=f"automation-run-{payload['task_id']}",
-            daemon=True,
+        state = dict(self.automation_virtual_task_state.get(payload["task_id"], {}))
+        state.update(
+            {
+                "run_id": run_id,
+                "task_mode": (
+                    "plugin"
+                    if payload.get("project_plugin_instance")
+                    else payload.get("task_mode")
+                ),
+                "last_run": started_stamp,
+                "last_status": "running",
+            }
         )
-        thread.start()
+        self.automation_virtual_task_state[payload["task_id"]] = state
+        return run_result
 
     def _render_automations(
         self,
@@ -337,28 +411,44 @@ class AutomationServiceMixin:
             scheduled_rows = []
             workflow_resource_rows = []
             automation_db_warning = normalize_feedback_text(
-                f"自动化任务数据库当前不可达，任务列表已临时降级为空，仅保留顶部 TMS 登录态验证模块。详情：{exc}"
+                f"自动化任务数据库当前不可达，任务列表已临时降级为空。详情：{exc}"
             )
 
-        grouped_rows: dict[str, list[dict[str, Any]]] = {}
-        for row in scheduled_rows:
-            grouped_rows.setdefault(normalize_task_group_id(str(row.get("id", "") or "")), []).append(row)
+        (
+            automation_plugin_packages,
+            automation_plugin_instances,
+            automation_workers,
+            unsupported_automation_ids,
+            automation_plugin_warning,
+            can_manage_plugins,
+        ) = self._load_automation_plugin_catalog(handler)
+        plugin_instances_by_id = {
+            str(item["automation_id"]): item for item in automation_plugin_instances
+        }
+
+        scheduled_row_groups = group_scheduled_rows_by_automation_id(scheduled_rows)
         workflow_resources = {
             str(item.get("resource_key", "") or ""): item
             for item in workflow_resource_rows
         }
 
         tasks_by_id: dict[str, dict[str, Any]] = {}
-        for base_task_id, rows in grouped_rows.items():
+        for scheduled_group in scheduled_row_groups:
+            base_task_id = str(scheduled_group["task_id"])
+            automation_link_missing = bool(
+                scheduled_group["missing_automation_id"]
+            )
+            rows = list(scheduled_group["rows"])
             rows = sorted(
                 rows,
                 key=lambda item: (
-                    task_group_slot_index(str(item.get("id", "") or "")),
+                    str(item.get("cron_expression", "") or ""),
                     str(item.get("id", "") or ""),
                 ),
             )
             primary_row = next((item for item in rows if str(item.get("id", "") or "") == base_task_id), rows[0])
             workflow = automation_workflow_definition(base_task_id)
+            control_plane_only = automation_task_control_plane_only(base_task_id)
             override = task_overrides.get(base_task_id, {})
             tool_params = primary_row.get("tool_params", {})
             default_tool_params = workflow.get("default_tool_params")
@@ -426,6 +516,8 @@ class AutomationServiceMixin:
                 or normalize_task_display_name(str(primary_row.get("name", "") or ""))
             )
             tool_name_value = str(override.get("tool_name") or primary_row.get("tool_name", "") or "")
+            if control_plane_only:
+                tool_name_value = str(workflow.get("tool_name") or tool_name_value)
             provider_value = automation_task_provider(base_task_id, workflow, tool_name_value)
             resource_bindings = build_automation_resource_bindings(
                 base_task_id,
@@ -442,16 +534,25 @@ class AutomationServiceMixin:
                 for item in resource_bindings
                 if item.get("missing") and item.get("required")
             ]
-            tasks_by_id[base_task_id] = {
+            tasks_by_id[str(scheduled_group["storage_key"])] = {
                 **primary_row,
                 "note": str(workflow.get("note") or automation_task_note(base_task_id)),
                 "provider": provider_value,
                 "provider_label": automation_provider_label(provider_value),
                 "system_badges": list(workflow.get("system_badges") or []),
                 "task_id": base_task_id,
+                "automation_link_missing": automation_link_missing,
                 "task_mode": "scheduled",
                 "display_task_id": str(primary_row.get("id", "") or base_task_id) if len(rows) == 1 else base_task_id,
                 "group_size": len(rows),
+                "task_ids": [str(item.get("id") or "").strip() for item in rows],
+                "task_cron_expressions": {
+                    str(item.get("id") or "").strip(): str(
+                        item.get("cron_expression") or ""
+                    ).strip()
+                    for item in rows
+                    if str(item.get("id") or "").strip()
+                },
                 "name_value": name_value,
                 "tool_name_value": tool_name_value,
                 "cron_expression_value": schedule_info["raw_value"],
@@ -459,13 +560,21 @@ class AutomationServiceMixin:
                 "tool_params_json": raw_json,
                 "tool_param_fields": flatten_automation_fields(tool_params),
                 "schedule_supported": bool(schedule_info["supported"] or not schedule_info["raw_value"]),
-                "schedule_editable": True,
+                "schedule_editable": not control_plane_only,
                 "schedule_time_values": schedule_info["time_values"],
                 "schedule_summary": schedule_info["summary"],
                 "schedule_icon": "clock",
                 "schedule_warning": schedule_info["warning"],
                 "trigger_label": str(workflow.get("trigger_label") or "定时任务"),
                 "is_schedulable": True,
+                "can_save": not control_plane_only,
+                "can_run_now": not control_plane_only,
+                "control_plane_only": control_plane_only,
+                "control_plane_notice": (
+                    CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE
+                    if control_plane_only
+                    else ""
+                ),
                 "has_webhook": False,
                 "webhook_path": "",
                 "webhook_full_url": "",
@@ -502,18 +611,191 @@ class AutomationServiceMixin:
                 "feedback": task_feedbacks.get(base_task_id),
             }
 
-        for workflow in AUTOMATION_WORKFLOW_CATALOG:
-            workflow_task_id = str(workflow.get("task_id", "") or "")
-            if not workflow_task_id or workflow_task_id in tasks_by_id:
+        # The static catalog is only an offline/migration display fallback. Installed
+        # instances returned by Agent are the runtime authority.
+        if automation_plugin_warning:
+            for workflow in AUTOMATION_WORKFLOW_CATALOG:
+                workflow_task_id = str(workflow.get("task_id", "") or "")
+                if not workflow_task_id or workflow_task_id in tasks_by_id:
+                    continue
+                tasks_by_id[workflow_task_id] = self._build_virtual_automation_task(
+                    workflow_task_id,
+                    override=task_overrides.get(workflow_task_id),
+                    feedback=task_feedbacks.get(workflow_task_id),
+                    open_task_id=open_task_id,
+                    workflow_resources=workflow_resources,
+                    resource_overrides=resource_overrides,
+                )
+
+        for plugin in automation_plugin_instances:
+            automation_id = str(plugin["automation_id"])
+            if automation_id in tasks_by_id:
                 continue
-            tasks_by_id[workflow_task_id] = self._build_virtual_automation_task(
-                workflow_task_id,
-                override=task_overrides.get(workflow_task_id),
-                feedback=task_feedbacks.get(workflow_task_id),
+            plugin_override = dict(task_overrides.get(automation_id) or {})
+            plugin_override.setdefault("name", str(plugin.get("instance_name") or automation_id))
+            plugin_override.setdefault("tool_name", f"automation.{automation_id}.run")
+            plugin_override.setdefault("enabled", False)
+            task = self._build_virtual_automation_task(
+                automation_id,
+                override=plugin_override,
+                feedback=task_feedbacks.get(automation_id),
                 open_task_id=open_task_id,
                 workflow_resources=workflow_resources,
                 resource_overrides=resource_overrides,
             )
+            can_schedule = bool(plugin.get("can_schedule"))
+            task.update(
+                {
+                    "task_mode": "scheduled" if can_schedule else "manual",
+                    "is_schedulable": can_schedule,
+                    "schedule_supported": can_schedule,
+                    "schedule_editable": can_schedule,
+                    "trigger_label": "定时任务 / 手工执行" if can_schedule else "手工执行",
+                }
+            )
+            tasks_by_id[automation_id] = task
+
+        for task in tasks_by_id.values():
+            automation_id = str(task.get("task_id") or "")
+            plugin = (
+                None
+                if task.get("automation_link_missing")
+                else plugin_instances_by_id.get(automation_id)
+            )
+            task["plugin"] = plugin
+            task["plugin_missing"] = plugin is None
+            task["plugin_warning"] = ""
+            if plugin is None:
+                task["can_save"] = False
+                task["can_run_now"] = False
+                task["schedule_editable"] = False
+                task["plugin_blocked"] = True
+                task["plugin_warning"] = (
+                    "迁移/插件缺失：定时任务未关联 automation_id，已作为独立阻断项显示，禁止按任务名推断归属。"
+                    if task.get("automation_link_missing")
+                    else "迁移/插件缺失：该任务不在 Agent 已安装实例目录中，运行与配置均已阻断。"
+                )
+                continue
+
+            task["name_value"] = str(plugin.get("instance_name") or task.get("name_value") or automation_id)
+            task["display_task_id"] = automation_id
+            task["plugin_blocked"] = bool(plugin.get("blocked"))
+            task["control_plane_only"] = False
+            task["control_plane_notice"] = ""
+            task["has_webhook"] = False
+            task["webhook_path"] = ""
+            task["webhook_full_url"] = ""
+            task["webhook_masked_url"] = ""
+            task["resource_bindings"] = []
+            task["missing_required_resources"] = []
+            task["missing_required_resource_labels"] = []
+            task["resource_blocked"] = False
+            task["is_schedulable"] = bool(plugin.get("can_schedule"))
+            task["schedule_supported"] = bool(task.get("is_schedulable"))
+            stable_state = str(plugin.get("state") or "") in AUTOMATION_PLUGIN_STABLE_STATES
+            task["can_save"] = stable_state
+            task["schedule_editable"] = bool(plugin.get("can_schedule")) and stable_state
+
+            cron_values = [
+                str(value or "").strip()
+                for value in (task.get("task_cron_expressions") or {}).values()
+                if str(value or "").strip()
+            ]
+            legacy_schedule_times = list(task.get("schedule_time_values") or [])
+            signed_schedule = dict(plugin.get("schedule") or {})
+            signed_schedule_kind = str(signed_schedule.get("kind") or "none")
+            allowed_schedule_kinds = set(
+                (plugin.get("scheduling") or {}).get("allowed_kinds") or []
+            )
+            task["plugin_schedule_source"] = "agent"
+            if signed_schedule_kind != "none":
+                plugin_schedule_kind = signed_schedule_kind
+                plugin_schedule_supported = signed_schedule_kind in allowed_schedule_kinds
+                task["schedule_time_values"] = list(signed_schedule.get("times") or [])
+                task["enabled_value"] = bool(signed_schedule.get("enabled"))
+            elif not cron_values:
+                plugin_schedule_kind = "none"
+                plugin_schedule_supported = True
+                task["schedule_time_values"] = []
+                task["enabled_value"] = False
+            elif all(value == "@startup" for value in cron_values):
+                plugin_schedule_kind = "startup"
+                plugin_schedule_supported = "startup" in allowed_schedule_kinds
+                task["schedule_time_values"] = []
+                task["plugin_schedule_source"] = "legacy_migration"
+            elif legacy_schedule_times:
+                plugin_schedule_kind = "daily_times"
+                plugin_schedule_supported = "daily_times" in allowed_schedule_kinds
+                task["schedule_time_values"] = legacy_schedule_times
+                task["plugin_schedule_source"] = "legacy_migration"
+            else:
+                plugin_schedule_kind = "unsupported"
+                plugin_schedule_supported = False
+            task["plugin_schedule_kind"] = plugin_schedule_kind
+            task["plugin_schedule_supported"] = plugin_schedule_supported
+            task["plugin_schedule_max_daily_times"] = int(
+                (plugin.get("scheduling") or {}).get("max_daily_times") or 0
+            )
+            if not plugin_schedule_supported:
+                task["plugin_blocked"] = True
+                plugin["blocked"] = True
+                plugin["missing_requirements"] = list(
+                    dict.fromkeys(
+                        [
+                            *list(plugin.get("missing_requirements") or []),
+                            "旧定时不符合签名动作包的调度合同，禁止猜测迁移",
+                        ]
+                    )
+                )
+
+            if plugin.get("execution_platform") == "windows":
+                bound_device_id = str((plugin.get("device") or {}).get("device_id") or "")
+                bound_worker = next(
+                    (
+                        worker
+                        for worker in automation_workers
+                        if str(worker.get("device_id") or "") == bound_device_id
+                    ),
+                    None,
+                )
+                if bound_device_id and (
+                    bound_worker is None or not bool(bound_worker.get("binding_usable"))
+                ):
+                    task["plugin_blocked"] = True
+                    plugin["blocked"] = True
+                    plugin["missing_requirements"] = list(
+                        dict.fromkeys(
+                            [
+                                *list(plugin.get("missing_requirements") or []),
+                                "已绑定 Windows Worker 不在线或会话不可用",
+                            ]
+                        )
+                    )
+            base_runnable = bool(
+                plugin.get("enabled") and plugin.get("configured") and not plugin.get("blocked")
+            )
+            console_enabled = "console" in set(plugin.get("enabled_entrypoints") or [])
+            task["can_run_now"] = bool(base_runnable and console_enabled)
+            task["run_disabled_reason"] = (
+                "后台入口已关闭" if base_runnable and not console_enabled else "当前不可执行"
+            )
+            task["plugin_worker_options"] = (
+                automation_workers if plugin.get("execution_platform") == "windows" else []
+            )
+            task["plugin_warning"] = "；".join(
+                str(item) for item in plugin.get("missing_requirements") or []
+            ) if task.get("plugin_blocked") else ""
+            task["search_text"] = " ".join(
+                item
+                for item in (
+                    str(task.get("search_text") or ""),
+                    str(plugin.get("plugin_id") or ""),
+                    str(plugin.get("instance_name") or ""),
+                    str(plugin.get("version") or ""),
+                    str(plugin.get("execution_platform") or ""),
+                )
+                if item
+            ).lower()
 
         tasks = sorted(
             tasks_by_id.values(),
@@ -522,6 +804,10 @@ class AutomationServiceMixin:
                 str(item.get("name_value") or ""),
             ),
         )
+        (
+            automation_approval_policy_warning,
+            can_manage_approval_policies,
+        ) = self._load_automation_project_policies(handler, tasks)
         automation_accounts, automation_account_warning = self._fetch_automation_accounts(
             force=False,
             prefer_cached=True,
@@ -554,8 +840,14 @@ class AutomationServiceMixin:
             automation_provider_enabled_counts=automation_provider_enabled_counts,
             automation_db_warning=automation_db_warning,
             automation_account_warning=automation_account_warning,
-            tms_session_status=self._fetch_tms_session_status(),
-            tms_session_credentials=self._fetch_tms_session_credentials(),
+            automation_approval_policy_warning=automation_approval_policy_warning,
+            can_manage_approval_policies=can_manage_approval_policies,
+            automation_plugin_packages=automation_plugin_packages,
+            automation_plugin_instances=automation_plugin_instances,
+            automation_workers=automation_workers,
+            unsupported_automation_ids=unsupported_automation_ids,
+            automation_plugin_warning=automation_plugin_warning,
+            can_manage_plugins=can_manage_plugins,
         )
         self._send_html(handler, body)
 
@@ -683,6 +975,18 @@ class AutomationServiceMixin:
             )
             return
 
+        if payload.get("project_plugin_instance"):
+            message = "插件项目设置只能通过当前卡片的“保存项目设置”提交到 Agent。"
+            if ajax_request:
+                self._send_json(
+                    handler,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "task_id": payload.get("task_id", ""), "message": message},
+                )
+                return
+            self._redirect_with_message(handler, "/automations", message, "warning")
+            return
+
         reload_result = self._persist_automation_task(payload)
         save_message = str(payload.get("save_message") or "").strip()
         success_message = f"已保存：{payload['name']}"
@@ -714,6 +1018,22 @@ class AutomationServiceMixin:
 
     def _handle_automation_task_run_now(self, handler: BaseHTTPRequestHandler) -> None:
         ajax_request = self._is_ajax_request(handler)
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        browser_request_uuid = str(
+            handler.headers.get("X-Browser-Request-UUID") or ""
+        ).strip()
+        if not browser_request_uuid:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error": "缺少稳定的浏览器请求标识，无法安全提交命令。",
+                },
+            )
+            return
         payload, override, error_message = self._collect_automation_task_submission(
             handler,
             allow_missing_schedule=True,
@@ -740,20 +1060,24 @@ class AutomationServiceMixin:
             )
             return
 
-        try:
-            workflow_resource_rows = self.repository.list_workflow_resources()
-        except Exception:
-            workflow_resource_rows = []
-        workflow_resources = {
-            str(item.get("resource_key", "") or ""): item
-            for item in workflow_resource_rows
-        }
-        resource_bindings = build_automation_resource_bindings(payload["task_id"], workflow_resources)
-        missing_required_resources = [
-            item.get("display_name") or item["resource_key"]
-            for item in resource_bindings
-            if item.get("missing") and item.get("required")
-        ]
+        missing_required_resources: list[str] = []
+        if not payload.get("project_plugin_instance"):
+            try:
+                workflow_resource_rows = self.repository.list_workflow_resources()
+            except Exception:
+                workflow_resource_rows = []
+            workflow_resources = {
+                str(item.get("resource_key", "") or ""): item
+                for item in workflow_resource_rows
+            }
+            resource_bindings = build_automation_resource_bindings(
+                payload["task_id"], workflow_resources
+            )
+            missing_required_resources = [
+                item.get("display_name") or item["resource_key"]
+                for item in resource_bindings
+                if item.get("missing") and item.get("required")
+            ]
         if missing_required_resources:
             message = (
                 "缺少运行资源："
@@ -782,7 +1106,11 @@ class AutomationServiceMixin:
 
         started_at = time.perf_counter()
         started_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        reload_result = self._persist_automation_task(payload)
+        reload_result = (
+            {"ok": True, "data": {"mode": "agent_project_configuration"}}
+            if payload.get("project_plugin_instance")
+            else self._persist_automation_task(payload)
+        )
         if not reload_result.get("ok"):
             failure_message = normalize_feedback_text(reload_result.get("error", "unknown error"))
             duration_ms = int(round((time.perf_counter() - started_at) * 1000))
@@ -832,21 +1160,54 @@ class AutomationServiceMixin:
             )
             return
 
-        self._start_automation_task_run(payload, started_at=started_at)
+        run_result = self._start_automation_task_run(
+            payload,
+            trusted_context=trusted_context,
+            browser_request_uuid=browser_request_uuid,
+        )
+        if not run_result.get("ok"):
+            failure_message = normalize_feedback_text(
+                run_result.get("error") or "Agent 命令提交失败"
+            )
+            response_payload = {
+                "ok": False,
+                "pending": False,
+                "task_id": payload["task_id"],
+                "title": "立即执行未开始",
+                "message": failure_message,
+                "error": failure_message,
+                "error_code": str(run_result.get("error_code") or "COMMAND_SUBMIT_FAILED"),
+            }
+            if ajax_request:
+                self._send_json(handler, HTTPStatus.BAD_GATEWAY, response_payload)
+                return
+            self._render_automations(
+                handler,
+                {"message": [failure_message], "kind": ["warning"]},
+                task_overrides=override,
+                open_task_id=payload["task_id"],
+            )
+            return
+
+        receipt = dict(run_result.get("data") or {})
         response_payload = {
-            "ok": False,
+            "ok": True,
             "pending": True,
             "task_id": payload["task_id"],
-            "title": "执行中",
-            "message": "脚本已开始执行，结果会自动更新。",
-            "status_label": "后台执行中",
-            "activity_label": "开始时间",
+            "title": "命令已受理",
+            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新；如需审批，可在当前项目卡片原位处理。",
+            "status_label": "等待状态同步",
+            "activity_label": "提交时间",
             "activity_value": started_stamp,
             "duration_label": format_duration_label(0),
             "error": "",
+            "command_id": receipt.get("command_id"),
+            "work_item_id": receipt.get("work_item_id"),
+            "run_id": receipt.get("run_id"),
+            "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
         }
         if ajax_request:
-            self._send_json(handler, HTTPStatus.OK, response_payload)
+            self._send_json(handler, HTTPStatus.ACCEPTED, response_payload)
             return
         self._render_automations(
             handler,
@@ -865,10 +1226,9 @@ class AutomationServiceMixin:
     def _handle_automation_task_cancel(self, handler: BaseHTTPRequestHandler) -> None:
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id", "") or "").strip()
-        tool_name = str(values.get("tool_name", "") or "").strip()
-        started_at = str(values.get("started_at", "") or "").strip()
+        run_id = str(values.get("run_id", "") or "").strip()
 
-        if not task_id or not tool_name:
+        if not task_id or not run_id:
             self._send_json(
                 handler,
                 HTTPStatus.BAD_REQUEST,
@@ -880,11 +1240,20 @@ class AutomationServiceMixin:
             )
             return
 
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         result = self._agent_request(
             "POST",
-            "/internal/v1/tools/cancel",
-            payload={"tool_name": tool_name, "started_at": started_at},
+            f"/internal/v1/runs/{quote(run_id, safe='')}/cancel",
+            payload={
+                "comment": "Console 自动化页面取消",
+                "actor": trusted_context["actor"],
+                "actor_roles": list(trusted_context.get("actor_roles") or []),
+                "source": "console",
+            },
             timeout=10,
+            console_principal=trusted_context.get("_console_principal"),
         )
         if not result.get("ok"):
             self._send_json(
@@ -902,52 +1271,124 @@ class AutomationServiceMixin:
         if not isinstance(payload, dict):
             payload = {}
 
-        if payload.get("ok"):
-            self._send_json(
-                handler,
-                HTTPStatus.OK,
-                {
-                    "ok": True,
-                    "task_id": task_id,
-                    "title": "取消中",
-                    "message": str(payload.get("message") or "已发送取消请求，正在停止脚本。"),
-                    "activity_value": str(payload.get("started_at") or started_at),
-                    "pending": True,
-                    "cancel_requested": True,
-                },
-            )
-            return
-
-        runtime = self._sync_task_runtime_from_latest_tool_log(
-            task_id,
-            tool_name,
-            since=started_at or None,
+        run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+        self._send_json(
+            handler,
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "task_id": task_id,
+                "run_id": run_id,
+                "title": "取消中",
+                "message": "已发送取消请求，正在安全停止当前 Run。",
+                "activity_value": str(run.get("started_at") or run.get("created_at") or ""),
+                "pending": True,
+                "cancel_requested": True,
+            },
         )
-        response_payload: dict[str, Any] = {
-            "ok": False,
-            "task_id": task_id,
-            "message": str(payload.get("message") or "当前没有运行中的任务。"),
-        }
-        if runtime:
-            response_payload["runtime"] = runtime
-        self._send_json(handler, HTTPStatus.OK, response_payload)
 
     def _handle_automation_task_output(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
-        """代理 Agent 的实时工具输出接口"""
+        """Return durable Run state; legacy tool output remains read-only compatibility."""
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         tool_name = str(query.get("tool_name", [""])[0]).strip()
         task_id = str(query.get("task_id", [""])[0]).strip()
         started_at = str(query.get("started_at", [""])[0]).strip()
+        run_id = str(query.get("run_id", [""])[0]).strip()
         try:
             offset = int(query.get("offset", ["0"])[0])
         except (ValueError, IndexError):
             offset = 0
+        if run_id:
+            result = self._agent_request(
+                "GET",
+                f"/internal/v1/runs/{quote(run_id, safe='')}",
+                timeout=5,
+                console_principal=trusted_context["_console_principal"],
+            )
+            if not result.get("ok"):
+                self._send_json(
+                    handler,
+                    HTTPStatus.BAD_GATEWAY,
+                    {
+                        "lines": [],
+                        "running": False,
+                        "offset": 0,
+                        "total": 0,
+                        "error": normalize_feedback_text(result.get("error") or "Run 状态查询失败"),
+                    },
+                )
+                return
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            run = data.get("run") if isinstance(data.get("run"), dict) else {}
+            status = str(run.get("status") or "").upper()
+            terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+            running_statuses = {"RUNNING", "VERIFYING"}
+            is_terminal = status in terminal_statuses
+            awaiting_approval = status == "WAITING_APPROVAL"
+            state_line = f"Run {run_id} · {status or 'UNKNOWN'}"
+            payload: dict[str, Any] = {
+                "lines": [state_line] if offset <= 0 else [],
+                "running": status in running_statuses,
+                "pending": not is_terminal,
+                "awaiting_approval": awaiting_approval,
+                "cancel_requested": bool(run.get("cancel_requested_at")),
+                "started_at": str(run.get("started_at") or run.get("created_at") or started_at),
+                "offset": 1,
+                "total": 1,
+                "run_id": run_id,
+                "status": status,
+                "next_poll_after_ms": data.get("next_poll_after_ms", 1000),
+            }
+            if is_terminal:
+                cancelled = status == "CANCELLED"
+                ok = status == "COMPLETED"
+                error_message = normalize_feedback_text(run.get("error_summary") or "")
+                payload["runtime"] = {
+                    "ok": ok,
+                    "cancelled": cancelled,
+                    "title": "已完成" if ok else "已取消" if cancelled else "执行未完成",
+                    "message": error_message,
+                    "last_run": str(run.get("finished_at") or run.get("updated_at") or ""),
+                    "duration_label": "",
+                    "error": error_message,
+                    "payload": {"run_id": run_id, "status": status},
+                }
+                last_status = "success" if ok else "cancelled" if cancelled else "error"
+                last_run = str(run.get("finished_at") or run.get("updated_at") or "")
+                if task_id:
+                    local_state = self.automation_virtual_task_state.get(task_id, {})
+                    if local_state.get("task_mode") == "scheduled":
+                        self.repository.update_scheduled_task_runtime(
+                            base_task_id=task_id,
+                            last_run=last_run,
+                            last_status=last_status,
+                            last_duration_ms=None,
+                            last_message=error_message,
+                        )
+                    else:
+                        self._record_virtual_task_runtime(
+                            task_id,
+                            last_run=last_run,
+                            last_status=last_status,
+                            last_duration_ms=None,
+                            last_message=error_message,
+                        )
+            self._send_json(handler, HTTPStatus.OK, payload)
+            return
         if not tool_name:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"error": "missing tool_name"})
             return
         query_string = f"/internal/v1/tool-output/{tool_name}?offset={offset}"
         if started_at:
             query_string += f"&started_at={quote(started_at, safe='')}"
-        result = self._agent_request("GET", query_string, timeout=5)
+        result = self._agent_request(
+            "GET",
+            query_string,
+            timeout=5,
+            console_principal=trusted_context["_console_principal"],
+        )
         if result.get("ok"):
             payload = dict(result["data"])
             if task_id:
@@ -961,6 +1402,7 @@ class AutomationServiceMixin:
                             task_id,
                             tool_name,
                             since=started_at or None,
+                            console_principal=trusted_context["_console_principal"],
                         )
                 if runtime:
                     payload["runtime"] = runtime
@@ -974,6 +1416,7 @@ class AutomationServiceMixin:
                         task_id,
                         tool_name,
                         since=started_at or None,
+                        console_principal=trusted_context["_console_principal"],
                     )
                 if runtime:
                     payload["runtime"] = runtime
@@ -1019,6 +1462,15 @@ class AutomationServiceMixin:
         tool_params_json = str(values.get("tool_params_json", "") or "").strip()
         enabled = str(values.get("enabled", "") or "").strip().lower() in {"1", "on", "true", "yes"}
         schedule_times_json = str(values.get("schedule_times_json", "") or "").strip()
+        project_plugin_instance = str(
+            values.get("project_plugin_instance", "") or ""
+        ).strip().lower() in {"1", "on", "true", "yes"}
+
+        if project_plugin_instance:
+            if not self._automation_project_id(task_id):
+                return None, {}, "自动化项目标识无效。"
+            tool_name = f"automation.{task_id}.run"
+            tool_params_json = "{}"
 
         override = {
             task_id: {
@@ -1035,6 +1487,9 @@ class AutomationServiceMixin:
         if not task_id or not name or not tool_name:
             return None, override, "任务 ID、任务名称和工具名称不能为空。"
 
+        if automation_task_control_plane_only(task_id) and not project_plugin_instance:
+            return None, override, CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE
+
         try:
             tool_params = json.loads(tool_params_json or "{}")
         except json.JSONDecodeError as exc:
@@ -1043,12 +1498,15 @@ class AutomationServiceMixin:
         if not isinstance(tool_params, dict):
             return None, override, f"任务 {task_id} 的参数必须是 JSON 对象。"
 
-        tool_params = self._merge_submitted_account_roles(
-            task_id=task_id,
-            tool_name=tool_name,
-            tool_params=tool_params,
-            values=values,
-        )
+        if project_plugin_instance:
+            tool_params = {}
+        else:
+            tool_params = self._merge_submitted_account_roles(
+                task_id=task_id,
+                tool_name=tool_name,
+                tool_params=tool_params,
+                values=values,
+            )
         tool_params_json = json.dumps(tool_params, ensure_ascii=False, indent=2)
         override[task_id]["tool_params_json"] = tool_params_json
 
@@ -1066,6 +1524,7 @@ class AutomationServiceMixin:
                     "schedule_times": [],
                     "schedule_times_json": "[]",
                     "enabled": False,
+                    "project_plugin_instance": project_plugin_instance,
                 },
                 override,
                 "",
@@ -1095,6 +1554,25 @@ class AutomationServiceMixin:
 
         cron_expressions = [item for item in cron_expressions if item]
         if not cron_expressions:
+            if project_plugin_instance:
+                return (
+                    {
+                        "task_id": task_id,
+                        "name": name,
+                        "tool_name": tool_name,
+                        "task_mode": "scheduled",
+                        "cron_expression": "",
+                        "cron_expressions": [],
+                        "tool_params_json": "{}",
+                        "tool_params": {},
+                        "schedule_times": [],
+                        "schedule_times_json": "[]",
+                        "enabled": False,
+                        "project_plugin_instance": True,
+                    },
+                    override,
+                    "",
+                )
             if not allow_missing_schedule:
                 return None, override, "请至少设置一个执行时间"
             return (
@@ -1110,6 +1588,7 @@ class AutomationServiceMixin:
                     "schedule_times": [],
                     "schedule_times_json": "[]",
                     "enabled": False,
+                    "project_plugin_instance": False,
                 },
                 override,
                 "",
@@ -1128,12 +1607,18 @@ class AutomationServiceMixin:
                 "schedule_times": schedule_times,
                 "schedule_times_json": json.dumps(schedule_times, ensure_ascii=False),
                 "enabled": enabled,
+                "project_plugin_instance": project_plugin_instance,
             },
             override,
             "",
         )
 
     def _persist_automation_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if automation_task_control_plane_only(str(payload.get("task_id") or "")):
+            return {
+                "ok": False,
+                "error": CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE,
+            }
         if str(payload.get("task_mode") or "scheduled") != "scheduled":
             self._record_virtual_task_runtime(payload["task_id"], payload=payload)
             return {"ok": True, "status": None, "data": {"mode": "virtual"}}
@@ -1604,88 +2089,22 @@ class AutomationServiceMixin:
             http_status=HTTPStatus.OK,
         )
 
-    def _agent_request(
+    def _latest_tool_log(
         self,
-        method: str,
-        endpoint: str,
+        tool_name: str,
         *,
-        payload: dict[str, Any] | None = None,
-        timeout: int | None = None,
-    ) -> dict[str, Any]:
-        agent_internal_api_token = str(
-            getattr(self.settings, "agent_internal_api_token", "") or ""
-        ).strip()
-        if not agent_internal_api_token:
-            return {
-                "ok": False,
-                "status": None,
-                "error": "AGENT_INTERNAL_API_TOKEN is not configured",
-            }
-        url = f"{self.settings.agent_base_url.rstrip('/')}{endpoint}"
-        body: bytes | None = None
-        headers: dict[str, str] = {
-            "X-Agent-Internal-Token": agent_internal_api_token,
-        }
-        if payload is not None:
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json; charset=utf-8"
-
-        request = Request(url, data=body, headers=headers, method=method.upper())
-        try:
-            if timeout is None:
-                response_handle = urlopen(request)
-            else:
-                response_handle = urlopen(request, timeout=timeout or self.settings.agent_timeout_seconds)
-            with response_handle as response:
-                raw = response.read().decode("utf-8")
-                data = json.loads(raw) if raw else {}
-                if endpoint.startswith("/internal/v1/"):
-                    if not isinstance(data, dict) or not {"ok", "data", "error"}.issubset(data):
-                        return {
-                            "ok": False,
-                            "status": response.status,
-                            "error": "Agent returned an invalid internal API contract",
-                            "error_code": "invalid_internal_contract",
-                        }
-                    if data.get("ok") is not True:
-                        error = data.get("error") if isinstance(data.get("error"), dict) else {}
-                        return {
-                            "ok": False,
-                            "status": response.status,
-                            "error": redact_text(error.get("message") or "Internal API request failed"),
-                            "error_code": str(error.get("code") or "internal_api_failed"),
-                            "data": data.get("data"),
-                        }
-                    data = data.get("data")
-                return {
-                    "ok": True,
-                    "status": response.status,
-                    "data": data,
-                }
-        except HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                data = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                data = raw
-            if endpoint.startswith("/internal/v1/") and isinstance(data, dict):
-                error = data.get("error") if isinstance(data.get("error"), dict) else {}
-                error_payload = error.get("message") or data
-            else:
-                error_payload = data
-            return {
-                "ok": False,
-                "status": exc.code,
-                "error": redact_sensitive(error_payload or str(exc)),
-            }
-        except URLError as exc:
-            return {"ok": False, "status": None, "error": redact_text(exc.reason)}
-        except Exception as exc:
-            return {"ok": False, "status": None, "error": redact_text(exc)}
-
-    def _latest_tool_log(self, tool_name: str, *, since: str | None = None) -> dict[str, Any] | None:
+        since: str | None = None,
+        console_principal: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         endpoint = f"/internal/v1/tool-logs?limit=5&tool_name={quote(tool_name, safe='')}"
-        result = self._agent_request("GET", endpoint, timeout=5)
+        if console_principal is None:
+            return None
+        result = self._agent_request(
+            "GET",
+            endpoint,
+            timeout=5,
+            console_principal=console_principal,
+        )
         if not result.get("ok"):
             return None
         data = result.get("data")
@@ -1707,8 +2126,13 @@ class AutomationServiceMixin:
         tool_name: str,
         *,
         since: str | None = None,
+        console_principal: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        row = self._latest_tool_log(tool_name, since=since)
+        row = self._latest_tool_log(
+            tool_name,
+            since=since,
+            console_principal=console_principal,
+        )
         if not row:
             return None
 

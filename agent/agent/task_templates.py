@@ -1,226 +1,84 @@
-"""Phase 7 迁移模板：先把可安全准备的任务定义固化下来。"""
+"""Safe scheduler seed templates derived from governed task contracts.
 
-PHASE7_SCHEDULED_TASK_TEMPLATES = [
+Persisted rows remain administrator-owned.  These templates are only used to
+insert missing rows, and every new row starts disabled so a fresh database
+cannot begin business automation before accounts and resources are verified.
+"""
+
+from __future__ import annotations
+
+import copy
+import re
+from typing import Any
+
+from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
+
+
+_TIME_SUFFIX_RE = re.compile(r"_(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)$")
+_GROUP_DISPLAY_NAMES = {
+    "arrive_list": "到货清单",
+    "daily_sign": "每日应签",
+    "delivery_status": "派送状态",
+    "send_order": "当日寄件数据",
+    "site_send": "网点出港清单",
+    "yunda_send_waybills": "韵达寄件运单",
+}
+
+
+def _cron_and_label(task_id: str) -> tuple[str, str]:
+    match = _TIME_SUFFIX_RE.search(task_id)
+    if match is None:
+        raise RuntimeError(f"Governed scheduled task id has no HHMM suffix: {task_id}")
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute"))
+    return f"{minute} {hour} * * *", f"{hour:02d}:{minute:02d}"
+
+
+def _build_governed_schedule_templates() -> list[dict[str, Any]]:
+    templates: list[dict[str, Any]] = []
+    for group_id, profile in APPROVED_SCHEDULED_TASK_PROFILES.items():
+        # Existing production clock jobs are governed in place.  External
+        # writes are never introduced automatically on a fresh installation.
+        if (
+            not profile.approved_task_ids
+            or profile.operation_type != "internal_projection_write"
+            or not profile.seed_governed_template
+        ):
+            continue
+        display_name = _GROUP_DISPLAY_NAMES.get(group_id)
+        if display_name is None:
+            raise RuntimeError(f"Governed scheduled task group has no display name: {group_id}")
+        for task_id in sorted(profile.approved_task_ids):
+            cron_expression, time_label = _cron_and_label(task_id)
+            templates.append(
+                {
+                    "id": task_id,
+                    "name": f"{display_name}-{time_label}",
+                    "tool_name": profile.tool_name,
+                    "tool_params": copy.deepcopy(dict(profile.approved_arguments)),
+                    "cron_expression": cron_expression,
+                    "enabled": False,
+                    "source": "control-plane-v1",
+                }
+            )
+    return templates
+
+
+GOVERNED_SCHEDULED_TASK_TEMPLATES = _build_governed_schedule_templates()
+GOVERNED_SCHEDULED_TASK_IDS = frozenset(task["id"] for task in GOVERNED_SCHEDULED_TASK_TEMPLATES)
+
+# These rows are useful configuration placeholders but are deliberately not
+# scheduler-policy exemptions.  A fresh database receives them disabled; an
+# existing administrator choice is never overwritten by seed operations.
+STATIC_DISABLED_SCHEDULED_TASK_TEMPLATES = [
     {
-        "id": "send_order_2150",
-        "name": "获取当日寄件数据",
-        "tool_name": "sync_daily_send_orders",
-        "tool_params": {},
-        "cron_expression": "50 21 * * *",
+        "id": "customer_problems_shadow",
+        "name": "客服问题件事项影子采集",
+        "tool_name": "sync_customer_service_problems",
+        "tool_params": {"direction": "both"},
+        "cron_expression": "*/15 * * * *",
         "enabled": False,
-        "source": "phase7-first-batch",
-    },
-    {
-        "id": "clockin_daxiang_1830",
-        "name": "网点打卡-大祥",
-        "tool_name": "tms_query",
-        "tool_params": {
-            "endpoint": "/clock_in_dual",
-            "params": {
-                "timeout_sec": 600,
-                "params": {
-                    "mode": "api",
-                    "site_name": "邵阳大祥站",
-                    "site_fb_name": "邵阳操作场",
-                    "first_type": "交件到港",
-                    "second_type": "接件离港",
-                    "delay_seconds": 2,
-                },
-            },
-        },
-        "cron_expression": "30 18 * * *",
-        "enabled": False,
-        "source": "phase7-first-batch",
-    },
-    {
-        "id": "clockin_daxiang_s_1830",
-        "name": "网点打卡-大祥S站",
-        "tool_name": "tms_query",
-        "tool_params": {
-            "endpoint": "/clock_in_dual",
-            "params": {
-                "timeout_sec": 600,
-                "params": {
-                    "mode": "api",
-                    "sitecode": "7390017",
-                    "sitefbcode": "73901",
-                    "site_name": "邵阳大祥S站",
-                    "site_fb_name": "邵阳操作场",
-                    "first_type": "交件到港",
-                    "second_type": "接件离港",
-                    "delay_seconds": 2,
-                },
-            },
-        },
-        "cron_expression": "33 18 * * *",
-        "enabled": False,
-        "source": "phase7-first-batch",
-    },
-    {
-        "id": "r7_arrival_checkin",
-        "name": "R7 到达打卡",
-        "tool_name": "r7_arrival_checkin",
-        "tool_params": {
-            "headless": True,
-            "slow_mo_ms": 0,
-            "max_login_attempts": 6,
-            "status_text": "车辆到达",
-            "verify_status_text": "已到达",
-            "flow_mode": 1,
-            "do_arrive_wait_unload": True,
-            "after_action_delay_ms": 1500,
-            "daily_success_limit": 1,
-        },
-        "cron_expression": "0 19 * * *",
-        "enabled": False,
-        "source": "phase7-r7-checkin",
-    },
-    {
-        "id": "r7_departure_checkin",
-        "name": "R7 发车打卡",
-        "tool_name": "r7_departure_checkin",
-        "tool_params": {
-            "headless": True,
-            "slow_mo_ms": 0,
-            "max_login_attempts": 6,
-            "status_text": "已调度",
-            "verify_status_text": "装车待发",
-            "class_name": "邵阳操作场-长沙",
-            "departure_time_fixed": "21:30:00",
-            "plate_numbers": "湘AK6980",
-            "do_departure_checkin": True,
-            "after_action_delay_ms": 1500,
-            "daily_success_limit": 1,
-        },
-        "cron_expression": "",
-        "enabled": False,
-        "source": "phase7-r7-checkin",
-    },
-    {
-        "id": "daily_sign_0500",
-        "name": "每日应签-05:00",
-        "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
-        "cron_expression": "0 5 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "daily_sign_0700",
-        "name": "每日应签-07:00",
-        "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
-        "cron_expression": "0 7 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "daily_sign_0900",
-        "name": "每日应签-09:00",
-        "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
-        "cron_expression": "0 9 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "daily_sign_1400",
-        "name": "每日应签-14:00",
-        "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
-        "cron_expression": "0 14 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "daily_sign_1530",
-        "name": "每日应签-15:30",
-        "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
-        "cron_expression": "30 15 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "daily_sign_1800",
-        "name": "每日应签-18:00",
-        "tool_name": "sync_daily_should_sign",
-        "tool_params": {},
-        "cron_expression": "0 18 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_0500",
-        "name": "网点出港清单-05:00",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "0 5 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_0530",
-        "name": "网点出港清单-05:30",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "30 5 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_1800",
-        "name": "网点出港清单-18:00",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "0 18 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_1900",
-        "name": "网点出港清单-19:00",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "0 19 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_1930",
-        "name": "网点出港清单-19:30",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "30 19 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_2000",
-        "name": "网点出港清单-20:00",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "0 20 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_2030",
-        "name": "网点出港清单-20:30",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "30 20 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
-    },
-    {
-        "id": "site_send_2100",
-        "name": "网点出港清单-21:00",
-        "tool_name": "sync_site_send_list",
-        "tool_params": {},
-        "cron_expression": "0 21 * * *",
-        "enabled": False,
-        "source": "phase7-second-batch",
+        "source": "control-plane-pilot",
     },
     {
         "id": "finance_bills_0010",
@@ -228,10 +86,25 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "tool_name": "sync_finance_bills",
         "tool_params": {
             "mode": "sync",
+            "platform": "ronghui",
             "rescan_days": 7,
         },
         "cron_expression": "10 0 * * *",
-        "enabled": True,
+        "enabled": False,
+        "source": "finance-ledger",
+    },
+    {
+        "id": "finance_startup_catchup",
+        "name": "财务启动缺口扫描",
+        "tool_name": "sync_finance_bills",
+        "tool_params": {
+            "mode": "sync",
+            "platform": "ronghui",
+            "rescan_days": 7,
+            "_startup_catchup": True,
+        },
+        "cron_expression": "@startup",
+        "enabled": False,
         "source": "finance-ledger",
     },
     {
@@ -239,11 +112,19 @@ PHASE7_SCHEDULED_TASK_TEMPLATES = [
         "name": "韵达网点派件量预测-17:00",
         "tool_name": "sync_yunda_dispatch_forecast",
         "tool_params": {
-            "session_profile": "yunda",
+            "account_id": "yunda_default",
             "dest_brch": "56739382",
         },
         "cron_expression": "0 17 * * *",
-        "enabled": True,
+        "enabled": False,
         "source": "yunda-dispatch-forecast",
     },
+]
+
+# Compatibility name retained for the existing seed API.  External writes
+# such as clock-in and R7 check-in are intentionally absent: they must never be
+# introduced by an automatic template seed.
+PHASE7_SCHEDULED_TASK_TEMPLATES = [
+    *GOVERNED_SCHEDULED_TASK_TEMPLATES,
+    *STATIC_DISABLED_SCHEDULED_TASK_TEMPLATES,
 ]

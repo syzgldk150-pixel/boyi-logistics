@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from shared.finance.mappings import (
@@ -35,7 +35,16 @@ from shared.finance.models import (
 )
 from shared.finance.money import ZERO, format_money
 from shared.finance.schema import validate_finance_schema
+from shared.finance.sources import (
+    enabled_finance_platforms,
+    is_finance_source_enabled,
+)
 from shared.finance.validation import ValidationReport
+from shared.finance.evolution import (
+    FinanceEvolutionMixin,
+    _enabled_platform_clause,
+    _enabled_source_clause,
+)
 
 
 ConnectionFactory = Callable[[], Any]
@@ -101,6 +110,18 @@ def _fetchall(cursor: Any) -> list[dict[str, Any]]:
     return [item for row in (cursor.fetchall() or []) if (item := _row_dict(cursor, row))]
 
 
+def _integer_count(value: Any, field_name: str) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer count") from exc
+    if not number.is_finite() or number != number.to_integral_value():
+        raise ValueError(f"{field_name} must be an integer count")
+    return int(number)
+
+
 @contextmanager
 def _managed_cursor(connection: Any) -> Iterator[Any]:
     cursor = connection.cursor()
@@ -112,7 +133,7 @@ def _managed_cursor(connection: Any) -> Iterator[Any]:
             close()
 
 
-class FinanceRepository:
+class FinanceRepository(FinanceEvolutionMixin):
     """Finance persistence over a caller-supplied DB-API connection factory."""
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
@@ -209,6 +230,8 @@ class FinanceRepository:
     ) -> int:
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value, account):
+            raise ValueError("finance source is not enabled")
         login = _required_text(login_account, "login_account")
         profile = _required_text(session_profile, "session_profile")
         target = _date(target_date, "target_date")
@@ -271,6 +294,8 @@ class FinanceRepository:
 
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value, account):
+            raise ValueError("finance source is not enabled")
         target = _date(target_date, "target_date")
         code = _required_text(error_code, "error_code")
         message = _required_text(error_message, "error_message")
@@ -393,8 +418,35 @@ class FinanceRepository:
     ) -> bool:
         cursor.execute(
             """
-            SELECT id, direction, fee_level, booking_fee_name,
-                   effective_start_month, include_in_cost, created_by
+            SELECT platform, raw_primary_fee_name, raw_secondary_fee_name
+            FROM finance_fee_items WHERE id = %s
+            """,
+            (int(fee_item_id),),
+        )
+        fee_item = _fetchone(cursor)
+        if not fee_item:
+            raise FinanceNotFoundError("fee item does not exist")
+        subject_name = (
+            seed.canonical_subject_name
+            or seed.booking_fee_name
+            or str(fee_item.get("raw_secondary_fee_name") or "")
+            or str(fee_item["raw_primary_fee_name"])
+        )
+        subject_id = self._ensure_fee_subject(
+            cursor,
+            platform=str(fee_item["platform"]),
+            subject_code=seed.canonical_subject_code,
+            subject_name=subject_name,
+            fee_level=seed.fee_level.value,
+            booking_fee_name=seed.booking_fee_name,
+            requires_waybill=seed.requires_waybill,
+            created_by="system:verified-baseline",
+        )
+        cursor.execute(
+            """
+            SELECT id, direction, fee_level, canonical_subject_id,
+                   booking_fee_name, requires_waybill, effective_start_month,
+                   include_in_cost, created_by
             FROM finance_fee_mappings
             WHERE fee_item_id = %s AND superseded_at IS NULL
             ORDER BY effective_start_month ASC, version_no ASC, id ASC
@@ -404,6 +456,47 @@ class FinanceRepository:
         )
         current = _fetchone(cursor)
         if current:
+            legacy_fields_match = (
+                str(current.get("direction") or "") == seed.direction.value
+                and str(current.get("fee_level") or "") == seed.fee_level.value
+                and str(current.get("booking_fee_name") or "") == seed.booking_fee_name
+                and bool(current.get("include_in_cost")) is seed.include_in_cost
+            )
+            if not current.get("canonical_subject_id") and legacy_fields_match:
+                before = dict(current)
+                cursor.execute(
+                    """
+                    UPDATE finance_fee_mappings
+                    SET canonical_subject_id = %s, requires_waybill = %s
+                    WHERE id = %s AND canonical_subject_id IS NULL
+                    """,
+                    (subject_id, 1 if seed.requires_waybill else 0, int(current["id"])),
+                )
+                if int(cursor.rowcount or 0) == 1:
+                    after = {
+                        **before,
+                        "canonical_subject_id": subject_id,
+                        "requires_waybill": seed.requires_waybill,
+                    }
+                    cursor.execute(
+                        """
+                        INSERT INTO finance_mapping_audit_logs (
+                            fee_item_id, mapping_id, action, before_json, after_json,
+                            changed_by, change_reason, created_at
+                        ) VALUES (%s, %s, 'canonical_backfill', %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            int(fee_item_id),
+                            int(current["id"]),
+                            _json_text(before),
+                            _json_text(after),
+                            "system:verified-baseline",
+                            "backfill canonical subject for an exact confirmed legacy mapping",
+                            _now(),
+                        ),
+                    )
+                    current["canonical_subject_id"] = subject_id
+                    current["requires_waybill"] = seed.requires_waybill
             current_start = _date(
                 current["effective_start_month"],
                 "effective_start_month",
@@ -412,7 +505,9 @@ class FinanceRepository:
                 str(current.get("created_by") or "") == "system:verified-baseline"
                 and str(current.get("direction") or "") == seed.direction.value
                 and str(current.get("fee_level") or "") == seed.fee_level.value
+                and int(current.get("canonical_subject_id") or 0) == subject_id
                 and str(current.get("booking_fee_name") or "") == seed.booking_fee_name
+                and bool(current.get("requires_waybill")) is seed.requires_waybill
                 and bool(current.get("include_in_cost")) is seed.include_in_cost
             )
             if not is_same_verified_seed or first_seen_month >= current_start:
@@ -423,7 +518,9 @@ class FinanceRepository:
                 fee_item_id=fee_item_id,
                 direction=seed.direction,
                 fee_level=seed.fee_level,
+                canonical_subject_id=subject_id,
                 booking_fee_name=seed.booking_fee_name,
+                requires_waybill=seed.requires_waybill,
                 effective_start_month=first_seen_month,
                 effective_end_month=prior_end_month,
                 include_in_cost=seed.include_in_cost,
@@ -437,7 +534,9 @@ class FinanceRepository:
             fee_item_id=fee_item_id,
             direction=seed.direction,
             fee_level=seed.fee_level,
+            canonical_subject_id=subject_id,
             booking_fee_name=seed.booking_fee_name,
+            requires_waybill=seed.requires_waybill,
             effective_start_month=first_seen_month,
             effective_end_month=None,
             include_in_cost=seed.include_in_cost,
@@ -466,6 +565,8 @@ class FinanceRepository:
             run = self._load_run_for_update(cursor, run_id)
             expected_platform = str(run["platform"])
             expected_account = str(run["account_id"])
+            if not is_finance_source_enabled(expected_platform, expected_account):
+                raise FinanceSnapshotRejectedError("finance source is not enabled")
             expected_login = str(run.get("login_account") or "")
             expected_date = _date(run["target_date"], "target_date")
             for record in rows:
@@ -586,6 +687,12 @@ class FinanceRepository:
                     int(run_id),
                 ),
             )
+            derivatives = self._refresh_run_derivatives(cursor, run)
+            report["metrics"].update(derivatives)
+            cursor.execute(
+                "UPDATE finance_sync_runs SET validation_report_json = %s WHERE id = %s",
+                (_json_text(report), int(run_id)),
+            )
         return {
             "run_id": int(run_id),
             "status": SyncStatus.SUCCESS.value,
@@ -593,6 +700,7 @@ class FinanceRepository:
             "unique_row_count": unique_count,
             "written_row_count": written,
             "validation_status": validation.status.value,
+            "derivatives": derivatives,
         }
 
     def mark_run_no_data(self, *, run_id: int, validation: ValidationReport) -> None:
@@ -603,7 +711,11 @@ class FinanceRepository:
             )
         now = _now()
         with self._connection() as connection, _managed_cursor(connection) as cursor:
-            self._load_run_for_update(cursor, run_id)
+            run = self._load_run_for_update(cursor, run_id)
+            if not is_finance_source_enabled(
+                str(run["platform"]), str(run["account_id"])
+            ):
+                raise FinanceSnapshotRejectedError("finance source is not enabled")
             report["metrics"]["written_row_count"] = 0
             cursor.execute(
                 """
@@ -690,6 +802,128 @@ class FinanceRepository:
             )
             return status
 
+    def read_batch_commit_proof(self, batch_id: int) -> dict[str, Any]:
+        """Freshly read one batch identity and its terminal run counts.
+
+        Callers use this from a new repository connection after create/finalize;
+        the write response itself is never accepted as completion evidence.
+        """
+
+        with self._connection() as connection, _managed_cursor(connection) as cursor:
+            cursor.execute(
+                """
+                SELECT id, trigger_type, requested_start_date, requested_end_date,
+                       rescan_days, status, earliest_date_status, requested_by
+                FROM finance_sync_batches
+                WHERE id = %s
+                """,
+                (int(batch_id),),
+            )
+            row = _fetchone(cursor)
+            if row is None:
+                raise FinanceNotFoundError("sync batch does not exist")
+            cursor.execute(
+                """
+                SELECT status, COUNT(*) AS total
+                FROM finance_sync_runs
+                WHERE batch_id = %s
+                GROUP BY status
+                """,
+                (int(batch_id),),
+            )
+            run_counts = {
+                str(item["status"]): _integer_count(item.get("total"), "run total")
+                for item in _fetchall(cursor)
+            }
+        return {
+            "batch_id": int(row["id"]),
+            "trigger_type": str(row.get("trigger_type") or ""),
+            "start_date": _date(row.get("requested_start_date"), "start_date").isoformat(),
+            "end_date": _date(row.get("requested_end_date"), "end_date").isoformat(),
+            "rescan_days": _integer_count(row.get("rescan_days"), "rescan_days"),
+            "status": str(row.get("status") or ""),
+            "earliest_date_status": (
+                str(row.get("earliest_date_status"))
+                if row.get("earliest_date_status") is not None
+                else None
+            ),
+            "requested_by": str(row.get("requested_by") or ""),
+            "run_counts": run_counts,
+        }
+
+    def read_run_commit_proof(self, run_id: int) -> dict[str, Any]:
+        """Freshly read one persisted run plus independent row/amount totals."""
+
+        with self._connection() as connection, _managed_cursor(connection) as cursor:
+            cursor.execute(
+                """
+                SELECT id, batch_id, platform, account_id, target_date, status,
+                       remote_total, unique_row_count, written_row_count
+                FROM finance_sync_runs
+                WHERE id = %s
+                """,
+                (int(run_id),),
+            )
+            row = _fetchone(cursor)
+            if row is None:
+                raise FinanceNotFoundError("sync run does not exist")
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS transaction_count,
+                       COUNT(DISTINCT BINARY source_record_key) AS transaction_unique_count,
+                       COALESCE(SUM(income), 0) AS transaction_income,
+                       COALESCE(SUM(expense), 0) AS transaction_expense
+                FROM finance_transactions
+                WHERE run_id = %s
+                """,
+                (int(run_id),),
+            )
+            transaction_totals = _fetchone(cursor) or {}
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS summary_count,
+                       COALESCE(SUM(income), 0) AS summary_income,
+                       COALESCE(SUM(expense), 0) AS summary_expense
+                FROM finance_summary_snapshots
+                WHERE run_id = %s
+                """,
+                (int(run_id),),
+            )
+            summary_totals = _fetchone(cursor) or {}
+        return {
+            "run_id": int(row["id"]),
+            "batch_id": int(row["batch_id"]),
+            "platform": str(row.get("platform") or ""),
+            "account_id": str(row.get("account_id") or ""),
+            "target_date": _date(row.get("target_date"), "target_date").isoformat(),
+            "status": str(row.get("status") or ""),
+            "remote_total": _integer_count(row.get("remote_total"), "remote_total"),
+            "unique_row_count": _integer_count(
+                row.get("unique_row_count"),
+                "unique_row_count",
+            ),
+            "written_row_count": _integer_count(
+                row.get("written_row_count"),
+                "written_row_count",
+            ),
+            "transaction_count": _integer_count(
+                transaction_totals.get("transaction_count"),
+                "transaction_count",
+            ),
+            "transaction_unique_count": _integer_count(
+                transaction_totals.get("transaction_unique_count"),
+                "transaction_unique_count",
+            ),
+            "transaction_income": transaction_totals.get("transaction_income", 0),
+            "transaction_expense": transaction_totals.get("transaction_expense", 0),
+            "summary_count": _integer_count(
+                summary_totals.get("summary_count"),
+                "summary_count",
+            ),
+            "summary_income": summary_totals.get("summary_income", 0),
+            "summary_expense": summary_totals.get("summary_expense", 0),
+        }
+
     def list_missing_dates(
         self,
         *,
@@ -700,6 +934,8 @@ class FinanceRepository:
     ) -> list[dt.date]:
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value, account):
+            raise ValueError("finance source is not enabled")
         start = _date(start_date, "start_date")
         end = _date(end_date, "end_date")
         if start > end:
@@ -777,6 +1013,8 @@ class FinanceRepository:
 
         platform_value = Platform(platform)
         account = _required_text(account_id, "account_id")
+        if not is_finance_source_enabled(platform_value.value, account):
+            raise ValueError("finance source is not enabled")
         target = _date(target_date, "target_date")
         keys = sorted(
             {
@@ -856,7 +1094,9 @@ class FinanceRepository:
         fee_item_id: int,
         direction: Direction,
         fee_level: FeeLevel,
+        canonical_subject_id: int,
         booking_fee_name: str,
+        requires_waybill: bool,
         effective_start_month: dt.date,
         effective_end_month: dt.date | None,
         include_in_cost: bool,
@@ -874,16 +1114,19 @@ class FinanceRepository:
         cursor.execute(
             """
             INSERT INTO finance_fee_mappings (
-                fee_item_id, direction, fee_level, booking_fee_name,
+                fee_item_id, direction, fee_level, canonical_subject_id,
+                booking_fee_name, requires_waybill,
                 effective_start_month, effective_end_month, include_in_cost,
                 mapping_status, version_no, created_by, change_reason, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 int(fee_item_id),
                 direction.value,
                 fee_level.value,
+                int(canonical_subject_id),
                 booking_fee_name or None,
+                1 if requires_waybill else 0,
                 effective_start_month,
                 effective_end_month,
                 1 if include_in_cost else 0,
@@ -899,7 +1142,9 @@ class FinanceRepository:
             "mapping_id": mapping_id,
             "direction": direction.value,
             "fee_level": fee_level.value,
+            "canonical_subject_id": int(canonical_subject_id),
             "booking_fee_name": booking_fee_name,
+            "requires_waybill": bool(requires_waybill),
             "effective_start_month": effective_start_month.isoformat(),
             "effective_end_month": (
                 effective_end_month.isoformat() if effective_end_month else None
@@ -933,7 +1178,10 @@ class FinanceRepository:
         *,
         fee_item_id: int,
         fee_level: FeeLevel | str,
-        booking_fee_name: str,
+        canonical_subject_name: str,
+        booking_fee_name: str = "",
+        canonical_subject_code: str = "",
+        requires_waybill: bool | None = None,
         effective_start_month: dt.date | str,
         effective_end_month: dt.date | str | None = None,
         include_in_cost: bool,
@@ -947,6 +1195,8 @@ class FinanceRepository:
             raise ValueError("effective_end_month must not precede effective_start_month")
         actor = _required_text(changed_by, "changed_by")
         change_reason = _required_text(reason, "reason")
+        subject_name = _required_text(canonical_subject_name, "canonical_subject_name")
+        mapping_id = 0
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(
                 "SELECT * FROM finance_fee_items WHERE id = %s FOR UPDATE",
@@ -955,6 +1205,8 @@ class FinanceRepository:
             fee_item = _fetchone(cursor)
             if not fee_item:
                 raise FinanceNotFoundError("fee item does not exist")
+            if str(fee_item["platform"]) not in enabled_finance_platforms():
+                raise ValueError("fee item's finance source is not enabled")
             source_direction = Direction(str(fee_item["direction"]))
             if include_in_cost and source_direction is not Direction.EXPENSE:
                 raise ValueError("only expense mappings may be included in cost")
@@ -962,6 +1214,19 @@ class FinanceRepository:
                 platform=Platform(str(fee_item["platform"])),
                 fee_level=level,
                 booking_fee_name=booking_fee_name,
+            )
+            require_waybill = level is FeeLevel.WAYBILL if requires_waybill is None else bool(requires_waybill)
+            if level is FeeLevel.OPERATING and require_waybill:
+                raise ValueError("operating mapping cannot require a waybill")
+            subject_id = self._ensure_fee_subject(
+                cursor,
+                platform=str(fee_item["platform"]),
+                subject_code=str(canonical_subject_code or "").strip(),
+                subject_name=subject_name,
+                fee_level=level.value,
+                booking_fee_name=target_name,
+                requires_waybill=require_waybill,
+                created_by=actor,
             )
             cursor.execute(
                 """
@@ -978,12 +1243,14 @@ class FinanceRepository:
                     "UPDATE finance_fee_mappings SET superseded_at = %s WHERE id = %s",
                     (_now(), int(current["id"])),
                 )
-            return self._insert_mapping(
+            mapping_id = self._insert_mapping(
                 cursor,
                 fee_item_id=int(fee_item_id),
                 direction=source_direction,
                 fee_level=level,
+                canonical_subject_id=subject_id,
                 booking_fee_name=target_name,
+                requires_waybill=require_waybill,
                 effective_start_month=start,
                 effective_end_month=end,
                 include_in_cost=bool(include_in_cost),
@@ -992,6 +1259,12 @@ class FinanceRepository:
                 action="update" if current else "create",
                 before=current,
             )
+        self.rebuild_waybill_facts_for_fee_item(
+            fee_item_id=int(fee_item_id),
+            reviewed_by=actor,
+            review_reason=change_reason,
+        )
+        return mapping_id
 
     def seed_fee_mappings(
         self,
@@ -1000,7 +1273,11 @@ class FinanceRepository:
         explicit = tuple(seeds) if seeds is not None else None
         seeded = 0
         with self._connection() as connection, _managed_cursor(connection) as cursor:
-            cursor.execute("SELECT * FROM finance_fee_items ORDER BY id")
+            enabled_clause, enabled_params = _enabled_platform_clause("platform")
+            cursor.execute(
+                f"SELECT * FROM finance_fee_items WHERE {enabled_clause} ORDER BY id",
+                tuple(enabled_params),
+            )
             for row in _fetchall(cursor):
                 key = FeeItemKey(
                     platform=Platform(str(row["platform"])),
@@ -1064,8 +1341,11 @@ class FinanceRepository:
     """
 
     def _entry_filters(self, query: FinanceQuery) -> tuple[list[str], list[Any]]:
-        clauses = ["t.business_date BETWEEN %s AND %s"]
-        params: list[Any] = [query.start_date, query.end_date]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="t.platform", account_column="t.account_id"
+        )
+        clauses = ["t.business_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [query.start_date, query.end_date, *enabled_params]
         if query.platform:
             clauses.append("t.platform = %s")
             params.append(query.platform.value)
@@ -1109,8 +1389,20 @@ class FinanceRepository:
         return result
 
     def _failed_sources(self, query: FinanceQuery) -> list[dict[str, Any]]:
-        clauses = ["r.target_date BETWEEN %s AND %s", "r.status = %s"]
-        params: list[Any] = [query.start_date, query.end_date, SyncStatus.FAILED.value]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        clauses = [
+            "r.target_date BETWEEN %s AND %s",
+            "r.status = %s",
+            enabled_clause,
+        ]
+        params: list[Any] = [
+            query.start_date,
+            query.end_date,
+            SyncStatus.FAILED.value,
+            *enabled_params,
+        ]
         if query.platform:
             clauses.append("r.platform = %s")
             params.append(query.platform.value)
@@ -1133,8 +1425,11 @@ class FinanceRepository:
             return [self._serialize_general_row(row) for row in _fetchall(cursor)]
 
     def _freshness(self, query: FinanceQuery) -> dict[str, Any]:
-        clauses = ["r.target_date BETWEEN %s AND %s"]
-        params: list[Any] = [query.start_date, query.end_date]
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        clauses = ["r.target_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [query.start_date, query.end_date, *enabled_params]
         if query.platform:
             clauses.append("r.platform = %s")
             params.append(query.platform.value)
@@ -1180,7 +1475,7 @@ class FinanceRepository:
                 COALESCE(SUM(CASE
                     WHEN fm.fee_level = %s AND fm.include_in_cost = 1 THEN t.expense
                     ELSE 0 END), 0) AS operating_cost,
-                COUNT(DISTINCT CASE WHEN fm.id IS NULL THEN t.fee_item_id END) AS pending_fee_items,
+                COUNT(DISTINCT CASE WHEN fm.id IS NULL OR fm.canonical_subject_id IS NULL THEN t.fee_item_id END) AS pending_fee_items,
                 SUM(CASE WHEN visible_run.validation_status = %s THEN 1 ELSE 0 END) AS warning_rows
             {self._VISIBLE_ENTRY_FROM}
             WHERE {where}
@@ -1193,13 +1488,30 @@ class FinanceRepository:
                                 THEN t.expense ELSE 0 END), 0) AS waybill_cost,
                    COALESCE(SUM(CASE WHEN fm.fee_level = %s AND fm.include_in_cost = 1
                                 THEN t.expense ELSE 0 END), 0) AS operating_cost
+                   ,COALESCE(SUM(CASE WHEN fm.canonical_subject_id IS NOT NULL
+                                      AND fm.fee_level = 'waybill'
+                                      AND COALESCE(TRIM(t.waybill_no), '') <> ''
+                                THEN t.income - t.expense ELSE 0 END), 0) AS waybill_net
+                   ,COALESCE(SUM(CASE WHEN fm.canonical_subject_id IS NOT NULL
+                                      AND fm.fee_level = 'operating'
+                                THEN t.income - t.expense ELSE 0 END), 0) AS operating_net
             {self._VISIBLE_ENTRY_FROM}
             WHERE {where}
             GROUP BY t.platform, t.account_id
             ORDER BY t.platform, t.account_id
         """
-        presence_clauses = ["r.target_date BETWEEN %s AND %s"]
-        presence_params: list[Any] = [query.start_date, query.end_date]
+        presence_enabled_clause, presence_enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        presence_clauses = [
+            "r.target_date BETWEEN %s AND %s",
+            presence_enabled_clause,
+        ]
+        presence_params: list[Any] = [
+            query.start_date,
+            query.end_date,
+            *presence_enabled_params,
+        ]
         if query.platform:
             presence_clauses.append("r.platform = %s")
             presence_params.append(query.platform.value)
@@ -1283,9 +1595,11 @@ class FinanceRepository:
                     "total_expense": self._format_aggregate(account_row.get("total_expense")),
                     "waybill_cost": self._format_aggregate(account_row.get("waybill_cost")),
                     "operating_cost": self._format_aggregate(account_row.get("operating_cost")),
+                    "waybill_net": self._format_aggregate(account_row.get("waybill_net")),
+                    "operating_net": self._format_aggregate(account_row.get("operating_net")),
                 }
             )
-        return {
+        result = {
             "total_income": self._format_aggregate(row.get("total_income")),
             "total_expense": self._format_aggregate(row.get("total_expense")),
             "net_change": self._format_aggregate(row.get("net_change")),
@@ -1302,6 +1616,8 @@ class FinanceRepository:
             "failed_sources": failed_sources,
             "accounts": accounts,
         }
+        result.update(self.get_evolution_summary(query))
+        return result
 
     def get_trend(self, query: FinanceQuery) -> list[dict[str, Any]]:
         clauses, params = self._entry_filters(query)
@@ -1315,8 +1631,18 @@ class FinanceRepository:
             GROUP BY t.business_date
             ORDER BY t.business_date
         """
-        presence_clauses = ["r.target_date BETWEEN %s AND %s"]
-        presence_params: list[Any] = [query.start_date, query.end_date]
+        presence_enabled_clause, presence_enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        presence_clauses = [
+            "r.target_date BETWEEN %s AND %s",
+            presence_enabled_clause,
+        ]
+        presence_params: list[Any] = [
+            query.start_date,
+            query.end_date,
+            *presence_enabled_params,
+        ]
         if query.platform:
             presence_clauses.append("r.platform = %s")
             presence_params.append(query.platform.value)
@@ -1450,7 +1776,7 @@ class FinanceRepository:
         """
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(count_sql, tuple(params))
-            total = int((_fetchone(cursor) or {}).get("total") or 0)
+            total = _integer_count((_fetchone(cursor) or {}).get("total"), "total")
             cursor.execute(
                 data_sql,
                 (
@@ -1496,8 +1822,9 @@ class FinanceRepository:
             raise ValueError("limit must be between 1 and 2000")
         if safe_offset < 0:
             raise ValueError("offset cannot be negative")
-        clauses = ["1 = 1"]
-        params: list[Any] = []
+        enabled_clause, enabled_params = _enabled_platform_clause("fi.platform")
+        clauses = [enabled_clause]
+        params: list[Any] = list(enabled_params)
         if platform is not None:
             clauses.append("fi.platform = %s")
             params.append(Platform(platform).value)
@@ -1521,12 +1848,16 @@ class FinanceRepository:
                    fi.direction, fi.first_seen_month, fi.last_seen_month,
                    fm.id AS mapping_id,
                    CASE WHEN fm.id IS NULL THEN %s ELSE %s END AS mapping_status,
-                   fm.fee_level, fm.booking_fee_name,
+                   fm.fee_level, fm.canonical_subject_id,
+                   s.subject_code AS canonical_subject_code,
+                   s.subject_name AS canonical_subject_name,
+                   fm.booking_fee_name, fm.requires_waybill,
                    fm.effective_start_month, fm.effective_end_month,
                    COALESCE(fm.include_in_cost, 0) AS include_in_cost,
                    fm.version_no
             FROM finance_fee_items fi
             {mapping_join}
+            LEFT JOIN finance_fee_subjects s ON s.id = fm.canonical_subject_id
             WHERE {where}
             ORDER BY (fm.id IS NULL) DESC, fi.platform,
                      fi.raw_primary_fee_name, fi.raw_secondary_fee_name, fi.direction
@@ -1535,7 +1866,7 @@ class FinanceRepository:
         count_sql = f"SELECT COUNT(*) AS total FROM finance_fee_items fi WHERE {where}"
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(count_sql, tuple(params))
-            total = int((_fetchone(cursor) or {}).get("total") or 0)
+            total = _integer_count((_fetchone(cursor) or {}).get("total"), "total")
             cursor.execute(
                 data_sql,
                 (
@@ -1553,6 +1884,7 @@ class FinanceRepository:
         for row in rows:
             item = self._serialize_general_row(row)
             item["include_in_cost"] = bool(row.get("include_in_cost"))
+            item["requires_waybill"] = bool(row.get("requires_waybill"))
             for field_name in (
                 "first_seen_month",
                 "last_seen_month",
@@ -1563,15 +1895,19 @@ class FinanceRepository:
                 if isinstance(value, str) and len(value) >= 7:
                     item[field_name] = value[:7]
             items.append(item)
+        booking_fee_items: dict[str, list[str]] = {}
+        enabled_platforms = enabled_finance_platforms()
+        if Platform.RONGHUI.value in enabled_platforms:
+            booking_fee_items[Platform.RONGHUI.value] = sorted(RONGHUI_BOOKING_FEE_ITEMS)
+        if Platform.YUNDA.value in enabled_platforms:
+            booking_fee_items[Platform.YUNDA.value] = sorted(YUNDA_BOOKING_FEE_ITEMS)
         return {
             "items": items,
             "total": total,
             "limit": safe_limit,
             "offset": safe_offset,
-            "booking_fee_items": {
-                Platform.RONGHUI.value: sorted(RONGHUI_BOOKING_FEE_ITEMS),
-                Platform.YUNDA.value: sorted(YUNDA_BOOKING_FEE_ITEMS),
-            },
+            "booking_fee_items": booking_fee_items,
+            "fee_subjects": self.list_fee_subjects(platform=platform),
         }
 
     def list_sync_batches(
@@ -1612,7 +1948,7 @@ class FinanceRepository:
         """
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             cursor.execute(count_sql, tuple(params))
-            total = int((_fetchone(cursor) or {}).get("total") or 0)
+            total = _integer_count((_fetchone(cursor) or {}).get("total"), "total")
             cursor.execute(
                 data_sql,
                 (
@@ -1624,7 +1960,11 @@ class FinanceRepository:
                     safe_offset,
                 ),
             )
-            items = [self._serialize_general_row(row) for row in _fetchall(cursor)]
+            batch_rows = _fetchall(cursor)
+            for row in batch_rows:
+                for key in ("total_runs", "success_runs", "failed_runs"):
+                    row[key] = _integer_count(row.get(key), key)
+            items = [self._serialize_general_row(row) for row in batch_rows]
             failed_rows: list[dict[str, Any]] = []
             if items:
                 batch_ids = [int(item["id"]) for item in items]
@@ -1654,7 +1994,5 @@ class FinanceRepository:
         for row in failed_rows:
             failed_by_batch.setdefault(int(row.pop("batch_id")), []).append(row)
         for item in items:
-            for key in ("total_runs", "success_runs", "failed_runs"):
-                item[key] = int(item.get(key) or 0)
             item["failed_sources"] = failed_by_batch.get(int(item["id"]), [])
         return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}

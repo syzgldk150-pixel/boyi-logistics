@@ -102,15 +102,7 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         for cookie in cookies:
             if not isinstance(cookie, dict):
                 continue
-            name = str(cookie.get("name") or "").strip()
-            if not name:
-                continue
-            session.cookies.set(
-                name,
-                str(cookie.get("value") or ""),
-                domain=cookie.get("domain"),
-                path=cookie.get("path") or "/",
-            )
+            _set_requests_cookie_from_storage(session, cookie)
         return session
 
     def describe_status(self, *, validate: bool = True, force: bool = False) -> dict[str, Any]:

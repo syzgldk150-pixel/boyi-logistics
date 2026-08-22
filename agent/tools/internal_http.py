@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import os
 
+from agent.execution_boundary import (
+    EXECUTION_CAPABILITY_ENV,
+    EXECUTION_CAPABILITY_HEADER,
+    current_execution_capability,
+)
 
-INTERNAL_API_TOKEN_HEADER = "X-Agent-Internal-Token"
 
-
-class InternalApiTokenNotConfigured(RuntimeError):
+class ExecutionCapabilityNotConfigured(RuntimeError):
     pass
 
 
 def internal_api_headers() -> dict[str, str]:
-    token = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
-    if not token:
-        raise InternalApiTokenNotConfigured("AGENT_INTERNAL_API_TOKEN is not configured")
-    return {INTERNAL_API_TOKEN_HEADER: token}
+    execution_capability = str(
+        os.getenv(EXECUTION_CAPABILITY_ENV, "") or current_execution_capability() or ""
+    ).strip()
+    if not execution_capability:
+        raise ExecutionCapabilityNotConfigured(
+            "AGENT_EXECUTION_CAPABILITY is required for local TMS calls"
+        )
+    return {EXECUTION_CAPABILITY_HEADER: execution_capability}

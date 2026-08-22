@@ -22,6 +22,7 @@ LEGACY_INTERNAL_PREFIXES = (
     "/tools",
     "/workflow-resources",
 )
+FORBIDDEN_CONSOLE_ENDPOINTS = frozenset({"/internal/v1/tools/run"})
 
 
 def _literal_string(node: ast.AST | None) -> str | None:
@@ -49,6 +50,12 @@ def _console_problems() -> list[str]:
             candidates.extend(keyword.value for keyword in node.keywords if keyword.arg == "endpoint")
             for candidate in candidates:
                 endpoint = _literal_string(candidate)
+                if endpoint in FORBIDDEN_CONSOLE_ENDPOINTS:
+                    relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+                    problems.append(
+                        "Console bypasses Command Gateway: "
+                        f"{relative}:{node.lineno} {endpoint}"
+                    )
                 if endpoint and endpoint.startswith(LEGACY_INTERNAL_PREFIXES):
                     relative = path.relative_to(REPOSITORY_ROOT).as_posix()
                     problems.append(f"Console uses legacy Agent endpoint: {relative}:{node.lineno} {endpoint}")

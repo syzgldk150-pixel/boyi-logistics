@@ -14,6 +14,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from shared.finance.models import SummarySemantics
+
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -44,6 +46,7 @@ class CaptureResult:
     source_site_code: str
     source_site_name: str
     validation: dict[str, Any]
+    summary_semantics: SummarySemantics = SummarySemantics.GROSS_BY_FEE_DIRECTION
 
 
 TRANSACTION_WHITELIST = frozenset(
@@ -98,7 +101,12 @@ def clean_text(value: Any) -> str:
 
 def amount_storage_text(value: Any, *, field: str) -> str:
     try:
-        from shared.finance.money import decimal_to_storage_text, to_decimal
+        from shared.finance.money import (
+            InvalidAmountError,
+            MissingAmountError,
+            decimal_to_storage_text,
+            to_decimal,
+        )
     except ImportError as exc:
         raise FinanceCaptureError(
             "SHARED_FINANCE_UNAVAILABLE",
@@ -107,6 +115,18 @@ def amount_storage_text(value: Any, *, field: str) -> str:
         ) from exc
     try:
         return decimal_to_storage_text(to_decimal(value))
+    except MissingAmountError as exc:
+        raise FinanceCaptureError(
+            "AMOUNT_MISSING",
+            f"金额字段缺失：{field}",
+            stage="normalize",
+        ) from exc
+    except InvalidAmountError as exc:
+        raise FinanceCaptureError(
+            "AMOUNT_INVALID",
+            f"金额字段格式异常：{field}",
+            stage="normalize",
+        ) from exc
     except Exception as exc:
         code = clean_text(getattr(exc, "code", "")) or "AMOUNT_INVALID"
         raise FinanceCaptureError(code, f"金额字段格式异常：{field}", stage="normalize") from exc

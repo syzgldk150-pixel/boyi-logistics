@@ -12,6 +12,75 @@ def _resolved_r7_test_params(params, **_kwargs):
     return resolved
 
 
+class _CompletedRunSteps:
+    def __init__(self, data):
+        self._data = data
+
+    def list_for_run(self, _run_id):
+        return [
+            {
+                "result_summary_json": {
+                    "status": "SUCCESS",
+                    "data": self._data,
+                    "meta": {},
+                    "warnings": [],
+                    "error": None,
+                }
+            }
+        ]
+
+
+class _NoApprovals:
+    def get_latest_for_run(self, _run_id, *, for_update=False):
+        return None
+
+
+class _CompletedRunUow:
+    def __init__(self, data):
+        self.steps = _CompletedRunSteps(data)
+        self.approvals = _NoApprovals()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _CompletedRunRepository:
+    def __init__(self, data):
+        self._data = data
+
+    def unit_of_work(self):
+        return _CompletedRunUow(self._data)
+
+
+class _CompletedRunGateway:
+    def __init__(self):
+        self.commands = []
+
+    async def submit_and_wait(self, command, *, timeout_seconds):
+        self.commands.append(command)
+        return {
+            "status": "COMPLETED",
+            "command_id": command.command_id,
+            "work_item_id": "work-item-1",
+            "run_id": "run-1",
+            "correlation_id": command.correlation_id,
+        }
+
+
+def _configure_completed_control_plane(core, *, data):
+    gateway = _CompletedRunGateway()
+    core.configure_orchestration(
+        command_gateway=gateway,
+        repository=_CompletedRunRepository(data),
+        workflow_runner=object(),
+        execution_runtime=object(),
+    )
+    return gateway
+
+
 class AgentExecutionToolTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(
@@ -171,25 +240,15 @@ class AgentExecutionToolTests(unittest.TestCase):
 
         class _FakeRegistry:
             def get_openai_tools(self):
-                return [{"type": "function", "function": {"name": "r7_departure_checkin"}}]
+                return [{"type": "function", "function": {"name": "track_waybill"}}]
 
-            def get_tool(self, name):
-                return {"name": name}
-
-        class _FakeExecutor:
-            async def execute(self, tool_config, params):
+            def get_capability(self, name):
+                if name != "track_waybill":
+                    return None
                 return {
-                    "success": True,
-                    "data": {
-                        "ok": True,
-                        "stage": "done",
-                        "message": "success",
-                        "detail": {
-                            "class_name": "邵阳操作场-长沙",
-                            "plate_numbers": ["湘AK6980"],
-                            "status_text": "装车待发",
-                        },
-                    },
+                    "name": name,
+                    "version": "1.0.0",
+                    "operation_type": "read",
                 }
 
         class _FakeLLM:
@@ -205,8 +264,8 @@ class AgentExecutionToolTests(unittest.TestCase):
                             {
                                 "id": "call-1",
                                 "function": {
-                                    "name": "r7_departure_checkin",
-                                    "arguments": "{}",
+                                    "name": "track_waybill",
+                                    "arguments": '{"tracking_number":"R00014513348"}',
                                 },
                             }
                         ],
@@ -216,8 +275,11 @@ class AgentExecutionToolTests(unittest.TestCase):
         core = AgentCore()
         core.memory = _FakeMemory()
         core.registry = _FakeRegistry()
-        core.executor = _FakeExecutor()
         core.llm = _FakeLLM()
+        _configure_completed_control_plane(
+            core,
+            data={"tracking_number": "R00014513348", "route_rows": []},
+        )
 
         result = asyncio.run(
             core.handle_message(
@@ -227,10 +289,9 @@ class AgentExecutionToolTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("R7 发车打卡已完成", result["reply"])
-        self.assertIn("湘AK6980", result["reply"])
+        self.assertIn("R00014513348", result["reply"])
         self.assertNotIn("假的 LLM 总结", result["reply"])
-        self.assertEqual("r7_departure_checkin", result["executed_tools"][0]["tool_name"])
+        self.assertEqual("track_waybill", result["executed_tools"][0]["tool_name"])
         self.assertTrue(result["executed_tools"][0]["result"]["success"])
 
     def test_agent_login_message_does_not_reach_llm(self):
@@ -270,28 +331,23 @@ class AgentExecutionToolTests(unittest.TestCase):
 
         self.assertEqual("1. 大祥账号\n2. 操作场账号\n3. 韵达账号", result["reply"])
 
-    def test_agent_executes_track_waybill_in_process_without_tool_executor_lock(self):
-        class _FakeMemory:
-            def save_tool_log(self, *args, **kwargs):
-                return 1
-
+    def test_agent_submits_track_waybill_to_control_plane_adapter_path(self):
         class _FakeRegistry:
-            def get_tool(self, name):
-                return {"name": name, "executor": "tools/track_waybill_tool.py"}
-
-        class _FailingExecutor:
-            async def execute(self, tool_config, params):
-                raise AssertionError("track_waybill should bypass generic subprocess executor")
+            def get_capability(self, name):
+                return {"name": name, "version": "1.0.0", "operation_type": "read"}
 
         run_track = Mock(return_value={"tracking_number": "R00014513348", "route_rows": []})
         core = AgentCore(direct_tool_runners={"track_waybill": run_track})
-        core.memory = _FakeMemory()
         core.registry = _FakeRegistry()
-        core.executor = _FailingExecutor()
+        gateway = _configure_completed_control_plane(
+            core,
+            data={"tracking_number": "R00014513348", "route_rows": []},
+        )
 
         result = asyncio.run(core.execute_tool("track_waybill", {"tracking_number": "R00014513348"}))
 
-        run_track.assert_called_once_with({"tracking_number": "R00014513348"})
+        run_track.assert_not_called()
+        self.assertEqual("track_waybill", gateway.commands[0].parameters["tool_name"])
         self.assertTrue(result["success"])
         self.assertEqual("R00014513348", result["data"]["tracking_number"])
 
@@ -323,29 +379,24 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertTrue(result["ronghui"]["saw_yunda_started"])
         self.assertEqual("隆尧莲子镇分部", result["yunda"]["目的网点"])
 
-    def test_agent_executes_get_price_in_process_without_tool_executor_lock(self):
-        class _FakeMemory:
-            def save_tool_log(self, *args, **kwargs):
-                return 1
-
+    def test_agent_submits_get_price_to_control_plane_adapter_path(self):
         class _FakeRegistry:
-            def get_tool(self, name):
-                return {"name": name, "executor": "tools/price_tool.py"}
-
-        class _FailingExecutor:
-            async def execute(self, tool_config, params):
-                raise AssertionError("get_price should bypass generic subprocess executor")
+            def get_capability(self, name):
+                return {"name": name, "version": "1.0.0", "operation_type": "read"}
 
         run_price = Mock(return_value={"mode": "agent_tms_combined", "ronghui": {}, "yunda": {}})
         core = AgentCore(direct_tool_runners={"get_price": run_price})
-        core.memory = _FakeMemory()
         core.registry = _FakeRegistry()
-        core.executor = _FailingExecutor()
+        gateway = _configure_completed_control_plane(
+            core,
+            data={"mode": "agent_tms_combined", "ronghui": {}, "yunda": {}},
+        )
 
         params = {"address": "河北省邢台市隆尧县莲子镇中学", "weight": 199, "volume": 2.727}
         result = asyncio.run(core.execute_tool("get_price", params))
 
-        run_price.assert_called_once_with(params)
+        run_price.assert_not_called()
+        self.assertEqual("get_price", gateway.commands[0].parameters["tool_name"])
         self.assertTrue(result["success"])
         self.assertEqual("agent_tms_combined", result["data"]["mode"])
 
@@ -358,7 +409,15 @@ class AgentExecutionToolTests(unittest.TestCase):
                 "ok": True,
                 "stage": "done",
                 "message": "success",
-                "detail": {"status_text": params.get("status_text")},
+                "detail": {
+                    "status_text": params.get("status_text"),
+                    "verify_status_text": params.get("verify_status_text"),
+                    "task_number": "R7-TASK-1",
+                    "observed_status": params.get("verify_status_text"),
+                    "url": "https://r7.example/task?token=must-not-leak",
+                    "diagnostic": "password=must-not-leak",
+                },
+                "ts": "2026-08-14T09:00:01+08:00",
                 "cost_sec": 1.2,
             }
 
@@ -398,9 +457,44 @@ class AgentExecutionToolTests(unittest.TestCase):
         )
         self.assertNotIn("timeout_sec", captured)
         self.assertNotIn("_scheduled_task", captured)
+        self.assertNotIn(
+            "_scheduled_task",
+            r7_arrival_checkin_tool._sanitize_for_log(
+                {"_scheduled_task": {"id": "browser-controlled"}}
+            ),
+        )
         self.assertEqual("success", insert_log.call_args.kwargs["status"])
         self.assertEqual(0, insert_log.call_args.kwargs["success_count_before"])
         self.assertEqual(1, insert_log.call_args.kwargs["success_count_after"])
+        self.assertEqual({"0": True}, result["postconditions"])
+        proof = result["postcondition_evidence"]["0"]
+        self.assertTrue(proof["verified"])
+        self.assertEqual(
+            "third_party_r7_arrival_state_confirmed",
+            proof["condition"],
+        )
+        self.assertEqual("R7-TASK-1", proof["details"]["external_task_id"])
+        self.assertEqual("已到达", proof["details"]["observed_status"])
+        self.assertNotIn("url", result["detail"])
+        self.assertNotIn("must-not-leak", result["detail"]["diagnostic"])
+        logged_result = insert_log.call_args.kwargs["result"]
+        self.assertNotIn("url", logged_result["detail"])
+
+    def test_r7_log_task_identity_uses_only_trusted_scheduler_side_channel(self):
+        with patch(
+            "tools.r7_arrival_checkin_tool.trusted_scheduler_context",
+            return_value=None,
+        ):
+            self.assertEqual("", r7_arrival_checkin_tool._scheduled_task_id())
+
+        with patch(
+            "tools.r7_arrival_checkin_tool.trusted_scheduler_context",
+            return_value={"task_id": "r7_arrival_checkin_0900"},
+        ):
+            self.assertEqual(
+                "r7_arrival_checkin_0900",
+                r7_arrival_checkin_tool._scheduled_task_id(),
+            )
 
     def test_r7_arrival_checkin_tool_keeps_dispatched_status_for_dry_run(self):
         captured: dict[str, Any] = {}
@@ -435,6 +529,15 @@ class AgentExecutionToolTests(unittest.TestCase):
             ),
             patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
             patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=1),
+            patch(
+                "tools.r7_arrival_checkin_tool._latest_success_observation",
+                return_value={
+                    "log_id": 42,
+                    "task_number": "R7-TASK-1",
+                    "observed_status": "已到达",
+                    "verified_at": "2026-08-14T09:00:01+08:00",
+                },
+            ),
             patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
             patch("tools.r7_arrival_checkin_tool.auto_checkin_r7.run_once") as run_once,
         ):
@@ -448,6 +551,36 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertEqual("skipped", insert_log.call_args.kwargs["status"])
         self.assertEqual(1, insert_log.call_args.kwargs["success_count_before"])
         self.assertEqual(1, insert_log.call_args.kwargs["success_count_after"])
+        self.assertEqual({"0": True}, result["postconditions"])
+        self.assertEqual(
+            {"external_task_id", "observed_status", "source_verified_at"},
+            set(result["postcondition_evidence"]["0"]["details"]),
+        )
+
+    def test_r7_arrival_daily_limit_fails_closed_without_prior_exact_proof(self):
+        with (
+            patch(
+                "tools.r7_arrival_checkin_tool.resolve_account_params",
+                side_effect=_resolved_r7_test_params,
+            ),
+            patch("tools.r7_arrival_checkin_tool._prepare_log_storage"),
+            patch("tools.r7_arrival_checkin_tool._count_successes_today", return_value=1),
+            patch(
+                "tools.r7_arrival_checkin_tool._latest_success_observation",
+                return_value=None,
+            ),
+            patch("tools.r7_arrival_checkin_tool._insert_log") as insert_log,
+            patch("tools.r7_arrival_checkin_tool.auto_checkin_r7.run_once") as run_once,
+        ):
+            result = r7_arrival_checkin_tool.run_r7_arrival_checkin(
+                {"daily_success_limit": 1}
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertIn("prior exact-task proof", result["error"])
+        run_once.assert_not_called()
+        self.assertFalse(insert_log.call_args.kwargs["ok"])
 
     def test_r7_arrival_checkin_tool_marks_script_not_ok_as_error(self):
         with (
@@ -583,7 +716,9 @@ class AgentExecutionToolTests(unittest.TestCase):
 
     def test_arrive_list_sync_handles_malformed_fetch_response(self):
         with patch("tools.arrive_list_sync_tool.call_http_service", return_value={"unexpected": True}):
-            result = arrive_list_sync_tool.run_arrive_list_sync({})
+            result = arrive_list_sync_tool.run_arrive_list_sync(
+                {"account_id": "ronghui-test"}
+            )
         self.assertIn("fetch_dispatch 返回格式异常", result["error"])
 
     def test_yunda_dispatch_forecast_fetch_maps_required_fields(self):

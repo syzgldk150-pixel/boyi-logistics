@@ -1,8 +1,13 @@
 """Console composition root and HTTP lifecycle."""
 
+import os
+
 from console.app_support import *  # noqa: F403
+from console.services.agent_api import AgentApiServiceMixin
 from console.services.auth import AuthServiceMixin
+from console.services.control_plane import ControlPlaneServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
+from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.customer_service import CustomerServiceMixin
 from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
 from console.services.tms_proxy import TmsProxyServiceMixin
@@ -13,9 +18,30 @@ from console.navigation import (
     MOBILE_NAVIGATION_CANDIDATES,
     mobile_bottom_nav_for_user,
 )
+from shared.service_identity import validate_service_identity_secrets
 
 
-class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerServiceMixin, WaybillsReceiptsServiceMixin, TmsProxyServiceMixin, AutomationServiceMixin, DocumentServiceMixin):
+def _validate_console_service_identity() -> None:
+    validate_service_identity_secrets(
+        internal_api_token=str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip(),
+        console_signing_secret=str(
+            os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or ""
+        ).strip(),
+    )
+
+
+class LocalDocFlowApp(
+    AuthServiceMixin,
+    AgentApiServiceMixin,
+    ControlPlaneServiceMixin,
+    LLMSettingsServiceMixin,
+    MonitoringFinanceServiceMixin,
+    CustomerServiceMixin,
+    WaybillsReceiptsServiceMixin,
+    TmsProxyServiceMixin,
+    AutomationServiceMixin,
+    DocumentServiceMixin,
+):
     def __init__(self) -> None:
         self.settings = load_settings()
         self.template_store = TemplateStore(self.settings)
@@ -50,9 +76,18 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         self.template_env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
         self.template_env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
         self.project_modules = self._build_project_modules()
-        self.finance_service = FinanceService(self.repository, agent_request=self._agent_request)
+        self.finance_service = FinanceService(
+            self.repository,
+            agent_request=self._agent_request,
+        )
         self.finance_service.initialize_schema()
         self.automation_virtual_task_state: dict[str, dict[str, Any]] = {}
+        # Original carrier pages execute on www.boyi.homes.  Keep the short-lived
+        # ticket and the resulting capability server-side so the Console session
+        # cookie is never shared with that independent origin.
+        self._original_page_state_lock = threading.Lock()
+        self._original_page_tickets: dict[str, dict[str, Any]] = {}
+        self._original_page_capabilities: dict[str, dict[str, Any]] = {}
         self.routes = ConsoleRouteDispatcher()
 
     def _ensure_seed_admin_user(self) -> None:
@@ -71,10 +106,12 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
             display_name="系统管理员",
             password_hash=hash_admin_password(password),
             is_active=True,
+            role="super_admin",
         )
         print("Created the first admin account from DOCFLOW_ADMIN_USERNAME.")
 
     def run(self) -> None:
+        _validate_console_service_identity()
         handler = self._build_handler()
         server = ThreadingHTTPServer((self.settings.host, self.settings.port), handler)
         print(
@@ -112,21 +149,11 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
     def handle_proxy_write(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
-        query = parse_qs(parsed.query)
+        if self._handle_isolated_original_page_request(handler, parsed, method=method):
+            return
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
+            return
         if not self._ensure_authorized(handler):
-            return
-
-        if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method=method.upper(), query=query)
-            return
-        if parsed.path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_yunda_receipt_live_proxy(handler, parsed.path, method=method.upper(), query=query)
-            return
-        if parsed.path.startswith(RONGHUI_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_live_proxy(handler, parsed.path, method=method.upper(), query=query)
-            return
-        if parsed.path.startswith(YUNDA_LIVE_PROXY_PREFIX):
-            self._handle_yunda_live_proxy(handler, parsed.path, method=method.upper(), query=query)
             return
         self._send_json(
             handler,
@@ -139,7 +166,9 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
-        query = parse_qs(parsed.query)
+
+        if self._handle_isolated_original_page_request(handler, parsed, method="GET"):
+            return
 
         if path.startswith("/static/"):
             relpath = path[len("/static/") :]
@@ -148,7 +177,13 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         if path == "/login":
             self._render_login(handler, query)
             return
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
+            return
         if not self._ensure_authorized(handler):
+            return
+        if path.startswith("/original-pages/") and path.endswith("/launch"):
+            provider = path[len("/original-pages/") : -len("/launch")].strip("/")
+            self._mint_isolated_original_page_ticket(handler, provider)
             return
         if self.routes.handle_get(self, handler, path, parsed.path, query):
             return
@@ -215,20 +250,10 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         if path.startswith("/receipts/attachments/"):
             self._handle_receipt_attachment(handler, path, query)
             return
-        if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method="GET", query=query)
-            return
-        if parsed.path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_yunda_receipt_live_proxy(handler, parsed.path, method="GET", query=query)
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if path.startswith("/receipts/"):
             self._handle_receipt_detail(handler, path)
-            return
-        if parsed.path.startswith(RONGHUI_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_live_proxy(handler, parsed.path, method="GET", query=query)
-            return
-        if parsed.path.startswith(YUNDA_LIVE_PROXY_PREFIX):
-            self._handle_yunda_live_proxy(handler, parsed.path, method="GET", query=query)
             return
         if path == "/dispatch":
             self._render_dispatch(handler, query)
@@ -263,16 +288,6 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
             return
         if path == "/settings/accounts":
             self._render_admin_accounts(handler, query)
-            return
-        if path == "/automations/session-context":
-            self._handle_automation_session_context(handler, query)
-            return
-        session_route = self._automation_session_route(path)
-        if session_route and session_route[1] == "/status":
-            self._handle_tms_session_status(handler, profile=session_route[0], query=query)
-            return
-        if path == "/automations/tms-session/status":
-            self._handle_tms_session_status(handler, query=query)
             return
         if path == "/templates/new":
             self._render_template_editor(handler, None, query)
@@ -319,8 +334,12 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
 
+        if self._handle_isolated_original_page_request(handler, parsed, method="POST"):
+            return
         if path == "/login":
             self._handle_login(handler)
+            return
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
             return
@@ -389,20 +408,18 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
         if path.startswith("/receipts/") and path.endswith("/audit"):
             self._handle_receipt_audit(handler, path)
             return
-        if parsed.path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_receipt_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
-            return
-        if parsed.path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX):
-            self._handle_yunda_receipt_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
-            return
-        if parsed.path.startswith(RONGHUI_LIVE_PROXY_PREFIX):
-            self._handle_ronghui_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
-            return
-        if parsed.path.startswith(YUNDA_LIVE_PROXY_PREFIX):
-            self._handle_yunda_live_proxy(handler, parsed.path, method="POST", query=parse_qs(parsed.query))
+        if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if path.startswith("/ocr/yunda/"):
-            self._handle_yunda_entry(handler, path)
+            self._send_json(
+                handler,
+                HTTPStatus.GONE,
+                {
+                    "ok": False,
+                    "error_code": "ACTIVE_ORIGINAL_PAGE_DISABLED",
+                    "message": "韵达活动原页与写动作已停用；请使用本地 OCR、手工运单或控制平面命令。",
+                },
+            )
             return
         if path in {"/upload", "/ocr/upload"}:
             self._handle_upload(handler)
@@ -446,70 +463,6 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
             return
         if path == "/automations/tasks/cancel":
             self._handle_automation_task_cancel(handler)
-            return
-        session_route = self._automation_session_route(path)
-        if session_route and self._handle_automation_session_post(handler, session_route[0], session_route[1]):
-            return
-        if path == "/automations/tms-session/send-code":
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/send-code",
-                payload={},
-                success_message="TMS融辉登录已提交；如出现图片验证码，请按图输入后提交。",
-                timeout=90,
-            )
-            return
-        if path == "/automations/tms-session/save-credentials":
-            values = self._parse_urlencoded_form(handler)
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/credentials",
-                payload={
-                    "username": str(values.get("username", "") or "").strip(),
-                    "password": str(values.get("password", "") or ""),
-                    "phone": str(values.get("phone", "") or "").strip(),
-                },
-                success_message="TMS 默认登录配置已保存。",
-                timeout=20,
-            )
-            return
-        if path == "/automations/tms-session/clear-credentials":
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/credentials/clear",
-                payload={},
-                success_message="TMS 默认登录配置已清空。",
-                timeout=20,
-            )
-            return
-        if path == "/automations/tms-session/submit-code":
-            values = self._parse_urlencoded_form(handler)
-            sms_code = str(values.get("code", "") or "").strip()
-            if not sms_code:
-                self._respond_tms_action(
-                    handler,
-                    ok=False,
-                    message="验证码不能为空。",
-                    kind="warning",
-                    http_status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/submit-code",
-                payload={"code": sms_code},
-                success_message="TMS 登录成功，共享登录态已更新。",
-                timeout=45,
-            )
-            return
-        if path == "/automations/tms-session/clear":
-            self._handle_tms_session_action(
-                handler,
-                endpoint="/internal/v1/admin/tms/session/clear",
-                payload={},
-                success_message="TMS 已退出登录，自动登录与断线提醒已关闭。",
-                timeout=20,
-            )
             return
         if path == "/automations/admin/import-phase7-resources":
             self._handle_automation_admin_action(
@@ -568,4 +521,5 @@ class LocalDocFlowApp(AuthServiceMixin, MonitoringFinanceServiceMixin, CustomerS
 
 if __name__ == "__main__":
     load_console_environment()
+    _validate_console_service_identity()
     LocalDocFlowApp().run()

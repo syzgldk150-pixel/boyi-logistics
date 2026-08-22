@@ -1,8 +1,34 @@
 tools:
   - name: query_waybill
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: true
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: true
+      max_attempts: 3
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_result_returned
     description: "根据运单号查询运单签收状态或详细信息（收件人、地址、件数、重量等）"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         waybill_no:
           type: string
@@ -12,14 +38,63 @@ tools:
           enum: [status, detail]
           description: "查询类型：status=签收状态速查（默认，支持批量），detail=完整运单详情（仅单号）"
       required: [waybill_no]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/query_tool.py
     timeout: 70
     heavy: false
 
   - name: track_waybill
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: true
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_result_returned
     description: "单号物流轨迹查询：融辉 R/RC/200 单号、韵达纯数字单号、000 专线单号统一入口"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         tracking_number:
           type: string
@@ -29,30 +104,137 @@ tools:
           enum: [ronghui, yunda, zhuanxian]
           description: "可选，指定物流系统；不传时按单号自动识别"
       required: [tracking_number]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/track_waybill_tool.py
     timeout: 210
     heavy: false
 
   - name: tms_query
-    description: "调用 TMS 系统查询数据（运单、扫描、签收、报价等）"
-    parameters:
+    version: "1.0.0"
+    operation_type: read
+    risk_level: medium
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_result_returned
+    description: "仅供旧兼容 API 使用的 TMS 只读端点白名单；写端点必须使用独立受治理工具"
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         endpoint:
           type: string
-          description: "TMS 兼容端点，如 /send_order, /get_scan, /get_qianshou, /get_price 等"
+          enum:
+            - /delivery_status
+            - /get_price
+            - /query_waybill_detail
+            - /ronghui_tms_tracking
+            - /tracking_query
+            - /waybill_tracking
+            - /yunda_price
+            - /yunda_waybill_tracking
+          description: "固定只读兼容端点；不接受任何写入或同步 target"
         params:
           type: object
           description: "请求参数"
       required: [endpoint]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/tms_tool.py
     timeout: 60
     heavy: false
 
   - name: get_price
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: true
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_result_returned
     description: "查询物流报价。默认走 Agent /tms/get_price；兼容旧版发站/到站/重量查询"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         address:
           type: string
@@ -73,44 +255,132 @@ tools:
           type: string
           description: "可选：账号管理中的融辉报价账号 ID；飞书直达报价默认使用 price_default"
       required: [weight]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/price_tool.py
     timeout: 60
     heavy: true
 
   - name: ocr_recognize
+    version: "1.0.0"
+    operation_type: compute
+    risk_level: medium
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: false
+      required_fields: []
+    postconditions:
+      - computed_result_returned
     description: "识别物流单据图片，提取托运单号、发站、到站、件数、重量等字段"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         image_path:
           type: string
           description: "图片文件路径"
       required: [image_path]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/ocr_tool.py
     timeout: 60
     heavy: true
 
-  - name: finance_etl
-    description: "运行财务对账 ETL 管道，生成报表并返回指定月份或全量摘要"
-    parameters:
-      type: object
-      properties:
-        month:
-          type: string
-          description: "可选，月份摘要范围，格式 YYYY-MM，如 2026-03"
-        input_path:
-          type: string
-          description: "可选，元数据目录路径，或包含 metadata/ 的项目目录路径"
-      required: []
-    executor: tools/finance_tool.py
-    timeout: 600
-    heavy: true
-
   - name: sync_daily_send_orders
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "Phase 7 第一批：拉取融辉寄件数据并按发件日期替换写入飞书多维表格"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的融辉账号；request_body 中若带账号必须完全一致"
         target_date:
           type: string
           description: "可选，单个发件日期，格式 YYYY-MM-DD；默认当天"
@@ -144,16 +414,73 @@ tools:
         sync_sql:
           type: boolean
           description: "是否同步控制台 waybills SQL 表，默认 true"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/send_order_sync_tool.py
     timeout: 7200
     heavy: false
 
   - name: sync_delivery_status
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "Phase 7 第一批：扫描飞书多维表格未签收记录，查询签收状态并批量更新；也兼容传入单号和 record_id 的 webhook 模式"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的融辉账号；禁止隐式默认账号"
         bill_codes:
           type: array
           items:
@@ -191,19 +518,72 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写回飞书记录"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/delivery_status_sync_tool.py
     timeout: 1800
     heavy: false
 
   - name: sync_daily_should_sign
-    description: "Phase 7 第二批：拉取每日应签数据，补齐脱敏收件地址后覆盖飞书多维表格并同步电子表格"
-    parameters:
+    version: "2.1.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - pagination_complete
+        - account
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_snapshot_committed
+    description: "权威每日应签采集：完整读取 R13、到货快照、融辉问题件与主单签收证据，提交 MySQL 账本并影子投影"
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         request_body:
           type: object
-          description: "可选，覆盖默认 get_qianshou 请求体；R13 账号优先通过 r13_account_id 绑定账号管理中的 R13 账号，缺失时兼容读取 workflow_resources 的 phase7.r13_credentials"
+          description: "可选，仅允许覆盖 get_qianshou 的非凭据查询参数；账号必须由 r13_account_id 经账号管理器显式绑定"
         base_token:
           type: string
           description: "可选，覆盖 phase7.daily_sign_bitable 的 base_token"
@@ -219,28 +599,232 @@ tools:
         enrich_addresses:
           type: boolean
           description: "是否按运单号调用 query_waybill_detail 补齐脱敏收件地址，默认 true"
-        detail_account_id:
+        account_id:
           type: string
-          description: "可选，补齐地址时使用的融辉详情查询账号 ID；不填则使用默认融辉账号"
+          minLength: 1
+          description: "必填，唯一的融辉 TMS 邵阳大祥站账号 ID；统一用于问题件、主单签收、轨迹核验和地址补全"
         r13_account_id:
           type: string
-          description: "可选，每日应签 R13 查询账号 ID；优先使用账号管理中保存的 R13 账号密码"
+          minLength: 1
+          description: "必填，每日应签 R13 查询账号 ID"
+        days:
+          type: integer
+          minimum: 1
+          maximum: 366
+          description: "R13 查询天数；当 request_body 没有显式 start/end 时必须提供"
+        source_start:
+          type: string
+          description: "可选，问题件和签收的权威回溯起点；不填则从已观测账本/到货/R13 最早日期计算"
+        source_end:
+          type: string
+          description: "可选，问题件和签收查询终点；必须与 source_start 配合且不能晚于本轮观测时间"
+        problem_page_size:
+          type: integer
+          minimum: 1
+          maximum: 200
+        problem_max_pages:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        problem_retry_attempts:
+          type: integer
+          minimum: 1
+          maximum: 5
+        problem_timeout_sec:
+          type: integer
+          minimum: 30
+          maximum: 7200
+        sign_page_size:
+          type: integer
+          minimum: 1
+          maximum: 200
+        sign_max_pages:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        sign_chunk_days:
+          type: integer
+          minimum: 1
+          maximum: 366
+        sign_retry_attempts:
+          type: integer
+          minimum: 1
+          maximum: 5
+        sign_timeout_sec:
+          type: integer
+          minimum: 30
+          maximum: 7200
         waybill_timeout_sec:
           type: integer
           description: "可选，补齐地址的详情查询超时时间，默认 2400 秒"
         browser_batch_size:
           type: integer
           description: "可选，浏览器补齐详情的批量大小，默认 10"
-      required: []
+        sign_site_code:
+          type: string
+          minLength: 1
+          description: "可选，TMS 签收扫描网点编码；未提供时必须从绑定账号的真实登录态精确取得"
+        exact_sign_conflict_limit:
+          type: integer
+          minimum: 0
+          description: "R13 与主单签收证据冲突时允许逐票精确核验的最大数量"
+        exact_historical_sign_limit:
+          type: integer
+          minimum: 0
+          description: "每轮按 1/3/7 天退避策略精确复核历史候选的最大数量"
+      required: [r13_account_id, account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/daily_sign_sync_tool.py
     timeout: 2400
     heavy: false
 
-  - name: sync_site_send_list
-    description: "Phase 7 第二批：拉取网点出港清单，覆盖飞书多维表格并同步电子表格"
-    parameters:
+  - name: backfill_daily_sign_ledger
+    version: "1.1.0"
+    operation_type: internal_projection_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
+    description: "历史应签账本影子重算或经 super_admin 单独批准后写入；不发布飞书，不允许隐式账号"
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        apply:
+          type: boolean
+          description: "false 只做影子计算；true 写共享历史账本并要求单独审批"
+        r13_account_id:
+          type: string
+          minLength: 1
+        account_id:
+          type: string
+          minLength: 1
+        request_body:
+          type: object
+          description: "可选 R13 非凭据查询参数；账号与凭据字段显式拒绝"
+        spreadsheet_token:
+          type: string
+        r13_backfill_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        event_backfill_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+      required: [r13_account_id, account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/daily_sign_backfill_tool.py
+    timeout: 2400
+    heavy: true
+
+  - name: sync_site_send_list
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
+    description: "Phase 7 第二批：拉取网点出港清单，覆盖飞书多维表格并同步电子表格"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的融辉账号；request_body 中若带账号必须完全一致"
+        target_date:
+          type: string
+          description: "控制平面按 Asia/Shanghai 当前业务日注入（YYYY-MM-DD），插件不接受缺省日期"
         request_body:
           type: object
           description: "可选，覆盖默认 get_wangdiansendlist 请求体"
@@ -256,19 +840,76 @@ tools:
         range:
           type: string
           description: "可选，覆盖 phase7.site_send_sheet 的写入范围"
-      required: []
+      required: [account_id, target_date]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/site_send_list_sync_tool.py
     timeout: 180
     heavy: false
 
   - name: sync_arrive_list
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "到货清单同步：拉取 TMS 派件预报基础清单，写入 MySQL 与飞书表格"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面从已配置的融辉账号中显式选择；禁止隐式默认账号"
         request_body:
           type: object
-          description: "可选，覆盖 fetch_dispatch 请求体"
+          description: "可选，覆盖 fetch_dispatch 请求体；嵌套账号若存在必须与顶层 account_id 完全一致"
         target_date:
           type: string
           description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
@@ -281,16 +922,76 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/飞书"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/arrive_list_sync_tool.py
     timeout: 3600
     heavy: false
 
   - name: sync_scan_codes
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "扫描同步：刷新扫描索引，并按批次触发 scan_next"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由项目实例从业务账号池显式绑定；禁止默认账号或运行时换号"
+        target_date:
+          type: string
+          description: "可选，扫描业务日期（YYYY-MM-DD）；为空时使用上海时区当天"
         request_body:
           type: object
           description: "可选，覆盖 get_scan 请求体"
@@ -317,25 +1018,87 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/不真正执行 scan_next"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/scan_sync_tool.py
     timeout: 21600
     heavy: false
 
   - name: sync_arrival_stats
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "到货统计：累计扫描索引、补抓缺失主单、统计累计到货件数、输出统计/未齐清单及归档，并刷新分批及有发未到表"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面从已配置的融辉账号中显式选择；禁止隐式默认账号"
         refresh_disabled:
           type: boolean
-          description: "是否跳过刷新扫描索引"
+          enum: [false]
+          description: "兼容参数，仅允许 false；到货统计必须刷新目标日扫描集合"
         target_date:
           type: string
           description: "可选，目标日期，格式 YYYY-MM-DD；默认当天"
         scan_window_days:
           type: integer
-          description: "可选，/get_scan 拉取窗口天数（默认 1=当日；首跑回填可传 30）"
+          enum: [1]
+          description: "兼容参数，仅允许 1；历史扫描回填必须使用独立扫描同步工具"
+        arrive_list_request_body:
+          type: object
+          description: "可选，单独覆盖目标日 arrive-list 请求体；不会复用 get_scan 请求体，嵌套账号若存在必须与顶层 account_id 完全一致"
         scan_codes_retention_days:
           type: integer
           description: "scan_codes 累积表的保留天数（默认 30；0 或负数=不清理）"
@@ -360,22 +1123,81 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/飞书"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/arrival_stats_sync_tool.py
     timeout: 7200
     heavy: false
 
   - name: sync_yunda_dispatch_forecast
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "韵达网点派件量预测主单表同步：默认拉取次日应派数据，按应派时间覆盖写入飞书多维表格"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的韵达账号；request_body 中若带账号必须完全一致"
         target_date:
           type: string
           description: "可选，应派日期，格式 YYYY-MM-DD；默认明天"
         dest_brch:
           type: string
-          description: "可选，目的网点编码，默认 56739382"
+          minLength: 1
+          maxLength: 64
+          description: "必填，项目实例显式保存的目的网点编码；插件和运行时均不提供默认值"
         session_profile:
           type: string
           enum: [yunda]
@@ -392,16 +1214,73 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不删除或写入飞书记录"
-      required: []
+      required: [account_id, dest_brch]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/yunda_dispatch_forecast_sync_tool.py
     timeout: 1800
     heavy: false
 
   - name: sync_yunda_send_waybills
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "韵达寄件运单管理同步：默认拉取当天寄件运单，补充快件跟踪详情和解密字段后按运单号 upsert 到飞书多维表格，并从电子表格第 2 行起刷新一份副本"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
+        account_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "由控制平面显式选择的韵达账号；request_body 中若带账号必须完全一致"
         target_date:
           type: string
           description: "可选，单个寄件日期，格式 YYYY-MM-DD；默认当天。传 start_date/end_date 时忽略"
@@ -451,15 +1330,66 @@ tools:
         sync_sql:
           type: boolean
           description: "是否同步控制台 waybills SQL 表，默认 true"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/yunda_send_waybills_sync_tool.py
     timeout: 7200
     heavy: false
 
   - name: init_waybills_sql_from_feishu
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "初始化后台运单查询 SQL：从飞书融辉寄件数据和韵达寄件运单表全量读取历史记录，按运单号 upsert 到 waybills"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         providers:
           oneOf:
@@ -493,14 +1423,115 @@ tools:
           type: boolean
           description: "可选，初始化融辉后清理 SQL 中 H/HR 开头的回单类记录，默认 true"
       required: []
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/init_waybills_sql_from_feishu_tool.py
     timeout: 7200
     heavy: false
 
-  - name: self_pickup_problem_upload
-    description: "自提到货问题件：读取飞书每日到货表，分别筛选邵阳自提部、邵阳大祥S站且派送方式=自提，且累计到货件数等于货物件数的单号，并按各自 TMS 登录态登记“开单为自提件”；默认不上传截图"
-    parameters:
+  - name: preview_self_pickup_problems
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: key
+      key_fields: [account_id, daxiang_s_account_id]
+    retry:
+      safe: true
+      max_attempts: 2
+    evidence:
+      required: true
+      required_fields: [source, observed_at, pagination_complete]
+    postconditions: [authoritative_preview_returned]
+    description: "只读预览自提到货问题件候选；封装器强制 dry_run=true，不接受写入参数，也不会登记第三方问题件"
+    input_schema:
       type: object
+      additionalProperties: false
+      properties:
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        daxiang_s_account_id: {type: string, minLength: 1, maxLength: 128}
+      required: [account_id, daxiang_s_account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status: {type: string, enum: [SUCCESS, FAILED]}
+        data: {type: object, additionalProperties: true}
+        meta: {type: object, additionalProperties: true}
+        warnings:
+          type: array
+          items: {type: string}
+        error:
+          oneOf:
+            - {type: object, additionalProperties: true}
+            - {type: "null"}
+      required: [status, data, meta, warnings, error]
+    executor: tools/preview_self_pickup_problems_tool.py
+    timeout: 7200
+    heavy: true
+
+  - name: self_pickup_problem_upload
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - third_party_self_pickup_problem_confirmed
+    description: "自提到货问题件：从项目绑定的飞书每日到货表精确筛选邵阳自提部及邵阳大祥S站自提到齐运单；正式执行必须提交本次预览选择和指纹，并经独立登记问题件列表读回后才算成功"
+    input_schema:
+      type: object
+      additionalProperties: false
       properties:
         dry_run:
           type: boolean
@@ -511,61 +1542,136 @@ tools:
         daxiang_s_account_id:
           type: string
           description: "可选，大祥S站 TMS 账号角色绑定；默认使用 ronghui_daxiang_s，不要使用 price_default"
-        spreadsheet_token:
-          type: string
-          description: "可选，飞书电子表格 token；默认使用固定到货表"
-        sheet_id:
-          type: string
-          description: "可选，飞书 URL 中的 sheet id；默认 UeBd3I，找不到来源表时回退读取"
-        source_sheet_title:
-          type: string
-          description: "可选，优先读取的源表名称；默认 每日到货表，按目的站点和派送方式筛选"
-        destination_site:
-          type: string
-          description: "可选，自提部目的站点筛选值；默认 邵阳自提部"
         include_daxiang_s_self_pickup:
           type: boolean
           description: "可选，默认 true；同时处理邵阳大祥S站且派送方式=自提的单号"
-        daxiang_s_destination_site:
-          type: string
-          description: "可选，大祥S站目的站点筛选值；默认 邵阳大祥S站"
-        daxiang_s_delivery_method:
-          type: string
-          description: "可选，大祥S站派送方式筛选值；默认 自提"
-        upload_screenshot:
-          type: boolean
-          description: "可选，默认 false；设为 true 时才从环境变量读取截图并上传"
-        screenshot_path:
-          type: string
-          description: "可选，截图路径；提供后会上传并关联到每个问题件"
-        screenshot_dir:
-          type: string
-          description: "可选，截图目录；提供后优先匹配包含单号或以单号命名的图片"
-        screenshot_map:
-          type: object
-          description: "可选，按单号指定截图路径的映射；提供后对应单号会上传截图"
-        problem_cause:
-          type: string
-          description: "可选，覆盖自提部默认问题原因文案；大祥S站使用独立 3 天游离仓储文案"
-        skip_existing_problem:
-          type: boolean
-          description: "可选，默认 true；登记前用 FIND_PROBLEM_BY_CODE 检查已有同类型或同文案问题件，存在则跳过"
         limit:
           type: integer
-          description: "可选，仅处理前 N 个候选单号，便于试跑"
-        stop_on_error:
-          type: boolean
-          description: "可选，遇到单票失败后是否停止后续处理，默认 false"
+          minimum: 0
+          maximum: 2000
+          description: "可选，仅预览来源顺序中的前 N 个候选；正式执行仍必须显式选择"
+        selected_bill_codes:
+          type: array
+          maxItems: 250
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: "正式执行必填；仅包含本次预览中由用户选择的运单"
+        preview_fingerprint:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: "正式执行必填；绑定来源行、业务规则和候选集合"
       required: []
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/self_pickup_problem_upload_tool.py
     timeout: 7200
     heavy: true
 
+  - name: preview_split_pending_problems
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: key
+      key_fields: [account_id]
+    retry:
+      safe: true
+      max_attempts: 2
+    evidence:
+      required: true
+      required_fields: [source, observed_at, pagination_complete]
+    postconditions: [authoritative_preview_returned]
+    description: "只读预览分批差错及有发未到候选；封装器强制 dry_run=true，不接受写入参数，也不会改写飞书、MySQL 或融辉"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        account_id: {type: string, minLength: 1, maxLength: 128}
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status: {type: string, enum: [SUCCESS, FAILED]}
+        data: {type: object, additionalProperties: true}
+        meta: {type: object, additionalProperties: true}
+        warnings:
+          type: array
+          items: {type: string}
+        error:
+          oneOf:
+            - {type: object, additionalProperties: true}
+            - {type: "null"}
+      required: [status, data, meta, warnings, error]
+    executor: tools/preview_split_pending_problems_tool.py
+    timeout: 7200
+    heavy: true
 
   - name: split_pending_problem_upload
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - third_party_split_problem_confirmed
     description: "分批差错及问题件：dry-run 返回可选择的未完成运单和预览指纹；正式模式仅执行人工选择的运单，少货/分批先上报差错再登记问题件，有发未到只登记问题件"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         dry_run:
           type: boolean
@@ -582,13 +1688,66 @@ tools:
           type: string
           description: "正式模式必填；dry-run 返回的 64 位预览指纹，用于执行前零写入复核"
       required: []
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/split_pending_problem_upload_tool.py
     timeout: 7200
     heavy: true
+
   - name: r7_arrival_checkin
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - third_party_r7_arrival_state_confirmed
     description: "R7 到达打卡：登录 R7 运输任务管理，勾选目标状态任务并执行到达待卸；不依赖 TMS 短信登录态"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         account_id:
           type: string
@@ -627,15 +1786,67 @@ tools:
         daily_success_limit:
           type: integer
           description: "一天需要成功打卡的次数，达到后当天后续定时执行会跳过，默认 1"
-      required: []
+      required: [account_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/r7_arrival_checkin_tool.py
     timeout: 1200
     heavy: true
 
   - name: r7_departure_checkin
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - third_party_r7_departure_state_confirmed
     description: "R7 发车打卡：登录 R7 运输任务管理，按状态、班次、计划发车时间和车牌号勾选目标任务并执行装车待发；不依赖 TMS 短信登录态"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         account_id:
           type: string
@@ -675,14 +1886,66 @@ tools:
           type: integer
           description: "一天需要成功发车打卡的次数，达到后当天后续定时执行会跳过，默认 1"
       required: []
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/r7_departure_checkin_tool.py
     timeout: 1200
     heavy: true
 
   - name: sync_finance_bills
-    description: "按账号管理中的四个财务角色，从融辉和韵达原始财务页面同步逐笔交易与平台汇总；支持近 7 天重扫、历史回填和失败批次重试"
-    parameters:
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: high
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: super_admin
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      mode: single_or_all_configured
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
+    description: "同步当前已上线的融辉三个财务角色并核对逐笔交易、平台汇总和 signed-net；韵达财务源保持禁用"
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         mode:
           type: string
@@ -699,27 +1962,82 @@ tools:
           description: "sync/backfill 可选结束日期；backfill 必填"
         platform:
           type: string
-          enum: [ronghui, yunda]
-          description: "sync/backfill 可选平台过滤"
+          enum: [ronghui]
+          description: "sync/backfill 可选平台过滤；首期仅允许已上线的融辉来源"
         account_id:
           type: string
-          enum: [price_default, ronghui_daxiang_s, ronghui_self_pickup_problem, yunda_default]
-          description: "sync/backfill 可选账号管理内部角色 ID"
+          minLength: 1
+          maxLength: 128
+          description: "sync/backfill 可选的已上线融辉财务角色 ID"
         batch_id:
           type: integer
           description: "retry 模式必填的原失败批次 ID；retry 不接受其他范围过滤"
         rescan_days:
           type: integer
           description: "sync 默认回扫 7 个完整业务日"
+        _startup_catchup:
+          type: boolean
+          description: "仅由启动缺口扫描注入；普通调用不得设置"
       required: []
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/sync_finance_bills_tool.py
     timeout: 21600
     heavy: false
 
   - name: automation_profile
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
     description: "查询或切换后台 Agent 当前自动化供应商 Profile（ronghui/yunda）"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         action:
           type: string
@@ -730,14 +2048,64 @@ tools:
           enum: [ronghui, yunda]
           description: "set/switch 时要切换到的 Profile"
       required: []
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/automation_profile_tool.py
     timeout: 30
     heavy: false
 
   - name: feishu_operation
+    version: "1.0.0"
+    operation_type: destructive
+    risk_level: extreme
+    llm_exposed: false
+    approval:
+      mode: disabled
+    permissions:
+      required_roles:
+        - super_admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - execution_disabled
     description: "执行飞书协作操作（创建表格、写入数据、发送消息等）"
-    parameters:
+    input_schema:
       type: object
+      additionalProperties: false
       properties:
         action:
           type: string
@@ -746,6 +2114,870 @@ tools:
           type: object
           description: "操作参数；支持飞书 Base/Sheets/IM 常用操作。write_records 支持 base_token(app_token 兼容) + table_id + records；search_records 使用 records/search + filter 精确筛选原始记录；query_records 使用 data-query DSL；read/write/append_sheet 使用 spreadsheet_token + range + values；add_sheet 走飞书 OpenAPI；trigger_webhook 用于触发飞书流程 webhook"
       required: [action, params]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
     executor: tools/feishu_cli_tool.py
     timeout: 30
+    heavy: false
+
+  - name: query_receipt_feishu_detail
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: true
+      max_attempts: 3
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - record_count
+        - pagination_complete
+    postconditions:
+      - exact_waybill_query_returned
+    description: "仅按一个韵达运单号精确查询固定飞书回单明细表；返回零或一条记录，多候选或分页不完整显式失败"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        waybill_no:
+          type: string
+          minLength: 1
+          maxLength: 100
+      required: [waybill_no]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/receipt_feishu_detail_query_tool.py
+    timeout: 45
+    heavy: false
+
+  - name: sync_customer_service_problems
+    version: "1.1.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: true
+      max_attempts: 3
+    evidence:
+      required: true
+      required_fields:
+        - pagination_complete
+        - account
+        - source
+    postconditions:
+      - configured_accounts_queried
+    description: "同步查询客服系统问题件；仅供调度器或管理员命令使用，不向 LLM 暴露"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        direction:
+          type: string
+          enum: [received, published, both]
+          description: "查询方向，必须由调用方明确指定"
+        account_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+          description: "项目实例显式绑定的融辉/韵达账号集合；禁止省略后查询全部账号"
+        recheck_items:
+          type: array
+          description: "由服务端计划上下文覆盖；当前开放事项的精确详情复核身份"
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              dedupe_key: {type: string, minLength: 1, maxLength: 512}
+              platform: {type: string, enum: [ronghui, yunda]}
+              account_id: {type: string, minLength: 1, maxLength: 128}
+              external_id: {type: string, minLength: 1, maxLength: 128}
+              source_direction: {type: string, minLength: 1, maxLength: 32}
+              waybill_no: {type: string, maxLength: 100}
+              context_error: {type: string, maxLength: 100}
+            required: [dedupe_key]
+      required: [direction, account_ids]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_sync_tool.py
+    timeout: 1800
+    heavy: false
+
+  - name: receipts_sync
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    approval:
+      mode: schedule_allowlist
+      required_role: admin
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [pagination_complete, source]
+    postconditions: [internal_receipt_projection_returned]
+    description: "按明确平台、方向和日期范围采集回单，并返回供内部投影持久化的完整分页结果"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [all, ronghui, yunda]
+        direction:
+          type: string
+          enum: [both, send, receive]
+        date_from: {type: string, minLength: 10, maxLength: 10}
+        date_to: {type: string, minLength: 10, maxLength: 10}
+        q: {type: string, maxLength: 100}
+        receipt_status: {type: string, maxLength: 100}
+        date_type: {type: string, maxLength: 50}
+        code_type: {type: string, maxLength: 50}
+        page_size: {type: integer, minimum: 1, maximum: 1000}
+        max_pages: {type: integer, minimum: 1, maximum: 1000}
+        timeout_sec: {type: integer, minimum: 1, maximum: 600}
+        source_workers: {type: integer, minimum: 1, maximum: 4}
+      required: [platform, direction, date_from, date_to]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/receipts_sync_tool.py
+    timeout: 7200
+    heavy: false
+
+  - name: receipts_audit
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, receipt_identifier, execution_result]
+    postconditions: [third_party_receipt_audit_confirmed]
+    description: "审核一条已精确定位的回单；第三方写入必须由超级管理员逐次批准"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        receipt_id:
+          oneOf:
+            - {type: integer, minimum: 1}
+            - {type: string, minLength: 1, maxLength: 64}
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        direction:
+          type: string
+          enum: [send, receive]
+        result:
+          type: string
+          enum: [passed, failed]
+        reason: {type: string, maxLength: 1000}
+        waybill_no: {type: string, minLength: 1, maxLength: 100}
+        receipt_no: {type: string, maxLength: 100}
+        return_waybill_no: {type: string, maxLength: 100}
+      required: [platform, direction, result, waybill_no]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/receipts_audit_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: clock_in_dual
+    version: "1.1.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    project_full_auto_allowed: true
+    approval:
+      mode: schedule_allowlist
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, site, execution_result]
+    postconditions: [both_third_party_clock_ins_confirmed]
+    description: "向融辉提交一次交件到港和一次接件离港；super_admin 可为配置完全锁定的定时任务授权免逐次审批，手工调用及失效计划仍需审批"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        sitecode: {type: string, minLength: 1, maxLength: 64}
+        sitefbcode: {type: string, minLength: 1, maxLength: 64}
+        sitename: {type: string, minLength: 1, maxLength: 100}
+        sitefbname: {type: string, minLength: 1, maxLength: 100}
+        first_type:
+          type: string
+          enum: [交件到港]
+        second_type:
+          type: string
+          enum: [接件离港]
+        delay_seconds: {type: number, minimum: 0, maximum: 30}
+      required: [account_id, sitecode, sitefbcode, sitename, sitefbname, first_type, second_type]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/clock_in_dual_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_query
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: false
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, pagination]
+    postconditions: [authoritative_problem_rows_returned]
+    description: "查询指定客服账号的收到或已发布问题件；不会标记已读或修改第三方状态"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        direction:
+          type: string
+          enum: [published_to_me, my_published, received, registered, query, published]
+        q: {type: string, maxLength: 200}
+        waybill_no: {type: string, maxLength: 100}
+        date_from: {type: string, maxLength: 10}
+        date_to: {type: string, maxLength: 10}
+        page: {type: integer, minimum: 1, maximum: 10000}
+        rows: {type: integer, minimum: 1, maximum: 200}
+        page_size: {type: integer, minimum: 1, maximum: 200}
+      required: [platform, account_id, direction]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_query_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_detail
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, external_id]
+    postconditions: [authoritative_problem_detail_returned]
+    description: "读取指定客服问题件的详情与附件索引，不执行第三方写入"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        external_id: {type: string, minLength: 1, maxLength: 128}
+        source_direction: {type: string, minLength: 1, maxLength: 32}
+        waybill_no: {type: string, maxLength: 100}
+        status: {type: string, maxLength: 100}
+      required: [platform, account_id, external_id, source_direction]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_detail_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_fetch_attachment
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, content_type]
+    postconditions: [validated_image_attachment_returned]
+    description: "从当前客服平台原站读取一张已验证的图片附件，拒绝跨域或含凭据的 URL"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        source_url: {type: string, minLength: 1, maxLength: 2048}
+      required: [platform, account_id, source_url]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_fetch_attachment_tool.py
+    timeout: 90
+    heavy: false
+
+  - name: customer_service_problem_mark_read
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, external_id, execution_result]
+    postconditions: [third_party_read_state_confirmed]
+    description: "将指定客服问题件标记为已读；融辉真实字段未确认时显式返回 capture-required"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        external_id: {type: string, minLength: 1, maxLength: 128}
+      required: [platform, account_id, external_id]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_mark_read_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_reply
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, external_id, execution_result]
+    postconditions: [third_party_reply_confirmed]
+    description: "回复一条指定客服问题件并更新其处理状态；每次写入均需超级管理员批准"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        external_id: {type: string, minLength: 1, maxLength: 128}
+        source_direction: {type: string, maxLength: 32}
+        waybill_no: {type: string, minLength: 1, maxLength: 100}
+        status: {type: string, maxLength: 100}
+        reply_text: {type: string, minLength: 1, maxLength: 4000}
+        prob_status: {type: string, minLength: 1, maxLength: 100}
+        old_prob_status: {type: string, maxLength: 100}
+      required: [platform, account_id, external_id, waybill_no, reply_text, prob_status]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_reply_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_publish
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, execution_result]
+    postconditions: [third_party_problem_publish_confirmed]
+    description: "向指定客服平台发布问题件；平台专属 payload 必须完整且不得包含额外字段"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        payload:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              properties:
+                bill_code: {type: string, minLength: 1, maxLength: 100}
+                problem_type: {type: string, minLength: 1, maxLength: 100}
+                owner_problem_type: {type: string, minLength: 1, maxLength: 100}
+                notice_site_code: {type: string, minLength: 1, maxLength: 100}
+                notice_site: {type: string, minLength: 1, maxLength: 200}
+                problem_cause: {type: string, minLength: 1, maxLength: 4000}
+              required:
+                [bill_code, problem_type, owner_problem_type, notice_site_code, notice_site, problem_cause]
+            - type: object
+              additionalProperties: false
+              properties:
+                ship_no: {type: string, minLength: 1, maxLength: 100}
+                classes_type: {type: string, minLength: 1, maxLength: 100}
+                prob_text: {type: string, minLength: 1, maxLength: 4000}
+                site_id:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                  items: {type: string, minLength: 1, maxLength: 100}
+              required: [ship_no, classes_type, prob_text, site_id]
+      required: [platform, account_id, payload]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_publish_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_upload_attachment
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, upload_result]
+    postconditions: [third_party_attachment_upload_confirmed]
+    description: "将调用方管理的本地文件上传到指定客服平台；适配器不会删除源文件"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        file_path: {type: string, minLength: 1, maxLength: 4096}
+      required: [platform, account_id, file_path]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_upload_attachment_tool.py
+    timeout: 180
     heavy: false

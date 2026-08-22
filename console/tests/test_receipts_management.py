@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+BROWSER_REQUEST_UUID = "123e4567-e89b-42d3-a456-426614174000"
 if str(CONSOLE_DIR) not in sys.path:
     sys.path.insert(0, str(CONSOLE_DIR))
 
@@ -251,6 +252,25 @@ def _build_app(repository):
         runtime_dir=Path(tempfile.mkdtemp()),
     )
     app.repository = repository
+    app._control_plane_write_context = lambda handler: {
+        "actor": {
+            "actor_type": "console_admin",
+            "actor_id": "7",
+            "roles": ["super_admin"],
+            "display_name": "tester",
+            "authenticated_by": "mysql_admin_session",
+        },
+        "actor_roles": ["super_admin"],
+        "source": "console",
+        "_console_principal": {
+            "actor_type": "console_admin",
+            "actor_id": "7",
+            "roles": ["super_admin"],
+            "display_name": "tester",
+            "authenticated_by": "mysql_admin_session",
+        },
+    }
+    app._control_plane_read_context = app._control_plane_write_context
     app.template_env = Environment(
         loader=FileSystemLoader(CONSOLE_DIR / "templates"),
         autoescape=select_autoescape(["html", "xml"]),
@@ -663,7 +683,9 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertIn('name="queried" value="1"', html)
         self.assertIn(f'value="{today}" data-receipt-date-from', html)
         self.assertIn(f'value="{today}" data-receipt-date-to', html)
-        self.assertIn("/ky_inms/public/index.php/business/waybill/delivery/index.html", html)
+        self.assertNotIn("/ky_inms/public/index.php/business/waybill/delivery/index.html", html)
+        self.assertIn("第三方活动原页已安全停用", html)
+        self.assertIn("控制平面审核", html)
 
     def test_render_receipts_forces_send_direction_even_with_old_receive_query(self):
         repo = _ReceiptRepo()
@@ -859,7 +881,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("/internal/v1/tms/query_waybill_detail", agent_calls[0]["endpoint"])
         self.assertEqual(["2003441429"], agent_calls[0]["payload"]["params"]["bill_codes"])
 
-    def test_receipt_detail_uses_feishu_exact_search_only_after_local_yunda_missing(self):
+    def test_receipt_detail_get_does_not_submit_or_execute_feishu_query(self):
         repo = _ReceiptRepo()
         repo.receipt_detail = {
             "record": {
@@ -878,27 +900,7 @@ class ReceiptRouteTests(unittest.TestCase):
 
         def fake_agent(method, endpoint, *, payload=None, timeout=None):
             agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
-            return {
-                "ok": True,
-                "data": {
-                    "ok": True,
-                    "items": [
-                        {
-                            "record_id": "rec-1",
-                            "fields": {
-                                "运单编号": "981296115",
-                                "收货人": "飞书收货人",
-                                "收件地址": "上海市青浦区",
-                                "货物名称": "电机",
-                                "包装类型": "托盘",
-                                "件数": "2",
-                                "实际重量": "88",
-                                "体积": "0.45",
-                            },
-                        }
-                    ],
-                },
-            }
+            self.fail("receipt detail GET must not submit or execute a Feishu query")
 
         app._agent_request = fake_agent
         handler = _Handler(headers={"Accept": "application/json"})
@@ -906,19 +908,62 @@ class ReceiptRouteTests(unittest.TestCase):
         app._handle_receipt_detail(handler, "/receipts/5")
 
         record = json.loads(handler.wfile.getvalue().decode("utf-8"))["data"]["record"]
-        self.assertEqual("飞书收货人", record["detail_summary"]["recipient_name"])
-        self.assertEqual("feishu_bitable", record["detail_summary_source"])
-        self.assertEqual("/internal/v1/tools/run", agent_calls[0]["endpoint"])
-        self.assertEqual("feishu_operation", agent_calls[0]["payload"]["tool_name"])
-        self.assertEqual("search_records", agent_calls[0]["payload"]["params"]["action"])
-        self.assertEqual(
-            {
-                "conjunction": "and",
-                "conditions": [{"field_name": "运单编号", "operator": "is", "value": ["981296115"]}],
+        self.assertEqual("", record["detail_summary"]["recipient_name"])
+        self.assertTrue(record["feishu_detail_query_available"])
+        self.assertEqual([], agent_calls)
+
+    def test_receipt_feishu_detail_query_submits_narrow_read_command(self):
+        repo = _ReceiptRepo()
+        app = _build_app(repo)
+        calls = []
+
+        def agent_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append({"method": method, "endpoint": endpoint, "payload": payload})
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-feishu-1",
+                    "work_item_id": "work-item-feishu-1",
+                    "run_id": "run-feishu-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
+
+        app._agent_request = agent_request
+        handler = _Handler(
+            body=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
             },
-            agent_calls[0]["payload"]["params"]["params"]["filter"],
         )
-        self.assertEqual(1, agent_calls[0]["payload"]["params"]["params"]["page_size"])
+
+        app._handle_receipt_feishu_detail_query(
+            handler,
+            "/receipts/3/feishu-detail-query",
+        )
+
+        payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
+        self.assertTrue(payload["pending"])
+        self.assertEqual("run-feishu-1", payload["run_id"])
+        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        command = calls[0]["payload"]
+        self.assertEqual(
+            "query_receipt_feishu_detail",
+            command["parameters"]["tool_name"],
+        )
+        self.assertEqual(
+            {"waybill_no": "979903652"},
+            command["parameters"]["arguments"],
+        )
+        self.assertEqual(
+            f"console:7:tool.execute:{BROWSER_REQUEST_UUID}",
+            command["idempotency_key"],
+        )
 
     def test_receipt_detail_keeps_images_available_when_external_enrichment_fails(self):
         repo = _ReceiptRepo()
@@ -947,84 +992,123 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertIn("recipient_name", payload["data"]["record"]["detail_summary_missing"])
         self.assertIn("agent unavailable", payload["data"]["record"]["detail_summary_error"])
 
-    def test_receipt_audit_route_updates_status_and_logs_sanitized_summary(self):
+    def test_receipt_audit_submits_durable_command_without_local_success_update(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
-        app._agent_request = lambda *args, **kwargs: {
-            "ok": True,
-            "data": {
+        calls = []
+
+        def agent_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
+            return {
                 "ok": True,
+                "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "ok": True,
-                    "platform": "yunda",
-                    "result_status": "passed",
-                    "audit_status": "审核通过",
-                    "message": "审核完成",
+                    "command_id": "command-1",
+                    "work_item_id": "work-item-1",
+                    "run_id": "run-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
                 },
-            },
-        }
+            }
+
+        app._agent_request = agent_request
         handler = _Handler(
             json.dumps({"result": "passed", "reason": ""}).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_receipt_audit(handler, "/receipts/3/audit")
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertEqual([{"receipt_id": 3, "audit_status": "审核通过"}], repo.audit_status_updates)
-        self.assertEqual("success", repo.audit_logs[-1]["result_status"])
+        self.assertTrue(payload["pending"])
+        self.assertEqual("run-1", payload["run_id"])
+        self.assertEqual([], repo.audit_status_updates)
+        self.assertEqual("submitted", repo.audit_logs[-1]["result_status"])
+        self.assertEqual("audit_submit", repo.audit_logs[-1]["action"])
+        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        command = calls[0]["payload"]
+        self.assertEqual("tool.execute", command["command_type"])
+        self.assertEqual("receipts_audit", command["parameters"]["tool_name"])
+        self.assertEqual(
+            f"console:7:tool.execute:{BROWSER_REQUEST_UUID}",
+            command["idempotency_key"],
+        )
         self.assertNotIn("raw_payload", repo.audit_logs[-1]["request_summary"])
-        self.assertNotIn("token", json.dumps(repo.audit_logs[-1], ensure_ascii=False))
+        self.assertNotIn("raw_payload", command["parameters"]["arguments"])
+        self.assertNotIn("token", json.dumps(command, ensure_ascii=False))
 
-    def test_receipt_audit_route_does_not_update_when_agent_requires_capture(self):
+    def test_receipt_audit_preserves_agent_error_without_local_status_update(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
         app._agent_request = lambda *args, **kwargs: {
-            "ok": True,
-            "data": {
-                "ok": False,
-                "error_code": "AUDIT_CAPTURE_REQUIRED",
-                "message": "回单审核真实接口尚未抓取，未执行第三方审核请求。",
-            },
+            "ok": False,
+            "status": HTTPStatus.UNPROCESSABLE_ENTITY,
+            "error_code": "PLAN_INVALID",
+            "error": "审核计划无效。",
         }
         handler = _Handler(
             json.dumps({"result": "failed", "reason": "照片不清晰"}).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_receipt_audit(handler, "/receipts/3/audit")
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(HTTPStatus.UNPROCESSABLE_ENTITY, handler.status)
         self.assertFalse(payload["ok"])
-        self.assertEqual("AUDIT_CAPTURE_REQUIRED", payload["error_code"])
+        self.assertEqual("PLAN_INVALID", payload["error_code"])
         self.assertEqual([], repo.audit_status_updates)
         self.assertEqual("failed", repo.audit_logs[-1]["result_status"])
 
-    def test_receipt_audit_route_records_original_page_execution_without_agent_call(self):
+    def test_receipt_audit_ignores_original_page_bypass_and_submits_command(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
+        calls = []
 
-        def fail_agent(*args, **kwargs):
-            raise AssertionError("original page execution should not call agent audit adapter")
+        def agent_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append({"method": method, "endpoint": endpoint, "payload": payload})
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-original-page",
+                    "work_item_id": "work-item-original-page",
+                    "run_id": "run-original-page",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
 
-        app._agent_request = fail_agent
+        app._agent_request = agent_request
         handler = _Handler(
             json.dumps({"result": "passed", "reason": "", "execution": "original_page"}).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_receipt_audit(handler, "/receipts/3/audit")
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertEqual([{"receipt_id": 3, "audit_status": "审核通过"}], repo.audit_status_updates)
-        self.assertEqual("success", repo.audit_logs[-1]["result_status"])
-        self.assertEqual("ORIGINAL_PAGE_EXECUTED", repo.audit_logs[-1]["response_status"])
-        self.assertNotIn("raw_payload", repo.audit_logs[-1]["request_summary"])
+        self.assertTrue(payload["pending"])
+        self.assertEqual([], repo.audit_status_updates)
+        self.assertEqual("audit_submit", repo.audit_logs[-1]["action"])
+        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        arguments = calls[0]["payload"]["parameters"]["arguments"]
+        self.assertNotIn("execution", arguments)
 
     def test_receipt_attachment_serves_cached_file(self):
         repo = _ReceiptRepo()
@@ -1038,8 +1122,38 @@ class ReceiptRouteTests(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertEqual("image/png", handler.header_value("Content-Type"))
+        self.assertEqual("nosniff", handler.header_value("X-Content-Type-Options"))
+        self.assertIn("sandbox", handler.header_value("Content-Security-Policy"))
         self.assertEqual("", handler.header_value("Content-Disposition"))
         self.assertEqual(b"\x89PNG\r\n\x1a\n", handler.wfile.getvalue())
+
+    def test_receipt_attachment_ignores_cached_html_mime_and_sniffs_raster_bytes(self):
+        repo = _ReceiptRepo()
+        repo.get_receipt_attachment = lambda attachment_id: {
+            "id": attachment_id,
+            "mime_type": "text/html",
+            "local_path": "receipts/yunda/979903652/demo.png",
+            "display_name": "demo.html",
+        }
+        app = _build_app(repo)
+        file_path = app.settings.runtime_dir / "receipts" / "yunda" / "979903652" / "demo.png"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n<script>bad()</script>")
+        handler = _Handler()
+
+        app._handle_receipt_attachment(handler, "/receipts/attachments/7")
+
+        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual("image/png", handler.header_value("Content-Type"))
+        self.assertNotEqual("text/html", handler.header_value("Content-Type"))
+
+    def test_receipt_image_magic_maps_only_supported_raster_types(self):
+        app = _build_app(_ReceiptRepo())
+        self.assertEqual("image/jpeg", app._receipt_image_mime_type(b"\xff\xd8jpeg"))
+        self.assertEqual("image/png", app._receipt_image_mime_type(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual("image/gif", app._receipt_image_mime_type(b"GIF89a"))
+        self.assertEqual("image/webp", app._receipt_image_mime_type(b"RIFFxxxxWEBP"))
+        self.assertEqual("", app._receipt_image_mime_type(b"<svg><script/></svg>"))
 
     def test_receipt_attachment_download_sets_attachment_header(self):
         repo = _ReceiptRepo()
@@ -1190,7 +1304,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(repo)
         calls = []
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
             return {"ok": True, "data": {"ok": True, "data": {"records": []}}}
 
@@ -1207,79 +1321,97 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual([], calls)
 
-    def test_receipts_query_uses_bounded_agent_timeout_and_query_limits(self):
+    def test_receipts_sync_submits_closed_durable_command(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
+                "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "ok": True,
-                    "data": {
-                        "records": [
-                            {
-                                "platform": "ronghui",
-                                "direction": "send",
-                                "waybill_no": "R0001",
-                                "receipt_no": "HD0001",
-                                "attachments": [{"source_url": "https://example.test/a.jpg", "file_hash": "h1"}],
-                            }
-                        ],
-                        "stats": {"fetched": 1},
-                        "warnings": [],
-                    },
+                    "command_id": "command-sync-1",
+                    "work_item_id": "work-item-sync-1",
+                    "run_id": "run-sync-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
                 },
             }
 
         app._agent_request = types.MethodType(agent_request, app)
         handler = _Handler(
             body=b"platform=all&direction=all&date_from=2026-06-01&date_to=2026-06-03",
-            headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Accept": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_receipts_sync(handler)
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertEqual("/internal/v1/tms/receipts_sync", app.last_call["endpoint"])
-        self.assertEqual("send", app.last_call["payload"]["params"]["direction"])
-        self.assertLess(app.last_call["payload"]["timeout_sec"], 900)
-        self.assertLess(app.last_call["timeout"], 900)
-        self.assertEqual("5", app.last_call["payload"]["params"]["max_pages"])
-        self.assertEqual("12", app.last_call["payload"]["params"]["timeout_sec"])
-        self.assertEqual(1, len(repo.upserted_records))
-        self.assertEqual(1, len(repo.upserted_attachments))
+        self.assertTrue(payload["pending"])
+        self.assertEqual("run-sync-1", payload["run_id"])
+        self.assertEqual("/internal/v1/commands", app.last_call["endpoint"])
+        command = app.last_call["payload"]
+        self.assertEqual("receipts_sync", command["parameters"]["tool_name"])
+        arguments = command["parameters"]["arguments"]
+        self.assertEqual("send", arguments["direction"])
+        self.assertEqual(5, arguments["max_pages"])
+        self.assertEqual(12, arguments["timeout_sec"])
+        self.assertNotIn("audit_status", arguments)
+        self.assertNotIn("datagrid_url", arguments)
+        self.assertEqual([], repo.upserted_records)
+        self.assertEqual([], repo.upserted_attachments)
 
     def test_receipts_query_defaults_empty_date_range_to_today(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
         today = datetime.now().strftime("%Y-%m-%d")
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
-            return {"ok": True, "data": {"ok": True, "data": {"records": [], "stats": {}, "warnings": []}}}
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-sync-2",
+                    "work_item_id": "work-item-sync-2",
+                    "run_id": "run-sync-2",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
 
         app._agent_request = types.MethodType(agent_request, app)
         handler = _Handler(
             body=b"platform=all&direction=all&date_from=&date_to=",
-            headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Accept": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_receipts_sync(handler)
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertEqual(today, app.last_call["payload"]["params"]["date_from"])
-        self.assertEqual(today, app.last_call["payload"]["params"]["date_to"])
+        arguments = app.last_call["payload"]["parameters"]["arguments"]
+        self.assertEqual(today, arguments["date_from"])
+        self.assertEqual(today, arguments["date_to"])
 
     def test_receipt_yunda_live_proxy_uses_receipt_prefix_and_existing_agent_endpoint(self):
         app = _build_app(_ReceiptRepo())
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -1312,7 +1444,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_ronghui_live_proxy_uses_receipt_prefix_and_existing_agent_endpoint(self):
         app = _build_app(_ReceiptRepo())
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.last_call = {"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout}
             return {
                 "ok": True,
@@ -1344,6 +1476,39 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("", app.last_call["payload"]["params"]["query"])
         self.assertEqual("寄方回单跟踪", app.last_call["payload"]["params"]["entry_menu_text"])
 
+    def test_receipt_live_proxies_reject_writes_without_agent_call(self):
+        cases = (
+            (
+                "yunda",
+                "_handle_yunda_receipt_live_proxy",
+                "/receipts/yunda/live/ky_inms/public/index.php/business/waybill/mailing/index.html",
+            ),
+            (
+                "ronghui",
+                "_handle_ronghui_receipt_live_proxy",
+                "/receipts/ronghui/live/dataOperation/saveTables",
+            ),
+        )
+        for platform, method_name, path in cases:
+            with self.subTest(platform=platform):
+                app = _build_app(_ReceiptRepo())
+
+                def fail_agent(*args, **kwargs):
+                    raise AssertionError("receipt proxy writes must not reach Agent or TMS")
+
+                app._agent_request = fail_agent
+                handler = _Handler(
+                    body=b"operation=write",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+
+                getattr(app, method_name)(handler, path, method="POST", query={})
+
+                payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+                self.assertEqual(HTTPStatus.METHOD_NOT_ALLOWED, handler.status)
+                self.assertFalse(payload["ok"])
+                self.assertEqual("RECEIPT_PROXY_WRITE_DISABLED", payload["error_code"])
+
 
 class ReceiptTemplateTests(unittest.TestCase):
     def test_receipts_template_contains_filter_table_preview_and_audit_modal(self):
@@ -1359,7 +1524,9 @@ class ReceiptTemplateTests(unittest.TestCase):
         self.assertIn("data-receipt-review-modal", template)
         self.assertIn("data-receipt-original-open", template)
         self.assertIn("data-receipt-audit-modal", template)
-        self.assertIn("data-receipt-audit-frame", template)
+        self.assertNotIn("data-receipt-audit-frame", template)
+        self.assertIn("第三方活动原页已安全停用", template)
+        self.assertIn("控制平面审核", template)
         self.assertIn("data-receipt-query-marker", template)
         self.assertIn("data-receipt-date-range", template)
         self.assertIn("data-receipt-date-range-label", template)
@@ -1499,24 +1666,24 @@ class ReceiptTemplateTests(unittest.TestCase):
         ):
             self.assertIn(expected, template)
 
-    def test_receipt_audit_original_page_auto_queries_clicked_number(self):
+    def test_receipt_audit_has_no_active_original_page_url_or_iframe(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
 
         for expected in (
-            "auditQueryPayloadFor",
-            "startAuditAutoQuery(record, meta)",
-            "{{ ronghui_live_url }}?receipt_entry=send",
-            "collectAuditDocuments",
-            "applyYundaAuditQuery",
-            "applyRonghuiAuditQuery",
-            "按运单号查询",
-            "按回单号查询",
-            "按回单快递单号查询",
-            "正在按单号查询",
-            "已${result.label || \"按单号\"}查询",
+            "第三方活动原页已安全停用",
+            "控制平面审核",
+            "submitReceiptAuditDirect",
+            "审核计划已提交",
         ):
             self.assertIn(expected, template)
-        self.assertNotIn('{{ ronghui_live_url }}/widget/home', template)
+        for forbidden in (
+            "{{ ronghui_live_url }}",
+            "{{ yunda_live_url }}",
+            "/receipts/ronghui/live",
+            "/receipts/yunda/live",
+            "data-receipt-audit-frame",
+        ):
+            self.assertNotIn(forbidden, template)
 
     def test_yunda_audit_auto_query_confirms_choice_before_clicking(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
