@@ -857,11 +857,17 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             )
             if opaque_identity and opaque_key != persisted_key:
                 context_error = "SUBJECT_ENTITY_IDENTITY_MISMATCH"
-        ref: dict[str, Any] = {
-            "dedupe_key": opaque_key,
-            "platform": platform,
-            "external_id": external_id,
-        }
+        # ``platform`` and ``external_id`` are optional in the signed
+        # recheck-item schema so an invalid historical identity can be carried
+        # forward with ``context_error`` and handled as BLOCKED_DATA by the
+        # action.  Emitting empty strings here makes the otherwise valid
+        # server-owned plan fail schema validation before the action gets a
+        # chance to record that explicit failure.
+        ref: dict[str, Any] = {"dedupe_key": opaque_key}
+        if platform:
+            ref["platform"] = platform
+        if external_id:
+            ref["external_id"] = external_id
         if context_error:
             ref["context_error"] = context_error
         source_direction = str(metadata.get("source_direction") or "").strip().lower()
@@ -895,9 +901,9 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             if len(directions) == 1:
                 ref["source_direction"] = next(iter(directions))
             elif not directions:
-                ref["context_error"] = "SOURCE_DIRECTION_MISSING"
+                ref.setdefault("context_error", "SOURCE_DIRECTION_MISSING")
             else:
-                ref["context_error"] = "SOURCE_DIRECTION_AMBIGUOUS"
+                ref.setdefault("context_error", "SOURCE_DIRECTION_AMBIGUOUS")
         refs.append(ref)
     return sorted(refs, key=lambda value: str(value.get("dedupe_key") or ""))
 

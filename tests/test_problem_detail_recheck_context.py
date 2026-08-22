@@ -79,6 +79,29 @@ class _Uow:
     evidence = _Evidence()
 
 
+class _MissingSubjectWorkItems:
+    @staticmethod
+    def list_by_type(item_type: str):
+        assert item_type == "CUSTOMER_SERVICE_PROBLEM"
+        return [
+            {
+                "work_item_id": "item-missing-subject",
+                "dedupe_key": "problem:v1:" + ("a" * 64),
+                "status": "OPEN",
+            }
+        ]
+
+    @staticmethod
+    def list_entities(work_item_id: str):
+        assert work_item_id == "item-missing-subject"
+        return []
+
+
+class _MissingSubjectUow:
+    work_items = _MissingSubjectWorkItems()
+    evidence = _Evidence()
+
+
 def test_open_problem_context_uses_exact_persisted_source_identity() -> None:
     opaque_key = customer_problem_identity(
         account_id="account-1",
@@ -92,6 +115,17 @@ def test_open_problem_context_uses_exact_persisted_source_identity() -> None:
             "external_id": "external-1",
             "source_direction": "received",
             "waybill_no": "430000000001",
+        }
+    ]
+
+
+def test_open_problem_context_omits_invalid_optional_identity_values() -> None:
+    opaque_key = "problem:v1:" + ("a" * 64)
+
+    assert _customer_problem_open_refs(_MissingSubjectUow()) == [
+        {
+            "dedupe_key": opaque_key,
+            "context_error": "SUBJECT_ENTITY_MISSING",
         }
     ]
 
