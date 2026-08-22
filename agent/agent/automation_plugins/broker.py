@@ -98,6 +98,23 @@ _RECORD_COLLECTION_FIELDS = (
 # create a false unknown-write recovery obligation. It is removed before the
 # response reaches plugin payload code.
 VERIFIED_WRITE_NOOP_FIELD = "_broker_verified_write_noop_v1"
+_VERIFIED_WRITE_NOOP_CONTRACTS = {
+    (
+        "sync_yunda_dispatch_forecast",
+        "network.request",
+        "feishu.bitable.append_yunda_dispatch_forecast",
+    ): ("records", frozenset({"records", "target_date", "ensure_fields"})),
+    (
+        "sync_site_send_list",
+        "network.request",
+        "feishu.bitable.replace_snapshot",
+    ): ("records", frozenset({"records", "target_date"})),
+    (
+        "sync_site_send_list",
+        "network.request",
+        "feishu.sheet.replace",
+    ): ("values", frozenset({"values", "target_date"})),
+}
 
 
 def recoverable_write_action_contracts() -> frozenset[tuple[str, str, str]]:
@@ -106,15 +123,34 @@ def recoverable_write_action_contracts() -> frozenset[tuple[str, str, str]]:
     return _RECOVERABLE_WRITE_ACTIONS
 
 
-def _is_verified_write_noop(result: Mapping[str, Any]) -> bool:
+def _is_verified_write_noop(
+    result: Mapping[str, Any],
+    *,
+    grant: BrokerGrant,
+    request: Mapping[str, Any],
+) -> bool:
     """Accept only the narrow closed result shape for a write no-op."""
 
+    contract = _VERIFIED_WRITE_NOOP_CONTRACTS.get(
+        (grant.tool_name, request.get("operation"), request.get("action"))
+    )
+    arguments = request.get("arguments")
+    if contract is None or not isinstance(arguments, Mapping):
+        return False
+    collection_key, required_keys = contract
+    original_collection = arguments.get(collection_key)
     return (
-        result.get(VERIFIED_WRITE_NOOP_FIELD) is True
+        set(arguments) == required_keys
+        and type(original_collection) is list
+        and not original_collection
+        and result.get(VERIFIED_WRITE_NOOP_FIELD) is True
         and result.get("committed") is True
         and result.get("verified") is True
+        and type(result.get("record_count")) is int
         and result.get("record_count") == 0
+        and type(result.get("readback_count")) is int
         and result.get("readback_count") == 0
+        and type(result.get("written")) is int
         and result.get("written") == 0
         and isinstance(result.get("readback_sha256"), str)
         and len(str(result["readback_sha256"])) == 64
@@ -751,7 +787,11 @@ class LocalCoreAutomationBroker:
             )
             public_result = dict(result)
             if mark_write_started is not None:
-                verified_noop = _is_verified_write_noop(public_result)
+                verified_noop = _is_verified_write_noop(
+                    public_result,
+                    grant=grant,
+                    request=request,
+                )
                 if verified_noop and mark_write_started.started():
                     raise PluginExecutionError(
                         "core broker write no-op crossed its started boundary",

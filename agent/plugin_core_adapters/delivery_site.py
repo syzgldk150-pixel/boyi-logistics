@@ -505,6 +505,7 @@ def _verified_result(
         "before_observation_id": secrets.token_hex(16),
         "after_observation_id": secrets.token_hex(16),
         "write_response_received": True,
+        "acknowledged_count": count,
     }
 
 
@@ -793,6 +794,12 @@ def build_production_delivery_site_ports(
             )
         except Exception as exc:
             write_error = exc
+        if write_error is not None and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "delivery Bitable write failed before mutation",
+                cause=write_error,
+            )
         try:
             after = _delivery_bitable_snapshot(
                 _read_all_bitable(

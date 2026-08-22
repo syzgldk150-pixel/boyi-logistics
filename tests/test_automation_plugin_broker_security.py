@@ -110,7 +110,18 @@ def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: P
         async def invoke(self, **_kwargs):
             return self._result
 
-    async def invoke(result: dict[str, object]) -> dict[str, object]:
+    async def invoke(
+        result: dict[str, object],
+        *,
+        arguments: dict[str, object] | None = None,
+        tool_name: str = "sync_yunda_dispatch_forecast",
+        action: str = "feishu.bitable.append_yunda_dispatch_forecast",
+    ) -> dict[str, object]:
+        request_arguments = arguments or {
+            "records": [],
+            "target_date": "2026-08-16",
+            "ensure_fields": True,
+        }
         socket_path = tmp_path / "broker.sock"
         issuer = LocalBrokerCapabilityIssuer(socket_path)
         broker = LocalCoreAutomationBroker(
@@ -122,7 +133,7 @@ def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: P
             capability = issuer.issue(
                 automation_id="instance-a",
                 plugin_version="1.0.0",
-                tool_name="automation.instance-a.run",
+                tool_name=tool_name,
                 ttl_seconds=60,
                 runtime_permissions={
                     "browser": False,
@@ -132,7 +143,7 @@ def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: P
                     "broker_operations": [
                         {
                             "operation": "network.request",
-                            "action": "snapshot.replace",
+                            "action": action,
                             "roles": ["target"],
                             "effect": "write",
                         }
@@ -152,9 +163,9 @@ def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: P
                             "request_id": str(uuid.uuid4()),
                             "capability": capability,
                             "operation": "network.request",
-                            "action": "snapshot.replace",
+                            "action": action,
                             "role": "target",
-                            "arguments": {"records": []},
+                            "arguments": request_arguments,
                         },
                         separators=(",", ":"),
                     )
@@ -189,3 +200,42 @@ def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: P
     rejected = asyncio.run(invoke(incomplete_result))
     assert rejected["ok"] is False
     assert rejected["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"
+
+    boolean_count_result = dict(verified_result)
+    boolean_count_result["record_count"] = False
+    rejected_boolean = asyncio.run(invoke(boolean_count_result))
+    assert rejected_boolean["ok"] is False
+    assert rejected_boolean["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"
+
+    rejected_nonempty = asyncio.run(
+        invoke(
+            verified_result,
+            arguments={
+                "records": [{"主单号": "YD-1"}],
+                "target_date": "2026-08-16",
+                "ensure_fields": True,
+            },
+        )
+    )
+    assert rejected_nonempty["ok"] is False
+    assert rejected_nonempty["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"
+
+    for action, arguments in (
+        (
+            "feishu.bitable.replace_snapshot",
+            {"records": [], "target_date": "2026-08-16"},
+        ),
+        (
+            "feishu.sheet.replace",
+            {"values": [], "target_date": "2026-08-16"},
+        ),
+    ):
+        site_response = asyncio.run(
+            invoke(
+                verified_result,
+                tool_name="sync_site_send_list",
+                action=action,
+                arguments=arguments,
+            )
+        )
+        assert site_response["ok"] is True

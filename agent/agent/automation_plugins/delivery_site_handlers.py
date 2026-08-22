@@ -16,6 +16,7 @@ from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
 )
+from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.first_party_handler_common import (
     _OpaqueCodec,
@@ -84,6 +85,11 @@ _VERIFIED_RESULT_FIELDS = {
     "after_observation_id",
     "write_response_received",
 }
+_VERIFIED_RESULT_ACK_FIELD = "acknowledged_count"
+_VERIFIED_RESULT_FIELDS_WITH_ACK = _VERIFIED_RESULT_FIELDS | {
+    _VERIFIED_RESULT_ACK_FIELD,
+}
+_EMPTY_SNAPSHOT_SHA256 = hashlib.sha256(canonical_json_bytes([])).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -131,6 +137,35 @@ def _raise_write_failure(
     if cause is None:
         raise error
     raise error from cause
+
+
+def _verified_empty_site_noop(
+    raw: object,
+    verified: Mapping[str, Any],
+    *,
+    boundary: _DelegatedWriteBoundary,
+    expected_count: int,
+) -> Mapping[str, Any]:
+    """Expose a site-sink no-op only with empty fresh snapshots."""
+
+    if (
+        expected_count != 0
+        or boundary.started
+        or not isinstance(raw, Mapping)
+        or type(raw.get(_VERIFIED_RESULT_ACK_FIELD)) is not int
+        or raw.get(_VERIFIED_RESULT_ACK_FIELD) != 0
+        or raw.get("before_sha256") != _EMPTY_SNAPSHOT_SHA256
+        or raw.get("after_sha256") != _EMPTY_SNAPSHOT_SHA256
+    ):
+        return verified
+    return {
+        **dict(verified),
+        "verified": True,
+        "readback_count": 0,
+        "written": 0,
+        "readback_sha256": _EMPTY_SNAPSHOT_SHA256,
+        VERIFIED_WRITE_NOOP_FIELD: True,
+    }
 
 
 def _require_context(
@@ -315,7 +350,10 @@ def _verified_result(
     purpose: str,
     proof: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    if not isinstance(raw, Mapping) or set(raw) != _VERIFIED_RESULT_FIELDS:
+    if not isinstance(raw, Mapping) or set(raw) not in (
+        _VERIFIED_RESULT_FIELDS,
+        _VERIFIED_RESULT_FIELDS_WITH_ACK,
+    ):
         raise _error(
             "write result did not contain a closed fresh-read proof",
             "WRITE_OUTCOME_UNKNOWN",
@@ -407,7 +445,12 @@ class _DeliverySiteHandlers:
             purpose="site-send-bitable-replace",
             proof={"target_date": target_date},
         )
-        return verified
+        return _verified_empty_site_noop(
+            result,
+            verified,
+            boundary=boundary,
+            expected_count=len(records),
+        )
 
     def replace_site_sheet(
         self,
@@ -450,7 +493,12 @@ class _DeliverySiteHandlers:
             purpose="site-send-sheet-replace",
             proof={"target_date": target_date},
         )
-        return verified
+        return _verified_empty_site_noop(
+            result,
+            verified,
+            boundary=boundary,
+            expected_count=len(rows),
+        )
 
     def write_delivery_bitable(
         self,
