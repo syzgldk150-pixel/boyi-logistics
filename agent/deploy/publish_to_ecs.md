@@ -14,6 +14,10 @@ powershell -ExecutionPolicy Bypass `
 签名包必须在提交、推送及 CI 通过后，使用最终的 40 位提交 SHA 构建；私钥路径和 key ID
 只传给只读源树的本地构建器，不写入仓库、发布目录或命令输出：
 
+当前开发机的真实签名路径与 `key_id` 记录在本机专用文档
+`~/.config/boyi/release-signing-profile.md`。发布人员或自动化 Agent 可以读取该文档中的路径元数据，
+但不得读取、打印或复制它所引用的私钥内容；该文档不得加入 Git。
+
 ```bash
 PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
   --private-key "<protected-private-key-path>" \
