@@ -43,6 +43,8 @@ _LOGIN_ERROR_CODES = {
     "AUTH_PENDING_CODE",
     "BLOCKED_LOGIN",
 }
+_PLATFORMS = {"ronghui", "yunda"}
+_SOURCE_DIRECTIONS = {"published", "query", "received", "registered"}
 
 
 def _object(value: object, label: str) -> dict[str, object]:
@@ -61,7 +63,7 @@ def _text(value: object, label: str, *, maximum: int = 512) -> str:
 def _dedupe_key(item: Mapping[str, object]) -> str:
     explicit = str(item.get("dedupe_key") or "").strip()
     if explicit:
-        return explicit
+        return _text(explicit, "dedupe_key", maximum=512)
     platform = _text(item.get("platform"), "platform", maximum=32)
     direction = _text(item.get("source_direction"), "source_direction", maximum=32)
     external_id = _text(item.get("external_id"), "external_id", maximum=128)
@@ -126,22 +128,59 @@ def _blocked_recheck(
     source_returned: bool,
     evidence: Mapping[str, object] | None = None,
     resolution_reason: str = "",
+    context_error: str = "",
 ) -> dict[str, object]:
-    return {
+    output: dict[str, object] = {
         "dedupe_key": _dedupe_key(item),
-        "platform": _text(item.get("platform"), "platform", maximum=32).lower(),
-        "external_id": _text(item.get("external_id"), "external_id", maximum=256),
-        "source_direction": _text(
-            item.get("source_direction"),
-            "source_direction",
-            maximum=32,
-        ).lower(),
         "status": status,
         "resolution_reason": resolution_reason,
         "error_code": error_code,
         "source_returned": source_returned,
         "evidence": dict(evidence or {}),
     }
+    for field, maximum, lower in (
+        ("platform", 32, True),
+        ("external_id", 128, False),
+        ("source_direction", 32, True),
+        ("waybill_no", 100, False),
+    ):
+        value = str(item.get(field) or "").strip()
+        if value:
+            output[field] = _text(value, field, maximum=maximum).lower() if lower else _text(
+                value,
+                field,
+                maximum=maximum,
+            )
+    if context_error:
+        output["context_error"] = _text(
+            context_error,
+            "context_error",
+            maximum=100,
+        )
+    return output
+
+
+def _detail_arguments(item: Mapping[str, object], *, dedupe_key: str) -> dict[str, object]:
+    platform = _text(item.get("platform"), "platform", maximum=32).lower()
+    if platform not in _PLATFORMS:
+        raise ValueError("platform is invalid")
+    source_direction = _text(
+        item.get("source_direction"),
+        "source_direction",
+        maximum=32,
+    ).lower()
+    if source_direction not in _SOURCE_DIRECTIONS:
+        raise ValueError("source_direction is invalid")
+    output: dict[str, object] = {
+        "dedupe_key": dedupe_key,
+        "platform": platform,
+        "source_direction": source_direction,
+        "external_id": _text(item.get("external_id"), "external_id", maximum=128),
+    }
+    waybill_no = str(item.get("waybill_no") or "").strip()
+    if waybill_no:
+        output["waybill_no"] = _text(waybill_no, "waybill_no", maximum=100)
+    return output
 
 
 def _collect_pages(
@@ -193,6 +232,8 @@ def _collect_pages(
 def _recheck_details(
     raw_items: object,
     broker: Callable[..., object],
+    *,
+    current_keys: set[str],
 ) -> tuple[list[dict[str, object]], list[str]]:
     if raw_items in (None, ""):
         return [], []
@@ -204,21 +245,35 @@ def _recheck_details(
     for raw_item in raw_items:
         item = _object(raw_item, "recheck item")
         key = _dedupe_key(item)
+        if key in current_keys:
+            continue
         if key in seen:
             continue
         seen.add(key)
+        context_error = str(item.get("context_error") or "").strip()
+        if context_error:
+            context_error = _text(
+                context_error,
+                "context_error",
+                maximum=100,
+            )
+            details.append(
+                _blocked_recheck(
+                    item,
+                    status="BLOCKED_DATA",
+                    error_code=context_error,
+                    source_returned=False,
+                    context_error=context_error,
+                )
+            )
+            continue
+        detail_arguments = _detail_arguments(item, dedupe_key=key)
         try:
             result = broker(
                 "browser.invoke",
                 action="customer_problem.detail",
                 role=_ROLE,
-                arguments={
-                    "dedupe_key": key,
-                    "platform": item.get("platform"),
-                    "source_direction": item.get("source_direction"),
-                    "external_id": item.get("external_id"),
-                    "waybill_no": item.get("waybill_no"),
-                },
+                arguments=detail_arguments,
             )
         except RuntimeError as exc:
             error_code = str(exc).strip().upper() or "DETAIL_QUERY_FAILED"
@@ -262,7 +317,11 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
     if direction not in _DIRECTIONS:
         raise ValueError("direction is invalid")
     records, page_count, page_refs = _collect_pages(direction, broker)
-    rechecks, detail_refs = _recheck_details(arguments.get("recheck_items"), broker)
+    rechecks, detail_refs = _recheck_details(
+        arguments.get("recheck_items"),
+        broker,
+        current_keys={_dedupe_key(item) for item in records},
+    )
     observed_at = utc_observed_at()
     evidence_refs = list(dict.fromkeys([*page_refs, *detail_refs]))
     condition = "configured_accounts_queried"

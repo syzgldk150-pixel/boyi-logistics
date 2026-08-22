@@ -56,11 +56,13 @@ def _sha(value: Any) -> str:
 class _CatalogRepository:
     def __init__(self, instance: PluginInstanceRecord) -> None:
         self.instance = instance
+        self.list_calls = 0
 
     def get_instance(self, automation_id: str) -> PluginInstanceRecord | None:
         return self.instance if automation_id == self.instance.automation_id else None
 
     def list_instances(self) -> list[PluginInstanceRecord]:
+        self.list_calls += 1
         return [self.instance]
 
 
@@ -281,8 +283,9 @@ def test_server_only_catalog_excludes_persisted_windows_instances() -> None:
         state=PluginProjectState.DISABLED,
         active_version=version,
     )
+    repository = _CatalogRepository(instance)
     catalog = PluginCatalog(
-        _CatalogRepository(instance),
+        repository,
         allowed_execution_platforms=("server",),
     )
 
@@ -291,6 +294,11 @@ def test_server_only_catalog_excludes_persisted_windows_instances() -> None:
     assert catalog.excluded_persisted_automation_ids() == {
         instance.automation_id
     }
+    calls_before_projection = repository.list_calls
+    assert catalog.safe_projection()["hidden_automation_ids"] == [
+        instance.automation_id
+    ]
+    assert repository.list_calls == calls_before_projection + 1
 
 
 def test_server_catalog_quarantines_historical_deferred_plugin_uuid() -> None:

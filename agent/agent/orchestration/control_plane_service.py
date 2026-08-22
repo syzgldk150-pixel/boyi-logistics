@@ -448,6 +448,10 @@ class ControlPlaneService:
         command_id = _required_id(getattr(command, "command_id", None), "command_id")
         parameters = getattr(command, "parameters", {})
         tool_name = str(parameters.get("tool_name") or "") if isinstance(parameters, Mapping) else ""
+        needs_customer_problem_refs = _is_customer_problem_project_command(
+            command,
+            tool_name=tool_name,
+        )
         with self._repository.unit_of_work() as uow:
             item = uow.work_items.get_by_command(command_id)
             if item is None:
@@ -467,7 +471,7 @@ class ControlPlaneService:
                 offset += len(page)
             problem_refs = (
                 _customer_problem_open_refs(uow)
-                if tool_name == "sync_customer_service_problems"
+                if needs_customer_problem_refs
                 else []
             )
         clarifications: list[dict[str, Any]] = []
@@ -522,7 +526,7 @@ class ControlPlaneService:
             ),
             **(
                 {"customer_problem_open_refs": problem_refs}
-                if tool_name == "sync_customer_service_problems"
+                if needs_customer_problem_refs
                 else {}
             ),
         }
@@ -789,6 +793,23 @@ _OPEN_CUSTOMER_PROBLEM_STATUSES = frozenset(
         "BLOCKED_DATA",
     }
 )
+_CUSTOMER_PROBLEM_PLATFORMS = frozenset({"ronghui", "yunda"})
+_CUSTOMER_PROBLEM_SOURCE_DIRECTIONS = frozenset(
+    {"published", "query", "received", "registered"}
+)
+
+
+def _is_customer_problem_project_command(command: Any, *, tool_name: str) -> bool:
+    """Recognize the exact project alias that owns customer recheck context."""
+
+    if tool_name == "sync_customer_service_problems":
+        return True
+    invocation = getattr(command, "automation_invocation", None)
+    automation_id = str(getattr(invocation, "automation_id", "") or "").strip()
+    return (
+        automation_id == "customer_problems_shadow"
+        and tool_name == "automation.customer_problems_shadow.run"
+    )
 
 
 def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
@@ -824,6 +845,8 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
         platform = ""
         account_id = ""
         external_id = ""
+        raw_platform = ""
+        raw_external_id = ""
         metadata: Mapping[str, Any] = {}
         if len(subjects) != 1:
             context_error = (
@@ -833,19 +856,29 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             subject = subjects[0]
             raw_metadata = subject.get("metadata_json")
             metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
-            platform = str(subject.get("source_system") or "").strip().lower()
-            external_id = str(subject.get("entity_id") or "").strip()
+            raw_platform = str(subject.get("source_system") or "").strip().lower()
+            raw_external_id = str(subject.get("entity_id") or "").strip()
             account_id = str(metadata.get("account_id") or "").strip()
             context_error = ""
+            if raw_platform and raw_platform not in _CUSTOMER_PROBLEM_PLATFORMS:
+                platform = ""
+                context_error = "SUBJECT_PLATFORM_UNSUPPORTED"
+            else:
+                platform = raw_platform
+            if len(raw_external_id) > 128:
+                external_id = ""
+                context_error = context_error or "SUBJECT_EXTERNAL_ID_TOO_LONG"
+            else:
+                external_id = raw_external_id
 
         if legacy_identity:
             _prefix, legacy_platform, legacy_account_id, legacy_external_id = parts
             if (
-                platform != legacy_platform.lower()
+                raw_platform != legacy_platform.lower()
                 or account_id != legacy_account_id
-                or external_id != legacy_external_id
+                or raw_external_id != legacy_external_id
             ):
-                context_error = "SUBJECT_ENTITY_IDENTITY_MISMATCH"
+                context_error = context_error or "SUBJECT_ENTITY_IDENTITY_MISMATCH"
         if not platform or not account_id or not external_id:
             context_error = context_error or "SUBJECT_ENTITY_IDENTITY_MISMATCH"
             opaque_key = persisted_key
@@ -863,7 +896,12 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
         # action.  Emitting empty strings here makes the otherwise valid
         # server-owned plan fail schema validation before the action gets a
         # chance to record that explicit failure.
-        ref: dict[str, Any] = {"dedupe_key": opaque_key}
+        # A context error describes the exact persisted item that produced it.
+        # Do not replace that identity with one derived from a contradictory
+        # subject row: the derived value may alias a different open item.
+        ref: dict[str, Any] = {
+            "dedupe_key": persisted_key if context_error else opaque_key
+        }
         if platform:
             ref["platform"] = platform
         if external_id:
@@ -872,7 +910,12 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             ref["context_error"] = context_error
         source_direction = str(metadata.get("source_direction") or "").strip().lower()
         if source_direction:
-            ref["source_direction"] = source_direction
+            if len(source_direction) > 32:
+                ref.setdefault("context_error", "SOURCE_DIRECTION_TOO_LONG")
+            elif source_direction not in _CUSTOMER_PROBLEM_SOURCE_DIRECTIONS:
+                ref.setdefault("context_error", "SOURCE_DIRECTION_UNSUPPORTED")
+            else:
+                ref["source_direction"] = source_direction
 
         waybills = [
             str(entity.get("entity_id") or "").strip()
@@ -882,11 +925,15 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             and str(entity.get("entity_id") or "").strip()
         ]
         if len(set(waybills)) == 1:
-            ref["waybill_no"] = waybills[0]
+            waybill_no = waybills[0]
+            if len(waybill_no) > 100:
+                ref.setdefault("context_error", "RELATED_WAYBILL_TOO_LONG")
+            else:
+                ref["waybill_no"] = waybill_no
         elif len(set(waybills)) > 1:
-            ref["context_error"] = "RELATED_WAYBILL_AMBIGUOUS"
+            ref.setdefault("context_error", "RELATED_WAYBILL_AMBIGUOUS")
 
-        if not ref.get("source_direction"):
+        if not ref.get("source_direction") and not source_direction:
             evidence_rows = uow.evidence.list(str(item["work_item_id"]), limit=500)
             directions = {
                 str(summary.get("source_direction") or "").strip().lower()
@@ -898,12 +945,22 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
                 )
                 if str(summary.get("source_direction") or "").strip()
             }
-            if len(directions) == 1:
+            invalid_directions = {
+                direction
+                for direction in directions
+                if len(direction) > 32
+                or direction not in _CUSTOMER_PROBLEM_SOURCE_DIRECTIONS
+            }
+            if invalid_directions:
+                ref.setdefault("context_error", "SOURCE_DIRECTION_UNSUPPORTED")
+            elif len(directions) == 1:
                 ref["source_direction"] = next(iter(directions))
             elif not directions:
                 ref.setdefault("context_error", "SOURCE_DIRECTION_MISSING")
             else:
                 ref.setdefault("context_error", "SOURCE_DIRECTION_AMBIGUOUS")
+        if ref.get("context_error"):
+            ref["dedupe_key"] = persisted_key
         refs.append(ref)
     return sorted(refs, key=lambda value: str(value.get("dedupe_key") or ""))
 

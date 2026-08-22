@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
+from types import SimpleNamespace
 import unittest
 
 from agent.orchestration.control_plane_service import ControlPlaneService
@@ -169,6 +170,10 @@ class _FakeWorkItems:
             if item["command_id"] == command_id:
                 return copy.deepcopy(item)
         return None
+
+    @staticmethod
+    def list_by_type(_item_type: str):
+        return []
 
 
 class _FakeEvents:
@@ -493,6 +498,22 @@ class ControlPlaneServiceTests(unittest.TestCase):
         )
         context = service.resolve_command_context(_Command())
         self.assertNotIn("clarification_override", context)
+
+    def test_customer_project_alias_receives_authoritative_recheck_context(self):
+        repository = _FakeRepository([_run("run-1", "CONTEXT_READY")])
+        service, _approval = self._service(repository)
+
+        class _CustomerProjectCommand(_Command):
+            parameters = {
+                "tool_name": "automation.customer_problems_shadow.run",
+            }
+            automation_invocation = SimpleNamespace(
+                automation_id="customer_problems_shadow",
+            )
+
+        context = service.resolve_command_context(_CustomerProjectCommand())
+
+        self.assertIn("customer_problem_open_refs", context)
 
     def test_clarification_is_scoped_to_exact_command_and_latest_explicit_patch(self):
         repository = _FakeRepository([_run("run-1", "NEEDS_CLARIFICATION")])

@@ -542,20 +542,29 @@ class PluginCatalog:
     def excluded_persisted_automation_ids(self) -> frozenset[str]:
         """Return exact persisted identities omitted by the release scope."""
 
-        return (
-            self._excluded_automation_ids
-            | frozenset(
-            project.automation_id
-            for project in self._repository.list_instances()
-            if self._project_is_excluded(project)
-            )
-        )
+        # Only persisted project identities are safe to expose as hidden IDs.
+        # Static/reserved identifiers must not cause a fallback card to vanish;
+        # a real same-ID project remains visible and fails closed instead.
+        _, hidden_automation_ids = self._partition_projects()
+        return hidden_automation_ids
+
+    def _partition_projects(
+        self,
+    ) -> tuple[list[PluginInstanceRecord], frozenset[str]]:
+        visible: list[PluginInstanceRecord] = []
+        hidden: set[str] = set()
+        for project in self._repository.list_instances():
+            if self._project_is_excluded(project):
+                hidden.add(project.automation_id)
+            else:
+                visible.append(project)
+        return visible, frozenset(hidden)
 
     def list(self, *, include_disabled: bool = True) -> list[PluginCatalogEntry]:
+        projects, _ = self._partition_projects()
         entries = [
             _entry_from_project(project, self._project_configuration)
-            for project in self._repository.list_instances()
-            if not self._project_is_excluded(project)
+            for project in projects
         ]
         if not include_disabled:
             entries = [entry for entry in entries if entry.enabled]
@@ -648,7 +657,14 @@ class PluginCatalog:
         uniform Console configuration form.
         """
 
-        entries = self.list()
+        projects, hidden_automation_ids = self._partition_projects()
+        entries = sorted(
+            (
+                _entry_from_project(project, self._project_configuration)
+                for project in projects
+            ),
+            key=lambda item: item.automation_id,
+        )
         newest: dict[str, PluginCatalogEntry] = {}
         for entry in entries:
             current = newest.get(entry.plugin_id)
@@ -722,7 +738,12 @@ class PluginCatalog:
             }
             for entry in entries
         ]
-        return {"plugins": plugins, "instances": instances, "unsupported_automation_ids": []}
+        return {
+            "plugins": plugins,
+            "instances": instances,
+            "unsupported_automation_ids": [],
+            "hidden_automation_ids": sorted(hidden_automation_ids),
+        }
 
     @staticmethod
     def _missing_requirements(entry: PluginCatalogEntry) -> list[str]:

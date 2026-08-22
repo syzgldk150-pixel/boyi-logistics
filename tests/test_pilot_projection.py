@@ -305,6 +305,41 @@ def _plugin_customer_result(*, external_id: str = "opaque-1") -> ToolResult:
     )
 
 
+def _plugin_customer_context_error_result(
+    dedupe_key: str,
+    *,
+    context_error: str = "SUBJECT_ENTITY_MISSING",
+    status: str = "BLOCKED_DATA",
+    source_returned: bool = False,
+) -> ToolResult:
+    result = _plugin_customer_result()
+    return ToolResult(
+        status=result.status,
+        data={
+            **result.data,
+            "records": [],
+            "rechecks": [
+                {
+                    "dedupe_key": dedupe_key,
+                    "context_error": context_error,
+                    "status": status,
+                    "resolution_reason": (
+                        "explicit_terminal_status" if status == "RESOLVED" else ""
+                    ),
+                    "error_code": context_error,
+                    "source_returned": source_returned,
+                    "evidence": {},
+                }
+            ],
+            "evidence": {
+                **result.data["evidence"],
+                "record_count": 0,
+            },
+        },
+        meta=result.meta,
+    )
+
+
 def test_plugin_customer_projection_resolves_opaque_identity_from_trusted_side_channel() -> None:
     result = _plugin_customer_result()
     opaque_key = str(result.data["records"][0]["dedupe_key"])
@@ -375,6 +410,130 @@ def test_plugin_customer_projection_rejects_binding_set_mismatch_before_mutation
 
     assert exc_info.value.code == "CUSTOMER_ACCOUNT_SCOPE_INCOMPLETE"
     assert uow.work_items.items == {}
+
+
+def test_plugin_customer_context_error_retains_exact_persisted_item_as_blocked() -> None:
+    key = "problem:v1:" + ("c" * 64)
+    uow = FakeUow([_existing_item(key, "CUSTOMER_SERVICE_PROBLEM")])
+
+    outcome = PilotProjectionService().project_successful_step(
+        uow=uow,
+        run=_run(),
+        step_row=_step_row(),
+        step=_step("sync_customer_service_problems"),
+        command=_command(),
+        result=_plugin_customer_context_error_result(key),
+        generation_verification=_plugin_customer_verification(),
+    )
+
+    item = uow.work_items.items[key]
+    assert item["status"] == "BLOCKED_DATA"
+    assert item["current_reason_code"] == "SUBJECT_ENTITY_MISSING"
+    assert item.get("resolution_json") is None
+    assert outcome is not None
+    assert f"detail_recheck:{key}" in outcome.incomplete_sources
+
+
+def test_plugin_customer_context_error_retains_exact_legacy_persisted_key() -> None:
+    key = "problem:yunda:account-1:legacy-context-error"
+    uow = FakeUow([_existing_item(key, "CUSTOMER_SERVICE_PROBLEM")])
+
+    PilotProjectionService().project_successful_step(
+        uow=uow,
+        run=_run(),
+        step_row=_step_row(),
+        step=_step("sync_customer_service_problems"),
+        command=_command(),
+        result=_plugin_customer_context_error_result(key),
+        generation_verification=_plugin_customer_verification(),
+    )
+
+    assert list(uow.work_items.items) == [key]
+    assert uow.work_items.items[key]["status"] == "BLOCKED_DATA"
+    assert uow.work_items.items[key]["current_reason_code"] == "SUBJECT_ENTITY_MISSING"
+
+
+def test_plugin_customer_context_error_never_binds_a_colliding_normalized_alias() -> None:
+    origin_key = "problem:yunda:account-1:persisted-external"
+    colliding_key = customer_problem_identity(
+        account_id="account-1",
+        platform="yunda",
+        external_id="other-open-item",
+    )
+    uow = FakeUow(
+        [
+            _existing_item(origin_key, "CUSTOMER_SERVICE_PROBLEM"),
+            _existing_item(colliding_key, "CUSTOMER_SERVICE_PROBLEM"),
+        ]
+    )
+
+    PilotProjectionService().project_successful_step(
+        uow=uow,
+        run=_run(),
+        step_row=_step_row(),
+        step=_step("sync_customer_service_problems"),
+        command=_command(),
+        result=_plugin_customer_context_error_result(
+            origin_key,
+            context_error="SUBJECT_ENTITY_IDENTITY_MISMATCH",
+        ),
+        generation_verification=_plugin_customer_verification(),
+    )
+
+    assert uow.work_items.items[origin_key]["status"] == "BLOCKED_DATA"
+    assert (
+        uow.work_items.items[origin_key]["current_reason_code"]
+        == "SUBJECT_ENTITY_IDENTITY_MISMATCH"
+    )
+    assert uow.work_items.items[colliding_key]["status"] == "BLOCKED_DATA"
+    assert (
+        uow.work_items.items[colliding_key]["current_reason_code"]
+        == "PROBLEM_DISAPPEARED_NEEDS_DETAIL"
+    )
+
+
+def test_plugin_customer_context_error_rejects_unpersisted_identity() -> None:
+    persisted_key = "problem:v1:" + ("d" * 64)
+    forged_key = "problem:v1:" + ("e" * 64)
+    uow = FakeUow([_existing_item(persisted_key, "CUSTOMER_SERVICE_PROBLEM")])
+
+    with pytest.raises(OrchestrationError) as exc_info:
+        PilotProjectionService().project_successful_step(
+            uow=uow,
+            run=_run(),
+            step_row=_step_row(),
+            step=_step("sync_customer_service_problems"),
+            command=_command(),
+            result=_plugin_customer_context_error_result(forged_key),
+            generation_verification=_plugin_customer_verification(),
+        )
+
+    assert exc_info.value.code == "UNEXPECTED_PROBLEM_DETAIL_RECHECK"
+    assert uow.work_items.items[persisted_key]["status"] == "OPEN"
+    assert uow.evidence.rows == []
+
+
+def test_plugin_customer_context_error_can_never_claim_resolution() -> None:
+    key = "problem:v1:" + ("f" * 64)
+    uow = FakeUow([_existing_item(key, "CUSTOMER_SERVICE_PROBLEM")])
+
+    with pytest.raises(OrchestrationError) as exc_info:
+        PilotProjectionService().project_successful_step(
+            uow=uow,
+            run=_run(),
+            step_row=_step_row(),
+            step=_step("sync_customer_service_problems"),
+            command=_command(),
+            result=_plugin_customer_context_error_result(
+                key,
+                status="RESOLVED",
+                source_returned=True,
+            ),
+            generation_verification=_plugin_customer_verification(),
+        )
+
+    assert exc_info.value.code == "PROBLEM_RECHECK_CONTEXT_INVALID"
+    assert uow.work_items.items[key]["status"] == "OPEN"
 
 
 def test_daily_sign_requires_main_waybill_sign_evidence() -> None:

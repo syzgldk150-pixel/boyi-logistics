@@ -1,5 +1,6 @@
 import unittest
 import json
+from http import HTTPStatus
 from types import SimpleNamespace
 
 from app import (
@@ -622,6 +623,64 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("执行未开始", captured["payload"]["title"])
         self.assertIn("到货清单主表写入配置", captured["payload"]["message"])
         self.assertIn("到货统计归档表配置", captured["payload"]["message"])
+
+    def test_run_now_preserves_safe_agent_admission_status_and_error_code(self):
+        for upstream_status in (
+            HTTPStatus.CONFLICT,
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+        ):
+            with self.subTest(upstream_status=upstream_status):
+                app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+                app._is_ajax_request = lambda _handler: True
+                app._control_plane_write_context = lambda _handler: {
+                    "_console_principal": {"actor_id": "17"}
+                }
+                app._collect_automation_task_submission = (
+                    lambda _handler, allow_missing_schedule=False: (
+                        {
+                            "task_id": "arrival_stats",
+                            "task_mode": "manual",
+                            "project_plugin_instance": True,
+                        },
+                        {},
+                        "",
+                    )
+                )
+                app._start_automation_task_run = (
+                    lambda _payload, trusted_context, browser_request_uuid: {
+                        "ok": False,
+                        "status": upstream_status,
+                        "error": "project runtime unavailable",
+                        "error_code": "PROJECT_RUNTIME_UNAVAILABLE",
+                    }
+                )
+                captured = {}
+                app._send_json = lambda _handler, status, payload: captured.update(
+                    status=status,
+                    payload=payload,
+                )
+
+                app._handle_automation_task_run_now(
+                    SimpleNamespace(headers={"X-Browser-Request-UUID": "request-1"})
+                )
+
+                expected_status = (
+                    upstream_status
+                    if upstream_status
+                    in {
+                        HTTPStatus.CONFLICT,
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    }
+                    else HTTPStatus.BAD_GATEWAY
+                )
+                self.assertEqual(expected_status, captured["status"])
+                self.assertEqual(
+                    "PROJECT_RUNTIME_UNAVAILABLE",
+                    captured["payload"]["error_code"],
+                )
 
     def test_batch_resource_save_persists_multiple_resources(self):
         saved = []

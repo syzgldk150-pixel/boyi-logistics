@@ -49,6 +49,7 @@ class RuntimeGenerationHealth:
     committed_count: int
     active_lease_count: int
     blocked_projects: Mapping[str, tuple[str, ...]]
+    archival_unknown_generation_count: int = 0
 
     def assert_release_ready(self) -> None:
         if not self.healthy:
@@ -368,6 +369,25 @@ class AutomationRuntimeReconciler:
             )
             raise
 
+    def _is_archival_unknown_generation(
+        self,
+        generation: RuntimeGenerationRecord,
+    ) -> bool:
+        """Whether a non-routed generation is permanently retained for audit.
+
+        This is deliberately narrower than "blocked": only the durable
+        unknown-write state may survive a route switch.  Any other BLOCKED
+        predecessor is a malformed journal and must remain fail-closed.
+        """
+
+        return (
+            generation.state is RuntimeGenerationState.BLOCKED
+            and self._repository.has_unknown_generation_write(
+                generation.snapshot.automation_id,
+                generation.snapshot.generation,
+            )
+        )
+
     def reconcile(
         self,
         snapshot: RuntimeGenerationSnapshot,
@@ -410,19 +430,28 @@ class AutomationRuntimeReconciler:
             expected_committed_generation is not None
             and expected_committed_generation != snapshot.generation
         ):
-            draining.append(expected_committed_generation)
-            self._repository.mark_generation_draining(
-                snapshot.automation_id,
-                expected_committed_generation,
-            )
             old = self._repository.get_generation(
                 snapshot.automation_id,
                 expected_committed_generation,
             )
             if old is None:
                 raise PluginConflictError("previous committed generation disappeared")
-            if self.dispose_generation(old):
-                disposed.append(expected_committed_generation)
+            if not self._is_archival_unknown_generation(old):
+                draining.append(expected_committed_generation)
+                # The repository commit transaction has already atomically
+                # moved normal predecessors to DRAINING.  Keep this call
+                # idempotent for adapters that journal the transition after
+                # commit, but never attempt it for the archival BLOCKED row.
+                self._repository.mark_generation_draining(
+                    snapshot.automation_id,
+                    expected_committed_generation,
+                )
+                old = self._repository.get_generation(
+                    snapshot.automation_id,
+                    expected_committed_generation,
+                ) or old
+                if self.dispose_generation(old):
+                    disposed.append(expected_committed_generation)
         return RuntimeReconcileResult(
             automation_id=snapshot.automation_id,
             target_generation=snapshot.generation,
@@ -491,6 +520,13 @@ class AutomationRuntimeReconciler:
             number = generation.snapshot.generation
             if number == project.committed_generation or generation.state == RuntimeGenerationState.DISPOSED:
                 continue
+            if generation.state is RuntimeGenerationState.BLOCKED:
+                if self._is_archival_unknown_generation(generation):
+                    continue
+                raise PluginConflictError(
+                    "non-current blocked runtime generation has no archival unknown write",
+                    code="RUNTIME_ARCHIVAL_INCONSISTENT",
+                )
             if generation.state in {
                 RuntimeGenerationState.COMMITTED,
                 RuntimeGenerationState.DRAINING,
@@ -522,6 +558,7 @@ class AutomationRuntimeReconciler:
             has_undisposed_old = any(
                 generation.snapshot.generation != project.committed_generation
                 and generation.state != RuntimeGenerationState.DISPOSED
+                and not self._is_archival_unknown_generation(generation)
                 for generation in generations
             )
             if project.reconcile_state != RuntimeReconcileState.STABLE or has_undisposed_old:
@@ -552,6 +589,7 @@ def runtime_generation_health(
         blockers[missing] = ("PROJECT_RUNTIME_MISSING",)
     committed_count = 0
     active_lease_count = 0
+    archival_unknown_generation_count = 0
     for automation_id, project in sorted(by_id.items()):
         reasons: set[str] = set()
         if project.reconcile_state != RuntimeReconcileState.STABLE:
@@ -577,9 +615,21 @@ def runtime_generation_health(
             active_lease_count += len(leases)
             if leases:
                 reasons.add("ACTIVE_GENERATION_LEASE")
-            if repository.has_unknown_generation_write(automation_id, number):
+            unknown_write = repository.has_unknown_generation_write(automation_id, number)
+            archival_unknown = (
+                number != project.committed_generation
+                and generation.state is RuntimeGenerationState.BLOCKED
+                and unknown_write
+            )
+            if archival_unknown:
+                archival_unknown_generation_count += 1
+            elif unknown_write:
                 reasons.add("WRITE_OUTCOME_UNKNOWN")
-            if number != project.committed_generation and generation.state != RuntimeGenerationState.DISPOSED:
+            if (
+                number != project.committed_generation
+                and generation.state != RuntimeGenerationState.DISPOSED
+                and not archival_unknown
+            ):
                 reasons.add(f"UNDISPOSED_{generation.state.value}")
         if reasons:
             blockers[automation_id] = tuple(sorted(reasons))
@@ -589,4 +639,5 @@ def runtime_generation_health(
         committed_count=committed_count,
         active_lease_count=active_lease_count,
         blocked_projects=blockers,
+        archival_unknown_generation_count=archival_unknown_generation_count,
     )

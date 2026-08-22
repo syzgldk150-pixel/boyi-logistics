@@ -4,7 +4,6 @@ import ast
 import asyncio
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 import sys
@@ -25,7 +24,10 @@ from agent.automation_plugins.first_party import (
     resolve_first_party_manifests,
 )
 from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
-from tests.first_party_action_payload_support import WriteAttemptReceiptCaptureMixin
+from tests.first_party_action_payload_support import (
+    WriteAttemptReceiptCaptureMixin,
+    load_first_party_action,
+)
 from agent.automation_plugins.core_adapter import (
     AccountManagerSessionResolver,
     RegisteredCoreAutomationBrokerAdapter,
@@ -70,40 +72,13 @@ from plugin_core_adapters.first_party import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRST_PARTY_ROOT = ROOT / "agent" / "first_party_automation_plugins"
-
-
 @pytest.fixture(scope="module")
 def manifests():
     catalog = ToolRegistry(ROOT / "agent" / "tools" / "registry.yaml")
     return resolve_first_party_manifests(catalog)
 
 
-def _load_action(plugin_id: str):
-    result_source = FIRST_PARTY_ROOT / "_runtime" / "result.py"
-    result_spec = importlib.util.spec_from_file_location("boyi_plugin_result", result_source)
-    assert result_spec is not None and result_spec.loader is not None
-    result_module = importlib.util.module_from_spec(result_spec)
-    previous = sys.modules.get("boyi_plugin_result")
-    sys.modules["boyi_plugin_result"] = result_module
-    result_spec.loader.exec_module(result_module)
-    source = (
-        FIRST_PARTY_ROOT
-        / plugin_id
-        / "payload"
-        / "action.py"
-    )
-    spec = importlib.util.spec_from_file_location(f"{plugin_id}_plugin_action", source)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if previous is None:
-            sys.modules.pop("boyi_plugin_result", None)
-        else:
-            sys.modules["boyi_plugin_result"] = previous
-    return module
+_load_action = load_first_party_action
 
 
 def _walk_keys(value):
@@ -893,10 +868,10 @@ def test_customer_problem_payload_owns_pagination_dedupe_and_recheck() -> None:
             "direction": "both",
             "recheck_items": [
                 {
-                    "dedupe_key": "ronghui:received:problem-2",
+                    "dedupe_key": "ronghui:received:problem-3",
                     "platform": "ronghui",
                     "source_direction": "received",
-                    "external_id": "problem-2",
+                    "external_id": "problem-3",
                 }
             ],
         },

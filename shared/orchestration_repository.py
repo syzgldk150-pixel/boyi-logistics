@@ -96,6 +96,7 @@ STEP_STATUSES = frozenset(
 APPROVAL_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "EXPIRED", "INVALIDATED"})
 OUTBOX_STATUSES = frozenset({"PENDING", "PROCESSING", "PUBLISHED", "DEAD_LETTER"})
 OUTBOX_CANDIDATE_SCAN_LIMIT = 500
+SCHEDULER_SUPERSESSION_BATCH_LIMIT = 100
 TERMINAL_RUN_STATUSES = frozenset(
     {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
 )
@@ -701,6 +702,116 @@ class AgentRunRepository(_RepositoryBase):
             )
             return _decode_row(_row_dict(cursor, cursor.fetchone()), self.JSON_FIELDS)
 
+    def get_latest_for_work_item(
+        self,
+        work_item_id: str,
+        *,
+        for_update: bool = False,
+    ) -> dict[str, Any] | None:
+        suffix = " FOR UPDATE" if for_update else ""
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT * FROM agent_runs WHERE work_item_id=%s
+                ORDER BY run_no DESC, created_at DESC, run_id DESC LIMIT 1{suffix}
+                """,
+                (_required_text(work_item_id, "work_item_id"),),
+            )
+            return _decode_row(_row_dict(cursor, cursor.fetchone()), self.JSON_FIELDS)
+
+    def list_open_failed_scheduler_run_ids_for_supersession(
+        self,
+        *,
+        automation_id: str,
+        scheduler_task_id: str,
+        successful_work_item_id: str,
+        successful_occurrence: datetime,
+        limit: int = SCHEDULER_SUPERSESSION_BATCH_LIMIT,
+    ) -> list[str]:
+        """Discover candidate Runs without locking multiple tables.
+
+        The runner subsequently locks each candidate in canonical
+        Run -> Command -> WorkItem order and revalidates every predicate before
+        changing state. Keeping discovery read-only prevents MySQL from
+        choosing a join lock order that could deadlock a terminal retry. The
+        fixed limit bounds the completion transaction; later successes continue
+        retiring any remaining strictly earlier failures.
+        """
+
+        project_id = _required_text(automation_id, "automation_id")
+        task_id = _required_text(scheduler_task_id, "scheduler_task_id")
+        current_item_id = _required_text(successful_work_item_id, "successful_work_item_id")
+        if not isinstance(successful_occurrence, datetime):
+            raise ValueError("successful_occurrence must be a datetime")
+        batch_limit = max(1, min(int(limit), SCHEDULER_SUPERSESSION_BATCH_LIMIT))
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT candidate.run_id
+                FROM (
+                    SELECT r.run_id,
+                           COALESCE(
+                               CASE
+                                   WHEN JSON_UNQUOTE(JSON_EXTRACT(
+                                       c.parameters_json,
+                                       '$.execution_context.scheduled_for'
+                                   )) REGEXP
+                                       '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?([+-][0-9]{2}:[0-9]{2}|Z)$'
+                                   THEN CONVERT_TZ(
+                                       REPLACE(LEFT(JSON_UNQUOTE(JSON_EXTRACT(
+                                           c.parameters_json,
+                                           '$.execution_context.scheduled_for'
+                                       )), 19), 'T', ' '),
+                                       CASE
+                                           WHEN RIGHT(JSON_UNQUOTE(JSON_EXTRACT(
+                                               c.parameters_json,
+                                               '$.execution_context.scheduled_for'
+                                           )), 1)='Z' THEN '+00:00'
+                                           ELSE RIGHT(JSON_UNQUOTE(JSON_EXTRACT(
+                                               c.parameters_json,
+                                               '$.execution_context.scheduled_for'
+                                           )), 6)
+                                       END,
+                                       '+00:00'
+                                   )
+                               END,
+                               c.requested_at
+                           ) AS occurrence_at
+                    FROM agent_runs AS r
+                    INNER JOIN work_items AS w ON w.work_item_id=r.work_item_id
+                    INNER JOIN agent_commands AS c ON c.command_id=w.command_id
+                    WHERE w.status='OPEN'
+                      AND c.source='scheduler'
+                      AND c.actor_type='scheduler'
+                      AND BINARY c.actor_id=BINARY %s
+                      AND BINARY c.automation_id=BINARY %s
+                      AND BINARY JSON_UNQUOTE(
+                          JSON_EXTRACT(c.parameters_json, '$.execution_context.task_id')
+                      )=BINARY %s
+                      AND w.work_item_id<>%s
+                      AND r.status='FAILED_TERMINAL'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM agent_runs AS newer
+                          WHERE newer.work_item_id=r.work_item_id
+                            AND newer.run_no > r.run_no
+                      )
+                ) AS candidate
+                WHERE candidate.occurrence_at < %s
+                ORDER BY candidate.occurrence_at, candidate.run_id
+                LIMIT %s
+                """,
+                (
+                    task_id,
+                    project_id,
+                    task_id,
+                    current_item_id,
+                    successful_occurrence,
+                    batch_limit,
+                ),
+            )
+            return [str(row.get("run_id") or "") for row in _rows(cursor) if str(row.get("run_id") or "")]
+
     def list_for_work_item(
         self,
         work_item_id: str,
@@ -795,9 +906,12 @@ class AgentRunRepository(_RepositoryBase):
             )
             if source_command is None:
                 raise KeyError("retry source command not found")
-            cursor.execute("SELECT work_item_id FROM work_items WHERE work_item_id=%s FOR UPDATE", (work_item_id,))
-            if cursor.fetchone() is None:
+            cursor.execute("SELECT status FROM work_items WHERE work_item_id=%s FOR UPDATE", (work_item_id,))
+            work_item = _row_dict(cursor, cursor.fetchone())
+            if work_item is None:
                 raise KeyError("retry source work item not found")
+            if str(work_item.get("status") or "") != "OPEN":
+                raise InvalidStateError("retry source work item is not open")
             cursor.execute(
                 "SELECT COALESCE(MAX(run_no), 0) AS max_run_no FROM agent_runs WHERE work_item_id=%s",
                 (work_item_id,),

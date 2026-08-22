@@ -65,6 +65,7 @@ from shared.automation_project_policy_repository import (
 )
 from shared.orchestration_repository import ConcurrentUpdateError, InvalidStateError
 from shared.orchestration_repository_support import IdempotencyConflict
+from shared.redaction import redact_text
 
 
 _USER_POLICY_MODES = frozenset(
@@ -1178,6 +1179,10 @@ class AutomationProjectPolicyService:
             "work_item_id": str(run.get("work_item_id") or receipt.work_item_id),
             "run_id": str(run.get("run_id") or receipt.run_id),
             "correlation_id": str(run.get("correlation_id") or ""),
+            "error_code": str(run.get("error_code") or "").strip() or None,
+            "error_summary": (
+                redact_text(run.get("error_summary"))[:500] or None
+            ),
         }
 
     def evaluate_invocation(
@@ -1520,9 +1525,17 @@ class AutomationProjectPolicyService:
             and contract is not None
             and getattr(entry, "current_enabled_entrypoints", ())
         )
-        if runtime_status == "READY" and not getattr(
-            entry, "current_enabled_entrypoints", ()
-        ):
+        current_entrypoints = getattr(entry, "current_enabled_entrypoints", ())
+        # Keep the reason deterministic and actionable.  A disabled or
+        # incomplete project must not be mislabeled as a runtime failure, and
+        # contract errors must remain visible even while a generation is
+        # reconciling.  Console-only entrypoint gating is handled by Console's
+        # entrypoint-specific execution gate.
+        if not getattr(entry, "enabled", False):
+            runtime_reason = "PROJECT_DISABLED"
+        elif not getattr(entry, "configured", False):
+            runtime_reason = "PROJECT_CONFIGURATION_INCOMPLETE"
+        elif not current_entrypoints:
             runtime_reason = "ENTRYPOINTS_DISABLED"
         elif contract_error is not None:
             runtime_reason = contract_error

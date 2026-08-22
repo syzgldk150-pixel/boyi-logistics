@@ -331,6 +331,28 @@ class _RuntimeRepository:
     ) -> ProjectRuntimeRecord:
         current = self.runtimes[automation_id]
         assert current.committed_generation == expected_committed_generation
+        archival_unknown_predecessor = False
+        if expected_committed_generation is not None:
+            predecessor_key = (automation_id, expected_committed_generation)
+            predecessor = self.generations[predecessor_key]
+            if predecessor.state is RuntimeGenerationState.BLOCKED:
+                if predecessor_key not in self.unknown_writes:
+                    raise PluginConflictError(
+                        "blocked predecessor has no unknown-write lease",
+                        code="RUNTIME_ARCHIVAL_INCONSISTENT",
+                    )
+                archival_unknown_predecessor = True
+            elif predecessor.state is RuntimeGenerationState.COMMITTED:
+                self._generation_state(
+                    automation_id,
+                    expected_committed_generation,
+                    RuntimeGenerationState.DRAINING,
+                )
+            else:
+                raise PluginConflictError(
+                    "previous committed runtime generation is not switchable",
+                    code="RUNTIME_ARCHIVAL_INCONSISTENT",
+                )
         self._generation_state(
             automation_id,
             generation,
@@ -339,7 +361,11 @@ class _RuntimeRepository:
         committed = replace(
             current,
             committed_generation=generation,
-            reconcile_state=RuntimeReconcileState.STABLE,
+            reconcile_state=(
+                RuntimeReconcileState.STABLE
+                if archival_unknown_predecessor or expected_committed_generation is None
+                else RuntimeReconcileState.DRAINING
+            ),
             record_version=current.record_version + 1,
         )
         self.runtimes[automation_id] = committed
@@ -406,6 +432,20 @@ class _RuntimeRepository:
             generation,
             RuntimeGenerationState.DISPOSED,
         )
+        runtime = self.runtimes[automation_id]
+        if all(
+            item.snapshot.generation == runtime.committed_generation
+            or item.state is RuntimeGenerationState.DISPOSED
+            or (
+                item.state is RuntimeGenerationState.BLOCKED
+                and (automation_id, item.snapshot.generation) in self.unknown_writes
+            )
+            for item in self.list_project_generations(automation_id)
+        ):
+            self.runtimes[automation_id] = replace(
+                runtime,
+                reconcile_state=RuntimeReconcileState.STABLE,
+            )
 
     def fail_generation(
         self,
@@ -920,7 +960,7 @@ def test_second_release_reconcile_reuses_identical_committed_generations() -> No
     } == {1}
 
 
-def test_staged_target_over_blocked_committed_generation_is_isolated_per_project() -> None:
+def test_staged_target_over_blocked_committed_generation_commits_and_archives() -> None:
     world = _build_release_world()
     _reconcile_world(world)
     blocked_id, following_id = sorted(world.expected_automation_ids)[:2]
@@ -952,52 +992,96 @@ def test_staged_target_over_blocked_committed_generation_is_isolated_per_project
         state=RuntimeGenerationState.BLOCKED,
     )
     world.runtime.unknown_writes.add((blocked_id, 1))
-    blocked_topology_before = copy.deepcopy(
-        {
-            "runtime": world.runtime.get_project_runtime(blocked_id),
-            "generations": tuple(
-                sorted(
-                    world.runtime.list_project_generations(blocked_id),
-                    key=lambda item: item.snapshot.generation,
-                )
-            ),
-        }
-    )
-
     service = _target_service(world)
-    assert service.reconcile_project(blocked_id) is None
+    committed = service.reconcile_project(blocked_id)
 
-    assert blocked_topology_before == {
-        "runtime": world.runtime.get_project_runtime(blocked_id),
-        "generations": tuple(
-            sorted(
-                world.runtime.list_project_generations(blocked_id),
-                key=lambda item: item.snapshot.generation,
-            )
-        ),
+    assert committed.committed_generation == 2
+    assert committed.draining_generations == ()
+    assert committed.disposed_generations == ()
+    world.policy_rows[blocked_id] = {
+        **world.policy_rows[blocked_id],
+        "project_generation": 2,
     }
 
     results = service.reconcile_all()
 
-    assert blocked_topology_before == {
-        "runtime": world.runtime.get_project_runtime(blocked_id),
-        "generations": tuple(
-            sorted(
-                world.runtime.list_project_generations(blocked_id),
-                key=lambda item: item.snapshot.generation,
-            )
-        ),
-    }
     assert world.runtime.get_generation(blocked_id, 1).state is (
         RuntimeGenerationState.BLOCKED
     )
     assert world.runtime.get_generation(blocked_id, 2).state is (
-        RuntimeGenerationState.PREPARED
+        RuntimeGenerationState.COMMITTED
     )
-    assert world.runtime.get_project_runtime(blocked_id).committed_generation == 1
+    assert world.runtime.get_project_runtime(blocked_id).committed_generation == 2
+    assert world.runtime.get_project_runtime(blocked_id).reconcile_state is (
+        RuntimeReconcileState.STABLE
+    )
     assert any(result.automation_id == following_id for result in results)
     assert world.runtime.get_project_runtime(following_id).committed_generation == 2
     assert world.runtime.get_generation(following_id, 2).state is (
+        RuntimeGenerationState.COMMITTED
+    )
+
+
+def test_blocked_committed_generation_without_unknown_lease_fails_closed() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "arrival_stats"
+    current = world.runtime.get_generation(automation_id, 1)
+    assert current is not None
+    world.runtime.generations[(automation_id, 1)] = replace(
+        current,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    target = world.runtime.allocate_target_generation(
+        replace(world.snapshots[automation_id], generation=2),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+    assert world.reconciler.prepare_target(target) == ()
+
+    with pytest.raises(PluginConflictError, match="without unknown-write evidence"):
+        _target_service(world).reconcile_project(automation_id)
+
+    assert world.runtime.get_project_runtime(automation_id).committed_generation == 1
+    assert world.runtime.get_generation(automation_id, 2).state is (
+        RuntimeGenerationState.PREPARED
+    )
+
+
+def test_blocked_current_without_target_prepares_and_commits_successor() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "finance_startup_catchup"
+    current = world.runtime.get_generation(automation_id, 1)
+    assert current is not None
+    world.runtime.generations[(automation_id, 1)] = replace(
+        current,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    world.runtime.unknown_writes.add((automation_id, 1))
+    runtime = world.runtime.runtimes[automation_id]
+    world.runtime.runtimes[automation_id] = replace(
+        runtime,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    project = world.project_repository.projects[automation_id]
+    world.project_repository.projects[automation_id] = replace(
+        project,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    world.policy_rows[automation_id] = {
+        **world.policy_rows[automation_id],
+        "project_generation": 2,
+        "version": 2,
+    }
+
+    result = _target_service(world).reconcile_project(automation_id)
+
+    assert result.committed_generation == 2
+    assert world.runtime.get_generation(automation_id, 1).state is (
+        RuntimeGenerationState.BLOCKED
+    )
+    assert world.runtime.get_generation(automation_id, 2).state is (
         RuntimeGenerationState.COMMITTED
     )
 
