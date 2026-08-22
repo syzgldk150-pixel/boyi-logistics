@@ -890,6 +890,139 @@ def test_catalog_accepts_legacy_signed_runtime_permissions_during_upgrade() -> N
     ]["broker_operations"][0]
 
 
+def test_catalog_accepts_exact_legacy_normalized_committed_descriptor() -> None:
+    source = _synthetic_manifest("1.0.0").to_mapping()
+    source["runtime_permissions"] = {
+        "network": True,
+        "browser": False,
+        "office": False,
+        "file_roles": [],
+        "broker_operations": [
+            {
+                "operation": "network.request",
+                "action": "synthetic.read",
+                "roles": ["source"],
+            }
+        ],
+        "max_broker_calls": 1,
+    }
+    manifest = AutomationPluginManifest.from_mapping(source)
+    signed_manifest = manifest.to_signed_mapping()
+    previous = _snapshot(
+        automation_id="legacy-stable-instance",
+        generation=1,
+        manifest=manifest,
+        package_sha256="7" * 64,
+        project_config={"marker": "A"},
+        account_id="account-A",
+        schedule_time="09:00",
+        install_root="/plugins/action/legacy-stable",
+    )
+    snapshot = _snapshot(
+        automation_id="legacy-stable-instance",
+        generation=2,
+        manifest=manifest,
+        package_sha256="7" * 64,
+        project_config={"marker": "A"},
+        account_id="account-A",
+        schedule_time="09:00",
+        install_root="/plugins/action/legacy-stable",
+    )
+    assert snapshot.execution_metadata["runtime_descriptor"][
+        "runtime_permissions"
+    ]["broker_operations"][0]["effect"] == "write"
+    runtime = _LowLevelRuntimeRepository({1: previous, 2: snapshot})
+    runtime.generations[2] = RuntimeGenerationRecord(
+        snapshot=snapshot,
+        state=RuntimeGenerationState.PREPARING,
+    )
+    runtime.project_runtime = ProjectRuntimeRecord(
+        automation_id=snapshot.automation_id,
+        target_generation=2,
+        committed_generation=1,
+        reconcile_state=RuntimeReconcileState.PREPARING,
+        record_version=2,
+    )
+
+    resumed = AutomationRuntimeReconciler(
+        repository=runtime,
+        coeffects=_ReadyCoeffects(),
+        planner=_RuntimeEffectPlanner(),
+        driver=_RuntimeEffectDriver(),
+    ).resume_project(snapshot.automation_id)
+
+    assert resumed.committed_generation == 2
+    assert runtime.project_runtime.reconcile_state is RuntimeReconcileState.STABLE
+    generation_row = runtime.get_generation_row(
+        snapshot.automation_id,
+        snapshot.generation,
+    )
+    assert generation_row is not None
+    version = replace(_version(manifest, snapshot), manifest=signed_manifest)
+    version_row = {
+        "plugin_id": version.plugin_id,
+        "version": version.version,
+        "package_sha256": version.package_sha256,
+        "manifest_sha256": version.manifest_sha256,
+        "manifest_json": version.manifest,
+        "trust_source": version.trust_source.value,
+        "install_root_metadata_json": {
+            **version.install_metadata,
+            "install_root": version.install_root,
+        },
+        "state": version.state.value,
+        "installed_at": version.installed_at,
+    }
+
+    class _CatalogLowLevel:
+        def get_generation_row(
+            self,
+            automation_id: str,
+            generation: int,
+        ) -> Mapping[str, Any] | None:
+            if (automation_id, generation) == (
+                snapshot.automation_id,
+                snapshot.generation,
+            ):
+                return generation_row
+            return None
+
+        def get_version(
+            self,
+            plugin_id: str,
+            plugin_version: str,
+        ) -> Mapping[str, Any] | None:
+            if (plugin_id, plugin_version) == (manifest.plugin_id, manifest.version):
+                return version_row
+            return None
+
+    row = {
+        "automation_id": snapshot.automation_id,
+        "display_name": "legacy stable instance",
+        "plugin_id": manifest.plugin_id,
+        "plugin_version": manifest.version,
+        "state": PluginProjectState.ENABLED.value,
+        "enabled": 1,
+        "record_version": 1,
+        "target_generation": 2,
+        "committed_generation": 2,
+        "reconcile_state": RuntimeReconcileState.STABLE.value,
+    }
+
+    project = MySQLAutomationPluginCatalogRepositoryAdapter._project_from_row(
+        _CatalogLowLevel(),
+        row,
+    )
+    entry = _entry_from_project(project)
+    contract = project_contract_fragment(entry)
+    capability = project_capability_from_snapshot(snapshot)
+
+    assert contract["committed_generation"] == 2
+    assert capability["_plugin_runtime"]["runtime_permissions"][
+        "broker_operations"
+    ][0]["effect"] == "write"
+
+
 def test_catalog_accepts_blocked_committed_generation_for_reconciliation() -> None:
     manifest = _synthetic_manifest("1.0.0")
     snapshot = _snapshot(

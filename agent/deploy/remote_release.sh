@@ -1913,6 +1913,191 @@ restart_runtime_services_for_rollback() {
   return "${restart_status}"
 }
 
+write_restored_first_party_seed_manifest() {
+  local destination="$1" restored_sha artifact_root index_path
+  [[ -f "${ROOTS[agent]}/runtime/release_sha" && \
+    ! -L "${ROOTS[agent]}/runtime/release_sha" && \
+    -x "${PYTHON_BINS[agent]}" ]] || return 1
+  read -r restored_sha <"${ROOTS[agent]}/runtime/release_sha"
+  [[ "${restored_sha}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  artifact_root="${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${restored_sha}"
+  index_path="${artifact_root}/release-index.json"
+  [[ -d "${artifact_root}" && ! -L "${artifact_root}" && \
+    -f "${index_path}" && ! -L "${index_path}" ]] || return 1
+
+  PYTHONPATH="${ROOTS[agent]}" "${PYTHON_BINS[agent]}" - \
+    "${index_path}" "${restored_sha}" "${destination}" <<'PY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+from agent.automation_plugins.first_party import release_first_party_instance_seeds
+
+
+index_path = Path(sys.argv[1])
+restored_sha = sys.argv[2]
+destination = Path(sys.argv[3])
+version_re = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+plugin_re = re.compile(r"[a-z][a-z0-9_]{1,63}")
+automation_re = re.compile(r"[a-z][a-z0-9_]{1,127}")
+sha256_re = re.compile(r"[0-9a-f]{64}")
+try:
+    if index_path.stat().st_size > 1024 * 1024:
+        raise ValueError
+    raw = index_path.read_bytes()
+    index = json.loads(raw.decode("utf-8"))
+    canonical = json.dumps(
+        index,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if (
+        not isinstance(index, dict)
+        or set(index) != {"schema_version", "release_sha", "plugins"}
+        or index.get("schema_version") != 1
+        or index.get("release_sha") != restored_sha
+        or not isinstance(index.get("plugins"), dict)
+        or raw not in {canonical, canonical + b"\n"}
+    ):
+        raise ValueError
+    rows = []
+    seen = set()
+    for seed in release_first_party_instance_seeds():
+        automation_id = str(seed.automation_id)
+        plugin_id = str(seed.plugin_id)
+        entry = index["plugins"].get(plugin_id)
+        if (
+            automation_re.fullmatch(automation_id) is None
+            or plugin_re.fullmatch(plugin_id) is None
+            or automation_id in seen
+            or not isinstance(entry, dict)
+            or set(entry) != {"version", "manifest_sha256", "package_sha256"}
+            or not isinstance(entry.get("version"), str)
+            or version_re.fullmatch(entry["version"]) is None
+            or entry["version"] != seed.version
+            or not isinstance(entry.get("manifest_sha256"), str)
+            or sha256_re.fullmatch(entry["manifest_sha256"]) is None
+            or not isinstance(entry.get("package_sha256"), str)
+            or sha256_re.fullmatch(entry["package_sha256"]) is None
+        ):
+            raise ValueError
+        seen.add(automation_id)
+        rows.append(
+            {
+                "automation_id": automation_id,
+                "plugin_id": plugin_id,
+                "version": entry["version"],
+            }
+        )
+    if not rows or len(rows) > 4096:
+        raise ValueError
+    payload = json.dumps(
+        {"seeds": sorted(rows, key=lambda item: item["automation_id"])},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if destination.is_symlink() or not destination.is_file():
+        raise ValueError
+    destination.write_bytes(payload)
+    os.chmod(destination, 0o600)
+except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+    raise SystemExit(1)
+PY
+}
+
+verify_rollback_first_party_version_compatibility() {
+  local manifest output code
+  manifest="$(mktemp "${BACKUP_DIR}/automation_project.rollback_seeds.XXXXXX")" || return 1
+  if ! write_restored_first_party_seed_manifest "${manifest}"; then
+    rm -f -- "${manifest}"
+    echo "rollback_plugin_versions=blocked reason=RESTORED_RELEASE_CONTRACT_UNAVAILABLE" >&2
+    return 1
+  fi
+  if output="$(
+    run_staged_migration_runner \
+      --check-rollback-exact-seed-compatibility \
+      --rollback-exact-seed-manifest "${manifest}" 2>&1
+  )"; then
+    rm -f -- "${manifest}"
+    if [[ "${output}" =~ ^rollback_exact_seed_compatibility=ok\ checked_seeds=[0-9]+$ ]]; then
+      echo "${output}"
+      return 0
+    fi
+    echo "rollback_plugin_versions=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+    return 1
+  fi
+  rm -f -- "${manifest}"
+  if [[ "${output}" =~ ^rollback_exact_seed_compatibility=blocked\ code=([A-Z_]+)$ ]]; then
+    code="${BASH_REMATCH[1]}"
+    case "${code}" in
+      DATABASE_PLUGIN_MISMATCH|DATABASE_VERSION_NEWER)
+        echo "rollback_forward_only_required reason=${code}" >&2
+        ;;
+      *)
+        echo "rollback_plugin_versions=blocked reason=${code}" >&2
+        ;;
+    esac
+    return 1
+  fi
+  echo "rollback_plugin_versions=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
+  return 1
+}
+
+check_rollback_health() {
+  local expected_sha
+  local agent_pid_before agent_pid_after agent_restarts_before agent_restarts_after
+  local console_pid_before console_pid_after console_restarts_before console_restarts_after
+  [[ -f "${ROOTS[agent]}/runtime/release_sha" && \
+    ! -L "${ROOTS[agent]}/runtime/release_sha" ]] || {
+    echo "rollback_health=failed reason=RESTORED_RELEASE_SHA_UNAVAILABLE" >&2
+    return 1
+  }
+  read -r expected_sha <"${ROOTS[agent]}/runtime/release_sha"
+  [[ "${expected_sha}" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "rollback_health=failed reason=RESTORED_RELEASE_SHA_INVALID" >&2
+    return 1
+  }
+
+  # Bash locals are dynamically scoped, so the existing release health gate
+  # validates the restored SHA and cannot be bypassed by --skip-health.
+  local RELEASE_SHA="${expected_sha}"
+  local SKIP_HEALTH=0
+  if ! check_health; then
+    echo "rollback_health=failed reason=RESTORED_RUNTIME_UNHEALTHY" >&2
+    return 1
+  fi
+
+  agent_pid_before="$(systemctl show agent.service -p MainPID --value)" || return 1
+  agent_restarts_before="$(systemctl show agent.service -p NRestarts --value)" || return 1
+  console_pid_before="$(systemctl show console.service -p MainPID --value)" || return 1
+  console_restarts_before="$(systemctl show console.service -p NRestarts --value)" || return 1
+  sleep 2
+  agent_pid_after="$(systemctl show agent.service -p MainPID --value)" || return 1
+  agent_restarts_after="$(systemctl show agent.service -p NRestarts --value)" || return 1
+  console_pid_after="$(systemctl show console.service -p MainPID --value)" || return 1
+  console_restarts_after="$(systemctl show console.service -p NRestarts --value)" || return 1
+  if [[ -z "${agent_pid_before}" || "${agent_pid_before}" == "0" || \
+    -z "${console_pid_before}" || "${console_pid_before}" == "0" || \
+    "${agent_pid_before}" != "${agent_pid_after}" || \
+    "${agent_restarts_before}" != "${agent_restarts_after}" || \
+    "${console_pid_before}" != "${console_pid_after}" || \
+    "${console_restarts_before}" != "${console_restarts_after}" ]]; then
+    echo "rollback_health=failed reason=RESTORED_RUNTIME_UNSTABLE" >&2
+    return 1
+  fi
+  check_health || {
+    echo "rollback_health=failed reason=RESTORED_RUNTIME_UNSTABLE" >&2
+    return 1
+  }
+  echo "rollback_health=ok release_sha=${expected_sha}"
+}
+
 check_health() {
   [[ "${SKIP_HEALTH}" == "1" ]] && return 0
   local target attempt body healthy
@@ -2432,11 +2617,34 @@ rollback() {
       restore_managed_release_state || rollback_status=1
       verify_runtime_virtualenvs || rollback_status=1
       if [[ "${rollback_status}" == "0" ]]; then
-        if clear_scheduler_release_hold_for_rollback; then
-          restart_runtime_services_for_rollback || rollback_status=1
-        else
+        if ! verify_rollback_first_party_version_compatibility; then
+          rollback_status=1
+          # Both runtime services are still stopped.  Remove only this
+          # release's verified hold so a forward repair can acquire a fresh
+          # hold; the stage remains intact below for diagnosis.
+          clear_scheduler_release_hold_for_rollback || rollback_status=1
+        elif ! restart_runtime_services_for_rollback; then
+          echo "Rollback runtime failed to start under the scheduler release hold" >&2
+          stop_runtime_services_for_rollback || rollback_status=1
+          rollback_status=1
+        elif ! check_rollback_health; then
+          echo "Rollback runtime failed its held stable health gate" >&2
+          stop_runtime_services_for_rollback || rollback_status=1
+          rollback_status=1
+        elif ! stop_runtime_services_for_rollback; then
+          rollback_status=1
+          echo "Rollback activation stopped because restored services could not be quiesced" >&2
+        elif ! clear_scheduler_release_hold_for_rollback; then
           rollback_status=1
           echo "Rollback restart skipped because the scheduler release hold could not be cleared" >&2
+        elif ! restart_runtime_services_for_rollback; then
+          echo "Rollback runtime failed to restart after clearing the release hold" >&2
+          stop_runtime_services_for_rollback || rollback_status=1
+          rollback_status=1
+        elif ! check_rollback_health; then
+          echo "Rollback runtime failed its final stable health gate" >&2
+          stop_runtime_services_for_rollback || rollback_status=1
+          rollback_status=1
         fi
       else
         echo "Rollback activation skipped because managed state restore did not complete" >&2

@@ -12,7 +12,11 @@ from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_plan_fields,
 )
 from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
-from agent.automation_plugins.manifest import AutomationPluginManifest, canonical_json_bytes
+from agent.automation_plugins.manifest import (
+    AutomationPluginManifest,
+    canonical_json_bytes,
+    runtime_descriptor_matches_signed_installation,
+)
 from agent.automation_plugins.models import (
     PluginInstanceRecord,
     PluginProjectState,
@@ -28,6 +32,7 @@ from agent.tool_registry import validate_schema_instance
 class PluginCatalogEntry:
     automation_id: str
     plugin_id: str
+    manifest_schema_version: int
     display_name: str
     name: str
     state: str
@@ -219,8 +224,10 @@ def _committed_execution_metadata(entry: PluginCatalogEntry) -> dict[str, Any]:
             "install_root": entry.install_root,
         },
     }
-    if canonical_json_bytes(metadata["runtime_descriptor"]) != canonical_json_bytes(
-        expected_runtime_descriptor
+    if not runtime_descriptor_matches_signed_installation(
+        metadata["runtime_descriptor"],
+        expected_runtime_descriptor,
+        schema_version=entry.manifest_schema_version,
     ):
         raise PluginConflictError(
             "committed runtime descriptor differs from its signed installation"
@@ -331,6 +338,7 @@ def _entry_from_project(
     return PluginCatalogEntry(
         automation_id=project.automation_id,
         plugin_id=project.plugin_id,
+        manifest_schema_version=manifest.schema_version,
         display_name=project.display_name,
         name=manifest.name,
         state=project.state.value,
