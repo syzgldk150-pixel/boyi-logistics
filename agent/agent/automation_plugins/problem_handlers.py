@@ -80,6 +80,16 @@ _SPLIT_OWNER_BY_TYPE = {
     "少货/分批": "交接异常",
     "有发未到": "通知类（不顺延时效）",
 }
+MARKED_WRITE_ACTION_KEYS = frozenset(
+    {
+        ("browser.invoke", "ronghui.problem.create"),
+        ("browser.invoke", "ronghui.complaint.create"),
+        ("projection.invoke", "split_pending.snapshot.replace"),
+        ("network.request", "feishu.sheet.replace_rows"),
+        ("projection.invoke", "split_pending.result.upsert"),
+        ("ledger.invoke", "daily_sign.problem_event.upsert"),
+    }
+)
 _TARGET_HEADERS = (
     "运单编号",
     "货物名称",
@@ -483,6 +493,11 @@ class _ProblemHandlers:
         self._ports = ports
         self._codec = _OpaqueCodec(secret)
 
+    @staticmethod
+    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
+        if context.mark_write_started is not None:
+            context.mark_write_started()
+
     def sheet_read(
         self,
         context: CoreBrokerInvocationContext,
@@ -637,6 +652,7 @@ class _ProblemHandlers:
         }
         if observed != plan:
             raise _error("problem write plan changed", "BROKER_CURSOR_INVALID")
+        self._mark_write_started(context)
         raw = self._ports.problem_action(
             descriptor,
             "create",
@@ -817,6 +833,7 @@ class _ProblemHandlers:
         if plan != {"bill_code": bill_code}:
             raise _error("complaint write plan changed", "BROKER_CURSOR_INVALID")
         descriptor = _one_account(context, self._ports)
+        self._mark_write_started(context)
         raw = self._ports.complaint_action(descriptor, "create", plan)
         if (
             not isinstance(raw, Mapping)
@@ -1030,6 +1047,7 @@ class _ProblemHandlers:
         _resource_id(context, _SPLIT_TARGET_ROLE)
         values = _strict(arguments, {"records"})
         records = self._snapshot_records(values.get("records"))
+        self._mark_write_started(context)
         raw = self._ports.snapshot_replace(records)
         if (
             not isinstance(raw, Mapping)
@@ -1076,6 +1094,7 @@ class _ProblemHandlers:
             raise _error("split target header changed", "BROKER_ARGUMENT_INVALID")
         if any(len(row) != _MAX_COLUMNS for row in rows):
             raise _error("split target row width changed", "BROKER_ARGUMENT_INVALID")
+        self._mark_write_started(context)
         raw = self._ports.sheet_rows_replace(resource_id, rows)
         if (
             not isinstance(raw, Mapping)
@@ -1153,6 +1172,7 @@ class _ProblemHandlers:
             or result["complaint_status"] not in allowed_complaint
         ):
             raise _error("problem result classification is invalid", "BROKER_ARGUMENT_INVALID")
+        self._mark_write_started(context)
         raw = self._ports.result_upsert(result)
         if (
             not isinstance(raw, Mapping)
@@ -1220,6 +1240,7 @@ class _ProblemHandlers:
         }
         if event["problem_type"] not in _SPLIT_OWNER_BY_TYPE:
             raise _error("problem event type is invalid", "BROKER_ARGUMENT_INVALID")
+        self._mark_write_started(context)
         raw = self._ports.problem_event_upsert(descriptor, event)
         if (
             not isinstance(raw, Mapping)
@@ -1276,4 +1297,8 @@ def build_problem_handler_map(
     return _ProblemHandlers(ports, secret=cursor_secret).handler_map()
 
 
-__all__ = ["ProblemHandlerPorts", "build_problem_handler_map"]
+__all__ = [
+    "MARKED_WRITE_ACTION_KEYS",
+    "ProblemHandlerPorts",
+    "build_problem_handler_map",
+]

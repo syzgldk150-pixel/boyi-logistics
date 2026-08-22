@@ -490,6 +490,7 @@ def test_registered_broker_revalidates_accounts_before_real_handler() -> None:
                     "operation": "browser.invoke",
                     "action": "customer_problem.list_page",
                     "roles": ["customer_service_source"],
+                    "effect": "read",
                 }
             ]
         },

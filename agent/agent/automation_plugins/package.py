@@ -378,7 +378,9 @@ def verify_signed_plugin_zip(
     if not isinstance(manifest_mapping, dict):
         raise PluginPackageError("manifest.json must contain an object")
     manifest = AutomationPluginManifest.from_mapping(manifest_mapping)
-    canonical_manifest = canonical_json_bytes(manifest.to_mapping())
+    # Verify the untouched signed schema-v1 mapping. The runtime projection
+    # may conservatively add fields that older packages did not sign.
+    canonical_manifest = canonical_json_bytes(manifest.to_signed_mapping())
     if file_bytes[MANIFEST_NAME] != canonical_manifest:
         raise PluginPackageError("manifest.json must use canonical JSON encoding")
     manifest_sha256 = _sha256(canonical_manifest)

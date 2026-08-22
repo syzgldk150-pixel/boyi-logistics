@@ -47,6 +47,7 @@ DELIVERY_WRITE_ACTION_KEYS = frozenset(
     }
 )
 DELIVERY_SITE_WRITE_ACTION_KEYS = SITE_WRITE_ACTION_KEYS | DELIVERY_WRITE_ACTION_KEYS
+MARKED_WRITE_ACTION_KEYS = DELIVERY_SITE_WRITE_ACTION_KEYS
 
 _SITE_TOOL = "sync_site_send_list"
 _SITE_BITABLE_ROLE = "site_send_bitable"
@@ -325,6 +326,11 @@ class _DeliverySiteHandlers:
         self._ports = ports
         self._codec = _OpaqueCodec(secret)
 
+    @staticmethod
+    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
+        if context.mark_write_started is not None:
+            context.mark_write_started()
+
     def replace_site_bitable(
         self,
         context: CoreBrokerInvocationContext,
@@ -344,6 +350,7 @@ class _DeliverySiteHandlers:
             raise _error("site-send Bitable arguments are invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(arguments.get("target_date"))
         records = _site_records(arguments.get("records"))
+        self._mark_write_started(context)
         result = self._ports.site_bitable_replace(
             _resource_id(context, _SITE_BITABLE_ROLE),
             records,
@@ -377,6 +384,7 @@ class _DeliverySiteHandlers:
             raise _error("site-send Sheet arguments are invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(arguments.get("target_date"))
         rows = _site_sheet_rows(arguments.get("values"))
+        self._mark_write_started(context)
         result = self._ports.site_sheet_replace(
             _resource_id(context, _SITE_SHEET_ROLE),
             rows,
@@ -406,6 +414,7 @@ class _DeliverySiteHandlers:
         if not isinstance(arguments, Mapping) or set(arguments) != {"records"}:
             raise _error("delivery Bitable arguments are invalid", "BROKER_ARGUMENT_INVALID")
         records = _delivery_records(arguments.get("records"))
+        self._mark_write_started(context)
         verified = _verified_result(
             self._ports.delivery_bitable_write(
                 _resource_id(context, _DELIVERY_BITABLE_ROLE),
@@ -449,6 +458,7 @@ class _DeliverySiteHandlers:
         bill_codes = _delivery_codes(arguments.get("bill_codes"))
         account_id = _account_id(context)
         _account_descriptor(self._ports, account_id, systems={"ronghui"})
+        self._mark_write_started(context)
         verified = _verified_result(
             self._ports.delivery_projection_update(bill_codes, status),
             expected_count=len(bill_codes),
@@ -490,6 +500,7 @@ def build_delivery_site_handler_map(
 __all__ = [
     "DELIVERY_SITE_WRITE_ACTION_KEYS",
     "DELIVERY_WRITE_ACTION_KEYS",
+    "MARKED_WRITE_ACTION_KEYS",
     "SITE_WRITE_ACTION_KEYS",
     "DeliverySiteHandlerPorts",
     "build_delivery_site_handler_map",

@@ -25,6 +25,7 @@ from agent.automation_plugins.first_party import (
     resolve_first_party_manifests,
 )
 from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
+from tests.first_party_action_payload_support import WriteAttemptReceiptCaptureMixin
 from agent.automation_plugins.core_adapter import (
     AccountManagerSessionResolver,
     RegisteredCoreAutomationBrokerAdapter,
@@ -266,7 +267,7 @@ class _ReadGenerationLeases:
         raise AssertionError("a read action must not finalize a write generation")
 
 
-class _WriteGenerationLeases(_ReadGenerationLeases):
+class _WriteGenerationLeases(WriteAttemptReceiptCaptureMixin, _ReadGenerationLeases):
     def __init__(self, capability):
         super().__init__(capability)
         self.finalized: list[dict[str, Any]] = []
@@ -278,6 +279,7 @@ class _WriteGenerationLeases(_ReadGenerationLeases):
         assert kwargs["lease_id"]
         assert len(str(kwargs["evidence_sha256"])) == 64
         self.finalized.append(copy.deepcopy(dict(kwargs)))
+        self.capture_finalized_write_receipts(kwargs)
 
 
 class _ExactResourceResolver:
@@ -483,7 +485,10 @@ def _execute_yunda_write_generation(
     leases = _WriteGenerationLeases(capability)
 
     async def run():
-        issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock")
+        issuer = LocalBrokerCapabilityIssuer(
+            tmp_path / "broker.sock",
+            write_attempt_recorder=leases.record_write_attempt,
+        )
         core_adapter = RegisteredCoreAutomationBrokerAdapter(
             handlers=handlers,
             account_resolver=AccountManagerSessionResolver(manager),
@@ -548,6 +553,7 @@ def _execute_yunda_write_generation(
 
     raw, verified = asyncio.run(run())
     assert isinstance(raw, GenerationBoundResult), json.dumps(raw, sort_keys=True)
+    assert leases.write_attempt_receipts, "every signed write must persist a receipt"
     return raw, verified, leases
 
 
@@ -1889,7 +1895,10 @@ def test_arrive_payload_runs_closed_production_primitives_through_write_verifier
     )
 
     async def run():
-        issuer = LocalBrokerCapabilityIssuer(tmp_path / "arrive-router-broker.sock")
+        issuer = LocalBrokerCapabilityIssuer(
+            tmp_path / "arrive-router-broker.sock",
+            write_attempt_recorder=leases.record_write_attempt,
+        )
         manager = Manager()
         core_adapter = RegisteredCoreAutomationBrokerAdapter(
             handlers=build_production_first_party_core_handler_map(
@@ -2263,7 +2272,10 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
     )
 
     async def run():
-        issuer = LocalBrokerCapabilityIssuer(tmp_path / "arrival-stats-router-broker.sock")
+        issuer = LocalBrokerCapabilityIssuer(
+            tmp_path / "arrival-stats-router-broker.sock",
+            write_attempt_recorder=leases.record_write_attempt,
+        )
         manager = Manager()
         core_adapter = RegisteredCoreAutomationBrokerAdapter(
             handlers=build_production_first_party_core_handler_map(
@@ -2562,11 +2574,13 @@ def test_yunda_dispatch_runs_router_to_write_verifier_with_exact_bindings(
             "operation": "browser.invoke",
             "action": "yunda.dispatch_forecast.read_page",
             "roles": ["account_id"],
+            "effect": "read",
         },
         {
             "operation": "network.request",
             "action": "feishu.bitable.append_yunda_dispatch_forecast",
             "roles": ["dispatch_forecast_bitable"],
+            "effect": "write",
         },
     ]
     manifest = _temporary_yunda_manifest(
@@ -2720,41 +2734,49 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
             "operation": "browser.invoke",
             "action": "yunda.send_waybill.list_page",
             "roles": ["account_id"],
+            "effect": "read",
         },
         {
             "operation": "browser.invoke",
             "action": "yunda.special_line.list_page",
             "roles": ["account_id"],
+            "effect": "read",
         },
         {
             "operation": "browser.invoke",
             "action": "yunda.waybill.tracking_detail",
             "roles": ["account_id"],
+            "effect": "read",
         },
         {
             "operation": "browser.invoke",
             "action": "yunda.waybill.original_data",
             "roles": ["account_id"],
+            "effect": "read",
         },
         {
             "operation": "browser.invoke",
             "action": "yunda.send_waybill.renderer_detail",
             "roles": ["account_id"],
+            "effect": "read",
         },
         {
             "operation": "network.request",
             "action": "feishu.bitable.replace_yunda_send_waybills_date",
             "roles": ["send_waybills_bitable"],
+            "effect": "write",
         },
         {
             "operation": "network.request",
             "action": "feishu.sheet.replace_yunda_send_waybills",
             "roles": ["send_waybills_sheet"],
+            "effect": "write",
         },
         {
             "operation": "projection.invoke",
             "action": "waybill.yunda.replace_date",
             "roles": ["account_id"],
+            "effect": "write",
         },
     ]
     manifest = _temporary_yunda_manifest(

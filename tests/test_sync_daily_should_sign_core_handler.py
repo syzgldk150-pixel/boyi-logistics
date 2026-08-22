@@ -111,6 +111,7 @@ def test_signed_manifest_declares_one_exact_dual_role_primitive() -> None:
                 "daily_sign_bitable",
                 "daily_sign_sheet",
             ],
+            "effect": "write",
         }
     ]
     assert manifest.runtime_permissions["max_broker_calls"] == 1
@@ -292,8 +293,11 @@ class _RecordingResourceResolver:
 
 def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
     authoritative_calls: list[dict[str, object]] = []
+    boundary_events: list[str] = []
 
     def authoritative_sync(arguments, resources):
+        assert boundary_events == ["marker"]
+        boundary_events.append("port")
         authoritative_calls.append(
             {
                 "arguments": copy.deepcopy(dict(arguments)),
@@ -332,6 +336,7 @@ def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
                         "daily_sign_bitable",
                         "daily_sign_sheet",
                     ],
+                    "effect": "write",
                 }
             ]
         },
@@ -377,6 +382,7 @@ def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
             role="account_id",
             binding="ronghui-bound",
             arguments={"days": 7},
+            mark_write_started=lambda: boundary_events.append("marker"),
         )
     )
 
@@ -402,6 +408,75 @@ def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
             },
         }
     ]
+    assert boundary_events == ["marker", "port"]
+
+
+def test_adapter_does_not_mark_before_handler_rejects_late_write_validation() -> None:
+    markers: list[str] = []
+    calls: list[object] = []
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            daily_sign_sync=lambda arguments, resources: calls.append((arguments, resources)),
+        ),
+        cursor_secret=b"d" * 32,
+    )
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers=handlers,
+        account_resolver=_RecordingAccountResolver(),
+        resource_resolver=_RecordingResourceResolver(),
+    )
+    grant = BrokerGrant(
+        automation_id="daily-sign-instance",
+        plugin_version="1.0.0",
+        tool_name="sync_daily_should_sign",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        runtime_permissions={
+            "broker_operations": [
+                {
+                    "operation": "ledger.invoke",
+                    "action": "daily_sign.authoritative_sync",
+                    "roles": [
+                        "r13_account_id",
+                        "account_id",
+                        "daily_sign_bitable",
+                        "daily_sign_sheet",
+                    ],
+                    "effect": "write",
+                }
+            ]
+        },
+        account_roles=(
+            {"role": "r13_account_id", "allowed_systems": ["r13"], "required": True},
+            {"role": "account_id", "allowed_systems": ["ronghui"], "required": True},
+        ),
+        resource_roles=(
+            {"role": "daily_sign_bitable", "allowed_kinds": ["feishu_bitable"], "required": True},
+            {"role": "daily_sign_sheet", "allowed_kinds": ["feishu_sheet"], "required": True},
+        ),
+        account_bindings={"r13_account_id": "r13-bound", "account_id": "ronghui-bound"},
+        resource_bindings={
+            "daily_sign_bitable": "resource-bitable",
+            "daily_sign_sheet": "resource-sheet",
+        },
+    )
+
+    with pytest.raises(PluginExecutionError) as exc_info:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="ledger.invoke",
+                action="daily_sign.authoritative_sync",
+                role="account_id",
+                binding="ronghui-bound",
+                arguments={"days": 7, "request_body": {"forged": True}},
+                mark_write_started=lambda: markers.append("marker"),
+            )
+        )
+
+    assert exc_info.value.code == "BROKER_ARGUMENT_INVALID"
+    assert markers == []
+    assert calls == []
 
 
 def test_production_port_injects_exact_bound_resources_inside_core(

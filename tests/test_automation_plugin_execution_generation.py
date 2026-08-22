@@ -179,6 +179,7 @@ def _capability(tmp_path: Path, *, automation_id: str = "project-a") -> dict[str
                         "operation": "browser.invoke",
                         "action": "customer_problem.list_page",
                         "roles": ["source"],
+                        "effect": "read",
                     }
                 ],
                 "max_broker_calls": 20,
@@ -292,8 +293,8 @@ class _Issuer:
     broker_endpoint = "unix:///tmp/fake-plugin-broker.sock"
     broker_socket_path = None
 
-    def __init__(self, *, consumed_calls: int = 0) -> None:
-        self._consumed_calls = consumed_calls
+    def __init__(self, *, started_mutating_calls: int = 0) -> None:
+        self._started_mutating_calls = started_mutating_calls
 
     def issue(self, **_: object) -> str:
         return "test-capability"
@@ -301,9 +302,9 @@ class _Issuer:
     def revoke(self, capability: str) -> None:
         assert capability == "test-capability"
 
-    def consumed_call_count(self, capability: str) -> int:
+    def started_mutating_call_count(self, capability: str) -> int:
         assert capability == "test-capability"
-        return self._consumed_calls
+        return self._started_mutating_calls
 
 
 class _Integrity:
@@ -599,7 +600,7 @@ def test_invalid_output_after_broker_write_is_outcome_unknown(tmp_path: Path) ->
     leases = _LeaseRepository({"project-a": capability})
     router = PluginExecutionRouter(
         core_executor=_Core(),
-        capability_issuer=_Issuer(consumed_calls=1),
+        capability_issuer=_Issuer(started_mutating_calls=1),
         integrity_verifier=_Integrity(),
         sandbox_launcher=_OutputSandbox(b"not-json"),
         generation_leases=leases,
@@ -616,6 +617,89 @@ def test_invalid_output_after_broker_write_is_outcome_unknown(tmp_path: Path) ->
 
     assert result["error_code"] == "WRITE_OUTCOME_UNKNOWN"
     assert leases.released[0][1] == RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+
+
+def test_started_write_lease_release_failure_returns_governing_unknown(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+
+    class _ReleaseFailingLeaseRepository(_LeaseRepository):
+        def release_generation(
+            self,
+            lease: RuntimeGenerationLease,
+            *,
+            outcome: RuntimeLeaseOutcome,
+        ) -> None:
+            del lease, outcome
+            raise RuntimeError("generation lease persistence unavailable")
+
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(started_mutating_calls=1),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"])))),
+        generation_leases=_ReleaseFailingLeaseRepository({"project-a": capability}),
+        release_hold_provider=lambda: False,
+    )
+
+    step = _step(str(capability["name"]))
+    result = asyncio.run(
+        RegisteredToolExecutionAdapter(catalog=_Catalog(capability), executor=router).execute_step(
+            step,
+            run_id=str(uuid.uuid4()),
+            step_id=str(uuid.uuid4()),
+            execution_context={
+                "source": "console",
+                "_automation_project_invocation": _project_invocation(capability),
+            },
+        )
+    )
+
+    assert result["status"] == "FAILED"
+    assert not isinstance(result, GenerationBoundResult)
+    assert result["error"]["code"] == "WRITE_OUTCOME_UNKNOWN"
+    assert result["error"]["retryable"] is False
+    assert result["error"]["persistence_diagnostic"]["code"] == "RUNTIMEERROR"
+    assert result["error"]["persistence_diagnostic"]["message"] == "generation lease persistence unavailable"
+    outcome = ResultVerifier().verify(
+        step,
+        result,
+        capability,
+    )
+    assert outcome.accepted is False
+    assert outcome.run_status.value == "BLOCKED_DATA"
+    assert outcome.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_zero_started_writes_keep_lease_release_failure_behavior(tmp_path: Path) -> None:
+    capability = _capability(tmp_path)
+
+    class _ReleaseFailingLeaseRepository(_LeaseRepository):
+        def release_generation(
+            self,
+            lease: RuntimeGenerationLease,
+            *,
+            outcome: RuntimeLeaseOutcome,
+        ) -> None:
+            del lease, outcome
+            raise RuntimeError("generation lease persistence unavailable")
+
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(started_mutating_calls=0),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"])))),
+        generation_leases=_ReleaseFailingLeaseRepository({"project-a": capability}),
+        release_hold_provider=lambda: False,
+    )
+
+    with pytest.raises(RuntimeError, match="generation lease persistence unavailable"):
+        asyncio.run(
+            router.execute(
+                capability,
+                {},
+                trusted_invocation_context=_trusted_binding(capability),
+            )
+        )
 
 
 def test_lease_run_binding_mismatch_blocks_before_plugin_launch(tmp_path: Path) -> None:

@@ -105,7 +105,12 @@ def _uploaded_package(
         "office": False,
         "file_roles": [],
         "broker_operations": [
-            {"operation": "browser.invoke", "action": "scan.fetch", "roles": [role]}
+            {
+                "operation": "browser.invoke",
+                "action": "scan.fetch",
+                "roles": [role],
+                "effect": "read",
+            }
         ],
         "max_broker_calls": 2,
     }

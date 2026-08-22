@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import yaml
@@ -101,6 +103,82 @@ class _ProjectInvoker:
     async def invoke_trusted_and_wait(self, automation_id, **kwargs):
         self.calls.append((automation_id, kwargs))
         return {"success": True, "status": "COMPLETED", "run_id": "run-project"}
+
+
+class _StartupGate:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def check_finance_startup_occurrence(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.responses:
+            raise RuntimeError("no gate response")
+        value = self.responses.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def _ready_startup_gate(**overrides):
+    return {
+        "runnable": True,
+        "runtime_status": "READY",
+        "scheduler_enabled": True,
+        "unresolved_run": False,
+        "unresolved_lease": False,
+        "unresolved_receipt": False,
+        **overrides,
+    }
+
+
+def _scheduler_module_for_gate_tests():
+    """Load the scheduling boundary under a tiny stdlib fake when needed."""
+
+    if HAS_APSCHEDULER:
+        return importlib.import_module("agent.scheduler")
+    apscheduler = ModuleType("apscheduler")
+    schedulers = ModuleType("apscheduler.schedulers")
+    asyncio_scheduler = ModuleType("apscheduler.schedulers.asyncio")
+    scheduler_base = ModuleType("apscheduler.schedulers.base")
+    triggers = ModuleType("apscheduler.triggers")
+    cron = ModuleType("apscheduler.triggers.cron")
+    date = ModuleType("apscheduler.triggers.date")
+
+    class _JobScheduler:
+        def __init__(self, **_kwargs):
+            self._jobs = {}
+
+        def add_job(self, func, _trigger, *, id, **_kwargs):
+            self._jobs[id] = SimpleNamespace(func=func)
+
+        def get_job(self, job_id):
+            return self._jobs.get(job_id)
+
+    class _DateTrigger:
+        def __init__(self, **_kwargs):
+            pass
+
+    class _CronTrigger:
+        pass
+
+    asyncio_scheduler.AsyncIOScheduler = _JobScheduler
+    scheduler_base.STATE_PAUSED = 0
+    scheduler_base.STATE_RUNNING = 1
+    scheduler_base.STATE_STOPPED = 2
+    cron.CronTrigger = _CronTrigger
+    date.DateTrigger = _DateTrigger
+    sys.modules.update({
+        "apscheduler": apscheduler,
+        "apscheduler.schedulers": schedulers,
+        "apscheduler.schedulers.asyncio": asyncio_scheduler,
+        "apscheduler.schedulers.base": scheduler_base,
+        "apscheduler.triggers": triggers,
+        "apscheduler.triggers.cron": cron,
+        "apscheduler.triggers.date": date,
+    })
+    sys.modules.pop("agent.scheduler", None)
+    return importlib.import_module("agent.scheduler")
 
 
 class _SeedMemory:
@@ -367,40 +445,51 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         import agent.scheduler as scheduler_module
 
         core = _AgentCore()
-        scheduler = init_scheduler(core, include_startup_catchup=True)
+        core.memory.rows[1] = {
+            "id": "finance_startup_catchup",
+            "name": "Finance startup catch-up",
+            "tool_name": "automation.finance_startup_catchup.run",
+            "tool_params": {},
+            "cron_expression": "@startup",
+            "enabled": True,
+            "configuration_version": 8,
+            "automation_id": "finance_startup_catchup",
+            "automation_generation": 4,
+        }
+        core.finance_startup_gate_provider = _StartupGate(
+            _ready_startup_gate(),
+            _ready_startup_gate(),
+            _ready_startup_gate(),
+        )
+        invoker = _ProjectInvoker()
+        scheduler = init_scheduler(
+            core,
+            automation_project_invoker=invoker,
+            include_startup_catchup=True,
+        )
         job = scheduler.get_job("finance_startup_catchup")
         self.assertIsNotNone(job)
         asyncio.run(job.func())
-        self.assertEqual(1, len(core.calls))
-        tool_name, arguments, trusted = core.calls[0]
-        self.assertEqual("sync_finance_bills", tool_name)
-        self.assertEqual(
-            {
-                "mode": "sync",
-                "rescan_days": 7,
-                "_startup_catchup": True,
-                "platform": "ronghui",
-            },
-            arguments,
-        )
+        self.assertEqual(1, len(invoker.calls))
+        _automation_id, trusted = invoker.calls[0]
         self.assertEqual(ActorType.SCHEDULER, trusted["actor"].actor_type)
         self.assertEqual("finance_startup_catchup", trusted["actor"].actor_id)
-        self.assertEqual("scheduler", trusted["source"])
-        scheduled_for = trusted["execution_context"]["scheduled_for"]
+        self.assertEqual("scheduler", trusted["entrypoint"])
+        scheduled_for = trusted["trusted_context"]["scheduled_for"]
         self.assertEqual(
             f"scheduler:finance_startup_catchup:v8:{scheduled_for}",
             trusted["idempotency_key"],
         )
-        self.assertEqual("@startup", trusted["execution_context"]["cron_expression"])
-        self.assertEqual(8, trusted["execution_context"]["configuration_version"])
+        self.assertEqual("@startup", trusted["trusted_context"]["cron_expression"])
+        self.assertEqual(8, trusted["trusted_context"]["configuration_version"])
 
         # A second service start on the same business day must submit the same
         # logical occurrence so CommandGateway reuses the original Run.
         asyncio.run(job.func())
-        self.assertEqual(2, len(core.calls))
+        self.assertEqual(2, len(invoker.calls))
         self.assertEqual(
-            core.calls[0][2]["idempotency_key"],
-            core.calls[1][2]["idempotency_key"],
+            invoker.calls[0][1]["request_id"],
+            invoker.calls[1][1]["request_id"],
         )
 
         # A contract revision is a distinct governed occurrence and must not
@@ -409,21 +498,19 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             scheduler_module._execute_scheduled_tool(
                 core,
                 task_id="finance_startup_catchup",
-                tool_name="sync_finance_bills",
-                arguments={
-                    "mode": "sync",
-                    "platform": "ronghui",
-                    "rescan_days": 7,
-                    "_startup_catchup": True,
-                },
+                tool_name="automation.finance_startup_catchup.run",
+                arguments={},
                 scheduled_for=datetime.fromisoformat(scheduled_for),
                 cron_expression="@startup",
                 configuration_version=9,
+                automation_id="finance_startup_catchup",
+                automation_generation=4,
+                automation_project_invoker=invoker,
             )
         )
         self.assertEqual(
             f"scheduler:finance_startup_catchup:v9:{scheduled_for}",
-            core.calls[2][2]["idempotency_key"],
+            invoker.calls[2][1]["request_id"],
         )
 
         for invalid_version in (None, 0, True):
@@ -436,11 +523,14 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                         scheduler_module._execute_scheduled_tool(
                             core,
                             task_id="finance_startup_catchup",
-                            tool_name="sync_finance_bills",
+                            tool_name="automation.finance_startup_catchup.run",
                             arguments={"mode": "sync"},
                             scheduled_for=datetime.fromisoformat(scheduled_for),
                             cron_expression="@startup",
                             configuration_version=invalid_version,
+                            automation_id="finance_startup_catchup",
+                            automation_generation=4,
+                            automation_project_invoker=invoker,
                         )
                     )
 
@@ -857,7 +947,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         )
         self.assertEqual((), seed_phase7_schedule_tasks(core))
 
-    def test_disabled_daily_finance_does_not_suppress_enabled_startup_catchup(self):
+    def test_unbound_startup_row_never_registers_catchup(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -888,7 +978,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         )
         try:
             scheduler_module._add_finance_startup_catchup_job(core)
-            self.assertIsNotNone(
+            self.assertIsNone(
                 scheduler_module._scheduler.get_job("finance_startup_catchup")
             )
         finally:
@@ -1109,3 +1199,98 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinanceStartupGateTests(unittest.TestCase):
+    def _core_and_task(self):
+        core = _AgentCore()
+        core.memory.rows = [{
+            "id": "finance_startup_catchup",
+            "enabled": True,
+            "tool_name": "automation.finance_startup_catchup.run",
+            "tool_params": {},
+            "cron_expression": "@startup",
+            "configuration_version": 8,
+            "automation_id": "finance_startup_catchup",
+            "automation_generation": 4,
+        }]
+        return core
+
+    def test_non_runnable_and_unresolved_states_do_not_register(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        for override in (
+            {"runnable": False},
+            {"runtime_status": "UNAVAILABLE"},
+            {"unresolved_run": True},
+            {"unresolved_lease": True},
+            {"unresolved_receipt": True},
+        ):
+            with self.subTest(override=override):
+                core = self._core_and_task()
+                previous = scheduler_module._scheduler
+                scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
+                    timezone="Asia/Shanghai"
+                )
+                try:
+                    scheduler_module._add_finance_startup_catchup_job(
+                        core, startup_gate_provider=_StartupGate(_ready_startup_gate(**override))
+                    )
+                    self.assertIsNone(scheduler_module._scheduler.get_job("finance_startup_catchup"))
+                finally:
+                    scheduler_module._scheduler = previous
+
+    def test_provider_error_does_not_register(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        core = self._core_and_task()
+        previous = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(timezone="Asia/Shanghai")
+        try:
+            scheduler_module._add_finance_startup_catchup_job(
+                core, startup_gate_provider=_StartupGate(RuntimeError("unavailable"))
+            )
+            self.assertIsNone(scheduler_module._scheduler.get_job("finance_startup_catchup"))
+        finally:
+            scheduler_module._scheduler = previous
+
+    def test_execution_rechecks_gate_before_submitting(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        core = self._core_and_task()
+        invoker = _ProjectInvoker()
+        gate = _StartupGate(_ready_startup_gate(), _ready_startup_gate(unresolved_receipt=True))
+        previous = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(timezone="Asia/Shanghai")
+        try:
+            scheduler_module._add_finance_startup_catchup_job(
+                core, automation_project_invoker=invoker, startup_gate_provider=gate
+            )
+            job = scheduler_module._scheduler.get_job("finance_startup_catchup")
+            self.assertIsNotNone(job)
+            asyncio.run(job.func())
+            self.assertEqual([], invoker.calls)
+            self.assertEqual(2, len(gate.calls))
+        finally:
+            scheduler_module._scheduler = previous
+
+    def test_ready_gate_submits_the_existing_stable_occurrence(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        core = self._core_and_task()
+        invoker = _ProjectInvoker()
+        gate = _StartupGate(_ready_startup_gate(), _ready_startup_gate())
+        previous = scheduler_module._scheduler
+        scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(timezone="Asia/Shanghai")
+        try:
+            scheduler_module._add_finance_startup_catchup_job(
+                core, automation_project_invoker=invoker, startup_gate_provider=gate
+            )
+            job = scheduler_module._scheduler.get_job("finance_startup_catchup")
+            self.assertIsNotNone(job)
+            asyncio.run(job.func())
+            self.assertEqual(1, len(invoker.calls))
+            self.assertEqual("finance_startup_catchup", invoker.calls[0][0])
+            self.assertEqual(2, len(gate.calls))
+            self.assertEqual(
+                invoker.calls[0][1]["request_id"],
+                gate.calls[1]["idempotency_key"],
+            )
+        finally:
+            scheduler_module._scheduler = previous

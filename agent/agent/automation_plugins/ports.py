@@ -263,12 +263,13 @@ class ExecutionCapabilityIssuerPort(Protocol):
         resource_roles: Sequence[Mapping[str, object]],
         account_bindings: Mapping[str, object],
         resource_bindings: Mapping[str, str],
+        write_attempt_context: Mapping[str, object] | None = None,
     ) -> str: ...
 
     def revoke(self, capability: str) -> None: ...
 
-    def consumed_call_count(self, capability: str) -> int:
-        """Return core-owned broker requests consumed by this exact capability."""
+    def started_mutating_call_count(self, capability: str) -> int:
+        """Return only signed writes started for this exact capability."""
 
 
 @runtime_checkable
@@ -595,3 +596,6 @@ class RuntimeGenerationLeasePort(Protocol):
         evidence_sha256: str,
     ) -> None:
         """Accept only WRITE_VERIFIED or WRITE_OUTCOME_UNKNOWN, idempotently."""
+
+    def record_write_attempt(self, receipt: Mapping[str, object]) -> None:
+        """Persist a payload-free receipt immediately before a Broker write."""

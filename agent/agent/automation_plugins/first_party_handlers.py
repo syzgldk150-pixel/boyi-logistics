@@ -305,6 +305,32 @@ _YUNDA_DISPATCH_RESOURCE_ROLE = "dispatch_forecast_bitable"
 _YUNDA_SEND_BITABLE_ROLE = "send_waybills_bitable"
 _YUNDA_SEND_SHEET_ROLE = "send_waybills_sheet"
 
+# This closed declaration is checked against the signed release contract. A
+# newly registered write must be named here and call ``_mark_write_started``
+# at the actual mutating port boundary.
+MARKED_WRITE_ACTION_KEYS = frozenset(
+    {
+        ("browser.invoke", "ronghui.clock.submit"),
+        ("ledger.invoke", "daily_sign.authoritative_sync"),
+        ("projection.invoke", "scan.snapshot.replace"),
+        ("projection.invoke", "scan.snapshot.cleanup"),
+        ("projection.invoke", "waybill.snapshot.replace"),
+        ("projection.invoke", "arrival.forecast_snapshot.replace"),
+        ("projection.invoke", "arrival.snapshot.replace"),
+        ("projection.invoke", "split_pending.snapshot.refresh"),
+        ("network.request", "feishu.sheet.replace"),
+        ("network.request", "feishu.sheet.add"),
+        ("browser.invoke", "ronghui.scan_next.submit"),
+        ("network.request", "feishu.bitable.write_records"),
+        ("network.request", "feishu.bitable.replace_snapshot"),
+        ("network.request", "feishu.bitable.append_yunda_dispatch_forecast"),
+        ("network.request", "feishu.bitable.replace_yunda_send_waybills_date"),
+        ("network.request", "feishu.sheet.replace_yunda_send_waybills"),
+        ("projection.invoke", "waybill.yunda.replace_date"),
+        ("projection.invoke", "waybill.delivery_status.update"),
+    }
+)
+
 
 class _FirstPartyCoreHandlers:
     def __init__(
@@ -315,6 +341,13 @@ class _FirstPartyCoreHandlers:
     ) -> None:
         self._ports = ports
         self._codec = _OpaqueCodec(secret)
+
+    @staticmethod
+    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
+        """Persist the one-shot attempt receipt at the write boundary."""
+
+        if context.mark_write_started is not None:
+            context.mark_write_started()
 
     def _clock_context(
         self,
@@ -384,6 +417,7 @@ class _FirstPartyCoreHandlers:
         clock_type = _text(values.get("clock_type"), "clock_type", maximum=32)
         site = _clock_site(values.get("site"))
         assert self._ports.clock_action is not None
+        self._mark_write_started(context)
         raw = self._ports.clock_action(
             {
                 "action": "submit",
@@ -531,6 +565,7 @@ class _FirstPartyCoreHandlers:
                 "daily-sign managed resources are not bound",
                 "BROKER_RESOURCE_UNAVAILABLE",
             )
+        self._mark_write_started(context)
         authoritative = self._ports.daily_sign_sync(
             {
                 **values,
@@ -1166,6 +1201,7 @@ class _FirstPartyCoreHandlers:
                 raise _error("delivery Bitable writes contain duplicates", "BROKER_ARGUMENT_INVALID")
             seen.add(record_id)
             records.append({"record_id": record_id, "status": status})
+        self._mark_write_started(context)
         raw = writer(resource_id, records)
         if not isinstance(raw, Mapping) or raw.get("ok") is not True:
             raise _error("delivery Bitable write failed", "BROKER_RESOURCE_WRITE_FAILED")
@@ -1206,6 +1242,7 @@ class _FirstPartyCoreHandlers:
         if status != "signed":
             raise _error("delivery projection status is not signed", "BROKER_ARGUMENT_INVALID")
         _account_descriptor(self._ports, _one_account(context), systems={"ronghui"})
+        self._mark_write_started(context)
         raw = writer(bill_codes, status)
         if not isinstance(raw, Mapping) or raw.get("ok") is not True:
             raise _error("delivery projection update failed", "BROKER_PROJECTION_FAILED")
@@ -1578,6 +1615,7 @@ class _FirstPartyCoreHandlers:
             fields=fields,
             identity_field=identity_field,
         )
+        self._mark_write_started(context)
         try:
             raw = port(resource_id, records, target_date, ensure_fields)
         except PluginExecutionError as exc:
@@ -1705,6 +1743,7 @@ class _FirstPartyCoreHandlers:
             fields=_YUNDA_SEND_FIELDS,
             identity_field="5.14编号",
         )
+        self._mark_write_started(context)
         try:
             raw = port(records, target_date)
         except PluginExecutionError as exc:
@@ -1806,6 +1845,7 @@ class _FirstPartyCoreHandlers:
         if port is None:
             raise _error("projection primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
         records, target_date = self._records(arguments, fields=fields)
+        self._mark_write_started(context)
         raw = port(records, target_date)
         if (
             not isinstance(raw, Mapping)
@@ -1946,6 +1986,7 @@ class _FirstPartyCoreHandlers:
         expected_sha256 = hashlib.sha256(
             canonical_json_bytes(expected_rows)
         ).hexdigest()
+        self._mark_write_started(context)
         try:
             raw = self._ports.replace_scan_snapshot(records, target_date)
         except PluginExecutionError as exc:
@@ -2012,6 +2053,7 @@ class _FirstPartyCoreHandlers:
             normalized.append({"bill_code": bill_code, "station_name": station_name})
         account_id = _one_account(context)
         descriptor = _account_descriptor(self._ports, account_id, systems={"ronghui"})
+        self._mark_write_started(context)
         try:
             raw = port(descriptor, normalized)
         except PluginExecutionError as exc:
@@ -2367,6 +2409,7 @@ class _FirstPartyCoreHandlers:
             raise _error("scan cleanup primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
         values = _strict_arguments(arguments, {"retention_days"})
         retention = _nonnegative_int(values.get("retention_days"), "retention_days", maximum=3650)
+        self._mark_write_started(context)
         raw = self._ports.cleanup_scan_snapshot(retention)
         if (
             not isinstance(raw, Mapping)
@@ -2507,6 +2550,7 @@ class _FirstPartyCoreHandlers:
                 fields=fields,
                 label="arrival statistics sheet",
             )
+            self._mark_write_started(context)
             raw = self._ports.replace_arrival_stats_sheet(
                 context.resource_id,
                 layout,
@@ -2559,6 +2603,7 @@ class _FirstPartyCoreHandlers:
                 raise _error("sheet resource primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
             values = _strict_arguments(arguments, {"values"})
             rows, _ = self._sheet_rows(_SITE_SEND_TOOL, values.get("values"))
+            self._mark_write_started(context)
             raw = self._ports.replace_sheet_resource(context.resource_id, rows, None)
             if not isinstance(raw, Mapping) or raw.get("ok") is not True:
                 raise _error("sheet snapshot commit failed", "BROKER_RESOURCE_WRITE_FAILED")
@@ -2596,6 +2641,7 @@ class _FirstPartyCoreHandlers:
             )
         rows, _ = self._sheet_rows(context.tool_name, values.get("values"))
         target_date = _business_date(values.get("target_date"))
+        self._mark_write_started(context)
         raw = self._ports.replace_arrive_sheet_resource(
             context.resource_id,
             rows,
@@ -2646,6 +2692,7 @@ class _FirstPartyCoreHandlers:
             fields=_ARRIVAL_STATS_FIELDS,
             label="arrival archive",
         )
+        self._mark_write_started(context)
         raw = self._ports.archive_arrival_stats_sheet(
             context.resource_id,
             records,
@@ -2721,6 +2768,7 @@ class _FirstPartyCoreHandlers:
                 raise _error("Bitable records contain duplicate identities", "BROKER_ARGUMENT_INVALID")
             identities.add(identity)
             normalized.append({"fields": fields})
+        self._mark_write_started(context)
         raw = self._ports.replace_bitable_resource(
             context.resource_id,
             normalized,
@@ -2892,6 +2940,7 @@ def build_first_party_core_handler_map(
 
 __all__ = [
     "FirstPartyCoreHandlerPorts",
+    "MARKED_WRITE_ACTION_KEYS",
     "build_first_party_core_handler_map",
     "customer_problem_identity",
 ]

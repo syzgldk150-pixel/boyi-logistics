@@ -185,8 +185,16 @@ python scripts/build_first_party_plugin_release.py \
 `BLOCKED_CONFIG` / `BLOCKED_LOGIN`，不选择默认账号、不切换账号、不回落旧工具。
 
 插件统一输出经过签名 output Schema 验证；写动作成功只进入 `VERIFYING`，必须由核心
-ResultVerifier 验证具名 postcondition 与 Evidence 后才可成为 `WRITE_VERIFIED`。进程启动后的超时、
-取消、无效 JSON 或异常一律视为 `WRITE_OUTCOME_UNKNOWN`，未知写会阻断旧代清理和卸载。
+ResultVerifier 验证具名 postcondition 与 Evidence 后才可成为 `WRITE_VERIFIED`。越过 started-mutating-call
+boundary 后的超时、取消、无效 JSON 或异常一律视为 `WRITE_OUTCOME_UNKNOWN`；登录、资源、handler 或
+精确 binding 校验失败仍是 pre-write，未知写会阻断旧代清理和卸载。
+
+每个已签名 `broker_operations` 项还必须闭合声明 `effect: read|write`。Broker 将一次性标记回调
+传入受管 Handler；Handler 只在全部权威参数和业务条件校验完成、并紧邻第一个变异端口调用前
+记录“started mutating call”；
+只读调用、鉴权失败、契约失败和资源/角色未绑定都不会被当作已开始写入。执行路由据此把零个
+started writes 的失败保存为 `FAILED_BEFORE_WRITE`，任何已开始但未获权威终态证明的写保持
+`WRITE_OUTCOME_UNKNOWN`，不会自动重放。
 
 ## Desired / committed generation
 
@@ -203,6 +211,19 @@ ResultVerifier 验证具名 postcondition 与 Evidence 后才可成为 `WRITE_VE
 
 外部网页、Office、飞书或财务写入不可逆，不能伪造 inverse。活跃、`VERIFYING`、过期但未定论的
 lease 或未知写结果都会阻断 dispose，直到权威读后核验或人工处置。
+
+### Broker write receipts and recovery
+
+Broker `read` calls never constitute a started write. For the five reviewed
+server projects, each signed `effect=write` action emits a durable,
+payload-free receipt with an action-specific opaque locator only at the
+started-mutating-call boundary, immediately before the handler's first real
+mutating port call.
+A new receipt can
+later prove `WRITE_VERIFIED` or a zero-receipt `FAILED_BEFORE_WRITE`; a real
+adapter call that started but has no terminal verification remains
+`WRITE_OUTCOME_UNKNOWN`. Historical leases without receipts also remain
+`UNKNOWN` and are never replayed by inference.
 
 这里是对 [Cordis 论文仓库](https://github.com/cordiverse/paper)《A Programming Paradigm for
 Spatiotemporal Composability》中 reversible effects、reactive coeffects 和时空组合模型的工程借鉴，

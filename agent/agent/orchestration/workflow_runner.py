@@ -971,6 +971,11 @@ class WorkflowRunner:
                     return waiting_run
             finally:
                 finish_protected_step_start()
+            # Keep the exact capability that was admitted before execution.
+            # The Catalog may be blocked by a concurrent generation fence
+            # after the subprocess returns; re-querying it here used to turn
+            # the plugin's real safe error into an opaque runtime block.
+            capability = self._catalog.get_capability(step.tool_name) or {}
             execution_task = asyncio.create_task(
                 self._execution_port.execute_step(
                     step,
@@ -988,7 +993,6 @@ class WorkflowRunner:
                 )
             finally:
                 self._active.pop(str(run["run_id"]), None)
-            capability = self._catalog.get_capability(step.tool_name) or {}
             outcome = self._verifier.verify(step, raw_result, capability)
             if outcome.accepted:
                 projection_error: OrchestrationError | None = None
@@ -1070,7 +1074,10 @@ class WorkflowRunner:
                             "RUN_NOT_FOUND",
                             "Run was not found while persisting the step result",
                         )
-                    if current_run.get("cancel_requested_at"):
+                    if (
+                        current_run.get("cancel_requested_at")
+                        and not _is_governing_unknown_write(failure_status.value, failure_code)
+                    ):
                         failure_status = RunStatus.CANCELLED
                         step_status = RunStatus.CANCELLED.value
                         if outcome.run_status is not RunStatus.CANCELLED:
@@ -1618,6 +1625,7 @@ class WorkflowRunner:
                 honor_cancel_request
                 and current.get("cancel_requested_at")
                 and status != RunStatus.CANCELLED.value
+                and not _is_governing_unknown_write(status, error_code)
             ):
                 status = RunStatus.CANCELLED.value
                 error_code = "CANCELLED_BY_ACTOR"
@@ -1870,6 +1878,20 @@ def _is_contractually_replay_safe(capability: Mapping[str, Any]) -> bool:
         else {}
     )
     return bool(retry.get("safe")) and str(idempotency.get("mode") or "") == "key"
+
+
+def _is_governing_unknown_write(status: str, error_code: str | None) -> bool:
+    """Keep a durable started-write unknown outcome ahead of cancellation.
+
+    A cancellation request can stop further work, but it cannot make a write
+    that already crossed the signed broker boundary safe to replay or appear
+    conclusively cancelled.
+    """
+
+    return (
+        status == RunStatus.BLOCKED_DATA.value
+        and str(error_code or "").upper() == "WRITE_OUTCOME_UNKNOWN"
+    )
 
 
 def _work_item_status_for_run(status: RunStatus) -> WorkItemStatus:

@@ -1172,6 +1172,54 @@ class AgentRunRepository(_RepositoryBase):
                 raise ConcurrentUpdateError("run lease is no longer owned by this worker")
         return self.get(run_id, for_update=True) or {}
 
+    def release_recovered(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        expected_statuses: Iterable[str],
+        status: str,
+        error_code: str | None = None,
+        error_summary: str | None = None,
+        retryable: bool = False,
+    ) -> dict[str, Any]:
+        """Release an interrupted Run after an authoritative recovery.
+
+        This is intentionally narrower than normal worker release: recovery
+        owns an exact locked Run but never impersonates its previous worker.
+        Clearing that stale lease makes the durable runner claim it promptly.
+        """
+
+        next_status = _status(status, RUN_STATUSES, "run status")
+        allowed = sorted(
+            {_status(item, RUN_STATUSES, "expected run status") for item in expected_statuses}
+        )
+        if not allowed:
+            raise ValueError("expected_statuses is required")
+        placeholders = ", ".join("%s" for _ in allowed)
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE agent_runs
+                SET status=%s, worker_id=NULL, lease_expires_at=NULL,
+                    next_attempt_at=NOW(6), error_code=%s, error_summary=%s,
+                    retryable=%s, version=version+1
+                WHERE run_id=%s AND version=%s AND status IN ({placeholders})
+                """,
+                (
+                    next_status,
+                    _optional_text(error_code),
+                    _safe_error(error_summary),
+                    bool(retryable),
+                    _required_text(run_id, "run_id"),
+                    int(expected_version),
+                    *allowed,
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("run state changed before recovery release")
+        return self.get(run_id, for_update=True) or {}
+
     def make_waiting_approval_runnable(self, run_id: str) -> dict[str, Any]:
         """Make a decided approval claimable before the post-commit wake signal.
 
@@ -1425,6 +1473,22 @@ class AgentRunStepRepository(_RepositoryBase):
     def list_for_run(self, run_id: str) -> list[dict[str, Any]]:
         with self.cursor() as cursor:
             cursor.execute("SELECT * FROM agent_run_steps WHERE run_id=%s ORDER BY step_order", (run_id,))
+            return [_decode_row(row, self.JSON_FIELDS) or {} for row in _rows(cursor)]
+
+    def list_interrupted_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Lock only stale in-flight steps for a no-receipt recovery."""
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM agent_run_steps
+                WHERE run_id=%s AND status IN (
+                    'RUNNING', 'VERIFYING', 'BLOCKED_DATA', 'FAILED_RETRYABLE'
+                )
+                ORDER BY step_order, step_id FOR UPDATE
+                """,
+                (_required_text(run_id, "run_id"),),
+            )
             return [_decode_row(row, self.JSON_FIELDS) or {} for row in _rows(cursor)]
 
     def create_or_get(self, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -2730,6 +2794,25 @@ class OrchestrationUnitOfWork:
             },
             "outbox": event_receipt["outbox"],
         }
+
+    def recover_unknown_automation_write(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        # Public UoW entry point; implementation is configuration-free.
+        from shared.automation_unknown_write_recovery import recover_unknown_automation_write
+
+        return recover_unknown_automation_write(
+            self, automation_id=automation_id, generation=generation,
+            lease_id=lease_id, request_id=request_id, actor_id=actor_id,
+            actor_role=actor_role,
+        )
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
         connection = self.connection

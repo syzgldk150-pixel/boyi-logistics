@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import subprocess
@@ -48,6 +49,9 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.package import (
     Ed25519PackageSigner,
     Ed25519TrustStore,
+    _file_statement,
+    _sha256,
+    _zip_bytes,
     build_signed_plugin_zip,
     extract_verified_package,
     verify_signed_plugin_zip,
@@ -118,6 +122,7 @@ def _uploaded_manifest(core_catalog: ToolRegistry) -> AutomationPluginManifest:
                 "operation": "browser.invoke",
                 "action": "scan.fetch",
                 "roles": [role_name],
+                "effect": "read",
             }
         ],
         "max_broker_calls": 3,
@@ -181,6 +186,40 @@ def test_signed_zip_round_trip_and_wrong_key_fail_closed(core_catalog: ToolRegis
         verify_signed_plugin_zip(package, verifier=wrong)
     with pytest.raises(PluginPackageError):
         verify_signed_plugin_zip(package, verifier=trust, expected_package_sha256="0" * 64)
+
+
+def test_signed_legacy_v1_zip_without_effect_verifies_untouched_bytes(
+    core_catalog: ToolRegistry,
+) -> None:
+    source = _uploaded_manifest(core_catalog).to_mapping()
+    source["runtime_permissions"]["broker_operations"][0].pop("effect")
+    manifest_bytes = canonical_json_bytes(source)
+    files = {
+        "manifest.json": manifest_bytes,
+        "payload/main.py": b"import json\nprint(json.dumps({'ok': True}))\n",
+        "payload/boyi_plugin_sdk.py": PLUGIN_SDK_SOURCE.encode("utf-8"),
+    }
+    signer, trust = _signer_and_store()
+    manifest_sha256 = _sha256(manifest_bytes)
+    statement, _ = _file_statement(files, manifest_sha256)
+    files["signature.json"] = canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "algorithm": "Ed25519",
+            "key_id": signer.key_id,
+            "manifest_sha256": manifest_sha256,
+            "statement_sha256": _sha256(statement),
+            "signature": base64.b64encode(signer.sign(statement)).decode("ascii"),
+        }
+    )
+
+    verified = verify_signed_plugin_zip(_zip_bytes(files), verifier=trust)
+
+    assert "effect" not in verified.manifest.to_signed_mapping()["runtime_permissions"][
+        "broker_operations"
+    ][0]
+    assert verified.manifest.runtime_permissions["broker_operations"][0]["effect"] == "write"
+    assert verified.manifest.manifest_sha256 == manifest_sha256
 
 
 def test_zip_slip_and_frontend_payload_are_rejected(core_catalog: ToolRegistry) -> None:

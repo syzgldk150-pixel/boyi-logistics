@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -209,6 +209,10 @@ class AutomationPluginManifest:
     worker_requirement: Mapping[str, Any]
     project_full_auto_allowed: bool
     runtime_permissions: Mapping[str, Any]
+    _legacy_missing_effect_operations: frozenset[tuple[str, str]] = field(
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "AutomationPluginManifest":
@@ -403,13 +407,20 @@ class AutomationPluginManifest:
             raise PluginManifestError("account and resource role names must be globally unique")
         declared_broker_roles = seen_roles | seen_resource_roles
         normalized_broker_operations: list[dict[str, Any]] = []
+        legacy_missing_effect_operations: set[tuple[str, str]] = set()
         seen_broker_operations: set[tuple[str, str]] = set()
         for index, raw_operation in enumerate(broker_operations):
             operation = _mapping(
                 raw_operation,
                 f"runtime_permissions.broker_operations[{index}]",
             )
-            if set(operation) != {"operation", "action", "roles"}:
+            # Schema v1 packages existed before broker effects were explicit.
+            # Their signed bytes stay untouched; only the in-memory runtime
+            # projection conservatively treats a missing effect as a write.
+            if set(operation) not in (
+                {"operation", "action", "roles"},
+                {"operation", "action", "roles", "effect"},
+            ):
                 raise PluginManifestError("broker operation fields are invalid")
             operation_name = _non_empty_text(
                 operation["operation"],
@@ -425,6 +436,9 @@ class AutomationPluginManifest:
             )
             if not re.fullmatch(r"^[a-z][a-z0-9_.-]{0,127}$", action):
                 raise PluginManifestError("broker action must be a stable code-owned identifier")
+            effect = operation.get("effect", "write")
+            if effect not in {"read", "write"}:
+                raise PluginManifestError("broker operation effect must be read or write")
             roles = _string_tuple(
                 operation["roles"],
                 f"runtime_permissions.broker_operations[{index}].roles",
@@ -435,6 +449,8 @@ class AutomationPluginManifest:
             if identity in seen_broker_operations:
                 raise PluginManifestError("duplicate broker operation/action contract")
             seen_broker_operations.add(identity)
+            if "effect" not in operation:
+                legacy_missing_effect_operations.add(identity)
             if operation_name.startswith("browser.") and runtime_permissions["browser"] is not True:
                 raise PluginManifestError("browser broker operation requires browser permission")
             if operation_name.startswith("office.") and runtime_permissions["office"] is not True:
@@ -444,7 +460,12 @@ class AutomationPluginManifest:
             if operation_name.startswith("file.") and not set(roles) <= set(file_roles):
                 raise PluginManifestError("file broker operation roles must be signed file roles")
             normalized_broker_operations.append(
-                {"operation": operation_name, "action": action, "roles": list(roles)}
+                {
+                    "operation": operation_name,
+                    "action": action,
+                    "roles": list(roles),
+                    "effect": effect,
+                }
             )
         if bool(normalized_broker_operations) != (max_broker_calls > 0):
             raise PluginManifestError("broker operations and max_broker_calls must be enabled together")
@@ -562,7 +583,20 @@ class AutomationPluginManifest:
             worker_requirement=MappingProxyType(copy.deepcopy(worker)),
             project_full_auto_allowed=full_auto,
             runtime_permissions=MappingProxyType(copy.deepcopy(runtime_permissions)),
+            _legacy_missing_effect_operations=frozenset(
+                legacy_missing_effect_operations
+            ),
         )
+
+    def to_signed_mapping(self) -> dict[str, Any]:
+        """Return the validated mapping whose canonical bytes were signed."""
+
+        signed = self.to_mapping()
+        for operation in signed["runtime_permissions"]["broker_operations"]:
+            identity = (operation["operation"], operation["action"])
+            if identity in self._legacy_missing_effect_operations:
+                operation.pop("effect")
+        return signed
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -591,7 +625,7 @@ class AutomationPluginManifest:
 
     @property
     def manifest_sha256(self) -> str:
-        return hashlib.sha256(canonical_json_bytes(self.to_mapping())).hexdigest()
+        return hashlib.sha256(canonical_json_bytes(self.to_signed_mapping())).hexdigest()
 
     @property
     def governance_anchor_sha256(self) -> str:

@@ -51,6 +51,17 @@ def test_governance_anchor_rejects_unknown_or_missing_fields() -> None:
         AutomationPluginManifest.from_mapping(missing)
 
 
+def test_legacy_v1_broker_operation_without_effect_projects_conservatively_to_write() -> None:
+    source = _manifest_mapping()
+    source["runtime_permissions"]["broker_operations"][0].pop("effect")
+    manifest = AutomationPluginManifest.from_mapping(source)
+    assert manifest.runtime_permissions["broker_operations"][0]["effect"] == "write"
+    invalid = _manifest_mapping()
+    invalid["runtime_permissions"]["broker_operations"][0]["effect"] = "mutate"
+    with pytest.raises(PluginManifestError, match="effect"):
+        AutomationPluginManifest.from_mapping(invalid)
+
+
 def test_production_manifest_rejects_legacy_core_tool_ref_runtime() -> None:
     source = _manifest_mapping()
     source["runtime"] = {

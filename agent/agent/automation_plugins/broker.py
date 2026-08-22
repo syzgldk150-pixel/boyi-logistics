@@ -11,10 +11,10 @@ import re
 import secrets
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
@@ -33,6 +33,233 @@ _OPERATIONS = frozenset(
     }
 )
 _SENSITIVE_KEYS = ("password", "cookie", "credential", "secret", "token", "session")
+_RECOVERABLE_WRITE_ACTIONS = frozenset(
+    {
+        ("arrive_list", "projection.invoke", "waybill.snapshot.replace"),
+        ("arrive_list", "projection.invoke", "arrival.forecast_snapshot.replace"),
+        ("arrive_list", "network.request", "feishu.sheet.replace"),
+        ("arrival_stats", "projection.invoke", "scan.snapshot.replace"),
+        ("arrival_stats", "projection.invoke", "scan.snapshot.cleanup"),
+        ("arrival_stats", "projection.invoke", "waybill.snapshot.replace"),
+        ("arrival_stats", "projection.invoke", "arrival.snapshot.replace"),
+        ("arrival_stats", "projection.invoke", "split_pending.snapshot.refresh"),
+        ("arrival_stats", "network.request", "feishu.sheet.replace"),
+        ("arrival_stats", "network.request", "feishu.sheet.add"),
+        ("daily_sign", "ledger.invoke", "daily_sign.authoritative_sync"),
+        ("delivery_status", "network.request", "feishu.bitable.write_records"),
+        ("delivery_status", "projection.invoke", "waybill.delivery_status.update"),
+        ("finance_startup_catchup", "ledger.invoke", "finance.batch.acquire"),
+        ("finance_startup_catchup", "ledger.invoke", "finance.source_snapshot.write"),
+        ("finance_startup_catchup", "ledger.invoke", "finance.projection.commit"),
+    }
+)
+# Recovery eligibility belongs to the signed package identity, never to a
+# mutable/reusable automation instance id.  The public compatibility constant
+# above intentionally remains project-oriented for management contracts; this
+# internal close-set controls the strict pre-write extractor.
+_RECOVERABLE_WRITE_PLUGIN_ACTIONS = frozenset(
+    {
+        ("sync_arrive_list", "projection.invoke", "waybill.snapshot.replace"),
+        ("sync_arrive_list", "projection.invoke", "arrival.forecast_snapshot.replace"),
+        ("sync_arrive_list", "network.request", "feishu.sheet.replace"),
+        ("sync_arrival_stats", "projection.invoke", "scan.snapshot.replace"),
+        ("sync_arrival_stats", "projection.invoke", "scan.snapshot.cleanup"),
+        ("sync_arrival_stats", "projection.invoke", "waybill.snapshot.replace"),
+        ("sync_arrival_stats", "projection.invoke", "arrival.snapshot.replace"),
+        ("sync_arrival_stats", "projection.invoke", "split_pending.snapshot.refresh"),
+        ("sync_arrival_stats", "network.request", "feishu.sheet.replace"),
+        ("sync_arrival_stats", "network.request", "feishu.sheet.add"),
+        ("sync_daily_should_sign", "ledger.invoke", "daily_sign.authoritative_sync"),
+        ("sync_delivery_status", "network.request", "feishu.bitable.write_records"),
+        ("sync_delivery_status", "projection.invoke", "waybill.delivery_status.update"),
+        ("sync_finance_bills", "ledger.invoke", "finance.batch.acquire"),
+        ("sync_finance_bills", "ledger.invoke", "finance.source_snapshot.write"),
+        ("sync_finance_bills", "ledger.invoke", "finance.projection.commit"),
+    }
+)
+_TARGET_REF_FIELDS = frozenset(
+    {
+        "schema", "automation_id", "operation", "action", "role_sha256",
+        "binding_sha256", "request_sha256", "business_date_sha256",
+        "batch_sha256", "run_sha256", "idempotency_key_sha256",
+        "record_count", "content_sha256",
+    }
+)
+_DATE_FIELDS = ("target_date", "business_date", "date")
+_BATCH_FIELDS = ("batch_id", "batch_ref")
+_RUN_FIELDS = ("run_ref", "run_id")
+_IDEMPOTENCY_FIELDS = ("idempotency_key", "contract_sha256")
+_RECORD_COLLECTION_FIELDS = (
+    "records", "values", "bill_codes", "outcomes", "transactions", "items",
+)
+
+
+def recoverable_write_action_contracts() -> frozenset[tuple[str, str, str]]:
+    """Expose the Broker close-set for signed-manifest contract tests."""
+
+    return _RECOVERABLE_WRITE_ACTIONS
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _first_text(arguments: Mapping[str, Any], fields: Sequence[str], *, label: str) -> str:
+    values: list[str] = []
+    for field in fields:
+        if field not in arguments:
+            continue
+        value = arguments[field]
+        if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).strip():
+            raise PluginExecutionError(
+                f"write locator {label} is invalid",
+                code="WRITE_ATTEMPT_LOCATOR_INVALID",
+            )
+        values.append(str(value).strip())
+    if len(set(values)) > 1:
+        raise PluginExecutionError(
+            f"write locator {label} is ambiguous",
+            code="WRITE_ATTEMPT_LOCATOR_INVALID",
+        )
+    return values[0] if values else ""
+
+
+def _record_count(arguments: Mapping[str, Any]) -> int:
+    counts: list[int] = []
+    for field in _RECORD_COLLECTION_FIELDS:
+        if field not in arguments:
+            continue
+        value = arguments[field]
+        if not isinstance(value, list):
+            raise PluginExecutionError(
+                "write locator record collection is invalid",
+                code="WRITE_ATTEMPT_LOCATOR_INVALID",
+            )
+        counts.append(len(value))
+    if len(counts) > 1 and len(set(counts)) > 1:
+        # A multi-collection write has one authoritative primary collection;
+        # its action-specific validation below decides whether it is allowed.
+        return max(counts)
+    return counts[0] if counts else 0
+
+
+def _generic_record_count(arguments: Mapping[str, Any]) -> int:
+    """Count only plainly-shaped collections without rejecting old writes."""
+
+    return max(
+        (len(value) for field, value in arguments.items()
+         if field in _RECORD_COLLECTION_FIELDS and isinstance(value, list)),
+        default=0,
+    )
+
+
+def _optional_locator_text(arguments: Mapping[str, Any], fields: Sequence[str]) -> str:
+    """Return an optional scalar only when it is unambiguous and safe to hash."""
+
+    values = {
+        str(arguments[field]).strip()
+        for field in fields
+        if field in arguments
+        and not isinstance(arguments[field], bool)
+        and isinstance(arguments[field], (str, int))
+        and str(arguments[field]).strip()
+    }
+    return next(iter(values)) if len(values) == 1 else ""
+
+
+def _require_locator_arguments(action: str, arguments: Mapping[str, Any]) -> None:
+    """Validate only the closed public shape needed to locate a write."""
+
+    list_actions = {
+        "waybill.snapshot.replace", "arrival.forecast_snapshot.replace",
+        "scan.snapshot.replace", "arrival.snapshot.replace",
+        "split_pending.snapshot.refresh", "feishu.sheet.replace",
+        "feishu.sheet.add", "feishu.bitable.write_records",
+    }
+    if action in list_actions:
+        if not any(isinstance(arguments.get(field), list) for field in ("records", "values")):
+            raise PluginExecutionError(
+                "write locator requires records or values",
+                code="WRITE_ATTEMPT_LOCATOR_INVALID",
+            )
+    elif action == "scan.snapshot.cleanup":
+        value = arguments.get("retention_days")
+        if type(value) is not int or value <= 0:
+            raise PluginExecutionError("write locator retention is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    elif action == "waybill.delivery_status.update":
+        if not isinstance(arguments.get("bill_codes"), list) or not isinstance(arguments.get("status"), str):
+            raise PluginExecutionError("write locator delivery update is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    elif action == "finance.batch.acquire":
+        if arguments.get("schema_version") != 1 or not isinstance(arguments.get("contract"), Mapping):
+            raise PluginExecutionError("write locator finance batch is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    elif action == "finance.source_snapshot.write":
+        if type(arguments.get("batch_id")) is not int or not isinstance(arguments.get("target_date"), str):
+            raise PluginExecutionError("write locator finance snapshot is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    elif action == "finance.projection.commit":
+        if type(arguments.get("batch_id")) is not int or not isinstance(arguments.get("outcomes"), list):
+            raise PluginExecutionError("write locator finance commit is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    elif action == "daily_sign.authoritative_sync":
+        # The signed daily-sign payload has a closed but intentionally
+        # versioned argument schema.  Its entire canonical content is hashed.
+        return
+    else:
+        raise PluginExecutionError("write locator action is unsupported", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+
+
+def _extract_write_target_ref(
+    *,
+    automation_id: str,
+    plugin_id: str | None = None,
+    operation: str,
+    action: str,
+    role: str,
+    binding: object,
+    request_id: str,
+    arguments: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Build a payload-free locator before adapter invocation.
+
+    Only the five explicitly recoverable signed packages use the closed,
+    action-specific validation.  Every other signed write receives the same
+    redacted durable receipt shape through a permissive generic locator so a
+    newly protected write cannot regress existing first-party behavior.
+    """
+
+    if not isinstance(arguments, Mapping) or not isinstance(role, str) or not role.strip():
+        raise PluginExecutionError("write locator input is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    strict = (str(plugin_id or ""), operation, action) in _RECOVERABLE_WRITE_PLUGIN_ACTIONS
+    if strict:
+        _require_locator_arguments(action, arguments)
+        business_date = _first_text(arguments, _DATE_FIELDS, label="business date")
+        batch = _first_text(arguments, _BATCH_FIELDS, label="batch")
+        run = _first_text(arguments, _RUN_FIELDS, label="run")
+        idempotency = _first_text(arguments, _IDEMPOTENCY_FIELDS, label="idempotency")
+        record_count = _record_count(arguments)
+    else:
+        business_date = _optional_locator_text(arguments, _DATE_FIELDS)
+        batch = _optional_locator_text(arguments, _BATCH_FIELDS)
+        run = _optional_locator_text(arguments, _RUN_FIELDS)
+        idempotency = _optional_locator_text(arguments, _IDEMPOTENCY_FIELDS)
+        record_count = _generic_record_count(arguments)
+    content_sha256 = hashlib.sha256(canonical_json_bytes(dict(arguments))).hexdigest()
+    target_ref = {
+        "schema": 1,
+        "automation_id": automation_id,
+        "operation": operation,
+        "action": action,
+        "role_sha256": _sha256_text(role.strip()),
+        "binding_sha256": _sha256_text(str(binding)),
+        "request_sha256": _sha256_text(request_id),
+        "business_date_sha256": _sha256_text(business_date) if business_date else "",
+        "batch_sha256": _sha256_text(batch) if batch else "",
+        "run_sha256": _sha256_text(run) if run else "",
+        "idempotency_key_sha256": _sha256_text(idempotency) if idempotency else "",
+        "record_count": record_count,
+        "content_sha256": content_sha256,
+    }
+    if set(target_ref) != _TARGET_REF_FIELDS:
+        raise AssertionError("write target locator schema drifted")
+    return target_ref, hashlib.sha256(canonical_json_bytes(target_ref)).hexdigest()
 
 
 def _is_account_identifier_key(value: object) -> bool:
@@ -53,6 +280,11 @@ class BrokerGrant:
     resource_roles: tuple[Mapping[str, object], ...]
     account_bindings: Mapping[str, object]
     resource_bindings: Mapping[str, str]
+    # Direct adapter tests do not cross the Broker issuer/write boundary, so
+    # they may construct a grant without durable receipt context.  Issuer
+    # consume still rejects every write unless its exact context and recorder
+    # are present.
+    write_attempt_context: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -61,6 +293,10 @@ class _BrokerGrantState:
     remaining_calls: int
     request_ids: set[str]
     consumed_calls: int = 0
+    started_mutating_calls: int = 0
+    pending_write_calls: dict[str, tuple[str, str, str, object, dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
 
 @runtime_checkable
@@ -74,6 +310,7 @@ class CoreAutomationBrokerAdapterPort(Protocol):
         role: str,
         binding: object,
         arguments: Mapping[str, Any],
+        mark_write_started: Callable[[], None] | None = None,
     ) -> Mapping[str, Any]:
         """Revalidate exact sessions/resources and return redacted business data.
 
@@ -86,12 +323,18 @@ class CoreAutomationBrokerAdapterPort(Protocol):
 class LocalBrokerCapabilityIssuer:
     """Store token digests and a bounded, replay-protected invocation grant."""
 
-    def __init__(self, socket_path: Path | str) -> None:
+    def __init__(
+        self,
+        socket_path: Path | str,
+        *,
+        write_attempt_recorder: Callable[[Mapping[str, object]], None] | None = None,
+    ) -> None:
         self._socket_path = Path(socket_path).resolve()
         if self._socket_path == self._socket_path.parent:
             raise ValueError("broker socket path is unsafe")
         self._grants: dict[str, _BrokerGrantState] = {}
         self._lock = threading.Lock()
+        self._write_attempt_recorder = write_attempt_recorder
 
     @property
     def broker_endpoint(self) -> str:
@@ -113,6 +356,7 @@ class LocalBrokerCapabilityIssuer:
         resource_roles: Sequence[Mapping[str, object]],
         account_bindings: Mapping[str, object],
         resource_bindings: Mapping[str, str],
+        write_attempt_context: Mapping[str, object] | None = None,
     ) -> str:
         ttl = max(1, min(int(ttl_seconds), 3600))
         token = secrets.token_urlsafe(32)
@@ -127,6 +371,7 @@ class LocalBrokerCapabilityIssuer:
             resource_roles=tuple(dict(role) for role in resource_roles),
             account_bindings=dict(account_bindings),
             resource_bindings=dict(resource_bindings),
+            write_attempt_context=dict(write_attempt_context or {}),
         )
         raw_limit = runtime_permissions.get("max_broker_calls")
         if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 0 <= raw_limit <= 1000:
@@ -154,6 +399,7 @@ class LocalBrokerCapabilityIssuer:
             self._grants.pop(digest, None)
 
     def consumed_call_count(self, capability: str) -> int:
+        """Legacy diagnostic counter; never use this to infer a write."""
         digest = hashlib.sha256(str(capability).encode("ascii", errors="ignore")).hexdigest()
         with self._lock:
             state = self._grants.get(digest)
@@ -164,6 +410,19 @@ class LocalBrokerCapabilityIssuer:
                 )
             return state.consumed_calls
 
+    def started_mutating_call_count(self, capability: str) -> int:
+        """Return only signed writes that crossed the adapter invocation boundary."""
+
+        digest = hashlib.sha256(str(capability).encode("ascii", errors="ignore")).hexdigest()
+        with self._lock:
+            state = self._grants.get(digest)
+            if state is None:
+                raise PluginExecutionError(
+                    "core broker capability observation is unavailable",
+                    code="BROKER_OBSERVATION_UNAVAILABLE",
+                )
+            return state.started_mutating_calls
+
     def consume(
         self,
         capability: str,
@@ -172,6 +431,7 @@ class LocalBrokerCapabilityIssuer:
         operation: str,
         action: str,
         role: str,
+        arguments: Mapping[str, Any] | None = None,
     ) -> tuple[BrokerGrant, object]:
         if operation not in _OPERATIONS:
             raise PluginExecutionError("core broker operation is unsupported", code="BROKER_OPERATION_DENIED")
@@ -188,20 +448,6 @@ class LocalBrokerCapabilityIssuer:
             if state is None or datetime.now(timezone.utc) >= state.grant.expires_at:
                 self._grants.pop(digest, None)
                 state = None
-            elif normalized_request_id in state.request_ids:
-                raise PluginExecutionError(
-                    "core broker request replayed",
-                    code="BROKER_REQUEST_REPLAYED",
-                )
-            elif state.remaining_calls <= 0:
-                raise PluginExecutionError(
-                    "core broker call limit was exhausted",
-                    code="BROKER_CALL_LIMIT",
-                )
-            else:
-                state.request_ids.add(normalized_request_id)
-                state.remaining_calls -= 1
-                state.consumed_calls += 1
         if state is None:
             raise PluginExecutionError("core broker capability is invalid or expired", code="BROKER_CAPABILITY_INVALID")
         grant = state.grant
@@ -219,6 +465,12 @@ class LocalBrokerCapabilityIssuer:
             raise PluginExecutionError(
                 "broker operation/action is not signed for this plugin",
                 code="BROKER_OPERATION_DENIED",
+            )
+        effect = matches[0].get("effect")
+        if effect not in {"read", "write"}:
+            raise PluginExecutionError(
+                "broker effect classification is not signed",
+                code="BROKER_CONTRACT_INVALID",
             )
         allowed_roles = matches[0].get("roles")
         if not isinstance(allowed_roles, list) or role not in allowed_roles:
@@ -239,12 +491,117 @@ class LocalBrokerCapabilityIssuer:
         if role in account_roles:
             if role not in grant.account_bindings:
                 raise PluginExecutionError("account role is unbound", code="BROKER_ROLE_UNBOUND")
-            return grant, grant.account_bindings[role]
-        if role in resource_roles:
+            binding = grant.account_bindings[role]
+        elif role in resource_roles:
             if role not in grant.resource_bindings:
                 raise PluginExecutionError("resource role is unbound", code="BROKER_ROLE_UNBOUND")
-            return grant, grant.resource_bindings[role]
-        raise PluginExecutionError("broker role is undeclared", code="BROKER_ROLE_UNBOUND")
+            binding = grant.resource_bindings[role]
+        else:
+            raise PluginExecutionError("broker role is undeclared", code="BROKER_ROLE_UNBOUND")
+
+        # Consuming a capability reserves its request id and call quota.  It is
+        # deliberately *not* the started-write boundary: production adapters
+        # still have to prove their handler/session/resource/exact-binding
+        # checks before they may call ``mark_write_started``.
+        with self._lock:
+            current = self._grants.get(digest)
+            if current is not state or datetime.now(timezone.utc) >= grant.expires_at:
+                self._grants.pop(digest, None)
+                raise PluginExecutionError("core broker capability is invalid or expired", code="BROKER_CAPABILITY_INVALID")
+            if normalized_request_id in current.request_ids:
+                raise PluginExecutionError(
+                    "core broker request replayed",
+                    code="BROKER_REQUEST_REPLAYED",
+                )
+            if current.remaining_calls <= 0:
+                raise PluginExecutionError(
+                    "core broker call limit was exhausted",
+                    code="BROKER_CALL_LIMIT",
+                )
+            current.request_ids.add(normalized_request_id)
+            current.remaining_calls -= 1
+            current.consumed_calls += 1
+            if effect == "write":
+                current.pending_write_calls[normalized_request_id] = (
+                    operation,
+                    action,
+                    role,
+                    binding,
+                    dict(arguments or {}),
+                )
+        return grant, binding
+
+    def mark_write_started_hook(
+        self,
+        capability: str,
+        *,
+        request_id: str,
+    ) -> Callable[[], None] | None:
+        """Return the one-shot durable started-write marker for a consumed call.
+
+        The callback is intentionally handed only to the production adapter.
+        Calling it is the sole point that creates a receipt and increments the
+        observable started count.
+        """
+
+        digest = hashlib.sha256(str(capability).encode("ascii", errors="ignore")).hexdigest()
+        try:
+            normalized_request_id = str(uuid.UUID(str(request_id)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise PluginExecutionError("core broker request_id is invalid", code="BROKER_REQUEST_INVALID") from exc
+        with self._lock:
+            state = self._grants.get(digest)
+            if state is None:
+                raise PluginExecutionError("core broker capability is invalid or expired", code="BROKER_CAPABILITY_INVALID")
+            pending = state.pending_write_calls.get(normalized_request_id)
+        if pending is None:
+            return None
+
+        called = False
+
+        def mark_write_started() -> None:
+            nonlocal called
+            with self._lock:
+                if called:
+                    raise PluginExecutionError("write start marker was called more than once", code="WRITE_ATTEMPT_START_REPLAYED")
+                current = self._grants.get(digest)
+                if current is not state or normalized_request_id not in current.pending_write_calls:
+                    raise PluginExecutionError("write start marker is no longer valid", code="WRITE_ATTEMPT_START_INVALID")
+                context = current.grant.write_attempt_context
+                required = {
+                    "automation_id", "plugin_id", "generation", "lease_id",
+                    "orchestration_run_id", "step_id",
+                }
+                if set(context) != required or self._write_attempt_recorder is None:
+                    raise PluginExecutionError("durable write attempt evidence is unavailable", code="WRITE_ATTEMPT_RECEIPT_UNAVAILABLE")
+                operation, action, role, binding, arguments = current.pending_write_calls[normalized_request_id]
+                target_ref, target_ref_sha256 = _extract_write_target_ref(
+                    automation_id=str(context["automation_id"]),
+                    plugin_id=str(context["plugin_id"]),
+                    operation=operation,
+                    action=action,
+                    role=role,
+                    binding=binding,
+                    request_id=normalized_request_id,
+                    arguments=arguments,
+                )
+                receipt = {
+                    **{key: value for key, value in context.items() if key != "plugin_id"},
+                    "request_id": normalized_request_id,
+                    "operation": operation,
+                    "action": action,
+                    "argument_sha256": str(target_ref["content_sha256"]),
+                    "target_ref_sha256": target_ref_sha256,
+                    "target_ref_json": target_ref,
+                }
+                self._write_attempt_recorder(receipt)
+                called = True
+                current.pending_write_calls.pop(normalized_request_id, None)
+                current.started_mutating_calls += 1
+
+        setattr(mark_write_started, "started", lambda: called)
+
+        return mark_write_started
 
 
 def _assert_redacted(value: Any) -> None:
@@ -353,6 +710,11 @@ class LocalCoreAutomationBroker:
                 operation=str(request.get("operation") or ""),
                 action=str(request.get("action") or ""),
                 role=str(request.get("role") or ""),
+                arguments=dict(request["arguments"]),
+            )
+            mark_write_started = self._issuer.mark_write_started_hook(
+                str(request.get("capability") or ""),
+                request_id=str(request.get("request_id") or ""),
             )
             result = await self._adapter.invoke(
                 grant=grant,
@@ -361,7 +723,16 @@ class LocalCoreAutomationBroker:
                 role=str(request["role"]),
                 binding=binding,
                 arguments=dict(request["arguments"]),
+                mark_write_started=mark_write_started,
             )
+            if mark_write_started is not None and not mark_write_started.started():
+                # A write adapter that returns without crossing the marker has
+                # not established a durable boundary and must never be treated
+                # as a successful invocation.
+                raise PluginExecutionError(
+                    "core broker write adapter did not mark its started boundary",
+                    code="WRITE_ATTEMPT_START_NOT_RECORDED",
+                )
             _assert_redacted(result)
             response = {"ok": True, "data": dict(result)}
         except Exception as exc:

@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
 from agent.automation_plugins.configuration import AutomationProjectConfigurationService
 from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
+from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
 from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
@@ -204,34 +205,65 @@ class AutomationPluginManagementService:
         request_id: str,
         actor: Actor,
     ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
+        del generation, lease_id, evidence_sha256, readback, request_id
+        self._require_console_actor(actor, super_admin=True)
+        raise PluginConflictError(
+            "actor-supplied arrival statistics readback is not recovery authority",
+            code="PLUGIN_RECOVERY_ACTOR_EVIDENCE_REJECTED",
+        )
+
+    def recover_unknown_write(
+        self,
+        automation_id: str,
+        *,
+        generation: int,
+        lease_id: str,
+        request_id: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        """Resolve an unknown write using only server-owned durable evidence."""
+
+        self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        if self._catalog.require(automation_id).plugin_id != "sync_arrival_stats":
+        entry = self._catalog.require(automation_id)
+        # Scope is package identity, not the display/default instance id: a
+        # reviewed first-party package may be installed under another exact
+        # automation id and still has its own isolated receipt chain.
+        if entry.plugin_id not in frozenset(RECOVERABLE_WRITE_PROJECT_PLUGINS.values()):
             raise PluginConflictError(
-                "readback recovery is not available for this automation action",
+                "recovery is not available for this automation project",
                 code="PLUGIN_RECOVERY_SCOPE_INVALID",
             )
-        if not _SHA256_RE.fullmatch(str(evidence_sha256 or "").lower()):
-            raise ValueError("arrival statistics recovery evidence digest is invalid")
-        outcome = classify_arrival_stats_recovery_readback(readback)
-        if outcome != "NOT_APPLIED":
+        reader = getattr(self._targets, "recover_unknown_write", None)
+        if not callable(reader):
             raise PluginConflictError(
-                "arrival statistics write outcome remains unknown",
-                code="WRITE_OUTCOME_UNKNOWN",
+                "server recovery reader is unavailable",
+                code="PLUGIN_RECOVERY_UNAVAILABLE",
             )
-        self._targets.resolve_unknown_write_not_applied(
+        result = reader(
             automation_id=automation_id,
             generation=generation,
             lease_id=lease_id,
-            evidence_sha256=str(evidence_sha256).lower(),
             request_id=request_id,
             actor_id=actor.actor_id,
-            actor_role=role,
+            actor_role="super_admin",
         )
-        entry = self._catalog.require(automation_id)
+        if not isinstance(result, Mapping) or result.get("recovery_status") not in {
+            "APPLIED", "NOT_APPLIED", "UNKNOWN",
+        }:
+            raise PluginConflictError(
+                "server recovery reader returned invalid evidence",
+                code="PLUGIN_RECOVERY_UNAVAILABLE",
+            )
         return {
             **self._catalog_instance_projection(entry),
-            "recovery_status": "NOT_APPLIED",
+            "recovery_status": str(result["recovery_status"]),
+            "reason": str(result.get("reason") or ""),
+            "run_id": str(result.get("run_id") or ""),
+            "step_id": str(result.get("step_id") or ""),
+            "transitioned": bool(result.get("transitioned")),
+            "idempotent": bool(result.get("idempotent")),
+            "evidence": dict(result.get("evidence") or {}),
         }
 
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:

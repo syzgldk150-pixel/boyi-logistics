@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import uuid
+from pathlib import Path
+
 import pytest
 
-from agent.automation_plugins.broker import _assert_redacted
+from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, _assert_redacted
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
@@ -54,3 +57,39 @@ def test_sdk_broker_timeout_is_core_owned_and_bounded(monkeypatch: pytest.Monkey
     monkeypatch.setenv("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "infinite")
     with pytest.raises(RuntimeError, match="timeout is unavailable"):
         namespace["_broker_timeout"]()
+
+
+def test_read_broker_failure_never_counts_as_a_started_write(tmp_path: Path) -> None:
+    issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock")
+    capability = issuer.issue(
+        automation_id="instance-a",
+        plugin_version="1.0.0",
+        tool_name="automation.instance-a.run",
+        ttl_seconds=60,
+        runtime_permissions={
+            "browser": True,
+            "network": False,
+            "office": False,
+            "max_broker_calls": 1,
+            "broker_operations": [
+                {
+                    "operation": "browser.invoke",
+                    "action": "source.read",
+                    "roles": ["source"],
+                    "effect": "read",
+                }
+            ],
+        },
+        account_roles=({"role": "source"},),
+        resource_roles=(),
+        account_bindings={"source": "opaque-binding"},
+        resource_bindings={},
+    )
+    issuer.consume(
+        capability,
+        request_id=str(uuid.uuid4()),
+        operation="browser.invoke",
+        action="source.read",
+        role="source",
+    )
+    assert issuer.started_mutating_call_count(capability) == 0
