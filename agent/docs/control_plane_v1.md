@@ -59,6 +59,13 @@ RUNNING -> VERIFYING -> COMPLETED
 登录恢复和补充信息恢复原 Run；`PARTIAL` 与终态失败只能创建关联新 Run。Run 失败不会
 自动关闭 Work Item。
 
+同一 Scheduler task 与同一自动化项目出现后续成功 Run 时，WorkflowRunner 在该 Run 完成的同一
+事务中，只取消最新 Run 仍为 `FAILED_TERMINAL` 的旧 `OPEN` 事项，并记录
+`work_item.superseded_by_later_success` 事件与审计 Outbox。候选发现不持有跨表锁；真正变更逐条按
+Run→Command→Work Item 固定顺序加锁并重验 task、项目、持久化 execution context、最新 Run 与事项
+状态。`BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`、其他非终态、其他 task/项目或已经产生关联 retry 的
+事项绝不自动收口；终态 retry 也必须复核原事项仍为 `OPEN`，不能复活已取消事项。
+
 `clarify` 使用闭合的结构化契约：`note`、`account_id`、`argument_updates`。兼容纯文本
 输入只作为审计说明，绝不解析或猜测为账号/业务参数。只有显式 `account_id` 和 JSON 对象
 `argument_updates` 会进入同一 Command 的重规划；事件必须绑定原 `command_id`，事项内其他

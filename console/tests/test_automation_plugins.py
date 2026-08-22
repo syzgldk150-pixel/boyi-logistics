@@ -508,6 +508,65 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         )
         return app, captured
 
+    def test_server_only_catalog_does_not_request_workers(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app._mysql_console_principal = lambda _user: {
+            "actor_id": "17",
+            "roles": ["super_admin"],
+        }
+        calls = []
+
+        def agent_request(method, endpoint, **kwargs):
+            calls.append((method, endpoint))
+            if endpoint == "/internal/v1/automation/plugins/catalog":
+                return {"ok": True, "data": _catalog_payload()}
+            self.fail(f"unexpected Agent request: {method} {endpoint}")
+
+        app._agent_request = agent_request
+        (
+            packages,
+            instances,
+            workers,
+            unsupported,
+            hidden_automation_ids,
+            warning,
+            can_manage,
+        ) = app._load_automation_plugin_catalog(self._handler())
+
+        self.assertTrue(packages)
+        self.assertTrue(instances)
+        self.assertEqual([], workers)
+        self.assertEqual([], unsupported)
+        self.assertEqual(frozenset(), hidden_automation_ids)
+        self.assertEqual("", warning)
+        self.assertTrue(can_manage)
+        self.assertFalse(hasattr(app, "_automation_hidden_ids"))
+        self.assertEqual(
+            [("GET", "/internal/v1/automation/plugins/catalog")],
+            calls,
+        )
+
+    def test_hidden_automation_ids_are_returned_per_request_without_shared_state(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app._mysql_console_principal = lambda _user: {
+            "actor_id": "17",
+            "roles": ["super_admin"],
+        }
+        catalog = _catalog_payload()
+        catalog["hidden_automation_ids"] = ["r7_arrival_checkin"]
+        responses = [
+            {"ok": True, "data": catalog},
+            {"ok": False, "error_code": "CATALOG_DOWN"},
+        ]
+        app._agent_request = lambda *_args, **_kwargs: responses.pop(0)
+
+        successful = app._load_automation_plugin_catalog(self._handler())
+        failed = app._load_automation_plugin_catalog(self._handler())
+
+        self.assertEqual(frozenset({"r7_arrival_checkin"}), successful[4])
+        self.assertEqual(frozenset(), failed[4])
+        self.assertFalse(hasattr(app, "_automation_hidden_ids"))
+
     @staticmethod
     def _configuration_payload() -> dict:
         return {

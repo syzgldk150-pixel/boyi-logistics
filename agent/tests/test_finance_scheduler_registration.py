@@ -238,6 +238,22 @@ class _ReleaseScheduler:
 
 
 class FinanceSchedulerRegistrationTests(unittest.TestCase):
+    def test_scheduler_failure_message_keeps_control_plane_code_and_summary(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+
+        message = scheduler_module._result_error(
+            {
+                "success": False,
+                "error_code": "PROJECT_INVOCATION_STALE",
+                "error_summary": "Committed automation contract no longer matches",
+            }
+        )
+
+        self.assertEqual(
+            "PROJECT_INVOCATION_STALE | Committed automation contract no longer matches",
+            message,
+        )
+
     def test_release_activation_never_reschedules_startup_catchup(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")

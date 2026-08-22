@@ -2055,6 +2055,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(1, cursor.fetchone()["count"])
 
+    def test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation(
+            self
+        )
+
     @unittest.skip("014 is production-applied and byte-immutable; upgrades live in 016/017")
     def test_task_cutover_exact_production_set_is_reentrant_and_fail_closed(self):
         migration = next(

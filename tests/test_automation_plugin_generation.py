@@ -202,11 +202,27 @@ class _MemoryGenerationRepository:
         expected_committed_generation: int | None,
     ) -> ProjectRuntimeRecord:
         assert self.runtime and self.runtime.committed_generation == expected_committed_generation
+        archival_unknown_predecessor = False
+        if expected_committed_generation is not None:
+            predecessor = self.generations[expected_committed_generation]
+            if predecessor.state is RuntimeGenerationState.BLOCKED:
+                assert expected_committed_generation in self.unknown
+                archival_unknown_predecessor = True
+            else:
+                assert predecessor.state is RuntimeGenerationState.COMMITTED
+                self._state(
+                    expected_committed_generation,
+                    RuntimeGenerationState.DRAINING,
+                )
         self._state(generation, RuntimeGenerationState.COMMITTED)
         self.runtime = replace(
             self.runtime,
             committed_generation=generation,
-            reconcile_state=RuntimeReconcileState.STABLE,
+            reconcile_state=(
+                RuntimeReconcileState.STABLE
+                if archival_unknown_predecessor or expected_committed_generation is None
+                else RuntimeReconcileState.DRAINING
+            ),
             record_version=self.runtime.record_version + 1,
         )
         self.events.append(f"commit:{generation}")
@@ -594,7 +610,7 @@ def test_upgrade_waiting_dependency_keeps_committed_a_and_never_routes_b() -> No
     assert driver.applied == []
 
 
-def test_unknown_write_blocks_old_generation_disposal() -> None:
+def test_archival_unknown_write_does_not_block_prepared_successor() -> None:
     repository = _MemoryGenerationRepository()
     reconciler, _ = _reconciler(repository)
     reconciler.reconcile(
@@ -603,6 +619,7 @@ def test_unknown_write_blocks_old_generation_disposal() -> None:
         request_id=str(uuid.uuid4()),
     )
     repository.unknown.add(1)
+    repository.block_generation_unknown_write("project-a", 1)
     result = reconciler.reconcile(
         _snapshot(2, "2.0.0"),
         expected_committed_generation=1,
@@ -610,9 +627,10 @@ def test_unknown_write_blocks_old_generation_disposal() -> None:
     )
     assert result.committed_generation == 2
     assert repository.generations[1].state == RuntimeGenerationState.BLOCKED
-    assert repository.runtime and (
-        repository.runtime.reconcile_state == RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
-    )
+    assert repository.generations[2].state == RuntimeGenerationState.COMMITTED
+    assert repository.runtime and repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
+    assert result.draining_generations == ()
+    assert result.disposed_generations == ()
 
 
 def test_non_reversible_effect_is_rejected_before_apply() -> None:
@@ -832,7 +850,34 @@ def test_startup_reconcile_retries_effect_dispose_after_crash() -> None:
     assert driver.disposed[-2:] == ["broker:1", "package:1.0.0"]
 
 
-def test_release_health_rejects_draining_leases_and_unknown_writes() -> None:
+def test_startup_resume_preserves_archival_unknown_generation() -> None:
+    repository = _MemoryGenerationRepository()
+    reconciler, _ = _reconciler(repository)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    repository.unknown.add(1)
+    repository.block_generation_unknown_write("project-a", 1)
+    target = repository.allocate_target_generation(
+        _snapshot(2, "2.0.0"),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+    assert reconciler.prepare_target(target) == ()
+
+    recovered = reconciler.reconcile_incomplete()
+
+    assert len(recovered) == 1
+    assert recovered[0].committed_generation == 2
+    assert repository.runtime and repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
+    assert repository.generations[1].state is RuntimeGenerationState.BLOCKED
+    assert repository.generations[2].state is RuntimeGenerationState.COMMITTED
+    assert reconciler.reconcile_incomplete() == ()
+
+
+def test_release_health_allows_archival_unknown_but_rejects_current_unknown() -> None:
     repository = _MemoryGenerationRepository()
     reconciler, _ = _reconciler(repository)
     reconciler.reconcile(
@@ -849,9 +894,10 @@ def test_release_health_rejects_draining_leases_and_unknown_writes() -> None:
     assert followup_release.project_count == 1
 
     repository.unknown.add(1)
+    repository.block_generation_unknown_write("project-a", 1)
     blocked = runtime_generation_health(repository, expected_automation_ids={"project-a"})
     assert blocked.healthy is False
-    assert blocked.blocked_projects["project-a"] == ("WRITE_OUTCOME_UNKNOWN",)
+    assert "WRITE_OUTCOME_UNKNOWN" in blocked.blocked_projects["project-a"]
     with pytest.raises(PluginConflictError, match="not release-ready"):
         blocked.assert_release_ready()
 
@@ -863,6 +909,20 @@ def test_release_health_rejects_draining_leases_and_unknown_writes() -> None:
     assert deferred.healthy is True
     assert deferred.project_count == 0
     assert deferred.committed_count == 0
+
+    target = repository.allocate_target_generation(
+        _snapshot(2, "2.0.0"),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+    assert reconciler.prepare_target(target) == ()
+    reconciler.resume_project("project-a")
+    archival = runtime_generation_health(
+        repository,
+        expected_automation_ids={"project-a"},
+    )
+    assert archival.healthy is True
+    assert archival.archival_unknown_generation_count == 1
 
 
 def test_coeffect_revision_change_between_prepare_and_commit_never_switches() -> None:

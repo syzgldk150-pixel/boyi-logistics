@@ -26,6 +26,16 @@ AUTOMATION_PROJECT_POLICY_STATUSES = frozenset(
 AUTOMATION_PROJECT_RUNTIME_STATUSES = frozenset(
     {"READY", "RECONCILING", "UNAVAILABLE"}
 )
+AUTOMATION_RUNTIME_REASON_LABELS = {
+    "PROJECT_DISABLED": "项目已停用",
+    "PROJECT_CONFIGURATION_INCOMPLETE": "项目配置尚未完整；运行、启用和完全自动均已阻断。",
+    "ENTRYPOINTS_DISABLED": "所有运行入口均已关闭",
+    "PROJECT_RUNTIME_UNAVAILABLE": "运行环境不可用/待修复",
+}
+AUTOMATION_RUNTIME_CONTRACT_ERROR_LABEL = (
+    "项目签名合同错误；运行、启用和完全自动均已阻断。"
+)
+AUTOMATION_RUNTIME_RECONCILING_LABEL = "运行环境同步中"
 AUTOMATION_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 AUTOMATION_PENDING_SET_HASH_RE = re.compile(r"^[A-Za-z0-9._~-]{16,256}$")
 AUTOMATION_RUN_RECEIPT_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,160}$")
@@ -348,12 +358,43 @@ def apply_automation_project_execution_gate(
         return
 
     task["can_run_now"] = False
+    runtime_reason = str(policy.get("runtime_reason") or "").strip().upper()
     if not available:
         task["run_disabled_reason"] = "项目权限不可用"
-    elif runtime_status == "RECONCILING":
-        task["run_disabled_reason"] = "运行环境同步中"
-    elif runtime_status != "READY":
-        task["run_disabled_reason"] = "运行环境不可用/待修复"
+    elif runtime_reason == "PROJECT_DISABLED":
+        task["run_disabled_reason"] = AUTOMATION_RUNTIME_REASON_LABELS[
+            "PROJECT_DISABLED"
+        ]
+    elif runtime_reason == "PROJECT_CONFIGURATION_INCOMPLETE":
+        task["run_disabled_reason"] = AUTOMATION_RUNTIME_REASON_LABELS[
+            "PROJECT_CONFIGURATION_INCOMPLETE"
+        ]
+    elif runtime_reason == "ENTRYPOINTS_DISABLED":
+        task["run_disabled_reason"] = AUTOMATION_RUNTIME_REASON_LABELS[
+            "ENTRYPOINTS_DISABLED"
+        ]
+    elif runtime_status == "RECONCILING" or (
+        runtime_status == "READY" and runtime_reason.startswith("RECONCILE_")
+    ):
+        task["run_disabled_reason"] = AUTOMATION_RUNTIME_RECONCILING_LABEL
+    elif (
+        runtime_reason.endswith("_CONTRACT_UNAVAILABLE")
+        or runtime_reason.endswith("_CONTRACT_INVALID")
+        or (
+            runtime_reason.startswith(("PROJECT_", "PLUGIN_"))
+            and runtime_reason
+            not in {
+                "PROJECT_DISABLED",
+                "PROJECT_CONFIGURATION_INCOMPLETE",
+                "PROJECT_RUNTIME_UNAVAILABLE",
+            }
+        )
+    ):
+        task["run_disabled_reason"] = AUTOMATION_RUNTIME_CONTRACT_ERROR_LABEL
+    elif runtime_reason == "PROJECT_RUNTIME_UNAVAILABLE" or runtime_status != "READY":
+        task["run_disabled_reason"] = AUTOMATION_RUNTIME_REASON_LABELS[
+            "PROJECT_RUNTIME_UNAVAILABLE"
+        ]
     elif str(task.get("run_disabled_reason") or "") not in {
         "后台入口已关闭",
         "当前不可执行",
@@ -1304,6 +1345,24 @@ def normalize_automation_workers(value: Any) -> list[dict[str, Any]]:
     return workers
 
 
+def normalize_hidden_automation_ids(value: Any) -> frozenset[str]:
+    """Accept only Agent's explicit list of persisted, deferred identities."""
+
+    if not isinstance(value, dict):
+        return frozenset()
+    raw_ids = value.get("hidden_automation_ids")
+    if not isinstance(raw_ids, list):
+        return frozenset()
+    return frozenset(
+        automation_id
+        for raw_id in raw_ids
+        if isinstance(raw_id, str)
+        if AUTOMATION_PROJECT_ID_RE.fullmatch(
+            automation_id := raw_id.strip()
+        )
+    )
+
+
 class AutomationProjectsServiceMixin:
     def _load_automation_plugin_catalog(
         self,
@@ -1313,6 +1372,7 @@ class AutomationProjectsServiceMixin:
         list[dict[str, Any]],
         list[dict[str, Any]],
         list[str],
+        frozenset[str],
         str,
         bool,
     ]:
@@ -1322,7 +1382,15 @@ class AutomationProjectsServiceMixin:
             principal and "super_admin" in list(principal.get("roles") or [])
         )
         if principal is None:
-            return [], [], [], [], "插件目录只对真实 MySQL 管理员会话开放。", False
+            return (
+                [],
+                [],
+                [],
+                [],
+                frozenset(),
+                "插件目录只对真实 MySQL 管理员会话开放。",
+                False,
+            )
 
         catalog_result = self._agent_request(
             "GET",
@@ -1332,16 +1400,49 @@ class AutomationProjectsServiceMixin:
         )
         if not catalog_result.get("ok"):
             code = str(catalog_result.get("error_code") or "PLUGIN_CATALOG_UNAVAILABLE")
-            return [], [], [], [], f"插件目录当前不可用（{code}），所有项目已阻断运行。", can_manage
+            return (
+                [],
+                [],
+                [],
+                [],
+                frozenset(),
+                f"插件目录当前不可用（{code}），所有项目已阻断运行。",
+                can_manage,
+            )
         packages, instances, unsupported = normalize_automation_plugin_catalog(
             catalog_result.get("data")
         )
         data = catalog_result.get("data")
+        hidden_automation_ids = normalize_hidden_automation_ids(data)
         raw_instances = data.get("instances") if isinstance(data, dict) else None
         if not isinstance(raw_instances, list):
             raw_instances = data.get("items") if isinstance(data, dict) else None
         if not isinstance(raw_instances, list):
-            return [], [], [], [], "插件目录返回无效，所有项目已阻断运行。", can_manage
+            return (
+                [],
+                [],
+                [],
+                [],
+                frozenset(),
+                "插件目录返回无效，所有项目已阻断运行。",
+                can_manage,
+            )
+
+        requires_workers = any(
+            str(item.get("execution_platform") or "").strip().lower() == "windows"
+            or bool(item.get("worker_required"))
+            for item in [*packages, *instances]
+        )
+        if not requires_workers:
+            return (
+                packages,
+                instances,
+                [],
+                unsupported,
+                hidden_automation_ids,
+                "",
+                can_manage,
+            )
 
         workers_result = self._agent_request(
             "GET",
@@ -1360,7 +1461,15 @@ class AutomationProjectsServiceMixin:
         ):
             code = str(workers_result.get("error_code") or "WORKERS_UNAVAILABLE")
             warning = f"Windows Worker 列表当前不可用（{code}），相关项目已阻断。"
-        return packages, instances, workers, unsupported, warning, can_manage
+        return (
+            packages,
+            instances,
+            workers,
+            unsupported,
+            hidden_automation_ids,
+            warning,
+            can_manage,
+        )
 
     def _load_automation_project_policies(
         self,

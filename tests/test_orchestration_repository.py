@@ -217,8 +217,8 @@ class _LinkedRetryCursor(_Cursor):
                 }
         elif "SELECT * FROM agent_commands WHERE command_id=" in sql:
             self.row = dict(self.source_command)
-        elif "SELECT work_item_id FROM work_items" in sql:
-            self.row = {"work_item_id": "item-1"}
+        elif "SELECT status FROM work_items" in sql:
+            self.row = {"status": "OPEN"}
         elif "SELECT COALESCE(MAX(run_no)" in sql:
             self.row = {"max_run_no": 2}
         elif "INSERT INTO agent_runs" in sql:
@@ -777,6 +777,62 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertIn("sla_deadline IS NOT NULL", sql)
         self.assertIn("%YD\\_100\\%%", params)
         self.assertEqual((25, 50), tuple(params[-2:]))
+
+    def test_scheduler_supersession_discovers_same_task_latest_terminal_failures_without_join_locks(self):
+        cursor = _Cursor(
+            rows=[
+                {
+                    "run_id": "old-failed-run",
+                }
+            ]
+        )
+        repository = AgentRunRepository(_Connection(cursor))
+
+        rows = repository.list_open_failed_scheduler_run_ids_for_supersession(
+            automation_id="customer_problems_shadow",
+            scheduler_task_id="customer-problems-shadow",
+            successful_work_item_id="successful-item",
+            successful_occurrence=datetime(2026, 8, 23, 1, 0),
+            limit=999,
+        )
+
+        self.assertEqual(["old-failed-run"], rows)
+        sql, params = cursor.calls[0]
+        self.assertIn("w.status='OPEN'", sql)
+        self.assertIn("c.source='scheduler'", sql)
+        self.assertIn("c.actor_type='scheduler'", sql)
+        self.assertIn("BINARY c.actor_id=BINARY %s", sql)
+        self.assertIn("BINARY c.automation_id=BINARY %s", sql)
+        self.assertIn("$.execution_context.task_id", sql)
+        self.assertIn("r.status='FAILED_TERMINAL'", sql)
+        self.assertIn("newer.run_no > r.run_no", sql)
+        self.assertIn("$.execution_context.scheduled_for", sql)
+        self.assertIn("candidate.occurrence_at < %s", sql)
+        self.assertIn("ORDER BY candidate.occurrence_at, candidate.run_id", sql)
+        self.assertNotIn("FOR UPDATE", sql)
+        self.assertEqual(
+            (
+                "customer-problems-shadow",
+                "customer_problems_shadow",
+                "customer-problems-shadow",
+                "successful-item",
+                datetime(2026, 8, 23, 1, 0),
+                100,
+            ),
+            params,
+        )
+
+    def test_latest_run_lookup_supports_a_current_locking_read(self):
+        cursor = _Cursor(row={"run_id": "latest-run", "plan_json": None})
+        repository = AgentRunRepository(_Connection(cursor))
+
+        row = repository.get_latest_for_work_item("item-1", for_update=True)
+
+        self.assertEqual("latest-run", row["run_id"])
+        sql, params = cursor.calls[0]
+        self.assertIn("ORDER BY run_no DESC", sql)
+        self.assertTrue(sql.endswith("FOR UPDATE"))
+        self.assertEqual(("item-1",), params)
 
     def test_work_item_assignment_is_cas_and_facade_commits(self):
         cursor = _AssignCursor()

@@ -59,6 +59,7 @@ TERMINAL_STATUSES = {
 }
 PROTECTED_STEP_LOCK_WAIT_SECONDS = 5.0
 PROTECTED_STEP_LOCK_RETRY_SECONDS = 0.1
+SCHEDULER_SUPERSESSION_MAX_NO_PROGRESS_BATCHES = 2
 
 
 class WorkflowRunner:
@@ -497,11 +498,7 @@ class WorkflowRunner:
                 run = await self._execute_plan(run, plan, command)
                 status = RunStatus(str(run["status"]))
             if status is RunStatus.VERIFYING:
-                run = self._transition(
-                    run,
-                    RunStatus.COMPLETED,
-                    finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                )
+                run = self._complete_run_and_supersede_scheduler_failures(run, command)
             await asyncio.to_thread(
                 self._release,
                 run_id,
@@ -1607,6 +1604,226 @@ class WorkflowRunner:
             uow.commit()
         return updated
 
+    def _complete_run_and_supersede_scheduler_failures(
+        self,
+        run: Mapping[str, Any],
+        command: Command,
+    ) -> dict[str, Any]:
+        """Complete a run and atomically retire only superseded scheduler failures."""
+
+        identity = self._scheduler_automation_identity(command)
+        if identity is None:
+            return self._transition(
+                run,
+                RunStatus.COMPLETED,
+                finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+
+        scheduler_task_id, automation_id, successful_occurrence = identity
+        assert_run_transition(str(run["status"]), RunStatus.COMPLETED)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with self._repository.unit_of_work() as uow:
+            updated = uow.runs.transition(
+                str(run["run_id"]),
+                expected_version=int(run["version"]),
+                expected_statuses=(str(run["status"]),),
+                status=RunStatus.COMPLETED.value,
+                finished_at=now,
+            )
+            self._sync_work_item_status(uow, updated, RunStatus.COMPLETED)
+            self._append_event(
+                uow,
+                event_type="agent.run.status_changed",
+                run=updated,
+                payload={"from": str(run["status"]), "to": RunStatus.COMPLETED.value},
+            )
+            self._supersede_scheduler_failure_batch(
+                uow,
+                successful_run=updated,
+                scheduler_task_id=scheduler_task_id,
+                automation_id=automation_id,
+                successful_occurrence=successful_occurrence,
+                occurred_at=now,
+            )
+            uow.commit()
+        self._drain_scheduler_failure_supersession(
+            successful_run=updated,
+            scheduler_task_id=scheduler_task_id,
+            automation_id=automation_id,
+            successful_occurrence=successful_occurrence,
+        )
+        return updated
+
+    def _drain_scheduler_failure_supersession(
+        self,
+        *,
+        successful_run: Mapping[str, Any],
+        scheduler_task_id: str,
+        automation_id: str,
+        successful_occurrence: datetime,
+    ) -> None:
+        """Drain additional bounded batches after the successful completion commits."""
+
+        try:
+            no_progress_batches = 0
+            while True:
+                with self._repository.unit_of_work() as uow:
+                    selected, retired = self._supersede_scheduler_failure_batch(
+                        uow,
+                        successful_run=successful_run,
+                        scheduler_task_id=scheduler_task_id,
+                        automation_id=automation_id,
+                        successful_occurrence=successful_occurrence,
+                        occurred_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    )
+                    if selected == 0:
+                        return
+                    if retired:
+                        no_progress_batches = 0
+                        uow.commit()
+                    else:
+                        no_progress_batches += 1
+                if no_progress_batches >= SCHEDULER_SUPERSESSION_MAX_NO_PROGRESS_BATCHES:
+                    logger.warning(
+                        "scheduler supersession drain stopped after bounded no-progress retries",
+                        extra={
+                            "run_id": successful_run.get("run_id"),
+                            "scheduler_task_id": scheduler_task_id,
+                            "automation_id": automation_id,
+                            "no_progress_batches": no_progress_batches,
+                        },
+                    )
+                    return
+        except Exception:
+            logger.exception(
+                "scheduler supersession drain failed after successful run commit",
+                extra={
+                    "run_id": successful_run.get("run_id"),
+                    "scheduler_task_id": scheduler_task_id,
+                    "automation_id": automation_id,
+                },
+            )
+
+    def _supersede_scheduler_failure_batch(
+        self,
+        uow: Any,
+        *,
+        successful_run: Mapping[str, Any],
+        scheduler_task_id: str,
+        automation_id: str,
+        successful_occurrence: datetime,
+        occurred_at: datetime,
+    ) -> tuple[int, int]:
+        """Cancel one bounded, revalidated batch of older scheduler failures."""
+
+        candidate_run_ids = uow.runs.list_open_failed_scheduler_run_ids_for_supersession(
+            automation_id=automation_id,
+            scheduler_task_id=scheduler_task_id,
+            successful_work_item_id=str(successful_run["work_item_id"]),
+            successful_occurrence=successful_occurrence,
+        )
+        retired = 0
+        for candidate_run_id in candidate_run_ids:
+            prior, prior_item = self._lock_supersedable_scheduler_failure(
+                uow,
+                run_id=candidate_run_id,
+                scheduler_task_id=scheduler_task_id,
+                automation_id=automation_id,
+                successful_work_item_id=str(successful_run["work_item_id"]),
+                successful_occurrence=successful_occurrence,
+            )
+            if prior is None or prior_item is None:
+                continue
+            assert_work_item_transition(WorkItemStatus.OPEN, WorkItemStatus.CANCELLED)
+            superseded = uow.work_items.transition(
+                str(prior_item["work_item_id"]),
+                expected_version=int(prior_item["version"]),
+                expected_statuses=(WorkItemStatus.OPEN.value,),
+                status=WorkItemStatus.CANCELLED.value,
+                reason_code="SUPERSEDED_BY_LATER_SUCCESS",
+                reason_summary="已由后续成功运行取代",
+                resolution={"successful_run_id": successful_run["run_id"]},
+                closed_at=occurred_at,
+            )
+            self._append_work_item_supersession_event(
+                uow,
+                prior_work_item=superseded,
+                successful_run=successful_run,
+                failed_run_id=str(prior["run_id"]),
+                scheduler_task_id=scheduler_task_id,
+                automation_id=automation_id,
+                occurred_at=occurred_at,
+            )
+            retired += 1
+        return len(candidate_run_ids), retired
+
+    @staticmethod
+    def _scheduler_automation_identity(command: Command) -> tuple[str, str, datetime] | None:
+        invocation = command.automation_invocation
+        if (
+            command.source != "scheduler"
+            or command.actor.actor_type is not ActorType.SCHEDULER
+            or invocation is None
+        ):
+            return None
+        task_id = str(command.actor.actor_id or "").strip()
+        automation_id = str(invocation.automation_id or "").strip()
+        execution_context = command.parameters.get("execution_context")
+        if (
+            not task_id
+            or not automation_id
+            or not isinstance(execution_context, Mapping)
+            or str(execution_context.get("task_id") or "").strip() != task_id
+        ):
+            return None
+        occurrence = _scheduler_occurrence(command.parameters, command.requested_at)
+        if occurrence is None:
+            return None
+        return task_id, automation_id, occurrence
+
+    @staticmethod
+    def _lock_supersedable_scheduler_failure(
+        uow: Any,
+        *,
+        run_id: str,
+        scheduler_task_id: str,
+        automation_id: str,
+        successful_work_item_id: str,
+        successful_occurrence: datetime,
+    ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+        """Lock and revalidate one candidate in the terminal-retry lock order."""
+
+        prior = uow.runs.get(run_id, for_update=True)
+        if prior is None or str(prior.get("status") or "") != RunStatus.FAILED_TERMINAL.value:
+            return None, None
+        latest = uow.runs.get_latest_for_work_item(
+            str(prior["work_item_id"]),
+            for_update=True,
+        )
+        if latest is None or str(latest.get("run_id") or "") != str(prior["run_id"]):
+            return None, None
+        prior_command = uow.commands.get(str(prior["command_id"]), for_update=True)
+        if prior_command is None or not _matches_scheduler_automation_identity(
+            prior_command,
+            scheduler_task_id=scheduler_task_id,
+            automation_id=automation_id,
+        ):
+            return None, None
+        prior_occurrence = _scheduler_occurrence(
+            prior_command.get("parameters_json"),
+            prior_command.get("requested_at"),
+        )
+        if prior_occurrence is None or prior_occurrence >= successful_occurrence:
+            return None, None
+        prior_item = uow.work_items.get(str(prior["work_item_id"]), for_update=True)
+        if (
+            prior_item is None
+            or str(prior_item.get("work_item_id") or "") == successful_work_item_id
+            or str(prior_item.get("status") or "") != WorkItemStatus.OPEN.value
+        ):
+            return None, None
+        return prior, prior_item
+
     def _release(
         self,
         run_id: str,
@@ -1772,6 +1989,52 @@ class WorkflowRunner:
             ),
         )
 
+    @staticmethod
+    def _append_work_item_supersession_event(
+        uow: Any,
+        *,
+        prior_work_item: Mapping[str, Any],
+        successful_run: Mapping[str, Any],
+        failed_run_id: str,
+        scheduler_task_id: str,
+        automation_id: str,
+        occurred_at: datetime,
+    ) -> None:
+        work_item_id = str(prior_work_item["work_item_id"])
+        successful_run_id = str(successful_run["run_id"])
+        uow.events.append_with_outbox(
+            {
+                "event_id": new_id(),
+                "event_type": "work_item.superseded_by_later_success",
+                "schema_version": 1,
+                "source_system": "agent",
+                "source_event_id": f"{work_item_id}:{successful_run_id}",
+                "entity_type": "work_item",
+                "entity_id": work_item_id,
+                "work_item_id": work_item_id,
+                "run_id": failed_run_id,
+                "step_id": None,
+                "occurred_at": occurred_at,
+                "observed_at": occurred_at,
+                "correlation_id": successful_run["correlation_id"],
+                "causation_id": successful_run.get("causation_id"),
+                "payload": {
+                    "successful_run_id": successful_run_id,
+                    "failed_run_id": failed_run_id,
+                    "scheduler_task_id": scheduler_task_id,
+                    "automation_id": automation_id,
+                },
+            },
+            (
+                {
+                    "consumer_name": "orchestration.audit",
+                    "topic": "work_item.superseded_by_later_success",
+                    "partition_key": work_item_id,
+                    "max_attempts": 10,
+                },
+            ),
+        )
+
     def _fail_claimed(self, run_id: str, exc: OrchestrationError) -> None:
         desired = str(exc.details.get("status") or "")
         if desired not in {
@@ -1842,6 +2105,36 @@ def _parse_datetime(value: Any) -> datetime:
     raise OrchestrationError("INVALID_TIMESTAMP", "Persisted timestamp is invalid")
 
 
+def _scheduler_occurrence(
+    parameters: Any,
+    requested_at: Any,
+) -> datetime | None:
+    """Return the scheduler occurrence in UTC, with requested time as fallback."""
+
+    context = parameters.get("execution_context") if isinstance(parameters, Mapping) else None
+    scheduled_for = context.get("scheduled_for") if isinstance(context, Mapping) else None
+    if isinstance(scheduled_for, str) and scheduled_for.strip():
+        try:
+            parsed = datetime.fromisoformat(scheduled_for.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    if isinstance(requested_at, datetime):
+        if requested_at.tzinfo is not None:
+            return requested_at.astimezone(timezone.utc).replace(tzinfo=None)
+        return requested_at
+    if isinstance(requested_at, str):
+        try:
+            parsed = datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    return None
+
+
 def _annotate_approval(plan: Plan, requires_approval: bool) -> Plan:
     return replace(
         plan,
@@ -1891,6 +2184,26 @@ def _is_governing_unknown_write(status: str, error_code: str | None) -> bool:
     return (
         status == RunStatus.BLOCKED_DATA.value
         and str(error_code or "").upper() == "WRITE_OUTCOME_UNKNOWN"
+    )
+
+
+def _matches_scheduler_automation_identity(
+    command: Mapping[str, Any],
+    *,
+    scheduler_task_id: str,
+    automation_id: str,
+) -> bool:
+    execution_context = command.get("parameters_json")
+    if not isinstance(execution_context, Mapping):
+        return False
+    execution_context = execution_context.get("execution_context")
+    return (
+        str(command.get("source") or "") == "scheduler"
+        and str(command.get("actor_type") or "") == ActorType.SCHEDULER.value
+        and str(command.get("actor_id") or "") == scheduler_task_id
+        and str(command.get("automation_id") or "") == automation_id
+        and isinstance(execution_context, Mapping)
+        and str(execution_context.get("task_id") or "") == scheduler_task_id
     )
 
 
