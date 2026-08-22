@@ -693,6 +693,31 @@ def build_production_delivery_site_ports(
             )
         )
         expected = _site_sheet_snapshot(rows)
+        if not rows and not before:
+            # The default snapshot synchronizer clears its target before it
+            # writes rows.  With an originally empty signed input and an
+            # authoritative empty pre-read, that clear is a false mutation:
+            # retain the marker and prove the no-op with a second fresh read.
+            try:
+                after = _site_sheet_snapshot(
+                    _read_sheet(
+                        invoke_feishu,
+                        spreadsheet_token=spreadsheet_token,
+                        value_range=clear_range,
+                    )
+                )
+            except Exception as exc:
+                _nested_write_failure(
+                    write_started,
+                    "site-send Sheet no-op post-read failed before mutation",
+                    cause=exc,
+                )
+            if after != expected:
+                _nested_write_failure(
+                    write_started,
+                    "site-send Sheet no-op snapshot changed before mutation",
+                )
+            return _verified_result(before=before, after=after, count=0)
         write_error: Exception | None = None
         response: object = None
         try:
