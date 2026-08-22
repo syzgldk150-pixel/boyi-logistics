@@ -1385,6 +1385,10 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         reverse_end = runner_source.index("\n)", reverse_start)
         reverse_block = runner_source[reverse_start:reverse_end]
         self.assertLess(
+            reverse_block.index('"automation_write_attempt_receipts"'),
+            reverse_block.index('"automation_project_generation_leases"'),
+        )
+        self.assertLess(
             reverse_block.rindex('"automation_project_bootstrap_items_018"'),
             reverse_block.rindex('"automation_project_bootstrap_marker_018"'),
         )
