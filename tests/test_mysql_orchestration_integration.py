@@ -107,6 +107,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls.feishu_queue_recovery_database = (
             f"{cls.database[:-5]}_feishu_queue_recovery_test"
         )
+        cls.legacy_plugin_full_auto_database = (
+            f"{cls.database[:-5]}_legacy_plugin_full_auto_test"
+        )
         cls.databases = (
             cls.database,
             cls.upgrade_database,
@@ -129,6 +132,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             cls.worker_dispatch_database,
             cls.daily_sign_readback_database,
             cls.feishu_queue_recovery_database,
+            cls.legacy_plugin_full_auto_database,
         )
         cls.runner = _load_migration_runner()
 
@@ -176,6 +180,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls._apply_through(cls.feishu_queue_recovery_database, "017")
         cls._seed_required_project_resources(cls.feishu_queue_recovery_database)
         cls._apply_through(cls.feishu_queue_recovery_database, "022")
+        cls._apply_through(cls.legacy_plugin_full_auto_database, "017")
+        cls._seed_required_project_resources(cls.legacy_plugin_full_auto_database)
+        cls._apply_through(cls.legacy_plugin_full_auto_database, "023")
         cls._apply_through(cls.compat_database, "013")
         cls._apply_through(cls.contract_chain_database, "013")
         cls._apply_through(cls.startup_contract_database, "015")
@@ -2969,6 +2976,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
     def test_automation_project_grouped_approval_rolls_back_real_mysql_transaction(self):
         AUTOMATION_PROJECT_SCENARIOS.run_test_grouped_approval_second_cas_failure_is_atomic(
+            self
+        )
+
+    def test_automation_project_024_restores_only_original_plugin_writer(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_automation_project_024_original_plugin_full_auto(
             self
         )
 

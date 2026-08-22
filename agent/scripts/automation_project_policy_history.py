@@ -11,6 +11,7 @@ CREDENTIAL_POLICY_DOWNGRADE_REASON = "ACCOUNT_CREDENTIAL_CHANGED"
 CREDENTIAL_POLICY_RESTORE_REASON = "MIGRATION_022_CREDENTIAL_FULL_AUTO"
 PLUGIN_POLICY_DOWNGRADE_REASON = "PLUGIN_VERSION_CHANGED"
 PLUGIN_POLICY_RESTORE_REASON = "MIGRATION_022_PLUGIN_FULL_AUTO"
+ORIGINAL_PLUGIN_POLICY_RESTORE_REASON = "MIGRATION_024_PLUGIN_FULL_AUTO"
 _CREDENTIAL_ACTOR_ID = "system:account-credential-change"
 _CREDENTIAL_DISPLAY_NAME = "Account credential safety guard"
 _CREDENTIAL_COMMENT = (
@@ -22,6 +23,13 @@ _RESTORE_COMMENT = "Restored durable full-auto after legacy credential guard"
 _PLUGIN_RESTORE_ACTOR_ID = "system:migration:automation-plugin-full-auto-v1"
 _PLUGIN_RESTORE_DISPLAY_NAME = "Migration 022"
 _PLUGIN_RESTORE_COMMENT = "Restored durable full-auto after legacy plugin downgrade"
+_ORIGINAL_PLUGIN_RESTORE_ACTOR_ID = (
+    "system:migration:automation-plugin-full-auto-v2"
+)
+_ORIGINAL_PLUGIN_RESTORE_DISPLAY_NAME = "Migration 024"
+_ORIGINAL_PLUGIN_RESTORE_COMMENT = (
+    "Restored durable full-auto after original plugin downgrade"
+)
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -74,9 +82,10 @@ def validate_credential_policy_history_event(
     """Return the resulting full-auto authority for a retired writer event.
 
     ``None`` means the event belongs to another writer. ``False`` is the
-    historical credential safety downgrade and ``True`` is its one-time 022
-    repair. Both shapes remain part of the immutable audit chain even though
-    current credential changes no longer alter durable project intent.
+    historical credential safety downgrade and ``True`` is an exact 022/024
+    repair. These shapes remain part of the immutable audit chain even though
+    current credential and plugin changes no longer alter durable project
+    intent.
     """
 
     reason = event.get("reason")
@@ -84,6 +93,7 @@ def validate_credential_policy_history_event(
         CREDENTIAL_POLICY_DOWNGRADE_REASON,
         CREDENTIAL_POLICY_RESTORE_REASON,
         PLUGIN_POLICY_RESTORE_REASON,
+        ORIGINAL_PLUGIN_POLICY_RESTORE_REASON,
     }:
         return None
     common_valid = (
@@ -110,22 +120,22 @@ def validate_credential_policy_history_event(
             raise ValueError("invalid historical credential policy downgrade")
         return False
     is_credential_restore = reason == CREDENTIAL_POLICY_RESTORE_REASON
-    restore_prefix = (
-        "migration-022-credential-full-auto"
-        if is_credential_restore
-        else "migration-022-plugin-full-auto"
-    )
-    restore_actor_id = (
-        _RESTORE_ACTOR_ID if is_credential_restore else _PLUGIN_RESTORE_ACTOR_ID
-    )
-    restore_display_name = (
-        _RESTORE_DISPLAY_NAME
-        if is_credential_restore
-        else _PLUGIN_RESTORE_DISPLAY_NAME
-    )
-    restore_comment = (
-        _RESTORE_COMMENT if is_credential_restore else _PLUGIN_RESTORE_COMMENT
-    )
+    is_original_plugin_restore = reason == ORIGINAL_PLUGIN_POLICY_RESTORE_REASON
+    if is_credential_restore:
+        restore_prefix = "migration-022-credential-full-auto"
+        restore_actor_id = _RESTORE_ACTOR_ID
+        restore_display_name = _RESTORE_DISPLAY_NAME
+        restore_comment = _RESTORE_COMMENT
+    elif is_original_plugin_restore:
+        restore_prefix = "migration-024-plugin-full-auto"
+        restore_actor_id = _ORIGINAL_PLUGIN_RESTORE_ACTOR_ID
+        restore_display_name = _ORIGINAL_PLUGIN_RESTORE_DISPLAY_NAME
+        restore_comment = _ORIGINAL_PLUGIN_RESTORE_COMMENT
+    else:
+        restore_prefix = "migration-022-plugin-full-auto"
+        restore_actor_id = _PLUGIN_RESTORE_ACTOR_ID
+        restore_display_name = _PLUGIN_RESTORE_DISPLAY_NAME
+        restore_comment = _PLUGIN_RESTORE_COMMENT
     predecessor_valid = (
         previous_event.get("reason") == CREDENTIAL_POLICY_DOWNGRADE_REASON
         and previous_event.get("from_mode") == "PROJECT_FULL_AUTO"
@@ -156,6 +166,7 @@ def validate_credential_policy_history_event(
 __all__ = [
     "CREDENTIAL_POLICY_DOWNGRADE_REASON",
     "CREDENTIAL_POLICY_RESTORE_REASON",
+    "ORIGINAL_PLUGIN_POLICY_RESTORE_REASON",
     "PLUGIN_POLICY_DOWNGRADE_REASON",
     "PLUGIN_POLICY_RESTORE_REASON",
     "validate_credential_policy_history_event",
