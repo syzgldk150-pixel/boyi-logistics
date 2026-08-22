@@ -4,7 +4,7 @@ type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
 status: active
-updated: 2026-08-16
+updated: 2026-08-23
 ---
 
 # Agent 统一控制平面 v1
@@ -256,6 +256,8 @@ receipt, remains `UNKNOWN`; the Runner must not infer or replay it.
 - 明确有效回复或原系统明确终态才关闭；未知状态保持开放；
 - 已开放事项从列表消失后，按同平台、同账号、同外部 ID 调精确详情工具复核；详情无明确
   终态时进入 `BLOCKED_DATA`；
+- 历史事项缺少可验证的平台、外部 ID 或来源方向时，服务端复核上下文保留精确
+  `context_error` 并省略缺失的可选字段；不得用空字符串污染签名计划，也不得猜测来源；
 - 登录失败进入 `BLOCKED_LOGIN` 并发布 `account.session_degraded`；真实登录恢复发布
   `account.session_restored`，恢复原 Run；
 - 试点只聚合、解释、展示 Evidence、指派和重新核验，不自动修改第三方状态。
