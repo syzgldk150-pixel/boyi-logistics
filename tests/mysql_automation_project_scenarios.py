@@ -2154,10 +2154,10 @@ def run_test_automation_project_024_original_plugin_full_auto(case):
                     automation_generation, source, actor_type, actor_id,
                     actor_roles_json, entity_refs_json, parameters_json,
                     automation_invocation_json, idempotency_key,
-                    correlation_id, status
+                    correlation_id, status, requested_at
                 ) VALUES (%s, 'automation.project.invoke', %s, 1,
                           'console', 'console_admin', %s, %s, %s, %s, %s,
-                          %s, %s, 'ACCEPTED')
+                          %s, %s, 'ACCEPTED', NOW(6))
                 """,
                 (
                     command_id,
