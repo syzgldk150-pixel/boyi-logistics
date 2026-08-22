@@ -1376,7 +1376,7 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
 
 
 def _builtin_release_files(manifest: AutomationPluginManifest) -> dict[str, bytes]:
-    manifest_bytes = canonical_json_bytes(manifest.to_mapping())
+    manifest_bytes = canonical_json_bytes(manifest.to_signed_mapping())
     attestation = canonical_json_bytes(
         {
             "schema_version": 1,
@@ -1485,7 +1485,7 @@ class SourceFirstPartyPackageProvider:
                     version=manifest.version,
                     package_sha256=package_digest,
                     manifest_sha256=manifest.manifest_sha256,
-                    manifest=manifest.to_mapping(),
+                    manifest=manifest.to_signed_mapping(),
                     trust_source=PluginTrustSource.BUILTIN_RELEASE,
                     install_root=None,
                     release_sha=current,
@@ -1614,7 +1614,7 @@ class SignedFirstPartyPackageProvider:
             verified is None
             or verified.package_sha256 != descriptor.package_sha256
             or verified.manifest_sha256 != descriptor.manifest_sha256
-            or verified.manifest.to_mapping() != descriptor.manifest
+            or verified.manifest.to_signed_mapping() != descriptor.manifest
         ):
             raise PluginPackageError(
                 "persisted first-party package was not verified in this release"
@@ -1805,7 +1805,8 @@ class SignedFirstPartyPackageProvider:
                 verified.manifest.plugin_id != plugin_id
                 or verified.manifest.version != source_manifest.version
                 or verified.manifest_sha256 != source_manifest.manifest_sha256
-                or verified.manifest.to_mapping() != source_manifest.to_mapping()
+                or verified.manifest.to_signed_mapping()
+                != source_manifest.to_signed_mapping()
             ):
                 raise PluginPackageError(f"signed first-party package contract drifted: {plugin_id}")
             verified_by_key[(plugin_id, source_manifest.version)] = verified
@@ -1815,7 +1816,7 @@ class SignedFirstPartyPackageProvider:
                     version=source_manifest.version,
                     package_sha256=verified.package_sha256,
                     manifest_sha256=verified.manifest_sha256,
-                    manifest=verified.manifest.to_mapping(),
+                    manifest=verified.manifest.to_signed_mapping(),
                     trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
                     install_root=None,
                     release_sha=current,
@@ -1861,7 +1862,7 @@ class SignedFirstPartyPackageProvider:
                 version=version.version,
                 package_sha256=version.package_sha256,
                 manifest_sha256=version.manifest_sha256,
-                manifest=verified.manifest.to_mapping(),
+                manifest=verified.manifest.to_signed_mapping(),
                 trust_source=version.trust_source,
                 install_root=str(committed),
                 state=version.state,
@@ -2019,7 +2020,10 @@ class FilesystemFirstPartyPackageMaterializer:
         if hashlib.sha256(package).hexdigest() != version.package_sha256:
             raise PluginPackageError("built-in package bytes changed before materialization")
         files = _builtin_release_files(manifest)
-        if hashlib.sha256(canonical_json_bytes(manifest.to_mapping())).hexdigest() != version.manifest_sha256:
+        if (
+            hashlib.sha256(canonical_json_bytes(manifest.to_signed_mapping())).hexdigest()
+            != version.manifest_sha256
+        ):
             raise PluginPackageError("built-in manifest changed before materialization")
         staging = self._storage.create_staging_root(manifest.plugin_id, manifest.version)
         committed: Path | None = None
@@ -2053,7 +2057,7 @@ class FilesystemFirstPartyPackageMaterializer:
                 version=version.version,
                 package_sha256=version.package_sha256,
                 manifest_sha256=version.manifest_sha256,
-                manifest=manifest.to_mapping(),
+                manifest=manifest.to_signed_mapping(),
                 trust_source=version.trust_source,
                 install_root=str(committed),
                 state=version.state,

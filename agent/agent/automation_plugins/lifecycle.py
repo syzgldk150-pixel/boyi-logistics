@@ -138,7 +138,7 @@ class AutomationPluginService:
                     version=manifest.version,
                     package_sha256=verified.package_sha256,
                     manifest_sha256=verified.manifest_sha256,
-                    manifest=manifest.to_mapping(),
+                    manifest=manifest.to_signed_mapping(),
                     trust_source=PluginTrustSource.ED25519_UPLOAD,
                     install_root=str(committed),
                     install_metadata={

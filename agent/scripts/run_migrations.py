@@ -2302,6 +2302,9 @@ check_automation_project_scheduled_task_identities = _load_script_helper("automa
 check_automation_plugin_install_ownership = _load_script_helper(
     "automation_plugin_install_ownership_preflight.py"
 ).check_automation_plugin_install_ownership
+check_rollback_exact_seed_compatibility = _load_script_helper(
+    "automation_project_version_preflight.py"
+).check_rollback_exact_seed_compatibility
 
 def _automation_project_authorization_artifacts(cursor) -> set[str]:
     return _MIGRATION_018_HELPER._automation_project_authorization_artifacts(
@@ -2819,7 +2822,13 @@ def main() -> int:
         action="store_true",
         help="Report safe deterministic identities owned before plugin installation",
     )
+    modes.add_argument(
+        "--check-rollback-exact-seed-compatibility",
+        action="store_true",
+        help="Read-only validation that existing exact project rows allow source rollback",
+    )
     parser.add_argument("--automation-plugin-install-root")
+    parser.add_argument("--rollback-exact-seed-manifest")
     parser.add_argument(
         "--expect-initial-production-manifest",
         action="store_true",
@@ -2850,6 +2859,13 @@ def main() -> int:
         parser.error(
             "--automation-plugin-install-root requires "
             "--check-automation-plugin-install-ownership"
+        )
+    if bool(args.rollback_exact_seed_manifest) != bool(
+        args.check_rollback_exact_seed_compatibility
+    ):
+        parser.error(
+            "--rollback-exact-seed-manifest requires "
+            "--check-rollback-exact-seed-compatibility"
         )
     if args.restore_control_plane_task_cutover:
         return restore_control_plane_task_cutover()
@@ -2891,6 +2907,11 @@ def main() -> int:
         return check_automation_plugin_install_ownership(
             _connect,
             args.automation_plugin_install_root,
+        )
+    if args.check_rollback_exact_seed_compatibility:
+        return check_rollback_exact_seed_compatibility(
+            _connect,
+            args.rollback_exact_seed_manifest,
         )
     return run(check_only=args.check)
 

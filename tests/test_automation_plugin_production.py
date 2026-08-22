@@ -12,19 +12,28 @@ from typing import Any, Mapping
 import pytest
 
 from agent.automation_plugins import production as production_module
-from agent.automation_plugins.catalog import PluginCatalog
+from agent.automation_plugins.catalog import (
+    PluginCatalog,
+    project_capability_from_snapshot,
+)
 from agent.automation_plugins.binding_resolver import ProductionProjectBindingResolver
+from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
+    BootstrapResult,
     PluginInstanceRecord,
     PluginProjectState,
     PluginTrustSource,
     PluginVersionRecord,
+    ProjectRuntimeRecord,
     RuntimeCoeffectKind,
     RuntimeEffectKind,
     RuntimeEffectRecord,
     RuntimeEffectState,
+    RuntimeGenerationRecord,
+    RuntimeGenerationState,
+    RuntimeReconcileState,
 )
 from agent.automation_plugins.production import (
     CURSOR_SECRET_ENV,
@@ -139,9 +148,17 @@ class _ScriptedGenerationConnection:
 
 def _entry_and_row(
     tmp_path: Path,
+    *,
+    legacy_missing_effect: bool = False,
 ) -> tuple[ToolRegistry, object, dict[str, Any], dict[str, Any]]:
     core = ToolRegistry()
-    manifest = resolve_first_party_manifests(core)["sync_customer_service_problems"]
+    manifest_source = resolve_first_party_manifests(core)[
+        "sync_customer_service_problems"
+    ].to_mapping()
+    if legacy_missing_effect:
+        for operation in manifest_source["runtime_permissions"]["broker_operations"]:
+            operation.pop("effect")
+    manifest = AutomationPluginManifest.from_mapping(manifest_source)
     package_file = tmp_path / "plugin" / "package" / "payload" / "main.py"
     package_file.parent.mkdir(parents=True)
     package_file.write_bytes(b"print('ok')\n")
@@ -163,7 +180,7 @@ def _entry_and_row(
         version=manifest.version,
         package_sha256="1" * 64,
         manifest_sha256=manifest.manifest_sha256,
-        manifest=manifest.to_mapping(),
+        manifest=manifest.to_signed_mapping(),
         trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
         install_root=str(tmp_path / "plugin"),
         install_metadata=install_metadata,
@@ -425,6 +442,360 @@ def test_snapshot_binds_only_closed_desired_material(tmp_path: Path) -> None:
         )
 
 
+def test_snapshot_binds_legacy_signed_permissions_and_allocates(
+    tmp_path: Path,
+) -> None:
+    core, entry, row, policy = _entry_and_row(
+        tmp_path,
+        legacy_missing_effect=True,
+    )
+    signed_permissions = copy.deepcopy(dict(entry.signed_runtime_permissions))
+    normalized_permissions = copy.deepcopy(dict(entry.runtime_permissions))
+    signed_operations = signed_permissions["broker_operations"]
+    normalized_operations = normalized_permissions["broker_operations"]
+    assert signed_operations
+    assert all("effect" not in operation for operation in signed_operations)
+    assert all(operation["effect"] == "write" for operation in normalized_operations)
+
+    snapshot = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+    descriptor = snapshot.execution_metadata["runtime_descriptor"]
+    assert descriptor["runtime_permissions"] == signed_permissions
+    assert snapshot.runtime_descriptor_sha256 == _json_hash(descriptor)
+    capability = project_capability_from_snapshot(snapshot)
+    assert all(
+        operation["effect"] == "write"
+        for operation in capability["_plugin_runtime"]["runtime_permissions"][
+            "broker_operations"
+        ]
+    )
+
+    signed_manifest = AutomationPluginManifest.from_mapping(
+        {
+            **resolve_first_party_manifests(core)[
+                "sync_customer_service_problems"
+            ].to_mapping(),
+            "runtime_permissions": signed_permissions,
+        }
+    ).to_signed_mapping()
+    persisted_row = {"allocated": True}
+    repository = AutomationPluginRepository(
+        _ScriptedGenerationConnection(
+            [
+                ("SELECT * FROM automation_project_generations", None, 0),
+                (
+                    "SELECT * FROM automation_projects",
+                    {
+                        "automation_id": snapshot.automation_id,
+                        "plugin_id": snapshot.plugin_id,
+                        "plugin_version": snapshot.plugin_version,
+                        "state": PluginProjectState.ENABLED.value,
+                        "committed_generation": None,
+                        "record_version": 1,
+                    },
+                    0,
+                ),
+                ("SELECT COALESCE(MAX(generation)", {"max_generation": 0}, 0),
+                (
+                    "SELECT * FROM automation_plugin_versions",
+                    {
+                        "package_sha256": snapshot.package_sha256,
+                        "manifest_sha256": snapshot.manifest_sha256,
+                        "trust_source": snapshot.trust_source.value,
+                        "tool_contract_sha256": snapshot.tool_contract_sha256,
+                        "invocation_contracts_sha256": (
+                            snapshot.invocation_contracts_sha256
+                        ),
+                        "manifest_json": signed_manifest,
+                        "install_root_metadata_json": copy.deepcopy(
+                            descriptor["install_metadata"]
+                        ),
+                    },
+                    0,
+                ),
+                ("SELECT * FROM automation_project_configs", row, 0),
+                ("INSERT INTO automation_project_generations", None, 1),
+                ("UPDATE automation_projects", None, 1),
+            ]
+        )
+    )
+    repository.get_generation_row = lambda *_args, **_kwargs: persisted_row
+
+    allocated = repository.allocate_target_generation_row(
+        snapshot_to_row(snapshot),
+        expected_committed_generation=None,
+        request_id="legacy-signed-runtime-target",
+    )
+
+    assert allocated == persisted_row
+
+
+def test_legacy_normalized_stable_generation_does_not_churn(
+    tmp_path: Path,
+) -> None:
+    core, entry, row, policy = _entry_and_row(
+        tmp_path,
+        legacy_missing_effect=True,
+    )
+    desired = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+    legacy_metadata = copy.deepcopy(dict(desired.execution_metadata))
+    legacy_metadata["runtime_descriptor"]["runtime_permissions"] = copy.deepcopy(
+        dict(entry.runtime_permissions)
+    )
+    legacy = replace(
+        desired,
+        runtime_descriptor_sha256=_sha(
+            legacy_metadata["runtime_descriptor"]
+        ),
+        execution_metadata=legacy_metadata,
+    )
+    runtime_record = ProjectRuntimeRecord(
+        automation_id=legacy.automation_id,
+        target_generation=1,
+        committed_generation=1,
+        reconcile_state=RuntimeReconcileState.STABLE,
+        record_version=3,
+    )
+    generation_record = RuntimeGenerationRecord(
+        snapshot=legacy,
+        state=RuntimeGenerationState.COMMITTED,
+    )
+
+    class _Runtime:
+        @staticmethod
+        def get_project_runtime(_automation_id):
+            return runtime_record
+
+        @staticmethod
+        def list_project_generations(_automation_id):
+            return (generation_record,)
+
+    class _AutomationPlugins:
+        @staticmethod
+        def get_project_config(_automation_id):
+            return row
+
+    class _AutomationProjects:
+        @staticmethod
+        def get_policy(_automation_id):
+            return policy
+
+    class _UnitOfWork:
+        automation_plugins = _AutomationPlugins()
+        automation_projects = _AutomationProjects()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class _Orchestration:
+        @staticmethod
+        def unit_of_work():
+            return _UnitOfWork()
+
+    class _Reconciler:
+        @staticmethod
+        def reconcile(*_args, **_kwargs):
+            raise AssertionError("stable legacy material must not allocate")
+
+        @staticmethod
+        def resume_project(*_args, **_kwargs):
+            raise AssertionError("stable legacy material must not resume")
+
+    target_service = object.__new__(MySQLRuntimeTargetService)
+    target_service._catalog = SimpleNamespace(require=lambda _automation_id: entry)
+    target_service._runtime = _Runtime()
+    target_service._orchestration = _Orchestration()
+    target_service._core_catalog = core
+    target_service._reconciler = _Reconciler()
+
+    assert target_service.reconcile_project(legacy.automation_id) is None
+
+
+@pytest.mark.parametrize(
+    ("target_state", "reconcile_state"),
+    (
+        (RuntimeGenerationState.TARGET, RuntimeReconcileState.PREPARING),
+        (RuntimeGenerationState.PREPARING, RuntimeReconcileState.PREPARING),
+        (
+            RuntimeGenerationState.WAITING_COEFFECTS,
+            RuntimeReconcileState.WAITING_COEFFECTS,
+        ),
+        (RuntimeGenerationState.PREPARED, RuntimeReconcileState.READY_TO_COMMIT),
+    ),
+)
+def test_legacy_normalized_incomplete_target_passes_signed_material_guard(
+    tmp_path: Path,
+    target_state: RuntimeGenerationState,
+    reconcile_state: RuntimeReconcileState,
+) -> None:
+    core, entry, row, policy = _entry_and_row(
+        tmp_path,
+        legacy_missing_effect=True,
+    )
+    desired = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+    legacy_metadata = copy.deepcopy(dict(desired.execution_metadata))
+    legacy_metadata["runtime_descriptor"]["runtime_permissions"] = copy.deepcopy(
+        dict(entry.runtime_permissions)
+    )
+    legacy = replace(
+        desired,
+        runtime_descriptor_sha256=_sha(legacy_metadata["runtime_descriptor"]),
+        execution_metadata=legacy_metadata,
+    )
+    target = RuntimeGenerationRecord(snapshot=legacy, state=target_state)
+    runtime_record = ProjectRuntimeRecord(
+        automation_id=legacy.automation_id,
+        target_generation=1,
+        committed_generation=None,
+        reconcile_state=reconcile_state,
+        record_version=2,
+    )
+
+    class _UnitOfWork:
+        automation_plugins = SimpleNamespace(
+            get_project_config=lambda _automation_id: row
+        )
+        automation_projects = SimpleNamespace(get_policy=lambda _automation_id: policy)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    resume_calls: list[str] = []
+    resumed = {"resumed": True}
+    target_service = object.__new__(MySQLRuntimeTargetService)
+    target_service._catalog = SimpleNamespace(require=lambda _automation_id: entry)
+    target_service._runtime = SimpleNamespace(
+        get_project_runtime=lambda _automation_id: runtime_record,
+        list_project_generations=lambda _automation_id: (target,),
+    )
+    target_service._orchestration = SimpleNamespace(
+        unit_of_work=lambda: _UnitOfWork()
+    )
+    target_service._core_catalog = core
+    target_service._reconciler = SimpleNamespace(
+        resume_project=lambda automation_id: (
+            resume_calls.append(automation_id) or resumed
+        )
+    )
+
+    assert target_service.reconcile_project(legacy.automation_id) is resumed
+    assert resume_calls == [legacy.automation_id]
+
+
+@pytest.mark.parametrize("tamper", ("descriptor", "config", "package"))
+def test_incomplete_target_material_drift_is_not_resumed(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    core, entry, row, policy = _entry_and_row(
+        tmp_path,
+        legacy_missing_effect=True,
+    )
+    desired = build_runtime_generation_snapshot(
+        entry,
+        desired_config_row=row,
+        policy_row=policy,
+        generation=1,
+        core_catalog=core,
+    )
+    target_metadata = copy.deepcopy(dict(desired.execution_metadata))
+    target_metadata["runtime_descriptor"]["runtime_permissions"] = copy.deepcopy(
+        dict(entry.runtime_permissions)
+    )
+    target_snapshot = replace(
+        desired,
+        runtime_descriptor_sha256=_sha(target_metadata["runtime_descriptor"]),
+        execution_metadata=target_metadata,
+    )
+    if tamper == "descriptor":
+        target_metadata["runtime_descriptor"]["runtime_permissions"][
+            "broker_operations"
+        ][0]["effect"] = "read"
+        target_snapshot = replace(
+            target_snapshot,
+            runtime_descriptor_sha256=_sha(target_metadata["runtime_descriptor"]),
+            execution_metadata=target_metadata,
+        )
+    elif tamper == "config":
+        target_metadata["project_config"] = {"direction": "outbound"}
+        target_snapshot = replace(
+            target_snapshot,
+            project_config_sha256=_sha(target_metadata["project_config"]),
+            execution_metadata=target_metadata,
+        )
+    else:
+        target_snapshot = replace(target_snapshot, package_sha256="f" * 64)
+    target = RuntimeGenerationRecord(
+        snapshot=target_snapshot,
+        state=RuntimeGenerationState.PREPARING,
+    )
+    runtime_record = ProjectRuntimeRecord(
+        automation_id=target_snapshot.automation_id,
+        target_generation=1,
+        committed_generation=None,
+        reconcile_state=RuntimeReconcileState.PREPARING,
+        record_version=2,
+    )
+
+    class _UnitOfWork:
+        automation_plugins = SimpleNamespace(
+            get_project_config=lambda _automation_id: row
+        )
+        automation_projects = SimpleNamespace(get_policy=lambda _automation_id: policy)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    resume_calls: list[str] = []
+    target_service = object.__new__(MySQLRuntimeTargetService)
+    target_service._catalog = SimpleNamespace(require=lambda _automation_id: entry)
+    target_service._runtime = SimpleNamespace(
+        get_project_runtime=lambda _automation_id: runtime_record,
+        list_project_generations=lambda _automation_id: (target,),
+    )
+    target_service._orchestration = SimpleNamespace(
+        unit_of_work=lambda: _UnitOfWork()
+    )
+    target_service._core_catalog = core
+    target_service._reconciler = SimpleNamespace(
+        resume_project=lambda automation_id: resume_calls.append(automation_id)
+    )
+    before = snapshot_to_row(target.snapshot)
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        target_service.reconcile_project(target_snapshot.automation_id)
+
+    assert exc_info.value.code == "RUNTIME_TARGET_MATERIAL_MISMATCH"
+    assert resume_calls == []
+    assert snapshot_to_row(target.snapshot) == before
+
+
 def test_snapshot_accepts_project_with_every_entrypoint_disabled(tmp_path: Path) -> None:
     core, entry, row, policy = _entry_and_row(tmp_path)
     row["enabled_entrypoints_json"] = []
@@ -484,6 +855,95 @@ def test_runtime_health_fails_closed_when_real_sandbox_canary_failed(monkeypatch
     assert health["runtime_status"] == "UNAVAILABLE"
     assert health["sandbox"]["state"] == "unavailable"
     assert health["sandbox"]["code"] == "PLUGIN_SANDBOX_CANARY_FAILED"
+
+
+def test_runtime_reconcile_finishes_inflight_generation_then_stages_release() -> None:
+    events: list[str] = []
+    state = {"generation": "old-preparing"}
+
+    class _TargetService:
+        @staticmethod
+        def reconcile_all():
+            events.append("reconcile")
+            if state["generation"] == "old-preparing":
+                state["generation"] = "old-stable"
+                return ("old-committed",)
+            if state["generation"] == "release-target":
+                state["generation"] = "release-stable"
+                return ("release-committed",)
+            return ()
+
+    def _bootstrap_release() -> BootstrapResult:
+        events.append("bootstrap")
+        assert state["generation"] == "old-stable"
+        state["generation"] = "release-target"
+        return BootstrapResult(created=(), existing=("project-a",), rejected={})
+
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.bootstrap = BootstrapResult(
+        created=(), existing=("project-a",), rejected={}
+    )
+    runtime.target_service = _TargetService()
+    runtime._bootstrap_first_party = _bootstrap_release
+
+    result = runtime.reconcile()
+
+    assert result == ("old-committed", "release-committed")
+    assert state["generation"] == "release-stable"
+    assert events == ["reconcile", "bootstrap", "reconcile"]
+    assert runtime.bootstrap.ok is True
+
+
+def test_runtime_reconcile_closes_concurrent_stabilization_window() -> None:
+    events: list[str] = []
+    state = {"generation": "old-stable"}
+
+    def _reconcile_all():
+        events.append("reconcile")
+        if state["generation"] == "release-target":
+            state["generation"] = "release-stable"
+            return ("release-committed",)
+        return ()
+
+    def _bootstrap_release() -> BootstrapResult:
+        events.append("bootstrap")
+        assert state["generation"] == "old-stable"
+        state["generation"] = "release-target"
+        return BootstrapResult(created=(), existing=("project-a",), rejected={})
+
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.bootstrap = BootstrapResult(
+        created=(), existing=("project-a",), rejected={}
+    )
+    runtime.target_service = SimpleNamespace(reconcile_all=_reconcile_all)
+    runtime._bootstrap_first_party = _bootstrap_release
+
+    assert runtime.reconcile() == ("release-committed",)
+    assert state["generation"] == "release-stable"
+    assert events == ["reconcile", "bootstrap", "reconcile"]
+
+
+def test_runtime_reconcile_fails_closed_when_follow_up_bootstrap_is_rejected() -> None:
+    reconcile_calls = 0
+
+    def _reconcile_all():
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        return ("old-committed",)
+
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.bootstrap = BootstrapResult(
+        created=(), existing=("project-a",), rejected={}
+    )
+    runtime.target_service = SimpleNamespace(reconcile_all=_reconcile_all)
+    runtime._bootstrap_first_party = lambda: BootstrapResult(
+        created=(), existing=(), rejected={"*": "signed release rejected"}
+    )
+
+    with pytest.raises(PluginConflictError, match="bootstrap was rejected"):
+        runtime.reconcile()
+
+    assert reconcile_calls == 1
 
 
 def test_policy_must_target_exact_generation(tmp_path: Path) -> None:

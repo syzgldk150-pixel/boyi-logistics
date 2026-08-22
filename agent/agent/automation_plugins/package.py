@@ -288,7 +288,9 @@ def build_signed_plugin_zip(
 ) -> bytes:
     """Build a deterministic signed ZIP without reading signing material from disk."""
 
-    files: dict[str, bytes] = {MANIFEST_NAME: canonical_json_bytes(manifest.to_mapping())}
+    files: dict[str, bytes] = {
+        MANIFEST_NAME: canonical_json_bytes(manifest.to_signed_mapping())
+    }
     for raw_name, raw_content in payload_files.items():
         name = _safe_member_name(str(raw_name))
         if name in {MANIFEST_NAME, SIGNATURE_NAME}:
