@@ -188,7 +188,13 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
             "results": [{
                 "bill_code": "R2",
                 "complaint": None,
-                "problem_item": {"status": "success"},
+                "problem_type": "有发未到",
+                "problem_item": {
+                    "status": "success",
+                    "external_id": "problem-r2",
+                    "registered_at": "2026-08-12 16:00:00",
+                    "registered_site": "邵阳大祥S站",
+                },
                 "complete": True,
             }],
         }
@@ -204,6 +210,8 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
             tool, "_upload_to_tms", return_value=upload_payload
         ) as upload_mock, patch.object(
             tool, "update_split_pending_combined_results", return_value={"updated": 1}
+        ), patch.object(
+            tool, "upsert_problem_events", return_value={"ok": True, "upserted": 1}
         ):
             result = tool.run_split_pending_problem_upload(
                 {
@@ -220,8 +228,13 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
 
     def test_router_accepts_only_exact_new_trigger(self):
         request = direct_tool_request_from_text("分批")
-        self.assertEqual("split_pending_problem_upload", request["tool_name"])
-        self.assertTrue(request["params"]["dry_run"])
+        self.assertEqual("preview_split_pending_problems", request["tool_name"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual("automation_preview", request["mode"])
+        self.assertEqual(
+            "builtin.split_pending_problem_upload",
+            request["automation_route_key"],
+        )
         self.assertIn("selection_intent", request)
         for old_text in ("分批问题件", "上报分批差错", "分批差错", "上传分批/未到问题件"):
             self.assertTrue(is_deprecated_split_command(old_text))

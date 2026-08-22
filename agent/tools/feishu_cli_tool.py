@@ -19,6 +19,7 @@ LARK_CLI = "lark-cli"
 _TOKEN_CACHE: dict[str, float | str | None] = {"token": None, "expires_at": 0.0}
 _SHEET_REF_CACHE: dict[str, dict[str, str]] = {}
 _SHEET_INFO_CACHE: dict[str, dict[str, dict]] = {}
+_SHEET_TITLE_COUNTS_CACHE: dict[str, dict[str, int]] = {}
 
 _A1_RANGE_RE = re.compile(
     r"^(?:(?P<sheet>[^!]+)!)?(?P<start_col>[A-Z]+)(?P<start_row>\d+):(?P<end_col>[A-Z]+)(?P<end_row>\d+)$"
@@ -29,6 +30,7 @@ _MAX_CELLS_PER_WRITE = 4000
 def _clear_spreadsheet_sheet_cache(spreadsheet_token: str) -> None:
     _SHEET_REF_CACHE.pop(spreadsheet_token, None)
     _SHEET_INFO_CACHE.pop(spreadsheet_token, None)
+    _SHEET_TITLE_COUNTS_CACHE.pop(spreadsheet_token, None)
 
 
 def run_lark_cli(args: list[str], timeout: int = 20) -> dict:
@@ -242,6 +244,12 @@ def _search_bitable_records(base_token: str, table_id: str, params: dict) -> dic
     return result
 
 
+def search_bitable_records(base_token: str, table_id: str, params: dict) -> dict:
+    """Public read-only primitive for narrow governed Bitable adapters."""
+
+    return _search_bitable_records(base_token, table_id, params)
+
+
 def _create_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
     field_name = str(params.get("field_name") or params.get("name") or "").strip()
     field_type = params.get("type", params.get("field_type", 1))
@@ -272,6 +280,25 @@ def _create_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
         payload=payload,
         timeout=30,
     )
+
+
+def _update_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
+    field_id = str(params.get("field_id") or "").strip()
+    field_name = str(params.get("field_name") or params.get("name") or "").strip()
+    field_type = params.get("type", params.get("field_type"))
+    if not field_id or not field_name:
+        return {"error": "update_field 缺少 field_id 或 field_name/name"}
+    try:
+        field_type = int(field_type)
+    except (TypeError, ValueError):
+        return {"error": "update_field type/field_type 必须是整数"}
+    payload: dict[str, object] = {"field_name": field_name, "type": field_type}
+    if isinstance(params.get("property"), dict):
+        payload["property"] = params["property"]
+    path = f"/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/fields/{field_id}"
+    if params.get("dry_run"):
+        return {"ok": True, "api": {"method": "PUT", "url": path, "body": payload}}
+    return _call_open_api("PUT", path, payload=payload, timeout=30)
 
 
 def _tenant_access_token() -> str:
@@ -342,6 +369,7 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
 
     refs: dict[str, str] = {}
     sheet_infos: dict[str, dict] = {}
+    title_counts: dict[str, int] = {}
     sheet_ids: list[str] = []
     for sheet in sheets:
         if not isinstance(sheet, dict):
@@ -353,6 +381,7 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
         sheet_ids.append(sheet_id)
         refs[sheet_id] = sheet_id
         if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
             refs.setdefault(title, sheet_id)
 
         grid_properties = sheet.get("grid_properties")
@@ -390,7 +419,16 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
 
     _SHEET_REF_CACHE[spreadsheet_token] = refs
     _SHEET_INFO_CACHE[spreadsheet_token] = sheet_infos
+    _SHEET_TITLE_COUNTS_CACHE[spreadsheet_token] = title_counts
     return refs
+
+
+def _spreadsheet_sheet_title_count(spreadsheet_token: str, title: str) -> int:
+    lookup = str(title or "").strip()
+    if not spreadsheet_token or not lookup:
+        return 0
+    _spreadsheet_sheet_ref_map(spreadsheet_token)
+    return int(_SHEET_TITLE_COUNTS_CACHE.get(spreadsheet_token, {}).get(lookup, 0))
 
 
 def _spreadsheet_sheet_info(spreadsheet_token: str, sheet_ref: str) -> dict | None:
@@ -666,6 +704,16 @@ def feishu_operation(action: str, params: dict) -> dict:
             return _create_bitable_field(base_token, table_id, params)
         except Exception as exc:
             return {"error": f"create_field 调用失败: {str(exc)[:300]}"}
+
+    if action == "update_field":
+        base_token = str(params.get("base_token") or params.get("app_token") or "")
+        table_id = str(params.get("table_id") or "")
+        if not base_token or not table_id:
+            return {"error": "update_field 缺少 base_token/app_token 或 table_id"}
+        try:
+            return _update_bitable_field(base_token, table_id, params)
+        except Exception as exc:
+            return {"error": f"update_field 调用失败: {str(exc)[:300]}"}
 
     if action == "list_records":
         base_token = str(params.get("base_token") or params.get("app_token") or "")

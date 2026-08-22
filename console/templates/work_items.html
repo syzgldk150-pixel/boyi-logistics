@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block body_class %}control-plane-page-body{% endblock %}
+{% block title %}事项中心 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}事项中心{% endblock %}
+{% block subtitle %}统一查看业务事项、责任人和执行状态{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/control_plane.css?v=20260813-1">
+{% endblock %}
+
+{% block page_actions %}
+  <button class="ghost-btn cp-refresh-button" type="button" data-cp-list-refresh>
+    <i data-feather="refresh-cw"></i><span>刷新列表</span>
+  </button>
+{% endblock %}
+
+{% block content %}
+<section class="cp-page" data-cp-list-page aria-labelledby="cp-list-heading">
+  <h2 class="sr-only" id="cp-list-heading">业务事项列表</h2>
+
+  <form class="cp-filter" data-cp-filter-form role="search" aria-label="筛选业务事项">
+    <label class="cp-field cp-field--search">
+      <span>关键词</span>
+      <span class="cp-input-shell">
+        <i data-feather="search" aria-hidden="true"></i>
+        <input type="search" name="q" maxlength="200" autocomplete="off" placeholder="事项标题、编号或关联对象">
+      </span>
+    </label>
+    <label class="cp-field">
+      <span>状态</span>
+      <select name="status">
+        <option value="">全部状态</option>
+        <option value="OPEN">待处理</option>
+        <option value="IN_PROGRESS">处理中</option>
+        <option value="NEEDS_CLARIFICATION">待补充信息</option>
+        <option value="WAITING_APPROVAL">待审批</option>
+        <option value="BLOCKED_LOGIN">登录阻塞</option>
+        <option value="BLOCKED_DATA">数据阻塞</option>
+        <option value="RESOLVED">已完成</option>
+        <option value="CANCELLED">已取消</option>
+      </select>
+    </label>
+    <label class="cp-field">
+      <span>优先级</span>
+      <select name="priority">
+        <option value="">全部优先级</option>
+        <option value="URGENT">紧急</option>
+        <option value="HIGH">高</option>
+        <option value="NORMAL">普通</option>
+        <option value="LOW">低</option>
+      </select>
+    </label>
+    <label class="cp-field">
+      <span>类型</span>
+      <input type="text" name="type" maxlength="64" autocomplete="off" placeholder="例如 daily_sign">
+    </label>
+    <label class="cp-field">
+      <span>责任人</span>
+      <input type="text" name="owner" maxlength="128" autocomplete="off" placeholder="姓名或账号">
+    </label>
+    <label class="cp-field">
+      <span>SLA</span>
+      <select name="sla">
+        <option value="">全部 SLA</option>
+        <option value="overdue">已逾期</option>
+        <option value="today">今日到期</option>
+        <option value="upcoming">后续到期</option>
+        <option value="missing">缺少 SLA</option>
+      </select>
+    </label>
+    <div class="cp-filter-actions">
+      <button class="primary-btn" type="submit">查询事项</button>
+      <button class="ghost-btn" type="button" data-cp-filter-reset>清除筛选</button>
+    </div>
+  </form>
+
+  <div class="cp-list-summary">
+    <p data-cp-list-count>正在读取事项…</p>
+    <p class="cp-refresh-note" data-cp-list-updated></p>
+  </div>
+
+  <div class="cp-feedback" data-cp-list-feedback role="status" aria-live="polite"></div>
+
+  <div class="cp-table-wrap" data-cp-table-wrap aria-busy="true">
+    <table class="cp-table">
+      <caption class="sr-only">业务事项、状态、优先级、责任人和更新时间</caption>
+      <thead>
+        <tr>
+          <th scope="col">状态</th>
+          <th scope="col">事项</th>
+          <th scope="col">类型 / 来源</th>
+          <th scope="col">优先级</th>
+          <th scope="col">责任人</th>
+          <th scope="col">SLA 截止</th>
+          <th scope="col">更新时间</th>
+          <th scope="col"><span class="sr-only">操作</span></th>
+        </tr>
+      </thead>
+      <tbody data-cp-list-body>
+        <tr class="cp-loading-row">
+          <td colspan="8"><span class="cp-spinner" aria-hidden="true"></span>正在读取事项…</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <nav class="cp-pagination" data-cp-pagination aria-label="事项列表分页" hidden>
+    <button class="ghost-btn" type="button" data-cp-page-previous>上一页</button>
+    <span data-cp-page-label></span>
+    <button class="ghost-btn" type="button" data-cp-page-next>下一页</button>
+  </nav>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/control_plane.js?v=20260813-1" defer></script>
+{% endblock %}

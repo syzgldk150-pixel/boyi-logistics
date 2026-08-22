@@ -31,14 +31,48 @@ SELF_PICKUP_PROBLEM_UPLOAD_RE = re.compile(
     re.IGNORECASE,
 )
 SELF_PICKUP_PROBLEM_LABEL = "自提到货问题件"
-SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
 
 SPLIT_PENDING_PROBLEM_UPLOAD_RE = re.compile(
     r"^\s*分批\s*$",
     re.IGNORECASE,
 )
 SPLIT_PENDING_PROBLEM_LABEL = "分批差错及问题件"
-SPLIT_PENDING_PROBLEM_ACCOUNT_ID = "ronghui_default"
+
+# These aliases identify one explicit migration instance route. They are not
+# plugin or tool selectors: the Feishu adapter resolves the alias through the
+# committed ``feishu_route`` resource and rejects missing or duplicate owners.
+# A repeated installation receives a different administrator-configured alias.
+FIRST_PARTY_FEISHU_ROUTE_KEYS = {
+    "r7_arrival_checkin": "builtin.r7_arrival_checkin",
+    "r7_departure_checkin": "builtin.r7_departure_checkin",
+    "sync_scan_codes": "builtin.scan_codes",
+    "sync_arrive_list": "builtin.arrive_list",
+    "sync_daily_send_orders": "builtin.send_order",
+    "sync_yunda_send_waybills": "builtin.yunda_send_waybills",
+    "sync_yunda_dispatch_forecast": "builtin.yunda_dispatch_forecast",
+    "sync_arrival_stats": "builtin.arrival_stats",
+    "preview_self_pickup_problems": "builtin.self_pickup_problem_upload",
+    "self_pickup_problem_upload": "builtin.self_pickup_problem_upload",
+    "preview_split_pending_problems": "builtin.split_pending_problem_upload",
+    "split_pending_problem_upload": "builtin.split_pending_problem_upload",
+}
+
+
+def _automation_project_request(
+    tool_name: str,
+    *,
+    mode: str = "automation_project",
+    dynamic_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one code-owned route request without action/account arguments."""
+
+    return {
+        "tool_name": tool_name,
+        "params": {},
+        "mode": mode,
+        "automation_route_key": FIRST_PARTY_FEISHU_ROUTE_KEYS[tool_name],
+        "dynamic_inputs": dict(dynamic_inputs or {}),
+    }
 
 
 def is_deprecated_split_command(text: str) -> bool:
@@ -423,9 +457,10 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 
     if SPLIT_PENDING_PROBLEM_UPLOAD_RE.match(normalized):
         return {
-            "tool_name": "split_pending_problem_upload",
-            "params": {"dry_run": True, "account_id": SPLIT_PENDING_PROBLEM_ACCOUNT_ID},
-            "mode": "reply",
+            **_automation_project_request(
+                "preview_split_pending_problems",
+                mode="automation_preview",
+            ),
             "selection_intent": {
                 "description": SPLIT_PENDING_PROBLEM_LABEL,
             },
@@ -433,79 +468,54 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 
     if SELF_PICKUP_PROBLEM_UPLOAD_RE.match(normalized):
         return {
-            "tool_name": "self_pickup_problem_upload",
-            "params": {"dry_run": True, "account_id": SELF_PICKUP_PROBLEM_ACCOUNT_ID},
-            "mode": "reply",
+            **_automation_project_request(
+                "preview_self_pickup_problems",
+                mode="automation_preview",
+            ),
             "confirm_intent": {
-                "execute_params": {"dry_run": False, "account_id": SELF_PICKUP_PROBLEM_ACCOUNT_ID},
+                "dynamic_inputs": {"dry_run": False},
                 "description": SELF_PICKUP_PROBLEM_LABEL,
             },
         }
 
     if R7_ARRIVAL_CHECKIN_RE.match(normalized):
-        return {
-            "tool_name": "r7_arrival_checkin",
-            "params": {},
-            "mode": "deferred",
-        }
+        return _automation_project_request("r7_arrival_checkin")
 
     if R7_DEPARTURE_CHECKIN_RE.match(normalized):
-        return {
-            "tool_name": "r7_departure_checkin",
-            "params": {},
-            "mode": "r7_departure_choice",
-        }
+        return _automation_project_request(
+            "r7_departure_checkin",
+            mode="r7_departure_choice",
+        )
 
     if SCAN_SYNC_RE.match(normalized):
-        return {
-            "tool_name": "sync_scan_codes",
-            "params": {},
-            "mode": "deferred",
-        }
+        return _automation_project_request("sync_scan_codes")
 
     if ARRIVE_LIST_SYNC_RE.match(normalized):
-        return {
-            "tool_name": "sync_arrive_list",
-            "params": {},
-            "mode": "deferred",
-        }
+        return _automation_project_request("sync_arrive_list")
 
     if SEND_ORDER_SYNC_RE.search(normalized):
-        return {
-            "tool_name": "sync_daily_send_orders",
-            "params": _extract_date_params(normalized),
-            "mode": "deferred",
-        }
+        return _automation_project_request(
+            "sync_daily_send_orders",
+            dynamic_inputs=_extract_date_params(normalized),
+        )
 
     if YUNDA_SEND_WAYBILL_SYNC_RE.search(normalized):
-        params = {"session_profile": "yunda"}
-        params.update(_extract_date_params(normalized))
-        return {
-            "tool_name": "sync_yunda_send_waybills",
-            "params": params,
-            "mode": "deferred",
-        }
+        return _automation_project_request(
+            "sync_yunda_send_waybills",
+            dynamic_inputs=_extract_date_params(normalized),
+        )
 
     if DISPATCH_FORECAST_SYNC_RE.match(normalized):
         profile = _automation_profile_from_text(normalized)
         if profile == "yunda":
-            return {
-                "tool_name": "sync_yunda_dispatch_forecast",
-                "params": {"session_profile": "yunda"},
-                "mode": "deferred",
-            }
-        return {
-            "tool_name": "sync_arrive_list",
-            "params": {"session_profile": "ronghui"},
-            "mode": "deferred",
-        }
+            return _automation_project_request(
+                "sync_yunda_dispatch_forecast",
+                dynamic_inputs=_extract_date_params(normalized),
+            )
+        return _automation_project_request("sync_arrive_list")
 
     if ARRIVAL_STATS_RE.match(normalized):
-        return {
-            "tool_name": "sync_arrival_stats",
-            "params": {},
-            "mode": "deferred",
-        }
+        return _automation_project_request("sync_arrival_stats")
     return None
 
 
@@ -514,9 +524,9 @@ def format_tool_reply(tool_name: str, result: dict[str, Any]) -> str:
         return format_track_waybill_reply(result)
     if tool_name == "get_price":
         return format_price_reply(result)
-    if tool_name == "split_pending_problem_upload":
+    if tool_name in {"preview_split_pending_problems", "split_pending_problem_upload"}:
         return format_split_pending_problem_upload_reply(result)
-    if tool_name == "self_pickup_problem_upload":
+    if tool_name in {"preview_self_pickup_problems", "self_pickup_problem_upload"}:
         return format_self_pickup_problem_upload_reply(result)
     if tool_name == "sync_scan_codes":
         return format_scan_sync_reply(result)
@@ -1102,10 +1112,34 @@ def format_scan_sync_reply(result: dict[str, Any]) -> str:
     payload = result.get("data")
     if not isinstance(payload, dict):
         return f"扫描任务：{payload}"
+    batch_results = payload.get("batch_results")
+    failed_batches = []
+    if isinstance(batch_results, list):
+        failed_batches = [
+            row for row in batch_results
+            if isinstance(row, dict) and not row.get("ok")
+        ]
     if payload.get("error"):
-        return f"扫描任务失败：{payload['error']}"
+        lines = [f"扫描任务失败：{payload['error']}"]
+        failed_batch = payload.get("failed_batch")
+        if failed_batch not in (None, ""):
+            lines.append(f"停止批次：第 {failed_batch} 批")
+        for row in failed_batches[:5]:
+            lines.append(
+                f"- 第 {row.get('batch', '?')} 批："
+                f"{_scan_sync_batch_error(row.get('raw'))[:120]}"
+            )
+        return "\n".join(lines)
+    if failed_batches:
+        lines = [f"扫描任务失败：检测到 {len(failed_batches)} 个失败批次"]
+        for row in failed_batches[:5]:
+            lines.append(
+                f"- 第 {row.get('batch', '?')} 批："
+                f"{_scan_sync_batch_error(row.get('raw'))[:120]}"
+            )
+        return "\n".join(lines)
 
-    lines = ["扫描任务已完成"]
+    lines = ["扫描任务按计划完成" if payload.get("truncated") else "扫描任务已完成"]
     for label, key in (
         ("拉取扫描记录", "fetched"),
         ("刷新扫描索引", "normalized"),
@@ -1120,23 +1154,12 @@ def format_scan_sync_reply(result: dict[str, Any]) -> str:
     if isinstance(scan_index_result, dict) and scan_index_result.get("replaced") is not None:
         lines.append(f"索引写入：{scan_index_result.get('replaced')}")
 
-    batch_results = payload.get("batch_results")
     if isinstance(batch_results, list):
-        failed_batches = [
-            row for row in batch_results
-            if isinstance(row, dict) and not row.get("ok")
-        ]
-        if failed_batches:
-            lines.append(f"失败批次：{len(failed_batches)}/{len(batch_results)}")
-            for row in failed_batches[:5]:
-                raw = row.get("raw") if isinstance(row, dict) else {}
-                if isinstance(raw, dict):
-                    error_text = _scan_sync_batch_error(raw)
-                else:
-                    error_text = str(raw or "未知错误").strip()
-                lines.append(f"- 第 {row.get('batch', '?')} 批：{error_text[:120]}")
-        else:
-            lines.append("scan_next 结果：全部成功")
+        lines.append("scan_next 结果：全部成功")
+
+    omitted_items = payload.get("omitted_items")
+    if omitted_items not in (None, "", 0):
+        lines.append(f"未排入本次扫描：{omitted_items}")
 
     skipped_signed_count = payload.get("skipped_signed_count")
     if skipped_signed_count not in (None, "", 0):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -12,6 +13,11 @@ from urllib.parse import urljoin
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from agent.tms_runtime.scripts.browser_manager import chromium_launch_kwargs
+from agent.tms_runtime.scripts.ronghui_problem_upload import (
+    fetch_login_context,
+    page_context_from_url,
+    query_page_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +64,33 @@ COMPLAINT_UPLOAD_BUTTON_SELECTOR = "#addUploadFileBtn"
 COMPLAINT_GRID_ID = "datagrid1"
 COMPLAINT_PROBLEM_DESCRIPTION_FIELD = "REMARK"
 DUPLICATE_COMPLAINT_TEXT = "同一单号同一类型同一网点仅支持上报一次"
+COMPLAINT_REGISTER_QUERY_CALL_ID = "FIND_TAB_EXCEPTION_REGISTER_CS"
+
+_COMPLAINT_REQUIRED_NONEMPTY_FIELDS = (
+    "BILL_CODE",
+    "EXCEPTION_ID",
+    "STATUS",
+    "EXCEPTION_DATE",
+    "CATEGORY",
+    "EXCEPTION_TYPE",
+    "REMARK",
+    "EXCEPTIONSITE_SIDE_CODE",
+    "EXCEPTIONSITE_SIDE",
+    "EXCEPTION_SITE",
+    "COMPLAINANT_NAME",
+)
+_COMPLAINT_REQUIRED_PRESENT_FIELDS = (
+    "EXCEPTION_DEPT_SIDE",
+    "EXCEPTION_MAN_SIDE",
+)
+_COMPLAINT_EXPECTED_MATCH_FIELDS = (
+    "BILL_CODE",
+    "CATEGORY",
+    "EXCEPTION_TYPE",
+    "REMARK",
+    "EXCEPTIONSITE_SIDE_CODE",
+    "EXCEPTIONSITE_SIDE",
+)
 
 _SPLIT_RE = re.compile(r"[,\s;]+")
 
@@ -84,6 +117,10 @@ class ComplaintSubmitResult:
     saved: bool
     skipped: bool
     message: str
+    verified: bool = False
+    external_id: str = ""
+    plan_sha256: str = ""
+    verification: Optional[Dict[str, Any]] = None
 
 
 def _ts() -> str:
@@ -103,6 +140,10 @@ def _normalize_bill_code(value: Any) -> str:
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
         text = text[1:-1].strip()
     return text
+
+
+def _clean_field_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
 
 
 def _split_bill_codes(text: str) -> List[str]:
@@ -199,6 +240,217 @@ def _safe_json(resp) -> Any:
         return resp.json()
     except Exception:
         return None
+
+
+def query_registered_complaints(
+    session,
+    *,
+    bill_code: str,
+    complaint_list_url: str = "",
+    login_site_code: str = "",
+) -> List[Dict[str, Any]]:
+    """Query the independent complaint list for one exact bill code."""
+
+    bill_code = _normalize_bill_code(bill_code)
+    if not bill_code:
+        raise ValueError("Complaint readback requires one exact bill code")
+    list_url = str(complaint_list_url or "").strip() or _resolve_widget_menu_url(
+        session,
+        COMPLAINT_MENU_TEXT,
+    )
+    site_code = _clean_field_text(login_site_code)
+    if not site_code:
+        site_code = _clean_field_text(fetch_login_context(session).get("site_code"))
+    if not site_code:
+        raise RuntimeError("Complaint readback is missing the authenticated login site code")
+    return query_page_rows(
+        session,
+        call_id=COMPLAINT_REGISTER_QUERY_CALL_ID,
+        data={"BILL_CODE": bill_code, "LOGIN_SITE_CODE": site_code},
+        page_context=page_context_from_url(list_url),
+    )
+
+
+def match_unique_complaint_registration(
+    rows: List[Dict[str, Any]],
+    *,
+    expected: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Require one exact complaint row and return a safe verification proof."""
+
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("Complaint readback did not return an object list")
+    expected_values = {
+        field: _clean_field_text(expected.get(field))
+        for field in _COMPLAINT_EXPECTED_MATCH_FIELDS
+    }
+    missing_expected = [field for field, value in expected_values.items() if not value]
+    if missing_expected:
+        raise RuntimeError(
+            "Complaint write expectation is missing critical fields: "
+            + ", ".join(missing_expected)
+        )
+
+    bill_rows = [
+        row
+        for row in rows
+        if _normalize_bill_code(row.get("BILL_CODE")) == expected_values["BILL_CODE"]
+    ]
+    if not bill_rows:
+        raise RuntimeError("Authoritative complaint list did not contain the target bill")
+    for row in bill_rows:
+        missing = [
+            field
+            for field in _COMPLAINT_REQUIRED_NONEMPTY_FIELDS
+            if not _clean_field_text(row.get(field))
+        ]
+        missing.extend(field for field in _COMPLAINT_REQUIRED_PRESENT_FIELDS if field not in row)
+        if missing:
+            raise RuntimeError(
+                "Authoritative complaint row is missing critical fields: "
+                + ", ".join(dict.fromkeys(missing))
+            )
+
+    matches = [
+        row
+        for row in bill_rows
+        if all(_clean_field_text(row.get(field)) == value for field, value in expected_values.items())
+    ]
+    if not matches:
+        raise RuntimeError("Authoritative complaint list has no row matching the exact write plan")
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Authoritative complaint list has {len(matches)} exact matches; implicit selection is forbidden"
+        )
+    row = matches[0]
+    plan_sha256 = hashlib.sha256(
+        json.dumps(
+            expected_values,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "source": COMPLAINT_REGISTER_QUERY_CALL_ID,
+        "external_id": _clean_field_text(row.get("EXCEPTION_ID")),
+        "bill_code": expected_values["BILL_CODE"],
+        "matched_fields": list(_COMPLAINT_EXPECTED_MATCH_FIELDS),
+        "observed_at": _clean_field_text(row.get("EXCEPTION_DATE")),
+        "plan_sha256": plan_sha256,
+        "status": _clean_field_text(row.get("STATUS")),
+    }
+
+
+def match_unique_complaint_fingerprint(
+    rows: List[Dict[str, Any]],
+    *,
+    bill_code: str,
+    external_id: str,
+    plan_sha256: str,
+) -> Dict[str, Any]:
+    """Require one complete complaint row with the signed field fingerprint."""
+
+    bill = _normalize_bill_code(bill_code)
+    identity = _clean_field_text(external_id)
+    fingerprint = _clean_field_text(plan_sha256)
+    if not bill or not identity or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise RuntimeError("Complaint fingerprint verification parameters are invalid")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("Complaint readback did not return an object list")
+    bill_rows = [
+        row for row in rows if _normalize_bill_code(row.get("BILL_CODE")) == bill
+    ]
+    for row in bill_rows:
+        missing = [
+            field
+            for field in _COMPLAINT_REQUIRED_NONEMPTY_FIELDS
+            if not _clean_field_text(row.get(field))
+        ]
+        missing.extend(
+            field
+            for field in _COMPLAINT_REQUIRED_PRESENT_FIELDS
+            if field not in row
+        )
+        if missing:
+            raise RuntimeError(
+                "Authoritative complaint row is missing critical fields: "
+                + ", ".join(dict.fromkeys(missing))
+            )
+    matches: list[Dict[str, Any]] = []
+    for row in bill_rows:
+        if _clean_field_text(row.get("EXCEPTION_ID")) != identity:
+            continue
+        material = {
+            field: _clean_field_text(row.get(field))
+            for field in _COMPLAINT_EXPECTED_MATCH_FIELDS
+        }
+        observed = hashlib.sha256(
+            json.dumps(
+                material,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if observed == fingerprint:
+            matches.append(row)
+    if not matches:
+        raise RuntimeError(
+            "Authoritative complaint list has no row matching the signed fingerprint"
+        )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Authoritative complaint list has {len(matches)} fingerprint matches; implicit selection is forbidden"
+        )
+    row = matches[0]
+    return {
+        "source": COMPLAINT_REGISTER_QUERY_CALL_ID,
+        "external_id": identity,
+        "bill_code": bill,
+        "observed_at": _clean_field_text(row.get("EXCEPTION_DATE")),
+        "plan_sha256": fingerprint,
+        "status": _clean_field_text(row.get("STATUS")),
+    }
+
+
+def verify_complaint_registration(
+    session,
+    *,
+    expected: Dict[str, Any],
+    complaint_list_url: str = "",
+    login_site_code: str = "",
+) -> Dict[str, Any]:
+    rows = query_registered_complaints(
+        session,
+        bill_code=_clean_field_text(expected.get("BILL_CODE")),
+        complaint_list_url=complaint_list_url,
+        login_site_code=login_site_code,
+    )
+    return match_unique_complaint_registration(rows, expected=expected)
+
+
+def verify_complaint_fingerprint(
+    session,
+    *,
+    bill_code: str,
+    external_id: str,
+    plan_sha256: str,
+    complaint_list_url: str = "",
+    login_site_code: str = "",
+) -> Dict[str, Any]:
+    rows = query_registered_complaints(
+        session,
+        bill_code=bill_code,
+        complaint_list_url=complaint_list_url,
+        login_site_code=login_site_code,
+    )
+    return match_unique_complaint_fingerprint(
+        rows,
+        bill_code=bill_code,
+        external_id=external_id,
+        plan_sha256=plan_sha256,
+    )
 
 
 def _walk_menu_nodes(nodes: Iterable[Dict[str, Any]], path: str = ""):
@@ -1320,7 +1572,7 @@ def _fill_complaint_form(
     problem_description: str,
     dialog_scope=None,
     session=None,
-) -> None:
+) -> Dict[str, str]:
     dialog_scope = dialog_scope or form_frame
 
     if not _mini_set_value(form_frame, "BILL_CODE", bill_code):
@@ -1345,7 +1597,7 @@ def _fill_complaint_form(
         raise RuntimeError("Session is required for EXCEPTIONSITE_SIDE_CODE lookup")
     lookup_url = _mini_component_url(form_frame, "EXCEPTIONSITE_SIDE_CODE")
     site_row = _find_exception_site_row(session, lookup_url, accused_site)
-    _set_lookup_selected_row(
+    selected_site = _set_lookup_selected_row(
         form_frame,
         "EXCEPTIONSITE_SIDE_CODE",
         site_row,
@@ -1359,6 +1611,18 @@ def _fill_complaint_form(
     # `REMARK` is the visible "问题描述" field on the complaint form.
     if not _mini_set_value(form_frame, COMPLAINT_PROBLEM_DESCRIPTION_FIELD, problem_description):
         raise RuntimeError(f"Failed to fill {COMPLAINT_PROBLEM_DESCRIPTION_FIELD}")
+    accused_site_code = _clean_field_text(selected_site.get("value"))
+    accused_site_name = _clean_field_text(selected_site.get("text"))
+    if not accused_site_code or not accused_site_name:
+        raise RuntimeError("Complaint accused-site lookup did not produce an exact code and name")
+    return {
+        "BILL_CODE": bill_code,
+        "CATEGORY": "违规操作类",
+        "EXCEPTION_TYPE": "分批",
+        "REMARK": problem_description,
+        "EXCEPTIONSITE_SIDE_CODE": accused_site_code,
+        "EXCEPTIONSITE_SIDE": accused_site_name,
+    }
 
 
 def _close_complaint_form(page, form_frame) -> None:
@@ -1412,11 +1676,12 @@ def _submit_complaint(
     problem_bills: Sequence[str],
     page1_path: str,
     page2_path: str,
+    complaint_list_url: str = "",
 ) -> ComplaintSubmitResult:
     form_frame = _open_complaint_form_frame(page)
     form_frame.locator(COMPLAINT_SAVE_BUTTON_SELECTOR).first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
 
-    _fill_complaint_form(
+    expected = _fill_complaint_form(
         form_frame,
         bill_code=bill_code,
         accused_site=accused_site,
@@ -1431,36 +1696,59 @@ def _submit_complaint(
         _upload_grid_attachment(page, form_frame, 2, page2_path),
     ]
 
-    save_status, response = _click_save_and_wait(page, form_frame, timeout_ms=30_000)
-    if save_status == "duplicate":
-        return ComplaintSubmitResult(
-            uploaded_files=uploaded,
-            saved=False,
-            skipped=True,
-            message="duplicate complaint exists; skipped",
+    save_status = "unknown"
+    response = None
+    save_error: Optional[Exception] = None
+    try:
+        save_status, response = _click_save_and_wait(page, form_frame, timeout_ms=30_000)
+        if save_status != "duplicate":
+            if response is None:
+                raise RuntimeError("Complaint save did not return a response")
+            if response.status >= 400:
+                raise RuntimeError(f"Complaint save failed with status {response.status}")
+
+            payload = _safe_json(response)
+            if isinstance(payload, dict):
+                success = payload.get("success")
+                code = payload.get("code")
+                status = str(payload.get("status") or "").lower()
+                if success is False:
+                    raise RuntimeError("Complaint save was explicitly rejected")
+                if code not in (None, 0, "0") and status not in {"", "ok", "success", "200"}:
+                    raise RuntimeError("Complaint save returned an unexpected acknowledgement")
+    except Exception as exc:
+        save_error = exc
+
+    try:
+        verification = verify_complaint_registration(
+            session,
+            expected=expected,
+            complaint_list_url=complaint_list_url,
         )
-
-    if response is None:
-        raise RuntimeError("Complaint save did not return a response")
-    if response.status >= 400:
-        raise RuntimeError(f"Complaint save failed with status {response.status}")
-
-    payload = _safe_json(response)
-    if isinstance(payload, dict):
-        success = payload.get("success")
-        code = payload.get("code")
-        status = str(payload.get("status") or "").lower()
-        if success is False:
-            raise RuntimeError(f"Complaint save rejected: {payload}")
-        if code not in (None, 0, "0") and status not in {"", "ok", "success", "200"}:
-            raise RuntimeError(f"Complaint save returned unexpected payload: {payload}")
+    except Exception as exc:
+        if save_status == "duplicate":
+            raise RuntimeError(
+                "Duplicate complaint warning was not confirmed by the authoritative list"
+            ) from exc
+        if save_error is not None:
+            raise RuntimeError(
+                "WRITE_OUTCOME_UNKNOWN: complaint save response is unavailable and readback did not confirm the write"
+            ) from exc
+        raise RuntimeError(
+            "Complaint save was acknowledged but authoritative readback did not confirm it"
+        ) from exc
 
     _dismiss_first_visible_text(page, ("确定", "关闭", "知道了"), timeout_ms=2_000)
+    skipped = save_status == "duplicate"
     return ComplaintSubmitResult(
         uploaded_files=uploaded,
-        saved=True,
-        skipped=False,
-        message="success",
+        saved=not skipped,
+        skipped=skipped,
+        message="duplicate complaint verified" if skipped else "success verified",
+        verified=True,
+        external_id=_clean_field_text(verification.get("external_id")),
+        plan_sha256=_clean_field_text(verification.get("plan_sha256")),
+        verification=verification,
     )
 
 
@@ -1487,6 +1775,7 @@ def _run_single_bill(
         problem_bills=tracking.problem_bills,
         page1_path=tracking.page1_path,
         page2_path=tracking.page2_path,
+        complaint_list_url=page_context.complaint_list_url,
     )
     if submit_result.skipped:
         return {
@@ -1499,6 +1788,10 @@ def _run_single_bill(
             "uploaded_files": submit_result.uploaded_files,
             "saved": False,
             "skipped": True,
+            "verified": submit_result.verified,
+            "external_id": submit_result.external_id,
+            "plan_sha256": submit_result.plan_sha256,
+            "verification": submit_result.verification,
         }
     return {
         "bill_code": bill_code,
@@ -1510,6 +1803,10 @@ def _run_single_bill(
         "uploaded_files": submit_result.uploaded_files,
         "saved": submit_result.saved,
         "skipped": False,
+        "verified": submit_result.verified,
+        "external_id": submit_result.external_id,
+        "plan_sha256": submit_result.plan_sha256,
+        "verification": submit_result.verification,
     }
 
 

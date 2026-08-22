@@ -1,6 +1,84 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
+from unittest.mock import ANY
+
 from _tms_runtime_test_support import *  # noqa: F403
+
+
+def _ronghui_params(**values):
+    return {"account_id": "configured-ronghui-test", **values}
+
+
+def _yunda_params(**values):
+    return {"account_id": "configured-yunda-test", **values}
+
+
+def _daily_persisted_snapshot_proof(**kwargs):
+    return {
+        "ok": True,
+        "ledger_rows": len(kwargs["ledger_rows"]),
+        "publication_rows": len(kwargs["publication_rows"]),
+        "persistence_marker": kwargs["persistence_marker"],
+    }
+
+
+def _daily_persistence_readback_proof(**kwargs):
+    marker = kwargs["persistence_marker"]
+
+    def row_set(name):
+        return {
+            "verified": True,
+            "record_count": marker[name]["count"],
+            "sha256": marker[name]["sha256"],
+        }
+
+    return {
+        "verified": True,
+        "record_count": len(kwargs["ledger_rows"]),
+        "problem_events": row_set("problem_events"),
+        "sign_events": row_set("sign_events"),
+        "sign_verification_states": row_set("sign_verification_states"),
+        "ledger_rows": row_set("ledger_rows"),
+        "publication_rows": row_set("publication_rows"),
+        "ledger_sha256": marker["ledger_rows"]["sha256"],
+        "publication_sha256": marker["publication_rows"]["sha256"],
+        "persistence_sha256": marker["marker_sha256"],
+    }
+
+
+def _daily_projection_readback_proof(rows, *, digest_char):
+    return {
+        "verified": True,
+        "record_count": len(rows),
+        "snapshot_sha256": digest_char * 64,
+    }
+
+
+def _daily_completed_run_readback_proof(*, expected_values, **_kwargs):
+    diagnostics = expected_values.get("diagnostics_json")
+    marker = (
+        diagnostics.get("persistence_commit")
+        if isinstance(diagnostics, dict)
+        else None
+    )
+    return {
+        "verified": True,
+        "record_count": expected_values.get("published_rows", 0),
+        "publication_sha256": expected_values.get("fingerprint") or "",
+        "persistence_sha256": (
+            marker.get("marker_sha256") if isinstance(marker, dict) else ""
+        ),
+    }
+
+
+def _daily_failed_run_values(_run_id, diagnostics, *, message):
+    return {
+        "status": "failed",
+        "published_rows": 0,
+        "fingerprint": diagnostics.get("fingerprint"),
+        "diagnostics_json": diagnostics,
+        "error_summary": message,
+    }
 
 
 class Phase7SyncToolTests(unittest.TestCase):
@@ -30,6 +108,32 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.addCleanup(self.send_order_sql_patch.stop)
         self.addCleanup(self.yunda_send_sql_patch.stop)
         self.addCleanup(self.delivery_status_sql_patch.stop)
+
+    def test_single_account_sync_builders_fail_closed_and_bind_approved_account(self):
+        target_date = date(2026, 8, 13)
+        builders = (
+            (send_order_sync_tool._build_request_body, "ronghui-test"),
+            (yunda_dispatch_forecast_sync_tool._build_request_body, "yunda-test"),
+            (yunda_send_waybills_sync_tool._build_request_body, "yunda-test"),
+        )
+
+        for builder, account_id in builders:
+            with self.subTest(builder=builder.__module__):
+                with self.assertRaisesRegex(ValueError, "account_id"):
+                    builder({}, target_date)
+                request = builder({"account_id": account_id}, target_date)
+                self.assertEqual(account_id, request["params"]["account_id"])
+                self.assertNotIn("accountId", request["params"])
+                self.assertNotIn("session_profile", request["params"])
+
+        with self.assertRaisesRegex(ValueError, "不一致"):
+            send_order_sync_tool._build_request_body(
+                {
+                    "account_id": "approved-account",
+                    "request_body": {"params": {"accountId": "other-account"}},
+                },
+                target_date,
+            )
 
     def test_get_waybill_tracking_cache_merges_console_waybill_and_scan_rows(self):
         calls: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = []
@@ -145,7 +249,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 },
             ) as call_http,
         ):
-            result = delivery_status_sync_tool.run_delivery_status_sync({})
+            result = delivery_status_sync_tool.run_delivery_status_sync(_ronghui_params())
 
         self.assertTrue(result["ok"])
         self.assertEqual(4, result["scanned"])
@@ -206,7 +310,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 return_value={"ok": True, "data": [{"运单编号": "R201", "签收状态": "已签收"}]},
             ) as call_http,
         ):
-            result = delivery_status_sync_tool.run_delivery_status_sync({})
+            result = delivery_status_sync_tool.run_delivery_status_sync(_ronghui_params())
 
         self.assertTrue(result["ok"])
         self.assertEqual([0, 200], list_offsets)
@@ -241,7 +345,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 return_value={"ok": True, "data": [{"运单编号": "R001", "签收状态": "已签收"}]},
             ),
         ):
-            result = delivery_status_sync_tool.run_delivery_status_sync({"dry_run": True})
+            result = delivery_status_sync_tool.run_delivery_status_sync(_ronghui_params(dry_run=True))
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["dry_run"])
@@ -275,7 +379,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             ),
         ):
             result = delivery_status_sync_tool.run_delivery_status_sync(
-                {"bill_codes": ["R001"], "record_ids": ["rec-1"]}
+                _ronghui_params(bill_codes=["R001"], record_ids=["rec-1"])
             )
 
         self.assertTrue(result["ok"])
@@ -422,7 +526,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             self.send_order_sql_mock.return_value = {"ok": True, "upserted": 1, "updates": 1, "creates": 0, "deleted_stale": 1}
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12"})
+            result = send_order_sync_tool.run_send_order_sync(_ronghui_params(target_date="2026-05-12"))
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["updates"])
@@ -479,7 +583,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.get_workflow_resource", return_value={"base_token": "base", "table_id": "table"}),
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12"})
+            result = send_order_sync_tool.run_send_order_sync(_ronghui_params(target_date="2026-05-12"))
 
         self.assertTrue(result["ok"])
         self.assertEqual(3, result["raw_fetched"])
@@ -538,7 +642,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.get_workflow_resource", return_value={"base_token": "base", "table_id": "table"}),
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12"})
+            result = send_order_sync_tool.run_send_order_sync(_ronghui_params(target_date="2026-05-12"))
 
         self.assertTrue(result["ok"])
         self.assertEqual([0, 200, 0, 200], list_offsets)
@@ -588,7 +692,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.get_workflow_resource", return_value={"base_token": "base", "table_id": "table"}),
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12"})
+            result = send_order_sync_tool.run_send_order_sync(_ronghui_params(target_date="2026-05-12"))
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["updates"])
@@ -630,7 +734,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.get_workflow_resource", return_value={"base_token": "base", "table_id": "table"}),
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12"})
+            result = send_order_sync_tool.run_send_order_sync(_ronghui_params(target_date="2026-05-12"))
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["updates"])
@@ -656,7 +760,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.call_http_service", return_value=tms_payload),
             patch("tools.send_order_sync_tool.feishu_operation") as feishu_op,
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12", "sql_only": True})
+            result = send_order_sync_tool.run_send_order_sync(
+                _ronghui_params(target_date="2026-05-12", sql_only=True)
+            )
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["sql_only"])
@@ -763,7 +869,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.get_workflow_resource", return_value={"base_token": "base", "table_id": "table"}),
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12"})
+            result = send_order_sync_tool.run_send_order_sync(_ronghui_params(target_date="2026-05-12"))
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["fetched"])
@@ -801,7 +907,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = send_order_sync_tool.run_send_order_sync(
-                {"start_date": "2026-05-06", "end_date": "2026-05-08"}
+                _ronghui_params(start_date="2026-05-06", end_date="2026-05-08")
             )
 
         self.assertTrue(result["ok"])
@@ -831,7 +937,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.send_order_sync_tool.get_workflow_resource", return_value={"base_token": "base", "table_id": "table"}),
             patch("tools.send_order_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = send_order_sync_tool.run_send_order_sync({"target_date": "2026-05-12", "dry_run": True})
+            result = send_order_sync_tool.run_send_order_sync(
+                _ronghui_params(target_date="2026-05-12", dry_run=True)
+            )
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["dry_run"])
@@ -936,7 +1044,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_dispatch_forecast_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync(
-                {"target_date": "2026-05-11"}
+                _yunda_params(target_date="2026-05-11")
             )
 
         self.assertTrue(result["ok"])
@@ -1001,7 +1109,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_dispatch_forecast_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync(
-                {"target_date": "2026-05-11"}
+                _yunda_params(target_date="2026-05-11")
             )
 
         self.assertTrue(result["ok"])
@@ -1020,7 +1128,7 @@ class Phase7SyncToolTests(unittest.TestCase):
 
         with patch("tools.yunda_dispatch_forecast_sync_tool.call_http_service", return_value=tms_payload):
             result = yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync(
-                {"target_date": "2026-05-11"}
+                _yunda_params(target_date="2026-05-11")
             )
 
         self.assertIn("韵达派件预测接口返回格式异常: list", result["error"])
@@ -1050,7 +1158,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_dispatch_forecast_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync(
-                {"target_date": "2026-05-11"}
+                _yunda_params(target_date="2026-05-11")
             )
 
         self.assertTrue(result["ok"])
@@ -1095,7 +1203,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_dispatch_forecast_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync(
-                {"target_date": "2026-05-11", "append_only": False}
+                _yunda_params(target_date="2026-05-11", append_only=False)
             )
 
         self.assertTrue(result["ok"])
@@ -1145,7 +1253,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_send_waybills_sync_tool.sync_console_waybills", side_effect=_fake_sync_console_waybills),
         ):
             result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
-                {"target_date": "2026-05-15", "sql_only": True}
+                _yunda_params(target_date="2026-05-15", sql_only=True)
             )
 
         self.assertEqual("/yunda_send_waybills", http_calls[0][0])
@@ -1182,7 +1290,11 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_send_waybills_sync_tool.sync_console_waybills", side_effect=_fake_sync_console_waybills),
         ):
             result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
-                {"start_date": "2026-05-15", "end_date": "2026-05-16", "sql_only": True}
+                _yunda_params(
+                    start_date="2026-05-15",
+                    end_date="2026-05-16",
+                    sql_only=True,
+                )
             )
 
         self.assertTrue(result["ok"])
@@ -1314,7 +1426,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.phase7_sync_common.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             self.yunda_send_sql_mock.return_value = {"ok": True, "upserted": 2, "updates": 1, "creates": 1, "deleted_stale": 0}
-            result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync({"target_date": "2026-05-15"})
+            result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
+                _yunda_params(target_date="2026-05-15")
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["updates"])
@@ -1388,7 +1502,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_send_waybills_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
             patch("tools.phase7_sync_common.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync({"target_date": "2026-05-21"})
+            result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
+                _yunda_params(target_date="2026-05-21")
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["fetched"])
@@ -1449,7 +1565,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_send_waybills_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
-                {"start_date": "2026-05-06", "end_date": "2026-05-08"}
+                _yunda_params(start_date="2026-05-06", end_date="2026-05-08")
             )
 
         self.assertTrue(result["ok"])
@@ -1501,7 +1617,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_send_waybills_sync_tool.feishu_operation", side_effect=_fake_feishu_operation),
             patch("tools.phase7_sync_common.feishu_operation", side_effect=_fake_feishu_operation),
         ):
-            result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync({"target_date": "2026-05-15"})
+            result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
+                _yunda_params(target_date="2026-05-15")
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["updates"])
@@ -1553,7 +1671,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.phase7_sync_common.feishu_operation", side_effect=_fake_feishu_operation),
         ):
             result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
-                {"target_date": "2026-05-15", "ensure_fields": False}
+                _yunda_params(target_date="2026-05-15", ensure_fields=False)
             )
 
         self.assertTrue(result["ok"])
@@ -1577,7 +1695,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.yunda_send_waybills_sync_tool.feishu_operation") as feishu_operation_mock,
         ):
             result = yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync(
-                {"target_date": "2026-05-15", "dry_run": True}
+                _yunda_params(target_date="2026-05-15", dry_run=True)
             )
 
         self.assertTrue(result["ok"])
@@ -1595,12 +1713,17 @@ class Phase7SyncToolTests(unittest.TestCase):
             "error": "当前未登录或登录态已过期。",
         }
         with patch("tools.arrival_stats_sync_tool.call_http_service", return_value=auth_payload):
-            result = arrival_stats_sync_tool.run_arrival_stats_sync({})
+            result = arrival_stats_sync_tool.run_arrival_stats_sync(
+                {"account_id": "ronghui-test"}
+            )
         self.assertEqual("AUTH_REQUIRED", result.get("error_code"))
 
     def test_arrive_list_sync_uses_dispatch_forecast_rows_without_detail_query(self):
+        captured_request = {}
+
         def fake_call_http_service(endpoint, request_body):
             if endpoint == "/fetch_dispatch":
+                captured_request.update(request_body)
                 return {
                     "data": [
                         {"BILL_CODE": "H2003441275"},
@@ -1618,14 +1741,21 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.arrive_list_sync_tool.call_http_service", side_effect=fake_call_http_service),
             patch("tools.arrive_list_sync_tool.replace_waybill_records", return_value={"ok": True, "replaced": 1}) as replace_records,
             patch("tools.arrive_list_sync_tool._write_sheet_resource", return_value={"ok": True, "rows": 1}) as write_sheet,
+            patch(
+                "tools.arrive_list_sync_tool.save_forecast_snapshot",
+                return_value={"ok": True, "run_id": "forecast-run", "rows": 1},
+            ),
         ):
-            result = arrive_list_sync_tool.run_arrive_list_sync({})
+            result = arrive_list_sync_tool.run_arrive_list_sync(
+                {"account_id": "ronghui-test"}
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(1, result["skipped_receipt_like"])
         self.assertEqual(1, result["bill_codes"])
         self.assertEqual(1, result["detail_records"])
         self.assertEqual("fetch_dispatch", result["source"])
+        self.assertEqual("ronghui-test", captured_request["params"]["account_id"])
         records = replace_records.call_args.args[0]
         self.assertEqual(["R00014652502"], [record["tracking_number"] for record in records])
         self.assertEqual("测试货物", records[0]["goods_name"])
@@ -1647,60 +1777,218 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.arrive_list_sync_tool._write_sheet_resource", return_value={"ok": True, "rows": 0}),
         ):
             result = arrive_list_sync_tool.run_arrive_list_sync(
-                {"target_date": "2026-05-04", "dry_run": True}
+                {
+                    "account_id": "ronghui-test",
+                    "target_date": "2026-05-04",
+                    "dry_run": True,
+                }
             )
 
         self.assertTrue(result["ok"])
         self.assertEqual("2026-05-04", captured_request["params"]["target_date"])
+        self.assertEqual("ronghui-test", captured_request["params"]["account_id"])
         self.assertEqual("05.04运单编号", arrive_list_sync_tool._build_title({"target_date": "2026-05-04"})[0])
+
+    def test_arrive_list_sync_requires_control_plane_account(self):
+        with patch("tools.arrive_list_sync_tool.call_http_service") as source_mock:
+            result = arrive_list_sync_tool.run_arrive_list_sync({})
+
+        self.assertEqual("forecast_validation_failed", result["stage"])
+        self.assertIn("account_id", result["error"])
+        source_mock.assert_not_called()
+
+    def test_arrival_tools_reject_nested_account_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "账号与控制平面批准"):
+            arrive_list_sync_tool._build_dispatch_request(
+                {
+                    "account_id": "approved-account",
+                    "request_body": {"params": {"accountId": "different-account"}},
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "账号与控制平面批准"):
+            arrival_stats_sync_tool._bind_account_id(
+                {"account_id": "different-account"},
+                "approved-account",
+                label="扫描请求",
+            )
 
     def test_scan_sync_handles_malformed_fetch_response(self):
         with patch("tools.scan_sync_tool.call_http_service", return_value={"unexpected": True}):
-            result = scan_sync_tool.run_scan_sync({})
+            result = scan_sync_tool.run_scan_sync({"account_id": "ronghui_default"})
         self.assertIn("get_scan 返回格式异常", result["error"])
+
+    def test_scan_sync_passes_target_date_and_dry_run_does_not_write_or_scan(self):
+        rows = [{"source": "get_scan"}]
+        normalized_rows = [
+            {"raw_code": "R00010001", "destination": "测试站", "code_type": "child"}
+        ]
+        child_items = [{"bill_code": "R00010001", "station_name": "测试站"}]
+        with (
+            patch("tools.scan_sync_tool.call_http_service", return_value={"data": rows}) as call_http,
+            patch("tools.scan_sync_tool.normalize_scan_rows", return_value=normalized_rows),
+            patch("tools.scan_sync_tool.child_items_from_scan_rows", return_value=child_items),
+            patch("tools.scan_sync_tool.replace_scan_codes") as replace_scan_codes,
+        ):
+            result = scan_sync_tool.run_scan_sync(
+                {
+                    "target_date": "2026-08-12",
+                    "dry_run": True,
+                    "account_id": "ronghui_default",
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(1, call_http.call_count)
+        self.assertEqual("/get_scan", call_http.call_args.args[0])
+        self.assertEqual("2026/08/12", call_http.call_args.args[1]["params"]["date"])
+        self.assertEqual(
+            "ronghui_default",
+            call_http.call_args.args[1]["params"]["account_id"],
+        )
+        replace_scan_codes.assert_not_called()
+
+    def test_scan_sync_rejects_conflicting_target_date_params(self):
+        with self.assertRaisesRegex(ValueError, "target_date 不能与"):
+            scan_sync_tool._resolve_get_scan_request_params(
+                {"target_date": "2026-08-12", "account_id": "ronghui_default"},
+                {"params": {"date": "2026/08/13"}},
+            )
+
+    def test_scan_sync_stops_after_first_failed_batch_and_preserves_nested_error(self):
+        rows = [{"source": "get_scan"}]
+        normalized_rows = [
+            {"raw_code": "R00010001", "destination": "测试站", "code_type": "child"}
+        ]
+        child_items = [
+            {"bill_code": "R00010001", "station_name": "测试站"},
+            {"bill_code": "R00010002", "station_name": "测试站"},
+        ]
+        scan_failure = {
+            "ok": False,
+            "data": {
+                "ok": False,
+                "stage": "upload",
+                "message": 'value too large for column "SCAN_MAN_CODE"',
+            },
+        }
+        with (
+            patch(
+                "tools.scan_sync_tool.call_http_service",
+                side_effect=[{"data": rows}, scan_failure],
+            ) as call_http,
+            patch("tools.scan_sync_tool.normalize_scan_rows", return_value=normalized_rows),
+            patch("tools.scan_sync_tool.child_items_from_scan_rows", return_value=child_items),
+            patch(
+                "tools.scan_sync_tool.replace_scan_codes",
+                return_value={"ok": True, "replaced": 1},
+            ),
+            patch("tools.scan_sync_tool._trigger_scan_flow") as trigger_flow,
+        ):
+            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "trigger_flow": True, "account_id": "ronghui_default"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("SCAN_NEXT_BATCH_FAILED", result["error_code"])
+        self.assertEqual(1, result["failed_batch"])
+        self.assertIn("SCAN_MAN_CODE", result["error"])
+        self.assertEqual(2, call_http.call_count)
+        self.assertEqual(1, len(result["batch_results"]))
+        self.assertEqual("batch_failed", result["flow_result"]["reason"])
+        trigger_flow.assert_not_called()
+
+    def test_scan_sync_reports_explicit_batch_limits(self):
+        rows = [{"source": "get_scan"}]
+        normalized_rows = [
+            {"raw_code": "R00010001", "destination": "测试站", "code_type": "child"}
+        ]
+        child_items = [
+            {"bill_code": f"R0001000{index}", "station_name": "测试站"}
+            for index in range(1, 4)
+        ]
+        with (
+            patch(
+                "tools.scan_sync_tool.call_http_service",
+                side_effect=[{"data": rows}, {"ok": True, "detail": []}],
+            ),
+            patch("tools.scan_sync_tool.normalize_scan_rows", return_value=normalized_rows),
+            patch("tools.scan_sync_tool.child_items_from_scan_rows", return_value=child_items),
+            patch(
+                "tools.scan_sync_tool.replace_scan_codes",
+                return_value={"ok": True, "replaced": 1},
+            ),
+        ):
+            result = scan_sync_tool.run_scan_sync({"batch_size": 1, "max_batches": 1, "account_id": "ronghui_default"})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(3, result["candidate_items"])
+        self.assertEqual(1, result["scheduled_items"])
+        self.assertEqual(2, result["omitted_items"])
+
+    def test_scan_sync_rejects_non_positive_limits(self):
+        with self.assertRaisesRegex(ValueError, "batch_size 必须大于 0"):
+            scan_sync_tool._chunk([], 0)
+
+    def test_scan_sync_passes_optional_target_date_to_get_scan(self):
+        captured_request = {}
+
+        def fake_call_http_service(endpoint, request_body):
+            self.assertEqual("/get_scan", endpoint)
+            captured_request.update(request_body)
+            return {"data": []}
+
+        with patch(
+            "tools.scan_sync_tool.call_http_service",
+            side_effect=fake_call_http_service,
+        ):
+            result = scan_sync_tool.run_scan_sync(
+                {"target_date": "2026-05-04", "dry_run": True, "account_id": "ronghui_default"}
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("2026/05/04", captured_request["params"]["date"])
+
+    def test_scan_sync_omits_empty_target_date_for_today_default(self):
+        captured_request = {}
+
+        def fake_call_http_service(endpoint, request_body):
+            self.assertEqual("/get_scan", endpoint)
+            captured_request.update(request_body)
+            return {"data": []}
+
+        with patch(
+            "tools.scan_sync_tool.call_http_service",
+            side_effect=fake_call_http_service,
+        ):
+            result = scan_sync_tool.run_scan_sync({"target_date": "", "dry_run": True, "account_id": "ronghui_default"})
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("date", captured_request["params"])
+
+    def test_scan_sync_rejects_conflicting_date_sources(self):
+        with self.assertRaisesRegex(ValueError, "不能与 request_body.params"):
+            scan_sync_tool.run_scan_sync(
+                {
+                    "target_date": "2026-05-04",
+                    "request_body": {"params": {"date": "2026/05/03"}},
+                    "dry_run": True,
+                    "account_id": "ronghui_default",
+                }
+            )
 
     def test_arrival_stats_sync_handles_malformed_fetch_response(self):
         with patch("tools.arrival_stats_sync_tool.call_http_service", return_value={"unexpected": True}):
             with self.assertRaises(ValueError):
                 arrival_stats_sync_tool.run_arrival_stats_sync({})
 
-    def test_daily_sign_sync_merges_r13_resource_into_qianshou_request(self):
-        with (
-            patch(
-                "tools.daily_sign_sync_tool.get_workflow_resource",
-                return_value={
-                    "username": "r13-user",
-                    "password": "r13-pass",
-                    "disp_site_code": "7390004",
-                    "days": 7,
-                    "_meta": {"source": "backend_console"},
-                },
-            ),
-            patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "YS1",
-                        "planSignTime": "2026-04-24 10:00:00",
-                        "goodsName": "demo",
-                        "pcs": 1,
-                    }
-                ],
-            ) as call_tms,
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", return_value={"ok": True}),
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(
-                {"request_body": {"days": 1}, "enrich_addresses": False, "enrich_arrival_counts": False}
+    def test_daily_sign_request_does_not_load_legacy_r13_resource(self):
+        with patch("tools.daily_sign_sync_tool.get_workflow_resource") as resource_mock:
+            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
+                {"request_body": {"days": 1}}
             )
 
-        self.assertTrue(result["ok"])
-        request_body = call_tms.call_args.args[1]
-        self.assertEqual("r13-user", request_body["username"])
-        self.assertEqual("r13-pass", request_body["password"])
-        self.assertEqual("7390004", request_body["disp_site_code"])
-        self.assertEqual(1, request_body["days"])
-        self.assertNotIn("_meta", request_body)
+        self.assertEqual({"days": 1}, request_body)
+        resource_mock.assert_not_called()
 
     def test_daily_sign_sync_prefers_r13_account_manager_credentials(self):
         class FakeAccountManager:
@@ -1714,91 +2002,331 @@ class Phase7SyncToolTests(unittest.TestCase):
         fake_manager = FakeAccountManager()
         with (
             patch("tools.daily_sign_sync_tool.get_account_manager", return_value=fake_manager),
+            patch("tools.daily_sign_sync_tool.get_workflow_resource") as resource_mock,
+        ):
+            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
+                {
+                    "r13_account_id": "r13_default",
+                    "request_body": {"days": 1},
+                }
+            )
+
+        self.assertEqual("r13_account_id", fake_manager.kwargs["account_field"])
+        self.assertEqual("", fake_manager.kwargs["output_account_field"])
+        self.assertEqual("", fake_manager.kwargs["output_session_profile_field"])
+        self.assertEqual("r13-account-user", request_body["username"])
+        self.assertEqual("r13-account-pass", request_body["password"])
+        resource_mock.assert_not_called()
+
+    def test_daily_sign_request_rejects_inline_credentials_and_account_selectors(self):
+        for forbidden in ("username", "password", "account_id", "r13_account_id"):
+            with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
+                daily_sign_sync_tool.build_daily_sign_request_body(
+                    {"request_body": {"days": 1, forbidden: "caller-controlled"}}
+                )
+
+    def test_daily_sign_sync_surfaces_get_qianshou_error(self):
+        from datetime import datetime
+
+        state = {
+            "ledger": {},
+            "arrivals": {},
+            "target_station_codes": set(),
+            "problems": {},
+            "signs": {},
+            "source_refs": [],
+            "arrival_source_proof": {
+                "complete": True,
+                "active_stat_runs": 1,
+                "latest_forecast_runs": 0,
+                "run_ids": ["arrival-run"],
+            },
+        }
+        with (
             patch(
-                "tools.daily_sign_sync_tool.get_workflow_resource",
-                return_value={
-                    "username": "legacy-resource-user",
-                    "password": "legacy-resource-pass",
-                    "disp_site_code": "7390004",
-                },
+                "tools.daily_sign_sync_tool.start_sync_run",
+                return_value=("source-run", datetime(2026, 8, 13, 9, 0, 0)),
+            ),
+            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("tools.daily_sign_pipeline.finish_sync_run") as finish_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=_daily_completed_run_readback_proof,
+            ) as verify_completed,
+            patch(
+                "tools.daily_sign_pipeline._resolve_r13_request",
+                return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "YS1",
-                        "planSignTime": "2026-04-24 10:00:00",
-                        "goodsName": "demo",
-                        "pcs": 1,
-                    }
-                ],
-            ) as call_tms,
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", return_value={"ok": True}),
+                return_value={
+                    "ok": False,
+                    "error_code": "AUTH_REQUIRED",
+                    "error": "R13 SSO login failed",
+                },
+            ),
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
                     "r13_account_id": "r13_default",
-                    "request_body": {"days": 1},
-                    "enrich_addresses": False,
-                    "enrich_arrival_counts": False,
+                    "account_id": "ronghui_daxiang_s",
+                    "days": 1,
                 }
             )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual("r13_account_id", fake_manager.kwargs["account_field"])
-        self.assertEqual("", fake_manager.kwargs["output_account_field"])
-        self.assertEqual("", fake_manager.kwargs["output_session_profile_field"])
-        request_body = call_tms.call_args.args[1]
-        self.assertEqual("r13-account-user", request_body["username"])
-        self.assertEqual("r13-account-pass", request_body["password"])
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("AUTH_REQUIRED", result["error"]["code"])
+        finish_mock.assert_called_once()
+        verify_completed.assert_called_once()
 
-    def test_daily_sign_request_body_helper_merges_r13_resource_without_meta(self):
-        with patch(
-            "tools.daily_sign_sync_tool.get_workflow_resource",
-            return_value={
-                "username": "r13-user",
-                "password": "r13-pass",
-                "disp_site_code": "7390004",
-                "days": 7,
-                "_meta": {"source": "backend_console"},
-            },
+    def test_daily_sign_sync_rejects_implicit_accounts_before_source_calls(self):
+        with (
+            patch("tools.daily_sign_sync_tool.call_http_service") as source_mock,
+            patch("tools.daily_sign_sync_tool.start_sync_run") as run_mock,
         ):
-            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
-                {"request_body": {"start": "2026-05-31 00:00:00", "end": "2026-05-31 23:59:59", "days": 1}}
+            result = daily_sign_sync_tool.run_daily_sign_sync({})
+
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("ACCOUNT_AMBIGUOUS", result["error"]["code"])
+        source_mock.assert_not_called()
+        run_mock.assert_not_called()
+
+    def test_daily_sign_sync_commits_c7_ledger_and_returns_unified_evidence(self):
+        from datetime import datetime
+
+        observed_at = datetime(2026, 8, 13, 9, 0, 0)
+        state = {
+            "ledger": {},
+            "arrivals": {},
+            "target_station_codes": set(),
+            "problems": {},
+            "signs": {},
+            "sign_verifications": {},
+            "source_refs": ["arrival_stat:arrival-run:arrival-hash"],
+            "arrival_source_proof": {
+                "complete": True,
+                "active_stat_runs": 1,
+                "latest_forecast_runs": 0,
+                "run_ids": ["arrival-run"],
+            },
+        }
+        r13_rows = [
+            {
+                "billNumberMain": "R1",
+                "planSignTime": "2026-08-13 23:59:59",
+            }
+        ]
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.start_sync_run",
+                return_value=("source-run", observed_at),
+            ),
+            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch(
+                "tools.daily_sign_pipeline._resolve_r13_request",
+                return_value={"days": 1, "fetch_all": True, "page": 1},
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                return_value={"data": r13_rows},
+            ),
+            patch(
+                "tools.daily_sign_pipeline._source_query_window",
+                return_value=(observed_at, observed_at),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._collect_problem_events",
+                return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._collect_sign_events",
+                return_value=([], {"source_rows": 0, "complete": True}),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                return_value=([], {"complete": True, "queried": 0}),
+            ) as exact_mock,
+            patch(
+                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                return_value=(
+                    [],
+                    {
+                        "complete": True,
+                        "queried": 0,
+                        "verification_rows": [],
+                    },
+                ),
+            ) as historical_mock,
+            patch(
+                "tools.daily_sign_sync_tool._enrich_missing_addresses",
+                side_effect=lambda rows, _params: (rows, {"ok": True, "updated": 0}),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                side_effect=_daily_persisted_snapshot_proof,
+            ) as persist_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                side_effect=_daily_persistence_readback_proof,
+            ) as verify_persistence,
+            patch(
+                "tools.daily_sign_sync_tool._sync_bitable",
+                side_effect=lambda rows, _params: {
+                    "ok": True,
+                    "written": len(rows),
+                    "readback": _daily_projection_readback_proof(
+                        rows,
+                        digest_char="b",
+                    ),
+                },
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_sheet",
+                side_effect=lambda rows, _params: {
+                    "ok": True,
+                    "rows": len(rows),
+                    "readback": _daily_projection_readback_proof(
+                        rows,
+                        digest_char="s",
+                    ),
+                },
+            ),
+            patch("tools.daily_sign_sync_tool.finish_sync_run") as finish_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=_daily_completed_run_readback_proof,
+            ) as verify_completed,
+        ):
+            result = daily_sign_sync_tool.run_daily_sign_sync(
+                {
+                    "r13_account_id": "r13_default",
+                    "account_id": "ronghui_daxiang_s",
+                    "days": 1,
+                }
             )
 
-        self.assertEqual("r13-user", request_body["username"])
-        self.assertEqual("r13-pass", request_body["password"])
-        self.assertEqual("7390004", request_body["disp_site_code"])
-        self.assertEqual("2026-05-31 00:00:00", request_body["start"])
-        self.assertEqual("2026-05-31 23:59:59", request_body["end"])
-        self.assertEqual(1, request_body["days"])
-        self.assertNotIn("_meta", request_body)
+        self.assertEqual("SUCCESS", result["status"])
+        self.assertIsNone(result["error"])
+        self.assertEqual("source-run", result["data"]["source_run_id"])
+        self.assertEqual(["daily_sign:R1"], result["data"]["legacy_candidate_keys"])
+        self.assertTrue(result["meta"]["pagination_complete"])
+        persist_kwargs = persist_mock.call_args.kwargs
+        marker = persist_kwargs["persistence_marker"]
+        self.assertIn(
+            f"mysql:daily_sign_ledger:{marker['ledger_rows']['sha256']}",
+            result["meta"]["evidence_refs"],
+        )
+        self.assertEqual(1, len(persist_kwargs["ledger_rows"]))
+        self.assertEqual([], persist_kwargs["sign_verification_states"])
+        self.assertEqual(0, marker["problem_events"]["count"])
+        self.assertEqual(0, marker["sign_events"]["count"])
+        self.assertEqual(0, marker["sign_verification_states"]["count"])
+        self.assertEqual(1, marker["ledger_rows"]["count"])
+        self.assertEqual(1, marker["publication_rows"]["count"])
+        self.assertEqual(64, len(marker["marker_sha256"]))
+        verify_persistence.assert_called_once()
+        verify_completed.assert_called_once()
+        exact_mock.assert_called_once_with(
+            ANY,
+            {"R1": r13_rows[0]},
+            ANY,
+            persist=False,
+        )
+        historical_mock.assert_called_once_with(
+            ANY,
+            {"R1": r13_rows[0]},
+            ANY,
+            observed_at=observed_at,
+            persist=False,
+        )
+        self.assertFalse(finish_mock.call_args.args[1]["degraded"])
 
-    def test_daily_sign_sync_surfaces_get_qianshou_error(self):
-        with patch(
-            "tools.daily_sign_sync_tool.call_http_service",
-            return_value={"ok": False, "error": "R13 SSO login failed", "http_status": 500},
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync({})
+    def test_daily_sign_sync_rejects_incomplete_exact_history_without_projection(self):
+        from datetime import datetime
 
-        self.assertIn("get_qianshou 执行失败", result["error"])
-        self.assertNotIn("返回格式异常", result["error"])
-
-    def test_daily_sign_sync_zero_rows_preserves_targets(self):
+        observed_at = datetime(2026, 8, 13, 9, 0, 0)
+        state = {
+            "ledger": {},
+            "arrivals": {},
+            "target_station_codes": set(),
+            "problems": {},
+            "signs": {},
+            "sign_verifications": {},
+            "source_refs": ["arrival_stat:arrival-run:arrival-hash"],
+            "arrival_source_proof": {
+                "complete": True,
+                "active_stat_runs": 1,
+                "latest_forecast_runs": 0,
+                "run_ids": ["arrival-run"],
+            },
+        }
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot") as bitable_mock,
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot") as sheet_mock,
+            patch(
+                "tools.daily_sign_sync_tool.start_sync_run",
+                return_value=("source-run", observed_at),
+            ),
+            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch(
+                "tools.daily_sign_pipeline._resolve_r13_request",
+                return_value={"days": 1, "fetch_all": True, "page": 1},
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                return_value={"data": []},
+            ),
+            patch(
+                "tools.daily_sign_pipeline._source_query_window",
+                return_value=(observed_at, observed_at),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._collect_problem_events",
+                return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._collect_sign_events",
+                return_value=([], {"source_rows": 0, "complete": True}),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                return_value=([], {"complete": True, "queried": 0}),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                return_value=(
+                    [],
+                    {
+                        "complete": False,
+                        "errors": [{"tracking_number": "R1", "error": "source unavailable"}],
+                        "verification_rows": [],
+                    },
+                ),
+            ),
+            patch(
+                "tools.daily_sign_pipeline._finish_failed_run",
+                side_effect=_daily_failed_run_values,
+            ) as failed_run_mock,
+            patch(
+                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                side_effect=_daily_completed_run_readback_proof,
+            ) as verify_completed,
+            patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist_mock,
+            patch("tools.daily_sign_sync_tool._sync_bitable") as bitable_mock,
+            patch("tools.daily_sign_sync_tool._sync_sheet") as sheet_mock,
         ):
-            result = daily_sign_sync_tool.run_daily_sign_sync({})
+            result = daily_sign_sync_tool.run_daily_sign_sync(
+                {
+                    "r13_account_id": "r13_default",
+                    "account_id": "ronghui_daxiang_s",
+                    "days": 1,
+                }
+            )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(0, result["fetched"])
-        self.assertEqual("no_fetched_rows", result["skip_reason"])
-        self.assertTrue(result["bitable_result"]["skipped"])
-        self.assertTrue(result["sheet_result"]["skipped"])
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("INCOMPLETE_SOURCE_EVIDENCE", result["error"]["code"])
+        self.assertTrue(result["error"]["retryable"])
+        failed_run_mock.assert_called_once()
+        verify_completed.assert_called_once()
+        persist_mock.assert_not_called()
         bitable_mock.assert_not_called()
         sheet_mock.assert_not_called()
 
@@ -1815,15 +2343,23 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("tools.site_send_list_sync_tool.sync_bitable_snapshot", return_value=bitable_result) as bitable_mock,
             patch("tools.site_send_list_sync_tool.sync_sheet_snapshot", return_value=sheet_result) as sheet_mock,
         ):
-            result = site_send_list_sync_tool.run_site_send_list_sync({})
+            result = site_send_list_sync_tool.run_site_send_list_sync(_ronghui_params())
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["fetched"])
         self.assertNotIn("skip_reason", result)
         self.assertEqual(bitable_result, result["bitable_result"])
         self.assertEqual(sheet_result, result["sheet_result"])
-        bitable_mock.assert_called_once_with("phase7.site_send_bitable", [], {})
-        sheet_mock.assert_called_once_with("phase7.site_send_sheet", [], {})
+        bitable_mock.assert_called_once_with(
+            "phase7.site_send_bitable",
+            [],
+            {"account_id": "configured-ronghui-test"},
+        )
+        sheet_mock.assert_called_once_with(
+            "phase7.site_send_sheet",
+            [],
+            {"account_id": "configured-ronghui-test"},
+        )
 
     def test_daily_sign_sheet_values_match_header_columns(self):
         values = daily_sign_sync_tool._build_sheet_values(
@@ -1846,52 +2382,15 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("", values[0][7])
 
     def test_daily_sign_sync_sorts_feishu_output_by_plan_sign_time(self):
-        written_records = []
-        written_values = []
-
-        def capture_bitable(_resource_key, records, _params):
-            written_records.extend(records)
-            return {"ok": True, "written": len(records)}
-
-        def capture_sheet(_resource_key, values, _params):
-            written_values.extend(values)
-            return {"ok": True, "rows": len(values)}
-
-        with (
-            patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "LATE",
-                        "planSignTime": "2026-06-21 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "托盘",
-                        "pcs": 2,
-                    },
-                    {
-                        "billNumberMain": "EARLY",
-                        "planSignTime": "2026-06-19 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "纸箱",
-                        "pcs": 1,
-                    },
-                    {
-                        "billNumberMain": "MIDDLE",
-                        "planSignTime": "2026-06-20 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "编织袋",
-                        "pcs": 5,
-                    },
-                ],
-            ),
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", side_effect=capture_bitable),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(
-                {"enrich_addresses": False, "enrich_arrival_counts": False}
-            )
-
-        self.assertTrue(result["ok"])
+        rows = daily_sign_sync_tool._sort_rows_by_plan_sign_time(
+            [
+                {"billNumberMain": "LATE", "planSignTime": "2026-06-21 23:59:59"},
+                {"billNumberMain": "EARLY", "planSignTime": "2026-06-19 23:59:59"},
+                {"billNumberMain": "MIDDLE", "planSignTime": "2026-06-20 23:59:59"},
+            ]
+        )
+        written_values = daily_sign_sync_tool._build_sheet_values(rows)
+        written_records = daily_sign_sync_tool._build_records(rows)
         self.assertEqual(["EARLY", "MIDDLE", "LATE"], [row[0] for row in written_values])
         self.assertEqual(
             ["EARLY", "MIDDLE", "LATE"],
@@ -1899,103 +2398,82 @@ class Phase7SyncToolTests(unittest.TestCase):
         )
 
     def test_daily_sign_sync_writes_arrived_quantity_to_sheet_column_h(self):
-        written_values = []
-        captured_sheet_params = {}
-
-        def capture_sheet(_resource_key, values, _params):
-            written_values.extend(values)
-            captured_sheet_params.update(_params)
-            return {"ok": True, "rows": len(values)}
-
+        rows = [
+            {
+                "billNumberMain": "R0001",
+                "planSignTime": "2026-06-04 23:59:59",
+                "goodsName": "配件",
+                "packTypeDesc": "编织袋",
+                "pcs": 6,
+                "dispAddress": "湖南省邵阳市大祥区",
+                "dispatchMode": "送货（不含上楼）",
+            }
+        ]
         with (
-            patch(
-                "tools.daily_sign_sync_tool.call_http_service",
-                return_value=[
-                    {
-                        "billNumberMain": "R0001",
-                        "planSignTime": "2026-06-04 23:59:59",
-                        "goodsName": "配件",
-                        "packTypeDesc": "编织袋",
-                        "pcs": 6,
-                        "dispAddress": "湖南省邵阳市大祥区",
-                        "dispatchMode": "送货（不含上楼）",
-                    }
-                ],
-            ),
             patch(
                 "tools.daily_sign_sync_tool.get_waybill_tracking_cache",
                 create=True,
                 return_value={"arrived_quantity": 4},
             ),
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", return_value={"ok": True, "written": 1}),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
         ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(
-                {
-                    "enrich_addresses": False,
-                    "spreadsheet_token": "sheet-token",
-                    "range": "Sheet1!A2:G100",
-                    "clear_range": "Sheet1!A2:G100",
-                }
-            )
+            rows, result = daily_sign_sync_tool._enrich_rows_with_arrival_quantities(rows, {})
 
         self.assertTrue(result["ok"])
+        written_values = daily_sign_sync_tool._build_sheet_values(rows)
+        captured_sheet_params = daily_sign_sync_tool._sheet_params_for_values(
+            {
+                "spreadsheet_token": "sheet-token",
+                "range": "Sheet1!A2:G100",
+                "clear_range": "Sheet1!A2:G100",
+            },
+            written_values,
+        )
         self.assertEqual(8, len(written_values[0]))
         self.assertEqual(4, written_values[0][7])
         self.assertEqual("Sheet1!A2:H2", captured_sheet_params["range"])
         self.assertEqual("Sheet1!A2:H100", captured_sheet_params["clear_range"])
 
     def test_daily_sign_sync_enriches_masked_addresses_before_writing(self):
-        written_records = []
-        written_values = []
-
-        def capture_bitable(_resource_key, records, _params):
-            written_records.extend(records)
-            return {"ok": True, "written": len(records)}
-
-        def capture_sheet(_resource_key, values, _params):
-            written_values.extend(values)
-            return {"ok": True, "rows": len(values)}
-
+        rows = [
+            {
+                "billNumberMain": "R0001",
+                "planSignTime": "2026-05-20 23:59:59",
+                "goodsName": "瓦",
+                "packTypeDesc": "托盘袋",
+                "pcs": 2,
+                "dispAddress": "湖南省******",
+                "dispatchMode": "送货（不含上楼）",
+            }
+        ]
         with (
             patch(
                 "tools.daily_sign_sync_tool.call_http_service",
-                side_effect=[
-                    [
+                return_value={
+                    "ok": True,
+                    "data": [
                         {
-                            "billNumberMain": "R0001",
-                            "planSignTime": "2026-05-20 23:59:59",
-                            "goodsName": "瓦",
-                            "packTypeDesc": "托盘袋",
-                            "pcs": 2,
-                            "dispAddress": "湖南省******",
-                            "dispatchMode": "送货（不含上楼）",
+                            "tracking_number": "R0001",
+                            "recipient_address": "湖南省邵阳市大祥区雨溪镇",
                         }
                     ],
-                    {
-                        "ok": True,
-                        "data": [
-                            {
-                                "tracking_number": "R0001",
-                                "recipient_address": "湖南省邵阳市大祥区雨溪镇",
-                            }
-                        ],
-                    },
-                ],
+                },
             ) as call_tms,
-            patch("tools.daily_sign_sync_tool.sync_bitable_snapshot", side_effect=capture_bitable),
-            patch("tools.daily_sign_sync_tool.sync_sheet_snapshot", side_effect=capture_sheet),
         ):
-            result = daily_sign_sync_tool.run_daily_sign_sync({"enrich_arrival_counts": False})
+            rows, result = daily_sign_sync_tool._enrich_rows_with_detail_addresses(
+                rows,
+                {"account_id": "ronghui_daxiang_s"},
+            )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(1, result["address_enrichment"]["updated"])
+        self.assertEqual(1, result["updated"])
+        written_records = daily_sign_sync_tool._build_records(rows)
+        written_values = daily_sign_sync_tool._build_sheet_values(rows)
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_records[0]["fields"]["收件人地址"])
         self.assertEqual("湖南省邵阳市大祥区雨溪镇", written_values[0][5])
-        self.assertEqual("/query_waybill_detail", call_tms.call_args_list[1].args[0])
+        self.assertEqual("/query_waybill_detail", call_tms.call_args.args[0])
         self.assertEqual(
             [{"bill_code": "R0001"}],
-            call_tms.call_args_list[1].args[1]["params"]["items"],
+            call_tms.call_args.args[1]["params"]["items"],
         )
 
     def test_sheet_snapshot_can_clear_wider_range_than_write_range(self):

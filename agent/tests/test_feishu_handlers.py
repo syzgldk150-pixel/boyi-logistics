@@ -301,7 +301,7 @@ class FeishuMessageHandlerTests(unittest.TestCase):
 
 
 class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_scan_command_when_running_does_not_start_second_script(self):
+    async def test_project_command_without_verified_event_identity_is_rejected(self):
         replies: list[str] = []
         pending_calls: list[tuple[str, dict, int]] = []
 
@@ -331,10 +331,8 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, len(replies))
         self.assertNotIn("程序正在执行", replies[0])
-        self.assertIn("扫描任务失败", replies[0])
-        self.assertIn("脚本正在执行中", replies[0])
-        self.assertEqual("cancel_running_tool", pending_calls[0][1]["type"])
-        self.assertEqual("sync_scan_codes", pending_calls[0][1]["tool_name"])
+        self.assertIn("STABLE_EVENT_ID_REQUIRED", replies[0])
+        self.assertEqual([], pending_calls)
 
     async def test_cancel_running_tool_pending_calls_cancel_tool(self):
         replies: list[str] = []
@@ -369,8 +367,8 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
             await message_handler._process_and_reply("取消", "user-1", "chat-1")
 
         clear_pending_mock.assert_called_once_with("chat-1")
-        self.assertEqual([("sync_scan_codes", "2026-06-08 15:44:00")], cancel_calls)
-        self.assertEqual(["扫描任务：已发送取消请求，正在停止脚本。"], replies)
+        self.assertEqual([], cancel_calls)
+        self.assertEqual(["旧取消状态已失效，请从事项中心按 Run 取消。"], replies)
 
     async def test_explicit_cancel_scan_command_calls_cancel_tool(self):
         replies: list[str] = []
@@ -397,15 +395,15 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             await message_handler._process_and_reply("取消扫描", "user-1", "chat-1")
 
-        self.assertEqual([("sync_scan_codes", "")], cancel_calls)
-        self.assertEqual(["扫描任务：已发送取消请求，正在停止脚本。"], replies)
+        self.assertEqual([], cancel_calls)
+        self.assertEqual(["取消失败：当前消息没有绑定可取消的事项运行。"], replies)
 
     async def test_price_reply_sends_ronghui_and_yunda_messages(self):
         replies: list[tuple[str, str]] = []
         case = self
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 case.assertEqual("get_price", tool_name)
                 return {
                     "success": True,
@@ -462,7 +460,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("yunda", pending_payload["auth_session"])
         self.assertIn("登录过期需要重新登录", replies[0])
 
-    async def test_authenticated_send_code_response_resumes_original_tool(self):
+    async def test_authenticated_send_code_response_resumes_original_control_plane_run(self):
         replies: list[tuple[str, str]] = []
         executed: list[tuple[str, dict]] = []
 
@@ -499,9 +497,10 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         set_pending_mock.assert_not_called()
         clear_pending_mock.assert_called_once_with("oc_test")
-        self.assertEqual(executed, [("track_waybill", {"tracking_number": "292084494", "provider": "yunda"})])
+        self.assertEqual(executed, [])
         self.assertEqual(replies[0][0], "send_code_start")
         self.assertEqual(replies[1][0], "login_success")
+        self.assertIn("原事项运行已恢复", replies[1][1])
 
     async def test_ronghui_authenticated_send_code_uses_auto_image_login_flow(self):
         replies: list[tuple[str, str]] = []
@@ -540,10 +539,11 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         set_pending_mock.assert_not_called()
         clear_pending_mock.assert_called_once_with("oc_test")
-        self.assertEqual(executed, [("get_price", {"address": "武汉", "weight": 12})])
+        self.assertEqual(executed, [])
         self.assertEqual(replies[0][0], "send_code_start")
         self.assertIn("自动识别图片验证码并登录", replies[0][1])
         self.assertEqual(replies[1][0], "login_success")
+        self.assertIn("原事项运行已恢复", replies[1][1])
 
     async def test_ronghui_pending_image_send_code_keeps_manual_fallback_prompt(self):
         replies: list[tuple[str, str]] = []

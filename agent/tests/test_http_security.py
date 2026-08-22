@@ -5,7 +5,8 @@ from agent.http_security import (
     authenticate_internal_request,
     is_public_path,
 )
-from tools.internal_http import InternalApiTokenNotConfigured, internal_api_headers
+from agent.execution_boundary import EXECUTION_CAPABILITY_ENV, EXECUTION_CAPABILITY_HEADER
+from tools.internal_http import ExecutionCapabilityNotConfigured, internal_api_headers
 
 
 def test_public_routes_do_not_require_internal_token() -> None:
@@ -50,22 +51,28 @@ def test_protected_route_accepts_matching_token() -> None:
     ) is None
 
 
-def test_internal_client_headers_fail_closed_and_send_configured_token() -> None:
-    original = os.environ.pop("AGENT_INTERNAL_API_TOKEN", None)
+def test_internal_client_headers_fail_closed_and_send_only_execution_capability() -> None:
+    original_capability = os.environ.pop(EXECUTION_CAPABILITY_ENV, None)
+    original_internal_token = os.environ.get("AGENT_INTERNAL_API_TOKEN")
     try:
         try:
             internal_api_headers()
-        except InternalApiTokenNotConfigured:
+        except ExecutionCapabilityNotConfigured:
             pass
         else:
-            raise AssertionError("missing internal token must fail closed")
+            raise AssertionError("missing execution capability must fail closed")
 
         os.environ["AGENT_INTERNAL_API_TOKEN"] = "configured-test-token"
+        os.environ[EXECUTION_CAPABILITY_ENV] = "execution-capability"
         assert internal_api_headers() == {
-            INTERNAL_API_TOKEN_HEADER: "configured-test-token",
+            EXECUTION_CAPABILITY_HEADER: "execution-capability",
         }
     finally:
-        if original is None:
+        if original_capability is None:
+            os.environ.pop(EXECUTION_CAPABILITY_ENV, None)
+        else:
+            os.environ[EXECUTION_CAPABILITY_ENV] = original_capability
+        if original_internal_token is None:
             os.environ.pop("AGENT_INTERNAL_API_TOKEN", None)
         else:
-            os.environ["AGENT_INTERNAL_API_TOKEN"] = original
+            os.environ["AGENT_INTERNAL_API_TOKEN"] = original_internal_token

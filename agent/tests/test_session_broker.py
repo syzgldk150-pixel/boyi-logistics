@@ -43,6 +43,40 @@ class SessionBrokerTests(unittest.TestCase):
             "expires_at": "",
         }
 
+    @staticmethod
+    def _ronghui_storage_state(*, user_info_http_only: bool = False):
+        return {
+            "cookies": [
+                {
+                    "name": "sid",
+                    "value": "fixture-session",
+                    "domain": "tms.ronghuiwl.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "Lax",
+                },
+                {
+                    "name": "userInfo",
+                    "value": json.dumps(
+                        {
+                            "loginUserName": "fixture-user",
+                            "loginUserAccount": "fixture-account",
+                            "loginSiteName": "fixture-site",
+                            "loginSiteCode": "fixture-site-code",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "domain": "tms.ronghuiwl.com",
+                    "path": "/",
+                    "httpOnly": user_info_http_only,
+                    "secure": False,
+                    "sameSite": "Lax",
+                },
+            ],
+            "origins": [],
+        }
+
     def _playwright_patch(self, page=None):
         page = page or _FakePage(self.login_config.login_url, self.login_config.home_url)
         context = _FakeContext(page)
@@ -72,10 +106,15 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertTrue(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker.describe_status(validate=False)["pending_code"])
 
-    def test_send_code_handles_ronghui_image_captcha_page(self):
+    def test_send_code_saves_manual_ronghui_image_challenge_when_ocr_unavailable(self):
         page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
         with (
             patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
+            patch.object(
+                session_broker_module.captcha_ocr,
+                "classify_captcha_image",
+                side_effect=session_broker_module.captcha_ocr.CaptchaOCRUnavailableError("fixture unavailable"),
+            ),
             self._playwright_patch(page),
         ):
             result = self.broker.send_code()
@@ -134,68 +173,64 @@ class SessionBrokerTests(unittest.TestCase):
     async def _submit_code_from_async_loop(self, code: str):
         return self.broker.submit_code(code)
 
-    def test_send_code_handles_ronghui_image_captcha_page(self):
+    def test_send_code_uses_original_ronghui_browser_login_flow(self):
         page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
-        session = _CaptchaPostSession([
-            _DummyResponse(status_code=302, headers={"Location": self.login_config.home_url}),
-        ])
         authenticated_meta = self._authenticated_meta()
         with (
             patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
-            patch.object(self.broker, "_requests_session_from_storage_state_payload", return_value=session),
-            patch.object(
-                self.broker,
-                "_fetch_ronghui_captcha_challenge",
-                return_value=(b"captcha-1", "data:image/png;base64,Y2FwdGNoYS0x", "image/png"),
-            ),
             patch.object(session_broker_module.captcha_ocr, "classify_captcha_image", return_value="ab12"),
-            patch.object(self.broker, "_persist_requests_session_locked", return_value=authenticated_meta) as persist_mock,
+            patch.object(self.broker, "_persist_storage_state_locked", return_value=authenticated_meta) as persist_mock,
             self._playwright_patch(page),
         ):
             result = self.broker.send_code()
 
         self.assertEqual(result["status"], "authenticated")
-        persist_mock.assert_called_once_with(session, self.login_config)
-        self.assertEqual(len(session.post_calls), 1)
-        self.assertEqual(session.post_calls[0]["data"]["validateCode"], "ab12")
-        self.assertTrue(self.broker._pending_storage_state_path.exists())
+        self.assertEqual(page.filled[session_broker_module.USERNAME_INPUT], "demo-user")
+        self.assertEqual(page.filled[session_broker_module.PASSWORD_INPUT], "demo-pass")
+        self.assertEqual(page.filled[session_broker_module.CODE_INPUT], "ab12")
+        self.assertEqual(page.clicked, [session_broker_module.LOGIN_BUTTON])
+        persist_mock.assert_called_once()
+        self.assertIs(persist_mock.call_args.args[1], page)
+        self.assertFalse(self.broker._pending_storage_state_path.exists())
         self.assertFalse(self.broker._pending_login_state_path.exists())
 
     def test_auto_login_ronghui_retries_after_empty_ocr_and_then_succeeds(self):
-        session = _CaptchaPostSession([
-            _DummyResponse(status_code=302, headers={"Location": self.login_config.home_url}),
-        ])
+        page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
+        context = _FakeContext(page)
         authenticated_meta = self._authenticated_meta()
-        fetch_side_effect = [
+        capture_side_effect = [
             (b"captcha-1", "data:image/png;base64,Y2FwdGNoYS0x", "image/png"),
             (b"captcha-2", "data:image/png;base64,Y2FwdGNoYS0y", "image/png"),
         ]
         with (
-            patch.object(self.broker, "_fetch_ronghui_captcha_challenge", side_effect=fetch_side_effect),
+            patch.object(self.broker, "_capture_ronghui_captcha_payload", side_effect=capture_side_effect),
             patch.object(session_broker_module.captcha_ocr, "classify_captcha_image", side_effect=["", "ab12"]),
-            patch.object(self.broker, "_persist_requests_session_locked", return_value=authenticated_meta) as persist_mock,
+            patch.object(self.broker, "_persist_storage_state_locked", return_value=authenticated_meta) as persist_mock,
         ):
-            result = self.broker._auto_login_ronghui_image_captcha(session, self.login_config)
+            result = self.broker._auto_login_ronghui_image_captcha_browser(context, page, self.login_config)
 
         self.assertEqual(result["status"], "authenticated")
-        persist_mock.assert_called_once_with(session, self.login_config)
-        self.assertEqual(len(session.post_calls), 1)
-        self.assertEqual(session.post_calls[0]["data"]["validateCode"], "ab12")
+        persist_mock.assert_called_once_with(context, page)
+        self.assertEqual(page.filled[session_broker_module.CODE_INPUT], "ab12")
+        self.assertEqual(page.clicked, [session_broker_module.LOGIN_BUTTON])
 
     def test_auto_login_ronghui_falls_back_to_manual_after_three_failed_attempts(self):
-        session = _CaptchaPostSession([
-            _DummyResponse(status_code=200, text="validateCode system/login", headers={"Content-Type": "text/html"})
-            for _ in range(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS)
-        ])
-        fetch_side_effect = [
+        page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
+        context = _FakeContext(page)
+        capture_side_effect = [
             (f"captcha-{idx}".encode("utf-8"), f"data:image/png;base64,Y2FwdGNoYS0{idx}", "image/png")
-            for idx in range(1, session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS + 1)
+            for idx in range(1, session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS + 2)
         ]
         with (
-            patch.object(self.broker, "_fetch_ronghui_captcha_challenge", side_effect=fetch_side_effect),
+            patch.object(self.broker, "_capture_ronghui_captcha_payload", side_effect=capture_side_effect),
             patch.object(session_broker_module.captcha_ocr, "classify_captcha_image", return_value="ab12"),
+            patch.object(
+                self.broker,
+                "_submit_ronghui_browser_login_attempt",
+                return_value=(False, "fixture rejected", False),
+            ) as submit_mock,
         ):
-            result = self.broker._auto_login_ronghui_image_captcha(session, self.login_config)
+            result = self.broker._auto_login_ronghui_image_captcha_browser(context, page, self.login_config)
 
         self.assertEqual(result["status"], "pending_code")
         self.assertEqual(result["challenge_type"], "image")
@@ -205,7 +240,7 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertTrue(result["auto_login_attempts_exhausted"])
         self.assertTrue(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker._pending_login_state_path.exists())
-        self.assertEqual(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS, len(session.post_calls))
+        self.assertEqual(session_broker_module.MAX_AUTO_CAPTCHA_ATTEMPTS, submit_mock.call_count)
 
     def test_price_profile_send_code_reuses_auto_image_login_flow(self):
         price_broker = self._configure_broker_state(
@@ -226,27 +261,18 @@ class SessionBrokerTests(unittest.TestCase):
             phone="",
         )
         page = _FakeImageCaptchaPage(price_config.login_url, price_config.home_url)
-        session = _CaptchaPostSession([
-            _DummyResponse(status_code=302, headers={"Location": price_config.home_url}),
-        ])
         authenticated_meta = self._authenticated_meta()
         with (
             patch.object(price_broker, "resolve_login_config", return_value=price_config),
-            patch.object(price_broker, "_requests_session_from_storage_state_payload", return_value=session),
-            patch.object(
-                price_broker,
-                "_fetch_ronghui_captcha_challenge",
-                return_value=(b"captcha-price", "data:image/png;base64,Y2FwdGNoYS1wcmljZQ==", "image/png"),
-            ),
             patch.object(session_broker_module.captcha_ocr, "classify_captcha_image", return_value="pq12"),
-            patch.object(price_broker, "_persist_requests_session_locked", return_value=authenticated_meta),
+            patch.object(price_broker, "_persist_storage_state_locked", return_value=authenticated_meta),
             self._playwright_patch(page),
         ):
             result = price_broker.send_code()
 
         self.assertEqual(result["status"], "authenticated")
-        self.assertEqual(len(session.post_calls), 1)
-        self.assertEqual(session.post_calls[0]["data"]["validateCode"], "pq12")
+        self.assertEqual(page.filled[session_broker_module.CODE_INPUT], "pq12")
+        self.assertEqual(page.clicked, [session_broker_module.LOGIN_BUTTON])
 
     def test_yunda_image_captcha_auto_login_succeeds_with_ocr(self):
         yunda_config = LoginConfig(
@@ -421,54 +447,7 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertFalse(self.broker._pending_storage_state_path.exists())
         self.assertTrue(self.broker.describe_status(validate=False)["authenticated"])
 
-    def test_submit_code_posts_ronghui_image_captcha_without_phone(self):
-        page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
-        with (
-            patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
-            self._playwright_patch(page),
-        ):
-            self.broker.send_code()
-
-        captured = {}
-
-        home_url = self.login_config.home_url
-
-        class CaptchaSession:
-            cookies = []
-
-            def post(self, url, data=None, headers=None, allow_redirects=None, timeout=None):
-                captured["url"] = url
-                captured["data"] = data
-                captured["headers"] = headers
-                captured["allow_redirects"] = allow_redirects
-                captured["timeout"] = timeout
-                return _DummyResponse(status_code=302, headers={"Location": home_url})
-
-        authenticated_meta = {
-            "status": "authenticated",
-            "last_validation_at": "",
-            "last_error_summary": "",
-            "authenticated_at": "2026-04-22 12:00:00",
-            "pending_since": "",
-            "expires_at": "",
-        }
-        with (
-            patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
-            patch.object(self.broker, "_requests_session_from_storage_state_payload", return_value=CaptchaSession()),
-            patch.object(self.broker, "_persist_requests_session_locked", return_value=authenticated_meta),
-        ):
-            result = self.broker.submit_code("abcd")
-
-        self.assertEqual(result["status"], "authenticated")
-        self.assertEqual(captured["url"], "https://tms.ronghuiwl.com/system/login")
-        self.assertEqual(captured["data"], {
-            "username": "demo-user",
-            "password": "demo-pass",
-            "validateCode": "abcd",
-        })
-        self.assertNotIn("phone", captured["data"])
-
-    def test_submit_code_posts_ronghui_image_captcha_without_phone(self):
+    def test_submit_code_uses_original_ronghui_browser_flow_without_phone(self):
         self.broker._pending_storage_state_path.write_text(
             json.dumps({"cookies": [], "origins": []}, ensure_ascii=False),
             encoding="utf-8",
@@ -477,8 +456,8 @@ class SessionBrokerTests(unittest.TestCase):
             json.dumps(
                 {
                     "challenge_type": "image",
-                    "challenge_label": "å›¾ç‰‡éªŒè¯ç ",
-                    "captcha_image": "data:image/png;base64,abc",
+                    "challenge_label": "图片验证码",
+                    "captcha_image": "data:image/png;base64,Y2FwdGNoYQ==",
                     "captcha_image_mime": "image/png",
                 },
                 ensure_ascii=False,
@@ -494,42 +473,30 @@ class SessionBrokerTests(unittest.TestCase):
                 "pending_since": "2026-04-22 11:58:00",
                 "expires_at": "",
                 "challenge_type": "image",
-                "challenge_label": "å›¾ç‰‡éªŒè¯ç ",
-                "captcha_image": "data:image/png;base64,abc",
+                "challenge_label": "图片验证码",
+                "captcha_image": "data:image/png;base64,Y2FwdGNoYQ==",
                 "captcha_image_mime": "image/png",
             }
         )
 
-        captured = {}
-        home_url = self.login_config.home_url
+        page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
         authenticated_meta = self._authenticated_meta()
-
-        class CaptchaSession:
-            cookies = [_SimpleCookie()]
-
-            def post(self, url, data=None, headers=None, allow_redirects=None, timeout=None):
-                captured["url"] = url
-                captured["data"] = data
-                captured["headers"] = headers
-                captured["allow_redirects"] = allow_redirects
-                captured["timeout"] = timeout
-                return _DummyResponse(status_code=302, headers={"Location": home_url})
-
         with (
             patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
-            patch.object(self.broker, "_requests_session_from_storage_state_payload", return_value=CaptchaSession()),
-            patch.object(self.broker, "_persist_requests_session_locked", return_value=authenticated_meta),
+            patch.object(self.broker, "_persist_storage_state_locked", return_value=authenticated_meta) as persist_mock,
+            self._playwright_patch(page),
         ):
             result = self.broker.submit_code("abcd")
 
         self.assertEqual(result["status"], "authenticated")
-        self.assertEqual(captured["url"], "https://tms.ronghuiwl.com/system/login")
-        self.assertEqual(captured["data"], {
-            "username": "demo-user",
-            "password": "demo-pass",
-            "validateCode": "abcd",
-        })
-        self.assertNotIn("phone", captured["data"])
+        self.assertEqual(page.filled[session_broker_module.USERNAME_INPUT], "demo-user")
+        self.assertEqual(page.filled[session_broker_module.PASSWORD_INPUT], "demo-pass")
+        self.assertEqual(page.filled[session_broker_module.CODE_INPUT], "abcd")
+        self.assertNotIn(session_broker_module.PHONE_INPUT, page.filled)
+        self.assertEqual(page.clicked, [session_broker_module.LOGIN_BUTTON])
+        self.assertEqual(page.routes, ["**/validateCode/code*"])
+        self.assertEqual(page.unroutes, ["**/validateCode/code*"])
+        persist_mock.assert_called_once()
 
     def test_submit_code_persists_authenticated_before_validation(self):
         with (
@@ -564,7 +531,7 @@ class SessionBrokerTests(unittest.TestCase):
             }
         )
         self.broker._storage_state_path.write_text(
-            json.dumps({"cookies": [{"name": "sid", "value": "cookie", "domain": "tms.ronghuiwl.com", "path": "/"}], "origins": []}),
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
             encoding="utf-8",
         )
         response = _DummyResponse(status_code=200, text="dashboard", headers={})
@@ -586,7 +553,7 @@ class SessionBrokerTests(unittest.TestCase):
             }
         )
         self.broker._storage_state_path.write_text(
-            json.dumps({"cookies": [{"name": "sid", "value": "cookie", "domain": "tms.ronghuiwl.com", "path": "/"}], "origins": []}),
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -872,6 +839,91 @@ class SessionBrokerTests(unittest.TestCase):
         submit_sms.assert_called_once()
         self.assertEqual(submit_sms.call_args.kwargs["sms_code"], "123456")
         submit_captcha.assert_not_called()
+
+    def test_yunda_sms_pending_is_saved_only_after_send_api_confirms_success(self):
+        yunda_broker = SessionBroker(
+            profile_name="yunda", login_mode="yunda_password", require_phone=False
+        )
+        self._configure_broker_state(yunda_broker, "yunda-sms-send-success")
+        yunda_config = LoginConfig(
+            base_origin="https://ky-sso.yunda56.com",
+            login_url="https://ky-sso.yunda56.com/login",
+            home_url="https://ky-client.yunda56.com/#/",
+            username="yunda-user", password="yunda-pass", phone="",
+        )
+
+        class SendButton:
+            def is_visible(self, timeout=None): return True
+            def is_enabled(self, timeout=None): return True
+            def click(self, timeout=None): return None
+
+        response = types.SimpleNamespace(
+            request=types.SimpleNamespace(method="POST"),
+            url="https://ky-sso.yunda56.com/public/sms/send_code",
+            status=200,
+            json=lambda: {"success": True},
+        )
+
+        class ExpectedResponse:
+            value = response
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, traceback): return False
+
+        page = Mock(url="https://ky-sso.yunda56.com/public/sms/sms_valid")
+        page.locator.return_value.first = SendButton()
+        page.expect_response.side_effect = lambda predicate, timeout: (
+            ExpectedResponse() if predicate(response) and timeout == 10_000 else None
+        )
+        result = yunda_broker._save_yunda_sms_pending_state_locked(
+            _FakeContext(page), page, config=yunda_config
+        )
+
+        self.assertEqual("pending_code", result["status"])
+        self.assertTrue(yunda_broker._pending_storage_state_path.exists())
+        self.assertTrue(yunda_broker._pending_login_state_path.exists())
+
+    def test_yunda_sms_send_rejection_does_not_create_pending_state(self):
+        yunda_broker = SessionBroker(
+            profile_name="yunda", login_mode="yunda_password", require_phone=False
+        )
+        self._configure_broker_state(yunda_broker, "yunda-sms-send-rejected")
+        yunda_config = LoginConfig(
+            base_origin="https://ky-sso.yunda56.com",
+            login_url="https://ky-sso.yunda56.com/login",
+            home_url="https://ky-client.yunda56.com/#/",
+            username="yunda-user", password="yunda-pass", phone="",
+        )
+
+        class SendButton:
+            def is_visible(self, timeout=None): return True
+            def is_enabled(self, timeout=None): return True
+            def click(self, timeout=None): return None
+
+        response = types.SimpleNamespace(
+            request=types.SimpleNamespace(method="POST"),
+            url="https://ky-sso.yunda56.com/public/sms/send_code",
+            status=200,
+            json=lambda: {"success": False},
+        )
+
+        class ExpectedResponse:
+            value = response
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, traceback): return False
+
+        page = Mock(url="https://ky-sso.yunda56.com/public/sms/sms_valid")
+        page.locator.return_value.first = SendButton()
+        page.expect_response.side_effect = lambda predicate, timeout: (
+            ExpectedResponse() if predicate(response) and timeout == 10_000 else None
+        )
+        with self.assertRaises(session_broker_module.TMSAuthStateError) as raised:
+            yunda_broker._save_yunda_sms_pending_state_locked(
+                _FakeContext(page), page, config=yunda_config
+            )
+
+        self.assertEqual("AUTH_REQUIRED", raised.exception.code)
+        self.assertFalse(yunda_broker._pending_storage_state_path.exists())
+        self.assertFalse(yunda_broker._pending_login_state_path.exists())
 
     def test_yunda_sms_submit_clicks_confirm_without_resending_code(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
@@ -1502,7 +1554,10 @@ class SessionBrokerTests(unittest.TestCase):
 
     def test_ronghui_status_validates_scan_api(self):
         self.broker._save_meta(self._authenticated_meta())
-        self.broker._storage_state_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+        self.broker._storage_state_path.write_text(
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
+            encoding="utf-8",
+        )
         home_response = _DummyResponse(status_code=200, text="dashboard", headers={})
         scan_response = _DummyResponse(status_code=200, text='{"data":[]}', headers={"Content-Type": "application/json"})
         session = _DummySession(home_response, post_response=scan_response)
@@ -1519,9 +1574,149 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual({"id": "FIND_COME_SCAN_RECORD"}, session.post_calls[0]["params"])
         self.assertEqual("1", session.post_calls[0]["data"]["pageSize"])
 
+    def test_ronghui_user_info_cookie_round_trip_stays_javascript_readable(self):
+        storage_state = self._ronghui_storage_state(user_info_http_only=False)
+        session = self.broker._requests_session_from_storage_state_payload(storage_state, self.login_config)
+
+        cookies = self.broker._storage_cookies_from_requests_session(session, "tms.ronghuiwl.com")
+        flags_by_name = {cookie["name"]: cookie["httpOnly"] for cookie in cookies}
+
+        self.assertTrue(flags_by_name["sid"])
+        self.assertFalse(flags_by_name["userInfo"])
+
+    def test_programmatic_ronghui_user_info_cookie_is_not_misclassified_as_http_only(self):
+        session = session_broker_module.requests.Session()
+        session.cookies.set(
+            "userInfo",
+            self._ronghui_storage_state()["cookies"][1]["value"],
+            domain="tms.ronghuiwl.com",
+            path="/",
+        )
+
+        cookies = self.broker._storage_cookies_from_requests_session(session, "tms.ronghuiwl.com")
+
+        self.assertEqual(1, len(cookies))
+        self.assertFalse(cookies[0]["httpOnly"])
+
+    def test_ronghui_user_info_migration_repairs_existing_http_only_state_before_ttl(self):
+        storage_state = self._ronghui_storage_state(user_info_http_only=True)
+        self.broker._storage_state_path.write_text(
+            json.dumps(storage_state, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self.broker._save_meta(
+            {
+                **self._authenticated_meta(),
+                "last_validation_at": session_broker_module._format_ts(session_broker_module._now_ts()),
+            }
+        )
+
+        session = _DummySession(_DummyResponse(status_code=200, text="dashboard"))
+        session.cookies = self.broker._requests_session_from_storage_state_payload(
+            storage_state,
+            self.login_config,
+        ).cookies
+        with (
+            patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
+            patch.object(self.broker, "_session_from_saved_state_locked", return_value=session),
+            patch.object(
+                self.broker,
+                "_validate_storage_state_with_browser_locked",
+                return_value=("authenticated", ""),
+            ) as browser_validate,
+        ):
+            status = self.broker.describe_status(validate=True)
+
+        migrated = json.loads(self.broker._storage_state_path.read_text(encoding="utf-8"))
+        user_info_cookie = next(cookie for cookie in migrated["cookies"] if cookie["name"] == "userInfo")
+        self.assertEqual("authenticated", status["status"])
+        self.assertFalse(user_info_cookie["httpOnly"])
+        browser_validate.assert_called_once()
+
+    def test_ronghui_user_info_migration_expires_when_browser_context_is_not_ready(self):
+        storage_state = self._ronghui_storage_state(user_info_http_only=True)
+        self.broker._storage_state_path.write_text(
+            json.dumps(storage_state, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self.broker._save_meta(
+            {
+                **self._authenticated_meta(),
+                "last_validation_at": session_broker_module._format_ts(session_broker_module._now_ts()),
+            }
+        )
+
+        session = _DummySession(_DummyResponse(status_code=200, text="dashboard"))
+        session.cookies = self.broker._requests_session_from_storage_state_payload(
+            storage_state,
+            self.login_config,
+        ).cookies
+        with (
+            patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
+            patch.object(self.broker, "_session_from_saved_state_locked", return_value=session),
+            patch.object(
+                self.broker,
+                "_validate_storage_state_with_browser_locked",
+                return_value=("expired", "页面用户上下文未就绪"),
+            ),
+        ):
+            status = self.broker.describe_status(validate=True)
+
+        self.assertEqual("expired", status["status"])
+        self.assertIn("页面用户上下文", status["last_error_summary"])
+
+    def test_ronghui_status_expires_when_page_user_context_cookie_is_missing(self):
+        self.broker._save_meta(self._authenticated_meta())
+        self.broker._storage_state_path.write_text(
+            json.dumps({"cookies": [], "origins": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with patch.object(self.broker, "_session_from_saved_state_locked") as session_factory:
+            status = self.broker.describe_status(validate=True)
+
+        self.assertEqual("expired", status["status"])
+        self.assertIn("页面用户上下文", status["last_error_summary"])
+        session_factory.assert_not_called()
+
+    def test_ronghui_browser_login_rejects_navigation_without_page_user_context(self):
+        page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
+        with (
+            patch.object(self.broker, "_wait_ronghui_page_user_context", return_value=False),
+            patch.object(self.broker, "_read_login_error", return_value=""),
+        ):
+            success, error_text, incomplete_context = self.broker._submit_ronghui_browser_login_attempt(
+                page,
+                self.login_config,
+                captcha_code="fixture-code",
+            )
+
+        self.assertFalse(success)
+        self.assertTrue(incomplete_context)
+        self.assertIn("页面用户上下文", error_text)
+
+    def test_shared_browser_auth_uses_profile_home_url(self):
+        broker = types.SimpleNamespace(resolve_login_config=lambda: self.login_config)
+        with patch.object(browser_manager, "get_session_broker", return_value=broker):
+            auth = browser_manager.TMSBrowserAuth(profile="fixture-profile")
+
+        self.assertEqual(self.login_config.home_url, auth.home_url)
+
+    def test_shared_browser_auth_surfaces_profile_home_resolution_error(self):
+        broker = types.SimpleNamespace(resolve_login_config=Mock(side_effect=RuntimeError("bad profile")))
+
+        with (
+            patch.object(browser_manager, "get_session_broker", return_value=broker),
+            self.assertRaisesRegex(RuntimeError, "bad profile"),
+        ):
+            browser_manager.TMSBrowserAuth(profile="fixture-profile")
+
     def test_ronghui_status_expires_when_scan_api_returns_login_page(self):
         self.broker._save_meta(self._authenticated_meta())
-        self.broker._storage_state_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+        self.broker._storage_state_path.write_text(
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
+            encoding="utf-8",
+        )
         home_response = _DummyResponse(status_code=200, text="dashboard", headers={})
         scan_response = _DummyResponse(
             status_code=200,
@@ -1541,7 +1736,10 @@ class SessionBrokerTests(unittest.TestCase):
 
     def test_ronghui_status_expires_when_menu_api_returns_failure(self):
         self.broker._save_meta(self._authenticated_meta())
-        self.broker._storage_state_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+        self.broker._storage_state_path.write_text(
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
+            encoding="utf-8",
+        )
         home_response = _DummyResponse(status_code=200, text="dashboard", headers={})
         scan_response = _DummyResponse(status_code=200, text='{"data":[]}', headers={"Content-Type": "application/json"})
         menu_response = _DummyResponse(
@@ -1571,7 +1769,10 @@ class SessionBrokerTests(unittest.TestCase):
                 "expires_at": "2026-04-23 12:00:00",
             }
         )
-        self.broker._storage_state_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+        self.broker._storage_state_path.write_text(
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
+            encoding="utf-8",
+        )
 
         response = _DummyResponse(
             status_code=200,
@@ -1590,7 +1791,7 @@ class SessionBrokerTests(unittest.TestCase):
 
     def test_describe_status_force_bypasses_validation_ttl(self):
         self.broker._storage_state_path.write_text(
-            json.dumps({"cookies": [], "origins": []}, ensure_ascii=False),
+            json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
             encoding="utf-8",
         )
         self.broker._save_meta(

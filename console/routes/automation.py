@@ -1,9 +1,31 @@
-"""Automation configuration, account and TMS session routes."""
+"""Automation projects, plugin lifecycle and business-account routes."""
 
 from __future__ import annotations
 
-from http import HTTPStatus
 from typing import Any
+
+
+def _automation_project_route(path: str) -> tuple[str, str] | None:
+    prefix = "/automations/projects/"
+    if not path.startswith(prefix):
+        return None
+    automation_id, separator, suffix = path[len(prefix) :].partition("/")
+    if not separator or not automation_id or not suffix:
+        return None
+    return automation_id, f"/{suffix}"
+
+
+def _automation_plugin_route(path: str) -> tuple[str, str] | None:
+    prefix = "/automations/plugins/"
+    if not path.startswith(prefix):
+        return None
+    remainder = path[len(prefix) :]
+    if remainder == "install":
+        return "", "install"
+    automation_id, separator, action = remainder.partition("/")
+    if not separator or not automation_id or not action or "/" in action:
+        return None
+    return automation_id, action
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
@@ -19,18 +41,15 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/automation-accounts":
         app._render_automation_accounts(handler, query)
         return True
-    if path == "/automations/session-context":
-        app._handle_automation_session_context(handler, query)
-        return True
-    session_route = app._automation_session_route(path)
-    if session_route and session_route[1] == "/status":
-        app._handle_tms_session_status(handler, profile=session_route[0], query=query)
-        return True
-    if path == "/automations/tms-session/status":
-        app._handle_tms_session_status(handler, query=query)
-        return True
     if path == "/automations/tasks/output":
         app._handle_automation_task_output(handler, query)
+        return True
+    project_route = _automation_project_route(path)
+    if project_route and project_route[1] == "/pending-approvals":
+        app._handle_automation_project_pending_approvals_get(
+            handler,
+            project_route[0],
+        )
         return True
     return False
 
@@ -50,68 +69,38 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/tasks/cancel":
         app._handle_automation_task_cancel(handler)
         return True
-    session_route = app._automation_session_route(path)
-    if session_route and app._handle_automation_session_post(handler, session_route[0], session_route[1]):
+    plugin_route = _automation_plugin_route(path)
+    if plugin_route and plugin_route[1] == "install":
+        app._handle_automation_plugin_package_upload(handler)
         return True
-    if path == "/automations/tms-session/send-code":
-        app._handle_tms_session_action(
+    if plugin_route and plugin_route[1] == "upgrade":
+        app._handle_automation_plugin_package_upload(
             handler,
-            endpoint="/internal/v1/admin/tms/session/send-code",
-            payload={},
-            success_message="TMS融辉登录已提交；如出现图片验证码，请按图输入后提交。",
-            timeout=90,
+            automation_id=plugin_route[0],
         )
         return True
-    if path == "/automations/tms-session/save-credentials":
-        values = app._parse_urlencoded_form(handler)
-        app._handle_tms_session_action(
+    if plugin_route and plugin_route[1] in {"enable", "disable", "uninstall"}:
+        app._handle_automation_plugin_instance_action(
             handler,
-            endpoint="/internal/v1/admin/tms/session/credentials",
-            payload={
-                "username": str(values.get("username", "") or "").strip(),
-                "password": str(values.get("password", "") or ""),
-                "phone": str(values.get("phone", "") or "").strip(),
-            },
-            success_message="TMS 默认登录配置已保存。",
-            timeout=20,
+            plugin_route[0],
+            plugin_route[1],
         )
         return True
-    if path == "/automations/tms-session/clear-credentials":
-        app._handle_tms_session_action(
-            handler,
-            endpoint="/internal/v1/admin/tms/session/credentials/clear",
-            payload={},
-            success_message="TMS 默认登录配置已清空。",
-            timeout=20,
-        )
+    if plugin_route and plugin_route[1] == "configuration":
+        app._handle_automation_plugin_configuration_save(handler, plugin_route[0])
         return True
-    if path == "/automations/tms-session/submit-code":
-        values = app._parse_urlencoded_form(handler)
-        sms_code = str(values.get("code", "") or "").strip()
-        if not sms_code:
-            app._respond_tms_action(
-                handler,
-                ok=False,
-                message="验证码不能为空。",
-                kind="warning",
-                http_status=HTTPStatus.BAD_REQUEST,
-            )
-            return True
-        app._handle_tms_session_action(
-            handler,
-            endpoint="/internal/v1/admin/tms/session/submit-code",
-            payload={"code": sms_code},
-            success_message="TMS 登录成功，共享登录态已更新。",
-            timeout=45,
-        )
+    project_route = _automation_project_route(path)
+    if project_route and project_route[1] == "/approval-policy":
+        app._handle_automation_project_approval_policy(handler, project_route[0])
         return True
-    if path == "/automations/tms-session/clear":
-        app._handle_tms_session_action(
+    if project_route and project_route[1] in {
+        "/pending-approvals/approve",
+        "/pending-approvals/reject",
+    }:
+        app._handle_automation_project_pending_approvals_action(
             handler,
-            endpoint="/internal/v1/admin/tms/session/clear",
-            payload={},
-            success_message="TMS 已退出登录，自动登录与断线提醒已关闭。",
-            timeout=20,
+            project_route[0],
+            project_route[1].rsplit("/", 1)[-1],
         )
         return True
     if path == "/automations/admin/import-phase7-resources":

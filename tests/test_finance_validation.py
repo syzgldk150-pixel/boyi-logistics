@@ -7,6 +7,7 @@ from shared.finance import (
     Direction,
     FeeItemKey,
     Platform,
+    SummarySemantics,
     SummarySnapshot,
     TransactionRecord,
     ValidationStatus,
@@ -70,7 +71,173 @@ def _rows() -> tuple[list[TransactionRecord], list[SummarySnapshot]]:
     return transactions, summaries
 
 
+def _ronghui_mixed_direction_rows(
+    *, summary_expense: str = "7.0000"
+) -> tuple[list[TransactionRecord], list[SummarySnapshot]]:
+    transactions = [
+        TransactionRecord(
+            platform=Platform.RONGHUI,
+            account_id="fictional-ronghui",
+            login_account="fictional-login",
+            source_record_key="fictional-rh-1",
+            business_date="2026-08-10",
+            transaction_at="2026-08-10 10:00:00",
+            primary_fee_name="派到付款",
+            direction=Direction.EXPENSE,
+            income="0",
+            expense="10.1250",
+            before_balance="100.0000",
+            after_balance="89.8750",
+            source_reference="0001",
+        ),
+        TransactionRecord(
+            platform=Platform.RONGHUI,
+            account_id="fictional-ronghui",
+            login_account="fictional-login",
+            source_record_key="fictional-rh-2",
+            business_date="2026-08-10",
+            transaction_at="2026-08-10 11:00:00",
+            primary_fee_name="派到付款",
+            direction=Direction.INCOME,
+            income="3.1250",
+            expense="0",
+            before_balance="89.8750",
+            after_balance="93.0000",
+            source_reference="0002",
+        ),
+    ]
+    summaries = [
+        SummarySnapshot(
+            Platform.RONGHUI,
+            "fictional-ronghui",
+            "2026-08-10",
+            "派到付款",
+            Direction.EXPENSE,
+            "0",
+            summary_expense,
+        )
+    ]
+    return transactions, summaries
+
+
 class FinanceValidationTests(unittest.TestCase):
+    def test_ronghui_signed_net_summary_accepts_mixed_directions_for_same_fee(self) -> None:
+        transactions, summaries = _ronghui_mixed_direction_rows()
+        report = validate_finance_capture(
+            CaptureEvidence(
+                remote_total=2,
+                page_row_counts=[2],
+                transactions=transactions,
+                summaries=summaries,
+                summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE,
+            )
+        )
+
+        self.assertIs(report.status, ValidationStatus.PASSED)
+        self.assertEqual("signed_net_by_fee", report.metrics["summary_semantics"])
+        self.assertEqual(0, report.metrics["fee_summary_mismatch_count"])
+        self.assertEqual(report.metrics["detail_net_change"], report.metrics["summary_net_change"])
+
+    def test_ronghui_signed_net_summary_rejects_decimal_difference(self) -> None:
+        transactions, summaries = _ronghui_mixed_direction_rows(
+            summary_expense="7.0001"
+        )
+        report = validate_finance_capture(
+            CaptureEvidence(
+                remote_total=2,
+                page_row_counts=[2],
+                transactions=transactions,
+                summaries=summaries,
+                summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE,
+            )
+        )
+
+        codes = {issue.code for issue in report.errors}
+        self.assertIn("FEE_SUMMARY_MISMATCH", codes)
+        self.assertIn("TOTAL_AMOUNT_MISMATCH", codes)
+
+    def test_gross_summary_semantics_still_rejects_net_only_summary(self) -> None:
+        transactions, summaries = _ronghui_mixed_direction_rows()
+        report = validate_finance_capture(
+            CaptureEvidence(
+                remote_total=2,
+                page_row_counts=[2],
+                transactions=transactions,
+                summaries=summaries,
+                summary_semantics=SummarySemantics.GROSS_BY_FEE_DIRECTION,
+            )
+        )
+
+        codes = {issue.code for issue in report.errors}
+        self.assertIn("FEE_SUMMARY_MISMATCH", codes)
+        self.assertIn("TOTAL_AMOUNT_MISMATCH", codes)
+
+    def test_ronghui_zero_net_same_fee_allows_empty_platform_summary(self) -> None:
+        transactions, _ = _ronghui_mixed_direction_rows(summary_expense="7.0000")
+        offsetting = [
+            transactions[0],
+            TransactionRecord(
+                platform=Platform.RONGHUI,
+                account_id="fictional-ronghui",
+                login_account="fictional-login",
+                source_record_key="fictional-rh-zero",
+                business_date="2026-08-10",
+                transaction_at="2026-08-10 11:00:00",
+                primary_fee_name="派到付款",
+                direction=Direction.INCOME,
+                income="10.1250",
+                expense="0",
+                before_balance="89.8750",
+                after_balance="100.0000",
+                source_reference="0002",
+            ),
+        ]
+        report = validate_finance_capture(
+            CaptureEvidence(
+                remote_total=2,
+                page_row_counts=[2],
+                transactions=offsetting,
+                summaries=[],
+                summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE,
+            )
+        )
+
+        self.assertIs(report.status, ValidationStatus.PASSED)
+
+    def test_ronghui_cross_fee_net_zero_still_requires_summary_rows(self) -> None:
+        transactions, _ = _ronghui_mixed_direction_rows(summary_expense="7.0000")
+        cross_fee = [
+            transactions[0],
+            TransactionRecord(
+                platform=Platform.RONGHUI,
+                account_id="fictional-ronghui",
+                login_account="fictional-login",
+                source_record_key="fictional-rh-cross-fee",
+                business_date="2026-08-10",
+                transaction_at="2026-08-10 11:00:00",
+                primary_fee_name="付到付款手续费",
+                direction=Direction.INCOME,
+                income="10.1250",
+                expense="0",
+                before_balance="89.8750",
+                after_balance="100.0000",
+                source_reference="0002",
+            ),
+        ]
+        report = validate_finance_capture(
+            CaptureEvidence(
+                remote_total=2,
+                page_row_counts=[2],
+                transactions=cross_fee,
+                summaries=[],
+                summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE,
+            )
+        )
+
+        codes = {issue.code for issue in report.errors}
+        self.assertIn("SUMMARY_MISSING", codes)
+        self.assertIn("FEE_SUMMARY_MISMATCH", codes)
+
     def test_valid_capture_reconciles_counts_fees_totals_and_balance_chain(self) -> None:
         transactions, summaries = _rows()
         report = validate_finance_capture(

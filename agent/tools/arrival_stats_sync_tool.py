@@ -14,18 +14,24 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
+from tools.arrive_list_sync_tool import fetch_arrive_list_records
 from tools.feishu_cli_tool import (
     _clear_spreadsheet_sheet_cache,
     _spreadsheet_sheet_info,
     _spreadsheet_sheet_ref_map,
+    _spreadsheet_sheet_title_count,
     feishu_operation,
 )
+from tools.daily_sign_store import (
+    load_completed_arrival_trackings_before,
+    save_arrival_stat_snapshot,
+)
+from tools.daily_sign_rules import business_now
 from tools.phase7_mysql_store import (
     cleanup_scan_codes,
     has_waybill_detail,
     list_pending_waybills,
     list_scan_codes,
-    list_waybill_records,
     main_tracking_from_scan_code,
     main_trackings_from_scan_rows,
     normalize_scan_rows,
@@ -33,19 +39,34 @@ from tools.phase7_mysql_store import (
     render_pending_sheet_values,
     render_stats_sheet_values,
     replace_scan_codes,
-    upsert_waybill_records,
+    replace_waybill_records,
 )
 from tools.phase7_sync_common import (
     TMSAuthSyncError,
+    bind_explicit_account_id,
     build_range_from_template,
     get_required_resource,
     parse_a1_range,
     raise_tms_auth_error_if_present,
+    require_explicit_account_id,
 )
 from tools.split_pending_snapshot import refresh_snapshot as refresh_split_pending_snapshot
 from tools.tms_tool import call_http_service
 
 _MASK_ONLY_RE = re.compile(r"^[\.\-·。…\s]+$")
+
+
+def _required_account_id(params: dict[str, Any]) -> str:
+    return require_explicit_account_id(params, label="到货统计")
+
+
+def _bind_account_id(
+    request_params: dict[str, Any],
+    account_id: str,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    return bind_explicit_account_id(request_params, account_id, label=label)
 
 
 def _emit_progress(message: str, **extra: Any) -> None:
@@ -93,7 +114,7 @@ def _apply_scan_window(request_params: dict, scan_window_days: int, target_date:
         if target_date is not None:
             request_params["date"] = target_date.strftime("%Y/%m/%d")
         return request_params
-    end_date = target_date or datetime.now().date()
+    end_date = target_date or business_now().date()
     start_date = end_date - timedelta(days=max(scan_window_days - 1, 0))
     request_params["start"] = f"{start_date.strftime('%Y/%m/%d')} 00:00:00"
     request_params["end"] = f"{end_date.strftime('%Y/%m/%d')} 23:59:59"
@@ -102,11 +123,18 @@ def _apply_scan_window(request_params: dict, scan_window_days: int, target_date:
 
 def _refresh_scan_index(params: dict) -> tuple[list[dict[str, str]], dict]:
     scan_window_days = int(params.get("scan_window_days") or 1)
+    if scan_window_days != 1:
+        raise ValueError("统计到货数据只允许拉取单个目标日；历史扫描回填请使用扫描同步工具")
     _emit_progress("开始刷新扫描索引", scan_window_days=scan_window_days)
     request_body = dict(params.get("scan_request_body") or params.get("request_body") or {})
     request_params = dict(request_body.get("params") or {})
+    request_params = _bind_account_id(
+        request_params,
+        _required_account_id(params),
+        label="扫描请求",
+    )
     request_params.setdefault("output_format", "json")
-    for key in ("session_profile", "account_id", "accountId"):
+    for key in ("session_profile",):
         if params.get(key) not in (None, "") and key not in request_params:
             request_params[key] = params[key]
     request_params = _apply_scan_window(request_params, scan_window_days, _target_date(params))
@@ -132,6 +160,53 @@ def _refresh_scan_index(params: dict) -> tuple[list[dict[str, str]], dict]:
         scan_window_days=scan_window_days,
     )
     return normalized, replace_result
+
+
+def _arrive_list_params(params: dict) -> dict:
+    arrive_params: dict[str, Any] = {}
+    if params.get("account_id") not in (None, ""):
+        arrive_params["account_id"] = params["account_id"]
+    if params.get("target_date") not in (None, ""):
+        arrive_params["target_date"] = params["target_date"]
+    if params.get("arrive_list_request_body") not in (None, ""):
+        arrive_params["request_body"] = dict(params["arrive_list_request_body"])
+    for key in ("session_profile",):
+        if params.get(key) not in (None, ""):
+            arrive_params[key] = params[key]
+    return arrive_params
+
+
+def _filter_historical_completed_arrive_records(
+    arrive_records: list[dict[str, Any]],
+    current_scan_trackings: set[str],
+    target_date: date,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    completed_trackings, history_result = load_completed_arrival_trackings_before(target_date)
+    filtered_records: list[dict[str, Any]] = []
+    filtered_arrive_only = 0
+    preserved_current_scan = 0
+    matched_historical_completed = 0
+    for record in arrive_records:
+        tracking_number = str(record.get("tracking_number") or "").strip()
+        if tracking_number not in completed_trackings:
+            filtered_records.append(record)
+            continue
+        matched_historical_completed += 1
+        if tracking_number in current_scan_trackings:
+            preserved_current_scan += 1
+            filtered_records.append(record)
+            continue
+        filtered_arrive_only += 1
+
+    result = {
+        **history_result,
+        "arrive_list_input": len(arrive_records),
+        "matched_historical_completed": matched_historical_completed,
+        "filtered_arrive_only": filtered_arrive_only,
+        "preserved_current_scan": preserved_current_scan,
+        "arrive_list_output": len(filtered_records),
+    }
+    return filtered_records, result
 
 
 def _is_masked_text(value: Any) -> bool:
@@ -220,6 +295,7 @@ def _fetch_waybill_details(bill_codes: list[str], params: dict) -> tuple[list[di
     request_body = {
         "params": {
             "items": [{"bill_code": bill_code} for bill_code in bill_codes],
+            "account_id": _required_account_id(params),
             "max_workers": int(params.get("detail_max_workers", 1)),
             "browser_headless": params.get("browser_headless", True),
             "browser_timeout_ms": int(params.get("browser_timeout_ms", 30_000)),
@@ -228,7 +304,7 @@ def _fetch_waybill_details(bill_codes: list[str], params: dict) -> tuple[list[di
         },
         "timeout_sec": int(params.get("waybill_timeout_sec", 2400)),
     }
-    for key in ("session_profile", "account_id", "accountId"):
+    for key in ("session_profile",):
         if params.get(key) not in (None, ""):
             request_body["params"][key] = params[key]
     tms_result = call_http_service("/query_waybill_detail", request_body)
@@ -241,7 +317,9 @@ def _fetch_waybill_details(bill_codes: list[str], params: dict) -> tuple[list[di
     return records, {"ok": True, "requested": len(bill_codes), "fetched": len(records)}
 
 
-def _merge_records(existing_records: list[dict[str, Any]], fetched_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_records(
+    existing_records: list[dict[str, Any]], fetched_records: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for record in existing_records:
         tracking_number = str(record.get("tracking_number") or "").strip()
@@ -275,15 +353,34 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _cap_arrival_counts_to_expected(
+    count_map: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> tuple[dict[str, int], int]:
+    quantity_by_tracking = {
+        str(record.get("tracking_number") or "").strip(): _safe_int(record.get("quantity"))
+        for record in records
+        if str(record.get("tracking_number") or "").strip()
+    }
+    capped_count_map: dict[str, int] = {}
+    quantity_adjustments = 0
+    for tracking_number, raw_count in count_map.items():
+        arrived_count = _safe_int(raw_count)
+        expected_count = quantity_by_tracking.get(str(tracking_number).strip()) or 0
+        if expected_count > 0 and arrived_count > expected_count:
+            arrived_count = expected_count
+            quantity_adjustments += 1
+        capped_count_map[tracking_number] = arrived_count
+    return capped_count_map, quantity_adjustments
+
+
 def _count_arrivals_from_scan_rows(
     scan_rows: list[dict[str, str]],
     records: list[dict[str, Any]],
     tracking_numbers: list[str],
 ) -> tuple[dict[str, Any], dict]:
     known_tracking_numbers = {
-        str(row.get("raw_code") or "").strip()
-        for row in scan_rows
-        if str(row.get("raw_code") or "").strip()
+        str(row.get("raw_code") or "").strip() for row in scan_rows if str(row.get("raw_code") or "").strip()
     }
     child_counts: Counter[str] = Counter()
     direct_main_seen: set[str] = set()
@@ -316,6 +413,7 @@ def _count_arrivals_from_scan_rows(
             quantity_gaps += 1
         count_map[tracking] = child_count
 
+    count_map, quantity_adjustments = _cap_arrival_counts_to_expected(count_map, records)
     arrived_nonzero = sum(1 for value in count_map.values() if _safe_int(value) > 0)
     return count_map, {
         "ok": True,
@@ -326,7 +424,7 @@ def _count_arrivals_from_scan_rows(
         "scan_rows": len(scan_rows),
         "child_scan_rows": sum(child_counts.values()),
         "direct_main_rows": len(direct_main_seen),
-        "quantity_adjustments": 0,
+        "quantity_adjustments": quantity_adjustments,
         "quantity_gaps": quantity_gaps,
     }
 
@@ -357,11 +455,7 @@ def _count_arrivals(tracking_numbers: list[str], params: dict) -> tuple[dict[str
     results = detail.get("results") if isinstance(detail, dict) else None
     if not isinstance(results, list):
         raise ValueError(f"child_count 返回格式异常: {tms_result}")
-    count_map = {
-        str(item.get("bill_code")): item.get("count", "")
-        for item in results
-        if item.get("bill_code")
-    }
+    count_map = {str(item.get("bill_code")): item.get("count", "") for item in results if item.get("bill_code")}
     _emit_progress("到货件数统计完成", counted=len(count_map))
     return count_map, {
         "ok": True,
@@ -517,12 +611,39 @@ def _write_stats_sheet(resource_key: str, values: list[list[Any]], params: dict)
     }
 
 
+def _write_optional_pending_sheet(values: list[list[Any]], params: dict) -> dict:
+    resource_key = "phase7.pending_arrivals_sheet"
+    try:
+        result = _write_stats_sheet(resource_key, values, params)
+    except ValueError as exc:
+        detail = str(exc)
+        _emit_progress("未齐货物表资源未配置，已跳过", reason=detail)
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "missing_resource",
+            "detail": detail,
+        }
+
+    if "error" not in result:
+        return result
+
+    detail = str(result.get("error") or "未齐货物表写入失败")
+    _emit_progress("未齐货物表写入失败，已跳过", error=detail)
+    return {
+        "ok": False,
+        "skipped": True,
+        "reason": "write_failed",
+        "detail": detail,
+    }
+
+
 def _archive_title(params: dict | None = None) -> str:
     params = params or {}
     resolved = _target_date(params)
     if resolved is not None:
         return resolved.strftime("%Y-%m-%d")
-    return datetime.now().strftime("%Y-%m-%d")
+    return business_now().strftime("%Y-%m-%d")
 
 
 def _build_archive_resource(params: dict) -> dict:
@@ -570,13 +691,16 @@ def _find_archive_sheet(resource: dict, archive_title: str, *, refresh: bool = F
     if refresh:
         _clear_spreadsheet_sheet_cache(spreadsheet_token)
     ref_map = _spreadsheet_sheet_ref_map(spreadsheet_token)
+    title_count = _spreadsheet_sheet_title_count(spreadsheet_token, title)
+    if title_count > 1:
+        raise ValueError("arrival archive title is ambiguous")
+    if title_count != 1:
+        return None
     sheet_id = str(ref_map.get(title) or "").strip()
     if not sheet_id:
         return None
     sheet_info = (
-        _spreadsheet_sheet_info(spreadsheet_token, sheet_id)
-        or _spreadsheet_sheet_info(spreadsheet_token, title)
-        or {}
+        _spreadsheet_sheet_info(spreadsheet_token, sheet_id) or _spreadsheet_sheet_info(spreadsheet_token, title) or {}
     )
     return {
         "sheet_id": sheet_id,
@@ -682,11 +806,7 @@ def _archive_snapshot_legacy(values: list[list[Any]], params: dict) -> dict:
         replies = add_result.get("data", {}).get("replies", [])
         sheet_id = None
         if replies and isinstance(replies[0], dict):
-            sheet_id = (
-                replies[0].get("addSheet", {})
-                .get("properties", {})
-                .get("sheetId")
-            )
+            sheet_id = replies[0].get("addSheet", {}).get("properties", {}).get("sheetId")
         if not sheet_id:
             _emit_progress("归档工作表缺少 sheetId")
             return {"error": "新增归档工作表返回缺少 sheetId", "feishu_result": add_result}
@@ -722,11 +842,7 @@ def _sheet_id_from_add_result(add_result: dict) -> str | None:
     replies = add_result.get("data", {}).get("replies", [])
     if not replies or not isinstance(replies[0], dict):
         return None
-    sheet_id = (
-        replies[0].get("addSheet", {})
-        .get("properties", {})
-        .get("sheetId")
-    )
+    sheet_id = replies[0].get("addSheet", {}).get("properties", {}).get("sheetId")
     return str(sheet_id) if sheet_id else None
 
 
@@ -871,15 +987,36 @@ def run_arrival_stats_sync(params: dict) -> dict:
 def _run_arrival_stats_sync(params: dict) -> dict:
     _emit_progress("统计到货数据任务开始")
     if params.get("refresh_disabled"):
-        scan_rows = list_scan_codes()
-        current_scan_rows = scan_rows
-        scan_result = {"ok": True, "skipped": True, "reason": "refresh_disabled", "loaded": len(scan_rows)}
-        _emit_progress("跳过刷新扫描索引")
-    else:
-        current_scan_rows, scan_result = _refresh_scan_index(params)
-        scan_rows = list_scan_codes()
-        scan_result["accumulated"] = len(scan_rows)
-        _emit_progress("加载累计扫描索引", accumulated=len(scan_rows))
+        return {
+            "error": "统计到货数据必须刷新目标日扫描数据，不能使用历史扫描索引代替当日扫描集合",
+            "stage": "current_scan_required",
+        }
+
+    arrive_records, arrive_list_result = fetch_arrive_list_records(
+        _arrive_list_params(params),
+        http_call=call_http_service,
+    )
+    _emit_progress("目标日 arrive-list 已加载", tracking_number=len(arrive_records))
+
+    current_scan_rows, scan_result = _refresh_scan_index(params)
+    scan_rows = list_scan_codes()
+    scan_result["accumulated"] = len(scan_rows)
+    _emit_progress("加载累计扫描索引", accumulated=len(scan_rows))
+
+    target_date = _target_date(params) or business_now().date()
+    current_scan_trackings = set(main_trackings_from_scan_rows(current_scan_rows))
+    arrive_records, historical_filter_result = _filter_historical_completed_arrive_records(
+        arrive_records,
+        current_scan_trackings,
+        target_date,
+    )
+    _emit_progress(
+        "历史已到齐 arrive-list 重复主单过滤完成",
+        input=historical_filter_result.get("arrive_list_input"),
+        filtered=historical_filter_result.get("filtered_arrive_only"),
+        preserved_current_scan=historical_filter_result.get("preserved_current_scan"),
+        output=historical_filter_result.get("arrive_list_output"),
+    )
 
     if not bool(params.get("dry_run", False)):
         retention_days = params.get("scan_codes_retention_days", 30)
@@ -895,9 +1032,8 @@ def _run_arrival_stats_sync(params: dict) -> dict:
             _emit_progress("清理扫描记录失败", error=str(exc))
             scan_result["cleanup_error"] = str(exc)
 
-    existing_records = list_waybill_records(include_receipt_like=False)
-    missing_tracking_numbers = _missing_trackings_from_current_scan(current_scan_rows, existing_records, params)
-    detail_tracking_numbers, detail_plan = _detail_tracking_numbers(existing_records, missing_tracking_numbers, params)
+    missing_tracking_numbers = _missing_trackings_from_current_scan(current_scan_rows, arrive_records, params)
+    detail_tracking_numbers, detail_plan = _detail_tracking_numbers(arrive_records, missing_tracking_numbers, params)
     _emit_progress(
         "缺失/需补抓主单已识别",
         missing=detail_plan.get("missing"),
@@ -920,23 +1056,43 @@ def _run_arrival_stats_sync(params: dict) -> dict:
     else:
         fetched_records, fetch_result = _fetch_waybill_details(detail_tracking_numbers, params)
         fetch_result["detail_plan"] = detail_plan
-    if bool(params.get("dry_run", False)):
-        upsert_result = {"ok": True, "upserted": len(fetched_records), "skipped": True}
-    else:
-        upsert_result = upsert_waybill_records(fetched_records)
-    _emit_progress("主单数据已写入 MySQL", upserted=upsert_result.get("upserted"))
+    merged_records = _merge_records(arrive_records, fetched_records)
+    merged_trackings = {
+        str(record.get("tracking_number") or "").strip()
+        for record in merged_records
+        if str(record.get("tracking_number") or "").strip()
+    }
+    missing_scanned_details = current_scan_trackings - merged_trackings
+    if missing_scanned_details:
+        return {
+            "error": f"目标日扫描主单详情不完整，共 {len(missing_scanned_details)} 票未能补齐",
+            "stage": "current_scan_detail_incomplete",
+            "arrive_list_result": _public_result(arrive_list_result),
+            "historical_filter_result": _public_result(historical_filter_result),
+            "scan_result": _public_result(scan_result),
+            "fetch_result": _public_result(fetch_result),
+        }
 
-    merged_records = _merge_records(existing_records, fetched_records)
+    if bool(params.get("dry_run", False)):
+        upsert_result = {"ok": True, "replaced": len(merged_records), "skipped": True}
+    else:
+        upsert_result = replace_waybill_records(merged_records)
+    _emit_progress("目标日主单快照已写入 MySQL", replaced=upsert_result.get("replaced"))
+
     export_records = merged_records
     if params.get("export_limit") not in (None, ""):
         export_records = export_records[: int(params.get("export_limit"))]
     _emit_progress("导出数据已准备", tracking_number=len(export_records))
 
-    tracking_numbers = [str(item.get("tracking_number") or "") for item in export_records if item.get("tracking_number")]
+    tracking_numbers = [
+        str(item.get("tracking_number") or "") for item in export_records if item.get("tracking_number")
+    ]
     if params.get("child_count_limit") not in (None, ""):
         tracking_numbers = tracking_numbers[: int(params.get("child_count_limit"))]
     if str(params.get("count_source") or "scan_index").strip().lower() in {"browser", "child_count"}:
         count_map, count_result = _count_arrivals(tracking_numbers, params)
+        count_map, quantity_adjustments = _cap_arrival_counts_to_expected(count_map, export_records)
+        count_result["quantity_adjustments"] = quantity_adjustments
     else:
         _emit_progress("开始按扫描索引统计到货件数", requested=len(tracking_numbers))
         count_map, count_result = _count_arrivals_from_scan_rows(scan_rows, export_records, tracking_numbers)
@@ -944,6 +1100,7 @@ def _run_arrival_stats_sync(params: dict) -> dict:
             "扫描索引到货件数统计完成",
             counted=count_result.get("counted"),
             arrived_nonzero=count_result.get("arrived_nonzero"),
+            quantity_adjustments=count_result.get("quantity_adjustments"),
         )
 
     values = render_stats_sheet_values(export_records, count_map, target_date=params.get("target_date"))
@@ -971,19 +1128,20 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         pending_records = list_pending_waybills(include_receipt_like=False)
         pending_values = render_pending_sheet_values(pending_records)
         _emit_progress("未齐货物清单已渲染", rows=len(pending_records))
-        try:
-            pending_result = _write_stats_sheet(
-                "phase7.pending_arrivals_sheet", pending_values, params
-            )
-            if "error" in pending_result:
-                _emit_progress("未齐货物表写入失败", error=pending_result.get("error", ""))
-        except ValueError as exc:
-            pending_result = {"ok": False, "skipped": True, "reason": "missing_resource", "detail": str(exc)}
-            _emit_progress("未齐货物表资源未配置，已跳过", reason=str(exc))
+        pending_result = _write_optional_pending_sheet(pending_values, params)
 
     if params.get("archive_snapshot", True):
         archive_result = _archive_snapshot(values, params)
         _emit_progress("归档结果已返回", ok=archive_result.get("ok"))
+        if archive_result.get("error") or not archive_result.get("ok"):
+            return {
+                "error": f"统计到货归档失败: {archive_result.get('error') or archive_result}",
+                "stage": "archive_snapshot_failed",
+                "primary_result": _public_result(primary_result),
+                "secondary_result": _public_result(secondary_result),
+                "pending_result": _public_result(pending_result),
+                "archive_result": _public_result(archive_result),
+            }
     else:
         archive_result = {"ok": False, "skipped": True, "reason": "disabled"}
         _emit_progress("跳过归档快照")
@@ -992,6 +1150,16 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         _emit_progress("触发遗留后续流程")
         flow_result = _trigger_stats_flow(params)
         _emit_progress("遗留后续流程返回", ok=flow_result.get("ok"), skipped=flow_result.get("skipped"))
+        if flow_result.get("error") or not flow_result.get("ok"):
+            return {
+                "error": f"统计到货后续流程失败: {flow_result.get('error') or flow_result}",
+                "stage": "flow_failed",
+                "primary_result": _public_result(primary_result),
+                "secondary_result": _public_result(secondary_result),
+                "pending_result": _public_result(pending_result),
+                "archive_result": _public_result(archive_result),
+                "flow_result": _public_result(flow_result),
+            }
     else:
         flow_result = {"ok": False, "skipped": True, "reason": "disabled"}
         _emit_progress("跳过遗留后续流程")
@@ -1004,6 +1172,8 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         return {
             "error": f"分批及有发未到表刷新失败: {detail}",
             "stage": "split_pending_snapshot_failed",
+            "arrive_list_result": _public_result(arrive_list_result),
+            "historical_filter_result": _public_result(historical_filter_result),
             "scan_result": _public_result(scan_result),
             "fetch_result": _public_result(fetch_result),
             "upsert_result": _public_result(upsert_result),
@@ -1015,9 +1185,44 @@ def _run_arrival_stats_sync(params: dict) -> dict:
             "flow_result": _public_result(flow_result),
         }
 
+    snapshot_records = [
+        {
+            "tracking_number": record.get("tracking_number"),
+            "destination_station": record.get("destination_station"),
+            "expected_quantity": record.get("quantity"),
+            "arrived_quantity": count_map.get(str(record.get("tracking_number") or "")),
+            "goods_name": record.get("goods_name"),
+            "package_type": record.get("package_type"),
+            "delivery_method": record.get("delivery_method"),
+            "recipient_address": record.get("recipient_address"),
+        }
+        for record in export_records
+        if record.get("tracking_number")
+    ]
+    try:
+        arrival_snapshot_result = save_arrival_stat_snapshot(
+            _target_date(params) or business_now().date(),
+            snapshot_records,
+            dry_run=bool(params.get("dry_run", False)),
+        )
+    except Exception as exc:
+        detail = str(exc)[:500]
+        _emit_progress("实际到货共享快照写入失败", error=detail)
+        return {
+            "error": f"实际到货共享快照写入失败: {detail}",
+            "stage": "arrival_snapshot_failed",
+            "primary_result": _public_result(primary_result),
+            "secondary_result": _public_result(secondary_result),
+            "pending_result": _public_result(pending_result),
+            "split_pending_result": _public_result(split_pending_result),
+            "archive_result": _public_result(archive_result),
+        }
+
     _emit_progress("统计到货数据任务结束")
     return {
         "ok": True,
+        "arrive_list_result": _public_result(arrive_list_result),
+        "historical_filter_result": _public_result(historical_filter_result),
         "scan_result": _public_result(scan_result),
         "fetch_result": _public_result(fetch_result),
         "upsert_result": _public_result(upsert_result),
@@ -1026,10 +1231,12 @@ def _run_arrival_stats_sync(params: dict) -> dict:
         "secondary_result": _public_result(secondary_result),
         "pending_result": _public_result(pending_result),
         "split_pending_result": _public_result(split_pending_result),
+        "arrival_snapshot_result": _public_result(arrival_snapshot_result),
         "archive_result": _public_result(archive_result),
         "flow_result": _public_result(flow_result),
         "debug_tracking": debug_count,
-        "main_trackings": len(main_trackings_from_scan_rows(scan_rows)),
+        "main_trackings": len(current_scan_trackings),
+        "accumulated_main_trackings": len(main_trackings_from_scan_rows(scan_rows)),
         "records": len(export_records),
     }
 

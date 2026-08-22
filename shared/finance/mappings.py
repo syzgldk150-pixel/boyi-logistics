@@ -33,6 +33,35 @@ class ExactOperatingFee:
     expense_is_cost: bool = True
 
 
+@dataclass(frozen=True)
+class ConfirmedFeeRule:
+    platform: Platform
+    primary_fee_name: str
+    subject_code: str
+    subject_name: str
+    fee_level: FeeLevel
+    requires_waybill: bool
+    secondary_fee_name: str = ""
+
+
+RONGHUI_CONFIRMED_FEE_RULES: tuple[ConfirmedFeeRule, ...] = (
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u76f4\u6d3e\u670d\u52a1\u8d39", "direct_delivery_service", "\u76f4\u6d3e\u670d\u52a1\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u5305\u4ed3\u8d39", "warehouse_contract_fee", "\u5305\u4ed3\u56fa\u5b9a\u8d39", FeeLevel.OPERATING, False),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u4fdd\u9669\u8d39", "insurance_fee", "\u4fdd\u9669\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u5bc4\u5230\u4ed8\u6b3e", "cod_freight_income", "\u5230\u4ed8\u8fd0\u8d39\u6536\u5165", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u7535\u5b50\u6807\u7b7e\u670d\u52a1\u8d39", "electronic_label_service", "\u7535\u5b50\u6807\u7b7e\u670d\u52a1\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u56fa\u5b9a\u4e2d\u8f6c\u8d39", "fixed_transfer_fee", "\u56fa\u5b9a\u4e2d\u8f6c\u8d39", FeeLevel.OPERATING, False),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u77ed\u4fe1\u6263\u8d39", "sms_fee", "\u77ed\u4fe1\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u4e2d\u8f6c\u8d39\u8ffd\u52a0", "transfer_fee_adjustment", "\u4e2d\u8f6c\u8d39\u8c03\u6574", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u5230\u4ed8\u6b3e\u624b\u7eed\u8d39", "cod_handling_fee", "\u5230\u4ed8\u6b3e\u624b\u7eed\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u7535\u5b50\u56de\u5355\u670d\u52a1\u8d39", "electronic_receipt_service", "\u7535\u5b50\u56de\u5355\u670d\u52a1\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u573a\u5730\u8d39\u6298\u8ba9", "site_fee_discount", "\u573a\u5730\u8d39\u6298\u8ba9", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u6d3e\u9001\u8d39\u6298\u8ba9", "delivery_fee_discount", "\u6d3e\u9001\u8d39\u6298\u8ba9", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u672b\u7aef\u8bf7\u8f66\u8d39", "terminal_vehicle_fee", "\u672b\u7aef\u8bf7\u8f66\u8d39", FeeLevel.WAYBILL, True),
+    ConfirmedFeeRule(Platform.RONGHUI, "\u6536\u6d3e\u9001\u8d39", "delivery_fee", "\u6d3e\u9001\u8d39", FeeLevel.WAYBILL, True),
+)
+
+
 RONGHUI_STRICT_EXACT_ALIASES: tuple[ExactFeeAlias, ...] = (
     ExactFeeAlias(Platform.RONGHUI, "收中转费", "中转费"),
     ExactFeeAlias(Platform.RONGHUI, "收中转费折让", "中转费折让"),
@@ -170,7 +199,7 @@ def validate_booking_fee_name(
             raise ValueError("operating mapping cannot target a waybill-entry fee item")
         return ""
     if not name:
-        raise ValueError("waybill mapping requires booking_fee_name")
+        return ""
     allowed = (
         RONGHUI_BOOKING_FEE_ITEMS
         if platform_value is Platform.RONGHUI
@@ -360,6 +389,24 @@ def mapping_seed_for_fee_item(key: FeeItemKey) -> FeeMappingSeed | None:
     direction in the binding key and does not infer it from the name.
     """
 
+    for rule in RONGHUI_CONFIRMED_FEE_RULES:
+        if (
+            rule.platform is key.platform
+            and rule.primary_fee_name == key.primary_fee_name
+            and rule.secondary_fee_name == key.secondary_fee_name
+        ):
+            return FeeMappingSeed(
+                platform=key.platform,
+                primary_fee_name=key.primary_fee_name,
+                secondary_fee_name=key.secondary_fee_name,
+                direction=key.direction,
+                fee_level=rule.fee_level,
+                booking_fee_name="",
+                include_in_cost=key.direction is Direction.EXPENSE,
+                canonical_subject_code=rule.subject_code,
+                canonical_subject_name=rule.subject_name,
+                requires_waybill=rule.requires_waybill,
+            )
     for seed in CONFIRMED_MAPPING_SEEDS:
         if (
             seed.platform is key.platform

@@ -226,3 +226,22 @@ def send_tms_session_disconnected_alert(status_payload: dict[str, Any]) -> bool:
         build_tms_session_disconnected_message(status, reason, status_payload),
         receive_id_type=receive_id_type,
     )
+
+
+def send_finance_anomaly_alert(payload: dict[str, Any]) -> bool:
+    """Send only finance exceptions; normal daily synchronization stays silent."""
+
+    receive_id_type, receive_id = resolve_notify_target()
+    if not receive_id_type or not receive_id:
+        logger.warning("No Feishu notify target configured for finance anomaly alert.")
+        return False
+    anomaly_type = str(payload.get("anomaly_type") or "FINANCE_ANOMALY").strip()
+    title = str(payload.get("title") or "财务异常待处理").strip()
+    details = str(payload.get("details") or "").strip()
+    admin_url = str(payload.get("admin_url") or "").strip()
+    lines = [f"【智能财务】{title}", f"类型：{anomaly_type}"]
+    if details:
+        lines.append(f"摘要：{details[:500]}")
+    if admin_url:
+        lines.append(f"后台：{admin_url}")
+    return send_text_sync(receive_id, "\n".join(lines), receive_id_type=receive_id_type)

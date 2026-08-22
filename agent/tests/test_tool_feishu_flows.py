@@ -1,10 +1,56 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
+from types import SimpleNamespace
+
 from _tms_runtime_test_support import *  # noqa: F403
+
+
+class _FakeAutomationProjectEntrypoints:
+    def __init__(self) -> None:
+        self.status = "COMPLETED"
+        self.calls: list[dict[str, Any]] = []
+        self.project_config = {
+            "class_name": "route-one",
+            "departure_time_fixed": "21:30:00",
+            "plate_numbers": ["湘AK6980", "湘B12345"],
+        }
+
+    def describe_feishu_route(self, _route_key):
+        return SimpleNamespace(
+            project_config=dict(self.project_config),
+            account_bindings={"account_id": "business-primary"},
+        )
+
+    async def invoke_feishu(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "success": self.status == "COMPLETED",
+            "status": self.status,
+            "run_id": "run-feishu",
+        }
 
 
 class ToolFeishuFlowTests(unittest.TestCase):
     def setUp(self):
+        self.project_entrypoints = _FakeAutomationProjectEntrypoints()
+        self.project_entrypoints_patch = patch.object(
+            message_handler,
+            "_AUTOMATION_PROJECT_ENTRYPOINTS",
+            self.project_entrypoints,
+        )
+        self.project_entrypoints_patch.start()
+        self.addCleanup(self.project_entrypoints_patch.stop)
+        self.command_context_token = message_handler._COMMAND_CONTEXT.set(
+            message_handler.FeishuCommandContext(
+                event_id="legacy-flow-event",
+                actor_id="user-1",
+                chat_id="chat-1",
+            )
+        )
+        self.addCleanup(
+            message_handler._COMMAND_CONTEXT.reset,
+            self.command_context_token,
+        )
         self.internal_token_patch = patch.dict(
             os.environ,
             {"AGENT_INTERNAL_API_TOKEN": "test-internal-token"},
@@ -50,7 +96,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -76,16 +122,17 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("扫描", "user-1", "chat-1"))
 
-        self.assertEqual(("sync_scan_codes", {}), calls["execute_tool"])
-        self.assertEqual("程序正在执行", replies[0])
-        self.assertIn("扫描任务已完成", replies[-1])
+        self.assertNotIn("execute_tool", calls)
+        self.assertEqual("builtin.scan_codes", self.project_entrypoints.calls[-1]["route_key"])
+        self.assertEqual({}, self.project_entrypoints.calls[-1]["envelope"]["body"])
+        self.assertTrue(replies)
 
     def test_feishu_invalid_tracking_number_replies_without_tool_execution(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 raise AssertionError("invalid tracking number should not execute a tool")
 
@@ -113,7 +160,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -149,7 +196,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -176,10 +223,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("执行一次arrivelist脚本", "user-1", "chat-1"))
 
-        self.assertEqual(("sync_arrive_list", {}), calls["execute_tool"])
-        self.assertEqual("程序正在执行", replies[0])
-        self.assertIn("到货清单同步已完成", replies[-1])
-        self.assertIn("派件预报：2", replies[-1])
+        self.assertNotIn("execute_tool", calls)
+        self.assertEqual("builtin.arrive_list", self.project_entrypoints.calls[-1]["route_key"])
+        self.assertEqual({}, self.project_entrypoints.calls[-1]["envelope"]["body"])
+        self.assertTrue(replies)
 
     def test_feishu_price_auth_pending_waits_for_sms_code(self):
         calls: dict[str, Any] = {}
@@ -188,7 +235,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": False,
@@ -241,7 +288,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": False,
@@ -281,14 +328,15 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual("get_price", pending_calls[0][1]["resume_tool"])
         self.assertIn("是否现在发送", replies[-1])
 
-    def test_feishu_deferred_tool_auth_pending_waits_for_sms_code(self):
+    def test_feishu_project_blocked_login_does_not_start_legacy_sms_flow(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []
         admin_calls: list[tuple[str, dict[str, Any] | None]] = []
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
+        self.project_entrypoints.status = "BLOCKED_LOGIN"
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": False,
@@ -318,23 +366,23 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("统计", "user-1", "chat-1"))
 
-        self.assertEqual(("sync_arrival_stats", {}), calls["execute_tool"])
-        self.assertEqual("程序正在执行", replies[0])
-        self.assertEqual([("/admin/tms/session/send-code", None)], admin_calls)
-        self.assertEqual(1, len(pending_calls))
-        self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
-        self.assertEqual("default", pending_calls[0][1]["auth_session"])
-        self.assertEqual("sync_arrival_stats", pending_calls[0][1]["resume_tool"])
-        self.assertIn("验证码已发送", replies[-1])
-        self.assertNotIn("工具执行失败", replies[-1])
+        self.assertNotIn("execute_tool", calls)
+        self.assertEqual([], admin_calls)
+        self.assertEqual([], pending_calls)
+        self.assertEqual(
+            "builtin.arrival_stats",
+            self.project_entrypoints.calls[-1]["route_key"],
+        )
+        self.assertTrue(replies)
 
-    def test_feishu_deferred_tool_retries_stale_auth_when_status_is_authenticated(self):
+    def test_feishu_deferred_tool_does_not_blind_retry_stale_auth(self):
         calls: list[tuple[str, dict[str, Any]]] = []
         replies: list[str] = []
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
+        self.project_entrypoints.status = "BLOCKED_LOGIN"
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls.append((tool_name, params))
                 if len(calls) == 1:
                     return {"success": False, "error_code": "AUTH_REQUIRED", "error": "AUTH_REQUIRED"}
@@ -365,7 +413,13 @@ class ToolFeishuFlowTests(unittest.TestCase):
             patch("feishu.message_handler.get_pending", return_value=None),
             patch(
                 "feishu.message_handler.direct_tool_request_from_text",
-                return_value={"tool_name": "sync_arrival_stats", "params": {}, "mode": "deferred"},
+                return_value={
+                    "tool_name": "sync_arrival_stats",
+                    "params": {},
+                    "mode": "automation_project",
+                    "automation_route_key": "builtin.arrival_stats",
+                    "dynamic_inputs": {},
+                },
             ),
             patch("feishu.message_handler.set_pending", side_effect=_fake_set_pending),
             patch("feishu.message_handler._get_admin", return_value={"ok": True, "status": "authenticated", "authenticated": True}),
@@ -374,11 +428,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("ç»Ÿè®¡", "user-1", "chat-1"))
 
-        self.assertEqual(2, len(calls))
-        self.assertEqual(("sync_arrival_stats", {}), calls[-1])
+        self.assertEqual([], calls)
         self.assertEqual([], pending_calls)
-        self.assertIn("missing_resource", replies[-1])
-        self.assertNotIn("AUTH_REQUIRED", replies[-1])
+        self.assertEqual(1, len(self.project_entrypoints.calls))
+        self.assertTrue(replies)
 
     def test_feishu_direct_tool_clears_stale_login_pending(self):
         calls: list[tuple[str, dict[str, Any]]] = []
@@ -391,7 +444,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         }
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls.append((tool_name, params))
                 return {
                     "success": True,
@@ -417,7 +470,13 @@ class ToolFeishuFlowTests(unittest.TestCase):
             patch("feishu.message_handler.get_pending", return_value=pending),
             patch(
                 "feishu.message_handler.direct_tool_request_from_text",
-                return_value={"tool_name": "sync_arrival_stats", "params": {}, "mode": "deferred"},
+                return_value={
+                    "tool_name": "sync_arrival_stats",
+                    "params": {},
+                    "mode": "automation_project",
+                    "automation_route_key": "builtin.arrival_stats",
+                    "dynamic_inputs": {},
+                },
             ),
             patch("feishu.message_handler.clear_pending") as clear_pending,
             patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
@@ -425,8 +484,13 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("ç»Ÿè®¡", "user-1", "chat-1"))
 
         clear_pending.assert_called_once_with("chat-1")
-        self.assertEqual([("sync_arrival_stats", {})], calls)
-        self.assertIn("missing_resource", replies[-1])
+        self.assertEqual([], calls)
+        self.assertEqual(1, len(self.project_entrypoints.calls))
+        self.assertEqual(
+            "builtin.arrival_stats",
+            self.project_entrypoints.calls[-1]["route_key"],
+        )
+        self.assertTrue(replies)
 
     def test_feishu_llm_selected_tool_auth_required_uses_login_resume_flow(self):
         replies: list[str] = []
@@ -993,7 +1057,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
         self.assertIn("验证码已发送", replies[-1])
 
-    def test_feishu_price_sms_code_uses_price_session_endpoint_and_resumes(self):
+    def test_feishu_price_sms_code_resumes_original_control_plane_run(self):
         replies: list[str] = []
         admin_calls: list[tuple[str, dict[str, Any] | None]] = []
         execute_calls: list[tuple[str, dict[str, Any]]] = []
@@ -1005,7 +1069,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         }
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 execute_calls.append((tool_name, params))
                 return {"success": True, "data": {"目的网点": "测试站"}}
 
@@ -1029,13 +1093,14 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("123456", "user-1", "chat-1"))
 
         self.assertEqual([("/admin/tms/price-session/submit-code", {"code": "123456"})], admin_calls)
-        self.assertEqual([("get_price", {"address": "长沙", "weight": 800.0})], execute_calls)
-        self.assertIn("登录成功", replies[-2])
-        self.assertIn("目的网点：测试站", replies[-1])
+        self.assertEqual([], execute_calls)
+        self.assertIn("登录成功", replies[-1])
+        self.assertIn("原事项运行已恢复", replies[-1])
 
     def test_feishu_departure_message_executes_single_configured_plate(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []
+        self.project_entrypoints.project_config["plate_numbers"] = ["湘AK6980"]
 
         class _FakeMemory:
             def list_scheduled_tasks(self):
@@ -1054,7 +1119,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         class _FakeAgent:
             memory = _FakeMemory()
 
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -1081,12 +1146,16 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("发车", "user-1", "chat-1"))
 
-        tool_name, params = calls["execute_tool"]
-        self.assertEqual("r7_departure_checkin", tool_name)
-        self.assertTrue(params["_feishu"])
-        self.assertEqual(["湘AK6980"], params["plate_numbers"])
-        self.assertEqual("程序正在执行", replies[0])
-        self.assertIn("R7 发车打卡已完成", replies[-1])
+        self.assertNotIn("execute_tool", calls)
+        self.assertEqual(
+            "builtin.r7_departure_checkin",
+            self.project_entrypoints.calls[-1]["route_key"],
+        )
+        self.assertEqual(
+            ["湘AK6980"],
+            self.project_entrypoints.calls[-1]["envelope"]["body"]["plate_numbers"],
+        )
+        self.assertTrue(replies)
 
     def test_feishu_departure_message_sets_pending_for_multiple_plates(self):
         replies: list[str] = []
@@ -1133,6 +1202,11 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual("chat-1", pending_calls[0][0])
         self.assertEqual("r7_departure_plate_choice", pending_calls[0][1]["type"])
         self.assertEqual(["湘AK6980", "湘B12345"], pending_calls[0][1]["plate_numbers"])
+        self.assertEqual(
+            "builtin.r7_departure_checkin",
+            pending_calls[0][1]["automation_route_key"],
+        )
+        self.assertNotIn("params", pending_calls[0][1])
         self.assertIn("1. 湘AK6980", replies[-1])
         self.assertIn("2. 湘B12345", replies[-1])
 
@@ -1142,12 +1216,12 @@ class ToolFeishuFlowTests(unittest.TestCase):
         pending = {
             "type": "r7_departure_plate_choice",
             "tool_name": "r7_departure_checkin",
-            "params": {"class_name": "邵阳操作场-长沙"},
+            "automation_route_key": "builtin.r7_departure_checkin",
             "plate_numbers": ["湘AK6980", "湘B12345"],
         }
 
         class _FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **kwargs):
                 calls["execute_tool"] = (tool_name, params)
                 return {
                     "success": True,
@@ -1169,18 +1243,19 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("湘B12345", "user-1", "chat-1"))
 
         clear_pending.assert_called_once_with("chat-1")
-        tool_name, params = calls["execute_tool"]
-        self.assertEqual("r7_departure_checkin", tool_name)
-        self.assertTrue(params["_feishu"])
-        self.assertEqual(["湘B12345"], params["plate_numbers"])
-        self.assertIn("湘B12345", replies[0])
+        self.assertNotIn("execute_tool", calls)
+        self.assertEqual(
+            ["湘B12345"],
+            self.project_entrypoints.calls[-1]["envelope"]["body"]["plate_numbers"],
+        )
+        self.assertTrue(replies)
 
     def test_feishu_departure_pending_rejects_bare_numeric_choice(self):
         replies: list[str] = []
         pending = {
             "type": "r7_departure_plate_choice",
             "tool_name": "r7_departure_checkin",
-            "params": {"class_name": "邵阳操作场-长沙"},
+            "automation_route_key": "builtin.r7_departure_checkin",
             "plate_numbers": ["湘AK6980", "湘B12345"],
         }
 
@@ -1206,7 +1281,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertIn("回复完整车牌号", replies[-1])
         self.assertIn("2. 湘B12345", replies[-1])
 
-    def test_scan_sync_reply_summarizes_counts_and_failed_batches(self):
+    def test_scan_sync_reply_never_labels_failed_batches_as_complete(self):
         reply = direct_tool_router.format_tool_reply(
             "sync_scan_codes",
             {
@@ -1227,10 +1302,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("扫描任务已完成", reply)
-        self.assertIn("拉取扫描记录：10", reply)
-        self.assertIn("失败批次：1/2", reply)
-        self.assertIn("已签收跳过：1", reply)
+        self.assertIn("扫描任务失败", reply)
+        self.assertNotIn("扫描任务已完成", reply)
+        self.assertIn("第 2 批", reply)
+        self.assertIn("scan_next failed", reply)
 
     def test_scan_sync_reply_uses_nested_scan_next_error(self):
         reply = direct_tool_router.format_tool_reply(

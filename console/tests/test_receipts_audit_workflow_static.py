@@ -87,6 +87,7 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn("data-receipt-record-next", template)
         self.assertIn("data-receipt-audit-pass", template)
         self.assertIn("data-receipt-audit-fail", template)
+        self.assertIn("data-receipt-feishu-detail-query", template)
         self.assertIn("data-receipt-fail-reason-submit", template)
         self.assertIn("data-receipt-audit-confirm", template)
         self.assertIn("data-receipt-audit-confirm-cancel", template)
@@ -145,31 +146,18 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn('reviewReasonClose?.addEventListener("click", hideFailReasonPanel)', template)
         self.assertIn('reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"))', template)
 
-    def test_receipts_audit_pass_executes_in_background_without_visible_original_page(self):
+    def test_receipts_audit_submits_durable_plan_without_automatic_original_page_fallback(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
 
         for expected in (
             "executeReceiptAuditInBackground(receiptAuditPayloadFor(\"passed\"))",
             "requestReceiptAuditConfirmation(\"failed\")",
             "submitReceiptAuditDirect",
-            "showReceiptAuditFeedback",
-            "receipt-audit-pass--success",
-            "已审核通过",
-            "审核通过成功",
-            "executeReceiptAuditInHiddenOriginalPage",
-            "ensureBackgroundAuditFrame",
+            "newBrowserRequestUuid",
+            '"X-Browser-Request-UUID": browserRequestUuid',
+            "if (payload.pending)",
+            "审核计划已提交",
             'reason: result === "failed" ? (reviewReason?.value || "") : ""',
-            "submitOriginalAuditForm",
-            "mini.get(\"AUDIT_STATUS\")",
-            "mini.get(\"saveBtn\")",
-            'audit.result === "failed" ? "3" : "2"',
-            "startOriginalPageAuditExecution",
-            "findOriginalAuditActionButton",
-            "clickOriginalAuditConfirm",
-            "verifyOriginalPageAuditResult",
-            "原页仍未显示",
-            "AUDIT_CAPTURE_REQUIRED",
-            'execution: "original_page"',
             "确认驳回回单",
             "确认后将把当前回单提交为审核不通过，并使用上方填写的原因。请确认回单照片和运单信息无误。",
             "确认驳回",
@@ -179,33 +167,40 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertNotIn("executeReceiptAuditInOriginalPage", template)
         self.assertNotIn("确认后会打开原页模式", template)
         self.assertNotIn("接口未抓取时会在后台原页执行", template)
+        self.assertNotIn('if (error.code === "AUDIT_CAPTURE_REQUIRED")', template)
         self.assertNotIn("confirmResult.ok || Date.now() - actionClickedAt > 4500", template)
         self.assertNotIn("确认执行审核通过", template)
+        self.assertNotIn('execution: "original_page"', template)
+        self.assertNotIn("executeReceiptAuditInHiddenOriginalPage", template)
+        self.assertNotIn("startOriginalPageAuditExecution", template)
+        self.assertNotIn("submitOriginalAuditForm", template)
+        self.assertNotIn("tryClickOriginalAuditAction", template)
 
-    def test_receipts_original_page_verification_reads_easyui_datagrid_rows(self):
+    def test_receipts_original_page_is_read_only_and_has_no_audit_write_helpers(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
 
-        for expected in (
-            "easyuiDatagridShowsAuditResult",
-            'jquery("#dg")',
-            'datagrid("getRows")',
-            "datagridRows.some((row)",
-            "easyuiDatagridShowsAuditResult(doc, identifiers, targetStatus)",
+        for forbidden in (
+            "recordOriginalPageAuditResult",
+            "clickOriginalAuditConfirm",
+            "verifyOriginalPageAuditResult",
+            "backgroundAuditFrame",
+            'mini.get("AUDIT_STATUS")',
+            'mini.get("saveBtn")',
         ):
-            self.assertIn(expected, template)
+            self.assertNotIn(forbidden, template)
 
-    def test_receipts_original_page_verification_resyncs_source_before_local_writeback(self):
+    def test_receipts_sync_and_audit_use_independent_browser_command_ids(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
 
         for expected in (
-            "verifyReceiptAuditViaSync",
+            "const browserRequestUuid = newBrowserRequestUuid();",
             'fetch("/receipts/sync"',
-            'syncParams.set("platform", record.platform || "")',
-            'syncParams.set("q", payload.query || "")',
-            "freshRecord.audit_status === targetStatus",
-            "await complete(`${meta || \"原系统审核页面\"} · 已通过真实接口复核${label}`)",
+            '"X-Browser-Request-UUID": browserRequestUuid',
+            "if (payload.pending)",
+            "if (result?.ok && !result.pending)",
         ):
             self.assertIn(expected, template)
+        self.assertNotIn("verifyReceiptAuditViaSync", template)
 
     def test_app_has_receipt_audit_route_and_agent_target_name(self):
         app_source = "\n".join(
@@ -217,10 +212,24 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
 
         self.assertIn('path.startswith("/receipts/") and path.endswith("/audit")', app_source)
         self.assertIn("def _handle_receipt_audit", app_source)
-        self.assertIn('"/internal/v1/tms/receipts_audit"', app_source)
-        self.assertIn("update_receipt_audit_status", app_source)
+        self.assertIn('tool_name="receipts_audit"', app_source)
+        self.assertIn("_submit_console_tool_command", app_source)
+        self.assertNotIn('"/internal/v1/tms/receipts_audit"', app_source)
+        self.assertNotIn("update_receipt_audit_status", app_source)
         self.assertIn("audit_log_request", app_source)
         self.assertNotIn("request_summary=params", app_source)
+
+    def test_feishu_detail_fallback_is_an_explicit_narrow_command(self):
+        template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
+        route_source = (CONSOLE_DIR / "routes" / "receipts.py").read_text(encoding="utf-8")
+        service_source = (CONSOLE_DIR / "services" / "waybills_receipts.py").read_text(encoding="utf-8")
+
+        self.assertIn("/feishu-detail-query", route_source)
+        self.assertIn('tool_name="query_receipt_feishu_detail"', service_source)
+        self.assertIn('"X-Browser-Request-UUID": browserRequestUuid', template)
+        self.assertIn("payload.work_item_id", template)
+        self.assertNotIn('tool_name="feishu_operation"', service_source)
+        self.assertNotIn('"/internal/v1/tools/run"', service_source)
 
 
 if __name__ == "__main__":

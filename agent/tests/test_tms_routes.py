@@ -1,6 +1,11 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
 from _tms_runtime_test_support import *  # noqa: F403
+from agent.execution_boundary import (
+    EXECUTION_CAPABILITY_HEADER,
+    issue_execution_capability,
+    revoke_execution_capability,
+)
 
 
 class TMSRoutesTests(unittest.TestCase):
@@ -13,6 +18,70 @@ class TMSRoutesTests(unittest.TestCase):
         app.include_router(router)
         app.include_router(router, prefix="/internal/v1")
         self.client = TestClient(app)
+
+    def test_legacy_yunda_entry_never_executes_even_if_capability_check_would_allow(self):
+        targets = ("yunda_waybill_entry",)
+        with patch(
+            "agent.tms_runtime.routes.authorize_tms_target",
+            return_value=True,
+        ), patch(
+            "agent.tms_runtime.routes.execute_target",
+            side_effect=AssertionError("disabled target must never execute"),
+        ):
+            for target in targets:
+                with self.subTest(target=target):
+                    response = self.client.post(
+                        f"/internal/v1/tms/{target}",
+                        json={"params": {}},
+                        headers={EXECUTION_CAPABILITY_HEADER: "would-otherwise-pass"},
+                    )
+                    self.assertEqual(410, response.status_code)
+                    self.assertEqual(
+                        "ACTIVE_ORIGINAL_PAGE_DISABLED",
+                        response.json()["data"]["error_code"],
+                    )
+
+    def test_isolated_original_page_proxy_requires_exact_reviewed_prefix(self):
+        self.assertTrue(
+            routes_module.authorize_direct_manual_target(
+                "yunda_waybill_proxy",
+                {
+                    "method": "GET",
+                    "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
+                    "proxy_prefix": "/original/yunda",
+                },
+                console_principal_verified=True,
+            )
+        )
+        self.assertTrue(
+            routes_module.authorize_direct_manual_target(
+                "ronghui_waybill_proxy",
+                {"method": "GET", "path": "/module/index", "proxy_prefix": "/original/ronghui"},
+                console_principal_verified=True,
+            )
+        )
+        self.assertFalse(
+            routes_module.authorize_direct_manual_target(
+                "yunda_waybill_proxy",
+                {
+                    "method": "GET",
+                    "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
+                    "proxy_prefix": "/ocr/yunda/live",
+                },
+                console_principal_verified=True,
+            )
+        )
+        self.assertFalse(
+            routes_module.authorize_direct_manual_target(
+                "yunda_waybill_proxy",
+                {
+                    "method": "GET",
+                    "path": "/ky_inms/public/../private/admin",
+                    "proxy_prefix": "/original/yunda",
+                },
+                console_principal_verified=True,
+            )
+        )
 
     def test_versioned_admin_route_uses_standard_envelope(self):
         class FakeAccountManager:
@@ -168,6 +237,10 @@ class TMSRoutesTests(unittest.TestCase):
                     {
                         "account_id": "ronghui_default",
                         "system": "ronghui",
+                        "auto_login_enabled": True,
+                        "auto_login_failure_count": 3,
+                        "auto_login_failure_limit": 3,
+                        "auto_login_blocked": True,
                         "status": {
                             "profile": "default",
                             "account_id": "ronghui_default",
@@ -286,6 +359,10 @@ class TMSRoutesTests(unittest.TestCase):
                 "account_id": "ronghui_default",
                 "status": "error",
                 "last_error_summary": "缺少登录配置",
+                "auto_login_enabled": True,
+                "auto_login_failure_count": 0,
+                "auto_login_failure_limit": 3,
+                "auto_login_blocked": False,
             }
         )
 
@@ -296,6 +373,8 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertTrue(payload["cached"])
         self.assertEqual(payload["accounts"][0]["status"]["status"], "error")
         self.assertEqual(payload["accounts"][0]["status"]["last_error_summary"], "缺少登录配置")
+        self.assertEqual(payload["accounts"][0]["auto_login_failure_count"], 0)
+        self.assertFalse(payload["accounts"][0]["auto_login_blocked"])
         self.assertEqual(payload["accounts"][1]["status"]["status"], "authenticated")
 
     def test_legacy_credentials_routes_use_account_manager(self):
@@ -438,8 +517,16 @@ class TMSRoutesTests(unittest.TestCase):
             self.assertEqual(req.params["address"], "长沙")
             return 200, {"ok": True, "data": {"目的网点": "测试站"}}
 
-        with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
-            response = self.client.post("/tms/get_price", json={"params": {"address": "长沙"}, "timeout_sec": 30})
+        capability = issue_execution_capability("get_price", ttl_seconds=30)
+        try:
+            with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
+                response = self.client.post(
+                    "/tms/get_price",
+                    json={"params": {"address": "长沙"}, "timeout_sec": 30},
+                    headers={EXECUTION_CAPABILITY_HEADER: capability},
+                )
+        finally:
+            revoke_execution_capability(capability)
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
@@ -449,8 +536,16 @@ class TMSRoutesTests(unittest.TestCase):
         async def fake_execute_target(name, req):
             return 200, {"ok": False, "error_code": "AUTH_REQUIRED", "message": "当前未登录或登录态已过期。"}
 
-        with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
-            response = self.client.post("/tms/scan_next", json={"params": {"items": []}, "timeout_sec": 30})
+        capability = issue_execution_capability("sync_scan_codes", ttl_seconds=30)
+        try:
+            with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
+                response = self.client.post(
+                    "/tms/scan_next",
+                    json={"params": {"items": []}, "timeout_sec": 30},
+                    headers={EXECUTION_CAPABILITY_HEADER: capability},
+                )
+        finally:
+            revoke_execution_capability(capability)
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -464,14 +559,34 @@ class TMSRoutesTests(unittest.TestCase):
             self.assertEqual(req.params["page_size"], 1)
             return 200, {"ok": True, "data": []}
 
-        with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
-            response = self.client.post(
-                "/tms/get_qianshou",
-                json={"disp_site_code": "7390004", "page_size": 1},
-            )
+        capability = issue_execution_capability("sync_daily_should_sign", ttl_seconds=30)
+        try:
+            with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
+                response = self.client.post(
+                    "/tms/get_qianshou",
+                    json={"disp_site_code": "7390004", "page_size": 1},
+                    headers={EXECUTION_CAPABILITY_HEADER: capability},
+                )
+        finally:
+            revoke_execution_capability(capability)
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
+
+    def test_daily_sign_capability_cannot_invoke_customer_service_write_action(self):
+        capability = issue_execution_capability("sync_daily_should_sign", ttl_seconds=30)
+        try:
+            with patch("agent.tms_runtime.routes.execute_target") as execute_target:
+                response = self.client.post(
+                    "/tms/customer_service_problem",
+                    json={"params": {"action": "reply", "account_id": "one"}},
+                    headers={EXECUTION_CAPABILITY_HEADER: capability},
+                )
+        finally:
+            revoke_execution_capability(capability)
+
+        self.assertNotEqual(response.status_code, 200)
+        execute_target.assert_not_called()
 
     def test_dispatch_runs_sync_target_outside_async_loop(self):
         module_name = "_test_tms_loop_guard_target"

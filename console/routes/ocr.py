@@ -17,9 +17,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     return False
 
 
-def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+def handle_post(app: Any, handler: Any, path: str, raw_path: str, _query: dict[str, list[str]]) -> bool:
     if path.startswith("/ocr/yunda/"):
-        app._handle_yunda_entry(handler, path)
+        app._active_original_page_proxy_disabled(handler, raw_path)
         return True
     if path in {"/upload", "/ocr/upload"}:
         app._handle_upload(handler)

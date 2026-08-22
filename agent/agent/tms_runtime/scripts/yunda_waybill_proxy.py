@@ -15,9 +15,13 @@ from agent.tms_runtime.scripts.yunda_waybill_entry import (
     YUNDA_INMS_ORIGIN,
     _auth_if_login_response,
 )
+from shared.manual_entry_contracts import (
+    YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES,
+    canonical_manual_proxy_path,
+)
 
 
-ALLOWED_PATH_PREFIXES = ("/ky_inms/public/",)
+ALLOWED_PATH_PREFIXES = YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES
 HOP_BY_HOP_REQUEST_HEADERS = {
     "accept-encoding",
     "authorization",
@@ -102,6 +106,9 @@ YUNDA_PREFILL_HELPER = """
 (function () {
   if (window.codexManualPrefill && window.codexManualPrefill.yunda) return;
   window.codexManualPrefill = window.codexManualPrefill || {};
+  var shipnowParentOrigin = window.location.origin === "https://www.boyi.homes"
+    ? "https://boyi.homes"
+    : window.location.origin;
   function clean(value) { return String(value == null ? "" : value).trim(); }
   function namesOf(spec) {
     var names = [];
@@ -244,7 +251,7 @@ YUNDA_PREFILL_HELPER = """
       window.parent.postMessage({
         type: "SHIPNOW_PREFILL_READY",
         provider: "yunda"
-      }, window.location.origin);
+      }, shipnowParentOrigin);
     } catch (_) {}
   }
   function waitForYundaPrefillReady(attempt) {
@@ -285,7 +292,7 @@ YUNDA_PREFILL_HELPER = """
         filled: filled,
         missing: specs.map(function (spec) { return clean(spec && spec.key) || "unknown"; }),
         error: "韵达原页尚未加载完成"
-      }, window.location.origin);
+      }, shipnowParentOrigin);
       if (serial === prefillRunSerial) activePrefillRunning = false;
       return;
     }
@@ -305,7 +312,7 @@ YUNDA_PREFILL_HELPER = """
       ok: Boolean(filled.length),
       filled: filled,
       missing: missing
-    }, window.location.origin);
+    }, shipnowParentOrigin);
     if (serial === prefillRunSerial) activePrefillRunning = false;
   }
   function startPrefill(message) {
@@ -321,7 +328,7 @@ YUNDA_PREFILL_HELPER = """
   }
   window.addEventListener("message", function (event) {
     var data = event.data || {};
-    if (event.origin !== window.location.origin) return;
+    if (event.origin !== shipnowParentOrigin) return;
     if (data.type !== "SHIPNOW_PREFILL" || data.provider !== "yunda") return;
     startPrefill(data);
   });
@@ -341,6 +348,9 @@ YUNDA_LOCAL_PRINT_HELPER = """
 (function () {
   if (window.__shipnowYundaLocalPrintHook) return;
   window.__shipnowYundaLocalPrintHook = true;
+  var shipnowParentOrigin = window.location.origin === "https://www.boyi.homes"
+    ? "https://boyi.homes"
+    : window.location.origin;
   var opened = {};
   function clean(value) { return String(value == null ? "" : value).trim(); }
   function parseJson(text) {
@@ -387,7 +397,7 @@ YUNDA_LOCAL_PRINT_HELPER = """
         type: "SHIPNOW_YUNDA_LOCAL_PRINT",
         url: url,
         preview_url: clean(payload.shipnow_print_url)
-      }, window.location.origin);
+      }, shipnowParentOrigin);
     } catch (_) {}
     window.setTimeout(function () {
       var popup = null;
@@ -435,7 +445,8 @@ def _clean_text(value: Any) -> str:
 
 
 def _is_allowed_path(path: str) -> bool:
-    return any(path.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
+    canonical = canonical_manual_proxy_path(path)
+    return bool(canonical) and any(canonical.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
 
 
 def _query_text(value: Any) -> str:
@@ -452,10 +463,12 @@ def _target_from_params(path_value: Any, query_value: Any = "") -> tuple[str, st
     if parsed.scheme or parsed.netloc:
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != urlparse(YUNDA_INMS_ORIGIN).netloc:
             raise ValueError("Only Yunda INMS URLs can be proxied.")
-        path = parsed.path
+        path = canonical_manual_proxy_path(parsed.path)
         query_parts = parse_qsl(parsed.query, keep_blank_values=True)
     else:
-        path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
+        path = canonical_manual_proxy_path(
+            raw_path if raw_path.startswith("/") else f"/{raw_path}"
+        )
         query_parts = []
 
     if raw_query:
