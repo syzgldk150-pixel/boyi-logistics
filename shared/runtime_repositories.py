@@ -582,6 +582,7 @@ class WaybillRepository:
         status: str,
         *,
         validate_schema: bool = True,
+        mark_write_started: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         normalized_status = self.normalize_status(status)
         clean_numbers = list(dict.fromkeys(str(value or "").strip() for value in waybill_numbers if str(value or "").strip()))
@@ -592,6 +593,8 @@ class WaybillRepository:
         placeholders = ", ".join("%s" for _ in clean_numbers)
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
+                if mark_write_started is not None:
+                    mark_write_started()
                 cursor.execute(
                     f"UPDATE waybills SET status = %s, updated_at = NOW() WHERE BINARY waybill_no IN ({placeholders}) AND status <> 'cancelled'",
                     [normalized_status, *clean_numbers],

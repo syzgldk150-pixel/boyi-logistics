@@ -166,7 +166,8 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
     def read_projection(codes: tuple[str, ...]) -> list[dict[str, str]]:
         return [deepcopy(projection_rows[code]) for code in codes]
 
-    def write_projection(codes: list[str], status: str) -> Mapping[str, Any]:
+    def write_projection(codes: list[str], status: str, write_started) -> Mapping[str, Any]:
+        write_started()
         assert projection_marks == ["started"]
         for code in codes:
             projection_rows[code]["status"] = status
@@ -222,7 +223,9 @@ def test_delivery_projection_rejects_zero_partial_or_extra_write_counts(
         "WB-2": _projection_row("WB-2", "in_transit"),
     }
 
-    def write(codes: list[str], status: str) -> Mapping[str, Any]:
+    def write(codes: list[str], status: str, write_started) -> Mapping[str, Any]:
+        if write_started is not None:
+            write_started()
         for code in codes:
             rows[code]["status"] = status
         return {"ok": True, "updated": response_count}
@@ -273,7 +276,10 @@ def test_delivery_projection_post_write_anomalies_are_unknown(
     ports = build_production_delivery_site_ports(
         account_manager=_Manager(),
         projection_read=read,
-        projection_write=lambda codes, status: {"ok": True, "updated": 1},
+        projection_write=lambda codes, status, write_started: (
+            (write_started() if write_started is not None else None)
+            or {"ok": True, "updated": 1}
+        ),
     )
 
     with pytest.raises(PluginExecutionError) as exc:
@@ -287,7 +293,9 @@ def test_delivery_projection_post_write_anomalies_are_unknown(
 def test_delivery_write_response_loss_is_unknown_even_when_readback_matches() -> None:
     rows = {"WB-1": _projection_row("WB-1", "in_transit")}
 
-    def write(codes: list[str], status: str) -> Mapping[str, Any]:
+    def write(codes: list[str], status: str, write_started) -> Mapping[str, Any]:
+        if write_started is not None:
+            write_started()
         rows["WB-1"]["status"] = status
         raise TimeoutError("response lost")
 
@@ -488,11 +496,13 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
         resource_id: str,
         rows: list[list[Any]],
         params: dict[str, Any],
+        write_started,
     ) -> Mapping[str, Any]:
         nonlocal sheet_rows
         assert resource_id == _SITE_SHEET_ID
         assert params["spreadsheet_token"] == "site-sheet-token"
         assert params["range"] == params["clear_range"] == "Data!A2:F100"
+        write_started()
         assert sheet_marks == ["started"]
         sync_calls.append(("sheet", resource_id, params["target_date"]))
         sheet_rows = deepcopy(rows)
@@ -636,10 +646,10 @@ def test_site_sheet_post_write_anomalies_are_unknown(
             "_meta": {"resource_key": resource_id},
         },
         feishu_operation=feishu,
-        site_sheet_sync=lambda resource_id, rows, params: {
-            "ok": True,
-            "rows": 1,
-        },
+        site_sheet_sync=lambda resource_id, rows, params, write_started: (
+            (write_started() if write_started is not None else None)
+            or {"ok": True, "rows": 1}
+        ),
     )
 
     with pytest.raises(PluginExecutionError) as exc:
@@ -784,8 +794,10 @@ def test_site_sinks_reject_zero_partial_or_extra_write_counts(
         ]
         return {"ok": True, "written": response_count}
 
-    def sync_sheet(resource_id, rows, params):
+    def sync_sheet(resource_id, rows, params, write_started):
         nonlocal sheet_rows
+        if write_started is not None:
+            write_started()
         sheet_rows = deepcopy(rows)
         return {"ok": True, "rows": response_count}
 

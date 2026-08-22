@@ -348,8 +348,32 @@ def _append_feishu_error(base: str, result: dict[str, Any]) -> str:
     return f"{base}: {detail}" if detail else base
 
 
-def sync_sheet_snapshot(resource_key: str, values: list[list[Any]], params: dict) -> dict:
+def sync_sheet_snapshot(
+    resource_key: str,
+    values: list[list[Any]],
+    params: dict,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict:
     spreadsheet_token, value_range = resolve_sheet_target(params, resource_key)
+
+    write_started = False
+
+    def mark_mutation_started() -> None:
+        nonlocal write_started
+        if not write_started and mark_write_started is not None:
+            mark_write_started()
+        write_started = True
+
+    def mutate_feishu(action: str, payload: dict) -> dict:
+        if mark_write_started is None:
+            return feishu_operation(action, payload)
+        return feishu_operation(
+            action,
+            payload,
+            mark_write_started=mark_mutation_started,
+        )
+
     clear_result: dict[str, Any] | None = None
     clear_range = str(params.get("clear_range") or "").strip()
     if not clear_range:
@@ -360,7 +384,7 @@ def sync_sheet_snapshot(resource_key: str, values: list[list[Any]], params: dict
 
     clear_shape = _parse_range_shape(clear_range)
     if clear_shape is not None:
-        clear_result = feishu_operation(
+        clear_result = mutate_feishu(
             "clear_sheet",
             {
                 "spreadsheet_token": spreadsheet_token,
@@ -377,7 +401,7 @@ def sync_sheet_snapshot(resource_key: str, values: list[list[Any]], params: dict
 
     write_result: dict[str, Any]
     if values:
-        write_result = feishu_operation(
+        write_result = mutate_feishu(
             "write_sheet",
             {
                 "spreadsheet_token": spreadsheet_token,

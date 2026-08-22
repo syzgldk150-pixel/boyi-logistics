@@ -4,7 +4,9 @@ from datetime import datetime
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
+from tools import phase7_mysql_store
 from shared.runtime_repositories import (
     ScheduledTaskRepository,
     WaybillRepository,
@@ -95,6 +97,54 @@ class RuntimeRepositoryTests(unittest.TestCase):
         self.assertIn("WHERE BINARY waybill_no IN (%s)", sql)
         self.assertEqual(["signed", "WB-1"], params)
         self.assertEqual(1, result["updated"])
+
+    def test_projection_status_update_marks_after_schema_validation_and_before_update(self):
+        marks: list[str] = []
+        testcase = self
+
+        class MarkerCursor(_Cursor):
+            def execute(self, sql, params=None):
+                if "UPDATE waybills" in sql:
+                    testcase.assertEqual(["started"], marks)
+                super().execute(sql, params)
+
+        cursor = MarkerCursor(
+            rows=[
+                {"COLUMN_NAME": column}
+                for column in ("id", "waybill_no", "insurance_amount", "cod_amount", "status", "scan_status")
+            ]
+        )
+        cursor.rowcount = 1
+        connection = _Connection(cursor)
+
+        with patch.object(phase7_mysql_store, "_connect", return_value=connection):
+            result = phase7_mysql_store.update_console_waybill_statuses(
+                ["WB-1"],
+                "signed",
+                mark_write_started=lambda: marks.append("started"),
+            )
+
+        self.assertEqual(1, result["updated"])
+        self.assertEqual(["started"], marks)
+        self.assertIn("information_schema.COLUMNS", cursor.calls[0][0])
+        self.assertIn("UPDATE waybills", cursor.calls[1][0])
+
+    def test_projection_schema_failure_does_not_mark_or_update(self):
+        marks: list[str] = []
+        cursor = _Cursor(rows=[])
+        connection = _Connection(cursor)
+
+        with patch.object(phase7_mysql_store, "_connect", return_value=connection):
+            with self.assertRaisesRegex(RuntimeError, "schema is not migrated"):
+                phase7_mysql_store.update_console_waybill_statuses(
+                    ["WB-1"],
+                    "signed",
+                    mark_write_started=lambda: marks.append("started"),
+                )
+
+        self.assertEqual([], marks)
+        self.assertEqual(1, len(cursor.calls))
+        self.assertIn("information_schema.COLUMNS", cursor.calls[0][0])
 
     def test_scheduled_task_list_decodes_json_and_formats_timestamps(self):
         cursor = _Cursor(
