@@ -2379,6 +2379,10 @@ def run_test_automation_project_024_original_plugin_full_auto(case):
 def run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation(case):
         """Exercise the selector and its Run -> Command -> WorkItem lock order."""
 
+        from shared.automation_project_authorization import (
+            AutomationEntrypoint,
+            AutomationProjectInvocation,
+        )
         from shared.orchestration_repository import InvalidStateError
 
         repository = case._repository()
@@ -2395,6 +2399,16 @@ def run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observe
             scheduled_for: str = "2026-08-22T00:00:00+00:00",
         ) -> dict[str, str]:
             command, item, run, event, outbox = case._aggregate_rows(label)
+            invocation = AutomationProjectInvocation(
+                automation_id=project,
+                automation_generation=1,
+                entrypoint=AutomationEntrypoint.SCHEDULER,
+                contract_id=f"integration-contract-{project}",
+                contract_hash="a" * 64,
+                policy_version=1,
+                project_configuration_version=1,
+                request_id=f"scheduler:{task}:{uuid4()}",
+            )
             command.update(
                 {
                     "command_type": "automation.project.invoke",
@@ -2411,7 +2425,7 @@ def run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observe
                     },
                     "automation_id": project,
                     "automation_generation": 1,
-                    "automation_invocation": None,
+                    "automation_invocation": invocation.to_dict(),
                 }
             )
             item["source"] = "scheduler"
