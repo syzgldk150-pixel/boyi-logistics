@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping, NoReturn, Sequence
 from agent.automation_plugins.delivery_site_handlers import (
     DELIVERY_SITE_WRITE_ACTION_KEYS,
     DeliverySiteHandlerPorts,
+    WriteStartMarker,
     build_delivery_site_handler_map,
 )
 from agent.automation_plugins.errors import PluginExecutionError
@@ -523,10 +524,15 @@ def build_production_delivery_site_ports(
     read_projection = projection_read or _default_projection_read
     write_projection = projection_write or _default_projection_write
 
+    def mark_write_started(marker: WriteStartMarker) -> None:
+        if marker is not None:
+            marker()
+
     def replace_site_bitable(
         resource_id: str,
         records: list[dict[str, Any]],
         target_date: str,
+        write_started: WriteStartMarker,
     ) -> Mapping[str, Any]:
         resource = _exact_resource(
             load_resource,
@@ -550,6 +556,7 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
+            mark_write_started(write_started)
             response = sync_bitable(
                 resource_id,
                 translated,
@@ -585,6 +592,7 @@ def build_production_delivery_site_ports(
         resource_id: str,
         rows: list[list[Any]],
         target_date: str,
+        write_started: WriteStartMarker,
     ) -> Mapping[str, Any]:
         resource = _exact_resource(
             load_resource,
@@ -627,6 +635,7 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
+            mark_write_started(write_started)
             response = sync_sheet(
                 resource_id,
                 rows,
@@ -662,6 +671,7 @@ def build_production_delivery_site_ports(
     def write_delivery_bitable(
         resource_id: str,
         records: list[dict[str, str]],
+        write_started: WriteStartMarker,
     ) -> Mapping[str, Any]:
         resource = _exact_resource(
             load_resource,
@@ -699,6 +709,7 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
+            mark_write_started(write_started)
             response = invoke_feishu(
                 "write_records",
                 {
@@ -732,6 +743,7 @@ def build_production_delivery_site_ports(
     def update_delivery_projection(
         bill_codes: tuple[str, ...],
         status: str,
+        write_started: WriteStartMarker,
     ) -> Mapping[str, Any]:
         before = _projection_snapshot(read_projection(bill_codes), bill_codes)
         expected = [dict(row) for row in before]
@@ -740,6 +752,7 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
+            mark_write_started(write_started)
             response = write_projection(list(bill_codes), status)
         except Exception as exc:
             write_error = exc

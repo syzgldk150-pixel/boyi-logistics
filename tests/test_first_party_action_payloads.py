@@ -703,13 +703,17 @@ def test_delivery_status_signed_payload_runs_through_router_and_verifier(
         build_delivery_site_handler_map(
             DeliverySiteHandlerPorts(
                 describe_account=Manager().require_authenticated_binding,
-                site_bitable_replace=lambda resource_id, records, target_date: {},
-                site_sheet_replace=lambda resource_id, rows, target_date: {},
-                delivery_bitable_write=lambda resource_id, records: (
-                    _fresh_write_result(len(records), "delivery-bitable")
+                site_bitable_replace=lambda resource_id, records, target_date, write_started: (
+                    write_started() or {}
                 ),
-                delivery_projection_update=lambda codes, status: (
-                    _fresh_write_result(len(codes), "delivery-projection")
+                site_sheet_replace=lambda resource_id, rows, target_date, write_started: (
+                    write_started() or {}
+                ),
+                delivery_bitable_write=lambda resource_id, records, write_started: (
+                    write_started() or _fresh_write_result(len(records), "delivery-bitable")
+                ),
+                delivery_projection_update=lambda codes, status, write_started: (
+                    write_started() or _fresh_write_result(len(codes), "delivery-projection")
                 ),
             ),
             cursor_secret=b"delivery-status-router-verifier-secret",
@@ -1145,10 +1149,14 @@ def test_site_send_signed_payload_runs_through_router_and_write_verifier(
         build_delivery_site_handler_map(
             DeliverySiteHandlerPorts(
                 describe_account=manager.require_authenticated_binding,
-                site_bitable_replace=replace_bitable,
-                site_sheet_replace=replace_sheet,
-                delivery_bitable_write=lambda resource_id, records: {},
-                delivery_projection_update=lambda codes, status: {},
+                site_bitable_replace=lambda resource_id, records, target_date, write_started: (
+                    write_started() or replace_bitable(resource_id, records, target_date)
+                ),
+                site_sheet_replace=lambda resource_id, rows, target_date, write_started: (
+                    write_started() or replace_sheet(resource_id, rows, target_date)
+                ),
+                delivery_bitable_write=lambda resource_id, records, write_started: write_started() or {},
+                delivery_projection_update=lambda codes, status, write_started: write_started() or {},
             ),
             cursor_secret=b"site-send-router-verifier-secret-v1",
         )
