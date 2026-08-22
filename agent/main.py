@@ -1201,6 +1201,7 @@ async def lifespan(app: FastAPI):
         protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
     )
     runner_holder["runner"] = runner
+    plugin_runtime.target_service.set_wake_runner(runner.wake)
     dispatcher = OutboxDispatcher(
         repository,
         worker_id=f"{INSTANCE_ID}:outbox",

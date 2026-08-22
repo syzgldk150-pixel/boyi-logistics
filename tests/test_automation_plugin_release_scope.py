@@ -7,12 +7,27 @@ import pytest
 
 from agent.automation_plugins.catalog import CompositeToolRegistry
 from agent.automation_plugins.first_party import (
+    _broker_action,
     deferred_first_party_plugin_ids,
     release_first_party_automation_ids,
     release_first_party_broker_action_keys,
     release_first_party_instance_seeds,
     release_first_party_plugin_ids,
+    resolve_first_party_manifests,
     resolve_release_first_party_manifests,
+)
+from agent.automation_plugins.errors import PluginPackageError
+from agent.automation_plugins.daily_send_handlers import (
+    MARKED_WRITE_ACTION_KEYS as DAILY_SEND_MARKED_WRITE_ACTION_KEYS,
+)
+from agent.automation_plugins.delivery_site_handlers import (
+    MARKED_WRITE_ACTION_KEYS as DELIVERY_SITE_MARKED_WRITE_ACTION_KEYS,
+)
+from agent.automation_plugins.first_party_handlers import (
+    MARKED_WRITE_ACTION_KEYS as CORE_MARKED_WRITE_ACTION_KEYS,
+)
+from agent.automation_plugins.problem_handlers import (
+    MARKED_WRITE_ACTION_KEYS as PROBLEM_MARKED_WRITE_ACTION_KEYS,
 )
 from agent.automation_plugins.release_scope import (
     DEFERRED_R7_PLUGIN_IDS,
@@ -27,7 +42,12 @@ from agent.orchestration.models import (
 )
 from agent.orchestration.planner import DeterministicPlanner
 from agent.tool_registry import ToolRegistry
+from plugin_core_adapters.finance import (
+    MARKED_WRITE_ACTION_KEYS as FINANCE_MARKED_WRITE_ACTION_KEYS,
+)
 from shared.orchestration_schema import (
+    REQUIRED_COLUMNS,
+    REQUIRED_TABLES,
     WINDOWS_WORKER_REQUIRED_COLUMNS,
     WINDOWS_WORKER_REQUIRED_TABLES,
     orchestration_schema_requirements,
@@ -75,6 +95,69 @@ def test_server_release_schema_does_not_require_windows_worker_extension() -> No
 
     assert server_tables.isdisjoint(WINDOWS_WORKER_REQUIRED_TABLES)
     assert server_columns.isdisjoint(WINDOWS_WORKER_REQUIRED_COLUMNS)
+
+
+def test_startup_schema_requires_write_attempt_receipts_and_identity_columns() -> None:
+    tables, columns = orchestration_schema_requirements(include_windows_worker=False)
+    expected_columns = {
+        "receipt_id", "automation_id", "generation", "lease_id",
+        "orchestration_run_id", "step_id", "request_id", "operation",
+        "action", "argument_sha256", "target_ref_sha256", "target_ref_json",
+        "outcome", "evidence_sha256",
+    }
+
+    assert "automation_write_attempt_receipts" in REQUIRED_TABLES
+    assert "automation_write_attempt_receipts" in tables
+    assert {
+        ("automation_write_attempt_receipts", column)
+        for column in expected_columns
+    } <= REQUIRED_COLUMNS
+    assert {
+        ("automation_write_attempt_receipts", column)
+        for column in expected_columns
+    } <= columns
+
+
+def test_first_party_broker_effects_are_closed_and_current_actions_explicit() -> None:
+    manifests = resolve_first_party_manifests(ToolRegistry())
+
+    for manifest in manifests.values():
+        for action in manifest.runtime_permissions["broker_operations"]:
+            classified = _broker_action(
+                str(action["operation"]),
+                str(action["action"]),
+                *(str(role) for role in action["roles"]),
+            )
+            assert classified.effect == action["effect"]
+
+    with pytest.raises(PluginPackageError, match="no explicit effect classification"):
+        _broker_action("browser.invoke", "future.unlisted.write", "account_id")
+
+
+def test_every_release_signed_write_has_a_declared_handler_start_boundary() -> None:
+    manifests = resolve_release_first_party_manifests(ToolRegistry())
+    signed_writes = {
+        (str(action["operation"]), str(action["action"]))
+        for manifest in manifests.values()
+        for action in manifest.runtime_permissions["broker_operations"]
+        if action["effect"] == "write"
+    }
+    marked_writes = (
+        CORE_MARKED_WRITE_ACTION_KEYS
+        | DAILY_SEND_MARKED_WRITE_ACTION_KEYS
+        | PROBLEM_MARKED_WRITE_ACTION_KEYS
+        | DELIVERY_SITE_MARKED_WRITE_ACTION_KEYS
+        | FINANCE_MARKED_WRITE_ACTION_KEYS
+    )
+    signed_reads = {
+        (str(action["operation"]), str(action["action"]))
+        for manifest in manifests.values()
+        for action in manifest.runtime_permissions["broker_operations"]
+        if action["effect"] == "read"
+    }
+
+    assert marked_writes == signed_writes
+    assert marked_writes.isdisjoint(signed_reads)
 
 
 def test_only_release_scoped_plugins_can_be_packaged_bootstrapped_or_brokered() -> None:

@@ -254,8 +254,8 @@ def _command() -> Command:
     )
 
 
-def _runner(repository, process_result):
-    capability = _capability()
+def _runner(repository, process_result, *, capability=None):
+    capability = capability or _capability()
     catalog = _Catalog(capability)
     adapter = RegisteredToolExecutionAdapter(
         catalog=catalog,
@@ -363,6 +363,34 @@ def test_cancel_request_is_checked_before_failed_step_commit():
     assert repository.step["error_code"] == "CANCELLED_BY_ACTOR"
     assert repository.run["status"] == "CANCELLED"
     assert repository.work_item["status"] == "CANCELLED"
+
+
+def test_cancel_request_cannot_overwrite_started_write_unknown_result():
+    repository = _Repository()
+    repository.run["cancel_requested_at"] = datetime(2026, 8, 13, 11, 59, 0)
+    repository.run["cancel_reason"] = "operator cancelled after the signed write started"
+    capability = _capability()
+    capability["operation_type"] = OperationType.EXTERNAL_WRITE.value
+    runner = _runner(
+        repository,
+        {
+            "success": False,
+            "error": "generation lease persistence failed after the broker write started",
+            "error_code": "WRITE_OUTCOME_UNKNOWN",
+            "retryable": False,
+        },
+        capability=capability,
+    )
+
+    error = asyncio.run(_execute_and_release_failure(runner, repository))
+
+    assert error.code == "WRITE_OUTCOME_UNKNOWN"
+    assert error.details["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.step["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.step["error_code"] == "WRITE_OUTCOME_UNKNOWN"
+    assert repository.run["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.run["error_code"] == "WRITE_OUTCOME_UNKNOWN"
+    assert repository.work_item["status"] == "BLOCKED_DATA"
 
 
 def test_waiting_approval_validation_failure_releases_to_needs_clarification():

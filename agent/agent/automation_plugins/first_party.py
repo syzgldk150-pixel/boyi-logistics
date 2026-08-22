@@ -64,7 +64,8 @@ FIRST_PARTY_ROOT = Path(__file__).resolve().parents[2] / "first_party_automation
 DIGEST_LOCK_PATH = FIRST_PARTY_ROOT / "digests.json"
 FIRST_PARTY_RUNTIME_PATH = FIRST_PARTY_ROOT / "_runtime" / "main.py"
 FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
-FIRST_PARTY_PACKAGE_VERSION = "1.0.3"
+# Broker effect classification changes the signed executable contract.
+FIRST_PARTY_PACKAGE_VERSION = "1.0.4"
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {
     "ronghui_": "ronghui",
@@ -365,10 +366,108 @@ class FirstPartyBrokerAction:
     operation: str
     action: str
     roles: tuple[str, ...]
+    effect: str
+
+
+# This is a closed, source-owned classification. Every signed first-party
+# Broker action is listed as either read or write. New actions must be
+# classified explicitly before a manifest may be built or signed.
+_FIRST_PARTY_WRITE_BROKER_ACTIONS = frozenset(
+    {
+        "ronghui.clock.submit",
+        "r7.arrival.submit",
+        "r7.departure.submit",
+        "r7.checkin_log.append_evidence",
+        "ronghui.problem.create",
+        "split_pending.snapshot.replace",
+        "feishu.sheet.replace_rows",
+        "ronghui.complaint.create",
+        "split_pending.result.upsert",
+        "daily_sign.problem_event.upsert",
+        "scan.snapshot.replace",
+        "scan.snapshot.cleanup",
+        "waybill.snapshot.replace",
+        "arrival.snapshot.replace",
+        "split_pending.snapshot.refresh",
+        "feishu.sheet.replace",
+        "feishu.sheet.add",
+        "arrival.forecast_snapshot.replace",
+        "sync_daily_send_orders.lock.acquire",
+        "sync_daily_send_orders.lock.release",
+        "feishu.bitable.delete_records",
+        "feishu.bitable.write_records",
+        "waybill.ronghui.replace_date",
+        "daily_sign.authoritative_sync",
+        "waybill.delivery_status.update",
+        "finance.batch.acquire",
+        "finance.source_snapshot.write",
+        "finance.projection.commit",
+        "ronghui.scan_next.submit",
+        "feishu.bitable.replace_snapshot",
+        "feishu.bitable.append_yunda_dispatch_forecast",
+        "feishu.bitable.replace_yunda_send_waybills_date",
+        "feishu.sheet.replace_yunda_send_waybills",
+        "waybill.yunda.replace_date",
+    }
+)
+
+
+_FIRST_PARTY_READ_BROKER_ACTIONS = frozenset(
+    {
+        "customer_problem.detail",
+        "customer_problem.list_page",
+        "r7.arrival.query_page",
+        "r7.arrival.verify",
+        "r7.departure.query_page",
+        "r7.departure.verify",
+        "ronghui.arrive_list.read_page",
+        "ronghui.clock.precheck",
+        "ronghui.clock.verify",
+        "ronghui.complaint.query",
+        "ronghui.complaint.verify",
+        "ronghui.delivery_status.read",
+        "ronghui.finance.capture_page",
+        "ronghui.finance.verify_source_totals",
+        "ronghui.problem.query",
+        "ronghui.problem.verify",
+        "ronghui.scan_next.verify",
+        "ronghui.scan.read_page",
+        "ronghui.send_order.read_page",
+        "ronghui.site_send.read_page",
+        "ronghui.waybill_detail.read",
+        "yunda.dispatch_forecast.read_page",
+        "yunda.send_waybill.list_page",
+        "yunda.send_waybill.renderer_detail",
+        "yunda.special_line.list_page",
+        "yunda.waybill.original_data",
+        "yunda.waybill.tracking_detail",
+        "feishu.bitable.list_records",
+        "feishu.bitable.list_views",
+        "feishu.sheet.read_rows",
+        "arrival.snapshot.completed_before",
+        "r7.checkin_log.read_daily_success",
+        "scan.snapshot.read",
+        "split_pending.snapshot.read",
+        "waybill.pending.read",
+    }
+)
 
 
 def _broker_action(operation: str, action: str, *roles: str) -> FirstPartyBrokerAction:
-    return FirstPartyBrokerAction(operation=operation, action=action, roles=tuple(roles))
+    if action in _FIRST_PARTY_WRITE_BROKER_ACTIONS:
+        effect = "write"
+    elif action in _FIRST_PARTY_READ_BROKER_ACTIONS:
+        effect = "read"
+    else:
+        raise PluginPackageError(
+            f"first-party Broker action has no explicit effect classification: {operation}/{action}"
+        )
+    return FirstPartyBrokerAction(
+        operation=operation,
+        action=action,
+        roles=tuple(roles),
+        effect=effect,
+    )
 
 
 # These contracts are part of the signed action package.  They describe only
@@ -635,6 +734,34 @@ _FIRST_PARTY_BROKER_ACTIONS: Mapping[str, tuple[FirstPartyBrokerAction, ...]] = 
         _broker_action("projection.invoke", "waybill.yunda.replace_date", "account_id"),
     ),
 }
+
+# Only instances of these reviewed plugin packages are eligible for
+# receipt-based unknown-write recovery. The keys retain the seeded first-party
+# instance index for auditability; authorization deliberately uses the package
+# identities in the values so repeated installed instances are covered.
+RECOVERABLE_WRITE_PROJECT_PLUGINS: Mapping[str, str] = {
+    "arrive_list": "sync_arrive_list",
+    "arrival_stats": "sync_arrival_stats",
+    "daily_sign": "sync_daily_should_sign",
+    "delivery_status": "sync_delivery_status",
+    "finance_startup_catchup": "sync_finance_bills",
+}
+
+
+def recoverable_write_broker_actions() -> frozenset[tuple[str, str, str]]:
+    """Return the exact signed write pairs eligible for receipt locators.
+
+    This is derived from the signed manifest source rather than a hand-kept
+    count.  The Broker has a deliberately matching close-set and tests keep
+    the two contracts equal whenever package permissions change.
+    """
+
+    return frozenset(
+        (automation_id, action.operation, action.action)
+        for automation_id, plugin_id in RECOVERABLE_WRITE_PROJECT_PLUGINS.items()
+        for action in _FIRST_PARTY_BROKER_ACTIONS[plugin_id]
+        if action.effect == "write"
+    )
 
 _SUBPROCESS_BROKER_ONLY_FIELDS = frozenset(
     {
@@ -1184,6 +1311,7 @@ def resolve_first_party_manifests(
                             "operation": item.operation,
                             "action": item.action,
                             "roles": list(item.roles),
+                            "effect": item.effect,
                         }
                         for item in broker_actions
                     ],

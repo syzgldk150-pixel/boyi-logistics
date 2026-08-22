@@ -100,7 +100,10 @@ class RegisteredToolExecutionAdapter:
                 "meta": self._base_meta(step, capability, execution_context),
                 "warnings": [],
                 "error": {
-                    "code": type(exc).__name__.upper(),
+                    # Broker/plugin failures carry reviewed, safe codes.
+                    # Preserve them so Runner persists the original cause
+                    # instead of collapsing it to a later Catalog fence.
+                    "code": str(getattr(exc, "code", "") or type(exc).__name__).upper(),
                     "message": redact_text(exc)[:500],
                     "retryable": False,
                 },

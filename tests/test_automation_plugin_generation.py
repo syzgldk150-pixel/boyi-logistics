@@ -494,6 +494,7 @@ def test_unauthenticated_session_does_not_block_structural_generation_commit() -
                             "operation": "browser.invoke",
                             "action": "fetch",
                             "roles": ["source"],
+                            "effect": "read",
                         }
                     ]
                 },

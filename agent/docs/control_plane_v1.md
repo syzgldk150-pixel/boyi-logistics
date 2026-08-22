@@ -70,6 +70,12 @@ Worker 通过 MySQL 8 `FOR UPDATE SKIP LOCKED` 和租约领取。执行中续租
 只读/计算步骤可安全恢复，声明幂等的内部投影写入按契约恢复。第三方或财务写入若没有
 精确读后核验器，一律进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得盲目重试。
 
+插件 Broker 对每个签名 primitive 明确区分 `read` 与 `write`。只有已通过授权、闭合契约和
+精确 binding 校验、且即将调用 mutating adapter 的 `write` 才可形成 started-write 观察；因此
+读调用失败及所有 pre-write 拒绝保持 `FAILED_BEFORE_WRITE`。Runner 在启动 step 前捕获该次
+执行能力，并在落库原始结果时复用该不可变能力，不能因之后 Catalog 被代际围栏阻断而覆盖插件
+原始安全错误码。
+
 调度策略遵循显式账号边界。寄件、签收、网点出港、到货清单、到货统计和两项韵达同步的顶层
 `account_id` 都是必填项；嵌套请求中重复出现的账号只能与顶层值完全一致。每个持久化任务默认
 `REQUIRE_EACH_RUN`，可单独配置为 `EXACT_SCHEDULE_EXEMPT`，不是按工具或任务类别一刀切。
@@ -221,6 +227,13 @@ Schema 校验，契约缺失或不匹配时不得进入成功状态。
 唯一、关键字段缺失、分页不完整、未知候选、证据缺失或写后条件没有可核验观测值时，
 ResultVerifier 必须显式阻塞或失败。第三方写工具必须返回与契约同名的 postcondition
 proof、观测时间和 Evidence 引用；通用“脚本返回成功”不能替代业务写后验证。
+
+Broker read primitive never counts as a started external write. For receipt-enabled
+automation writes, a durable payload-free receipt is recorded immediately before
+the adapter boundary: verified receipts may recover as applied, and a proven
+pre-adapter failure with zero receipts may recover as failed-before-write. An
+adapter-started call without terminal evidence, or a historical lease without a
+receipt, remains `UNKNOWN`; the Runner must not infer or replay it.
 
 ## 首期只读事项投影
 

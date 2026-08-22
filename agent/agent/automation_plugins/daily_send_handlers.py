@@ -37,6 +37,15 @@ _MAX_RECORDS = 10_000
 _MAX_PAGE_SIZE = 500
 _MAX_RECORD_REFS = 10_000
 _LEASE_SECONDS = 3_600.0
+MARKED_WRITE_ACTION_KEYS = frozenset(
+    {
+        ("ledger.invoke", "sync_daily_send_orders.lock.acquire"),
+        ("ledger.invoke", "sync_daily_send_orders.lock.release"),
+        ("network.request", "feishu.bitable.delete_records"),
+        ("network.request", "feishu.bitable.write_records"),
+        ("projection.invoke", "waybill.ronghui.replace_date"),
+    }
+)
 _WAYBILL_FIELD = "运单编号"
 _DATE_FIELD = "发件日期"
 _BITABLE_FIELDS = (
@@ -324,7 +333,12 @@ class _LeaseRegistry:
         self._lock = threading.Lock()
         self._lease: _Lease | None = None
 
-    def acquire(self, context: CoreBrokerInvocationContext) -> str:
+    def acquire(
+        self,
+        context: CoreBrokerInvocationContext,
+        *,
+        mark_write_started: Callable[[], None] | None = None,
+    ) -> str:
         now = time.monotonic()
         owner = (context.automation_id, context.plugin_version)
         nonce = secrets.token_urlsafe(32)
@@ -332,6 +346,8 @@ class _LeaseRegistry:
         with self._lock:
             if self._lease is not None and self._lease.expires_at > now:
                 raise _error("daily-send synchronization is already running", "BROKER_CONCURRENCY_BLOCKED")
+            if mark_write_started is not None:
+                mark_write_started()
             self._lease = _Lease(
                 owner=owner,
                 nonce_sha256=nonce_sha256,
@@ -343,7 +359,13 @@ class _LeaseRegistry:
             {"nonce": nonce, "owner": list(owner)},
         )
 
-    def release(self, context: CoreBrokerInvocationContext, lease_ref: object) -> None:
+    def release(
+        self,
+        context: CoreBrokerInvocationContext,
+        lease_ref: object,
+        *,
+        mark_write_started: Callable[[], None] | None = None,
+    ) -> None:
         payload = self._codec.decode(context, "lease", lease_ref)
         nonce = _text(payload.get("nonce"), "lease nonce", maximum=256)
         owner = (context.automation_id, context.plugin_version)
@@ -358,6 +380,8 @@ class _LeaseRegistry:
                 digest,
             ):
                 raise _error("daily-send lease is not active", "BROKER_CURSOR_INVALID")
+            if mark_write_started is not None:
+                mark_write_started()
             self._lease = None
 
 
@@ -461,6 +485,11 @@ class _DailySendHandlers:
         self._codec = _OpaqueCodec(secret)
         self._leases = _LeaseRegistry(self._codec)
 
+    @staticmethod
+    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
+        if context.mark_write_started is not None:
+            context.mark_write_started()
+
     def acquire(
         self,
         context: CoreBrokerInvocationContext,
@@ -474,7 +503,10 @@ class _DailySendHandlers:
         )
         _strict(arguments, set())
         _account_descriptor(self._ports, context)
-        lease_ref = self._leases.acquire(context)
+        lease_ref = self._leases.acquire(
+            context,
+            mark_write_started=context.mark_write_started,
+        )
         proof = {"acquired": True, "owner": context.automation_id}
         return {
             "acquired": True,
@@ -495,7 +527,11 @@ class _DailySendHandlers:
         )
         values = _strict(arguments, {"lease_ref"})
         _account_descriptor(self._ports, context)
-        self._leases.release(context, values.get("lease_ref"))
+        self._leases.release(
+            context,
+            values.get("lease_ref"),
+            mark_write_started=context.mark_write_started,
+        )
         proof = {"released": True, "owner": context.automation_id}
         return {
             "committed": True,
@@ -627,6 +663,7 @@ class _DailySendHandlers:
             record_ids.append(_text(payload.get("record_id"), "record_id", maximum=512))
         if len(set(record_ids)) != len(record_ids):
             raise _error("daily-send delete references are duplicated", "BROKER_ARGUMENT_INVALID")
+        self._mark_write_started(context)
         raw = self._ports.bitable_delete(resource_id, tuple(record_ids))
         if (
             not isinstance(raw, Mapping)
@@ -675,6 +712,7 @@ class _DailySendHandlers:
                 raise _error("daily-send Bitable identities are duplicated", "BROKER_ARGUMENT_INVALID")
             identities.add(identity)
             normalized.append({"fields": dict(raw["fields"])})
+        self._mark_write_started(context)
         raw = self._ports.bitable_write(resource_id, normalized)
         if (
             not isinstance(raw, Mapping)
@@ -713,6 +751,7 @@ class _DailySendHandlers:
         records = _projection_records(values.get("records"))
         if any(record["open_date"] != target_date for record in records):
             raise _error("daily-send projection date changed", "BROKER_ARGUMENT_INVALID")
+        self._mark_write_started(context)
         raw = self._ports.projection_replace(records, target_date)
         if not isinstance(raw, Mapping) or raw.get("ok") is not True or raw.get("verified") is not True:
             raise _error(
@@ -758,4 +797,8 @@ def build_daily_send_handler_map(
     return _DailySendHandlers(ports, secret=cursor_secret).handler_map()
 
 
-__all__ = ["DailySendHandlerPorts", "build_daily_send_handler_map"]
+__all__ = [
+    "DailySendHandlerPorts",
+    "MARKED_WRITE_ACTION_KEYS",
+    "build_daily_send_handler_map",
+]

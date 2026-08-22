@@ -44,7 +44,7 @@
 
 - 系统保持 Agent + Console 双服务；业务编排、审批、执行恢复和事务 Outbox 全部位于 Agent，禁止新增独立 LLM 服务、消息中间件或 Console 侧编排器。完整规范见 `agent/docs/control_plane_v1.md`。
 - 除登录/验证码、Console 本地 OCR 与手工运单 CRUD 外，Console、飞书、APScheduler、Webhook 和兼容工具 API 必须提交 Command；只有 `agent/agent/orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`。
-- Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；通用仓储原语、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
+- Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；通用仓储原语、未知写恢复状态机、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/automation_unknown_write_recovery.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
 - Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
 - 风险、审批角色、调度免审、Evidence 与写后条件只读取受管工具契约。LLM 只能选择开放的只读/计算工具；第三方写要求 `super_admin` 独立审批和可核验写后证据，除非 Scheduler 命中当前有效的精确任务豁免；未知写结果不得盲目重试。
 - 定时任务的审批不是按工具一刀切：每个持久化任务都有 `REQUIRE_EACH_RUN`（默认）或 `EXACT_SCHEDULE_EXEMPT` 两种策略。只有真实 MySQL 管理员会话签名的 Console `super_admin` 可以变更策略；该豁免只由 Scheduler 使用，手工、Console、飞书和 Webhook 发起的同一工具仍走逐次审批。`registry.yaml` 的 `approval.mode: schedule_allowlist` 只是可配置豁免的资格上限，不会自动授权。

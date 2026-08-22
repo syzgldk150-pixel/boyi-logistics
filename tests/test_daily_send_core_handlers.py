@@ -249,3 +249,89 @@ def test_write_and_projection_require_independent_verified_postconditions():
             {"records": [dict(_PROJECTION)], "target_date": "2026-05-12"},
         )
     assert projection_unknown.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_write_marker_is_after_late_argument_validation_and_immediately_before_port():
+    events: list[str] = []
+
+    def write(_resource: str, records: list[dict[str, object]]):
+        assert events == ["marker"]
+        events.append("port")
+        return {
+            "ok": True,
+            "verified": True,
+            "written": len(records),
+        }
+
+    handlers = build_daily_send_handler_map(
+        _ports(bitable_write=write),
+        cursor_secret=_SECRET,
+    )
+    context = replace(
+        _context(
+            "network.request",
+            "feishu.bitable.write_records",
+            "send_order_bitable",
+        ),
+        mark_write_started=lambda: events.append("marker"),
+    )
+
+    with pytest.raises(PluginExecutionError) as invalid:
+        handlers[(context.operation, context.action)](
+            context,
+            {"records": [{"fields": dict(_FIELDS)}, {"fields": dict(_FIELDS)}]},
+        )
+
+    assert invalid.value.code == "BROKER_ARGUMENT_INVALID"
+    assert events == []
+
+    result = handlers[(context.operation, context.action)](
+        context,
+        {"records": [{"fields": dict(_FIELDS)}]},
+    )
+
+    assert result["committed"] is True
+    assert events == ["marker", "port"]
+
+
+def test_read_handler_never_marks_a_write_boundary() -> None:
+    handlers = build_daily_send_handler_map(_ports(), cursor_secret=_SECRET)
+    context = replace(
+        _context("browser.invoke", "ronghui.send_order.read_page", "account_id"),
+        mark_write_started=lambda: pytest.fail("read action marked a write boundary"),
+    )
+
+    result = handlers[(context.operation, context.action)](
+        context,
+        {"target_date": "2026-05-12", "page_index": 0, "page_size": 100},
+    )
+
+    assert result["total"] == 1
+
+
+def test_lease_handlers_mark_only_after_their_final_state_validation() -> None:
+    events: list[str] = []
+    handlers = build_daily_send_handler_map(_ports(), cursor_secret=_SECRET)
+    acquire_context = replace(
+        _context("ledger.invoke", "sync_daily_send_orders.lock.acquire", "account_id"),
+        mark_write_started=lambda: events.append("marker"),
+    )
+    release_context = replace(
+        _context("ledger.invoke", "sync_daily_send_orders.lock.release", "account_id"),
+        mark_write_started=lambda: events.append("marker"),
+    )
+    acquire = handlers[(acquire_context.operation, acquire_context.action)]
+    release = handlers[(release_context.operation, release_context.action)]
+    acquired = acquire(acquire_context, {})
+
+    with pytest.raises(PluginExecutionError) as conflict:
+        acquire(acquire_context, {})
+    assert conflict.value.code == "BROKER_CONCURRENCY_BLOCKED"
+
+    with pytest.raises(PluginExecutionError) as forged:
+        release(release_context, {"lease_ref": "forged"})
+    assert forged.value.code == "BROKER_CURSOR_INVALID"
+    assert events == ["marker"]
+
+    release(release_context, {"lease_ref": acquired["lease_ref"]})
+    assert events == ["marker", "marker"]

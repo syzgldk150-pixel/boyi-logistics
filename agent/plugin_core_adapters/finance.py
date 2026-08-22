@@ -48,6 +48,13 @@ _PAGE_SIZE = 100
 _MAX_PAGES = 200
 _MAX_TARGETS = 255
 _CAPTURE_TTL_SECONDS = 3_600.0
+MARKED_WRITE_ACTION_KEYS = frozenset(
+    {
+        ("ledger.invoke", "finance.batch.acquire"),
+        ("ledger.invoke", "finance.source_snapshot.write"),
+        ("ledger.invoke", "finance.projection.commit"),
+    }
+)
 _CONTRACT_FIELDS = {
     "mode",
     "trigger_type",
@@ -491,6 +498,11 @@ class _FinanceBrokerHandlers:
         self._source_contexts: dict[str, str] = {}
         self._batches: dict[int, _BatchState] = {}
 
+    @staticmethod
+    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
+        if context.mark_write_started is not None:
+            context.mark_write_started()
+
     def _opaque(self, context: CoreBrokerInvocationContext, purpose: str) -> str:
         nonce = secrets.token_urlsafe(24)
         material = canonical_json_bytes(
@@ -730,6 +742,7 @@ class _FinanceBrokerHandlers:
         self._validate_contract(contract, contract_sha256)
         accounts, descriptors = self._descriptors(context)
         repository = self._repository_factory()
+        self._mark_write_started(context)
         repository.initialize_schema()
         try:
             seeded = repository.seed_fee_mappings()
@@ -1187,6 +1200,7 @@ class _FinanceBrokerHandlers:
             failure = _strict(values.get("failure"), {"code", "stage"}, "finance failure")
             code = _text(failure.get("code"), "failure code", maximum=64)
             stage = _text(failure.get("stage"), "failure stage", maximum=64)
+            self._mark_write_started(context)
             run_id = repository.start_failed_run(
                 batch_id=batch_id,
                 platform="ronghui",
@@ -1268,6 +1282,7 @@ class _FinanceBrokerHandlers:
                     raise _error("finance no-data snapshot is not empty", "BROKER_ARGUMENT_INVALID")
             elif not transactions:
                 raise _error("finance success snapshot is empty", "BROKER_ARGUMENT_INVALID")
+            self._mark_write_started(context)
             run_id = repository.start_run(
                 batch_id=batch_id,
                 platform="ronghui",
@@ -1454,6 +1469,7 @@ class _FinanceBrokerHandlers:
                 or supplied_validation != receipt.validation_sha256
             ):
                 raise _error("finance projection receipt changed", "BROKER_STATE_CONFLICT")
+        self._mark_write_started(context)
         try:
             status = batch.repository.finalize_batch(batch_id)
         except Exception as exc:
@@ -1607,4 +1623,4 @@ def build_production_finance_handler_map(
     return handlers.handler_map()
 
 
-__all__ = ["build_production_finance_handler_map"]
+__all__ = ["MARKED_WRITE_ACTION_KEYS", "build_production_finance_handler_map"]

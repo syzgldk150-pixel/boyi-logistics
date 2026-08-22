@@ -29,6 +29,11 @@ class CoreBrokerInvocationContext:
     resource_id: str | None = None
     account_bindings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     resource_bindings: Mapping[str, str] = field(default_factory=dict)
+    # This is supplied only for a signed write call.  The handler must invoke
+    # it exactly once, immediately before its first mutating port call.  It is
+    # intentionally optional so closed handler unit tests can exercise their
+    # validation branches without manufacturing write-attempt state.
+    mark_write_started: Callable[[], None] | None = None
 
 
 CoreBrokerHandler = Callable[
@@ -192,6 +197,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         role: str,
         binding: object,
         arguments: Mapping[str, Any],
+        mark_write_started: Callable[[], None] | None = None,
     ) -> Mapping[str, Any]:
         handler = self._handlers.get((operation, action))
         if handler is None:
@@ -300,6 +306,7 @@ class RegisteredCoreAutomationBrokerAdapter:
             resource_id=resource_id,
             account_bindings=resolved_accounts,
             resource_bindings=resolved_resources,
+            mark_write_started=mark_write_started,
         )
         result = handler(context, dict(arguments))
         if inspect.isawaitable(result):

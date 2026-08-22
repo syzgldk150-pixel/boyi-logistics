@@ -2984,6 +2984,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self
         )
 
+    def test_generation_write_lock_order_races(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_generation_write_lock_order_races(self)
+
     def test_daily_sign_fresh_readback_rejects_event_and_publication_tamper(self):
         DAILY_SIGN_SCENARIOS.run_test_daily_sign_fresh_readback_rejects_mysql_tamper(
             self

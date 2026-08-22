@@ -16,6 +16,7 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.ports import RuntimeGenerationLeasePort
 from agent.orchestration.models import OrchestrationError, PlanStep, RunStatus, ToolResult, sha256_json
 from agent.tool_registry import validate_schema_instance
+from shared.redaction import redact_text
 
 
 @dataclass(frozen=True)
@@ -295,10 +296,16 @@ class ResultVerifier:
                 outcome=final_outcome,
                 evidence_sha256=sha256_json(evidence_value),
             )
-        except Exception:
-            return self._failure(
-                "GENERATION_LEASE_FINALIZE_FAILED",
-                "Plugin generation write outcome could not be persisted",
+        except Exception as exc:
+            # The adapter already crossed the signed write boundary and the
+            # lease remains VERIFYING. A persistence outage here is therefore
+            # an unknown external outcome, never a terminal/retryable result.
+            return VerificationOutcome(
+                False,
+                RunStatus.BLOCKED_DATA,
+                "WRITE_OUTCOME_UNKNOWN",
+                "Plugin generation write finalization could not be persisted "
+                f"({type(exc).__name__}: {redact_text(exc)[:300]})",
             )
         return outcome
 
@@ -336,7 +343,12 @@ class ResultVerifier:
         code = str(result.get("error_code") or error.get("code") or "TOOL_RESULT_FAILED").upper()
         message = str(error.get("message") or error_value or result.get("message") or "Tool result reported failure")
         governed_blocked_status = str(meta.get("blocked_status") or "").upper()
-        if code in {"CANCELLED", "CANCELED"}:
+        if code == "WRITE_OUTCOME_UNKNOWN":
+            # A durable started-write boundary is never replayable.  The
+            # original plugin diagnostic is deliberately subordinate to this
+            # governing status.
+            status = RunStatus.BLOCKED_DATA
+        elif code in {"CANCELLED", "CANCELED"}:
             status = RunStatus.CANCELLED
         elif governed_blocked_status == RunStatus.BLOCKED_LOGIN.value or code in {
             "LOGIN_REQUIRED",

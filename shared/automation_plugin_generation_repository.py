@@ -7,6 +7,8 @@ repository type and method names remain backward compatible.
 from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
+from shared.automation_unknown_write_repository import lock_remaining_unknown_generation_leases
+from shared.automation_write_attempt_repository import record_generation_write_attempt_row as _record_generation_write_attempt_row
 
 Any = _repository.Any
 AutomationPluginPurgeBlocked = _repository.AutomationPluginPurgeBlocked
@@ -1574,6 +1576,36 @@ class AutomationPluginGenerationRepositoryMixin:
         }:
             raise ValueError("runtime lease terminal outcome is invalid")
         with self.cursor() as cursor:
+            # A lease-id-only caller must discover the parent identity without
+            # taking a child lock, then acquire the durable hierarchy in its
+            # one global order and validate that discovery again.
+            cursor.execute(
+                """
+                SELECT automation_id, generation
+                FROM automation_project_generation_leases WHERE lease_id=%s
+                """,
+                (safe_lease_id,),
+            )
+            lease_identity = _row_dict(cursor, cursor.fetchone())
+            if lease_identity is None:
+                raise OrchestrationPersistenceError("runtime generation lease does not exist")
+            automation_id = _required_text(lease_identity.get("automation_id"), "automation_id")
+            generation = _positive_int(lease_identity.get("generation"), "generation")
+            cursor.execute(
+                "SELECT automation_id FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                (automation_id,),
+            )
+            if _row_dict(cursor, cursor.fetchone()) is None:
+                raise OrchestrationPersistenceError("automation project disappeared during lease release")
+            cursor.execute(
+                """
+                SELECT automation_id, generation FROM automation_project_generations
+                WHERE automation_id=%s AND generation=%s FOR UPDATE
+                """,
+                (automation_id, generation),
+            )
+            if _row_dict(cursor, cursor.fetchone()) is None:
+                raise OrchestrationPersistenceError("automation generation disappeared during lease release")
             cursor.execute(
                 """
                 SELECT * FROM automation_project_generation_leases
@@ -1581,12 +1613,13 @@ class AutomationPluginGenerationRepositoryMixin:
                 """,
                 (safe_lease_id,),
             )
-            lease = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                ("runtime_metadata_json",),
-            )
-            if lease is None:
-                raise OrchestrationPersistenceError("runtime generation lease does not exist")
+            lease = _decode_row(_row_dict(cursor, cursor.fetchone()), ("runtime_metadata_json",))
+            if (
+                lease is None
+                or str(lease.get("automation_id") or "") != automation_id
+                or int(lease.get("generation") or 0) != generation
+            ):
+                raise IdempotencyConflict("runtime lease identity changed during release")
             current = str(lease.get("outcome") or "")
             if current != "RUNNING":
                 if current != normalized_outcome:
@@ -1607,6 +1640,14 @@ class AutomationPluginGenerationRepositoryMixin:
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("runtime lease release changed")
             if normalized_outcome == "WRITE_OUTCOME_UNKNOWN":
+                cursor.execute(
+                    """
+                    UPDATE automation_write_attempt_receipts
+                    SET outcome='WRITE_OUTCOME_UNKNOWN', updated_at=NOW(6)
+                    WHERE lease_id=%s AND outcome='STARTED'
+                    """,
+                    (safe_lease_id,),
+                )
                 cursor.execute(
                     """
                     UPDATE automation_project_generations
@@ -1637,6 +1678,12 @@ class AutomationPluginGenerationRepositoryMixin:
             raise OrchestrationPersistenceError("runtime lease disappeared")
         return result
 
+    def record_generation_write_attempt_row(
+        self,
+        receipt: Mapping[str, object],
+    ) -> None:
+        return _record_generation_write_attempt_row(self, receipt)
+
     def resolve_unknown_generation_write_not_applied_row(
         self,
         automation_id: str,
@@ -1660,6 +1707,40 @@ class AutomationPluginGenerationRepositoryMixin:
         safe_lease_id = _required_text(lease_id, "lease_id")
         safe_evidence = _sha256(evidence_sha256, "evidence_sha256")
         with self.cursor() as cursor:
+            # Discover without a lock.  The locked re-read below remains the
+            # authority, so a reused lease id cannot route this recovery to a
+            # different project or generation.
+            cursor.execute(
+                """
+                SELECT automation_id, generation
+                FROM automation_project_generation_leases WHERE lease_id=%s
+                """,
+                (safe_lease_id,),
+            )
+            lease_identity = _row_dict(cursor, cursor.fetchone())
+            if lease_identity is None:
+                raise OrchestrationPersistenceError("runtime generation lease does not exist")
+            if (
+                str(lease_identity.get("automation_id") or "") != safe_automation_id
+                or int(lease_identity.get("generation") or 0) != safe_generation
+            ):
+                raise IdempotencyConflict("runtime recovery does not match its generation lease")
+            cursor.execute(
+                "SELECT automation_id FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                (safe_automation_id,),
+            )
+            if _row_dict(cursor, cursor.fetchone()) is None:
+                raise OrchestrationPersistenceError("automation project disappeared during recovery")
+            cursor.execute(
+                """
+                SELECT state FROM automation_project_generations
+                WHERE automation_id=%s AND generation=%s FOR UPDATE
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            generation_row = _row_dict(cursor, cursor.fetchone())
+            if generation_row is None:
+                raise OrchestrationPersistenceError("runtime generation disappeared during recovery")
             cursor.execute(
                 """
                 SELECT * FROM automation_project_generation_leases
@@ -1667,14 +1748,10 @@ class AutomationPluginGenerationRepositoryMixin:
                 """,
                 (safe_lease_id,),
             )
-            lease = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                ("runtime_metadata_json",),
-            )
-            if lease is None:
-                raise OrchestrationPersistenceError("runtime generation lease does not exist")
+            lease = _decode_row(_row_dict(cursor, cursor.fetchone()), ("runtime_metadata_json",))
             if (
-                str(lease.get("automation_id") or "") != safe_automation_id
+                lease is None
+                or str(lease.get("automation_id") or "") != safe_automation_id
                 or int(lease.get("generation") or 0) != safe_generation
             ):
                 raise IdempotencyConflict(
@@ -1707,17 +1784,9 @@ class AutomationPluginGenerationRepositoryMixin:
                 )
             cursor.execute(
                 """
-                SELECT state FROM automation_project_generations
-                WHERE automation_id=%s AND generation=%s FOR UPDATE
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            generation_row = _row_dict(cursor, cursor.fetchone())
-            cursor.execute(
-                """
                 SELECT target_generation, committed_generation, reconcile_state
                 FROM automation_projects
-                WHERE automation_id=%s FOR UPDATE
+                WHERE automation_id=%s
                 """,
                 (safe_automation_id,),
             )
@@ -1802,6 +1871,37 @@ class AutomationPluginGenerationRepositoryMixin:
         }:
             raise ValueError("runtime write finalization outcome is invalid")
         with self.cursor() as cursor:
+            # Lease-id callers discover their parent identity without locking;
+            # the authoritative read is after the project and generation rows.
+            cursor.execute(
+                "SELECT automation_id, generation FROM automation_project_generation_leases WHERE lease_id=%s",
+                (safe_lease_id,),
+            )
+            lease_identity = _row_dict(cursor, cursor.fetchone())
+            if lease_identity is None:
+                raise OrchestrationPersistenceError("runtime generation lease does not exist")
+            if (
+                str(lease_identity.get("automation_id") or "") != safe_automation_id
+                or int(lease_identity.get("generation") or 0) != safe_generation
+            ):
+                raise IdempotencyConflict(
+                    "runtime write finalization does not match its generation lease"
+                )
+            cursor.execute(
+                "SELECT automation_id FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                (safe_automation_id,),
+            )
+            if _row_dict(cursor, cursor.fetchone()) is None:
+                raise OrchestrationPersistenceError("automation project disappeared during write finalization")
+            cursor.execute(
+                """
+                SELECT automation_id, generation FROM automation_project_generations
+                WHERE automation_id=%s AND generation=%s FOR UPDATE
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            if _row_dict(cursor, cursor.fetchone()) is None:
+                raise OrchestrationPersistenceError("automation generation disappeared during write finalization")
             cursor.execute(
                 """
                 SELECT * FROM automation_project_generation_leases
@@ -1809,16 +1909,10 @@ class AutomationPluginGenerationRepositoryMixin:
                 """,
                 (safe_lease_id,),
             )
-            lease = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                ("runtime_metadata_json",),
-            )
-            if lease is None:
-                raise OrchestrationPersistenceError(
-                    "runtime generation lease does not exist"
-                )
+            lease = _decode_row(_row_dict(cursor, cursor.fetchone()), ("runtime_metadata_json",))
             if (
-                str(lease.get("automation_id") or "") != safe_automation_id
+                lease is None
+                or str(lease.get("automation_id") or "") != safe_automation_id
                 or int(lease.get("generation") or 0) != safe_generation
             ):
                 raise IdempotencyConflict(
@@ -1849,6 +1943,15 @@ class AutomationPluginGenerationRepositoryMixin:
             if normalized_outcome == "WRITE_OUTCOME_UNKNOWN":
                 cursor.execute(
                     """
+                    UPDATE automation_write_attempt_receipts
+                    SET outcome='WRITE_OUTCOME_UNKNOWN', evidence_sha256=%s,
+                        updated_at=NOW(6)
+                    WHERE lease_id=%s AND outcome='STARTED'
+                    """,
+                    (safe_evidence, safe_lease_id),
+                )
+                cursor.execute(
+                    """
                     UPDATE automation_project_generations
                     SET state='BLOCKED', error_code='WRITE_OUTCOME_UNKNOWN',
                         error_summary='Unknown external write outcome requires reconciliation',
@@ -1864,6 +1967,16 @@ class AutomationPluginGenerationRepositoryMixin:
                     WHERE automation_id=%s
                     """,
                     (safe_automation_id,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE automation_write_attempt_receipts
+                    SET outcome='WRITE_VERIFIED', evidence_sha256=%s,
+                        updated_at=NOW(6)
+                    WHERE lease_id=%s AND outcome='STARTED'
+                    """,
+                    (safe_evidence, safe_lease_id),
                 )
             cursor.execute(
                 "SELECT * FROM automation_project_generation_leases WHERE lease_id=%s",
@@ -1919,6 +2032,499 @@ class AutomationPluginGenerationRepositoryMixin:
                 ),
             )
             return cursor.fetchone() is not None
+
+    def finance_startup_occurrence_gate_row(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        configuration_version: int,
+        occurrence: str,
+        idempotency_key: str,
+    ) -> dict[str, bool | str]:
+        """Read the exact finance-startup occurrence gate without mutation.
+
+        A scheduler restart is never allowed to infer a missing run or receipt.
+        The command identity, its run, lease, and broker receipt are joined by
+        their durable IDs; unrelated finance executions cannot block or clear
+        this occurrence.
+        """
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        safe_version = _positive_int(configuration_version, "configuration_version")
+        safe_occurrence = _required_text(occurrence, "occurrence")
+        safe_idempotency = _required_text(idempotency_key, "idempotency_key")
+        command_prefix = f"scheduler:finance_startup_catchup:v{safe_version}:"
+        occurrence_prefix = (
+            f"{command_prefix}{safe_automation_id}:g{safe_generation}:"
+        )
+        if (
+            not safe_occurrence.startswith(occurrence_prefix)
+            or not safe_idempotency.startswith(command_prefix)
+            or safe_occurrence[len(occurrence_prefix):]
+            != safe_idempotency[len(command_prefix):]
+        ):
+            raise ValueError("finance startup occurrence does not match command identity")
+        expected_tool = f"automation.{safe_automation_id}.run"
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    CASE WHEN project.enabled=TRUE
+                              AND project.state='ENABLED'
+                              AND project.reconcile_state='STABLE'
+                              AND project.committed_generation=%s
+                              AND generation.state='COMMITTED'
+                              AND JSON_CONTAINS(
+                                  generation.snapshot_json,
+                                  JSON_QUOTE('scheduler'),
+                                  '$.enabled_entrypoints'
+                              )
+                         THEN 1 ELSE 0 END AS runnable,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM scheduled_tasks AS task
+                        WHERE task.id='finance_startup_catchup'
+                          AND task.enabled=TRUE
+                          AND task.automation_id=%s
+                          AND task.automation_generation=%s
+                          AND task.configuration_version=%s
+                          AND task.cron_expression='@startup'
+                          AND task.tool_name=%s
+                    ) THEN 1 ELSE 0 END AS scheduler_enabled,
+                    EXISTS (
+                        SELECT 1
+                        FROM agent_commands AS command
+                        LEFT JOIN agent_runs AS run
+                          ON run.command_id=command.command_id
+                        WHERE command.source='scheduler'
+                          AND command.idempotency_key=%s
+                          AND command.automation_id=%s
+                          AND command.automation_generation=%s
+                          AND (
+                              command.status='RECEIVED'
+                              OR (command.status='ACCEPTED' AND (
+                                  run.run_id IS NULL
+                                  OR run.status NOT IN (
+                                      'COMPLETED', 'PARTIAL',
+                                      'FAILED_TERMINAL', 'CANCELLED'
+                                  )
+                              ))
+                          )
+                    ) AS unresolved_run,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_project_generation_leases AS lease
+                        INNER JOIN agent_runs AS run
+                          ON run.run_id=lease.orchestration_run_id
+                        INNER JOIN agent_commands AS command
+                          ON command.command_id=run.command_id
+                        WHERE command.source='scheduler'
+                          AND command.idempotency_key=%s
+                          AND command.automation_id=%s
+                          AND command.automation_generation=%s
+                          AND lease.automation_id=%s
+                          AND lease.generation=%s
+                          AND lease.outcome IN (
+                              'RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN'
+                          )
+                    ) AS unresolved_lease,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_write_attempt_receipts AS receipt
+                        INNER JOIN agent_runs AS run
+                          ON run.run_id=receipt.orchestration_run_id
+                        INNER JOIN agent_commands AS command
+                          ON command.command_id=run.command_id
+                        WHERE command.source='scheduler'
+                          AND command.idempotency_key=%s
+                          AND command.automation_id=%s
+                          AND command.automation_generation=%s
+                          AND receipt.automation_id=%s
+                          AND receipt.generation=%s
+                          AND receipt.outcome IN ('STARTED', 'WRITE_OUTCOME_UNKNOWN')
+                    ) AS unresolved_receipt
+                FROM automation_projects AS project
+                LEFT JOIN automation_project_generations AS generation
+                  ON generation.automation_id=project.automation_id
+                 AND generation.generation=%s
+                WHERE project.automation_id=%s
+                """,
+                (
+                    safe_generation,
+                    safe_automation_id,
+                    safe_generation,
+                    safe_version,
+                    expected_tool,
+                    safe_idempotency,
+                    safe_automation_id,
+                    safe_generation,
+                    safe_idempotency,
+                    safe_automation_id,
+                    safe_generation,
+                    safe_automation_id,
+                    safe_generation,
+                    safe_idempotency,
+                    safe_automation_id,
+                    safe_generation,
+                    safe_automation_id,
+                    safe_generation,
+                    safe_generation,
+                    safe_automation_id,
+                ),
+            )
+            row = _row_dict(cursor, cursor.fetchone())
+        if row is None:
+            # The only safe representation of a missing current projection is
+            # a non-runnable, disabled entrypoint with no authority to submit.
+            return {
+                "runnable": False,
+                "runtime_status": "NOT_READY",
+                "scheduler_enabled": False,
+                "unresolved_run": False,
+                "unresolved_lease": False,
+                "unresolved_receipt": False,
+            }
+        runnable = bool(row.get("runnable"))
+        return {
+            "runnable": runnable,
+            "runtime_status": "READY" if runnable else "NOT_READY",
+            "scheduler_enabled": bool(row.get("scheduler_enabled")),
+            "unresolved_run": bool(row.get("unresolved_run")),
+            "unresolved_lease": bool(row.get("unresolved_lease")),
+            "unresolved_receipt": bool(row.get("unresolved_receipt")),
+        }
+
+    def unknown_write_recovery_snapshot_row(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+    ) -> dict[str, Any]:
+        """Lock and describe only durable identity evidence for recovery.
+
+        This intentionally does not return plan arguments, target identifiers,
+        or business payloads.  Callers may only release a lease after a
+        project-specific authoritative reader has independently verified the
+        exact receipt target.
+        """
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        safe_lease_id = _required_text(lease_id, "lease_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lease_id, automation_id, generation, orchestration_run_id, outcome
+                FROM automation_project_generation_leases
+                WHERE lease_id=%s FOR UPDATE
+                """,
+                (safe_lease_id,),
+            )
+            lease = _row_dict(cursor, cursor.fetchone())
+            if lease is None:
+                return {"state": "MISSING_LEASE", "receipt_count": 0}
+            if (
+                str(lease.get("automation_id") or "") != safe_automation_id
+                or int(lease.get("generation") or 0) != safe_generation
+            ):
+                return {"state": "LEASE_IDENTITY_MISMATCH", "receipt_count": 0}
+            if str(lease.get("outcome") or "") == "FAILED_BEFORE_WRITE":
+                return {"state": "FAILED_BEFORE_WRITE", "receipt_count": 0}
+            if str(lease.get("outcome") or "") != "WRITE_OUTCOME_UNKNOWN":
+                return {"state": "LEASE_NOT_UNKNOWN", "receipt_count": 0}
+            cursor.execute(
+                """
+                SELECT receipt.receipt_id, receipt.operation, receipt.action,
+                       receipt.argument_sha256, receipt.target_ref_sha256,
+                       receipt.outcome, receipt.evidence_sha256,
+                       receipt.orchestration_run_id,
+                       receipt.step_id,
+                       step.run_id AS persisted_step_run_id
+                FROM automation_write_attempt_receipts AS receipt
+                LEFT JOIN agent_run_steps AS step ON step.step_id=receipt.step_id
+                WHERE receipt.lease_id=%s
+                ORDER BY receipt.receipt_id FOR UPDATE
+                """,
+                (safe_lease_id,),
+            )
+            receipts = _rows(cursor)
+        if not receipts:
+            return {"state": "HISTORICAL_RECEIPT_UNAVAILABLE", "receipt_count": 0}
+        valid = all(
+            str(row.get("orchestration_run_id") or "")
+            == str(lease.get("orchestration_run_id") or "")
+            and str(row.get("persisted_step_run_id") or "")
+            == str(lease.get("orchestration_run_id") or "")
+            and bool(str(row.get("operation") or ""))
+            and bool(str(row.get("action") or ""))
+            and bool(str(row.get("argument_sha256") or ""))
+            and bool(str(row.get("target_ref_sha256") or ""))
+            for row in receipts
+        )
+        applied = valid and all(
+            str(row.get("outcome") or "") == "WRITE_VERIFIED"
+            and bool(str(row.get("evidence_sha256") or ""))
+            for row in receipts
+        )
+        return {
+            "state": (
+                "RECEIPTS_APPLIED" if applied else
+                "RECEIPTS_IDENTIFIED" if valid else "RECEIPT_IDENTITY_MISMATCH"
+            ),
+            "receipt_count": len(receipts),
+            "receipt_digest": _json_hash(
+                [
+                    {
+                        field: str(row.get(field) or "")
+                        for field in (
+                            "receipt_id", "operation", "action", "argument_sha256",
+                            "target_ref_sha256",
+                        )
+                    }
+                    for row in receipts
+                ]
+            ),
+        }
+
+    def lock_unknown_write_recovery_context_row(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+    ) -> dict[str, Any]:
+        """Lock the runtime half of a recovery in the global lock order.
+
+        This helper acquires project -> generation -> lease first. The caller
+        then locks Work Item -> Run -> Step and finally asks this repository
+        to lock receipts. Do not fold receipt locking into this helper.
+        """
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        safe_lease_id = _required_text(lease_id, "lease_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                (safe_automation_id,),
+            )
+            project = _decode_row(_row_dict(cursor, cursor.fetchone()), ("metadata_json",))
+            if project is None:
+                raise OrchestrationPersistenceError("automation project does not exist")
+            cursor.execute(
+                """
+                SELECT * FROM automation_project_generations
+                WHERE automation_id=%s AND generation=%s FOR UPDATE
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            generation_row = _decode_row(_row_dict(cursor, cursor.fetchone()), ("snapshot_json",))
+            if generation_row is None:
+                raise OrchestrationPersistenceError("runtime generation does not exist")
+            cursor.execute(
+                """
+                SELECT * FROM automation_project_generation_leases
+                WHERE lease_id=%s FOR UPDATE
+                """,
+                (safe_lease_id,),
+            )
+            lease = _decode_row(
+                _row_dict(cursor, cursor.fetchone()),
+                ("runtime_metadata_json",),
+            )
+        if lease is None:
+            raise OrchestrationPersistenceError("runtime generation lease does not exist")
+        if (
+            str(lease.get("automation_id") or "") != safe_automation_id
+            or int(lease.get("generation") or 0) != safe_generation
+        ):
+            raise IdempotencyConflict("runtime recovery does not match its generation lease")
+        return {"project": project, "generation": generation_row, "lease": lease}
+
+    def peek_unknown_write_receipt_identity_rows(self, lease_id: str) -> list[dict[str, Any]]:
+        """Read only receipt identities so the caller can lock one exact Step.
+
+        The lease row is already locked by the caller, so no writer can add a
+        receipt for this lease between this identity read and the final
+        ``FOR UPDATE`` receipt validation.
+        """
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT receipt_id, orchestration_run_id, step_id
+                FROM automation_write_attempt_receipts
+                WHERE lease_id=%s ORDER BY receipt_id
+                """,
+                (_required_text(lease_id, "lease_id"),),
+            )
+            return _rows(cursor)
+
+    def lock_unknown_write_receipt_rows(self, lease_id: str) -> list[dict[str, Any]]:
+        """Lock and return the complete receipt set after Run/Step locking."""
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT receipt_id, orchestration_run_id, step_id, operation, action,
+                       argument_sha256, target_ref_sha256, outcome, evidence_sha256
+                FROM automation_write_attempt_receipts
+                WHERE lease_id=%s ORDER BY receipt_id FOR UPDATE
+                """,
+                (_required_text(lease_id, "lease_id"),),
+            )
+            return _rows(cursor)
+
+    def settle_unknown_write_recovery_row(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        recovery_status: str,
+        evidence_sha256: str,
+        locked_context: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a receipt-proven recovery while caller-owned locks are held."""
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        safe_lease_id = _required_text(lease_id, "lease_id")
+        safe_evidence = _sha256(evidence_sha256, "evidence_sha256")
+        status = str(recovery_status or "").upper()
+        if status not in {"APPLIED", "NOT_APPLIED"}:
+            raise ValueError("unknown-write recovery status is invalid")
+        desired_lease_outcome = (
+            "WRITE_VERIFIED" if status == "APPLIED" else "FAILED_BEFORE_WRITE"
+        )
+        with self.cursor() as cursor:
+            # Transactional recovery already holds project -> generation ->
+            # lease before locking its Run/Step and receipts.  Do not reissue
+            # those FOR UPDATE statements after the orchestration locks: even
+            # though MySQL treats them as re-entrant, that is an inverse lock
+            # trace and obscures the contract.  The standalone compatibility
+            # path acquires the same hierarchy itself.
+            if locked_context is None:
+                cursor.execute(
+                    """
+                    SELECT target_generation, committed_generation, reconcile_state
+                    FROM automation_projects
+                    WHERE automation_id=%s FOR UPDATE
+                    """,
+                    (safe_automation_id,),
+                )
+                project = _row_dict(cursor, cursor.fetchone())
+                cursor.execute(
+                    """
+                    SELECT state FROM automation_project_generations
+                    WHERE automation_id=%s AND generation=%s FOR UPDATE
+                    """,
+                    (safe_automation_id, safe_generation),
+                )
+                generation_row = _row_dict(cursor, cursor.fetchone())
+                cursor.execute(
+                    """
+                    SELECT outcome, verification_evidence_sha256, automation_id, generation
+                    FROM automation_project_generation_leases
+                    WHERE lease_id=%s FOR UPDATE
+                    """,
+                    (safe_lease_id,),
+                )
+                lease = _row_dict(cursor, cursor.fetchone())
+            else:
+                project = dict(locked_context.get("project") or {})
+                generation_row = dict(locked_context.get("generation") or {})
+                lease = dict(locked_context.get("lease") or {})
+            if project is None or generation_row is None or lease is None:
+                raise OrchestrationPersistenceError("runtime recovery rows disappeared")
+            if (
+                str(lease.get("automation_id") or "") != safe_automation_id
+                or int(lease.get("generation") or 0) != safe_generation
+                or str(lease.get("lease_id") or safe_lease_id) != safe_lease_id
+            ):
+                raise IdempotencyConflict("runtime recovery does not match its generation lease")
+            if (
+                int(project.get("target_generation") or 0) != safe_generation
+                or int(project.get("committed_generation") or 0) != safe_generation
+            ):
+                raise ConcurrentUpdateError(
+                    "runtime recovery generation is no longer the current committed target"
+                )
+            current = str(lease.get("outcome") or "")
+            lease_transitioned = False
+            if current == desired_lease_outcome:
+                existing_evidence = str(lease.get("verification_evidence_sha256") or "")
+                if existing_evidence and existing_evidence != safe_evidence:
+                    raise IdempotencyConflict("runtime recovery was reused with different evidence")
+                if existing_evidence != safe_evidence:
+                    cursor.execute(
+                        """
+                        UPDATE automation_project_generation_leases
+                        SET verification_evidence_sha256=%s,
+                            released_at=COALESCE(released_at, NOW(6)), updated_at=NOW(6)
+                        WHERE lease_id=%s AND outcome=%s
+                          AND verification_evidence_sha256 IS NULL
+                        """,
+                        (safe_evidence, safe_lease_id, current),
+                    )
+                    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                        raise ConcurrentUpdateError("runtime recovery lease evidence changed")
+                    lease_transitioned = True
+            else:
+                allowed = (
+                    {"WRITE_OUTCOME_UNKNOWN"}
+                    if status == "APPLIED"
+                    else {"WRITE_OUTCOME_UNKNOWN", "FAILED_BEFORE_WRITE"}
+                )
+                if current not in allowed:
+                    raise ConcurrentUpdateError("runtime lease is not recoverable")
+                cursor.execute(
+                    """
+                    UPDATE automation_project_generation_leases
+                    SET outcome=%s, verification_evidence_sha256=%s,
+                        released_at=COALESCE(released_at, NOW(6)), updated_at=NOW(6)
+                    WHERE lease_id=%s AND outcome=%s
+                    """,
+                    (desired_lease_outcome, safe_evidence, safe_lease_id, current),
+                )
+                if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                    raise ConcurrentUpdateError("runtime recovery lease changed")
+                lease_transitioned = True
+            if lock_remaining_unknown_generation_leases(cursor, safe_automation_id, safe_generation):
+                return {"transitioned": lease_transitioned, "outcome": desired_lease_outcome}
+            if (
+                str(generation_row.get("state") or "") == "COMMITTED"
+                and str(project.get("reconcile_state") or "") == "STABLE"
+            ):
+                return {"transitioned": lease_transitioned, "outcome": desired_lease_outcome}
+            cursor.execute(
+                """
+                UPDATE automation_project_generations
+                SET state='COMMITTED', error_code=NULL, error_summary=NULL,
+                    committed_at=COALESCE(committed_at, NOW(6)),
+                    record_version=record_version+1, updated_at=NOW(6)
+                WHERE automation_id=%s AND generation=%s
+                  AND state IN ('BLOCKED', 'COMMITTED')
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("runtime generation is not recoverable")
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET reconcile_state='STABLE', updated_at=NOW(6)
+                WHERE automation_id=%s AND target_generation=%s
+                  AND committed_generation=%s
+                  AND reconcile_state IN ('BLOCKED_UNKNOWN_WRITE', 'STABLE')
+                """,
+                (safe_automation_id, safe_generation, safe_generation),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("runtime project is not recoverable")
+        return {"transitioned": True, "outcome": desired_lease_outcome}
 
     def reserve_generation_dispose_row(
         self,
@@ -2325,19 +2931,43 @@ class AutomationPluginGenerationRepositoryMixin:
         safe_automation_id = _required_text(automation_id, "automation_id")
         safe_generation = _positive_int(generation, "generation")
         with self.cursor() as cursor:
+            # Disposal/reconciliation can race release/finalization; a lease-first count deadlocks.
+            # Parent locks must precede the lease set in project -> generation -> lease order.
             cursor.execute(
                 """
-                SELECT COUNT(*) AS unknown_count
-                FROM automation_project_generation_leases
-                WHERE automation_id=%s AND generation=%s
-                  AND outcome='WRITE_OUTCOME_UNKNOWN' FOR UPDATE
+                SELECT automation_id FROM automation_projects
+                WHERE automation_id=%s FOR UPDATE
+                """,
+                (safe_automation_id,),
+            )
+            if _row_dict(cursor, cursor.fetchone()) is None:
+                raise OrchestrationPersistenceError(
+                    "automation project disappeared during unknown-write block"
+                )
+            cursor.execute(
+                """
+                SELECT state FROM automation_project_generations
+                WHERE automation_id=%s AND generation=%s FOR UPDATE
                 """,
                 (safe_automation_id, safe_generation),
             )
-            unknown = int(
-                (_row_dict(cursor, cursor.fetchone()) or {}).get("unknown_count") or 0
+            generation_row = _row_dict(cursor, cursor.fetchone())
+            if generation_row is None:
+                raise OrchestrationPersistenceError(
+                    "runtime generation disappeared during unknown-write block"
+                )
+            if str(generation_row.get("state") or "") == "DISPOSED":
+                raise ConcurrentUpdateError("runtime generation is already disposed")
+            cursor.execute(
+                """
+                SELECT lease_id
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s AND generation=%s
+                AND outcome='WRITE_OUTCOME_UNKNOWN' FOR UPDATE
+                """,
+                (safe_automation_id, safe_generation),
             )
-            if unknown == 0:
+            if not _rows(cursor):
                 raise ConcurrentUpdateError(
                     "runtime generation has no unknown write evidence"
                 )

@@ -359,13 +359,13 @@ class PluginExecutionRouter:
         capability: Mapping[str, Any],
         *,
         process_launched: bool,
-        consumed_call_count: int | None,
+        started_mutating_call_count: int | None,
     ) -> RuntimeLeaseOutcome:
         if capability.get("operation_type") not in _WRITE_TYPES:
             return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
-        if consumed_call_count is not None and consumed_call_count > 0:
+        if started_mutating_call_count is not None and started_mutating_call_count > 0:
             return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
-        if consumed_call_count == 0:
+        if started_mutating_call_count == 0:
             return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         return (
             RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
@@ -379,7 +379,7 @@ class PluginExecutionRouter:
         result: Mapping[str, Any],
         *,
         process_launched: bool,
-        consumed_call_count: int | None = None,
+        started_mutating_call_count: int | None = None,
     ) -> RuntimeLeaseOutcome:
         error_code = str(result.get("error_code") or "").upper()
         nested_error = result.get("error")
@@ -395,21 +395,24 @@ class PluginExecutionRouter:
         return PluginExecutionRouter._write_failure_outcome(
             capability,
             process_launched=process_launched,
-            consumed_call_count=consumed_call_count,
+            started_mutating_call_count=started_mutating_call_count,
         )
 
-    def _observe_consumed_calls(
+    def _observe_started_mutating_calls(
         self,
         capability: str,
         execution_state: dict[str, object],
     ) -> None:
         try:
-            observed = self._issuer.consumed_call_count(capability)
+            observer = getattr(self._issuer, "started_mutating_call_count", None)
+            if not callable(observer):
+                raise ValueError("started mutating call observation is unavailable")
+            observed = observer(capability)
             if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
                 raise ValueError("invalid broker call count")
-            execution_state["consumed_call_count"] = observed
+            execution_state["started_mutating_call_count"] = observed
         except Exception:
-            execution_state["consumed_call_count"] = None
+            execution_state["started_mutating_call_count"] = None
 
     def _failure_code(
         self,
@@ -422,13 +425,79 @@ class PluginExecutionRouter:
             return fallback
         if execution_state is None:
             return "WRITE_OUTCOME_UNKNOWN"
-        self._observe_consumed_calls(token, execution_state)
+        self._observe_started_mutating_calls(token, execution_state)
         outcome = self._write_failure_outcome(
             capability,
             process_launched=bool(execution_state["process_launched"]),
-            consumed_call_count=execution_state["consumed_call_count"],
+            started_mutating_call_count=execution_state["started_mutating_call_count"],
         )
         return fallback if outcome is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE else "WRITE_OUTCOME_UNKNOWN"
+
+    def _govern_started_write_failure(
+        self,
+        capability: Mapping[str, Any],
+        result: Mapping[str, Any],
+        *,
+        token: str,
+        execution_state: dict[str, object] | None,
+    ) -> Mapping[str, Any]:
+        """Make a started write's governing result code non-retryable.
+
+        Plugin failures remain useful diagnostics, but cannot override the
+        durable started-write boundary.  The original code is retained only as
+        a subordinate, redacted contract diagnostic.
+        """
+
+        if capability.get("operation_type") not in _WRITE_TYPES or execution_state is None:
+            return result
+        self._observe_started_mutating_calls(token, execution_state)
+        if execution_state["started_mutating_call_count"] in (None, 0):
+            return result
+        original_error = result.get("error")
+        original_code = str(
+            result.get("error_code")
+            or (original_error.get("code") if isinstance(original_error, Mapping) else "")
+            or "PLUGIN_RESULT_FAILED"
+        ).upper()[:64]
+        safe_error = dict(original_error) if isinstance(original_error, Mapping) else {}
+        safe_error["code"] = "WRITE_OUTCOME_UNKNOWN"
+        safe_error["original_error_code"] = original_code
+        governed = dict(result)
+        governed["error_code"] = "WRITE_OUTCOME_UNKNOWN"
+        governed["error"] = safe_error
+        governed["retryable"] = False
+        return governed
+
+    @staticmethod
+    def _has_observed_started_write(execution_state: Mapping[str, object]) -> bool:
+        started_count = execution_state.get("started_mutating_call_count")
+        return isinstance(started_count, int) and not isinstance(started_count, bool) and started_count > 0
+
+    @staticmethod
+    def _lease_release_unknown_result(release_error: Exception) -> Mapping[str, Any]:
+        """Do not turn a post-write persistence failure into a normal tool error.
+
+        The broker's started-write receipt is authoritative: if recording the
+        corresponding generation outcome fails, no success or retryable result
+        may escape.  The storage failure remains a redacted subordinate
+        diagnostic for operators and recovery tooling.
+        """
+
+        return {
+            "status": "FAILED",
+            "data": {},
+            "meta": {"blocked_status": "BLOCKED_DATA"},
+            "warnings": [],
+            "error": {
+                "code": "WRITE_OUTCOME_UNKNOWN",
+                "message": "A started plugin write could not persist its generation lease outcome",
+                "retryable": False,
+                "persistence_diagnostic": {
+                    "code": type(release_error).__name__.upper()[:64],
+                    "message": redact_text(release_error)[:500],
+                },
+            },
+        }
 
     async def execute(
         self,
@@ -494,7 +563,7 @@ class PluginExecutionRouter:
             )
         resolved = self._lease_capability(lease, automation_id=automation_id)
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
-        execution_state: dict[str, object] = {"process_launched": False, "consumed_call_count": None}
+        execution_state: dict[str, object] = {"process_launched": False, "started_mutating_call_count": None}
         try:
             result = await self._execute_plugin(
                 resolved,
@@ -508,7 +577,7 @@ class PluginExecutionRouter:
                 resolved,
                 result,
                 process_launched=bool(execution_state["process_launched"]),
-                consumed_call_count=execution_state["consumed_call_count"],
+                started_mutating_call_count=execution_state["started_mutating_call_count"],
             )
             if outcome in {RuntimeLeaseOutcome.VERIFYING, RuntimeLeaseOutcome.SUCCEEDED}:
                 raw_account_bindings = resolved["_plugin_runtime"].get("account_bindings")
@@ -548,18 +617,25 @@ class PluginExecutionRouter:
             outcome = self._write_failure_outcome(
                 resolved,
                 process_launched=bool(execution_state["process_launched"]),
-                consumed_call_count=execution_state["consumed_call_count"],
+                started_mutating_call_count=execution_state["started_mutating_call_count"],
             )
             raise
         except Exception:
             outcome = self._write_failure_outcome(
                 resolved,
                 process_launched=bool(execution_state["process_launched"]),
-                consumed_call_count=execution_state["consumed_call_count"],
+                started_mutating_call_count=execution_state["started_mutating_call_count"],
             )
             raise
         finally:
-            self._generation_leases.release_generation(lease, outcome=outcome)
+            # ``_execute_plugin`` observes the broker receipt in its own
+            # finalizer before control reaches this persistence boundary.
+            try:
+                self._generation_leases.release_generation(lease, outcome=outcome)
+            except Exception as release_error:
+                if self._has_observed_started_write(execution_state):
+                    return self._lease_release_unknown_result(release_error)
+                raise
 
     async def _execute_plugin(
         self,
@@ -635,6 +711,16 @@ class PluginExecutionRouter:
             resource_roles=resource_roles,
             account_bindings=copy.deepcopy(dict(account_bindings)),
             resource_bindings={str(key): str(value) for key, value in resource_bindings.items()},
+            write_attempt_context={
+                "automation_id": automation_id,
+                # This comes from the committed generation snapshot and is
+                # therefore stable across repeated installations of a plugin.
+                "plugin_id": plugin_id,
+                "generation": int(metadata.get("generation") or 0),
+                "lease_id": invocation_id,
+                "orchestration_run_id": run_binding["run_id"],
+                "step_id": run_binding["step_id"],
+            },
         )
         action_name = str(capability.get("name") or "")
         payload = canonical_json_bytes(
@@ -837,12 +923,17 @@ class PluginExecutionRouter:
                     "retryable": False,
                 }
             if str(result.get("status") or "").upper() != "SUCCESS":
-                return result
+                return self._govern_started_write_failure(
+                    capability,
+                    result,
+                    token=token,
+                    execution_state=execution_state,
+                )
             return result
         finally:
             self._running.pop(invocation_id, None)
             if execution_state is not None:
-                self._observe_consumed_calls(token, execution_state)
+                self._observe_started_mutating_calls(token, execution_state)
             self._issuer.revoke(token)
 
     def running_tool_info(self, tool_name: str) -> dict[str, Any]:

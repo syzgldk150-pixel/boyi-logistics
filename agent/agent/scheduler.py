@@ -8,7 +8,7 @@ import os
 import stat
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -231,12 +231,34 @@ def _add_finance_startup_catchup_job(
     agent_core,
     *,
     automation_project_invoker: Any | None = None,
+    startup_gate_provider: Any | None = None,
 ) -> None:
     """Perform the bounded startup gap scan through the same control plane."""
 
     startup_task = _finance_startup_schedule_task(agent_core)
     if startup_task is None:
         logger.info("Finance startup catch-up skipped because its independent task is disabled")
+        return
+
+    provider = (
+        startup_gate_provider
+        or getattr(agent_core, "finance_startup_gate_provider", None)
+        or _agent_finance_startup_gate_provider(agent_core)
+    )
+    try:
+        registration_occurrence = _finance_startup_occurrence(startup_task)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Finance startup catch-up was not registered: "
+            "FINANCE_STARTUP_GATE_INVALID_OCCURRENCE"
+        )
+        return
+    if not _finance_startup_gate_allows(
+        startup_task,
+        occurrence=registration_occurrence,
+        provider=provider,
+    ):
+        logger.warning("Finance startup catch-up was not registered: STARTUP_GATE_BLOCKED")
         return
 
     async def startup_catchup() -> None:
@@ -250,6 +272,15 @@ def _add_finance_startup_catchup_job(
             microsecond=0,
         )
         try:
+            # Registration is only advisory: runtime/lease state can change
+            # while APScheduler waits for its DateTrigger.
+            if not _finance_startup_gate_allows(
+                startup_task,
+                occurrence=_finance_startup_occurrence(startup_task, scheduled_for),
+                provider=provider,
+            ):
+                logger.warning("Finance startup catch-up skipped: STARTUP_GATE_BLOCKED")
+                return
             result = await _execute_scheduled_tool(
                 agent_core,
                 task_id=FINANCE_STARTUP_TASK_ID,
@@ -281,6 +312,116 @@ def _add_finance_startup_catchup_job(
         max_instances=1,
         misfire_grace_time=300,
     )
+
+
+def _finance_startup_occurrence(
+    task: Mapping[str, Any],
+    scheduled_for: datetime | None = None,
+) -> str:
+    """Stable identity shared by the gate and scheduler idempotency key."""
+
+    current = scheduled_for or datetime.now(ZoneInfo("Asia/Shanghai")).replace(
+        hour=0, minute=10, second=0, microsecond=0
+    )
+    if current.tzinfo is None:
+        raise ValueError("finance startup occurrence must be timezone-aware")
+    automation_id = str(task.get("automation_id") or "").strip()
+    generation = task.get("automation_generation")
+    version = task.get("configuration_version")
+    if not automation_id or type(generation) is not int or type(version) is not int:
+        raise ValueError("finance startup task has no exact project occurrence")
+    return (
+        f"scheduler:{FINANCE_STARTUP_TASK_ID}:v{version}:"
+        f"{automation_id}:g{generation}:{current.isoformat()}"
+    )
+
+
+def _finance_startup_gate_allows(
+    task: Mapping[str, Any],
+    *,
+    occurrence: str,
+    provider: Any,
+) -> bool:
+    """Read only Agent-side state; malformed/unavailable evidence blocks."""
+
+    if provider is None:
+        logger.warning("Finance startup catch-up gate unavailable: FINANCE_STARTUP_GATE_UNAVAILABLE")
+        return False
+    try:
+        reader = getattr(provider, "check_finance_startup_occurrence", provider)
+        if not callable(reader):
+            return False
+        result = reader(
+            automation_id=str(task.get("automation_id") or "").strip(),
+            generation=task.get("automation_generation"),
+            configuration_version=task.get("configuration_version"),
+            occurrence=occurrence,
+            idempotency_key=_finance_startup_command_idempotency(task, occurrence),
+        )
+    except Exception:
+        logger.warning("Finance startup catch-up gate failed: FINANCE_STARTUP_GATE_UNAVAILABLE")
+        return False
+    required = {
+        "runnable", "runtime_status", "scheduler_enabled",
+        "unresolved_run", "unresolved_lease", "unresolved_receipt",
+    }
+    if not isinstance(result, Mapping) or set(result) != required:
+        logger.warning("Finance startup catch-up gate failed: FINANCE_STARTUP_GATE_INVALID_EVIDENCE")
+        return False
+    return (
+        result["runnable"] is True
+        and result["runtime_status"] == "READY"
+        and result["scheduler_enabled"] is True
+        and all(result[key] is False for key in (
+            "unresolved_run", "unresolved_lease", "unresolved_receipt"
+        ))
+    )
+
+
+def _agent_finance_startup_gate_provider(agent_core: Any) -> Any | None:
+    """Build the read-only gate from the Agent's already-bound repository.
+
+    The scheduler must not query Console storage.  ``AgentCore`` is configured
+    by the composition root before scheduler registration, so this adapter is
+    available only in the Agent process.  If binding is absent, callers fail
+    closed rather than treating that absence as a ready runtime.
+    """
+
+    repository = getattr(agent_core, "_orchestration_repository", None)
+    if not callable(getattr(repository, "unit_of_work", None)):
+        return None
+    from agent.automation_plugins.runtime_repository import (
+        MySQLAutomationPluginRuntimeAdapter,
+    )
+
+    return MySQLAutomationPluginRuntimeAdapter(repository)
+
+
+def _finance_startup_command_idempotency(
+    task: Mapping[str, Any],
+    occurrence: str,
+) -> str:
+    """Recover the existing stable Command identity from the richer gate key."""
+
+    generation = task.get("automation_generation")
+    version = task.get("configuration_version")
+    automation_id = str(task.get("automation_id") or "").strip()
+    if (
+        not automation_id
+        or type(generation) is not int
+        or type(version) is not int
+    ):
+        raise ValueError("finance startup task has no exact project occurrence")
+    prefix = (
+        f"scheduler:{FINANCE_STARTUP_TASK_ID}:v{version}:"
+        f"{automation_id}:g{generation}:"
+    )
+    if not occurrence.startswith(prefix):
+        raise ValueError("finance startup occurrence does not match its task binding")
+    scheduled_iso = occurrence[len(prefix):]
+    if not scheduled_iso:
+        raise ValueError("finance startup occurrence has no scheduled instant")
+    return f"scheduler:{FINANCE_STARTUP_TASK_ID}:v{version}:{scheduled_iso}"
 
 
 def _finance_startup_schedule_task(agent_core) -> dict[str, Any] | None:

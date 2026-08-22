@@ -93,6 +93,16 @@ class ArrivalStatsRecoveryRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=64)
 
 
+class UnknownWriteRecoveryRequest(BaseModel):
+    """No actor-supplied readback/evidence can influence recovery."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    generation: int = Field(ge=1)
+    lease_id: str = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=1, max_length=64)
+
+
 class WorkerIdentityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -487,6 +497,26 @@ def create_automation_plugin_management_router(
             )
         )
 
+    @router.post(
+        "/internal/v1/automation/instances/{automation_id}/generation/recover-unknown-write",
+        response_model=None,
+    )
+    async def recover_unknown_write(
+        automation_id: str,
+        payload: UnknownWriteRecoveryRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().recover_unknown_write(
+                automation_id,
+                generation=payload.generation,
+                lease_id=payload.lease_id,
+                request_id=payload.request_id,
+                actor=actor,
+            )
+        )
+
     return router
 
 
@@ -494,6 +524,7 @@ __all__ = [
     "PluginConfigurationRequest",
     "ArrivalStatsRecoveryReadbackRequest",
     "ArrivalStatsRecoveryRequest",
+    "UnknownWriteRecoveryRequest",
     "PluginScheduleRequest",
     "PluginStateRequest",
     "PluginUninstallRequest",

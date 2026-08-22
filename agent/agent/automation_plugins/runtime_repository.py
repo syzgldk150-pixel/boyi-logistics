@@ -738,6 +738,67 @@ class MySQLAutomationPluginRuntimeAdapter:
             outcome=outcome.value,
         )
 
+    def record_write_attempt(self, receipt: Mapping[str, object]) -> None:
+        """Persist one broker-started write; the caller provides digests only."""
+
+        self._write("record_generation_write_attempt_row", dict(receipt))
+
+    def check_finance_startup_occurrence(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        configuration_version: int,
+        occurrence: str,
+        idempotency_key: str,
+    ) -> dict[str, bool | str]:
+        """Return Agent-owned, exact evidence for one startup occurrence."""
+
+        with self._orchestration.unit_of_work() as uow:
+            reader = getattr(
+                uow.automation_plugins,
+                "finance_startup_occurrence_gate_row",
+                None,
+            )
+            if not callable(reader):
+                raise ValueError("finance startup occurrence gate is unavailable")
+            result = reader(
+                automation_id=automation_id,
+                generation=generation,
+                configuration_version=configuration_version,
+                occurrence=occurrence,
+                idempotency_key=idempotency_key,
+            )
+        if not isinstance(result, Mapping):
+            raise ValueError("finance startup occurrence gate returned invalid evidence")
+        return dict(result)
+
+    def inspect_unknown_write_recovery(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+    ) -> dict[str, Any]:
+        """Read locked durable identity evidence; never resolves a lease."""
+
+        with self._orchestration.unit_of_work() as uow:
+            reader = getattr(
+                uow.automation_plugins,
+                "unknown_write_recovery_snapshot_row",
+                None,
+            )
+            if not callable(reader):
+                raise ValueError("unknown-write recovery evidence is unavailable")
+            result = reader(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=lease_id,
+            )
+        if not isinstance(result, Mapping):
+            raise ValueError("unknown-write recovery evidence is invalid")
+        return dict(result)
+
     def resolve_unknown_write_not_applied(
         self,
         *,
@@ -803,6 +864,35 @@ class MySQLAutomationPluginRuntimeAdapter:
             uow.commit()
         if not isinstance(result, Mapping):
             raise ValueError("runtime generation recovery did not persist")
+        return dict(result)
+
+    def resolve_unknown_write_recovery(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Run the server-owned receipt recovery as one orchestration UoW."""
+
+        with self._orchestration.unit_of_work() as uow:
+            resolver = getattr(uow, "recover_unknown_automation_write", None)
+            if not callable(resolver):
+                raise ValueError("transactional unknown-write recovery is unavailable")
+            result = resolver(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=lease_id,
+                request_id=request_id,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            )
+            uow.commit()
+        if not isinstance(result, Mapping):
+            raise ValueError("transactional unknown-write recovery returned invalid data")
         return dict(result)
 
     def finalize_generation_write(

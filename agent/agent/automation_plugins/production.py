@@ -748,12 +748,19 @@ class MySQLRuntimeTargetService:
         core_catalog: Any,
         runtime_repository: MySQLAutomationPluginRuntimeAdapter,
         reconciler: AutomationRuntimeReconciler,
+        wake_runner: Callable[[str], None] | None = None,
     ) -> None:
         self._orchestration = orchestration_repository
         self._catalog = catalog
         self._core_catalog = core_catalog
         self._runtime = runtime_repository
         self._reconciler = reconciler
+        self._wake_runner = wake_runner
+
+    def set_wake_runner(self, wake_runner: Callable[[str], None] | None) -> None:
+        """Bind the process-local wake hook after the Runner is constructed."""
+
+        self._wake_runner = wake_runner
 
     def _desired_rows(
         self,
@@ -939,6 +946,31 @@ class MySQLRuntimeTargetService:
             actor_id=actor_id,
             actor_role=actor_role,
         )
+
+    def recover_unknown_write(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Resolve only from server-owned durable receipt evidence."""
+
+        result = self._runtime.resolve_unknown_write_recovery(
+            automation_id=automation_id,
+            generation=generation,
+            lease_id=lease_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+        run_id = str(result.get("run_id") or "")
+        if result.get("transitioned") is True and run_id and self._wake_runner:
+            self._wake_runner(run_id)
+        return result
 
     def reconcile_all(self) -> tuple[object, ...]:
         results: list[object] = []
@@ -1276,7 +1308,10 @@ def build_production_automation_plugin_runtime(
         resource_catalog_provider=list_workflow_resource_descriptors,
     )
     socket_path = runtime_root / f"agent-{os.getpid()}.sock"
-    issuer = LocalBrokerCapabilityIssuer(socket_path)
+    issuer = LocalBrokerCapabilityIssuer(
+        socket_path,
+        write_attempt_recorder=runtime_repository.record_write_attempt,
+    )
     core_adapter = RegisteredCoreAutomationBrokerAdapter(
         handlers=scoped_broker_handlers,
         account_resolver=AccountManagerSessionResolver(account_manager),

@@ -4,6 +4,10 @@ from copy import deepcopy
 
 import pytest
 
+from agent.automation_plugins.models import (
+    GenerationBoundResult,
+    GenerationVerificationContext,
+)
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, RunStatus, sha256_json
 from agent.orchestration.result_verifier import ResultVerifier
 
@@ -94,6 +98,36 @@ def test_matching_condition_observation_evidence_and_result_hash_is_accepted():
 
     assert outcome.accepted is True
     assert outcome.run_status is RunStatus.COMPLETED
+
+
+def test_write_finalization_persistence_failure_remains_unknown_and_recoverable():
+    class _FailingGenerationLeases:
+        def finalize_generation_write(self, **_kwargs):
+            raise RuntimeError("generation repository unavailable")
+
+    value = _verified_result()
+    value["meta"].pop("account_id")
+    raw = GenerationBoundResult(
+        value,
+        verification=GenerationVerificationContext(
+            automation_id="write-instance",
+            generation=1,
+            lease_id="c0f9af26-8a75-469c-89a7-94fbce2453ad",
+            account_ids=("account-1",),
+            account_bindings_sha256="a" * 64,
+            requires_write_verification=True,
+        ),
+    )
+
+    outcome = ResultVerifier(_FailingGenerationLeases()).verify(
+        _step(), raw, _capability()
+    )
+
+    assert outcome.accepted is False
+    assert outcome.run_status is RunStatus.BLOCKED_DATA
+    assert outcome.code == "WRITE_OUTCOME_UNKNOWN"
+    assert "RuntimeError" in outcome.message
+    assert "generation repository unavailable" in outcome.message
 
 
 @pytest.mark.parametrize(
