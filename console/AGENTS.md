@@ -27,7 +27,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 ## 自动化项目与插件边界
 
-- Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。动作包只声明验签后的动作、平台、账号/资源角色、闭合 `config_schema`、允许入口和调度能力；同一 `plugin_id` 可以重复安装为不同 `automation_id`。任何持久化定时行若无法关联到已安装实例，Console 只能显示“迁移/插件缺失”阻断卡，禁止运行和配置。
+- Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。动作包只声明验签后的动作、平台、账号/资源角色、闭合 `config_schema`、允许入口和调度能力；同一 `plugin_id` 可以重复安装为不同 `automation_id`。目录返回的 `hidden_automation_ids` 只包含真实持久化、当前发行明确排除的身份，Console 仅在没有同 ID 实例时隐藏其历史/静态卡；同 ID 合法碰撞仍保留为阻断卡。任何持久化定时行若无法关联到已安装实例，Console 只能显示“迁移/插件缺失”阻断卡，禁止运行和配置；纯服务器目录不请求 Windows Worker 列表。
 - 安装与升级只允许同源、真实 MySQL `super_admin` 会话。浏览器安装 multipart 只含 `package/instance_name/request_id`，不能指定 `automation_id`、manifest 或摘要；Console 限制 ZIP/请求体大小，在受限临时目录暂存并及时清理，按收到的字节计算传输 SHA 后再用签名 principal 转发。重复安装生成新的停用实例，升级/启停/卸载只作用于路径中的具体实例并使用版本 CAS。
 - 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`enabled_entrypoints` 允许签名清单任意子集和空集；高级设置以标准 switch 独立控制系统定时、后台手动、飞书消息和外部验签请求。关闭定时保留时间配置但不注册 Job，关闭后台时执行按钮必须明确显示入口已关闭。
 - 后台账号页允许当前 Console 超级管理员创建/撤销飞书审批绑定码；页面不得展示 `open_id/chat_id`。绑定后飞书角色实时继承账号当前 `control_plane_role/is_active`，审批通知由 Agent 串行推送，精确回复 `1/2` 决定当前条目。

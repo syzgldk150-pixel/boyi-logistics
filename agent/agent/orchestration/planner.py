@@ -11,6 +11,9 @@ from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from agent.automation_plugins.code_owned_fields import (
+    first_party_code_owned_plan_fields,
+)
 from agent.orchestration.models import (
     Command,
     ContextSnapshot,
@@ -64,7 +67,14 @@ class DeterministicPlanner:
             arguments["account_id"] = account_id
 
         arguments = _normalize_financial_values(arguments)
-        if tool_name == CUSTOMER_PROBLEM_SYNC_TOOL:
+        code_owned_fields = _project_code_owned_plan_fields(
+            command=command,
+            capability=capability,
+        )
+        if (
+            tool_name == CUSTOMER_PROBLEM_SYNC_TOOL
+            or "recheck_items" in code_owned_fields
+        ):
             arguments["recheck_items"] = _customer_problem_recheck_context(context)
 
         operation_type = _operation_type(capability)
@@ -129,6 +139,34 @@ class DeterministicPlanner:
                 invocation.contract_hash if invocation is not None else None
             ),
         )
+
+
+def _project_code_owned_plan_fields(
+    *,
+    command: Command,
+    capability: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Resolve server-owned plan fields from the exact committed plugin identity.
+
+    Project capabilities are exposed as ``automation.<instance>.run`` aliases,
+    so matching the underlying core tool name silently skipped first-party
+    fields for real Console and Scheduler commands.  The immutable runtime
+    descriptor carries the signed instance/plugin/trust identity needed by the
+    same closed declaration used during contract compilation.
+    """
+
+    invocation = command.automation_invocation
+    runtime = capability.get("_plugin_runtime")
+    if invocation is None or not isinstance(runtime, Mapping):
+        return ()
+    automation_id = str(runtime.get("automation_id") or "").strip()
+    if automation_id != invocation.automation_id:
+        return ()
+    return first_party_code_owned_plan_fields(
+        automation_id=automation_id,
+        plugin_id=str(runtime.get("plugin_id") or "").strip(),
+        trust_source=str(runtime.get("trust_source") or "").strip(),
+    )
 
 
 def _trusted_clarification_override(context: ContextSnapshot) -> dict[str, Any]:

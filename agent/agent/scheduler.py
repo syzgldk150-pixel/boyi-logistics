@@ -24,6 +24,7 @@ from agent.orchestration.models import Actor, ActorType
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from shared.automation_project_manifest import get_first_party_automation_project
 from shared.finance.sources import enabled_finance_platforms
+from shared.redaction import redact_text
 
 
 logger = logging.getLogger("agent")
@@ -711,12 +712,27 @@ def _update_task_status(agent_core, task_id: str, status: str, result: Any) -> N
 
 def _result_error(result: Any) -> str:
     if not isinstance(result, dict):
-        return str(result)[:1000]
-    parts = [str(result.get("error") or "").strip()]
+        return redact_text(result)[:1000]
+    parts = [
+        str(result.get("error_code") or "").strip(),
+        str(result.get("error_summary") or "").strip(),
+        str(result.get("error") or "").strip(),
+    ]
+    error = result.get("error")
+    if isinstance(error, dict):
+        parts.extend(
+            str(error.get(key) or "").strip()
+            for key in ("code", "summary", "message")
+        )
     data = result.get("data")
     if isinstance(data, dict):
-        parts.append(str(data.get("error") or "").strip())
-    return " | ".join(dict.fromkeys(part for part in parts if part))[:1000]
+        parts.extend(
+            str(data.get(key) or "").strip()
+            for key in ("error_code", "error_summary", "error")
+        )
+    return redact_text(
+        " | ".join(dict.fromkeys(part for part in parts if part))
+    )[:1000]
 
 
 def get_scheduler() -> AsyncIOScheduler | None:

@@ -731,6 +731,13 @@ CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE = (
     "此处不能修改任务配置或立即执行，但超级管理员可以单独设置审批策略。"
 )
 
+# R7 remains in historical migration data.  The Console may suppress its
+# static fallback cards when Agent explicitly reports the persisted identity
+# as deferred, but must not invent or hide other catalog IDs.
+AUTOMATION_DEFERRED_FALLBACK_IDS = frozenset(
+    {"r7_arrival_checkin", "r7_departure_checkin"}
+)
+
 AUTOMATION_PROVIDER_LABELS = {
     "ronghui": "TMS融辉",
     "yunda": "韵达",

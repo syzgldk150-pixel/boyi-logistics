@@ -665,7 +665,6 @@ class PilotProjectionService:
         data = result.data
         records = _mapping_list(data.get("records"), "records")
         open_rows, resolved_rows = _split_plugin_customer_rows(records)
-        detail_rechecks = _opaque_detail_recheck_map(data.get("rechecks", []), verification)
         collection_evidence = data.get("evidence")
         if (
             not isinstance(collection_evidence, Mapping)
@@ -684,6 +683,11 @@ class PilotProjectionService:
             for item in uow.work_items.list_by_type(CUSTOMER_PROBLEM_ITEM_TYPE, for_update=True)
         }
         existing_aliases = _customer_existing_aliases(existing)
+        detail_rechecks = _opaque_detail_recheck_map(
+            data.get("rechecks", []),
+            verification,
+            existing_aliases=existing_aliases,
+        )
         seen_aliases: set[str] = set()
         candidate_keys: set[str] = set()
 
@@ -1658,17 +1662,18 @@ def _customer_existing_aliases(
         else:
             parts = persisted_key.split(":", 3)
             if len(parts) != 4 or parts[0] != "problem" or not all(parts[1:]):
-                raise OrchestrationError(
-                    "INVALID_PERSISTED_PROBLEM_IDENTITY",
-                    "Persisted customer problem identity cannot be migrated safely.",
-                    details={"status": "BLOCKED_DATA"},
+                # A malformed historical key cannot resolve or migrate, but it
+                # must remain addressable so a signed context-error row can
+                # keep that exact persisted item blocked without inventing an
+                # external identity.
+                alias = persisted_key
+            else:
+                _prefix, platform, account_id, external_id = parts
+                alias = customer_problem_identity(
+                    account_id=account_id,
+                    platform=platform,
+                    external_id=external_id,
                 )
-            _prefix, platform, account_id, external_id = parts
-            alias = customer_problem_identity(
-                account_id=account_id,
-                platform=platform,
-                external_id=external_id,
-            )
         previous = aliases.get(alias)
         if previous is not None and str(previous.get("work_item_id")) != str(item.get("work_item_id")):
             raise OrchestrationError(
@@ -1683,6 +1688,8 @@ def _customer_existing_aliases(
 def _opaque_detail_recheck_map(
     value: Any,
     verification: GenerationVerificationContext,
+    *,
+    existing_aliases: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Mapping[str, Any]]:
     rows = _mapping_list(value, "rechecks")
     output: dict[str, Mapping[str, Any]] = {}
@@ -1693,6 +1700,57 @@ def _opaque_detail_recheck_map(
                 "Plugin detail rows cannot provide core account binding proof.",
                 details={"status": "BLOCKED_DATA"},
             )
+        context_error = str(raw.get("context_error") or "").strip()
+        if context_error:
+            supplied = _required_text(raw.get("dedupe_key"), "dedupe_key")
+            # Context errors are server-owned statements about one persisted
+            # row. Match only its exact stored key; accepting a normalized
+            # alias could bind a contradictory subject to another open item.
+            matched_aliases = [
+                alias
+                for alias, item in existing_aliases.items()
+                if supplied == str(item.get("dedupe_key") or "").strip()
+            ]
+            evidence = raw.get("evidence")
+            if (
+                len(context_error) > 100
+                or re.fullmatch(r"[A-Z][A-Z0-9_]*", context_error) is None
+                or str(raw.get("status") or "").strip().upper()
+                != WorkItemStatus.BLOCKED_DATA.value
+                or str(raw.get("resolution_reason") or "").strip()
+                or str(raw.get("error_code") or "").strip() != context_error
+                or raw.get("source_returned") is not False
+                or not isinstance(evidence, Mapping)
+                or bool(evidence)
+            ):
+                raise OrchestrationError(
+                    "PROBLEM_RECHECK_CONTEXT_INVALID",
+                    "A context-error recheck can only retain an exact item as BLOCKED_DATA.",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            if len(matched_aliases) != 1:
+                raise OrchestrationError(
+                    "UNEXPECTED_PROBLEM_DETAIL_RECHECK",
+                    "Context-error recheck does not identify one persisted customer problem.",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            key = matched_aliases[0]
+            if key in output:
+                raise OrchestrationError(
+                    "DUPLICATE_PROBLEM_DETAIL_RECHECK",
+                    f"Exact detail result was returned more than once: {key}",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            output[key] = {
+                "dedupe_key": supplied,
+                "context_error": context_error,
+                "status": WorkItemStatus.BLOCKED_DATA.value,
+                "resolution_reason": "",
+                "error_code": context_error,
+                "source_returned": False,
+                "evidence": {},
+            }
+            continue
         identity = _opaque_problem_identity(raw, verification)
         key = identity["dedupe_key"]
         if key in output:

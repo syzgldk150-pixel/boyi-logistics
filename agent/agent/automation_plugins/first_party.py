@@ -65,7 +65,7 @@ DIGEST_LOCK_PATH = FIRST_PARTY_ROOT / "digests.json"
 FIRST_PARTY_RUNTIME_PATH = FIRST_PARTY_ROOT / "_runtime" / "main.py"
 FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Broker effect classification changes the signed executable contract.
-FIRST_PARTY_PACKAGE_VERSION = "1.0.4"
+FIRST_PARTY_PACKAGE_VERSION = "1.0.5"
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {
     "ronghui_": "ronghui",

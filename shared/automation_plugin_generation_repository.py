@@ -7,6 +7,10 @@ repository type and method names remain backward compatible.
 from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
+from shared.automation_plugin_generation_unknown_write_repository import (
+    block_generation_unknown_write_row as _block_generation_unknown_write_row,
+    lock_archival_unknown_predecessor as _lock_archival_unknown_predecessor,
+)
 from shared.automation_unknown_write_repository import lock_remaining_unknown_generation_leases
 from shared.automation_write_attempt_repository import record_generation_write_attempt_row as _record_generation_write_attempt_row
 
@@ -1019,6 +1023,9 @@ class AutomationPluginGenerationRepositoryMixin:
                 raise ConcurrentUpdateError(
                     "runtime target was prepared from another committed generation"
                 )
+            archival_unknown_predecessor = _lock_archival_unknown_predecessor(
+                cursor, automation_id=safe_automation_id, expected_committed=expected_committed
+            )
             cursor.execute(
                 """
                 SELECT effect_sequence, effect_kind, effect_key, state,
@@ -1293,7 +1300,7 @@ class AutomationPluginGenerationRepositoryMixin:
                     """,
                     tuple([safe_automation_id, *sorted(stale_ids)]),
                 )
-            if expected_committed is not None:
+            if expected_committed is not None and not archival_unknown_predecessor:
                 cursor.execute(
                     """
                     UPDATE automation_project_generations
@@ -1319,7 +1326,11 @@ class AutomationPluginGenerationRepositoryMixin:
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("runtime generation commit changed")
-            reconcile_state = "DRAINING" if expected_committed is not None else "STABLE"
+            reconcile_state = (
+                "DRAINING"
+                if expected_committed is not None and not archival_unknown_predecessor
+                else "STABLE"
+            )
             cursor.execute(
                 """
                 UPDATE automation_projects
@@ -1592,7 +1603,7 @@ class AutomationPluginGenerationRepositoryMixin:
             automation_id = _required_text(lease_identity.get("automation_id"), "automation_id")
             generation = _positive_int(lease_identity.get("generation"), "generation")
             cursor.execute(
-                "SELECT automation_id FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                "SELECT automation_id, committed_generation FROM automation_projects WHERE automation_id=%s FOR UPDATE",
                 (automation_id,),
             )
             if _row_dict(cursor, cursor.fetchone()) is None:
@@ -1662,9 +1673,9 @@ class AutomationPluginGenerationRepositoryMixin:
                     """
                     UPDATE automation_projects
                     SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-                    WHERE automation_id=%s
+                    WHERE automation_id=%s AND committed_generation=%s
                     """,
-                    (lease["automation_id"],),
+                    (lease["automation_id"], lease["generation"]),
                 )
             cursor.execute(
                 "SELECT * FROM automation_project_generation_leases WHERE lease_id=%s",
@@ -1726,7 +1737,7 @@ class AutomationPluginGenerationRepositoryMixin:
             ):
                 raise IdempotencyConflict("runtime recovery does not match its generation lease")
             cursor.execute(
-                "SELECT automation_id FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                "SELECT automation_id, committed_generation FROM automation_projects WHERE automation_id=%s FOR UPDATE",
                 (safe_automation_id,),
             )
             if _row_dict(cursor, cursor.fetchone()) is None:
@@ -1888,7 +1899,7 @@ class AutomationPluginGenerationRepositoryMixin:
                     "runtime write finalization does not match its generation lease"
                 )
             cursor.execute(
-                "SELECT automation_id FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                "SELECT automation_id, committed_generation FROM automation_projects WHERE automation_id=%s FOR UPDATE",
                 (safe_automation_id,),
             )
             if _row_dict(cursor, cursor.fetchone()) is None:
@@ -1964,9 +1975,9 @@ class AutomationPluginGenerationRepositoryMixin:
                     """
                     UPDATE automation_projects
                     SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-                    WHERE automation_id=%s
+                    WHERE automation_id=%s AND committed_generation=%s
                     """,
-                    (safe_automation_id,),
+                    (safe_automation_id, safe_generation),
                 )
             else:
                 cursor.execute(
@@ -2594,9 +2605,9 @@ class AutomationPluginGenerationRepositoryMixin:
                     """
                     UPDATE automation_projects
                     SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-                    WHERE automation_id=%s
+                    WHERE automation_id=%s AND committed_generation=%s
                     """,
-                    (safe_automation_id,),
+                    (safe_automation_id, safe_generation),
                 )
                 raise AutomationPluginPurgeBlocked(
                     "unknown generation write blocks effect disposal"
@@ -2795,6 +2806,18 @@ class AutomationPluginGenerationRepositoryMixin:
                 FROM automation_project_generations
                 WHERE automation_id=%s
                   AND state IN ('DRAINING', 'DISPOSING', 'FAILED', 'BLOCKED')
+                  AND (
+                      state <> 'BLOCKED'
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM automation_project_generation_leases AS archival_lease
+                          WHERE archival_lease.automation_id=
+                                automation_project_generations.automation_id
+                            AND archival_lease.generation=
+                                automation_project_generations.generation
+                            AND archival_lease.outcome='WRITE_OUTCOME_UNKNOWN'
+                      )
+                  )
                 """,
                 (safe_automation_id,),
             )
@@ -2928,72 +2951,10 @@ class AutomationPluginGenerationRepositoryMixin:
         automation_id: str,
         generation: int,
     ) -> None:
-        safe_automation_id = _required_text(automation_id, "automation_id")
-        safe_generation = _positive_int(generation, "generation")
-        with self.cursor() as cursor:
-            # Disposal/reconciliation can race release/finalization; a lease-first count deadlocks.
-            # Parent locks must precede the lease set in project -> generation -> lease order.
-            cursor.execute(
-                """
-                SELECT automation_id FROM automation_projects
-                WHERE automation_id=%s FOR UPDATE
-                """,
-                (safe_automation_id,),
-            )
-            if _row_dict(cursor, cursor.fetchone()) is None:
-                raise OrchestrationPersistenceError(
-                    "automation project disappeared during unknown-write block"
-                )
-            cursor.execute(
-                """
-                SELECT state FROM automation_project_generations
-                WHERE automation_id=%s AND generation=%s FOR UPDATE
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            generation_row = _row_dict(cursor, cursor.fetchone())
-            if generation_row is None:
-                raise OrchestrationPersistenceError(
-                    "runtime generation disappeared during unknown-write block"
-                )
-            if str(generation_row.get("state") or "") == "DISPOSED":
-                raise ConcurrentUpdateError("runtime generation is already disposed")
-            cursor.execute(
-                """
-                SELECT lease_id
-                FROM automation_project_generation_leases
-                WHERE automation_id=%s AND generation=%s
-                AND outcome='WRITE_OUTCOME_UNKNOWN' FOR UPDATE
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            if not _rows(cursor):
-                raise ConcurrentUpdateError(
-                    "runtime generation has no unknown write evidence"
-                )
-            cursor.execute(
-                """
-                UPDATE automation_project_generations
-                SET state='BLOCKED', error_code='WRITE_OUTCOME_UNKNOWN',
-                    error_summary='Unknown external write outcome requires reconciliation',
-                    record_version=record_version+1, updated_at=NOW(6)
-                WHERE automation_id=%s AND generation=%s AND state<>'DISPOSED'
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError(
-                    "runtime generation unknown-write state changed"
-                )
-            cursor.execute(
-                """
-                UPDATE automation_projects
-                SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-                WHERE automation_id=%s
-                """,
-                (safe_automation_id,),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError(
-                    "runtime project unknown-write state changed"
-                )
+        _block_generation_unknown_write_row(
+            self,
+            automation_id,
+            generation,
+            required_text=_required_text,
+            positive_int=_positive_int,
+        )
