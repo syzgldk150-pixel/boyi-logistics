@@ -639,7 +639,6 @@
     font-weight: 850;
   }
   .receipt-audit-body { min-height: 0; background: #fff; }
-  .receipt-audit-frame { width: 100%; height: 100%; border: 0; background: #fff; }
   .receipt-modal-card--confirm {
     grid-template-rows: auto auto;
     width: min(440px, calc(100vw - 32px));
@@ -888,8 +887,8 @@
             <td><span class="receipt-chip {% if row.signed_confirmed in ['是', '已确认'] %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.signed_confirmed or '-' }}</span></td>
             <td class="receipt-updated-cell" title="{{ row.updated_at }}">{{ row.updated_at }}</td>
             <td>
-              <button class="receipt-icon-btn" type="button" data-receipt-original-open title="原页模式" aria-label="打开原页模式">
-                <i data-feather="external-link"></i>
+              <button class="receipt-icon-btn" type="button" data-receipt-original-open title="控制平面审核" aria-label="打开控制平面审核">
+                <i data-feather="shield"></i>
               </button>
             </td>
           </tr>
@@ -920,6 +919,7 @@
         <div class="receipt-modal-actions">
           <button class="receipt-icon-btn" type="button" data-receipt-record-prev title="上一个单号" aria-label="上一个单号"><i data-feather="skip-back"></i></button>
           <button class="receipt-icon-btn" type="button" data-receipt-record-next title="下一个单号" aria-label="下一个单号"><i data-feather="skip-forward"></i></button>
+          <button class="ghost-btn" type="button" data-receipt-feishu-detail-query hidden><i data-feather="search"></i> 查询飞书明细</button>
           <button class="ghost-btn" type="button" data-receipt-audit-fail><i data-feather="x-circle"></i> 审核不通过</button>
           <button class="primary-btn" type="button" data-receipt-audit-pass><i data-feather="check-circle"></i> 审核通过</button>
           <button class="receipt-close-btn" type="button" data-receipt-review-close aria-label="关闭审核"><i data-feather="x"></i></button>
@@ -991,13 +991,15 @@
     <div class="receipt-modal-card receipt-modal-card--audit" role="dialog" aria-modal="true" aria-labelledby="receipt-audit-title">
       <div class="receipt-modal-head">
         <div>
-          <h2 id="receipt-audit-title" data-receipt-audit-title>原页审核</h2>
+          <h2 id="receipt-audit-title" data-receipt-audit-title>控制平面审核</h2>
           <p data-receipt-audit-subtitle>请选择一条回单记录</p>
         </div>
         <button class="receipt-close-btn" type="button" data-receipt-audit-close aria-label="关闭审核"><i data-feather="x"></i></button>
       </div>
       <div class="receipt-audit-body">
-        <iframe class="receipt-audit-frame" data-receipt-audit-frame title="原页审核"></iframe>
+        <div class="receipt-empty">
+          第三方活动原页已安全停用。审核仍会提交到控制平面，并在审批后由后台执行和读后核验。
+        </div>
       </div>
     </div>
   </div>
@@ -1060,6 +1062,7 @@
   const reviewRotationLabel = page.querySelector("[data-receipt-review-rotation]");
   const reviewRecordPrev = page.querySelector("[data-receipt-record-prev]");
   const reviewRecordNext = page.querySelector("[data-receipt-record-next]");
+  const reviewFeishuDetailQuery = page.querySelector("[data-receipt-feishu-detail-query]");
   const reviewAuditPass = page.querySelector("[data-receipt-audit-pass]");
   const reviewAuditFail = page.querySelector("[data-receipt-audit-fail]");
   const reviewReasonPanel = page.querySelector("[data-receipt-fail-reason-panel]");
@@ -1070,7 +1073,6 @@
   const auditModal = page.querySelector("[data-receipt-audit-modal]");
   const auditTitle = page.querySelector("[data-receipt-audit-title]");
   const auditSubtitle = page.querySelector("[data-receipt-audit-subtitle]");
-  const auditFrame = page.querySelector("[data-receipt-audit-frame]");
   const auditConfirmModal = page.querySelector("[data-receipt-audit-confirm]");
   const auditConfirmTitle = page.querySelector("[data-receipt-audit-confirm-title]");
   const auditConfirmSubtitle = page.querySelector("[data-receipt-audit-confirm-subtitle]");
@@ -1107,23 +1109,6 @@
     document.body.appendChild(auditConfirmModal);
   }
 
-  const liveUrlFor = (record) => {
-    const platform = String(record.platform || "");
-    const direction = String(record.direction || "send");
-    if (platform === "yunda") {
-      const path = direction === "receive"
-        ? "/ky_inms/public/index.php/business/waybill/delivery/index.html"
-        : "/ky_inms/public/index.php/business/waybill/mailing/index.html";
-      return "{{ yunda_live_url }}" + path;
-    }
-    if (platform === "ronghui") {
-      return direction === "receive"
-        ? "{{ ronghui_live_url }}?receipt_entry=receive"
-        : "{{ ronghui_live_url }}?receipt_entry=send";
-    }
-    return "";
-  };
-
   const detailCache = new Map();
   let previewAttachments = [];
   let previewIndex = 0;
@@ -1136,11 +1121,14 @@
   let reviewRotation = 0;
   let reviewDrag = null;
   let auditAutoQueryTimer = null;
-  let originalAuditExecutionTimer = null;
   let pendingReceiptAudit = null;
-  let backgroundAuditFrame = null;
-  let activeAuditExecutionFrame = null;
-  let backgroundAuditFrameClearTimer = null;
+
+  const newBrowserRequestUuid = () => {
+    if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
+      throw new Error("当前浏览器无法生成安全的请求标识，写入计划未提交。");
+    }
+    return window.crypto.randomUUID();
+  };
 
   const fetchDetail = async (id) => {
     if (detailCache.has(id)) return detailCache.get(id);
@@ -1193,70 +1181,6 @@
     }
   };
 
-  const stopOriginalPageAuditExecution = () => {
-    if (originalAuditExecutionTimer) {
-      window.clearInterval(originalAuditExecutionTimer);
-      originalAuditExecutionTimer = null;
-    }
-  };
-
-  const ensureBackgroundAuditFrame = () => {
-    if (backgroundAuditFrameClearTimer) {
-      window.clearTimeout(backgroundAuditFrameClearTimer);
-      backgroundAuditFrameClearTimer = null;
-    }
-    if (backgroundAuditFrame?.isConnected) return backgroundAuditFrame;
-    const frame = document.createElement("iframe");
-    frame.title = "后台回单审核";
-    frame.setAttribute("aria-hidden", "true");
-    frame.tabIndex = -1;
-    Object.assign(frame.style, {
-      position: "fixed",
-      left: "-10000px",
-      top: "0",
-      width: "1366px",
-      height: "900px",
-      border: "0",
-      opacity: "0",
-      pointerEvents: "none",
-      zIndex: "-1"
-    });
-    document.body.appendChild(frame);
-    backgroundAuditFrame = frame;
-    return frame;
-  };
-
-  const clearBackgroundAuditFrame = (delayMs = 0) => {
-    const frame = backgroundAuditFrame;
-    if (activeAuditExecutionFrame === backgroundAuditFrame) activeAuditExecutionFrame = null;
-    if (!frame) return;
-    const clearFrame = () => {
-      backgroundAuditFrameClearTimer = null;
-      if (backgroundAuditFrame === frame && activeAuditExecutionFrame !== frame) {
-        frame.src = "about:blank";
-      }
-    };
-    if (delayMs > 0) {
-      backgroundAuditFrameClearTimer = window.setTimeout(clearFrame, delayMs);
-    } else {
-      clearFrame();
-    }
-  };
-
-  const finishOriginalPageAuditExecution = () => {
-    stopOriginalPageAuditExecution();
-    if (activeAuditExecutionFrame === backgroundAuditFrame) {
-      clearBackgroundAuditFrame(10000);
-    } else {
-      activeAuditExecutionFrame = null;
-    }
-  };
-
-  const setOriginalAuditExecutionMessage = (message) => {
-    if (auditSubtitle) auditSubtitle.textContent = message;
-    if (reviewSubtitle) reviewSubtitle.textContent = message;
-  };
-
   const isUsableElement = (element) => {
     if (!element) return false;
     const doc = element.ownerDocument;
@@ -1277,8 +1201,6 @@
     const out = [];
     const queue = [];
     try {
-      const frame = activeAuditExecutionFrame || auditFrame;
-      if (frame?.contentWindow) queue.push(frame.contentWindow);
     } catch (_) {}
     const seen = new Set();
     while (queue.length) {
@@ -1605,282 +1527,6 @@
     }
   };
 
-  const clickOriginalPageElement = (element) => {
-    if (!element) return false;
-    try {
-      element.click();
-      return true;
-    } catch (_) {
-      try {
-        ["mousedown", "mouseup", "click"].forEach((type) => {
-          element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: element.ownerDocument.defaultView}));
-        });
-        return true;
-      } catch (__) {
-        return false;
-      }
-    }
-  };
-
-  const originalAuditClickableElements = (doc) => {
-    const selector = "button,a,input[type='button'],input[type='submit'],.layui-btn,.l-btn,.mini-button,.easyui-linkbutton,[role='button']";
-    return Array.from(doc.querySelectorAll(selector)).filter((item) => {
-      const disabled = item.disabled || item.getAttribute("aria-disabled") === "true" || item.classList.contains("is-disabled") || item.classList.contains("disabled");
-      return !disabled && isUsableElement(item);
-    });
-  };
-
-  const compactButtonText = (element) => elementText(element).replace(/\s+/g, "");
-
-  const labelsForOriginalAuditResult = (result) => result === "passed"
-    ? ["审核通过", "通过"]
-    : ["审核不通过", "不通过"];
-
-  const findOriginalAuditActionButton = (doc, result) => {
-    const labels = labelsForOriginalAuditResult(result);
-    const candidates = originalAuditClickableElements(doc);
-    const exact = candidates.find((item) => labels.some((label) => compactButtonText(item) === label));
-    if (exact) return exact;
-    return candidates.find((item) => {
-      const text = compactButtonText(item);
-      if (!text || text.includes("查询")) return false;
-      if (result === "passed" && text.includes("不通过")) return false;
-      return labels.some((label) => text.includes(label));
-    }) || null;
-  };
-
-  const findOriginalAuditEntryButton = (doc) => {
-    const labels = ["回单审核", "审核", "处理"];
-    const candidates = originalAuditClickableElements(doc).filter((item) => {
-      const text = compactButtonText(item);
-      return labels.some((label) => text === label || text.includes(label));
-    });
-    return candidates.length === 1 ? candidates[0] : null;
-  };
-
-  const fillOriginalAuditReason = (doc, reason) => {
-    const value = cleanAuditValue(reason);
-    if (!value) return true;
-    const fields = Array.from(doc.querySelectorAll("textarea,input[type='text'],input:not([type])"));
-    const field = fields.find((item) => {
-      const placeholder = cleanAuditValue(item.getAttribute("placeholder"));
-      const context = controlTextContext(item);
-      return isUsableElement(item) && (
-        placeholder.includes("原因") ||
-        placeholder.includes("意见") ||
-        placeholder.includes("备注") ||
-        context.includes("原因") ||
-        context.includes("意见") ||
-        context.includes("备注")
-      );
-    });
-    return field ? setAuditFieldValue(field, value) : true;
-  };
-
-  const setMiniControlValue = (control, value) => {
-    if (!control) return false;
-    let changed = false;
-    try {
-      if (typeof control.setValue === "function") {
-        control.setValue(value);
-        changed = true;
-      } else if ("value" in control) {
-        control.value = value;
-        changed = true;
-      }
-    } catch (_) {
-      return false;
-    }
-    if (!changed) return false;
-    try {
-      control.doValueChanged?.();
-    } catch (_) {}
-    try {
-      control.fire?.("valuechanged");
-    } catch (_) {}
-    return true;
-  };
-
-  const submitOriginalAuditForm = (doc, audit) => {
-    const mini = doc?.defaultView?.mini;
-    if (!mini || typeof mini.get !== "function") return {ok: false, reason: "audit_form_not_found"};
-    const auditStatus = mini.get("AUDIT_STATUS");
-    const saveBtn = mini.get("saveBtn");
-    if (!auditStatus || !saveBtn) return {ok: false, reason: "audit_form_not_found"};
-    const auditStatusValue = audit.result === "failed" ? "3" : "2";
-    if (!setMiniControlValue(auditStatus, auditStatusValue)) return {ok: false, reason: "audit_status_set_failed"};
-    const reason = audit.reason || "";
-    const auditContent = mini.get("AUDIT_CONTENT");
-    if (auditContent) setMiniControlValue(auditContent, reason);
-    fillOriginalAuditReason(doc, reason);
-    try {
-      if (typeof saveBtn.doClick === "function") {
-        saveBtn.doClick();
-        return {ok: true, label: "saveBtn"};
-      }
-    } catch (_) {
-      return {ok: false, reason: "audit_form_save_failed"};
-    }
-    const saveElement = saveBtn.el || saveBtn._el || doc.getElementById("saveBtn");
-    return clickOriginalPageElement(saveElement)
-      ? {ok: true, label: "saveBtn"}
-      : {ok: false, reason: "audit_form_save_failed"};
-  };
-
-  const clickOriginalAuditConfirm = (doc) => {
-    const labels = ["确定", "确认", "是", "OK"];
-    const candidates = originalAuditClickableElements(doc);
-    const button = candidates.find((item) => labels.some((label) => compactButtonText(item) === label)) ||
-      candidates.find((item) => {
-        const text = compactButtonText(item);
-        return labels.some((label) => text.includes(label)) && !text.includes("取消");
-      });
-    return button ? clickOriginalPageElement(button) : false;
-  };
-
-  const tryClickOriginalAuditConfirm = () => {
-    for (const doc of collectAuditDocuments()) {
-      if (clickOriginalAuditConfirm(doc)) return {ok: true};
-    }
-    return {ok: false, reason: "confirm_not_found"};
-  };
-
-  const auditIdentifiersForVerification = (payload) => {
-    const values = [
-      payload?.query,
-      payload?.waybill_no,
-      payload?.receipt_no,
-      payload?.return_waybill_no
-    ].map(cleanAuditValue).filter(Boolean);
-    values.forEach((value) => {
-      if (value.length >= 6) values.push(value.slice(-6));
-    });
-    return Array.from(new Set(values));
-  };
-
-  const rowLikeElementsForAuditVerification = (doc) => Array.from(doc.querySelectorAll([
-    "tr",
-    "[role='row']",
-    ".datagrid-row",
-    ".mini-grid-row",
-    ".layui-table tr"
-  ].join(","))).filter(isUsableElement);
-
-  const rowTextShowsAuditResult = (text, identifiers, targetStatus) => {
-    const compact = cleanAuditValue(text).replace(/\s+/g, "");
-    if (!compact || !compact.includes(targetStatus)) return false;
-    return identifiers.some((identifier) => compact.includes(identifier));
-  };
-
-  const miniGridShowsAuditResult = (doc, identifiers, targetStatus) => {
-    const mini = doc?.defaultView?.mini;
-    if (!mini || typeof mini.getComponents !== "function") return false;
-    try {
-      return mini.getComponents().some((component) => {
-        if (!component || typeof component.getData !== "function") return false;
-        const rows = component.getData() || [];
-        return rows.some((row) => rowTextShowsAuditResult(Object.values(row || {}).join(" "), identifiers, targetStatus));
-      });
-    } catch (_) {
-      return false;
-    }
-  };
-
-  const easyuiDatagridShowsAuditResult = (doc, identifiers, targetStatus) => {
-    const win = doc?.defaultView;
-    const jquery = win?.jQuery || win?.$;
-    if (typeof jquery !== "function") return false;
-    try {
-      const gridElements = [];
-      const addGridElements = (items) => {
-        Array.from(items || []).forEach((item) => {
-          if (item && !gridElements.includes(item)) gridElements.push(item);
-        });
-      };
-      addGridElements(jquery("#dg"));
-      addGridElements(doc.querySelectorAll("table.easyui-datagrid,.easyui-datagrid"));
-      return gridElements.some((element) => {
-        const grid = jquery(element);
-        if (!grid || typeof grid.datagrid !== "function") return false;
-        const datagridRows = grid.datagrid("getRows") || [];
-        return datagridRows.some((row) =>
-          rowTextShowsAuditResult(Object.values(row || {}).join(" "), identifiers, targetStatus)
-        );
-      });
-    } catch (_) {
-      return false;
-    }
-  };
-
-  const verifyOriginalPageAuditResult = (payload, audit) => {
-    const targetStatus = auditLabelForResult(audit.result);
-    const identifiers = auditIdentifiersForVerification(payload);
-    if (!identifiers.length) return {ok: false, reason: "missing_identifier"};
-    for (const doc of collectAuditDocuments()) {
-      if (easyuiDatagridShowsAuditResult(doc, identifiers, targetStatus)) return {ok: true};
-      if (miniGridShowsAuditResult(doc, identifiers, targetStatus)) return {ok: true};
-      const matched = rowLikeElementsForAuditVerification(doc).some((row) =>
-        rowTextShowsAuditResult(elementText(row), identifiers, targetStatus)
-      );
-      if (matched) return {ok: true};
-    }
-    return {ok: false, reason: "status_not_confirmed"};
-  };
-
-  const verifyReceiptAuditViaSync = async (record, payload, audit) => {
-    const targetStatus = auditLabelForResult(audit.result);
-    const syncParams = new URLSearchParams();
-    syncParams.set("platform", record.platform || "");
-    syncParams.set("direction", record.direction || "send");
-    syncParams.set("q", payload.query || "");
-    const response = await fetch("/receipts/sync", {
-      method: "POST",
-      headers: {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Accept": "application/json"},
-      body: syncParams.toString()
-    });
-    let syncPayload = {};
-    try {
-      syncPayload = await response.json();
-    } catch (_) {
-      syncPayload = {};
-    }
-    if (!response.ok || !syncPayload.ok) {
-      return {ok: false, reason: syncPayload.message || syncPayload.error || "sync_failed"};
-    }
-    if (audit?.receiptId) detailCache.delete(String(audit.receiptId));
-    const freshDetail = await fetchDetail(audit.receiptId);
-    const freshRecord = freshDetail.record || {};
-    return freshRecord.audit_status === targetStatus
-      ? {ok: true}
-      : {ok: false, reason: "synced_status_not_confirmed"};
-  };
-
-  const tryClickOriginalAuditAction = (audit) => {
-    const docs = collectAuditDocuments();
-    let openedDialog = false;
-    for (const doc of docs) {
-      const formResult = submitOriginalAuditForm(doc, audit);
-      if (formResult.ok) return formResult;
-      if (formResult.reason !== "audit_form_not_found") return formResult;
-      const actionButton = findOriginalAuditActionButton(doc, audit.result);
-      if (actionButton) {
-        fillOriginalAuditReason(doc, audit.reason || "");
-        if (!clickOriginalPageElement(actionButton)) return {ok: false, reason: "audit_action_click_failed"};
-        return {ok: true, label: compactButtonText(actionButton)};
-      }
-      const state = auditStateElement(doc);
-      const openedKey = `${audit.receiptId || ""}|${audit.result || ""}`;
-      if (state?.dataset?.shipnowReceiptAuditEntryOpened !== openedKey) {
-        const entryButton = findOriginalAuditEntryButton(doc);
-        if (entryButton && clickOriginalPageElement(entryButton)) {
-          if (state?.dataset) state.dataset.shipnowReceiptAuditEntryOpened = openedKey;
-          openedDialog = true;
-        }
-      }
-    }
-    return {ok: false, reason: openedDialog ? "audit_dialog_opening" : "audit_action_not_found"};
-  };
-
   const yundaQueryLabelFor = (payload) => payload.mode === "receipt"
     ? "按回单号查询"
     : (payload.mode === "return_waybill" ? "按回单快递单号查询" : "按运单号查询");
@@ -2131,11 +1777,9 @@
 
   const closeAudit = () => {
     stopAuditAutoQuery();
-    stopOriginalPageAuditExecution();
     setReviewAuditBusy(false);
     auditModal?.classList.remove("is-open");
     if (auditModal) auditModal.hidden = true;
-    auditFrame?.removeAttribute("src");
     table?.querySelectorAll("[data-receipt-id]").forEach((row) => row.classList.remove("is-selected"));
   };
 
@@ -2375,6 +2019,7 @@
     reviewImage?.removeAttribute("src");
     resetReviewImageTransform();
     resetReceiptAuditFeedback();
+    if (reviewFeishuDetailQuery) reviewFeishuDetailQuery.hidden = true;
     hideFailReasonPanel();
     closeReceiptAuditConfirmation();
     table?.querySelectorAll("[data-receipt-id]").forEach((row) => row.classList.remove("is-selected"));
@@ -2388,6 +2033,7 @@
     if (reviewTitle) reviewTitle.textContent = "正在加载";
     if (reviewSubtitle) reviewSubtitle.textContent = "正在读取回单详情。";
     renderReviewSummary({}, {});
+    if (reviewFeishuDetailQuery) reviewFeishuDetailQuery.hidden = true;
     if (reviewReason) reviewReason.value = "";
     hideFailReasonPanel();
     reviewAttachments = [];
@@ -2404,6 +2050,9 @@
       if (reviewTitle) reviewTitle.textContent = heading;
       if (reviewSubtitle) reviewSubtitle.textContent = meta || "本地回单详情";
       renderReviewSummary(record.detail_summary || {}, record);
+      if (reviewFeishuDetailQuery) {
+        reviewFeishuDetailQuery.hidden = !record.feishu_detail_query_available;
+      }
       if (record.audit_status === "审核通过") {
         showReceiptAuditFeedback({result: "passed"}, "当前回单已审核通过。");
       } else if (record.audit_status === "审核不通过") {
@@ -2508,10 +2157,60 @@
     return {record, auditStatus, message};
   };
 
+  const submitReceiptFeishuDetailQuery = async () => {
+    if (!reviewReceiptId || !reviewFeishuDetailQuery) return;
+    const browserRequestUuid = newBrowserRequestUuid();
+    reviewFeishuDetailQuery.disabled = true;
+    reviewFeishuDetailQuery.setAttribute("aria-busy", "true");
+    try {
+      const response = await fetch(
+        `/receipts/${encodeURIComponent(reviewReceiptId)}/feishu-detail-query`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=UTF-8",
+            "Accept": "application/json",
+            "X-Browser-Request-UUID": browserRequestUuid,
+          },
+          body: "{}",
+        },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || `飞书回单详情查询提交失败（${response.status}）。`);
+      }
+      const message = payload.message || `飞书精确查询已提交（Run ${payload.run_id || "待生成"}）。`;
+      if (reviewStatus) {
+        reviewStatus.replaceChildren(document.createTextNode(message));
+        if (payload.work_item_id) {
+          const link = document.createElement("a");
+          link.href = `/work-items/${encodeURIComponent(payload.work_item_id)}`;
+          link.textContent = " 打开事项";
+          reviewStatus.appendChild(link);
+        }
+        reviewStatus.hidden = false;
+      }
+      if (reviewSubtitle) reviewSubtitle.textContent = message;
+    } catch (error) {
+      if (reviewStatus) {
+        reviewStatus.textContent = error.message || String(error);
+        reviewStatus.hidden = false;
+      }
+    } finally {
+      reviewFeishuDetailQuery.disabled = false;
+      reviewFeishuDetailQuery.removeAttribute("aria-busy");
+    }
+  };
+
   const submitReceiptAuditDirect = async (audit) => {
+    const browserRequestUuid = newBrowserRequestUuid();
     const response = await fetch(`/receipts/${encodeURIComponent(audit.receiptId)}/audit`, {
       method: "POST",
-      headers: {"Content-Type": "application/json; charset=UTF-8", "Accept": "application/json"},
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        "Accept": "application/json",
+        "X-Browser-Request-UUID": browserRequestUuid,
+      },
       body: JSON.stringify({result: audit.result, reason: audit.reason || ""})
     });
     let payload = {};
@@ -2526,146 +2225,19 @@
       error.payload = payload;
       throw error;
     }
+    if (payload.pending) {
+      const message = payload.message || `审核计划已提交（Run ${payload.run_id || "待生成"}）`;
+      if (reviewSubtitle) reviewSubtitle.textContent = message;
+      if (auditSubtitle) auditSubtitle.textContent = message;
+      hideFailReasonPanel();
+      return {pending: true, receipt: payload, message};
+    }
     return applyReceiptAuditPayload(audit, payload, `后台已执行${auditLabelForResult(audit.result)}。`);
-  };
-
-  const recordOriginalPageAuditResult = async (audit, actionMessage) => {
-    const response = await fetch(`/receipts/${encodeURIComponent(audit.receiptId)}/audit`, {
-      method: "POST",
-      headers: {"Content-Type": "application/json; charset=UTF-8", "Accept": "application/json"},
-      body: JSON.stringify({result: audit.result, reason: audit.reason || "", execution: "original_page"})
-    });
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.message || "本地审核状态更新失败");
-    applyReceiptAuditPayload(audit, payload, actionMessage || `已在后台原页执行${auditLabelForResult(audit.result)}。`);
-  };
-
-  const startOriginalPageAuditExecution = (record, meta, audit) => {
-    stopAuditAutoQuery();
-    stopOriginalPageAuditExecution();
-    if (!activeAuditExecutionFrame) activeAuditExecutionFrame = auditFrame;
-    const payload = auditQueryPayloadFor(record);
-    if (!payload) {
-      setOriginalAuditExecutionMessage("缺少运单号或回单号，无法在原页定位回单。");
-      finishOriginalPageAuditExecution();
-      setReviewAuditBusy(false);
-      return;
-    }
-    let attempts = 0;
-    let phase = "query";
-    let phaseStartedAt = Date.now();
-    let running = false;
-    let syncVerifyAttempted = false;
-    const label = auditLabelForResult(audit.result);
-    const enterPhase = (nextPhase, message) => {
-      phase = nextPhase;
-      phaseStartedAt = Date.now();
-      if (message) setOriginalAuditExecutionMessage(message);
-    };
-    setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 正在按单号查询 ${payload.query}`);
-    const complete = async (message) => {
-      finishOriginalPageAuditExecution();
-      try {
-        await recordOriginalPageAuditResult(audit, message);
-      } catch (error) {
-        setOriginalAuditExecutionMessage(error.message || String(error));
-      } finally {
-        setReviewAuditBusy(false);
-      }
-    };
-    const tick = async () => {
-      if (running) return;
-      running = true;
-      attempts += 1;
-      try {
-        if (phase === "query") {
-          const queryResult = tryApplyAuditQuery(payload);
-          if (queryResult.ok) {
-            enterPhase("action", `${meta || "原系统审核页面"} · 已查询 ${payload.query}，正在执行${label}`);
-          } else if (attempts >= 45) {
-            finishOriginalPageAuditExecution();
-            setReviewAuditBusy(false);
-            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 后台原页查询 ${payload.query} 超时，未执行审核`);
-          }
-          return;
-        }
-        if (phase === "action") {
-          const actionResult = tryClickOriginalAuditAction(audit);
-          if (actionResult.ok) {
-            enterPhase("confirm", `${meta || "原系统审核页面"} · 已点击${label}，正在确认原页提示`);
-          } else if (attempts >= 90) {
-            finishOriginalPageAuditExecution();
-            setReviewAuditBusy(false);
-            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 未找到原页${label}按钮，未执行审核`);
-          } else if (actionResult.reason === "audit_dialog_opening") {
-            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 已打开原页审核窗口，正在查找${label}按钮`);
-          }
-          return;
-        }
-        if (phase === "confirm") {
-          const confirmResult = tryClickOriginalAuditConfirm();
-          if (confirmResult.ok) {
-            enterPhase("verify", `${meta || "原系统审核页面"} · 已确认原页提示，正在核对原页审核状态`);
-          } else if (Date.now() - phaseStartedAt > 6000) {
-            enterPhase("verify", `${meta || "原系统审核页面"} · 未检测到原页确认提示，正在核对原页审核状态`);
-          }
-          return;
-        }
-        if (phase === "verify") {
-          const verifyResult = verifyOriginalPageAuditResult(payload, audit);
-          if (verifyResult.ok) {
-            await complete(`${meta || "原系统审核页面"} · 已核对原页显示${label}`);
-          } else if (!syncVerifyAttempted) {
-            syncVerifyAttempted = true;
-            const syncVerifyResult = await verifyReceiptAuditViaSync(record, payload, audit);
-            if (syncVerifyResult.ok) {
-              await complete(`${meta || "原系统审核页面"} · 已通过真实接口复核${label}`);
-              return;
-            }
-          } else if (Date.now() - phaseStartedAt > 12000) {
-            finishOriginalPageAuditExecution();
-            setReviewAuditBusy(false);
-            setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 原页仍未显示${label}，未回写本地状态`);
-          }
-        }
-      } finally {
-        running = false;
-      }
-    };
-    originalAuditExecutionTimer = window.setInterval(tick, 800);
-    window.setTimeout(tick, 1000);
-  };
-
-  const executeReceiptAuditInHiddenOriginalPage = async (audit) => {
-    if (!audit?.receiptId) return;
-    try {
-      const detail = await fetchDetail(audit.receiptId);
-      const record = detail.record || {};
-      const meta = [record.platform_label || record.platform, record.direction_label || record.direction, record.audit_status]
-        .filter(Boolean)
-        .join(" · ");
-      const liveUrl = liveUrlFor(record);
-      if (!liveUrl) throw new Error("当前平台没有可用的后台原页审核入口。");
-      table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item.dataset.receiptId === String(audit.receiptId)));
-      const frame = ensureBackgroundAuditFrame();
-      activeAuditExecutionFrame = frame;
-      setOriginalAuditExecutionMessage(`${meta || "原系统审核页面"} · 正在后台打开原页执行${auditLabelForResult(audit.result)}`);
-      frame.src = liveUrl;
-      startOriginalPageAuditExecution(record, meta, audit);
-    } catch (error) {
-      finishOriginalPageAuditExecution();
-      setReviewAuditBusy(false);
-      setOriginalAuditExecutionMessage(error.message || String(error));
-    } finally {
-      if (auditConfirmExecute) auditConfirmExecute.disabled = false;
-      pendingReceiptAudit = null;
-    }
   };
 
   const executeReceiptAuditInBackground = async (audit) => {
     if (!audit?.receiptId) return;
     const label = auditLabelForResult(audit.result);
-    let delegatedToHiddenOriginalPage = false;
     setReviewAuditBusy(true);
     if (auditConfirmExecute) auditConfirmExecute.disabled = true;
     closeReceiptAuditConfirmation(false);
@@ -2674,48 +2246,33 @@
       await submitReceiptAuditDirect(audit);
       setReviewAuditBusy(false);
     } catch (error) {
-      if (error.code === "AUDIT_CAPTURE_REQUIRED") {
-        delegatedToHiddenOriginalPage = true;
-        if (reviewSubtitle) reviewSubtitle.textContent = `真实审核接口尚未抓取，正在后台原页执行${label}。`;
-        await executeReceiptAuditInHiddenOriginalPage(audit);
-        return;
-      }
       setReviewAuditBusy(false);
       if (reviewSubtitle) reviewSubtitle.textContent = error.message || String(error);
       if (auditSubtitle) auditSubtitle.textContent = error.message || String(error);
     } finally {
-      if (!delegatedToHiddenOriginalPage) {
-        if (auditConfirmExecute) auditConfirmExecute.disabled = false;
-        pendingReceiptAudit = null;
-      }
+      if (auditConfirmExecute) auditConfirmExecute.disabled = false;
+      pendingReceiptAudit = null;
     }
   };
 
   const openAudit = async (id, row) => {
-    stopOriginalPageAuditExecution();
-    activeAuditExecutionFrame = auditFrame;
     table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item === row));
     openModal(auditModal);
     if (auditTitle) auditTitle.textContent = "正在加载";
-    if (auditSubtitle) auditSubtitle.textContent = "正在读取原页审核入口。";
-    if (auditFrame) auditFrame.src = "about:blank";
+    if (auditSubtitle) auditSubtitle.textContent = "正在读取控制平面审核详情。";
     try {
       const detail = await fetchDetail(id);
       const record = detail.record || {};
-      const heading = record.waybill_no || record.receipt_no || "原页审核";
+      const heading = record.waybill_no || record.receipt_no || "控制平面审核";
       const meta = [record.platform_label || record.platform, record.direction_label || record.direction, record.audit_status]
         .filter(Boolean)
         .join(" · ");
-      const liveUrl = liveUrlFor(record);
       if (auditTitle) auditTitle.textContent = heading;
-      if (auditSubtitle) auditSubtitle.textContent = meta || "原系统审核页面";
-      if (auditFrame) auditFrame.src = liveUrl || "about:blank";
-      if (liveUrl) startAuditAutoQuery(record, meta);
+      if (auditSubtitle) auditSubtitle.textContent = meta || "后台控制平面审核";
     } catch (error) {
       stopAuditAutoQuery();
       if (auditTitle) auditTitle.textContent = "加载失败";
       if (auditSubtitle) auditSubtitle.textContent = error.message || String(error);
-      if (auditFrame) auditFrame.src = "about:blank";
     }
   };
 
@@ -2753,6 +2310,7 @@
   });
   reviewRecordPrev?.addEventListener("click", () => openReviewByOffset(-1));
   reviewRecordNext?.addEventListener("click", () => openReviewByOffset(1));
+  reviewFeishuDetailQuery?.addEventListener("click", submitReceiptFeishuDetailQuery);
   reviewReasonClose?.addEventListener("click", hideFailReasonPanel);
   reviewReasonCancel?.addEventListener("click", hideFailReasonPanel);
   reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"));
@@ -2920,8 +2478,8 @@
           <td><span class="receipt-chip ${okClassFor(signedOk)}">${escapeHtml(row.signed_confirmed || "-")}</span></td>
           <td class="receipt-updated-cell" title="${escapeHtml(row.updated_at || "")}">${escapeHtml(row.updated_at || "")}</td>
           <td>
-            <button class="receipt-icon-btn" type="button" data-receipt-original-open title="原页模式" aria-label="打开原页模式">
-              <i data-feather="external-link"></i>
+            <button class="receipt-icon-btn" type="button" data-receipt-original-open title="控制平面审核" aria-label="打开控制平面审核">
+              <i data-feather="shield"></i>
             </button>
           </td>
         </tr>
@@ -3175,15 +2733,27 @@
     }
     setSyncStatus(label);
     try {
+      const browserRequestUuid = newBrowserRequestUuid();
       const response = await fetch("/receipts/sync", {
         method: "POST",
-        headers: {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Accept": "application/json"},
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "Accept": "application/json",
+          "X-Browser-Request-UUID": browserRequestUuid,
+        },
         body: params.toString()
       });
       const payload = await response.json();
       if (!payload.ok) {
         setSyncStatus(payload.message || "查询失败", "is-error");
         return {ok: false, payload};
+      }
+      if (payload.pending) {
+        setSyncStatus(
+          payload.message || `回单同步计划已提交（Run ${payload.run_id || "待生成"}）`,
+          "is-warning",
+        );
+        return {ok: true, pending: true, payload};
       }
       const stats = payload.stats || {};
       const warnings = payload.warnings || [];
@@ -3204,7 +2774,7 @@
     setSubmitBusy(true);
     try {
       const result = await queryReceipts("正在从原系统查询回单...");
-      if (result?.ok) {
+      if (result?.ok && !result.pending) {
         if (queryMarker) queryMarker.value = "1";
         const data = await refreshReceiptTable(1);
         const total = Number((data.pagination || {}).total || 0);

@@ -9,6 +9,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import self_pickup_problem_upload
+from agent.tms_runtime.scripts import ronghui_problem_upload
 
 
 class SelfPickupProblemUploadTests(unittest.TestCase):
@@ -118,7 +119,15 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
             patch.object(self_pickup_problem_upload, "_fetch_bill_info", return_value=self._base_bill_info()), \
             patch.object(self_pickup_problem_upload, "_fetch_existing_problem_rows", return_value=[], create=True), \
             patch.object(self_pickup_problem_upload, "_fetch_guid", return_value="guid-1"), \
-            patch.object(self_pickup_problem_upload, "_save_tables", return_value={"success": True, "message": "ok"}):
+            patch.object(self_pickup_problem_upload, "_save_tables", return_value={"success": True, "message": "ok"}), \
+            patch.object(
+                ronghui_problem_upload,
+                "verify_registered_problem_item",
+                side_effect=lambda _session, *, expected, **_kwargs: {
+                    "source": "FIND_PROBLEM_REGISTER_LIST",
+                    "external_id": expected["GUID"],
+                },
+            ):
             result = self_pickup_problem_upload.run_once({"dry_run": False, "update_postpone_days": False})
 
         self.assertEqual(["self_pickup_problem_upload", "daxiang_s"], profiles)
@@ -135,7 +144,15 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
         with patch.object(self_pickup_problem_upload, "_fetch_bill_info", return_value=self._base_bill_info()), \
             patch.object(self_pickup_problem_upload, "_fetch_existing_problem_rows", side_effect=AssertionError("unexpected existing problem lookup"), create=True), \
             patch.object(self_pickup_problem_upload, "_fetch_guid", return_value="guid-1"), \
-            patch.object(self_pickup_problem_upload, "_save_tables", side_effect=fake_save_tables):
+            patch.object(self_pickup_problem_upload, "_save_tables", side_effect=fake_save_tables), \
+            patch.object(
+                ronghui_problem_upload,
+                "verify_registered_problem_item",
+                side_effect=lambda _session, *, expected, **_kwargs: {
+                    "source": "FIND_PROBLEM_REGISTER_LIST",
+                    "external_id": expected["GUID"],
+                },
+            ):
             result = self_pickup_problem_upload._process_bill(
                 object(),
                 record={"bill_code": "R0001"},
@@ -147,6 +164,7 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
 
         self.assertEqual("R0001", result["bill_code"])
         self.assertEqual(True, result["saved"])
+        self.assertEqual(True, result["verified"])
         self.assertEqual(["TAB_PROBLEM_ADD"], [item["operationKey"] for item in saved_operations])
 
     def test_process_bill_saves_even_when_skip_existing_problem_param_is_true(self):
@@ -159,7 +177,15 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
         with patch.object(self_pickup_problem_upload, "_fetch_bill_info", return_value=self._base_bill_info()), \
             patch.object(self_pickup_problem_upload, "_fetch_existing_problem_rows", side_effect=AssertionError("unexpected existing problem lookup"), create=True), \
             patch.object(self_pickup_problem_upload, "_fetch_guid", return_value="guid-1"), \
-            patch.object(self_pickup_problem_upload, "_save_tables", side_effect=fake_save_tables):
+            patch.object(self_pickup_problem_upload, "_save_tables", side_effect=fake_save_tables), \
+            patch.object(
+                ronghui_problem_upload,
+                "verify_registered_problem_item",
+                side_effect=lambda _session, *, expected, **_kwargs: {
+                    "source": "FIND_PROBLEM_REGISTER_LIST",
+                    "external_id": expected["GUID"],
+                },
+            ):
             result = self_pickup_problem_upload._process_bill(
                 object(),
                 record={"bill_code": "R0001"},
@@ -184,6 +210,14 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
             patch.object(self_pickup_problem_upload, "_fetch_existing_problem_rows", return_value=[], create=True), \
             patch.object(self_pickup_problem_upload, "_fetch_guid", return_value="guid-1"), \
             patch.object(self_pickup_problem_upload, "_save_tables", side_effect=fake_save_tables), \
+            patch.object(
+                ronghui_problem_upload,
+                "verify_registered_problem_item",
+                side_effect=lambda _session, *, expected, **_kwargs: {
+                    "source": "FIND_PROBLEM_REGISTER_LIST",
+                    "external_id": expected["GUID"],
+                },
+            ), \
             patch.object(self_pickup_problem_upload, "_validate_image_path", side_effect=AssertionError("unexpected image validation")), \
             patch.object(self_pickup_problem_upload, "_upload_image", side_effect=AssertionError("unexpected image upload")):
             result = self_pickup_problem_upload._process_bill(

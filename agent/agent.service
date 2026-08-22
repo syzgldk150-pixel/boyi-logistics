@@ -14,8 +14,9 @@ RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/home/boyce:/home/boyce/agent
 Environment=AGENT_HOST=127.0.0.1
+EnvironmentFile=/home/boyce/agent/runtime/automation_plugin_release.env
 
-# finance_tool / price_tool 会启动重任务子进程，需预留足够 cgroup 空间
+# 价格采集和财务原页同步会启动浏览器或重任务子进程，需预留足够 cgroup 空间
 MemoryHigh=900M
 MemoryMax=1400M
 

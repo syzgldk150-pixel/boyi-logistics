@@ -24,24 +24,13 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
             scheduled_task_count=1,
             enabled_task_count=0,
             automation_db_warning="",
-            tms_session_status={
-                "status": "logged_out",
-                "label": "未登录",
-                "status_tone": "neutral",
-                "last_validation_at": "",
-                "last_error_summary": "",
-                "authenticated_at": "",
-                "pending_since": "",
-                "expires_at": "",
-                "has_saved_credentials": False,
-            },
-            tms_session_credentials={
-                "username": "",
-                "password": "",
-                "phone": "",
-                "updated_at": "",
-                "has_saved_credentials": False,
-            },
+            automation_account_warning="",
+            automation_approval_policy_warning="",
+            automation_plugin_warning="",
+            automation_plugin_packages=[],
+            unsupported_automation_ids=[],
+            can_manage_plugins=True,
+            can_manage_approval_policies=True,
         )
 
     def test_template_renders_single_run_toggle_control(self):
@@ -119,6 +108,70 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn('data-settings-toggle', html)
         self.assertIn('data-schedule-stack', html)
         self.assertNotIn('data-code-toggle', html)
+
+    def test_control_plane_only_clock_is_read_only(self):
+        html = self._render(
+            {
+                "task_id": "clockin_daxiang_s",
+                "task_mode": "scheduled",
+                "name_value": "网点打卡-大祥S站",
+                "tool_name_value": "clock_in_dual",
+                "cron_expression_value": "33 18 * * *",
+                "schedule_time_values": ["18:33"],
+                "tool_params_json": "{}",
+                "tool_param_fields": [],
+                "search_text": "网点打卡 大祥S站 clock_in_dual",
+                "last_activity_value": "",
+                "sort_order": 1,
+                "is_schedulable": True,
+                "schedule_supported": True,
+                "schedule_editable": False,
+                "has_webhook": False,
+                "enabled_value": True,
+                "is_open": False,
+                "feedback": None,
+                "last_error_summary": "",
+                "last_run_value": "",
+                "webhook_masked_url": "",
+                "webhook_full_url": "",
+                "webhook_path": "",
+                "webhook_token_enabled": False,
+                "webhook_header_name": "X-Agent-Webhook-Token",
+                "webhook_body_json": "{}",
+                "can_save": False,
+                "can_run_now": False,
+                "plugin_blocked": True,
+                "control_plane_only": True,
+                "control_plane_notice": (
+                    "代码锁定的既有自动打卡任务；"
+                    "任务配置只读，但审批策略可以单独设置。"
+                ),
+                "approval_policy": {
+                    "available": True,
+                    "configured_mode": "REQUIRE_EACH_RUN",
+                    "effective_mode": "REQUIRE_EACH_RUN",
+                    "effective_status": "ACTIVE",
+                    "label": "每次运行审批",
+                    "summary": "项目已启用的全部可信入口每次运行都需要审批。",
+                    "can_full_auto": True,
+                    "policy_version": 3,
+                    "project_configuration_version": 7,
+                },
+            }
+        )
+        task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
+
+        self.assertNotIn("data-automation-toggle", task_html)
+        self.assertNotIn("data-run-now", task_html)
+        self.assertNotIn("data-settings-toggle", task_html)
+        self.assertNotIn("data-schedule-stack", task_html)
+        self.assertIn("任务配置只读，但审批策略可以单独设置", task_html)
+        self.assertIn("当前任务：已启用", task_html)
+        self.assertIn("每次运行审批", task_html)
+        self.assertIn("保存权限", task_html)
+        self.assertIn("全部可信入口每次运行都需要审批", task_html)
+        self.assertNotIn("EXACT_SCHEDULE_EXEMPT", task_html)
+        self.assertNotIn("policy_hash", task_html)
 
     def test_missing_required_resources_render_resource_editor(self):
         html = self._render(

@@ -12,9 +12,13 @@
 - 这个脚本是标准发布入口，默认 `auto` 模式会自动判断发布 `agent`、`console` 或两者一起发布，并执行远端健康检查。
 - 只有在用户明确要求 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等特殊参数时，才偏离这条默认命令。
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
+- 当前 Linux/ECS 发行明确不包含 Windows Worker/Tray：Agent 不装载其签名密钥、transport 或路由，发布器不以 Worker mTLS、服务端身份或 dispatcher readiness 阻断其余服务端插件。版本化 `deploy/nginx/boyi-worker-mtls.conf` 仅保留为未来重新启用时的安全合同；重新启用必须在同一受审提交中恢复精确 mTLS location、身份验证、发布预检和健康门禁，不得通过环境变量旁路打开。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
-- Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的临时材料恢复旧环境和源码。健康检查成功后必须立即删除临时回滚材料、持久发布备份和所有非当前虚拟环境，ECS 最终只保留一个运行环境。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
+- `scripts/automation_project_resource_preflight.py` 封装迁移 018 的八项 required-existing 资源只读前检；`scripts/automation_project_schedule_identity_preflight.py` 从共享迁移清单构造 71 项历史计划任务身份并仅在 018 待执行时做只读前检，其中 R7 发车身份只供迁移审计且不进入当前发行或执行面；`scripts/automation_project_release_manifest_preflight.py` 在 018 应用后独立核验 committed generation、typed schedule、14 条 deferred R7、一次性项目策略 marker 与不可变证据链，插件升级历史的六键/七键元数据证据由 `scripts/automation_project_plugin_policy_history.py` 严格校验；首次切换必须精确得到 71 行/68 启用/16 策略，后续切换按当前 committed 配置和历史 marker 校验；`scripts/automation_plugin_install_ownership_preflight.py` 只读输出首方签名包的安全不可变身份并在内部核验确定性安装根，不得输出数据库元数据或绝对路径；`run_migrations.py` 仅通过脚本同目录 exact-path loader 绑定这些公开检查函数，loader 必须完整恢复临时模块及 `shared` 命名空间，禁止裸导入或修改全局 `sys.path`。
+- 标准发布器的计划写窗口同时读取旧任务级精确豁免和项目化 `automation.<automation_id>.run` 计划；项目化计划必须精确绑定启用项目、当前 committed generation、有效项目策略与签名 generation 中的治理动作类型，只对完全自动/遗留定时授权的外部写、财务写和破坏性动作建立发布窗口，结构或绑定不闭合时 fail closed。紧急计划窗口覆盖只能由本地显式 `-EmergencyUserAuthorizedScheduledWindowOverride` 开关发起，远端仅接受代码内固定授权参数；该覆盖只跳过两次计划任务临近时间检查，必须额外先证明 protected writes 为 0，且不得旁路其余预检、备份、服务静默、回滚或健康门禁。首次升级前的旧 scheduler 不会动态读取 release hold，因此紧急路径必须记录 `residual_race_user_authorized=true`，在最终 running=0 检查后不夹入其他工作、立即停服务，并在停后再次检查；该 hold 只保证新进程以 held 状态启动，不能宣称动态暂停旧进程。
+- 插件安装目录的回滚清单固定以 `LC_ALL=C` 排序并用同一 locale 的 `comm --check-order` 比较；发布器必须在 mutation 前记录数据库已拥有的精确首方版本身份，停服务后复核身份未漂移，并将当时缺失、后由新运行时重建的确定性根保留给旧源码；只有不在该 ownership 证据中的本次新版本才可隔离移除。任一身份、缺失根或比较异常必须令 rollback incomplete、保持服务停止并保留恢复材料。发布器本地异常提示只能要求复核远端 stage，不能在未读取远端状态时声称恢复目录仍然存在。
+- Agent 依赖以 Python 3.10 的 `requirements.txt` 和精确 `requirements.lock` 为准；Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境。只有任一锁文件内容变化或环境校验失败时才构建新环境并原子切换。失败时使用当次暂存目录中的精确材料恢复旧环境和源码；成功时也必须保留当次远端回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。提交前执行 Ruff、工具清单、仓库卫生、内部 API 契约和运行时导入边界检查，GitHub Actions 会独立验证 Agent 与 Console 的锁文件。
 
 ## 本地 WSL 与 ECS 运行隔离
 
@@ -26,12 +30,41 @@
 ## HTTP 安全边界
 
 - Agent 固定默认监听 `127.0.0.1:9000`。
-- Console、TMS 工具和飞书内部调用必须发送 `X-Agent-Internal-Token`，其值来自 `AGENT_INTERNAL_API_TOKEN`；缺失配置必须显式失败。
+- `AGENT_INTERNAL_API_TOKEN` 只鉴别服务连接，不授予管理员角色。Console 管理员命令、审批和账号管理必须额外使用独立 `CONSOLE_AGENT_SIGNING_SECRET`，把 method、精确 path/query、原始 body 哈希、时间戳、一次性 nonce 与真实 MySQL 管理员会话快照绑定；Agent 忽略请求体伪造的 actor、roles、source 和 authenticated_by。
+- WorkflowRunner 为每个工具执行签发按工具名、target 和必要 action 绑定的短期能力。工具子进程必须剥离内部 API Token、Console 签名密钥、会话/Webhook/验证 Token，只能用该能力访问精确 `/tms/*`。
 - 只有 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*` 属于公开路径。统一策略在 `agent/http_security.py`，不得在各路由重复实现。
 - 所有日志和持久化审计通过 `shared/redaction.py` 脱敏；原始请求体、密码、Token、Cookie 和 Authorization 不得落盘。
 - `agent/agent/` 不得导入 `tools` 或 `feishu`；直接工具执行器和飞书告警回调统一在 `main.py` 注入，TMS 会话事件通过 `shared/runtime_events.py` 发布。
-- `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。
+- 飞书、Webhook、Phase 7、客服与回单入口只能向 Command Gateway 提交命令；旧 `/tms/*` 写入口必须提供稳定幂等键并映射到精确工具。Phase 7 签收和到货统计 Webhook 的融辉账号由受信适配器固定绑定代码批准的 `ronghui_default`，兼容旧调用方省略账号，但拒绝任何账号覆盖。底层 TMS target 只接受 WorkflowRunner 为当前工具签发的短期执行能力，宽泛 `tms_query` 不得承载写端点。
+- 韵达/融辉活动原页不得在 Console 同源上下文执行。仅独立 origin 的 `yunda_waybill_proxy`、`ronghui_waybill_proxy` 可在已验证 Console principal、精确 `proxy_prefix=/original/{provider}` 和受审路径/写入 allowlist 同时满足时调用；旧 `/ocr/*` live、回单前缀及 `yunda_waybill_entry` 仍固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，不得回退到同源代理。
+- 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
+- `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。`fetch_dispatch` 必须从显式所选账号的已认证会话 `userInfo` 唯一解析站点身份；缺失、多候选或调用参数与会话不一致时显式失败，不得硬编码或回落到默认站点码。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
+
+## 统一控制平面
+
+- `main.py` 是唯一组合根，负责注入 `CommandGateway`、Context/Planner/Validator/Policy、Approval、WorkflowRunner、ResultVerifier、Outbox Dispatcher、真实仓储和执行 adapter，并按 Runner -> Outbox 的顺序停机。
+- `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；通用仓储原语、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
+- 自动化插件的通用清单、签名校验、代际租约、Broker、安装/卸载与 subprocess 路由位于 `agent/automation_plugins/`；首方闭合 handler 门面位于 `agent/automation_plugins/first_party_handlers.py`，通用参数校验、脱敏与不透明证据编解码集中在 `agent/automation_plugins/first_party_handler_common.py`，不得在动作 handler 中复制；首方动作源码和提取状态位于 `first_party_automation_plugins/`，真实账号会话、浏览器、投影和飞书等闭合底层端口只可放在 `plugin_core_adapters/`。签名 payload 不得导入 `agent`、`shared` 或旧 whole-tool 入口，只能调用清单精确声明的 `(operation, action)`；账号 ID 只留在 Python 代际 side-channel，JSON 结果统一使用 binding-set proof。版本切换只把新租约原子指向新 generation，旧租约排空后才删除旧字节；缺少真实页面、独立写后验证或字段来源证据的动作必须保持 fail closed，当前逐动作状态以 `first_party_automation_plugins/MIGRATION_MATRIX.md` 为准。
+- 自动化插件的签名工件、desired/committed generation、Windows Service/Tray、两阶段卸载和发布健康门禁详见 `docs/automation_plugin_platform.md`；首方生产集合必须由 `scripts/build_first_party_plugin_release.py` 从同一提交一次性构建并完整预检。仅当上一版签名 ZIP 与当前受审 payload 逐文件完全一致时，才可用公共信任根走 `--reuse-artifact-root` 复用不可变 ZIP；payload 漂移必须提升插件版本并重新签名。当前只打包迁移矩阵标为 `RUNNABLE` 且同时进入代码 allowlist 的 Linux/ECS 动作；`BLOCKED` 动作即使存在 payload 也不得进入 bootstrap、Catalog、Broker 或健康计数。本轮还精确排除两个 R7 打卡动作，排除项不得阻断其余服务端插件。
+- `scripts/first_party_release_scope.py` 以 AST 读取上述代码 allowlist，不导入 payload；本地发布只复制 allowlist 包，远端编译前重验 staged 包集合。CI 只以该集合的首方源码/源码测试阻断当前发行，`BLOCKED` 包进入独立非阻断审计；release-scope、签名、Catalog/Broker 禁入与共享核心测试仍是阻断门禁，禁止 whole-tool 或旧源码回退。
+- Windows Worker/Tray 的未来设计源码位于 `windows_worker_host.py` 和 `agent/windows_worker/{tray_host.py,tray_ipc.py,installer.py,manage_installation.ps1}`，但整套运行面当前发行禁用且不参与健康门禁。重新启用后，安装仍不得启动进程、读取密钥或联网；卸载先正常停机并在其他 active job/未知写时拒绝，且不自动删除本地 state/package/DPAPI 材料。未注入闭合 action adapter 时必须返回 `TRAY_ACTION_ADAPTER_UNAVAILABLE`，禁止任意 subprocess/旧 whole-tool 回退。
+- 自动化插件管理面位于 `agent/automation_plugins/management_api.py`、`management.py`、`management_repository.py` 与 `binding_resolver.py`：浏览器 DTO 必须闭合且身份只取签名 Console principal，生命周期/配置写只允许 `super_admin`；账号、资源和命名设备只精确匹配，不用默认或首项兜底。原始签名 ZIP 必须以 `0600` 常规文件复制进不可变 installed 版本目录，Worker 仅按 plugin/version/digest 安全读取；升级必须以 request UUID 在同一 UoW 注册目标版本、推进 desired generation、撤销旧授权，旧 committed generation 保持执行至新代原子切换，严禁覆盖当前版本或靠重启清场。
+- 首方启动 bootstrap 除补齐缺失实例外，还必须把仍指向较旧版本的保留实例按本次签名发布自动推进到目标版本；管理员配置、账号/资源绑定、入口空集、定时与权限模式保持不变，较新实例绝不降级。旧不可变包只为尚未排空的 generation lease、审计和可恢复回滚保留，不得继续作为活动 Catalog 版本。交互选择、预览指纹、客服复核引用和财务启动标记等代码拥有字段必须由精确首方身份声明、进入合同哈希并由 Agent 规范化，Console 不得让用户编辑或因其 Schema 形状阻断整个配置表单。
+- Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
+- 插件包只安装动作并声明支持的调度能力，不携带 cron 或实际执行时刻。定时由安装后的项目实例在系统自动化设置中配置，并与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源、定时和权限。
+- 飞书插件直达入口由 `agent/orchestration/automation_project_entrypoints.py` 提供，并在 `feishu/message_handler.py` 通过组合根注入：文本、菜单与 pending 只能按 committed generation 中唯一的 `feishu_route.route_key` 构造 typed invocation，重复别名、多候选、账号覆盖或缺少稳定事件 ID 均 fail closed。账号只来自项目实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入，通用 Command/LLM 不得伪造项目上下文。
+- Run/Work Item 状态转换必须走模型允许表和版本 CAS。登录恢复、补充信息恢复原 Run；`PARTIAL` 或终态失败创建关联新 Run。第三方/财务写的未知结果必须 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，除非存在精确读后 reconciliation。
+- Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
+- 计划固定 Schema v1，计划哈希必须覆盖上下文、目录哈希、工具版本、完整参数/账号、实际影响、Evidence 与写后条件。未决定的 `PENDING` 审批须在 15 分钟内决定；一旦在期限内成为 `APPROVED`，runner hold/停机不得仅因原截止时间经过而作废，恢复执行时仍须重算计划，变化则使旧批准失效并生成新轮次。
+- `tools/registry.yaml` 的每项治理字段都必填；宽泛 `tms_query` 和 `feishu_operation` 不向 LLM 开放，破坏性通用飞书操作禁用。`approval.mode: schedule_allowlist` 只表示该工具具备进入任务级免审设置的资格，不是固定白名单或自动授权。
+- 迁移 `019` 保留生产已执行的 generation lease / Run 绑定原始字节；迁移 `020` 将所有现有 `REQUIRE_EACH_RUN` / `LEGACY_SCHEDULE_ONLY` 项目一次性改为 `PROJECT_FULL_AUTO` 并记录不可变审计。迁移 `021` 只恢复当前策略仍为 `PROJECT_FULL_AUTO` 的 typed `WAITING_APPROVAL` Run。迁移 `022` 只在最新不可变事件严格闭合为旧凭据安全降权或七键插件 `PLUGIN_VERSION_CHANGED` 降权时恢复持久完全自动；迁移 `024` 仅对原始六键 `PLUGIN_UPGRADE_STAGED` canonical 元数据与对应策略事件均严格闭合的旧插件降权执行同类修复，二者互不放宽并唤醒对应 typed Run。插件事件本身不能授予完全自动，较新的管理员事件永远优先。迁移 `023` 将历史重复 `ACTIVE` 故障安全退回 `QUEUED`、重置可证明的原始 Outbox 以重新通知，再以数据库唯一键保证每个绑定最多一条 `ACTIVE`；恢复 DML 必须显式事务化。新安装与首次 bootstrap 后也默认完全自动。该模式是持久化管理员意图，不绑定某代 contract hash，配置、插件代际或凭据变化只让 runtime/账号校验进入同步或不可运行状态，不得静默改写为逐次审批。管理员后续仍可显式选择 `REQUIRE_EACH_RUN`。
+- `enabled_entrypoints` 是签名入口清单的任意子集（允许空集）。关闭 Console/Scheduler/飞书/Webhook 必须由后端硬阻断；关闭 Scheduler 时保留时间配置但提交代际只物化禁用任务。飞书超级管理员通过 10 分钟单次绑定码关联 Console 账号；决定事务内须再次锁定并实时复核绑定、账号启用状态与 `super_admin` 角色。审批经事务 Outbox 串行推送，精确回复 `1` 批准、`2` 驳回；纯队列按 Binding→Delivery，加锁涉及决定/过期时固定为 Run（如有）→Approval→按 ID 排序的 Binding→Delivery，已持单 Binding 的失效清理只能推进该队列。数据库约束每个绑定最多一条 `ACTIVE`。Run 必须先进入 `WAITING_APPROVAL` 才能提交 requested Outbox；未决定审批的下次调度时间固定为其 `expires_at`，不能每 5 秒重抓。决定、策略、配置或插件代际变化必须按 Run→Approval 锁序立即置为可调度并在提交后唤醒 Runner；审批创建提交后还必须再次读取当前策略，废止夹在首次评估与创建之间已过时的新审批。飞书投递发现当前 ACTIVE 已失效时必须自动跳过并推送下一条，避免 409、死锁、丢失唤醒或队列饥饿。
+- 已停在 `WAITING_APPROVAL` 的 Run 若在重新领取时发现当前持久化策略已经不再要求审批，必须使旧审批失效并通过 Run CAS 恢复原计划，不能继续消费旧批准或永久停留；若计划本身变化则仍按新计划与当前策略重新验证。
+- 账号凭据保存/清除前必须原子撤销所有显式引用、以及财务同步等代码声明的隐式账号依赖对应的精确定时免审并写审计/Outbox；账号级 MySQL 执行锁必须让凭据变更与全部非终态受保护写 Run 串行化，活动 Run 检查、锁获取或撤权失败时禁止改凭据。项目级 `PROJECT_FULL_AUTO` 不得随凭据变化改写，账号或登录态不闭合由运行前校验阻断。每个受保护写步骤在同一账号锁内重新评估当前策略并提交 `RUNNING`；免审已失效时原子回到 `WAITING_APPROVAL`，已开始的写只 reconcile，未知结果不重放。人工 terminal retry 只允许原计划全为 read/compute；任何写计划必须重新提交 Command 并重新策略评估/审批，不得复制 Scheduler 身份或豁免重放。
+- 发布器必须在 mutation 前捕获 `014`/`016`/`017`/`018` 与各 bootstrap marker 原状态，停服务前后阻断 `RUNNING`/`VERIFYING` 的受保护写；失败仅按本次发布状态逆序恢复项目策略 bootstrap、`018`、旧任务 bootstrap、`017`、`016`、`014`。新 Agent 必须带发布标记以 paused 状态装载 Scheduler，并让 WorkflowRunner 保持 held、不领取 Run；identity smoke、post-018 项目 manifest 和依赖记录全部通过后，签名接口才先恢复并确认两者均可运行，最后删除匹配本次 SHA 的 marker。marker 删除是发布提交点；删除前异常/进程退出保留 marker，下次启动继续 hold，响应丢失后的重复激活必须幂等完成。激活请求发出后不得自动回滚可能已经启动的任务。
+- 打卡的 `clock_in_dual` 为 v1.1 精确账号/会话配置的外部写：每次提交 ACK 后必须通过 `FIND_REACH_OR_LEAVE_PORT_DETNEW` 做独立新鲜读回，并唯一匹配网点、操作类型、结果类别、时间与 GUID/ROW_ID；零条、多条、不完整或不可达均记为未知写且禁止重试。财务启动只继承已持久化的财务任务策略，不得以启动补拉绕过审批。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
+- 每日应签与客服问题件只读试点通过 `pilot_projection.py` 投影；每次采集（包括来源不完整或详情复核失败）都必须保存 COMPLETE/INCOMPLETE 影子 Evidence。客服旧口径集合必须从现有账号选择与站点过滤规则独立计算，不能从新集合反推。首页保持旧口径，直至连续三个完整业务日影子集合、来源完整性和差异证据满足切换标准。
 
 ## 快速定位入口
 
@@ -48,6 +81,7 @@
 | OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
 | 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
+| 自动化插件平台 | `agent/automation_plugins/`、`first_party_automation_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/` | `docs/automation_plugin_platform.md`、`first_party_automation_plugins/README.md`、`first_party_automation_plugins/MIGRATION_MATRIX.md` | 当前发行仅启用矩阵与代码 allowlist 双重许可的 Linux/ECS 动作；Windows Worker/Tray 与 R7 打卡延后 |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
 | 通用规范 | — | `docs/common/` | 活跃 |
 
@@ -141,9 +175,8 @@ docs/
 - 本地入口：`http://127.0.0.1:8765/`
 - 实时消息监控大盘：首页 `/`，Console 通过 `/monitoring/summary`、`/monitoring/stream`、`/monitoring/detail-link` 代理 Agent `/internal/v1/admin/monitoring/snapshot` 和 `/internal/v1/admin/monitoring/detail-link`；Agent 只返回分类、数量、状态和非敏感原系统跳转标识。
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
-- 韵达录入页签：`http://127.0.0.1:8765/ocr?mode=yunda`，Console 同源 `/ocr/yunda/live/...` 转发 GET/POST/PUT/PATCH/DELETE 到 Agent `/tms/yunda_waybill_proxy`，Agent 使用 `yunda` 登录态代理韵达原始 `kyinms.yunda56.com/ky_inms/public/...` 页面与接口，成功保存后由 Console 写入本地 `waybills`，并通过保存响应里的 `shipnow_autoprint_url` 打开 Console 本地热敏打印页。
-- 融辉录入页签：`http://127.0.0.1:8765/ocr?mode=ronghui`，Console 只加载当前录单模式 iframe，非当前模式原页延迟到切换后加载；同源 `/ocr/ronghui/live` 转发 GET/POST/PUT/PATCH/DELETE 到 Agent `/tms/ronghui_waybill_proxy`，Agent 使用账号管理中的大祥报价 `price_default` 登录态以浏览器 XHR 头解析菜单 id `1622` 的融辉原始 `/widget/home` 运单录入页，菜单或页面返回登录页时透传 `AUTH_REQUIRED`，融辉原页代理目标在调度层允许 12 并发以承接浏览器首屏接口突发，固定字典/站点/客户下拉 GET 初始化接口在 Agent 侧短缓存 5 分钟且忽略 `_` 缓存破坏参数，运行时代理脚本会同步移除这些安全初始化接口 URL 的 `_` 参数以启用 Chrome 缓存，不缓存生成单号、日期、保存提交或带关键字的地址查询，`/static/...` 大 JS/图片资源直连融辉原站以避免代理大文件，CSS 与字体资源保留同源代理以避免字体 CORS 导致 MiniUI 图标显示异常，静态 CSS/字体响应带 `Cache-Control: public, max-age=86400` 供 Console 保留，并把大祥报价登录态里的必要 `userInfo` 字段桥接到同源 Cookie，初始地图 iframe 延迟到目的地/派件网点地图相关操作时再加载，重写允许的业务页面/接口链接、JSON/XML/XHTML/text/SVG 响应 URL（含 `\/` 斜杠转义形式）、协议相对 URL、跳转响应头 `Location/Refresh`、移除响应头和 HTML meta CSP、静态和动态 meta refresh、静态和动态 `<base href>`、静态和动态 iframe `srcdoc`、静态和动态 `<object data>`、组件 `url/data-url/data-src/data-href/poster/background` 属性、动态样式 URL（`style/cssText/setProperty/insertRule`，含 `url(...)` 与 `@import`）、动态 XHR/fetch/jQuery Ajax/MiniUI `mini.open`/`mini.ajax`/Beacon/SSE/Worker/表单提交、DOM URL 属性（含图片、脚本、iframe、表单、媒体、source/track/embed/object、area/input image）、动态 HTML 注入入口（`innerHTML/outerHTML/insertAdjacentHTML/document.write/writeln`）、DOM 子树和 URL 属性变化扫描（MutationObserver）、`window.open` URL、`history.pushState/replaceState` URL 和静态 `location.assign/replace` 参数，成功保存后由 Console 记录请求/响应快照。
-- 统一回单管理：Console `/receipts/sync` 调 Agent `/tms/receipts_sync`，脚本位于 `agent/tms_runtime/scripts/receipts_sync.py`；融辉使用 `price` 登录态按方向请求 `FIND_SEND_RETURN_PROCESS`（寄方跟踪）或 `FIND_DISP_RETURN_PROCESS`（派方处理），并按处理记录 `FIND_TAB_PROCESS_RECORD` 继续解析附件：人工记录查 `FIND_TAB_PROCESS_RECORD_PATH`，系统生成记录按原页 `renderReplyFiles` 逻辑查 `FIND_TAB_PIC_SCAN_ALL`；韵达使用 `yunda` 登录态从实际回单页的 `#dg` datagrid 配置发现数据 URL 后拉取。返回给 Console 的数据只包含标准化回单字段、附件来源 URL/hash 和统计，不返回 Cookie、Token、密码、SSO 参数；Console 的 `/receipts/yunda/live/...`、`/receipts/ronghui/live/...` 原页模式继续复用现有 waybill proxy 脚本；Console 回单详情补齐可调用 `/tms/query_waybill_detail`，韵达飞书兜底走 `tools/feishu_cli_tool.py` 的 `feishu_operation.search_records`，只用 `records/search` + `运单编号` 等值筛选查询单票业务字段，不分页扫全表；Console 审核按钮点击后先 POST `/receipts/{id}/audit` 调 Agent `/tms/receipts_audit`，融辉已按真实原页 `saveBtn -> saveData()` 抓取并直连 `/dataOperation/saveTables`，提交前会从“寄方回单跟踪/派方回单处理”菜单 URL 取得 `authenticationKey/pageId` 请求头，否则融辉会返回“非法的请求”；本地记录缺处理记录 `GUID` 时会先按同票查询 `FIND_TAB_PROCESS_RECORD` 取得唯一处理记录，再提交 `TAB_PROCESS_RECORD_UPT` 的 `AUDIT_STATUS=2/3`，使用 `price` 登录态 `userInfo` 补审核网点/人员字段；缺登录人字段、处理记录无法唯一确定或韵达未适配时显式失败或返回 `AUDIT_CAPTURE_REQUIRED`，才由前端隐藏同源原页 iframe 兜底执行并通过 `execution=original_page` 回写本地状态，不打开可见原页；审核不通过仍先展示原因/确认，再走同一后台执行链路；不得猜未抓实的第三方审核接口。
+- 韵达/融辉录入的旧同源兼容 URL 不创建第三方活动 iframe；`/ocr?mode=yunda`、`/ocr?mode=ronghui` 仍回到博益本地录单壳，`/ocr/yunda/*` 与 `/ocr/ronghui/live/*` 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。独立 origin 仅通过 `/original/yunda`、`/original/ronghui` 的已验证 Console principal 和受审 allowlist 访问，不能改回同源预填代理。
+- 统一回单管理：Console `/receipts/sync` 与 `/receipts/{id}/audit` 只向 `/internal/v1/commands` 提交精确的 `receipts_sync` / `receipts_audit` 计划，浏览器 UUID 形成 Console 幂等键；提交阶段不得 upsert 同步结果或提前修改本地审核状态。`receipts_audit` 由高风险审批后的 WorkflowRunner 执行并读后核验；缺关键字段、多候选、登录失效、韵达未适配或写后状态不一致均显式失败。旧隐藏 iframe 自动写入兜底已删除，两个回单活动原页前缀对所有方法固定返回 410；页面只保留本地照片、证据和控制平面审核。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
 - 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；账号系统按真实外部系统展示，大祥报价、自提问题件、大祥S站等通过 TMS融辉账号用途区分。所有账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用；协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不得影响凭据和状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。大祥报价显式使用 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一状态，不再写死特殊 `price` 身份；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，只能在页面保存完整凭据后开启；账号管理不得把环境变量凭据计入或展示为已保存凭据。
 - 启动脚本：`console/start_backend.sh`
@@ -156,10 +189,23 @@ docs/
 
 ## 分批差错及问题件
 
-- 飞书文本仅精确指令“分批”触发 `split_pending_problem_upload`；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
-- 交互为 dry-run 编号列表 → 首次回复“确认”直接执行全部候选；数字/多选/区间只选择对应运单，回显选择后再回复“确认”正式执行。两个 pending 阶段均为 10 分钟，重新发送“分批”会丢弃旧选择并刷新列表。
+- 飞书文本仅精确指令“分批”触发低风险只读工具 `preview_split_pending_problems`；自提问题件预览使用 `preview_self_pickup_problems`。两条封装器只接受显式 `account_id` 并强制旧实现 `dry_run=true`，任何写入参数都会被拒绝；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
+- 交互仍可生成 dry-run 编号列表和选择快照，但正式第三方写当前固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`：在按每个运单从目标系统读回问题件/差错记录并形成权威写后 Evidence 之前，不得因用户确认而执行。
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
 - `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉差错或问题件上报。
+- `sync_arrival_stats` 的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1，历史回填必须使用独立扫描同步工具。
 - MySQL 表 `split_pending_problem_items` 分别保存 `complaint_status` 与问题件 `upload_status`；同类型刷新保留历史步骤结果，完整成功单隐藏，失败或未完成步骤继续显示，类型变化才重置。
-- 正式模式必须同时提供 `selected_bill_codes` 与 `preview_fingerprint`；执行前重读来源和状态，指纹变化整批零业务写入。正式刷新全部当前未齐 Sheet/MySQL 快照，但融辉只处理所选运单。
-- `0 < 已到 < 应到` 先上报“分批”差错，成功或重复后登记“少货/分批”问题件；差错失败跳过该票问题件并继续后续运单。`已到=0` 只登记“有发未到”问题件。
+- 历史正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 仅保留为离线/测试契约，不构成控制平面可执行条件；不得以工具返回的 `saved/success` 代替第三方读后验证。
+- 历史业务顺序为 `0 < 已到 < 应到` 先差错、再问题件，`已到=0` 只登记“有发未到”问题件；该写链在新的权威读后验证器落地前保持停用。
+
+## 每日应签共享台账
+
+- R13、实际到货、问题件与 TMS 主单签收必须完整分页并写入 `010_daily_sign_ledger.sql` 建立的权威台账；R13 状态只作候选诊断，只有真实主单“签收”事件可关闭事项。
+- 必须显式传入独立的 R13 来源账号和唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
+- TMS 签收长历史查询按连续无重叠的 31 天窗口分片，校验汇总/明细总量并按主键去重；已离开当前 R13 的候选使用 `013_daily_sign_verification_state.sql` 按 1/3/7 天持久化退避精确复核。
+- 来源不完整、冲突无法核验、字段缺失或账号不唯一必须显式阻塞；不得发布新展示口径覆盖上一轮完整结果。
+
+## 财务同步上线范围
+
+- 当前生产只启用共享来源注册表中的融辉三个财务角色；韵达适配器保留但不得调度、展示或计入当前告警。
+- 每日 00:10 同步前一完整业务日并回扫 7 天；逐笔汇总、平台汇总与 signed-net 必须一致，任何不一致都使 Run 失败，退出码 0 不能代替业务验证。

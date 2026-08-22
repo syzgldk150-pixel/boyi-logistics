@@ -5,13 +5,43 @@
 {% block subtitle %}管理员账号与登录安全{% endblock %}
 
 {% block content %}
+{% if is_super_admin %}
+<section class="panel account-admin-panel" aria-labelledby="feishu-approval-binding-title">
+  <div class="account-admin-toolbar">
+    <div class="account-admin-title">
+      <strong id="feishu-approval-binding-title">飞书审批身份</strong>
+      <span class="status-pill {{ 'status-pill--success' if feishu_binding.bound else 'status-pill--muted' }}">
+        {{ '已绑定' if feishu_binding.bound else '未绑定' }}
+      </span>
+    </div>
+    <div class="account-row-actions">
+      <form action="/settings/accounts/feishu-approval/challenge" method="post">
+        <button class="primary-btn" type="submit">生成一次性绑定码</button>
+      </form>
+      {% if feishu_binding.bound %}
+      <form action="/settings/accounts/feishu-approval/revoke" method="post">
+        <button class="ghost-btn" type="submit">撤销绑定</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  <p class="muted-copy">绑定后，飞书身份实时继承当前 Console 超级管理员权限；停用、降权或解绑立即失效。</p>
+  {% if binding_challenge %}
+  <div class="automation-plugin-block" role="status">
+    <i data-feather="message-square"></i>
+    <span>请在 10 分钟内向机器人发送：<strong>{{ binding_challenge.command }}</strong>。绑定码仅显示本次且只能使用一次。</span>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="panel account-admin-panel account-admin-compact" aria-label="管理员账号列表">
   <div class="account-admin-toolbar">
     <div class="account-admin-title">
       <span class="account-count">{{ users|length }} 个账号</span>
     </div>
 
-    <form class="account-create-form" action="/settings/accounts/create" method="post">
+    {% if is_super_admin %}<form class="account-create-form" action="/settings/accounts/create" method="post">
       <input class="review-input" type="text" name="username" autocomplete="off" placeholder="账号" aria-label="账号" required>
       <input class="review-input" type="text" name="display_name" autocomplete="off" placeholder="显示名称" aria-label="显示名称">
       <input class="review-input" type="password" name="password" autocomplete="new-password" minlength="8" placeholder="初始密码" aria-label="初始密码" required>
@@ -19,7 +49,7 @@
         <i data-feather="user-plus"></i>
         <span>新增</span>
       </button>
-    </form>
+    </form>{% endif %}
   </div>
 
   <div class="account-table-wrap">
@@ -27,6 +57,7 @@
       <thead>
         <tr>
           <th>账号</th>
+          <th>角色</th>
           <th>状态</th>
           <th>最近登录</th>
           <th>操作</th>
@@ -42,12 +73,25 @@
             {% endif %}
           </td>
           <td>
+            {% if is_super_admin %}
+            <form action="/settings/accounts/{{ user.id }}/role" method="post">
+              <select class="review-input compact-input" name="role" aria-label="管理员角色" onchange="this.form.submit()">
+                <option value="admin" {% if user.role == 'admin' %}selected{% endif %}>普通管理员</option>
+                <option value="super_admin" {% if user.role == 'super_admin' %}selected{% endif %}>超级管理员</option>
+              </select>
+            </form>
+            {% else %}
+            <span>{{ '超级管理员' if user.role == 'super_admin' else '普通管理员' }}</span>
+            {% endif %}
+          </td>
+          <td>
             <span class="status-pill {{ 'status-pill--success' if user.is_active else 'status-pill--muted' }}">
               {{ '已启用' if user.is_active else '已停用' }}
             </span>
           </td>
           <td>{{ user.last_login_at or '-' }}</td>
           <td>
+            {% if is_super_admin %}
             <div class="account-row-actions">
               <form action="/settings/accounts/{{ user.id }}/toggle" method="post">
                 <input type="hidden" name="target_active" value="{{ 0 if user.is_active else 1 }}">
@@ -64,11 +108,14 @@
                 </button>
               </form>
             </div>
+            {% else %}
+            <span>只读</span>
+            {% endif %}
           </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="4" class="account-empty">暂无管理员账号。</td>
+          <td colspan="5" class="account-empty">暂无管理员账号。</td>
         </tr>
         {% endfor %}
       </tbody>

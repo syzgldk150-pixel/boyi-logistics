@@ -15,15 +15,13 @@ class DocumentModeSwitchTemplateTests(unittest.TestCase):
             flags=re.S,
         )
 
-        self.assertEqual(4, len(switches))
+        self.assertEqual(2, len(switches))
         for switch in switches:
             labels = re.findall(r'<a [^>]*data-mode-link="([^"]+)"[^>]*>(.*?)</a>', switch, flags=re.S)
             compact_labels = [(mode, re.sub(r"<[^>]+>", "", label).strip()) for mode, label in labels]
             self.assertEqual(
                 [
                     ("manual", "\u535a\u76ca"),
-                    ("yunda", "\u97f5\u8fbe"),
-                    ("ronghui", "\u878d\u8f89"),
                     ("ocr", "OCR"),
                 ],
                 compact_labels,

@@ -72,6 +72,38 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("[]", payload["schedule_times_json"])
         self.assertIn("arrive_list", override)
 
+    def test_plugin_submission_discards_browser_tool_params_accounts_and_tool_name(self):
+        app = self._make_app(
+            {
+                "task_id": "finance_action_east",
+                "task_mode": "manual",
+                "name": "华东财务同步",
+                "tool_name": "browser.supplied.tool",
+                "cron_expression": "* * * * *",
+                "schedule_times_json": '["00:01"]',
+                "tool_params_json": '{"token":"browser-secret","account_id":"legacy"}',
+                "account_role__account_id": "legacy",
+                "plugin_account_role__finance_quote_source": "browser-account",
+                "project_plugin_instance": "true",
+                "enabled": "on",
+            }
+        )
+
+        payload, _override, error_message = app._collect_automation_task_submission(
+            None,
+            allow_missing_schedule=True,
+        )
+
+        self.assertEqual("", error_message)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertTrue(payload["project_plugin_instance"])
+        self.assertEqual("automation.finance_action_east.run", payload["tool_name"])
+        self.assertEqual({}, payload["tool_params"])
+        self.assertEqual("{}", payload["tool_params_json"])
+        self.assertEqual([], payload["schedule_times"])
+        self.assertEqual([], payload["cron_expressions"])
+
     def test_save_still_requires_schedule_for_scheduled_task(self):
         app = self._make_app(
             {
@@ -108,7 +140,7 @@ class AutomationSubmissionTests(unittest.TestCase):
             missing_required,
         )
 
-    def test_daily_sign_requires_r13_credentials_resource(self):
+    def test_daily_sign_no_longer_requires_legacy_r13_credentials_resource(self):
         bindings = build_automation_resource_bindings("daily_sign", {})
 
         missing_required = {
@@ -128,7 +160,10 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("sync_yunda_send_waybills", workflow["tool_name"])
         self.assertEqual("scheduled", defaults["task_mode"])
         self.assertEqual(False, defaults["enabled"])
-        self.assertEqual("", defaults["tool_params"]["target_date"])
+        self.assertEqual(
+            {"account_id": "yunda_default", "ensure_fields": False},
+            defaults["tool_params"],
+        )
         self.assertNotIn("session_profile", defaults["tool_params"])
         self.assertNotIn("default_schedule_times", workflow)
         self.assertEqual(1800, AUTOMATION_RUN_TIMEOUTS["sync_yunda_send_waybills"])
@@ -139,6 +174,90 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual(False, bindings[0]["required"])
         self.assertEqual(False, bindings[1]["required"])
 
+    def test_catalog_defaults_match_production_scheduler_contract(self):
+        send_order = AUTOMATION_WORKFLOW_BY_ID["send_order"]
+        daily_sign = AUTOMATION_WORKFLOW_BY_ID["daily_sign"]
+
+        self.assertEqual(
+            {"account_id": "price_default"},
+            send_order["default_tool_params"],
+        )
+        self.assertEqual(
+            "price_default",
+            send_order["account_roles"][0]["default_account_id"],
+        )
+        self.assertEqual(
+            {
+                "r13_account_id": "r13_default",
+                "account_id": "ronghui_daxiang_s",
+                "days": 7,
+            },
+            daily_sign["default_tool_params"],
+        )
+        tms_role = next(
+            role
+            for role in daily_sign["account_roles"]
+            if role["field"] == "account_id"
+        )
+        self.assertEqual("ronghui_daxiang_s", tms_role["default_account_id"])
+        self.assertEqual(2, len(daily_sign["account_roles"]))
+
+    def test_clock_catalog_is_read_only_and_not_tms_query(self):
+        for task_id in ("clockin_daxiang", "clockin_daxiang_s"):
+            workflow = AUTOMATION_WORKFLOW_BY_ID[task_id]
+            self.assertEqual("clock_in_dual", workflow["tool_name"])
+            self.assertTrue(workflow["control_plane_only"])
+            self.assertEqual("定时任务", workflow["trigger_label"])
+            self.assertIn("参数仍只读", workflow["note"])
+            self.assertIn("审批策略由超级管理员单独配置", workflow["note"])
+
+    def test_clock_submission_is_rejected_before_save_or_run(self):
+        for task_id in ("clockin_daxiang", "clockin_daxiang_s_1833"):
+            with self.subTest(task_id=task_id):
+                app = self._make_app(
+                    {
+                        "task_id": task_id,
+                        "task_mode": "scheduled",
+                        "name": "legacy clock",
+                        "tool_name": "tms_query",
+                        "cron_expression": "33 18 * * *",
+                        "schedule_times_json": "[\"18:33\"]",
+                        "tool_params_json": "{}",
+                        "enabled": "on",
+                    }
+                )
+
+                payload, _override, error_message = (
+                    app._collect_automation_task_submission(
+                        None,
+                        allow_missing_schedule=True,
+                    )
+                )
+
+                self.assertIsNone(payload)
+                self.assertIn("时间、账号与参数仍由代码锁定", error_message)
+                self.assertIn("不能修改任务配置", error_message)
+                self.assertIn("可以单独设置审批策略", error_message)
+
+    def test_direct_clock_persist_is_fail_closed_without_repository_write(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app.repository = SimpleNamespace(
+            replace_scheduled_task_group=lambda **kwargs: self.fail(
+                "control-plane-only task reached persistence"
+            )
+        )
+
+        result = app._persist_automation_task(
+            {
+                "task_id": "clockin_daxiang",
+                "task_mode": "scheduled",
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("时间、账号与参数仍由代码锁定", result["error"])
+        self.assertIn("可以单独设置审批策略", result["error"])
+
     def test_delivery_status_workflow_is_scheduled_scan(self):
         workflow = AUTOMATION_WORKFLOW_BY_ID["delivery_status"]
         defaults = build_virtual_task_defaults("delivery_status")
@@ -146,7 +265,7 @@ class AutomationSubmissionTests(unittest.TestCase):
 
         self.assertEqual("sync_delivery_status", workflow["tool_name"])
         self.assertEqual("scheduled", defaults["task_mode"])
-        self.assertEqual({}, defaults["tool_params"])
+        self.assertEqual({"account_id": "ronghui_default"}, defaults["tool_params"])
         self.assertEqual(1800, AUTOMATION_RUN_TIMEOUTS["sync_delivery_status"])
         self.assertIn(
             "phase7.delivery_status_bitable",
@@ -154,8 +273,16 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
         self.assertEqual(True, bindings[0]["required"])
 
-    def test_send_order_exposes_optional_target_date_field(self):
+    def test_send_order_uses_closed_default_account_contract(self):
         defaults = build_virtual_task_defaults("send_order")
+        self.assertEqual({"account_id": "price_default"}, defaults["tool_params"])
+
+    def test_arrive_list_uses_closed_default_account_contract(self):
+        defaults = build_virtual_task_defaults("arrive_list")
+        self.assertEqual({"account_id": "ronghui_default"}, defaults["tool_params"])
+
+    def test_scan_codes_keeps_optional_target_date_field(self):
+        defaults = build_virtual_task_defaults("scan_codes")
         fields = {item["path"]: item for item in flatten_automation_fields(defaults["tool_params"])}
 
         self.assertEqual("", defaults["tool_params"]["target_date"])
@@ -175,7 +302,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("ronghui", automation_task_provider("self_pickup_problem_upload", workflow))
         self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["self_pickup_problem_upload"])
 
-    def test_daily_sign_account_roles_select_r13_and_detail_accounts(self):
+    def test_daily_sign_account_roles_select_r13_and_one_tms_account(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         tasks = [
             {
@@ -185,7 +312,7 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "tool_params_json": json.dumps(
                     {
                         "r13_account_id": "r13_ops",
-                        "detail_account_id": "ronghui_detail",
+                        "account_id": "ronghui_daxiang_s",
                     }
                 ),
             }
@@ -199,9 +326,9 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "is_default": True,
             },
             {
-                "account_id": "ronghui_detail",
+                "account_id": "ronghui_daxiang_s",
                 "system": "ronghui",
-                "name": "融辉详情账号",
+                "name": "TMS邵阳大祥站账号",
                 "is_active": True,
                 "is_default": False,
             },
@@ -229,13 +356,14 @@ class AutomationSubmissionTests(unittest.TestCase):
             ["r13_default", "r13_ops"],
             [item["account_id"] for item in roles["r13_account_id"]["options"]],
         )
-        self.assertEqual("ronghui_detail", roles["detail_account_id"]["selected_account_id"])
+        self.assertEqual("ronghui_daxiang_s", roles["account_id"]["selected_account_id"])
         self.assertEqual(
-            ["ronghui_default", "ronghui_detail"],
-            [item["account_id"] for item in roles["detail_account_id"]["options"]],
+            ["ronghui_default", "ronghui_daxiang_s"],
+            [item["account_id"] for item in roles["account_id"]["options"]],
         )
+        self.assertEqual({"r13_account_id", "account_id"}, set(roles))
 
-    def test_self_pickup_problem_upload_exposes_two_account_roles(self):
+    def test_uninstalled_legacy_task_exposes_roles_without_implicit_account_defaults(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         tasks = [
             {
@@ -273,9 +401,13 @@ class AutomationSubmissionTests(unittest.TestCase):
 
         roles = {item["field"]: item for item in tasks[0]["account_role_bindings"]}
         self.assertEqual("自提部账号", roles["account_id"]["label"])
-        self.assertEqual("ronghui_self_pickup_problem", roles["account_id"]["selected_account_id"])
+        self.assertEqual("", roles["account_id"]["selected_account_id"])
         self.assertEqual("大祥S站账号", roles["daxiang_s_account_id"]["label"])
-        self.assertEqual("ronghui_daxiang_s", roles["daxiang_s_account_id"]["selected_account_id"])
+        self.assertEqual("", roles["daxiang_s_account_id"]["selected_account_id"])
+        self.assertEqual(
+            {"ronghui_default", "ronghui_self_pickup_problem", "ronghui_daxiang_s"},
+            {item["account_id"] for item in roles["account_id"]["options"]},
+        )
 
     def test_fetch_accounts_marks_authenticated_session_without_credentials(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
@@ -463,6 +595,11 @@ class AutomationSubmissionTests(unittest.TestCase):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app.repository = SimpleNamespace(list_workflow_resources=lambda: [])
         app._is_ajax_request = lambda handler: True
+        app._control_plane_write_context = lambda handler: {
+            "actor": {"actor_type": "console_admin", "actor_id": "17", "roles": ["admin"]},
+            "actor_roles": ["admin"],
+            "source": "console",
+        }
         app._collect_automation_task_submission = lambda handler, allow_missing_schedule=False: (
             {
                 "task_id": "arrival_stats",
@@ -478,7 +615,8 @@ class AutomationSubmissionTests(unittest.TestCase):
         captured = {}
         app._send_json = lambda handler, status, payload: captured.update({"status": status, "payload": payload})
 
-        app._handle_automation_task_run_now(None)
+        handler = SimpleNamespace(headers={"X-Browser-Request-UUID": "request-1"})
+        app._handle_automation_task_run_now(handler)
 
         self.assertEqual(False, captured["payload"]["ok"])
         self.assertEqual("执行未开始", captured["payload"]["title"])
@@ -539,9 +677,19 @@ class AutomationSubmissionTests(unittest.TestCase):
             ]
         )
         app.automation_virtual_task_state = {}
+        console_principal = {
+            "actor_id": "17",
+            "roles": ["admin"],
+            "authenticated_by": "mysql_admin_session",
+        }
+        app._control_plane_read_context = lambda handler: {
+            "_console_principal": console_principal,
+        }
         app._agent_request = lambda *args, **kwargs: {"ok": False, "error": "timed out"}
         app._sync_task_runtime_from_latest_tool_log = (
-            lambda task_id, tool_name, since=None: (_ for _ in ()).throw(AssertionError("should not call agent logs"))
+            lambda task_id, tool_name, since=None, console_principal=None: (_ for _ in ()).throw(
+                AssertionError("should not call agent logs")
+            )
         )
         captured = {}
         app._send_json = lambda handler, status, payload: captured.update({"status": status, "payload": payload})

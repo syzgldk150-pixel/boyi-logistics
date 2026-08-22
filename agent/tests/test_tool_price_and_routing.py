@@ -7,7 +7,10 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(
             os.environ,
-            {"AGENT_INTERNAL_API_TOKEN": "test-internal-token"},
+            {
+                "AGENT_INTERNAL_API_TOKEN": "test-internal-token",
+                "AGENT_EXECUTION_CAPABILITY": "test-execution-capability",
+            },
             clear=False,
         )
         self.send_order_sql_patch = patch(
@@ -53,6 +56,63 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertEqual(["R0001", "R0002"], [row[0] for row in rows])
         self.assertEqual([("73901", 0, 1), ("73901", 1, 1), ("73901", 2, 1)], calls)
+
+    def test_fetch_dispatch_uses_selected_profile_and_session_user_context(self):
+        class Cookie:
+            name = "userInfo"
+            value = json.dumps(
+                {
+                    "loginUserName": "operator",
+                    "loginUserAccount": "account",
+                    "loginSiteName": "site",
+                    "loginSiteCode": "real-site-code",
+                }
+            )
+
+        session = Mock(cookies=[Cookie()])
+        auth = Mock()
+        auth.login_and_get_session.return_value = session
+        with (
+            patch("fetch_dispatch.TMSAuth", return_value=auth) as auth_type,
+            patch("fetch_dispatch.collect_dispatch_records", return_value=[]) as collect,
+        ):
+            result = fetch_dispatch.run_once({"session_profile": "selected-profile"})
+
+        self.assertEqual([], result)
+        auth_type.assert_called_once_with(profile="selected-profile")
+        self.assertEqual("real-site-code", collect.call_args.kwargs["login_site_code"])
+
+    def test_fetch_dispatch_rejects_missing_or_conflicting_session_identity(self):
+        with self.assertRaisesRegex(
+            fetch_dispatch.TMSAuthStateError,
+            "explicit account session profile",
+        ):
+            fetch_dispatch.run_once({})
+
+        class Cookie:
+            name = "userInfo"
+            value = json.dumps(
+                {
+                    "loginUserName": "operator",
+                    "loginUserAccount": "account",
+                    "loginSiteName": "site",
+                    "loginSiteCode": "real-site-code",
+                }
+            )
+
+        session = Mock(cookies=[Cookie()])
+        auth = Mock()
+        auth.login_and_get_session.return_value = session
+        with (
+            patch("fetch_dispatch.TMSAuth", return_value=auth),
+            self.assertRaisesRegex(fetch_dispatch.TMSAuthStateError, "does not match"),
+        ):
+            fetch_dispatch.run_once(
+                {
+                    "session_profile": "selected-profile",
+                    "login_site_code": "wrong-site-code",
+                }
+            )
 
     def test_default_http_service_urls_point_to_agent_tms(self):
         self.assertEqual(tms_tool.HTTP_SERVICE_URL, "http://127.0.0.1:9000/tms")
@@ -143,6 +203,38 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 sys.modules.pop("fetch_dispatch", None)
             else:
                 sys.modules["fetch_dispatch"] = original_fetch_dispatch
+
+    def test_dispatch_rebuilds_stale_script_auth_module_before_execution(self):
+        from agent.tms_runtime import dispatch
+
+        target_module_name = dispatch.TARGETS["fetch_dispatch"].module
+        auth_module_name = "agent.tms_runtime.scripts.login_manager"
+        target_module = importlib.import_module(target_module_name)
+        original_auth = target_module.TMSAuth
+        original_auth_module = sys.modules[auth_module_name]
+
+        class WrongAuth:
+            pass
+
+        stale_auth_module = types.ModuleType(auth_module_name)
+        stale_auth_module.TMSAuth = WrongAuth
+        stale_auth_module.__file__ = str(
+            Path(price_tool.PRICE_GET_MODULE).with_name("login_manager.py")
+        )
+        sys.modules[auth_module_name] = stale_auth_module
+        target_module.TMSAuth = WrongAuth
+        try:
+            fn = dispatch._load_callable(dispatch.TARGETS["fetch_dispatch"])
+            loaded_module = sys.modules[fn.__module__]
+            auth_module = sys.modules[loaded_module.TMSAuth.__module__]
+
+            self.assertIsNot(WrongAuth, loaded_module.TMSAuth)
+            self.assertTrue(Path(auth_module.__file__).resolve().is_relative_to(SCRIPTS_DIR))
+        finally:
+            sys.modules[auth_module_name] = original_auth_module
+            restored_target_module = sys.modules.get(target_module_name)
+            if restored_target_module is not None:
+                restored_target_module.TMSAuth = original_auth
 
     def test_price_tool_unwraps_agent_tms_response_data(self):
         class _Response:
@@ -1084,7 +1176,11 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             )
 
         self.assertEqual({"ok": True}, result)
-        self.assertIn("X-Agent-Internal-Token", captured["headers"])
+        self.assertNotIn("X-Agent-Internal-Token", captured["headers"])
+        self.assertEqual(
+            "test-execution-capability",
+            captured["headers"]["X-Agent-Execution-Capability"],
+        )
         self.assertEqual({"bill_codes": ["R0001"]}, captured["json"]["params"])
         self.assertNotIn("params", captured["json"]["params"])
         self.assertEqual(960, captured["json"]["timeout_sec"])
@@ -1121,6 +1217,15 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual([], result)
         self.assertEqual("r13", captured["account_key"])
 
+    def test_get_qianshou_uses_actual_sign_time_or_sign_site_as_sign_evidence(self):
+        self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signTime": "2026-08-11 16:54:54"}))
+        self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signSiteName": "长垣魏庄站"}))
+        self.assertFalse(
+            get_qianshou._has_confirmed_sign_signal(
+                {"dispTime": "2026-08-11 16:54:54", "signTime": "", "signSiteName": ""}
+            )
+        )
+
     def test_registry_removed_trigger_n8n_and_contains_sync_tools(self):
         registry_path = Path(__file__).resolve().parents[1] / "tools" / "registry.yaml"
         registry_text = registry_path.read_text(encoding="utf-8")
@@ -1144,7 +1249,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertIsNotNone(request)
         self.assertEqual("r7_arrival_checkin", request["tool_name"])
         self.assertEqual({}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_arrive_list_command_to_sync_tool(self):
         for text in ("执行一次arrivelist脚本", "同步到货清单", "拉取预到达清单", "arrive-list"):
@@ -1154,7 +1259,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 self.assertIsNotNone(request)
                 self.assertEqual("sync_arrive_list", request["tool_name"])
                 self.assertEqual({}, request["params"])
-                self.assertEqual("deferred", request["mode"])
+                self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_self_pickup_problem_command_to_preview(self):
         for text in (
@@ -1168,15 +1273,12 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 request = direct_tool_router.direct_tool_request_from_text(text)
 
                 self.assertIsNotNone(request)
-                self.assertEqual("self_pickup_problem_upload", request["tool_name"])
+                self.assertEqual("preview_self_pickup_problems", request["tool_name"])
+                self.assertEqual({}, request["params"])
+                self.assertEqual("automation_preview", request["mode"])
                 self.assertEqual(
-                    {"dry_run": True, "account_id": "ronghui_self_pickup_problem"},
-                    request["params"],
-                )
-                self.assertEqual("reply", request["mode"])
-                self.assertEqual(
-                    {"dry_run": False, "account_id": "ronghui_self_pickup_problem"},
-                    request["confirm_intent"]["execute_params"],
+                    {"dry_run": False},
+                    request["confirm_intent"]["dynamic_inputs"],
                 )
 
     def test_self_pickup_problem_preview_reply_hides_account_and_session_names(self):
@@ -1272,25 +1374,28 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertIsNotNone(request)
         self.assertEqual("sync_yunda_dispatch_forecast", request["tool_name"])
-        self.assertEqual({"session_profile": "yunda"}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual({}, request["dynamic_inputs"])
+        self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_yunda_send_waybills_command(self):
         request = direct_tool_router.direct_tool_request_from_text("韵达寄件运单管理")
 
         self.assertIsNotNone(request)
         self.assertEqual("sync_yunda_send_waybills", request["tool_name"])
-        self.assertEqual({"session_profile": "yunda"}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual({}, request["dynamic_inputs"])
+        self.assertEqual("automation_project", request["mode"])
 
         range_request = direct_tool_router.direct_tool_request_from_text(
             "韵达寄件运单同步从2026年5月6日到2026年5月16日"
         )
         self.assertIsNotNone(range_request)
         self.assertEqual("sync_yunda_send_waybills", range_request["tool_name"])
+        self.assertEqual({}, range_request["params"])
         self.assertEqual(
-            {"session_profile": "yunda", "start_date": "2026-05-06", "end_date": "2026-05-16"},
-            range_request["params"],
+            {"start_date": "2026-05-06", "end_date": "2026-05-16"},
+            range_request["dynamic_inputs"],
         )
 
     def test_direct_router_maps_send_order_range_command(self):
@@ -1300,8 +1405,12 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
         self.assertIsNotNone(request)
         self.assertEqual("sync_daily_send_orders", request["tool_name"])
-        self.assertEqual({"start_date": "2026-05-06", "end_date": "2026-05-16"}, request["params"])
-        self.assertEqual("deferred", request["mode"])
+        self.assertEqual({}, request["params"])
+        self.assertEqual(
+            {"start_date": "2026-05-06", "end_date": "2026-05-16"},
+            request["dynamic_inputs"],
+        )
+        self.assertEqual("automation_project", request["mode"])
 
     def test_direct_router_maps_tracking_commands(self):
         checks = [
@@ -2085,4 +2194,4 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 self.assertIsNotNone(request)
                 self.assertEqual("sync_scan_codes", request["tool_name"])
                 self.assertEqual({}, request["params"])
-                self.assertEqual("deferred", request["mode"])
+                self.assertEqual("automation_project", request["mode"])

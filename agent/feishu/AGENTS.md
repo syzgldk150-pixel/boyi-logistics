@@ -4,6 +4,14 @@
 
 `feishu/` 负责飞书消息入口、长连接、消息事件分发、回复格式化。
 
+## 控制平面边界
+
+- 非插件只读/兼容文本通过注入的 `AgentCore` 命令门面提交；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
+- 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
+- 每个生产命令使用飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键；缺少稳定事件 ID 的写命令必须显式拒绝，不能用消息内容、时间戳或随机值代替。
+- 飞书 actor 只从真实事件发送者构造，角色固定为空；飞书可以提交高风险计划，但首期不能在飞书批准。
+- 登录和验证码流程仍由账号管理接口处理。登录成功只发布 `account.session_restored` 并恢复原 `BLOCKED_LOGIN` Run，不得重新提交或盲目重跑原工具。
+
 ## 修改入口
 
 - 机器人连不上、长连接状态异常：
@@ -33,10 +41,10 @@
 - **登录态过期恢复**：任意工具结果含 `AUTH_REQUIRED` / "当前未登录" / "登录态已过期" 关键字
   - 自动注册 `confirm_login_for_resume` pending，提示用户是否重新登录
   - 用户回"是" → 调 `POST /admin/tms/session/send-code` → 注册 `waiting_code_for_resume`
-  - 用户回 4-8 位字母数字验证码 → 调 `POST /admin/tms/session/submit-code` → 成功后自动续跑原任务
+  - 用户回 4-8 位字母数字验证码 → 调 `POST /admin/tms/session/submit-code` → 成功后由 `account.session_restored` 恢复原 Run；飞书不得再次提交原工具
 - **验证码已发送/已生成恢复**：任意工具结果含 `AUTH_PENDING_CODE` / "验证码已发送" / "验证码已生成" 时
   - 直接注册 `waiting_code_for_resume` pending，不再重复询问是否发码
-  - 用户回 4-8 位字母数字验证码 → 校验成功后自动续跑原任务
+  - 用户回 4-8 位字母数字验证码 → 校验成功后由控制平面恢复原 Run，不创建第二个 Run
 - **同脚本互斥执行**：飞书触发脚本前必须先检查同名工具是否正在运行；已运行时不再回复“程序正在执行”、不再启动第二个脚本，直接提示等待或回复“取消”取消当前任务；也支持 `取消扫描`、`取消统计`、`取消自提到货问题件`、`取消发车`、`取消到达打卡`、`取消分批差错` 等明确取消命令。
 - **主动登录/发码**：用户直接发送 `登录`、`登陆`、`发验证码`、`重新登录` 等文本
   - 主动登录/发码优先级高于所有 pending；收到后必须先清除旧 pending，不能把“登陆”当成上一次登录恢复任务的确认，也不能自动续跑旧任务

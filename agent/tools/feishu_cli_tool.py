@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urlencode
+from typing import Callable
 
 import httpx
 
@@ -19,6 +20,7 @@ LARK_CLI = "lark-cli"
 _TOKEN_CACHE: dict[str, float | str | None] = {"token": None, "expires_at": 0.0}
 _SHEET_REF_CACHE: dict[str, dict[str, str]] = {}
 _SHEET_INFO_CACHE: dict[str, dict[str, dict]] = {}
+_SHEET_TITLE_COUNTS_CACHE: dict[str, dict[str, int]] = {}
 
 _A1_RANGE_RE = re.compile(
     r"^(?:(?P<sheet>[^!]+)!)?(?P<start_col>[A-Z]+)(?P<start_row>\d+):(?P<end_col>[A-Z]+)(?P<end_row>\d+)$"
@@ -29,6 +31,7 @@ _MAX_CELLS_PER_WRITE = 4000
 def _clear_spreadsheet_sheet_cache(spreadsheet_token: str) -> None:
     _SHEET_REF_CACHE.pop(spreadsheet_token, None)
     _SHEET_INFO_CACHE.pop(spreadsheet_token, None)
+    _SHEET_TITLE_COUNTS_CACHE.pop(spreadsheet_token, None)
 
 
 def run_lark_cli(args: list[str], timeout: int = 20) -> dict:
@@ -242,6 +245,12 @@ def _search_bitable_records(base_token: str, table_id: str, params: dict) -> dic
     return result
 
 
+def search_bitable_records(base_token: str, table_id: str, params: dict) -> dict:
+    """Public read-only primitive for narrow governed Bitable adapters."""
+
+    return _search_bitable_records(base_token, table_id, params)
+
+
 def _create_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
     field_name = str(params.get("field_name") or params.get("name") or "").strip()
     field_type = params.get("type", params.get("field_type", 1))
@@ -272,6 +281,25 @@ def _create_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
         payload=payload,
         timeout=30,
     )
+
+
+def _update_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
+    field_id = str(params.get("field_id") or "").strip()
+    field_name = str(params.get("field_name") or params.get("name") or "").strip()
+    field_type = params.get("type", params.get("field_type"))
+    if not field_id or not field_name:
+        return {"error": "update_field 缺少 field_id 或 field_name/name"}
+    try:
+        field_type = int(field_type)
+    except (TypeError, ValueError):
+        return {"error": "update_field type/field_type 必须是整数"}
+    payload: dict[str, object] = {"field_name": field_name, "type": field_type}
+    if isinstance(params.get("property"), dict):
+        payload["property"] = params["property"]
+    path = f"/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/fields/{field_id}"
+    if params.get("dry_run"):
+        return {"ok": True, "api": {"method": "PUT", "url": path, "body": payload}}
+    return _call_open_api("PUT", path, payload=payload, timeout=30)
 
 
 def _tenant_access_token() -> str:
@@ -322,9 +350,13 @@ def _call_open_api(method: str, path: str, payload: dict | None = None, timeout:
     return data
 
 
-def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
+def _spreadsheet_sheet_ref_map(
+    spreadsheet_token: str,
+    *,
+    require_fresh_metadata: bool = False,
+) -> dict[str, str]:
     cached = _SHEET_REF_CACHE.get(spreadsheet_token)
-    if cached is not None:
+    if cached is not None and not require_fresh_metadata:
         return cached
 
     result = _call_open_api(
@@ -333,15 +365,20 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
         timeout=30,
     )
     if "error" in result:
+        if require_fresh_metadata:
+            raise RuntimeError(str(result["error"]))
         return {}
 
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     sheets = data.get("sheets") if isinstance(data, dict) else None
     if not isinstance(sheets, list):
+        if require_fresh_metadata:
+            raise RuntimeError("sheet metadata response is invalid")
         return {}
 
     refs: dict[str, str] = {}
     sheet_infos: dict[str, dict] = {}
+    title_counts: dict[str, int] = {}
     sheet_ids: list[str] = []
     for sheet in sheets:
         if not isinstance(sheet, dict):
@@ -353,6 +390,7 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
         sheet_ids.append(sheet_id)
         refs[sheet_id] = sheet_id
         if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
             refs.setdefault(title, sheet_id)
 
         grid_properties = sheet.get("grid_properties")
@@ -388,24 +426,49 @@ def _spreadsheet_sheet_ref_map(spreadsheet_token: str) -> dict[str, str]:
         if only_sheet_id in sheet_infos:
             sheet_infos.setdefault("__only_sheet_info__", sheet_infos[only_sheet_id])
 
+    if require_fresh_metadata and not sheet_ids:
+        raise RuntimeError("sheet metadata response is empty")
+
     _SHEET_REF_CACHE[spreadsheet_token] = refs
     _SHEET_INFO_CACHE[spreadsheet_token] = sheet_infos
+    _SHEET_TITLE_COUNTS_CACHE[spreadsheet_token] = title_counts
     return refs
 
 
-def _spreadsheet_sheet_info(spreadsheet_token: str, sheet_ref: str) -> dict | None:
+def _spreadsheet_sheet_title_count(spreadsheet_token: str, title: str) -> int:
+    lookup = str(title or "").strip()
+    if not spreadsheet_token or not lookup:
+        return 0
+    _spreadsheet_sheet_ref_map(spreadsheet_token)
+    return int(_SHEET_TITLE_COUNTS_CACHE.get(spreadsheet_token, {}).get(lookup, 0))
+
+
+def _spreadsheet_sheet_info(
+    spreadsheet_token: str,
+    sheet_ref: str,
+    *,
+    require_fresh_metadata: bool = False,
+) -> dict | None:
     lookup_ref = str(sheet_ref or "").strip()
     if len(lookup_ref) >= 2 and lookup_ref.startswith("'") and lookup_ref.endswith("'"):
         lookup_ref = lookup_ref[1:-1]
     if not lookup_ref:
         return None
 
-    _spreadsheet_sheet_ref_map(spreadsheet_token)
+    _spreadsheet_sheet_ref_map(
+        spreadsheet_token,
+        require_fresh_metadata=require_fresh_metadata,
+    )
     info_map = _SHEET_INFO_CACHE.get(spreadsheet_token, {})
     return info_map.get(lookup_ref) or info_map.get("__only_sheet_info__")
 
 
-def _resolve_sheet_ref_in_range(spreadsheet_token: str, value_range: str) -> str:
+def _resolve_sheet_ref_in_range(
+    spreadsheet_token: str,
+    value_range: str,
+    *,
+    require_fresh_metadata: bool = False,
+) -> str:
     match = _A1_RANGE_RE.match(value_range.strip())
     if not spreadsheet_token or not match:
         return value_range
@@ -419,9 +482,14 @@ def _resolve_sheet_ref_in_range(spreadsheet_token: str, value_range: str) -> str
         lookup_ref = lookup_ref[1:-1]
 
     try:
-        ref_map = _spreadsheet_sheet_ref_map(spreadsheet_token)
+        ref_map = _spreadsheet_sheet_ref_map(
+            spreadsheet_token,
+            require_fresh_metadata=require_fresh_metadata,
+        )
         resolved_sheet_id = ref_map.get(lookup_ref) or ref_map.get("__only_sheet_id__")
     except Exception:
+        if require_fresh_metadata:
+            raise
         return value_range
     if not resolved_sheet_id or resolved_sheet_id == sheet_ref:
         return value_range
@@ -433,14 +501,23 @@ def _resolve_sheet_ref_in_range(spreadsheet_token: str, value_range: str) -> str
     return f"{resolved_sheet_id}!{range_body}"
 
 
-def _ensure_sheet_rows_for_range(spreadsheet_token: str, value_range: str) -> dict:
+def _ensure_sheet_rows_for_range(
+    spreadsheet_token: str,
+    value_range: str,
+    *,
+    require_fresh_metadata: bool = False,
+) -> dict:
     match = _A1_RANGE_RE.match(value_range.strip())
     if not spreadsheet_token or not match or not match.group("sheet"):
         return {"ok": True, "skipped": True, "reason": "range without sheet ref", "range": value_range}
 
     end_row = int(match.group("end_row"))
     sheet_id = str(match.group("sheet")).strip()
-    sheet_info = _spreadsheet_sheet_info(spreadsheet_token, sheet_id)
+    sheet_info = _spreadsheet_sheet_info(
+        spreadsheet_token,
+        sheet_id,
+        require_fresh_metadata=require_fresh_metadata,
+    )
     row_count = sheet_info.get("row_count") if isinstance(sheet_info, dict) else None
     if not isinstance(row_count, int) or row_count <= 0:
         return {"ok": True, "skipped": True, "reason": "unknown sheet row count", "range": value_range}
@@ -467,9 +544,14 @@ def _row_dimension_requests_from_range(
     value_range: str,
     *,
     resolve_sheet_ref: bool = True,
+    require_fresh_metadata: bool = False,
 ) -> dict | None:
     resolved_range = (
-        _resolve_sheet_ref_in_range(spreadsheet_token, value_range)
+        _resolve_sheet_ref_in_range(
+            spreadsheet_token,
+            value_range,
+            require_fresh_metadata=require_fresh_metadata,
+        )
         if resolve_sheet_ref
         else value_range
     )
@@ -486,7 +568,18 @@ def _row_dimension_requests_from_range(
         return None
 
     sheet_id = str(match.group("sheet")).strip()
-    sheet_info = _spreadsheet_sheet_info(spreadsheet_token, sheet_id) if resolve_sheet_ref else None
+    sheet_info = (
+        _spreadsheet_sheet_info(
+            spreadsheet_token,
+            sheet_id,
+            # Resolving the range immediately above has already performed the
+            # strict refresh for this operation. Reusing that just-refreshed
+            # snapshot avoids a second metadata request inside one mutation.
+            require_fresh_metadata=False,
+        )
+        if resolve_sheet_ref
+        else None
+    )
     row_count = sheet_info.get("row_count") if isinstance(sheet_info, dict) else None
     if isinstance(row_count, int) and row_count > 0:
         end_row = min(end_row, row_count)
@@ -566,7 +659,12 @@ def _split_values_for_write(
     return out
 
 
-def feishu_operation(action: str, params: dict) -> dict:
+def feishu_operation(
+    action: str,
+    params: dict,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict:
     """执行飞书操作。"""
     if action == "send_message":
         target_type, target_value = _normalize_receive_target(params)
@@ -667,6 +765,16 @@ def feishu_operation(action: str, params: dict) -> dict:
         except Exception as exc:
             return {"error": f"create_field 调用失败: {str(exc)[:300]}"}
 
+    if action == "update_field":
+        base_token = str(params.get("base_token") or params.get("app_token") or "")
+        table_id = str(params.get("table_id") or "")
+        if not base_token or not table_id:
+            return {"error": "update_field 缺少 base_token/app_token 或 table_id"}
+        try:
+            return _update_bitable_field(base_token, table_id, params)
+        except Exception as exc:
+            return {"error": f"update_field 调用失败: {str(exc)[:300]}"}
+
     if action == "list_records":
         base_token = str(params.get("base_token") or params.get("app_token") or "")
         table_id = str(params.get("table_id") or "")
@@ -763,11 +871,26 @@ def feishu_operation(action: str, params: dict) -> dict:
             return {"error": "write_sheet values 必须是二维数组"}
 
         qualified_range = _qualify_range(value_range, params.get("sheet_id"))
-        if not params.get("dry_run"):
-            qualified_range = _resolve_sheet_ref_in_range(spreadsheet_token, qualified_range)
-        chunks = _split_values_for_write(qualified_range, parsed_values)
+        try:
+            if not params.get("dry_run"):
+                qualified_range = _resolve_sheet_ref_in_range(
+                    spreadsheet_token,
+                    qualified_range,
+                    require_fresh_metadata=True,
+                )
+            chunks = _split_values_for_write(qualified_range, parsed_values)
+        except Exception as exc:
+            return {"error": f"write_sheet metadata resolution failed: {str(exc)[:300]}"}
         url = f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
         dimension_url = f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/dimension_range"
+
+        write_started = False
+
+        def mark_mutation_started() -> None:
+            nonlocal write_started
+            if not write_started and mark_write_started is not None:
+                mark_write_started()
+            write_started = True
 
         if params.get("dry_run"):
             return {
@@ -782,12 +905,22 @@ def feishu_operation(action: str, params: dict) -> dict:
                 ],
             }
 
-        ensure_rows_result = _ensure_sheet_rows_for_range(spreadsheet_token, qualified_range)
+        try:
+            ensure_rows_result = _ensure_sheet_rows_for_range(
+                spreadsheet_token,
+                qualified_range,
+                # ``qualified_range`` was obtained from a strict fresh
+                # metadata resolution immediately above.
+                require_fresh_metadata=False,
+            )
+        except Exception as exc:
+            return {"error": f"write_sheet row validation failed: {str(exc)[:300]}"}
         if "error" in ensure_rows_result:
             return {"error": ensure_rows_result["error"], "ensure_rows_result": ensure_rows_result}
         add_rows_result: dict | None = None
         if ensure_rows_result.get("add_payload"):
             try:
+                mark_mutation_started()
                 add_rows_result = _call_open_api(
                     "POST",
                     dimension_url,
@@ -810,6 +943,7 @@ def feishu_operation(action: str, params: dict) -> dict:
         chunk_results = []
         for cr, cv in chunks:
             try:
+                mark_mutation_started()
                 result = _call_open_api(
                     "PUT",
                     url,
@@ -845,11 +979,15 @@ def feishu_operation(action: str, params: dict) -> dict:
             return {"error": "clear_sheet 缺少 spreadsheet_token 或 range"}
 
         qualified_range = _qualify_range(value_range, params.get("sheet_id"))
-        clear_requests = _row_dimension_requests_from_range(
-            spreadsheet_token,
-            qualified_range,
-            resolve_sheet_ref=not params.get("dry_run"),
-        )
+        try:
+            clear_requests = _row_dimension_requests_from_range(
+                spreadsheet_token,
+                qualified_range,
+                resolve_sheet_ref=not params.get("dry_run"),
+                require_fresh_metadata=not params.get("dry_run"),
+            )
+        except Exception as exc:
+            return {"error": f"clear_sheet metadata resolution failed: {str(exc)[:300]}"}
         if clear_requests is None:
             return {"error": f"clear_sheet only supports row snapshot ranges starting at column A: {qualified_range}"}
 
@@ -875,6 +1013,8 @@ def feishu_operation(action: str, params: dict) -> dict:
             }
 
         try:
+            if mark_write_started is not None:
+                mark_write_started()
             delete_result = _call_open_api(
                 "DELETE",
                 delete_url,

@@ -10,6 +10,39 @@ from feishu import message_handler
 from agent import pending_actions
 
 
+class FakeProjectEntrypoints:
+    def __init__(self, *, status: str = "COMPLETED") -> None:
+        self.status = status
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def require_feishu_account_bindings(_route_key, *roles):
+        bindings = {"account_id": "split-primary"}
+        return {role: bindings[role] for role in roles}
+
+    async def invoke_feishu(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "success": self.status == "COMPLETED",
+            "status": self.status,
+            "run_id": "run-split",
+        }
+
+
+def run_verified_message(text: str, *, event_id: str) -> None:
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id=event_id,
+            actor_id="user",
+            chat_id="chat",
+        )
+    )
+    try:
+        asyncio.run(message_handler._process_and_reply(text, "user", "chat"))
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+
 def candidates(count: int) -> list[dict[str, Any]]:
     return [
         {
@@ -24,6 +57,27 @@ def candidates(count: int) -> list[dict[str, Any]]:
 
 
 class FeishuSplitSelectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.project_entrypoints = FakeProjectEntrypoints()
+        service_patch = patch.object(
+            message_handler,
+            "_AUTOMATION_PROJECT_ENTRYPOINTS",
+            self.project_entrypoints,
+        )
+        service_patch.start()
+        self.addCleanup(service_patch.stop)
+        self.command_context_token = message_handler._COMMAND_CONTEXT.set(
+            message_handler.FeishuCommandContext(
+                event_id="legacy-flow-event",
+                actor_id="user",
+                chat_id="chat",
+            )
+        )
+        self.addCleanup(
+            message_handler._COMMAND_CONTEXT.reset,
+            self.command_context_token,
+        )
+
     def test_selection_parser_supports_all_formats(self):
         self.assertEqual([2], message_handler._parse_split_selection("2", 5))
         self.assertEqual([1, 3, 5], message_handler._parse_split_selection("1，3、5", 5))
@@ -53,9 +107,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **_kwargs):
                 calls.append((tool_name, dict(params)))
-                if params.get("dry_run"):
+                if tool_name == "preview_split_pending_problems":
                     return {
                         "success": True,
                         "data": {
@@ -112,10 +166,15 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
 
         self.assertNotIn("chat", pending_store)
-        formal_call = calls[-1]
-        self.assertFalse(formal_call[1]["dry_run"])
-        self.assertEqual(["R0001", "R0003"], formal_call[1]["selected_bill_codes"])
-        self.assertEqual("a" * 64, formal_call[1]["preview_fingerprint"])
+        self.assertEqual(
+            ("preview_split_pending_problems", {"account_id": "split-primary"}),
+            calls[-1],
+        )
+        formal_body = self.project_entrypoints.calls[-1]["envelope"]["body"]
+        self.assertFalse(formal_body["dry_run"])
+        self.assertEqual(["R0001", "R0003"], formal_body["selected_bill_codes"])
+        self.assertEqual("a" * 64, formal_body["preview_fingerprint"])
+        self.assertFalse(message_handler._contains_account_override(formal_body))
         self.assertEqual([600, 600], pending_ttls)
 
     def test_initial_confirmation_executes_all_previewed_codes(self):
@@ -124,9 +183,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params):
+            async def execute_tool(self, tool_name, params, **_kwargs):
                 calls.append((tool_name, dict(params)))
-                if params.get("dry_run"):
+                if tool_name == "preview_split_pending_problems":
                     return {
                         "success": True,
                         "data": {
@@ -173,19 +232,23 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
 
         self.assertNotIn("chat", pending_store)
-        formal_calls = [params for _tool_name, params in calls if not params.get("dry_run")]
-        self.assertEqual(1, len(formal_calls))
-        self.assertEqual(["R0001", "R0002", "R0003"], formal_calls[0]["selected_bill_codes"])
-        self.assertEqual("g" * 64, formal_calls[0]["preview_fingerprint"])
-        self.assertEqual("ronghui_default", formal_calls[0]["account_id"])
+        self.assertEqual(
+            ("preview_split_pending_problems", {"account_id": "split-primary"}),
+            calls[-1],
+        )
+        formal_body = self.project_entrypoints.calls[-1]["envelope"]["body"]
+        self.assertEqual(["R0001", "R0002", "R0003"], formal_body["selected_bill_codes"])
+        self.assertEqual("g" * 64, formal_body["preview_fingerprint"])
+        self.assertFalse(message_handler._contains_account_override(formal_body))
         self.assertFalse(any(reply.startswith("已选择") for reply in replies))
 
-    def test_initial_confirmation_keeps_full_list_when_tool_is_running(self):
+    def test_initial_confirmation_uses_control_plane_not_legacy_tool_running_flag(self):
         replies: list[str] = []
         pending_store = {
             "chat": {
                 "type": "split_pending_selection",
                 "tool_name": message_handler.SPLIT_TOOL_NAME,
+                "automation_route_key": "builtin.split_pending_problem_upload",
                 "candidates": candidates(2),
                 "preview_fingerprint": "h" * 64,
             }
@@ -210,8 +273,13 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
             asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
 
-        self.assertEqual("split_pending_selection", pending_store["chat"]["type"])
-        self.assertIn("当前列表仍保留", replies[-1])
+        self.assertNotIn("chat", pending_store)
+        self.assertEqual(1, len(self.project_entrypoints.calls))
+        self.assertEqual(
+            ["R0001", "R0002"],
+            self.project_entrypoints.calls[0]["envelope"]["body"]["selected_bill_codes"],
+        )
+        self.assertTrue(replies)
 
     def test_candidate_prompt_explains_initial_confirmation_executes_all(self):
         prompt = "\n".join(message_handler._split_candidate_lines(candidates(2), hidden_completed=0))
@@ -224,6 +292,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             "chat": {
                 "type": "split_pending_selection",
                 "tool_name": message_handler.SPLIT_TOOL_NAME,
+                "automation_route_key": "builtin.split_pending_problem_upload",
                 "candidates": candidates(2),
                 "preview_fingerprint": "b" * 64,
             }
@@ -285,7 +354,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         }
 
         class FakeAgent:
-            async def execute_tool(self, _tool_name, params):
+            async def execute_tool(self, _tool_name, params, **_kwargs):
                 self.params = params
                 return {
                     "success": True,
@@ -317,13 +386,13 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         self.assertEqual("split_pending_selection", pending_store["chat"]["type"])
         self.assertEqual("e" * 64, pending_store["chat"]["preview_fingerprint"])
 
-    def test_running_tool_keeps_confirmation_selection(self):
+    def test_confirmed_selection_submits_typed_command_not_legacy_tool(self):
         replies: list[str] = []
         pending = {
             "type": "split_pending_confirmation",
+            "automation_route_key": "builtin.split_pending_problem_upload",
             "selected_bill_codes": ["R0001"],
             "preview_fingerprint": "f" * 64,
-            "account_id": "ronghui_default",
         }
 
         class FakeAgent:
@@ -342,8 +411,13 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             message_handler, "_reply_text", side_effect=fake_reply
         ):
             asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
-        clear_mock.assert_not_called()
-        self.assertIn("当前选择仍保留", replies[-1])
+        clear_mock.assert_called_once_with("chat")
+        self.assertEqual(1, len(self.project_entrypoints.calls))
+        self.assertEqual(
+            ["R0001"],
+            self.project_entrypoints.calls[0]["envelope"]["body"]["selected_bill_codes"],
+        )
+        self.assertTrue(replies)
 
     def test_pending_selection_expires_after_ten_minutes(self):
         project_tmp = Path(__file__).resolve().parents[1] / "tmp"

@@ -18,7 +18,13 @@ from agent.workflow_resource_store import get_workflow_resource
 from shared.yunda_console_waybill import build_console_waybill_from_yunda_data
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import sync_console_waybills
-from tools.phase7_sync_common import build_range_from_template, sync_sheet_snapshot, tms_auth_error_result
+from tools.phase7_sync_common import (
+    bind_explicit_account_id,
+    build_range_from_template,
+    require_explicit_account_id,
+    sync_sheet_snapshot,
+    tms_auth_error_result,
+)
 from tools.tms_tool import call_http_service
 
 
@@ -724,9 +730,13 @@ def _tms_service_error(tms_result: Any) -> dict[str, Any] | None:
 def _build_request_body(params: dict[str, Any], target_date: dt.date) -> dict[str, Any]:
     request_body = params.get("request_body") if isinstance(params.get("request_body"), dict) else {}
     request_params = dict(request_body.get("params") or {})
-    request_params.setdefault("session_profile", "yunda")
+    request_params = bind_explicit_account_id(
+        request_params,
+        require_explicit_account_id(params, label="韵达寄件运单同步"),
+        label="韵达寄件运单请求",
+    )
     request_params["target_date"] = target_date.isoformat()
-    for key in ("page_size", "max_pages", "session_profile", "account_id", "accountId", "request_timeout_sec"):
+    for key in ("page_size", "max_pages", "session_profile", "request_timeout_sec"):
         if params.get(key) not in (None, "") and key not in request_params:
             request_params[key] = params[key]
     return {

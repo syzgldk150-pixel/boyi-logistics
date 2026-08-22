@@ -100,9 +100,19 @@ class MobileNavigationTests(unittest.TestCase):
         routes = [item["route"] for item in CONSOLE_NAVIGATION]
 
         self.assertEqual(len(routes), len(set(routes)))
+        self.assertIn("/work-items", routes)
         self.assertEqual(("/tracking", "/receipts", "/automations"), DEFAULT_MOBILE_BOTTOM_NAV)
         self.assertTrue(all(route != "/" for route in DEFAULT_MOBILE_BOTTOM_NAV))
         self.assertTrue(all(item["route"] != "/" for item in MOBILE_NAVIGATION_CANDIDATES))
+        self.assertNotIn("/templates/new", routes)
+        system_labels = [
+            item["label"] for item in CONSOLE_NAVIGATION if item["section"] == "system"
+        ]
+        self.assertEqual(["智能模型", "事项中心", "系统管理"], system_labels)
+        self.assertEqual("system", next(item for item in CONSOLE_NAVIGATION if item["route"] == "/work-items")["section"])
+        self.assertEqual(("/tracking", "/receipts", "/automations"), DEFAULT_MOBILE_BOTTOM_NAV)
+        console_ui = (CONSOLE_DIR / "static" / "console_ui.js").read_text(encoding="utf-8")
+        self.assertNotIn('pathname.startsWith("/templates")', console_ui)
 
     def test_preferences_are_read_safely_and_preserve_unrelated_keys_on_write(self):
         user = {"ui_preferences_json": '{"mobile_bottom_nav":["/receipts","/tracking","/ocr"]}'}

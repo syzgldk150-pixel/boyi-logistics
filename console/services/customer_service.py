@@ -1,5 +1,7 @@
 """Console application services grouped by business responsibility."""
 
+import uuid
+
 from console.app_support import *  # noqa: F403
 
 
@@ -115,37 +117,20 @@ class CustomerServiceMixin:
 
     @staticmethod
     def _customer_service_clean_text(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, (list, tuple, set)):
-            return "、".join(
-                item for item in (type(self)._customer_service_clean_text(part) for part in value) if item
-            )
-        if isinstance(value, dict):
-            return ""
-        return str(value).strip()
+        return customer_problem_clean_text(value)
 
     @classmethod
     def _customer_service_problem_field(cls, row: dict[str, Any], keys: tuple[str, ...]) -> str:
-        sources: list[dict[str, Any]] = [row]
-        raw = row.get("raw")
-        if isinstance(raw, dict):
-            sources.append(raw)
-        for source in sources:
-            for key in keys:
-                value = cls._customer_service_clean_text(source.get(key))
-                if value:
-                    return value
-        return ""
+        del cls
+        return customer_problem_field(row, keys)
 
     @classmethod
     def _customer_service_should_include_problem_row(cls, row: dict[str, Any]) -> bool:
-        account_login = cls._customer_service_clean_text(row.get("account_login"))
-        if account_login != CUSTOMER_SERVICE_SITE_FILTER_LOGIN:
-            return True
-        publish_site = cls._customer_service_problem_field(row, CUSTOMER_SERVICE_PUBLISH_SITE_KEYS)
-        notified_site = cls._customer_service_problem_field(row, CUSTOMER_SERVICE_NOTIFIED_SITE_KEYS)
-        return publish_site == CUSTOMER_SERVICE_SITE_FILTER_SITE and notified_site == CUSTOMER_SERVICE_SITE_FILTER_SITE
+        del cls
+        return legacy_customer_problem_included(
+            row,
+            account_login=customer_problem_clean_text(row.get("account_login")),
+        )
 
     def _render_customer_service(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         accounts, account_map, warning = self._customer_service_account_maps(force=False)
@@ -237,13 +222,134 @@ class CustomerServiceMixin:
             "payload": body.get("payload") if isinstance(body.get("payload"), dict) else {},
         }
 
-    def _call_customer_service_problem_agent(self, payload: dict[str, Any], *, timeout_sec: int = 120) -> dict[str, Any]:
+    def _call_customer_service_problem_agent(
+        self,
+        payload: dict[str, Any],
+        *,
+        trusted_context: dict[str, Any],
+        browser_request_uuid: str,
+        timeout_sec: int = 120,
+    ) -> dict[str, Any]:
+        normalized_uuid = self._normalize_browser_request_uuid(browser_request_uuid)
+        actor = trusted_context.get("actor") if isinstance(trusted_context, dict) else None
+        actor_id = str(actor.get("actor_id") or "").strip() if isinstance(actor, dict) else ""
+        if not normalized_uuid or not actor_id:
+            return {
+                "ok": False,
+                "status": HTTPStatus.BAD_REQUEST,
+                "error_code": "TRUSTED_READ_COMMAND_REQUIRED",
+                "error": "缺少真实管理员身份或稳定请求标识，查询命令未提交。",
+            }
+        action = str(payload.get("action") or "query").strip().lower()
+        account_id = str(payload.get("account_id") or "").strip()
+        child_uuid = uuid.uuid5(
+            uuid.UUID(normalized_uuid),
+            f"customer_service_problem_{action}:{account_id}",
+        )
         return self._agent_request(
             "POST",
             "/internal/v1/tms/customer_service_problem",
-            payload={"params": payload, "timeout_sec": timeout_sec},
+            payload={
+                "params": payload,
+                "timeout_sec": timeout_sec,
+                "actor": actor,
+                "actor_roles": list(trusted_context.get("actor_roles") or []),
+                "source": "console",
+                "idempotency_key": f"console:{actor_id}:tool.execute:{child_uuid}",
+            },
             timeout=max(timeout_sec + 15, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context.get("_console_principal"),
         )
+
+    @staticmethod
+    def _customer_service_command_arguments(
+        account: dict[str, Any],
+        action: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the closed input contract for one governed write tool."""
+
+        item = body.get("item") if isinstance(body.get("item"), dict) else {}
+        payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+        arguments: dict[str, Any] = {
+            "platform": str(account.get("system") or "").strip().lower(),
+            "account_id": str(account.get("account_id") or "").strip(),
+            "account_label": str(
+                account.get("name") or account.get("account_id") or ""
+            ).strip(),
+        }
+        if action == "mark_read":
+            arguments["external_id"] = str(
+                item.get("external_id") or body.get("external_id") or ""
+            ).strip()
+        elif action == "reply":
+            arguments.update(
+                {
+                    "external_id": str(item.get("external_id") or "").strip(),
+                    "source_direction": str(item.get("source_direction") or "").strip(),
+                    "waybill_no": str(item.get("waybill_no") or "").strip(),
+                    "status": str(item.get("status") or "").strip(),
+                    "reply_text": str(payload.get("reply_text") or "").strip(),
+                    "prob_status": str(payload.get("prob_status") or "").strip(),
+                    "old_prob_status": str(payload.get("old_prob_status") or "").strip(),
+                }
+            )
+        elif action == "publish":
+            if arguments["platform"] == "yunda":
+                site_ids = payload.get("site_id")
+                arguments["payload"] = {
+                    "ship_no": str(payload.get("ship_no") or "").strip(),
+                    "classes_type": str(payload.get("classes_type") or "").strip(),
+                    "prob_text": str(payload.get("prob_text") or "").strip(),
+                    "site_id": [
+                        str(value).strip()
+                        for value in (site_ids if isinstance(site_ids, list) else [])
+                        if str(value).strip()
+                    ],
+                }
+            else:
+                arguments["payload"] = {
+                    key: str(payload.get(key) or "").strip()
+                    for key in (
+                        "bill_code",
+                        "problem_type",
+                        "owner_problem_type",
+                        "notice_site_code",
+                        "notice_site",
+                        "problem_cause",
+                    )
+                }
+        return arguments
+
+    @staticmethod
+    def _customer_service_entity_refs(
+        arguments: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        refs: list[dict[str, Any]] = []
+        external_id = str(arguments.get("external_id") or "").strip()
+        waybill_no = str(arguments.get("waybill_no") or "").strip()
+        platform = str(arguments.get("platform") or "").strip()
+        if external_id:
+            refs.append(
+                {
+                    "entity_type": "customer_service_problem",
+                    "entity_id": external_id,
+                    "source_system": platform,
+                    "relation_type": "subject",
+                    "metadata": {},
+                }
+            )
+        if waybill_no:
+            refs.append(
+                {
+                    "entity_type": "waybill",
+                    "entity_id": waybill_no,
+                    "source_system": platform,
+                    "relation_type": "related",
+                    "metadata": {},
+                }
+            )
+        return refs
 
     @staticmethod
     def _unwrap_customer_service_agent_result(result: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
@@ -271,6 +377,12 @@ class CustomerServiceMixin:
         return data, ""
 
     def _handle_customer_service_problem_query(self, handler: BaseHTTPRequestHandler) -> None:
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        browser_request_uuid = str(
+            handler.headers.get("X-Browser-Request-UUID") or ""
+        )
         body = self._parse_json_body(handler)
         _accounts, account_map, warning = self._customer_service_account_maps(force=False)
         if warning:
@@ -286,7 +398,12 @@ class CustomerServiceMixin:
 
         def fetch_one(account: dict[str, Any]) -> dict[str, Any]:
             payload = self._customer_service_agent_payload(account, "query", body)
-            result = self._call_customer_service_problem_agent(payload, timeout_sec=180)
+            result = self._call_customer_service_problem_agent(
+                payload,
+                trusted_context=trusted_context,
+                browser_request_uuid=browser_request_uuid,
+                timeout_sec=180,
+            )
             data, error = self._unwrap_customer_service_agent_result(result)
             return {"account": account, "payload": payload, "data": data, "error": error}
 
@@ -364,6 +481,9 @@ class CustomerServiceMixin:
         return account, ""
 
     def _handle_customer_service_problem_agent_action(self, handler: BaseHTTPRequestHandler, action: str) -> None:
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         body = self._parse_json_body(handler)
         _accounts, account_map, warning = self._customer_service_account_maps(force=False)
         if warning:
@@ -373,8 +493,49 @@ class CustomerServiceMixin:
         if error or not account:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": error})
             return
+        if action != "detail":
+            tool_name = {
+                "mark_read": "customer_service_problem_mark_read",
+                "reply": "customer_service_problem_reply",
+                "publish": "customer_service_problem_publish",
+            }.get(action, "")
+            if not tool_name:
+                self._send_json(
+                    handler,
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "ok": False,
+                        "error_code": "UNSUPPORTED_CUSTOMER_SERVICE_ACTION",
+                        "message": "该客服写操作未开放。",
+                    },
+                )
+                return
+            arguments = self._customer_service_command_arguments(account, action, body)
+            result = self._submit_console_tool_command(
+                trusted_context=trusted_context,
+                browser_request_uuid=str(
+                    handler.headers.get("X-Browser-Request-UUID") or ""
+                ),
+                tool_name=tool_name,
+                arguments=arguments,
+                entity_refs=self._customer_service_entity_refs(arguments),
+                console_entry=f"/customer-service/problems/{action.replace('_', '-')}",
+            )
+            self._send_console_command_receipt(
+                handler,
+                result,
+                message="客服写入计划已提交，请在事项中心完成审批并查看执行结果。",
+            )
+            return
         payload = self._customer_service_agent_payload(account, action, body)
-        result = self._call_customer_service_problem_agent(payload, timeout_sec=180)
+        result = self._call_customer_service_problem_agent(
+            payload,
+            trusted_context=trusted_context,
+            browser_request_uuid=str(
+                handler.headers.get("X-Browser-Request-UUID") or ""
+            ),
+            timeout_sec=180,
+        )
         data, error = self._unwrap_customer_service_agent_result(result)
         if error:
             self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": error, "agent": data or {}})
@@ -386,7 +547,13 @@ class CustomerServiceMixin:
         handler: BaseHTTPRequestHandler,
         query: dict[str, list[str]],
     ) -> None:
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         source_url = str((query.get("src") or [""])[0] or "").strip()
+        browser_request_uuid = str(
+            (query.get("request_uuid") or [""])[0] or ""
+        ).strip()
         body = {
             "platform": str((query.get("platform") or [""])[0] or "").strip(),
             "account_id": str((query.get("account_id") or [""])[0] or "").strip(),
@@ -405,7 +572,12 @@ class CustomerServiceMixin:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": error})
             return
         payload = self._customer_service_agent_payload(account, "fetch_attachment", body)
-        result = self._call_customer_service_problem_agent(payload, timeout_sec=90)
+        result = self._call_customer_service_problem_agent(
+            payload,
+            trusted_context=trusted_context,
+            browser_request_uuid=browser_request_uuid,
+            timeout_sec=90,
+        )
         data, error = self._unwrap_customer_service_agent_result(result)
         if error:
             self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": error, "agent": data or {}})
@@ -416,7 +588,14 @@ class CustomerServiceMixin:
         except Exception:
             self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": "Agent 返回的附件图片内容无效。"})
             return
-        content_type = str((data or {}).get("content_type") or "image/jpeg").split(";", 1)[0].strip() or "image/jpeg"
+        content_type = self._customer_service_raster_mime_type(image_bytes)
+        if not content_type:
+            self._send_json(
+                handler,
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                {"ok": False, "message": "附件不是受支持的栅格图片格式。"},
+            )
+            return
         filename = sanitize_filename(str((data or {}).get("filename") or "problem-attachment").strip()) or "problem-attachment"
         self._send_bytes(
             handler,
@@ -424,10 +603,46 @@ class CustomerServiceMixin:
             image_bytes,
             content_type,
             cache_control="no-store",
-            extra_headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            extra_headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
+    @staticmethod
+    def _customer_service_raster_mime_type(payload: bytes) -> str:
+        if payload.startswith(b"\xff\xd8"):
+            return "image/jpeg"
+        if payload.startswith(b"\x89PNG"):
+            return "image/png"
+        if payload.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if payload.startswith(b"BM"):
+            return "image/bmp"
+        if len(payload) >= 12 and payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+            return "image/webp"
+        return ""
+
     def _handle_customer_service_attachment_upload(self, handler: BaseHTTPRequestHandler) -> None:
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        browser_request_uuid = self._normalize_browser_request_uuid(
+            handler.headers.get("X-Browser-Request-UUID")
+        )
+        if not browser_request_uuid:
+            self._send_console_command_receipt(
+                handler,
+                {
+                    "ok": False,
+                    "status": HTTPStatus.BAD_REQUEST,
+                    "error_code": "BROWSER_REQUEST_UUID_REQUIRED",
+                    "error": "缺少有效且稳定的浏览器请求标识，命令未提交。",
+                },
+                message="",
+            )
+            return
         form = self._parse_multipart_form(handler)
         file_item = form["file"] if "file" in form else None
         if file_item is None or not getattr(file_item, "filename", ""):
@@ -456,11 +671,15 @@ class CustomerServiceMixin:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": error})
             return
 
-        upload_root = (getattr(self.settings, "temp_dir", MODULE_DIR / "runtime" / "artifacts" / "temp") / "customer_service").resolve()
+        upload_root = (
+            getattr(self.settings, "runtime_dir", MODULE_DIR / "runtime")
+            / "control_plane_uploads"
+            / "customer_service"
+        ).resolve()
         upload_root.mkdir(parents=True, exist_ok=True)
         suffix = Path(str(file_item.filename or "")).suffix.lower()
         safe_name = sanitize_filename(Path(str(file_item.filename or "attachment")).name) or f"attachment{suffix}"
-        target = (upload_root / f"{secrets.token_hex(12)}_{safe_name}").resolve()
+        target = (upload_root / f"{browser_request_uuid}_{safe_name}").resolve()
         try:
             target.relative_to(upload_root)
         except ValueError:
@@ -470,19 +689,42 @@ class CustomerServiceMixin:
         if not payload_bytes:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "附件文件为空。"})
             return
-        target.write_bytes(payload_bytes)
-        body["payload"] = {
-            "file_path": str(target),
-            "file_name": safe_name,
-            "delete_after_upload": True,
-            "scene": str(form.getvalue("scene") or "").strip(),
-        }
-        payload = self._customer_service_agent_payload(account, "upload_attachment", body)
-        result = self._call_customer_service_problem_agent(payload, timeout_sec=180)
-        data, error = self._unwrap_customer_service_agent_result(result)
-        if target.exists():
-            target.unlink(missing_ok=True)
-        if error:
-            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": error, "agent": data or {}})
+        target_preexisted = target.exists()
+        if target_preexisted and hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(
+            payload_bytes
+        ).digest():
+            self._send_json(
+                handler,
+                HTTPStatus.CONFLICT,
+                {
+                    "ok": False,
+                    "error_code": "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "message": "同一浏览器请求标识对应了不同附件，命令未提交。",
+                },
+            )
             return
-        self._send_json(handler, HTTPStatus.OK, data or {"ok": True})
+        if not target_preexisted:
+            target.write_bytes(payload_bytes)
+        arguments = {
+            "platform": str(account.get("system") or "").strip().lower(),
+            "account_id": str(account.get("account_id") or "").strip(),
+            "account_label": str(
+                account.get("name") or account.get("account_id") or ""
+            ).strip(),
+            "file_path": str(target),
+        }
+        result = self._submit_console_tool_command(
+            trusted_context=trusted_context,
+            browser_request_uuid=browser_request_uuid,
+            tool_name="customer_service_problem_upload_attachment",
+            arguments=arguments,
+            entity_refs=[],
+            console_entry="/customer-service/problems/attachments/upload",
+        )
+        if not result.get("ok") and not target_preexisted:
+            target.unlink(missing_ok=True)
+        self._send_console_command_receipt(
+            handler,
+            result,
+            message="附件上传计划已提交，请在事项中心完成审批并查看执行结果。",
+        )

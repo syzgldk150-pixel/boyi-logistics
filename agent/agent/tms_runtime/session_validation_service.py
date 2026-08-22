@@ -38,6 +38,8 @@ class SessionValidationMixin:
                 pass
             if on_login_page:
                 return "expired", "登录态已失效，请重新发送验证码。"
+            if not self._is_yunda_mode() and not self._wait_ronghui_page_user_context(page, timeout_ms=10_000):
+                return "expired", "融辉登录态的页面用户上下文未就绪，请重新登录。"
             return "authenticated", ""
         finally:
             try:
@@ -217,8 +219,21 @@ class SessionValidationMixin:
                 )
             return self._save_meta(meta)
 
+        context_changed = False
+        if not self._is_yunda_mode():
+            context_status, context_error, context_changed = self._normalize_ronghui_user_context_state_locked()
+            if context_status != "ready":
+                return self._save_meta(
+                    {
+                        **meta,
+                        "status": "expired",
+                        "last_validation_at": _format_ts(_now_ts()),
+                        "last_error_summary": context_error,
+                    }
+                )
+
         last_validation_text = str(meta.get("last_validation_at") or "").strip()
-        if not force and last_validation_text:
+        if not force and not context_changed and last_validation_text:
             try:
                 last_validation = time.mktime(time.strptime(last_validation_text, "%Y-%m-%d %H:%M:%S"))
             except Exception:
@@ -263,6 +278,10 @@ class SessionValidationMixin:
                     fallback_domain = urlparse(config.base_origin).hostname or "tms.ronghuiwl.com"
                     cookies = self._storage_cookies_from_requests_session(session, fallback_domain)
                     self._write_storage_cookies_locked(cookies)
+                    if context_changed:
+                        next_status, error_text = self._run_in_isolated_thread(
+                            self._validate_storage_state_with_browser_locked
+                        )
             except Exception as exc:
                 requests_error = exc
                 try:
