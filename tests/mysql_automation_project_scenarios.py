@@ -2427,7 +2427,7 @@ def run_test_generation_write_lock_order_races(case):
                     enabled_entrypoints_sha256, snapshot_json, snapshot_sha256, committed_at
                 ) VALUES (%s, 1, %s, 'COMMITTED', %s, '1.0.0', %s, %s,
                           'ed25519_first_party', %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, '{}', %s, NOW(6))
+                          %s, %s, %s, %s, %s, %s, '{}', %s, NOW(6))
                 """,
                 (automation_id, str(uuid4()), plugin_id, "1" * 64, "2" * 64, *hashes, "0" * 64),
             )
