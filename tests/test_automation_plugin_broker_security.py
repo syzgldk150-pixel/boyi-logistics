@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from pathlib import Path
 
 import pytest
 
-from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, _assert_redacted
+from agent.automation_plugins.broker import (
+    VERIFIED_WRITE_NOOP_FIELD,
+    LocalBrokerCapabilityIssuer,
+    LocalCoreAutomationBroker,
+    _assert_redacted,
+)
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
@@ -93,3 +100,92 @@ def test_read_broker_failure_never_counts_as_a_started_write(tmp_path: Path) -> 
         role="source",
     )
     assert issuer.started_mutating_call_count(capability) == 0
+
+
+def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: Path) -> None:
+    class VerifiedNoopAdapter:
+        def __init__(self, result: dict[str, object]) -> None:
+            self._result = result
+
+        async def invoke(self, **_kwargs):
+            return self._result
+
+    async def invoke(result: dict[str, object]) -> dict[str, object]:
+        socket_path = tmp_path / "broker.sock"
+        issuer = LocalBrokerCapabilityIssuer(socket_path)
+        broker = LocalCoreAutomationBroker(
+            issuer=issuer,
+            adapter=VerifiedNoopAdapter(result),
+        )
+        await broker.start()
+        try:
+            capability = issuer.issue(
+                automation_id="instance-a",
+                plugin_version="1.0.0",
+                tool_name="automation.instance-a.run",
+                ttl_seconds=60,
+                runtime_permissions={
+                    "browser": False,
+                    "network": True,
+                    "office": False,
+                    "max_broker_calls": 1,
+                    "broker_operations": [
+                        {
+                            "operation": "network.request",
+                            "action": "snapshot.replace",
+                            "roles": ["target"],
+                            "effect": "write",
+                        }
+                    ],
+                },
+                account_roles=({"role": "target"},),
+                resource_roles=(),
+                account_bindings={"target": "opaque-binding"},
+                resource_bindings={},
+            )
+            reader, writer = await asyncio.open_unix_connection(str(socket_path))
+            writer.write(
+                (
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "request_id": str(uuid.uuid4()),
+                            "capability": capability,
+                            "operation": "network.request",
+                            "action": "snapshot.replace",
+                            "role": "target",
+                            "arguments": {"records": []},
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+            await writer.drain()
+            payload = json.loads((await reader.readline()).decode("utf-8"))
+            writer.close()
+            await writer.wait_closed()
+            return payload
+        finally:
+            await broker.stop()
+
+    verified_result = {
+        VERIFIED_WRITE_NOOP_FIELD: True,
+        "committed": True,
+        "verified": True,
+        "record_count": 0,
+        "readback_count": 0,
+        "written": 0,
+        "readback_sha256": "a" * 64,
+        "evidence_ref": "opaque:evidence:verified-noop",
+    }
+    response = asyncio.run(invoke(verified_result))
+    assert response["ok"] is True
+    assert response["data"]["record_count"] == 0
+    assert VERIFIED_WRITE_NOOP_FIELD not in response["data"]
+
+    incomplete_result = dict(verified_result)
+    incomplete_result.pop("written")
+    rejected = asyncio.run(invoke(incomplete_result))
+    assert rejected["ok"] is False
+    assert rejected["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"

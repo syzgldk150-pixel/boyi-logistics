@@ -16,6 +16,7 @@ from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
 )
+from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.first_party_handler_common import (
     _OpaqueCodec,
     _account_descriptor,
@@ -92,6 +93,44 @@ class DeliverySiteHandlerPorts:
     site_sheet_replace: SiteSheetReplacePort
     delivery_bitable_write: DeliveryBitableWritePort
     delivery_projection_update: DeliveryProjectionUpdatePort
+
+
+@dataclass
+class _DelegatedWriteBoundary:
+    """Observe whether a nested production port actually crossed the marker."""
+
+    marker: WriteStartMarker
+    started: bool = False
+
+    @property
+    def observable(self) -> bool:
+        return self.marker is not None
+
+    def __call__(self) -> None:
+        if self.marker is not None:
+            self.marker()
+        self.started = True
+
+
+def _failed_before_write(message: str, *, cause: Exception | None = None) -> None:
+    error = _error(message, "FAILED_BEFORE_WRITE")
+    if cause is None:
+        raise error
+    raise error from cause
+
+
+def _raise_write_failure(
+    boundary: _DelegatedWriteBoundary,
+    message: str,
+    *,
+    cause: Exception | None = None,
+) -> None:
+    if boundary.observable and not boundary.started:
+        _failed_before_write(message, cause=cause)
+    error = _error(message, "WRITE_OUTCOME_UNKNOWN")
+    if cause is None:
+        raise error
+    raise error from cause
 
 
 def _require_context(
@@ -346,13 +385,21 @@ class _DeliverySiteHandlers:
             raise _error("site-send Bitable arguments are invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(arguments.get("target_date"))
         records = _site_records(arguments.get("records"))
-        result = self._ports.site_bitable_replace(
-            _resource_id(context, _SITE_BITABLE_ROLE),
-            records,
-            target_date,
-            context.mark_write_started,
-        )
-        return _verified_result(
+        boundary = _DelegatedWriteBoundary(context.mark_write_started)
+        try:
+            result = self._ports.site_bitable_replace(
+                _resource_id(context, _SITE_BITABLE_ROLE),
+                records,
+                target_date,
+                boundary,
+            )
+        except PluginExecutionError:
+            raise
+        except Exception as exc:
+            _raise_write_failure(boundary, "site-send Bitable write failed", cause=exc)
+        if isinstance(result, Mapping) and (result.get("error") or result.get("errors")):
+            _raise_write_failure(boundary, "site-send Bitable write failed before mutation")
+        verified = _verified_result(
             result,
             expected_count=len(records),
             context=context,
@@ -360,6 +407,7 @@ class _DeliverySiteHandlers:
             purpose="site-send-bitable-replace",
             proof={"target_date": target_date},
         )
+        return verified
 
     def replace_site_sheet(
         self,
@@ -380,13 +428,21 @@ class _DeliverySiteHandlers:
             raise _error("site-send Sheet arguments are invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(arguments.get("target_date"))
         rows = _site_sheet_rows(arguments.get("values"))
-        result = self._ports.site_sheet_replace(
-            _resource_id(context, _SITE_SHEET_ROLE),
-            rows,
-            target_date,
-            context.mark_write_started,
-        )
-        return _verified_result(
+        boundary = _DelegatedWriteBoundary(context.mark_write_started)
+        try:
+            result = self._ports.site_sheet_replace(
+                _resource_id(context, _SITE_SHEET_ROLE),
+                rows,
+                target_date,
+                boundary,
+            )
+        except PluginExecutionError:
+            raise
+        except Exception as exc:
+            _raise_write_failure(boundary, "site-send Sheet write failed", cause=exc)
+        if isinstance(result, Mapping) and (result.get("error") or result.get("errors")):
+            _raise_write_failure(boundary, "site-send Sheet write failed before mutation")
+        verified = _verified_result(
             result,
             expected_count=len(rows),
             context=context,
@@ -394,6 +450,7 @@ class _DeliverySiteHandlers:
             purpose="site-send-sheet-replace",
             proof={"target_date": target_date},
         )
+        return verified
 
     def write_delivery_bitable(
         self,
@@ -410,12 +467,21 @@ class _DeliverySiteHandlers:
         if not isinstance(arguments, Mapping) or set(arguments) != {"records"}:
             raise _error("delivery Bitable arguments are invalid", "BROKER_ARGUMENT_INVALID")
         records = _delivery_records(arguments.get("records"))
-        verified = _verified_result(
-            self._ports.delivery_bitable_write(
+        boundary = _DelegatedWriteBoundary(context.mark_write_started)
+        try:
+            result = self._ports.delivery_bitable_write(
                 _resource_id(context, _DELIVERY_BITABLE_ROLE),
                 records,
-                context.mark_write_started,
-            ),
+                boundary,
+            )
+        except PluginExecutionError:
+            raise
+        except Exception as exc:
+            _raise_write_failure(boundary, "delivery Bitable write failed", cause=exc)
+        if isinstance(result, Mapping) and (result.get("error") or result.get("errors")):
+            _raise_write_failure(boundary, "delivery Bitable write failed before mutation")
+        verified = _verified_result(
+            result,
             expected_count=len(records),
             context=context,
             codec=self._codec,
@@ -454,12 +520,21 @@ class _DeliverySiteHandlers:
         bill_codes = _delivery_codes(arguments.get("bill_codes"))
         account_id = _account_id(context)
         _account_descriptor(self._ports, account_id, systems={"ronghui"})
-        verified = _verified_result(
-            self._ports.delivery_projection_update(
+        boundary = _DelegatedWriteBoundary(context.mark_write_started)
+        try:
+            result = self._ports.delivery_projection_update(
                 bill_codes,
                 status,
-                context.mark_write_started,
-            ),
+                boundary,
+            )
+        except PluginExecutionError:
+            raise
+        except Exception as exc:
+            _raise_write_failure(boundary, "delivery projection update failed", cause=exc)
+        if isinstance(result, Mapping) and (result.get("error") or result.get("errors")):
+            _raise_write_failure(boundary, "delivery projection update failed before mutation")
+        verified = _verified_result(
+            result,
             expected_count=len(bill_codes),
             context=context,
             codec=self._codec,

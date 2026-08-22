@@ -2686,6 +2686,49 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(["GET"], no_op_calls)
         self.assertEqual([], no_op_marks)
 
+    def test_fresh_sheet_metadata_bypasses_warm_cache_and_rejects_invalid_refresh(self):
+        token = "sheet-fresh-metadata-token"
+        feishu_cli_tool._SHEET_REF_CACHE[token] = {"Data": "stale-sheet"}
+        feishu_cli_tool._SHEET_INFO_CACHE[token] = {
+            "Data": {"sheet_id": "stale-sheet", "title": "Data", "row_count": 99}
+        }
+        feishu_cli_tool._SHEET_TITLE_COUNTS_CACHE[token] = {"Data": 1}
+        calls: list[str] = []
+
+        def unavailable(method, path, payload=None, timeout=30):
+            del payload, timeout
+            calls.append(method)
+            self.assertTrue(path.endswith("/sheets/query"))
+            return {"error": "metadata unavailable"}
+
+        with patch("tools.feishu_cli_tool._call_open_api", side_effect=unavailable):
+            with self.assertRaisesRegex(RuntimeError, "metadata unavailable"):
+                feishu_cli_tool._spreadsheet_sheet_ref_map(
+                    token,
+                    require_fresh_metadata=True,
+                )
+
+        self.assertEqual(["GET"], calls)
+        self.assertEqual("stale-sheet", feishu_cli_tool._SHEET_REF_CACHE[token]["Data"])
+
+        calls.clear()
+
+        def invalid(method, path, payload=None, timeout=30):
+            del payload, timeout
+            calls.append(method)
+            self.assertTrue(path.endswith("/sheets/query"))
+            return {"code": 0, "data": {"sheets": []}}
+
+        with patch("tools.feishu_cli_tool._call_open_api", side_effect=invalid):
+            with self.assertRaisesRegex(RuntimeError, "metadata response is empty"):
+                feishu_cli_tool._spreadsheet_sheet_ref_map(
+                    token,
+                    require_fresh_metadata=True,
+                )
+
+        self.assertEqual(["GET"], calls)
+        self.assertEqual("stale-sheet", feishu_cli_tool._SHEET_REF_CACHE[token]["Data"])
+
     def test_sheet_snapshot_includes_clear_error_detail(self):
         resource = {
             "spreadsheet_token": "sheet-token",

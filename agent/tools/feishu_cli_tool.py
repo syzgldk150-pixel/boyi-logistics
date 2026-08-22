@@ -356,7 +356,7 @@ def _spreadsheet_sheet_ref_map(
     require_fresh_metadata: bool = False,
 ) -> dict[str, str]:
     cached = _SHEET_REF_CACHE.get(spreadsheet_token)
-    if cached is not None:
+    if cached is not None and not require_fresh_metadata:
         return cached
 
     result = _call_open_api(
@@ -425,6 +425,9 @@ def _spreadsheet_sheet_ref_map(
         refs.setdefault("__only_sheet_id__", only_sheet_id)
         if only_sheet_id in sheet_infos:
             sheet_infos.setdefault("__only_sheet_info__", sheet_infos[only_sheet_id])
+
+    if require_fresh_metadata and not sheet_ids:
+        raise RuntimeError("sheet metadata response is empty")
 
     _SHEET_REF_CACHE[spreadsheet_token] = refs
     _SHEET_INFO_CACHE[spreadsheet_token] = sheet_infos
@@ -569,7 +572,10 @@ def _row_dimension_requests_from_range(
         _spreadsheet_sheet_info(
             spreadsheet_token,
             sheet_id,
-            require_fresh_metadata=require_fresh_metadata,
+            # Resolving the range immediately above has already performed the
+            # strict refresh for this operation. Reusing that just-refreshed
+            # snapshot avoids a second metadata request inside one mutation.
+            require_fresh_metadata=False,
         )
         if resolve_sheet_ref
         else None
@@ -903,7 +909,9 @@ def feishu_operation(
             ensure_rows_result = _ensure_sheet_rows_for_range(
                 spreadsheet_token,
                 qualified_range,
-                require_fresh_metadata=True,
+                # ``qualified_range`` was obtained from a strict fresh
+                # metadata resolution immediately above.
+                require_fresh_metadata=False,
             )
         except Exception as exc:
             return {"error": f"write_sheet row validation failed: {str(exc)[:300]}"}

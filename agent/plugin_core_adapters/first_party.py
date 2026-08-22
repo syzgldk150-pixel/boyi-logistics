@@ -1883,6 +1883,20 @@ def _append_yunda_dispatch_bitable(
         "ensure_fields": ensure_fields,
         "dry_run": False,
     }
+    if not records:
+        # This is append-only. An empty source must not create fields or issue
+        # a write request merely to manufacture a write-attempt receipt.
+        _list_exact_bitable_records(base_token, table_id)
+        return {
+            "ok": True,
+            "record_count": 0,
+            "written": 0,
+            "created_fields": 0,
+            "verified": True,
+            "readback_count": 0,
+            "readback_sha256": _readback_digest([]),
+            "no_op": True,
+        }
     field_result = sink._ensure_fields(base_token, table_id, params)
     if not isinstance(field_result, Mapping) or field_result.get("error"):
         return {"ok": False, "record_count": 0}
@@ -1894,15 +1908,7 @@ def _append_yunda_dispatch_bitable(
         has_explicit_main_field=has_explicit_main_field,
     )
     if not payload:
-        return {
-            "ok": True,
-            "record_count": 0,
-            "written": 0,
-            "created_fields": len(field_result.get("created") or []),
-            "verified": True,
-            "readback_count": 0,
-            "readback_sha256": _readback_digest([]),
-        }
+        return {"ok": False, "record_count": 0}
     if len(payload) != len(records):
         return {"ok": False, "record_count": 0}
     canonical_by_actual: dict[str, str] = {}
