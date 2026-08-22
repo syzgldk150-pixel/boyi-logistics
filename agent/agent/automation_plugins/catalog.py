@@ -228,6 +228,23 @@ def project_capability_from_snapshot(
 
     committed = _snapshot_execution_metadata(snapshot)
     descriptor = copy.deepcopy(dict(committed["runtime_descriptor"]))
+    runtime_permissions = copy.deepcopy(dict(descriptor["runtime_permissions"]))
+    broker_operations = runtime_permissions.get("broker_operations")
+    if isinstance(broker_operations, list):
+        normalized_operations: list[object] = []
+        for operation in broker_operations:
+            normalized = copy.deepcopy(operation)
+            if isinstance(normalized, dict) and set(normalized) == {
+                "operation",
+                "action",
+                "roles",
+            }:
+                # Schema-v1 signed packages did not declare broker effects.
+                # Their immutable descriptor was verified above; execution
+                # alone conservatively projects the missing effect as write.
+                normalized["effect"] = "write"
+            normalized_operations.append(normalized)
+        runtime_permissions["broker_operations"] = normalized_operations
     capability = copy.deepcopy(dict(committed["action_contract"]))
     capability["name"] = f"automation.{snapshot.automation_id}.run"
     capability["_plugin_runtime"] = {
@@ -242,7 +259,7 @@ def project_capability_from_snapshot(
         "runtime": copy.deepcopy(descriptor["runtime"]),
         "core_tool_name": str(committed["governance_anchor"].get("name") or ""),
         "install_metadata": copy.deepcopy(descriptor["install_metadata"]),
-        "runtime_permissions": copy.deepcopy(descriptor["runtime_permissions"]),
+        "runtime_permissions": runtime_permissions,
         "governance_anchor": copy.deepcopy(committed["governance_anchor"]),
         "governance_anchor_sha256": _canonical_digest(committed["governance_anchor"]),
         "account_roles": copy.deepcopy(descriptor["account_roles"]),
