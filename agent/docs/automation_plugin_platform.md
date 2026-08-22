@@ -124,6 +124,8 @@ actor、`automation_id`、manifest 或签名/完整性内部字段。读取目�
 Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resource role 的 `kind` 精确过滤候选，
 不会默认选中第一项；已保存 ID 也必须重新核验状态与类型。provider 不可用、descriptor 字段多/缺、
 必填绑定缺失、资源停用或类型漂移时，目录投影标记资源池不可用，项目配置与执行 fail closed。
+目录响应中的 `hidden_automation_ids` 只列出当前发行明确排除且确实存在于持久化实例表的身份；
+它用于 Console 隐藏历史/静态展示，不代表可执行项目，也不能把未持久化的 deferred 身份补回目录。
 
 迁移 `018` 的资源闭包由当前 16 个可发布首方实例模板反向校验：模板绑定的并集必须精确等于 26 个
 审阅身份。其中 18 个代码内置身份由 `phase7_resource_import.BUILTIN_RESOURCES` 提供精确配置，另 8 个
@@ -211,6 +213,13 @@ started writes 的失败保存为 `FAILED_BEFORE_WRITE`，任何已开始但未�
 
 外部网页、Office、飞书或财务写入不可逆，不能伪造 inverse。活跃、`VERIFYING`、过期但未定论的
 lease 或未知写结果都会阻断 dispose，直到权威读后核验或人工处置。
+
+未知写不会被清除、伪造为成功或自动重放。若当前代已精确落为 `BLOCKED` 且存在同代
+`WRITE_OUTCOME_UNKNOWN` lease，平台允许一个独立、完整 `PREPARED` 后继代在提交事务中同时锁定
+项目、前代与 lease 后原子成为新的 committed route；前代保持 `BLOCKED`，lease 和历史 Run/Evidence
+保持不可变，并作为不可删除的审计归档退出运行健康阻断。此例外只适用于已经不再路由的精确未知写
+前代：当前代未知写、普通 `BLOCKED`、缺少未知写 lease、配置或 effect 未闭合仍然 fail closed；旧代的
+异步 release/finalize 也只能更新旧代，不能把已经切换的新路由重新标成 `BLOCKED_UNKNOWN_WRITE`。
 
 ### Broker write receipts and recovery
 

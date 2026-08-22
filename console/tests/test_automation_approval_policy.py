@@ -9,8 +9,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.app import LocalDocFlowApp
 from console.services.automation import (
+    apply_automation_project_execution_gate,
     build_automation_project_policy_view,
     normalize_automation_approval_batch_result,
+    normalize_hidden_automation_ids,
     normalize_automation_pending_approvals,
     normalize_automation_project_policy_items,
 )
@@ -219,7 +221,70 @@ class AutomationProjectExecutionGateTests(unittest.TestCase):
         service._load_automation_project_policies(self._handler(), [task])
 
         self.assertFalse(task["can_run_now"])
-        self.assertEqual("项目当前不可运行", task["run_disabled_reason"])
+        self.assertEqual("所有运行入口均已关闭", task["run_disabled_reason"])
+
+    def test_closed_runtime_reasons_are_projected_without_collapsing_to_generic_error(self):
+        expected = {
+            "PROJECT_DISABLED": "项目已停用",
+            "PROJECT_CONFIGURATION_INCOMPLETE": (
+                "项目配置尚未完整；运行、启用和完全自动均已阻断。"
+            ),
+            "ENTRYPOINTS_DISABLED": "所有运行入口均已关闭",
+            "PROJECT_CONTRACT_UNAVAILABLE": (
+                "项目签名合同错误；运行、启用和完全自动均已阻断。"
+            ),
+            "RECONCILE_PREPARING": "运行环境同步中",
+            "PROJECT_RUNTIME_UNAVAILABLE": "运行环境不可用/待修复",
+        }
+        for reason, label in expected.items():
+            with self.subTest(reason=reason):
+                task = self._task()
+                apply_automation_project_execution_gate(
+                    task,
+                    {
+                        "available": True,
+                        "runnable": False,
+                        "runtime_status": (
+                            "RECONCILING"
+                            if reason.startswith("RECONCILE_")
+                            else "UNAVAILABLE"
+                            if reason == "PROJECT_RUNTIME_UNAVAILABLE"
+                            else "READY"
+                        ),
+                        "runtime_reason": reason,
+                    },
+                )
+                self.assertEqual(label, task["run_disabled_reason"])
+
+    def test_console_only_disabled_keeps_entrypoint_specific_reason(self):
+        task = self._task()
+        task["can_run_now"] = False
+        task["run_disabled_reason"] = "后台入口已关闭"
+        apply_automation_project_execution_gate(
+            task,
+            {
+                "available": True,
+                "runnable": True,
+                "runtime_status": "READY",
+                "runtime_reason": "",
+            },
+        )
+        self.assertEqual("后台入口已关闭", task["run_disabled_reason"])
+
+    def test_hidden_catalog_ids_accept_only_closed_identity_list(self):
+        self.assertEqual(
+            frozenset({"r7_arrival_checkin", "historic-project"}),
+            normalize_hidden_automation_ids(
+                {
+                    "hidden_automation_ids": [
+                        "r7_arrival_checkin",
+                        "historic-project",
+                        "not valid",
+                        123,
+                    ]
+                }
+            ),
+        )
 
     def test_missing_or_failed_policy_load_disables_console_execution(self):
         responses = (

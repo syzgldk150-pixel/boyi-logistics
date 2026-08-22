@@ -815,6 +815,7 @@ class MySQLRuntimeTargetService:
             # therefore a safe, non-blocking catalog state.
             return None
         by_number = {item.snapshot.generation: item for item in generations}
+        blocked_unknown_committed = False
         if runtime is not None:
             committed_generation = runtime.committed_generation
             committed = (
@@ -831,15 +832,17 @@ class MySQLRuntimeTargetService:
                     automation_id,
                     committed_generation,
                 ):
-                    # A later upgrade may already have replaced the project-level
-                    # reconcile marker with PREPARING.  The committed generation
-                    # and its unknown-write lease remain the authoritative safety
-                    # fence: isolate this project before considering any target.
-                    return None
-                raise PluginConflictError(
-                    "committed runtime generation is blocked without unknown-write evidence",
-                    code="RUNTIME_COMMIT_INCONSISTENT",
-                )
+                    # Preserve the unknown-write generation as an archival
+                    # safety fence, but allow a separately prepared successor
+                    # to atomically take the current route.  The repository CAS
+                    # locks and verifies this exact state and lease before it
+                    # permits the exception.
+                    blocked_unknown_committed = True
+                else:
+                    raise PluginConflictError(
+                        "committed runtime generation is blocked without unknown-write evidence",
+                        code="RUNTIME_COMMIT_INCONSISTENT",
+                    )
             target = by_number.get(runtime.target_generation)
             if target is not None and target.state in {
                 RuntimeGenerationState.TARGET,
@@ -860,7 +863,11 @@ class MySQLRuntimeTargetService:
                 # These states require evidence or an explicit administrator
                 # repair.  Keep the affected project unavailable without
                 # preventing the rest of the Agent from starting.
-                return None
+                if not (
+                    runtime.reconcile_state is RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
+                    and blocked_unknown_committed
+                ):
+                    return None
 
         config, policy = self._desired_rows(automation_id)
         next_generation = max(by_number, default=0) + 1
@@ -1070,6 +1077,9 @@ class ProductionAutomationPluginRuntime:
                 "project_count": generations.project_count,
                 "committed_count": generations.committed_count,
                 "active_lease_count": generations.active_lease_count,
+                "archival_unknown_generation_count": (
+                    getattr(generations, "archival_unknown_generation_count", 0)
+                ),
                 "blocked_projects": {
                     key: list(value)
                     for key, value in sorted(generations.blocked_projects.items())

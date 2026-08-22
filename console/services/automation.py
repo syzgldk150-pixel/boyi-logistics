@@ -46,12 +46,27 @@ def group_scheduled_rows_by_automation_id(
 def _automation_plugin_block_warning(plugin: Mapping[str, Any]) -> str:
     """Keep configuration closure distinct from an immutable runtime transition."""
 
+    if plugin.get("configured") is not True:
+        return AUTOMATION_RUNTIME_REASON_LABELS[
+            "PROJECT_CONFIGURATION_INCOMPLETE"
+        ]
+    enabled_entrypoints = plugin.get("enabled_entrypoints")
+    if isinstance(enabled_entrypoints, list) and not enabled_entrypoints:
+        return AUTOMATION_RUNTIME_REASON_LABELS["ENTRYPOINTS_DISABLED"]
     missing = [
         str(item).strip()
         for item in plugin.get("missing_requirements") or []
         if str(item).strip()
     ]
     if missing:
+        if any(
+            "合同" in item
+            or "Schema" in item
+            or "投影" in item
+            or "运行描述符" in item
+            for item in missing
+        ):
+            return AUTOMATION_RUNTIME_CONTRACT_ERROR_LABEL
         return "；".join(dict.fromkeys(missing))
     state = str(plugin.get("state") or "UNKNOWN").upper()
     if state not in AUTOMATION_PLUGIN_STABLE_STATES:
@@ -64,9 +79,7 @@ def _automation_plugin_block_warning(plugin: Mapping[str, Any]) -> str:
             f"运行环境正在协调：项目状态 {state}，协调阶段 {reconcile_state}；"
             "正在核验并重建旧版签名运行描述符，配置与完全自动意图保持不变。"
         )
-    if plugin.get("configured") is not True:
-        return "项目配置尚未闭合；请展开项目设置补齐必填字段、账号和资源。"
-    return "运行环境不可用；请刷新后查看 Agent 返回的精确阻断原因。"
+    return AUTOMATION_RUNTIME_REASON_LABELS["PROJECT_RUNTIME_UNAVAILABLE"]
 
 
 class AutomationServiceMixin(AutomationProjectsServiceMixin):
@@ -447,12 +460,14 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             automation_plugin_instances,
             automation_workers,
             unsupported_automation_ids,
+            hidden_automation_ids,
             automation_plugin_warning,
             can_manage_plugins,
         ) = self._load_automation_plugin_catalog(handler)
         plugin_instances_by_id = {
             str(item["automation_id"]): item for item in automation_plugin_instances
         }
+        deferred_fallback_ids = set(AUTOMATION_DEFERRED_FALLBACK_IDS)
 
         scheduled_row_groups = group_scheduled_rows_by_automation_id(scheduled_rows)
         workflow_resources = {
@@ -463,6 +478,13 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         tasks_by_id: dict[str, dict[str, Any]] = {}
         for scheduled_group in scheduled_row_groups:
             base_task_id = str(scheduled_group["task_id"])
+            if (
+                base_task_id in hidden_automation_ids
+                or base_task_id in deferred_fallback_ids
+            ) and base_task_id not in plugin_instances_by_id:
+                # Historical rows stay in Agent for audit, but an explicitly
+                # deferred project must not render an unusable Console card.
+                continue
             automation_link_missing = bool(
                 scheduled_group["missing_automation_id"]
             )
@@ -645,6 +667,14 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             for workflow in AUTOMATION_WORKFLOW_CATALOG:
                 workflow_task_id = str(workflow.get("task_id", "") or "")
                 if not workflow_task_id or workflow_task_id in tasks_by_id:
+                    continue
+                if (
+                    workflow_task_id in deferred_fallback_ids
+                    or (
+                        workflow_task_id in hidden_automation_ids
+                        and workflow_task_id not in plugin_instances_by_id
+                    )
+                ):
                     continue
                 tasks_by_id[workflow_task_id] = self._build_virtual_automation_task(
                     workflow_task_id,
@@ -1207,7 +1237,17 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "error_code": str(run_result.get("error_code") or "COMMAND_SUBMIT_FAILED"),
             }
             if ajax_request:
-                self._send_json(handler, HTTPStatus.BAD_GATEWAY, response_payload)
+                try:
+                    upstream_status = HTTPStatus(int(run_result.get("status")))
+                except (TypeError, ValueError):
+                    upstream_status = HTTPStatus.BAD_GATEWAY
+                if upstream_status not in {
+                    HTTPStatus.CONFLICT,
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                }:
+                    upstream_status = HTTPStatus.BAD_GATEWAY
+                self._send_json(handler, upstream_status, response_payload)
                 return
             self._render_automations(
                 handler,

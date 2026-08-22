@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -409,6 +410,7 @@ class _Gateway:
     def __init__(self, repository: _Repository) -> None:
         self.repository = repository
         self.command = None
+        self.run_result = None
 
     def submit(self, command, *, uow_guard=None):
         with self.repository.unit_of_work() as uow:
@@ -426,6 +428,8 @@ class _Gateway:
 
     async def wait_for_run(self, run_id, *, timeout_seconds):
         self.waited = (run_id, timeout_seconds)
+        if self.run_result is not None:
+            return dict(self.run_result)
         return {
             "run_id": run_id,
             "command_id": self.command.command_id,
@@ -700,6 +704,56 @@ class AutomationProjectPolicyServiceTests(TestCase):
                     projection["runtime_reason"],
                 )
 
+    def test_policy_projection_uses_stable_reason_priority_for_closed_projects(self):
+        self.service._compile_entry = (  # type: ignore[method-assign]
+            lambda _entry, _rows: self.contract
+        )
+        policy = {
+            **self.repository.state.policy,
+            "mode": "PROJECT_FULL_AUTO",
+        }
+        cases = (
+            (False, False, (), "PROJECT_DISABLED"),
+            (True, False, (), "PROJECT_CONFIGURATION_INCOMPLETE"),
+            (True, True, (), "ENTRYPOINTS_DISABLED"),
+        )
+        for enabled, configured, entrypoints, expected_reason in cases:
+            with self.subTest(expected_reason=expected_reason):
+                entry = SimpleNamespace(
+                    automation_id=AUTOMATION_ID,
+                    enabled=enabled,
+                    configured=configured,
+                    target_generation=1,
+                    committed_generation=1,
+                    reconcile_state="STABLE",
+                    current_enabled_entrypoints=entrypoints,
+                    project_config_version=1,
+                )
+                projection = self.service._describe_entry(entry, policy)
+                self.assertFalse(projection["runnable"])
+                self.assertEqual(expected_reason, projection["runtime_reason"])
+
+    def test_policy_projection_keeps_contract_error_ahead_of_reconcile_reason(self):
+        def raise_contract(_entry, _rows):
+            raise RuntimeError("invalid committed project contract")
+
+        self.service._compile_entry = raise_contract  # type: ignore[method-assign]
+        entry = SimpleNamespace(
+            automation_id=AUTOMATION_ID,
+            enabled=True,
+            configured=True,
+            target_generation=2,
+            committed_generation=1,
+            reconcile_state="PREPARING",
+            current_enabled_entrypoints=("console",),
+            project_config_version=2,
+        )
+        projection = self.service._describe_entry(
+            entry,
+            {**self.repository.state.policy, "mode": "PROJECT_FULL_AUTO"},
+        )
+        self.assertEqual("PROJECT_CONTRACT_UNAVAILABLE", projection["runtime_reason"])
+
     def test_startup_defaults_bootstrapped_policy_to_durable_full_auto(self):
         result = self.service.ensure_default_full_auto_policies()
 
@@ -831,6 +885,48 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual(
             "schedule-one",
             command.parameters["execution_context"]["task_id"],
+        )
+
+    def test_trusted_wait_preserves_terminal_error_for_scheduler_status(self):
+        self.contract = _contract_for(AutomationEntrypoint.SCHEDULER)
+        self.gateway.run_result = {
+            "run_id": "run-invoke",
+            "command_id": "command-failed",
+            "work_item_id": "work-invoke",
+            "status": "FAILED_TERMINAL",
+            "correlation_id": "correlation-failed",
+            "error_code": "PROJECT_INVOCATION_STALE",
+            "error_summary": "Committed automation contract no longer matches",
+        }
+        actor = Actor(
+            ActorType.SCHEDULER,
+            "schedule-one",
+            roles=("system",),
+            authenticated_by="apscheduler",
+        )
+
+        result = asyncio.run(
+            self.service.invoke_trusted_and_wait(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.SCHEDULER,
+                request_id="scheduler:schedule-one:failed",
+                actor=actor,
+                trusted_context={
+                    "task_id": "schedule-one",
+                    "scheduled_for": "2026-08-15T07:00:00+08:00",
+                    "cron_expression": "0 7 * * *",
+                    "configuration_version": 1,
+                },
+                expected_automation_generation=1,
+                expected_project_configuration_version=1,
+            )
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual("PROJECT_INVOCATION_STALE", result["error_code"])
+        self.assertEqual(
+            "Committed automation contract no longer matches",
+            result["error_summary"],
         )
 
     def test_scheduler_invocation_rejects_missing_or_different_task_contract(self):
