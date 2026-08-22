@@ -157,8 +157,10 @@ def test_production_site_resource_handlers_use_exact_bound_resource_ids(monkeypa
             return {"values": list(sheet_rows)}
         raise AssertionError(action)
 
-    def bitable(resource_id, records, params):
+    def bitable(resource_id, records, params, *, mark_write_started=None):
         nonlocal bitable_rows
+        if mark_write_started is not None:
+            mark_write_started()
         calls.append(("bitable", resource_id, records))
         assert params == {
             "base_token": "base-test",

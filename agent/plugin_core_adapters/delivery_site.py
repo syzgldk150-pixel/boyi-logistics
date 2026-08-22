@@ -24,7 +24,10 @@ from agent.tms_runtime.errors import TMSAuthStateError
 
 ResourceLoader = Callable[[str], Mapping[str, Any] | None]
 FeishuOperation = Callable[[str, dict[str, Any]], Mapping[str, Any]]
-SiteBitableSync = Callable[[str, list[dict[str, Any]], dict[str, Any]], Mapping[str, Any]]
+SiteBitableSync = Callable[
+    [str, list[dict[str, Any]], dict[str, Any], WriteStartMarker],
+    Mapping[str, Any],
+]
 SiteSheetSync = Callable[[str, list[list[Any]], dict[str, Any]], Mapping[str, Any]]
 ProjectionRead = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
 ProjectionWrite = Callable[[list[str], str], Mapping[str, Any]]
@@ -84,10 +87,16 @@ def _default_site_bitable_sync(
     resource_id: str,
     records: list[dict[str, Any]],
     params: dict[str, Any],
+    write_started: WriteStartMarker,
 ) -> Mapping[str, Any]:
     from tools.phase7_sync_common import sync_bitable_snapshot
 
-    return sync_bitable_snapshot(resource_id, records, params)
+    return sync_bitable_snapshot(
+        resource_id,
+        records,
+        params,
+        mark_write_started=write_started,
+    )
 
 
 def _default_site_sheet_sync(
@@ -556,7 +565,6 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
-            mark_write_started(write_started)
             response = sync_bitable(
                 resource_id,
                 translated,
@@ -567,6 +575,7 @@ def build_production_delivery_site_ports(
                     "as": "bot",
                     "dry_run": False,
                 },
+                write_started,
             )
         except Exception as exc:
             write_error = exc
