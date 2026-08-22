@@ -876,6 +876,116 @@ def test_site_invalid_sheet_binding_fails_before_write_with_original_code() -> N
     assert marks == []
 
 
+@pytest.mark.parametrize("sink", ["bitable", "sheet"])
+def test_empty_site_snapshot_is_a_verified_noop_only_when_both_reads_are_empty(
+    sink: str,
+) -> None:
+    marks: list[str] = []
+    sync_calls: list[str] = []
+
+    def resource(resource_id: str) -> Mapping[str, Any]:
+        if sink == "bitable":
+            assert resource_id == _SITE_BITABLE_ID
+            return {
+                "resource_kind": "feishu_bitable",
+                "base_token": "site-base",
+                "table_id": "site-table",
+                "_meta": {"resource_key": resource_id},
+            }
+        assert resource_id == _SITE_SHEET_ID
+        return {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "site-sheet-token",
+            "range": "Data!A2:F100",
+            "clear_range": "Data!A2:F100",
+            "_meta": {"resource_key": resource_id},
+        }
+
+    def feishu(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        if sink == "bitable":
+            assert action == "list_records"
+            return {"items": [], "has_more": False}
+        assert action == "read_sheet"
+        return {"values": []}
+
+    def no_op_bitable(*_args: object) -> Mapping[str, Any]:
+        sync_calls.append("bitable")
+        return {"ok": True, "written": 0}
+
+    def no_op_sheet(*_args: object) -> Mapping[str, Any]:
+        sync_calls.append("sheet")
+        return {"ok": True, "rows": 0}
+
+    handlers = _delivery_handlers(
+        build_production_delivery_site_ports(
+            account_manager=_Manager(),
+            resource_loader=resource,
+            feishu_operation=feishu,
+            site_bitable_sync=no_op_bitable,
+            site_sheet_sync=no_op_sheet,
+        )
+    )
+    if sink == "bitable":
+        result = handlers[("network.request", "feishu.bitable.replace_snapshot")](
+            _site_context(
+                action="feishu.bitable.replace_snapshot",
+                role="site_send_bitable",
+                resource_id=_SITE_BITABLE_ID,
+                mark_write_started=lambda: marks.append("started"),
+            ),
+            {"records": [], "target_date": "2026-08-15"},
+        )
+    else:
+        result = handlers[("network.request", "feishu.sheet.replace")](
+            _site_context(
+                action="feishu.sheet.replace",
+                role="site_send_sheet",
+                resource_id=_SITE_SHEET_ID,
+                mark_write_started=lambda: marks.append("started"),
+            ),
+            {"values": [], "target_date": "2026-08-15"},
+        )
+
+    assert sync_calls == [sink]
+    assert marks == []
+    assert result["_broker_verified_write_noop_v1"] is True
+    assert result["record_count"] == result["readback_count"] == result["written"] == 0
+
+
+def test_delivery_bitable_marker_callback_failure_is_failed_before_write() -> None:
+    rows = [_bitable_row("record-1", "WB-1", "未签收")]
+    write_calls: list[str] = []
+
+    def feishu(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        if action == "list_records":
+            return {"items": deepcopy(rows), "has_more": False}
+        write_calls.append(action)
+        raise AssertionError("write must not run after marker receipt failure")
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        resource_loader=lambda resource_id: {
+            "resource_kind": "feishu_bitable",
+            "base_token": "base-test",
+            "table_id": "table-test",
+            "_meta": {"resource_key": resource_id},
+        },
+        feishu_operation=feishu,
+    )
+
+    def marker_failure() -> None:
+        raise RuntimeError("durable receipt unavailable")
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("network.request", "feishu.bitable.write_records")](
+            _resource_context(mark_write_started=marker_failure),
+            {"records": [{"record_id": "record-1", "status": "已签收"}]},
+        )
+
+    assert exc.value.code == "FAILED_BEFORE_WRITE"
+    assert write_calls == []
+
+
 @pytest.mark.parametrize("response_count", [0, 1, 3])
 @pytest.mark.parametrize("sink", ["bitable", "sheet"])
 def test_site_sinks_reject_zero_partial_or_extra_write_counts(
