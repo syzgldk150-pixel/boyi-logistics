@@ -2470,7 +2470,7 @@ def run_test_generation_write_lock_order_races(case):
                 )
                 if receipt:
                     cursor.execute(
-                        """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id, generation, lease_id, orchestration_run_id, step_id, request_id, operation, action, argument_sha256, target_ref_sha256, target_ref_json, outcome, created_at, updated_at)
+                        """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id, generation, lease_id, orchestration_run_id, step_id, request_id, operation, action, argument_sha256, target_ref_sha256, target_ref_json, outcome, evidence_sha256, created_at, updated_at)
                            VALUES (%s, %s, 1, %s, %s, %s, %s, 'write', 'sync', %s, %s, %s, 'WRITE_VERIFIED', %s, NOW(6), NOW(6))""",
                         (str(uuid4()), automation_id, lease_id, run_id, str(uuid4()), str(uuid4()), "4" * 64, target_ref_sha256, json.dumps(target_ref), "9" * 64),
                     )
