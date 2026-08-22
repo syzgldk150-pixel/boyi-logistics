@@ -30,7 +30,7 @@ class _Manager:
         }
 
 
-def _resource_context() -> CoreBrokerInvocationContext:
+def _resource_context(*, mark_write_started=None) -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id="delivery-test",
         plugin_version="1.0.0",
@@ -40,10 +40,11 @@ def _resource_context() -> CoreBrokerInvocationContext:
         role="delivery_status_bitable",
         resource_id=_RESOURCE_ID,
         resource_bindings={"delivery_status_bitable": _RESOURCE_ID},
+        mark_write_started=mark_write_started,
     )
 
 
-def _projection_context() -> CoreBrokerInvocationContext:
+def _projection_context(*, mark_write_started=None) -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id="delivery-test",
         plugin_version="1.0.0",
@@ -53,10 +54,17 @@ def _projection_context() -> CoreBrokerInvocationContext:
         role="account_id",
         account_ids=("ronghui-test",),
         account_bindings={"account_id": ("ronghui-test",)},
+        mark_write_started=mark_write_started,
     )
 
 
-def _site_context(*, action: str, role: str, resource_id: str) -> CoreBrokerInvocationContext:
+def _site_context(
+    *,
+    action: str,
+    role: str,
+    resource_id: str,
+    mark_write_started=None,
+) -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id="site-send-test",
         plugin_version="1.0.0",
@@ -66,6 +74,7 @@ def _site_context(*, action: str, role: str, resource_id: str) -> CoreBrokerInvo
         role=role,
         resource_id=resource_id,
         resource_bindings={role: resource_id},
+        mark_write_started=mark_write_started,
     )
 
 
@@ -130,6 +139,8 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
         "WB-2": _projection_row("WB-2", "in_transit"),
     }
     reads: list[tuple[str, str, int]] = []
+    bitable_marks: list[str] = []
+    projection_marks: list[str] = []
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
         assert params["base_token"] == "base-test"
@@ -138,6 +149,7 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
             reads.append((action, params["table_id"], params["offset"]))
             return {"items": deepcopy(bitable_rows), "has_more": False}
         assert action == "write_records"
+        assert bitable_marks == ["started"]
         assert set(params) == {
             "base_token",
             "table_id",
@@ -155,6 +167,7 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
         return [deepcopy(projection_rows[code]) for code in codes]
 
     def write_projection(codes: list[str], status: str) -> Mapping[str, Any]:
+        assert projection_marks == ["started"]
         for code in codes:
             projection_rows[code]["status"] = status
         return {"ok": True, "updated": len(codes)}
@@ -174,7 +187,7 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
     handlers = _delivery_handlers(ports)
 
     bitable = handlers[("network.request", "feishu.bitable.write_records")](
-        _resource_context(),
+        _resource_context(mark_write_started=lambda: bitable_marks.append("started")),
         {
             "records": [
                 {"record_id": "record-1", "status": "已签收"},
@@ -183,7 +196,7 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
         },
     )
     projection = handlers[("projection.invoke", "waybill.delivery_status.update")](
-        _projection_context(),
+        _projection_context(mark_write_started=lambda: projection_marks.append("started")),
         {"bill_codes": ["WB-1", "WB-2"], "status": "signed"},
     )
 
@@ -192,6 +205,8 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
     assert projection["committed"] is True
     assert projection["updated"] == 2
     assert len(reads) == 2
+    assert bitable_marks == ["started"]
+    assert projection_marks == ["started"]
     assert all(table_id == "table-test" and offset == 0 for _, table_id, offset in reads)
     assert "base-test" not in bitable["evidence_ref"]
     assert _RESOURCE_ID not in bitable["evidence_ref"]
@@ -332,6 +347,7 @@ def test_delivery_bitable_rejects_zero_partial_or_extra_write_counts(
 
 
 def test_delivery_pre_write_resource_binding_error_keeps_original_code() -> None:
+    marks: list[str] = []
     def load_resource(resource_id: str) -> Mapping[str, Any]:
         raise PluginExecutionError(
             "resource revision changed",
@@ -345,16 +361,83 @@ def test_delivery_pre_write_resource_binding_error_keeps_original_code() -> None
 
     with pytest.raises(PluginExecutionError) as exc:
         _delivery_handlers(ports)[("network.request", "feishu.bitable.write_records")](
-            _resource_context(),
+            _resource_context(mark_write_started=lambda: marks.append("started")),
             {"records": [{"record_id": "record-1", "status": "已签收"}]},
         )
     assert exc.value.code == "BROKER_RESOURCE_MISMATCH"
+    assert marks == []
+
+
+def test_delivery_pre_write_snapshot_failure_does_not_mark_write_started() -> None:
+    marks: list[str] = []
+    write_calls: list[object] = []
+
+    def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
+        if action == "list_records":
+            raise RuntimeError("fresh snapshot unavailable")
+        write_calls.append(params)
+        return {"ok": True, "written": 1}
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        resource_loader=lambda resource_id: {
+            "resource_kind": "feishu_bitable",
+            "base_token": "base-test",
+            "table_id": "table-test",
+            "_meta": {"resource_key": resource_id},
+        },
+        feishu_operation=feishu,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("network.request", "feishu.bitable.write_records")](
+            _resource_context(mark_write_started=lambda: marks.append("started")),
+            {"records": [{"record_id": "record-1", "status": "已签收"}]},
+        )
+
+    assert exc.value.code == "BROKER_RESOURCE_UNAVAILABLE"
+    assert marks == []
+    assert write_calls == []
+
+
+def test_delivery_pre_write_identity_failure_does_not_mark_write_started() -> None:
+    marks: list[str] = []
+    write_calls: list[object] = []
+
+    def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
+        if action == "list_records":
+            return {"items": [_bitable_row("other-record", "WB-OTHER", "未签收")], "has_more": False}
+        write_calls.append(params)
+        return {"ok": True, "written": 1}
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        resource_loader=lambda resource_id: {
+            "resource_kind": "feishu_bitable",
+            "base_token": "base-test",
+            "table_id": "table-test",
+            "_meta": {"resource_key": resource_id},
+        },
+        feishu_operation=feishu,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("network.request", "feishu.bitable.write_records")](
+            _resource_context(mark_write_started=lambda: marks.append("started")),
+            {"records": [{"record_id": "record-1", "status": "已签收"}]},
+        )
+
+    assert exc.value.code == "BROKER_SOURCE_INVALID"
+    assert marks == []
+    assert write_calls == []
 
 
 def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> None:
     bitable_rows = [_external_site_row("old", "OLD")]
     sheet_rows: list[list[Any]] = [["OLD", "旧站", "袋", 1, 2, "旧目的"]]
     sync_calls: list[tuple[str, str, str]] = []
+    bitable_marks: list[str] = []
+    sheet_marks: list[str] = []
 
     def load_resource(resource_id: str) -> Mapping[str, Any]:
         if resource_id == _SITE_BITABLE_ID:
@@ -392,6 +475,7 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
         assert resource_id == _SITE_BITABLE_ID
         assert params["base_token"] == "site-base"
         assert params["table_id"] == "site-table"
+        assert bitable_marks == ["started"]
         sync_calls.append(("bitable", resource_id, params["target_date"]))
         bitable_rows = [
             {"record_id": f"new-{index}", "fields": deepcopy(row["fields"])} for index, row in enumerate(records)
@@ -407,6 +491,7 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
         assert resource_id == _SITE_SHEET_ID
         assert params["spreadsheet_token"] == "site-sheet-token"
         assert params["range"] == params["clear_range"] == "Data!A2:F100"
+        assert sheet_marks == ["started"]
         sync_calls.append(("sheet", resource_id, params["target_date"]))
         sheet_rows = deepcopy(rows)
         return {"ok": True, "rows": len(rows)}
@@ -426,6 +511,7 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
             action="feishu.bitable.replace_snapshot",
             role="site_send_bitable",
             resource_id=_SITE_BITABLE_ID,
+            mark_write_started=lambda: bitable_marks.append("started"),
         ),
         {"records": records, "target_date": "2026-08-15"},
     )
@@ -434,6 +520,7 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
             action="feishu.sheet.replace",
             role="site_send_sheet",
             resource_id=_SITE_SHEET_ID,
+            mark_write_started=lambda: sheet_marks.append("started"),
         ),
         {
             "values": [["WB-1", "发货站", "纸箱", 0, 0, "目的站"]],
@@ -448,6 +535,8 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
         ("bitable", _SITE_BITABLE_ID, "2026-08-15"),
         ("sheet", _SITE_SHEET_ID, "2026-08-15"),
     ]
+    assert bitable_marks == ["started"]
+    assert sheet_marks == ["started"]
 
 
 @pytest.mark.parametrize(
@@ -614,6 +703,7 @@ def test_site_write_response_loss_is_unknown_and_target_date_is_required() -> No
 
 def test_site_invalid_sheet_binding_fails_before_write_with_original_code() -> None:
     writes: list[object] = []
+    marks: list[str] = []
     ports = build_production_delivery_site_ports(
         account_manager=_Manager(),
         resource_loader=lambda resource_id: {
@@ -631,6 +721,7 @@ def test_site_invalid_sheet_binding_fails_before_write_with_original_code() -> N
                 action="feishu.sheet.replace",
                 role="site_send_sheet",
                 resource_id=_SITE_SHEET_ID,
+                mark_write_started=lambda: marks.append("started"),
             ),
             {
                 "values": [["WB-1", "发货站", "纸箱", 0, 0, "目的站"]],
@@ -640,6 +731,7 @@ def test_site_invalid_sheet_binding_fails_before_write_with_original_code() -> N
 
     assert exc.value.code == "BROKER_RESOURCE_INVALID"
     assert writes == []
+    assert marks == []
 
 
 @pytest.mark.parametrize("response_count", [0, 1, 3])

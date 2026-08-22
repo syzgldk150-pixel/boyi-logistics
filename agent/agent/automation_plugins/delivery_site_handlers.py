@@ -28,10 +28,11 @@ from agent.automation_plugins.manifest import canonical_json_bytes
 
 
 AccountDescriptorPort = Callable[[str], Mapping[str, Any]]
-SiteBitableReplacePort = Callable[[str, list[dict[str, Any]], str], Mapping[str, Any]]
-SiteSheetReplacePort = Callable[[str, list[list[Any]], str], Mapping[str, Any]]
-DeliveryBitableWritePort = Callable[[str, list[dict[str, str]]], Mapping[str, Any]]
-DeliveryProjectionUpdatePort = Callable[[tuple[str, ...], str], Mapping[str, Any]]
+WriteStartMarker = Callable[[], None] | None
+SiteBitableReplacePort = Callable[[str, list[dict[str, Any]], str, WriteStartMarker], Mapping[str, Any]]
+SiteSheetReplacePort = Callable[[str, list[list[Any]], str, WriteStartMarker], Mapping[str, Any]]
+DeliveryBitableWritePort = Callable[[str, list[dict[str, str]], WriteStartMarker], Mapping[str, Any]]
+DeliveryProjectionUpdatePort = Callable[[tuple[str, ...], str, WriteStartMarker], Mapping[str, Any]]
 
 
 SITE_WRITE_ACTION_KEYS = frozenset(
@@ -326,11 +327,6 @@ class _DeliverySiteHandlers:
         self._ports = ports
         self._codec = _OpaqueCodec(secret)
 
-    @staticmethod
-    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
-        if context.mark_write_started is not None:
-            context.mark_write_started()
-
     def replace_site_bitable(
         self,
         context: CoreBrokerInvocationContext,
@@ -350,11 +346,11 @@ class _DeliverySiteHandlers:
             raise _error("site-send Bitable arguments are invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(arguments.get("target_date"))
         records = _site_records(arguments.get("records"))
-        self._mark_write_started(context)
         result = self._ports.site_bitable_replace(
             _resource_id(context, _SITE_BITABLE_ROLE),
             records,
             target_date,
+            context.mark_write_started,
         )
         return _verified_result(
             result,
@@ -384,11 +380,11 @@ class _DeliverySiteHandlers:
             raise _error("site-send Sheet arguments are invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(arguments.get("target_date"))
         rows = _site_sheet_rows(arguments.get("values"))
-        self._mark_write_started(context)
         result = self._ports.site_sheet_replace(
             _resource_id(context, _SITE_SHEET_ROLE),
             rows,
             target_date,
+            context.mark_write_started,
         )
         return _verified_result(
             result,
@@ -414,11 +410,11 @@ class _DeliverySiteHandlers:
         if not isinstance(arguments, Mapping) or set(arguments) != {"records"}:
             raise _error("delivery Bitable arguments are invalid", "BROKER_ARGUMENT_INVALID")
         records = _delivery_records(arguments.get("records"))
-        self._mark_write_started(context)
         verified = _verified_result(
             self._ports.delivery_bitable_write(
                 _resource_id(context, _DELIVERY_BITABLE_ROLE),
                 records,
+                context.mark_write_started,
             ),
             expected_count=len(records),
             context=context,
@@ -458,9 +454,12 @@ class _DeliverySiteHandlers:
         bill_codes = _delivery_codes(arguments.get("bill_codes"))
         account_id = _account_id(context)
         _account_descriptor(self._ports, account_id, systems={"ronghui"})
-        self._mark_write_started(context)
         verified = _verified_result(
-            self._ports.delivery_projection_update(bill_codes, status),
+            self._ports.delivery_projection_update(
+                bill_codes,
+                status,
+                context.mark_write_started,
+            ),
             expected_count=len(bill_codes),
             context=context,
             codec=self._codec,
@@ -503,5 +502,6 @@ __all__ = [
     "MARKED_WRITE_ACTION_KEYS",
     "SITE_WRITE_ACTION_KEYS",
     "DeliverySiteHandlerPorts",
+    "WriteStartMarker",
     "build_delivery_site_handler_map",
 ]
