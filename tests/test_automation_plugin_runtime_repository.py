@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from agent.automation_plugins.catalog import (
     PluginCatalog,
+    _entry_from_project,
     project_capability_from_snapshot,
     project_contract_fragment,
 )
@@ -878,6 +879,8 @@ def test_catalog_accepts_legacy_signed_runtime_permissions_during_upgrade() -> N
 
     assert project.committed_snapshot == snapshot
     assert project.active_version.version == desired_manifest.version
+    committed_contract = project_contract_fragment(_entry_from_project(project))
+    assert committed_contract["committed_generation"] == snapshot.generation
     capability = project_capability_from_snapshot(snapshot)
     assert capability["_plugin_runtime"]["runtime_permissions"][
         "broker_operations"

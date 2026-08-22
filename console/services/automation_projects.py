@@ -67,6 +67,17 @@ AUTOMATION_PLUGIN_STATE_LABELS = {
     "UNKNOWN": "状态未知",
 }
 AUTOMATION_PLUGIN_STABLE_STATES = frozenset({"INSTALLED", "ENABLED", "DISABLED"})
+AUTOMATION_PLUGIN_RECONCILE_STATES = frozenset(
+    {
+        "STABLE",
+        "PREPARING",
+        "WAITING_COEFFECTS",
+        "READY_TO_COMMIT",
+        "DISPOSING",
+        "BLOCKED_UNKNOWN_WRITE",
+        "ERROR",
+    }
+)
 AUTOMATION_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 AUTOMATION_PLUGIN_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 AUTOMATION_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
@@ -988,6 +999,12 @@ def normalize_automation_plugin_catalog(
             if projected_state in AUTOMATION_PLUGIN_STATE_LABELS
             else "UNKNOWN"
         )
+        projected_reconcile_state = str(raw.get("reconcile_state") or "").strip().upper()
+        reconcile_state = (
+            projected_reconcile_state
+            if projected_reconcile_state in AUTOMATION_PLUGIN_RECONCILE_STATES
+            else "UNKNOWN"
+        )
         if (
             automation_id in seen_instances
             or not AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id)
@@ -1146,6 +1163,30 @@ def normalize_automation_plugin_catalog(
         missing_requirements = list(
             dict.fromkeys([*missing_requirements, *projection_warnings])
         )[:20]
+        if not configured:
+            missing_config_fields = [
+                str(field["label"])
+                for field in config_fields
+                if field.get("required") and not field.get("present")
+            ]
+            if missing_config_fields:
+                missing_requirements.append(
+                    "缺少必填配置：" + "、".join(missing_config_fields)
+                )
+            missing_account_roles = [
+                str(role["label"])
+                for role in account_roles
+                if role.get("required") and not account_bindings.get(str(role["role"]))
+            ]
+            if missing_account_roles:
+                missing_requirements.append(
+                    "缺少必需账号：" + "、".join(missing_account_roles)
+                )
+            if not missing_config_fields and not missing_account_roles and not missing_requirements:
+                missing_requirements.append(
+                    "项目配置尚未闭合；请展开项目设置检查必填字段、账号和资源"
+                )
+        missing_requirements = list(dict.fromkeys(missing_requirements))[:20]
         seen_instances.add(automation_id)
         instances.append(
             {
@@ -1161,6 +1202,7 @@ def normalize_automation_plugin_catalog(
                 "configured": configured,
                 "state": state,
                 "status_label": AUTOMATION_PLUGIN_STATE_LABELS[state],
+                "reconcile_state": reconcile_state,
                 "lifecycle_actions_allowed": state in AUTOMATION_PLUGIN_STABLE_STATES,
                 "record_version": record_version,
                 "project_configuration_version": project_configuration_version,

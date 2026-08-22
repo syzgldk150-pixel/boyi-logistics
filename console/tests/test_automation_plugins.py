@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from console.app import LocalDocFlowApp
 from console.routes import automation as automation_routes
 from console.services.automation import (
+    _automation_plugin_block_warning,
     build_automation_project_policy_view,
     normalize_automation_plugin_catalog,
 )
@@ -154,6 +155,35 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertTrue(projected["config_schema_supported"])
         self.assertFalse(projected["blocked"])
         self.assertEqual(["_startup_catchup"], projected["code_owned_config_fields"])
+
+    def test_incomplete_configuration_names_required_fields_and_accounts(self):
+        payload = _catalog_payload()
+        instance = payload["instances"][0]
+        instance["configured"] = False
+        instance["config"] = {}
+        instance["account_bindings"] = {}
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        self.assertIn("缺少必填配置：区域", instances[0]["missing_requirements"])
+        self.assertIn("缺少必需账号：报价来源账号", instances[0]["missing_requirements"])
+
+    def test_reconciling_generation_is_distinct_from_configuration_missing(self):
+        payload = _catalog_payload()
+        instance = payload["instances"][0]
+        instance["state"] = "UPGRADING"
+        instance["reconcile_state"] = "PREPARING"
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        self.assertTrue(instances[0]["blocked"])
+        self.assertEqual("UPGRADING", instances[0]["state"])
+        self.assertEqual("PREPARING", instances[0]["reconcile_state"])
+        self.assertEqual([], instances[0]["missing_requirements"])
+        self.assertIn(
+            "签名运行描述符",
+            _automation_plugin_block_warning(instances[0]),
+        )
 
     def test_code_owned_projection_must_not_overlap_browser_schema(self):
         payload = _catalog_payload()

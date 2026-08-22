@@ -1,5 +1,7 @@
 """Console application services grouped by business responsibility."""
 
+from typing import Any, Mapping
+
 from console.app_support import *  # noqa: F403
 from console.services.automation_projects import *  # noqa: F403
 
@@ -39,6 +41,32 @@ def group_scheduled_rows_by_automation_id(
             }
         )
     return groups
+
+
+def _automation_plugin_block_warning(plugin: Mapping[str, Any]) -> str:
+    """Keep configuration closure distinct from an immutable runtime transition."""
+
+    missing = [
+        str(item).strip()
+        for item in plugin.get("missing_requirements") or []
+        if str(item).strip()
+    ]
+    if missing:
+        return "；".join(dict.fromkeys(missing))
+    state = str(plugin.get("state") or "UNKNOWN").upper()
+    if state not in AUTOMATION_PLUGIN_STABLE_STATES:
+        reconcile_state = str(plugin.get("reconcile_state") or "UNKNOWN").upper()
+        if reconcile_state == "BLOCKED_UNKNOWN_WRITE":
+            return "运行环境因未知写入结果被隔离；必须先完成回读核验，禁止重放。"
+        if reconcile_state == "ERROR":
+            return "运行环境协调失败：签名运行描述符未闭合；请执行受控修复，禁止手工篡改生成记录。"
+        return (
+            f"运行环境正在协调：项目状态 {state}，协调阶段 {reconcile_state}；"
+            "正在核验并重建旧版签名运行描述符，配置与完全自动意图保持不变。"
+        )
+    if plugin.get("configured") is not True:
+        return "项目配置尚未闭合；请展开项目设置补齐必填字段、账号和资源。"
+    return "运行环境不可用；请刷新后查看 Agent 返回的精确阻断原因。"
 
 
 class AutomationServiceMixin(AutomationProjectsServiceMixin):
@@ -782,9 +810,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             task["plugin_worker_options"] = (
                 automation_workers if plugin.get("execution_platform") == "windows" else []
             )
-            task["plugin_warning"] = "；".join(
-                str(item) for item in plugin.get("missing_requirements") or []
-            ) if task.get("plugin_blocked") else ""
+            task["plugin_warning"] = _automation_plugin_block_warning(plugin)
+            if not task.get("plugin_blocked"):
+                task["plugin_warning"] = ""
             task["search_text"] = " ".join(
                 item
                 for item in (
