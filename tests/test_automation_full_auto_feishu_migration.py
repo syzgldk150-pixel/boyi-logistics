@@ -20,6 +20,12 @@ MIGRATION_023 = (
     / "migrations"
     / "023_feishu_approval_queue_single_active.sql"
 )
+MIGRATION_024 = (
+    ROOT
+    / "agent"
+    / "migrations"
+    / "024_restore_original_plugin_full_auto.sql"
+)
 
 
 def test_migration_020_has_binding_queue_and_durable_full_auto_conversion():
@@ -175,3 +181,60 @@ def test_migration_023_enforces_one_active_delivery_per_binding_idempotently():
     assert "ADD UNIQUE INDEX uq_feishu_approval_delivery_active_binding" in normalized
     assert "ADD COLUMN IF NOT EXISTS" not in normalized
     assert "ADD UNIQUE INDEX IF NOT EXISTS" not in normalized
+
+
+def test_migration_024_restores_only_original_six_key_plugin_downgrades():
+    sql = MIGRATION_024.read_text(encoding="utf-8")
+    normalized = " ".join(sql.split())
+
+    assert "migration-024-plugin-full-auto:" in normalized
+    assert "MIGRATION_024_PLUGIN_FULL_AUTO" in normalized
+    assert "system:migration:automation-plugin-full-auto-v2" in normalized
+    assert "Restored durable full-auto after original plugin downgrade" in normalized
+    assert "MAX(candidate.event_id)" in normalized
+    assert normalized.count("MAX(predecessor.event_id)") == 2
+    assert normalized.count("newer.event_id>restored.event_id") == 2
+    assert "BINARY policy.mode=BINARY 'REQUIRE_EACH_RUN'" in normalized
+    assert "BINARY source.from_mode=BINARY 'PROJECT_FULL_AUTO'" in normalized
+    assert "BINARY source.to_mode=BINARY 'REQUIRE_EACH_RUN'" in normalized
+    assert "BINARY source.reason=BINARY 'PLUGIN_VERSION_CHANGED'" in normalized
+    assert "BINARY source.actor_role=BINARY 'super_admin'" in normalized
+    assert "source.actor_display_name IS NULL" in normalized
+    assert "source.comment IS NULL" in normalized
+    assert "BINARY source.correlation_id=BINARY source.request_id" in normalized
+    assert "source.contract_snapshot_json IS NULL" in normalized
+    assert "JSON_LENGTH(plugin_event.metadata_json)=6" in normalized
+    assert normalized.count("JSON_LENGTH(plugin_event.metadata_json)=6") == 3
+    assert "prepared_configuration_request_id" not in normalized
+    assert normalized.count("'$.request_payload_sha256'") == 12
+    assert normalized.count("'$.package_sha256'") == 12
+    assert normalized.count("'$.target_generation'") == 12
+    assert normalized.count("'$.previous_state'") == 12
+    assert normalized.count("BINARY plugin_event.metadata_sha256=BINARY SHA2(CONCAT(") == 3
+    assert "'{\"from_version\":'" in normalized
+    assert "',\"package_sha256\":'" in normalized
+    assert "',\"previous_state\":'" in normalized
+    assert "',\"request_payload_sha256\":'" in normalized
+    assert "',\"target_generation\":'" in normalized
+    assert "',\"to_version\":'" in normalized
+    assert "SET policy.mode='PROJECT_FULL_AUTO'" in normalized
+
+
+def test_migration_024_invalidates_only_typed_waiting_approvals_after_cas_restore():
+    sql = MIGRATION_024.read_text(encoding="utf-8")
+    normalized = " ".join(sql.split())
+    wake_section = normalized[normalized.index("UPDATE agent_runs AS run") :]
+
+    assert "JOIN approval_requests AS approval" in wake_section
+    assert "JOIN agent_commands AS command" in wake_section
+    assert "JOIN automation_project_policies AS policy" in wake_section
+    assert "BINARY restored.automation_id=BINARY command.automation_id" in wake_section
+    assert "BINARY run.status=BINARY 'WAITING_APPROVAL'" in wake_section
+    assert "BINARY approval.status IN (BINARY 'PENDING', BINARY 'APPROVED')" in wake_section
+    assert "BINARY command.command_type=BINARY 'automation.project.invoke'" in wake_section
+    assert "command.automation_invocation_json IS NOT NULL" in wake_section
+    assert "approval.status='INVALIDATED'" in wake_section
+    assert "run.next_attempt_at=NOW(6)" in wake_section
+    assert "BINARY restored.reason=BINARY 'MIGRATION_024_PLUGIN_FULL_AUTO'" in wake_section
+    assert "BINARY source.reason=BINARY 'PLUGIN_VERSION_CHANGED'" in wake_section
+    assert "JSON_LENGTH(plugin_event.metadata_json)=6" in wake_section

@@ -450,6 +450,7 @@ def _load_exact_module(
     path: Path,
     *,
     submodule_search_locations: Sequence[str] | None = None,
+    register: bool = True,
 ) -> Any:
     spec = importlib.util.spec_from_file_location(
         module_name,
@@ -459,12 +460,22 @@ def _load_exact_module(
     if spec is None or spec.loader is None:
         raise RuntimeError("exact-path module spec is unavailable")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
+    if register:
+        sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
 
-credential_policy_history = _load_exact_module("_automation_project_policy_history", PROJECT_ROOT / "scripts" / "automation_project_policy_history.py")
+credential_policy_history = _load_exact_module(
+    "_automation_project_policy_history",
+    PROJECT_ROOT / "scripts" / "automation_project_policy_history.py",
+    register=False,
+)
+plugin_policy_history = _load_exact_module(
+    "_automation_project_plugin_policy_history",
+    PROJECT_ROOT / "scripts" / "automation_project_plugin_policy_history.py",
+    register=False,
+)
 def _load_release_contract() -> dict[str, Any]:
     """Load staged code-owned identities without leaking ``shared`` modules."""
 
@@ -2143,50 +2154,6 @@ def _validate_system_full_auto_event(*, automation_id: str, event: Mapping[str, 
         _raise_followup_policy_invalid()
 
 
-def _validate_plugin_version_event(event: Mapping[str, Any], configuration_evidence: Sequence[Mapping[str, Any]]) -> tuple[str | None, bool]:
-    matches = [row for row in configuration_evidence if row.get("request_id") == event.get("request_id")]
-    joined = matches[0] if len(matches) == 1 else {}
-    metadata = joined.get("configuration_metadata_json")
-    prepared_request = metadata.get("prepared_configuration_request_id") if isinstance(metadata, Mapping) else None
-    legacy_downgrade = event.get("from_mode") in _DURABLE_POLICY_MODES and event.get("from_mode") != event.get("to_mode") and event.get("to_mode") == "REQUIRE_EACH_RUN"
-    if (
-        len(matches) != 1
-        or (event.get("from_mode") != event.get("to_mode") and not legacy_downgrade)
-        or event.get("to_mode") not in _DURABLE_POLICY_MODES
-        or not _empty_policy_event_contract(event)
-        or event.get("actor_role") != "super_admin"
-        or type(event.get("actor_id")) is not str
-        or not event.get("actor_id")
-        or event.get("actor_display_name") is not None
-        or event.get("comment") is not None
-        or event.get("correlation_id") != event.get("request_id")
-        or not _joined_policy_event_matches(joined, event)
-        or type(joined.get("configuration_event_id")) is not int
-        or joined.get("configuration_event_id", 0) <= 0
-        or joined.get("configuration_event_type") != "PLUGIN_UPGRADE_STAGED"
-        or joined.get("configuration_from_state") not in {"INSTALLED", "ENABLED", "DISABLED"}
-        or joined.get("configuration_to_state") != "UPGRADING"
-        or joined.get("configuration_actor_id") != event.get("actor_id")
-        or joined.get("configuration_actor_role") != event.get("actor_role")
-        or not isinstance(metadata, Mapping)
-        or set(metadata) != {
-            "request_payload_sha256", "from_version", "to_version", "package_sha256",
-            "target_generation", "previous_state", "prepared_configuration_request_id",
-        }
-        or not _valid_sha256(metadata.get("request_payload_sha256"))
-        or not _valid_sha256(metadata.get("package_sha256"))
-        or type(metadata.get("from_version")) is not str
-        or not metadata.get("from_version")
-        or type(metadata.get("to_version")) is not str
-        or not metadata.get("to_version")
-        or metadata.get("from_version") == metadata.get("to_version")
-        or metadata.get("target_generation") != event.get("project_generation")
-        or metadata.get("previous_state") != joined.get("configuration_from_state")
-        or (prepared_request is not None and (type(prepared_request) is not str or not prepared_request))
-        or _canonical_sha256(metadata) != joined.get("configuration_metadata_sha256")
-    ):
-        _raise_followup_policy_invalid()
-    return prepared_request, legacy_downgrade
 def _validate_super_admin_policy_event(*, automation_id: str, event: Mapping[str, Any]) -> None:
     if (
         event.get("actor_role") != "super_admin"
@@ -2258,6 +2225,7 @@ def _validate_later_project_policy_chain(
     system_full_auto_reason: str | None = None
     super_admin_seen = False
     approval_anchor: Mapping[str, Any] | None = None
+    plugin_downgrade_variants: dict[int, str] = {}
     for event in subsequent:
         if event.get("from_mode") != previous_mode:
             raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_EVENT_CHAIN_INVALID")
@@ -2271,6 +2239,18 @@ def _validate_later_project_policy_chain(
         except ValueError:
             _raise_followup_policy_invalid()
         if credential_authority is not None:
+            required_variant = None
+            if reason == credential_policy_history.PLUGIN_POLICY_RESTORE_REASON:
+                required_variant = plugin_policy_history.PREPARED_AWARE
+            elif (
+                reason
+                == credential_policy_history.ORIGINAL_PLUGIN_POLICY_RESTORE_REASON
+            ):
+                required_variant = plugin_policy_history.ORIGINAL
+            if required_variant is not None:
+                predecessor_id = validated_events[-1].get("event_id")
+                if plugin_downgrade_variants.get(predecessor_id) != required_variant:
+                    _raise_followup_policy_invalid()
             full_auto_authorized, approval_anchor = credential_authority, event
         elif reason == contract["bootstrap_evidence"]["plugin_reason"]:
             legacy_configuration = _validate_followup_configuration_event(
@@ -2291,7 +2271,14 @@ def _validate_later_project_policy_chain(
             system_full_auto_reason = reason
             approval_anchor = event
         elif reason == "PLUGIN_VERSION_CHANGED":
-            prepared_request, legacy_downgrade = _validate_plugin_version_event(event, configuration_evidence)
+            try:
+                prepared_request, legacy_downgrade, metadata_variant = (
+                    plugin_policy_history.validate_plugin_version_evidence(
+                        event, configuration_evidence
+                    )
+                )
+            except ValueError:
+                _raise_followup_policy_invalid()
             if prepared_request:
                 prepared_events = [row for row in validated_events if row.get("request_id") == prepared_request]
                 if (
@@ -2304,6 +2291,7 @@ def _validate_later_project_policy_chain(
                     _raise_followup_policy_invalid()
             if legacy_downgrade:
                 full_auto_authorized = False
+                plugin_downgrade_variants[int(event["event_id"])] = metadata_variant
             approval_anchor = event
         elif reason == "SUPER_ADMIN_PROJECT_POLICY_CHANGED":
             super_admin_seen = True

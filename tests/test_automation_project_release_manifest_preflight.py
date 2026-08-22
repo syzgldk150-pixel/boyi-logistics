@@ -1458,6 +1458,29 @@ def _plugin_restore_event(
     }
 
 
+def _original_plugin_restore_event(
+    automation_id, *, event_id=4, generation=2, config_version=2
+):
+    return {
+        "event_id": event_id,
+        "request_id": f"migration-024-plugin-full-auto:{automation_id}",
+        "from_mode": "REQUIRE_EACH_RUN",
+        "to_mode": "PROJECT_FULL_AUTO",
+        "project_generation": generation,
+        "project_configuration_version": config_version,
+        "contract_hash": None,
+        "contract_snapshot_json": None,
+        "tool_contract_hash": None,
+        "plugin_contract_hash": None,
+        "actor_id": "system:migration:automation-plugin-full-auto-v2",
+        "actor_role": "system",
+        "actor_display_name": "Migration 024",
+        "reason": "MIGRATION_024_PLUGIN_FULL_AUTO",
+        "comment": "Restored durable full-auto after original plugin downgrade",
+        "correlation_id": "77777777-7777-4777-a777-777777777777",
+    }
+
+
 def _plugin_version_event(*, event_id=3):
     return {
         "event_id": event_id,
@@ -1503,7 +1526,13 @@ def _joined_policy_evidence(event):
     }
 
 
-def _plugin_version_evidence(preflight, event, *, prepared_request_id=None):
+def _plugin_version_evidence(
+    preflight,
+    event,
+    *,
+    prepared_request_id=None,
+    include_prepared_request=True,
+):
     metadata = {
         "request_payload_sha256": "a" * 64,
         "from_version": "1.0.0",
@@ -1511,8 +1540,9 @@ def _plugin_version_evidence(preflight, event, *, prepared_request_id=None):
         "package_sha256": "b" * 64,
         "target_generation": event["project_generation"],
         "previous_state": "ENABLED",
-        "prepared_configuration_request_id": prepared_request_id,
     }
+    if include_prepared_request:
+        metadata["prepared_configuration_request_id"] = prepared_request_id
     return {
         **_joined_policy_evidence(event),
         "configuration_event_id": 30,
@@ -1928,6 +1958,126 @@ def test_later_manifest_accepts_exact_historical_plugin_downgrade(preflight):
             _plugin_version_evidence(preflight, plugin_event)
         ],
     )
+
+
+def test_later_manifest_accepts_original_plugin_downgrade_then_024_restore(
+    preflight,
+):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = {
+        **_plugin_version_event(event_id=3),
+        "request_id": "55555555-5555-4555-a555-555555555555",
+        "correlation_id": "55555555-5555-4555-a555-555555555555",
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+    restored = _original_plugin_restore_event(automation_id)
+
+    preflight._validate_later_project_policy_chain(
+        _later_policy_contract(),
+        automation_id=automation_id,
+        item={
+            "automation_id": automation_id,
+            "initial_mode": "REQUIRE_EACH_RUN",
+            "policy_version": 1,
+        },
+        project={"generation": 2, "config_version": 2},
+        policy=_durable_policy("PROJECT_FULL_AUTO", 4, 2, 2, restored),
+        policy_events=[bootstrap, migration, plugin_event, restored],
+        configuration_evidence=[
+            _plugin_version_evidence(
+                preflight,
+                plugin_event,
+                include_prepared_request=False,
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("restore_factory", "include_prepared_request"),
+    (
+        (_plugin_restore_event, False),
+        (_original_plugin_restore_event, True),
+    ),
+)
+def test_later_manifest_rejects_restore_for_the_wrong_plugin_metadata_generation(
+    preflight,
+    restore_factory,
+    include_prepared_request,
+):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = {
+        **_plugin_version_event(event_id=3),
+        "request_id": "55555555-5555-4555-a555-555555555555",
+        "correlation_id": "55555555-5555-4555-a555-555555555555",
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+    restored = restore_factory(automation_id)
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={
+                "automation_id": automation_id,
+                "initial_mode": "REQUIRE_EACH_RUN",
+                "policy_version": 1,
+            },
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin_event, restored],
+            configuration_evidence=[
+                _plugin_version_evidence(
+                    preflight,
+                    plugin_event,
+                    include_prepared_request=include_prepared_request,
+                )
+            ],
+        )
+
+
+def test_later_manifest_rejects_extra_original_plugin_metadata_field(preflight):
+    automation_id = "send_order"
+    bootstrap = _bootstrap_policy_event(automation_id, to_mode="REQUIRE_EACH_RUN")
+    migration = _migration_full_auto_event(automation_id)
+    plugin_event = {
+        **_plugin_version_event(event_id=3),
+        "to_mode": "REQUIRE_EACH_RUN",
+    }
+    evidence = _plugin_version_evidence(
+        preflight,
+        plugin_event,
+        include_prepared_request=False,
+    )
+    evidence["configuration_metadata_json"]["unexpected"] = "value"
+    evidence["configuration_metadata_sha256"] = preflight._canonical_sha256(
+        evidence["configuration_metadata_json"]
+    )
+
+    with pytest.raises(
+        preflight.AutomationProjectReleaseManifestError,
+        match="AUTOMATION_PROJECT_FOLLOWUP_POLICY_EVENT_INVALID",
+    ):
+        preflight._validate_later_project_policy_chain(
+            _later_policy_contract(),
+            automation_id=automation_id,
+            item={
+                "automation_id": automation_id,
+                "initial_mode": "REQUIRE_EACH_RUN",
+                "policy_version": 1,
+            },
+            project={"generation": 2, "config_version": 2},
+            policy={},
+            policy_events=[bootstrap, migration, plugin_event],
+            configuration_evidence=[evidence],
+        )
 
 
 def test_later_manifest_rejects_plugin_transition_that_grants_full_auto(preflight):

@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-16
+updated: 2026-08-22
 ---
 
 # 数据库迁移
@@ -100,7 +100,7 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 - `021_recover_full_auto_waiting_approvals.sql`：只恢复当前策略已经是完全自动的 typed
   `WAITING_APPROVAL` Run，不覆盖管理员后来显式选择的逐次审批。
 - `022_restore_durable_full_auto_after_credentials.sql`：只在最新不可变策略事件严格闭合为旧凭据安全
-  降权，或存在唯一且元数据哈希闭合的旧插件 `PLUGIN_UPGRADE_STAGED` 降权时，恢复完全自动并唤醒
+  降权，或存在唯一且七键元数据哈希闭合的旧插件 `PLUGIN_UPGRADE_STAGED` 降权时，恢复完全自动并唤醒
   typed Run；所有身份、UUID、SHA 与固定文本均大小写敏感，任何较新的管理员事件或字段漂移都不匹配。
   当前凭据/插件变更不再改写项目意图。
 - `023_feishu_approval_queue_single_active.sql`：对历史重复 `ACTIVE` 队列先严格证明原
@@ -108,9 +108,14 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   Outbox/消费记录；Agent 重启后只会激活并重新推送一条明确的当前审批。缺失或多份恢复证据由临时表
   `CHECK` 约束 fail closed。随后 generated column 与唯一索引保证每个飞书管理员绑定最多一条活动审批；
   DDL 通过 `information_schema` 条件语句支持部分应用后的安全重试。
+- `024_restore_original_plugin_full_auto.sql`：只修复原始插件升级 writer 留下的严格六键
+  `PLUGIN_UPGRADE_STAGED` 元数据（不接受 `022` 的七键形状、额外键、坏哈希或伪事件）。当前策略仍为
+  `REQUIRE_EACH_RUN`、原降权事件仍为该项目最新策略事件且所有 actor/请求/代际字段闭合时，才以独立
+  `MIGRATION_024_PLUGIN_FULL_AUTO` 事件 CAS 恢复完全自动，并失效对应 typed `WAITING_APPROVAL` 审批以唤醒
+  Run；任何后续管理员选择优先。
 
-生产迁移序列固定连续递增且不得改写已执行文件；当前生产已经执行到不可变 `021`，发布器只按
-顺序补执行尚未记录的 `022`、`023`。`016`/`017`/`018` 在业务行变更前各自保存
+生产迁移序列固定连续递增且不得改写已执行文件；发布器只按顺序补执行尚未记录的迁移，包含对已应用
+`022`、`023` 保持原始校验和，并在目标库尚未记录时执行 `024`。`016`/`017`/`018` 在业务行变更前各自保存
 完整行备份；远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
 直接阻断，回滚只撤销本次从
 pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
@@ -132,6 +137,6 @@ pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
 CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整
-`014 -> 015 -> 016 -> 017 -> 018 -> 019 -> 020 -> 021 -> 022 -> 023` 升级、部分历史、`017`/`018` 恢复后重应用、
+`014 -> 015 -> 016 -> 017 -> 018 -> 019 -> 020 -> 021 -> 022 -> 023 -> 024` 升级、部分历史、`017`/`018` 恢复后重应用、
 `--check`、JSON、外键、唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码
 只接受显式 CI 环境变量，不读取项目 `.env`。
