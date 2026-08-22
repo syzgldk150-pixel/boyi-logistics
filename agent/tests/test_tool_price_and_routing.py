@@ -204,6 +204,38 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             else:
                 sys.modules["fetch_dispatch"] = original_fetch_dispatch
 
+    def test_dispatch_rebuilds_stale_script_auth_module_before_execution(self):
+        from agent.tms_runtime import dispatch
+
+        target_module_name = dispatch.TARGETS["fetch_dispatch"].module
+        auth_module_name = "agent.tms_runtime.scripts.login_manager"
+        target_module = importlib.import_module(target_module_name)
+        original_auth = target_module.TMSAuth
+        original_auth_module = sys.modules[auth_module_name]
+
+        class WrongAuth:
+            pass
+
+        stale_auth_module = types.ModuleType(auth_module_name)
+        stale_auth_module.TMSAuth = WrongAuth
+        stale_auth_module.__file__ = str(
+            Path(price_tool.PRICE_GET_MODULE).with_name("login_manager.py")
+        )
+        sys.modules[auth_module_name] = stale_auth_module
+        target_module.TMSAuth = WrongAuth
+        try:
+            fn = dispatch._load_callable(dispatch.TARGETS["fetch_dispatch"])
+            loaded_module = sys.modules[fn.__module__]
+            auth_module = sys.modules[loaded_module.TMSAuth.__module__]
+
+            self.assertIsNot(WrongAuth, loaded_module.TMSAuth)
+            self.assertTrue(Path(auth_module.__file__).resolve().is_relative_to(SCRIPTS_DIR))
+        finally:
+            sys.modules[auth_module_name] = original_auth_module
+            restored_target_module = sys.modules.get(target_module_name)
+            if restored_target_module is not None:
+                restored_target_module.TMSAuth = original_auth
+
     def test_price_tool_unwraps_agent_tms_response_data(self):
         class _Response:
             def raise_for_status(self):
