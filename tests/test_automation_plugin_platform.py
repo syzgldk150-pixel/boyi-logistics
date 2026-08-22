@@ -171,6 +171,11 @@ def test_ed25519_rfc8032_known_vector_and_bad_signature() -> None:
 def test_signed_zip_round_trip_and_wrong_key_fail_closed(core_catalog: ToolRegistry) -> None:
     manifest, package, trust = _signed_package(core_catalog)
     verified = verify_signed_plugin_zip(package, verifier=trust)
+    with zipfile.ZipFile(BytesIO(package)) as archive:
+        signed_manifest_bytes = archive.read("manifest.json")
+    assert manifest.to_signed_mapping() == manifest.to_mapping()
+    assert signed_manifest_bytes == canonical_json_bytes(manifest.to_mapping())
+    assert verified.manifest_sha256 == _sha256(signed_manifest_bytes)
     assert verified.manifest.to_mapping() == manifest.to_mapping()
     assert verified.signing_key_id == "test-release"
     assert {item.path for item in verified.files} >= {

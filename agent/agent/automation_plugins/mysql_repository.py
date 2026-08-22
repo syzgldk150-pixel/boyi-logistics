@@ -111,7 +111,11 @@ def _registration_rows(
     ):
         raise PluginPackageError("plugin version identity differs from its signed manifest")
     metadata = _installed_metadata(version)
-    manifest_mapping = manifest.to_mapping()
+    # Persist the exact validated mapping whose canonical bytes were signed.
+    # Schema-v1 parsing may add a conservative broker ``effect=write`` only to
+    # the in-memory execution view; storing that projection beside the raw
+    # signed manifest digest would create a self-contradictory version row.
+    manifest_mapping = manifest.to_signed_mapping()
     package = {
         "plugin_id": manifest.plugin_id,
         "display_name": manifest.name,

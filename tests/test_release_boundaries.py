@@ -185,6 +185,9 @@ def _run_rollback_fault_harness(
     *,
     fail_agent_restart: bool,
     fail_stage_cleanup: bool = False,
+    fail_version_compatibility: bool = False,
+    fail_rollback_health: bool = False,
+    fail_final_rollback_health: bool = False,
     automation_project_restore_failure: str = "none",
     cutover_pending: bool = True,
     daily_sign_pending: bool = False,
@@ -240,6 +243,9 @@ def _run_rollback_fault_harness(
             migrations_attempted="${10}"
             runtime_start_attempted="${11}"
             automation_project_restore_failure="${12}"
+            fail_version_compatibility="${13}"
+            fail_rollback_health="${14}"
+            fail_final_rollback_health="${15}"
             stage_root="${temp_root}/release-aaaaaaaaaaaa-20260815192447"
             events_path="${temp_root}/events.log"
             source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
@@ -368,6 +374,28 @@ def _run_rollback_fault_harness(
               return 0
             }
 
+            verify_rollback_first_party_version_compatibility() {
+              printf 'rollback-version-compatibility\n' >>"${events_path}"
+              [[ "${fail_version_compatibility}" == "0" ]]
+            }
+
+            check_rollback_health() {
+              rollback_health_calls="$((${rollback_health_calls:-0} + 1))"
+              local hold_present=0
+              [[ -f "${SCHEDULER_RELEASE_HOLD_FILE}" ]] && hold_present=1
+              printf 'rollback-health:%s:hold=%s\n' \
+                "${rollback_health_calls}" "${hold_present}" >>"${events_path}"
+              if [[ "${rollback_health_calls}" == "1" && \
+                "${fail_rollback_health}" == "1" ]]; then
+                return 1
+              fi
+              if [[ "${rollback_health_calls}" == "2" && \
+                "${fail_final_rollback_health}" == "1" ]]; then
+                return 1
+              fi
+              return 0
+            }
+
             set +e
             false
             rollback
@@ -391,6 +419,9 @@ def _run_rollback_fault_harness(
             "1" if migrations_attempted else "0",
             "1" if runtime_start_attempted else "0",
             automation_project_restore_failure,
+            "1" if fail_version_compatibility else "0",
+            "1" if fail_rollback_health else "0",
+            "1" if fail_final_rollback_health else "0",
         ]
         if os.name == "nt":
             harness_args = ["wsl.exe", "-d", "Ubuntu", "--", *harness_args]
@@ -989,8 +1020,38 @@ class ReleaseBoundaryTests(unittest.TestCase):
             rollback_function.index("restore_managed_release_state"),
         )
         self.assertIn("restart_runtime_services_for_rollback", rollback_function)
+        self.assertIn(
+            "verify_rollback_first_party_version_compatibility",
+            rollback_function,
+        )
+        self.assertIn("check_rollback_health", rollback_function)
         self.assertLess(
+            rollback_function.index(
+                "verify_rollback_first_party_version_compatibility"
+            ),
             rollback_function.index("restart_runtime_services_for_rollback"),
+        )
+        compatible_restart = rollback_function.index(
+            'elif ! restart_runtime_services_for_rollback'
+        )
+        held_health = rollback_function.index(
+            'elif ! check_rollback_health', compatible_restart
+        )
+        compatible_clear = rollback_function.index(
+            'elif ! clear_scheduler_release_hold_for_rollback', held_health
+        )
+        final_restart = rollback_function.index(
+            'elif ! restart_runtime_services_for_rollback', compatible_clear
+        )
+        final_health = rollback_function.index(
+            'elif ! check_rollback_health', final_restart
+        )
+        self.assertLess(compatible_restart, held_health)
+        self.assertLess(held_health, compatible_clear)
+        self.assertLess(compatible_clear, final_restart)
+        self.assertLess(final_restart, final_health)
+        self.assertLess(
+            final_health,
             rollback_function.index("cleanup_failed_release_stage"),
         )
         self.assertLess(
@@ -1086,10 +1147,6 @@ class ReleaseBoundaryTests(unittest.TestCase):
             release,
         )
         self.assertLess(
-            rollback_function.index("clear_scheduler_release_hold_for_rollback"),
-            rollback_function.index("restart_runtime_services_for_rollback"),
-        )
-        self.assertLess(
             rollback_function.index('[[ "${rollback_status}" == "0" ]]'),
             rollback_function.index("clear_scheduler_release_hold_for_rollback"),
         )
@@ -1177,6 +1234,246 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("venv:console", events)
         self.assertNotIn("restore-014", events)
         self.assertLess(events.index("restart:agent.service"), events.index("restart:console.service"))
+        self.assertIn("rollback-version-compatibility", events)
+        self.assertIn("rollback-health:1:hold=1", events)
+        self.assertIn("rollback-health:2:hold=0", events)
+        self.assertLess(
+            events.index("rollback-health:1:hold=1"),
+            events.index("hold-cleared"),
+        )
+        self.assertLess(
+            events.index("hold-cleared"),
+            events.index("rollback-health:2:hold=0"),
+        )
+        self.assertEqual(2, events.count("restart:agent.service"))
+        self.assertEqual(2, events.count("restart:console.service"))
+
+    def test_newer_database_plugin_version_requires_forward_recovery(self):
+        completed, events, stage_exists, _new_venv_exists, hold_exists = (
+            _run_rollback_fault_harness(
+                fail_agent_restart=False,
+                fail_version_compatibility=True,
+            )
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("rollback_incomplete", completed.stderr)
+        self.assertIn("recovery_material_preserved=1", completed.stderr)
+        self.assertTrue(stage_exists)
+        self.assertFalse(hold_exists)
+        self.assertIn("rollback-version-compatibility", events)
+        self.assertIn("hold-cleared", events)
+        self.assertFalse(any(event.startswith("rollback-health:") for event in events))
+        self.assertFalse(any(event.startswith("restart:") for event in events))
+
+    def test_unhealthy_restored_runtime_is_stopped_and_stage_is_preserved(self):
+        completed, events, stage_exists, _new_venv_exists, hold_exists = (
+            _run_rollback_fault_harness(
+                fail_agent_restart=False,
+                fail_rollback_health=True,
+            )
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("Rollback runtime failed its held stable health gate", completed.stderr)
+        self.assertIn("rollback_incomplete", completed.stderr)
+        self.assertTrue(stage_exists)
+        self.assertTrue(hold_exists)
+        self.assertIn("rollback-health:1:hold=1", events)
+        self.assertNotIn("hold-cleared", events)
+        self.assertIn("restart:agent.service", events)
+        self.assertIn("restart:console.service", events)
+        self.assertGreaterEqual(events.count("stop:agent.service"), 2)
+        self.assertGreaterEqual(events.count("stop:console.service"), 2)
+
+    def test_unhealthy_unheld_rollback_runtime_is_stopped_and_stage_is_preserved(self):
+        completed, events, stage_exists, _new_venv_exists, hold_exists = (
+            _run_rollback_fault_harness(
+                fail_agent_restart=False,
+                fail_final_rollback_health=True,
+            )
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("Rollback runtime failed its final stable health gate", completed.stderr)
+        self.assertIn("rollback_incomplete", completed.stderr)
+        self.assertTrue(stage_exists)
+        self.assertFalse(hold_exists)
+        self.assertIn("rollback-health:1:hold=1", events)
+        self.assertIn("rollback-health:2:hold=0", events)
+        self.assertEqual(2, events.count("restart:agent.service"))
+        self.assertEqual(2, events.count("restart:console.service"))
+        self.assertGreaterEqual(events.count("stop:agent.service"), 3)
+        self.assertGreaterEqual(events.count("stop:console.service"), 3)
+
+    def test_rollback_health_requires_exact_restored_sha_and_two_stable_checks(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            ROOTS[agent]="${stage_root}/restored-agent"
+            mkdir -p "${ROOTS[agent]}/runtime"
+            printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+              >"${ROOTS[agent]}/runtime/release_sha"
+            REQUESTED_TARGETS=(agent console)
+            RUNTIME_TARGETS=(agent console)
+            SERVICES_QUIESCED=1
+            SKIP_HEALTH=1
+            health_calls=0
+            check_health() {
+              [[ "${RELEASE_SHA}" == \
+                'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ]]
+              [[ "${SKIP_HEALTH}" == "0" ]]
+              health_calls="$((health_calls + 1))"
+            }
+            systemctl() {
+              if [[ "$1" == "show" && "$2" == "agent.service" && \
+                "$3" == "-p" && "$4" == "MainPID" ]]; then
+                printf '101\n'
+              elif [[ "$1" == "show" && "$2" == "console.service" && \
+                "$3" == "-p" && "$4" == "MainPID" ]]; then
+                printf '202\n'
+              elif [[ "$1" == "show" && "$3" == "-p" && \
+                "$4" == "NRestarts" ]]; then
+                printf '0\n'
+              else
+                return 1
+              fi
+            }
+            sleep() { :; }
+            check_rollback_health
+            printf 'health_calls=%s\n' "${health_calls}"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "rollback_health=ok "
+            "release_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            completed.stdout,
+        )
+        self.assertIn("health_calls=2", completed.stdout)
+
+    def test_rollback_health_rejects_noncanonical_restored_sha(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            ROOTS[agent]="${stage_root}/restored-agent"
+            mkdir -p "${ROOTS[agent]}/runtime"
+            printf '%s\n' 'bbbbbbb' >"${ROOTS[agent]}/runtime/release_sha"
+            check_health() {
+              printf 'health-must-not-run\n'
+              return 0
+            }
+            check_rollback_health
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "rollback_health=failed reason=RESTORED_RELEASE_SHA_INVALID",
+            completed.stderr,
+        )
+        self.assertNotIn("health-must-not-run", completed.stdout)
+
+    def test_rollback_version_gate_rejects_newer_database_package(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            BACKUP_DIR="${stage_root}/_rollback"
+            mkdir -p "${BACKUP_DIR}"
+            write_restored_first_party_seed_manifest() {
+              printf '%s\n' \
+                '{"seeds":[{"automation_id":"scan_codes","plugin_id":"sync_scan_codes","version":"1.0.4"}]}' \
+                >"$1"
+            }
+            run_staged_migration_runner() {
+              printf '%s\n' \
+                'rollback_exact_seed_compatibility=blocked code=DATABASE_VERSION_NEWER'
+              return 1
+            }
+            verify_rollback_first_party_version_compatibility
+            """
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "rollback_forward_only_required "
+            "reason=DATABASE_VERSION_NEWER",
+            completed.stderr,
+        )
+
+    def test_rollback_version_gate_accepts_equal_or_older_packages(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            BACKUP_DIR="${stage_root}/_rollback"
+            mkdir -p "${BACKUP_DIR}"
+            write_restored_first_party_seed_manifest() {
+              printf '%s\n' \
+                '{"seeds":[{"automation_id":"scan_codes","plugin_id":"sync_scan_codes","version":"1.0.5"}]}' \
+                >"$1"
+            }
+            run_staged_migration_runner() {
+              printf '%s\n' \
+                'rollback_exact_seed_compatibility=ok checked_seeds=1'
+            }
+            verify_rollback_first_party_version_compatibility
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn(
+            "rollback_exact_seed_compatibility=ok checked_seeds=1",
+            completed.stdout,
+        )
+
+    def test_restored_seed_manifest_uses_exact_instances_and_release_index_version(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            restored_sha='cccccccccccccccccccccccccccccccccccccccc'
+            ROOTS[agent]="${stage_root}/restored-agent"
+            PYTHON_BINS[agent]="$(command -v python3)"
+            FIRST_PARTY_PLUGIN_RELEASES_ROOT="${stage_root}/releases"
+            mkdir -p \
+              "${ROOTS[agent]}/runtime" \
+              "${ROOTS[agent]}/agent/automation_plugins" \
+              "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${restored_sha}"
+            : >"${ROOTS[agent]}/agent/__init__.py"
+            : >"${ROOTS[agent]}/agent/automation_plugins/__init__.py"
+            printf '%s\n' \
+              'from types import SimpleNamespace' \
+              'def release_first_party_instance_seeds():' \
+              '    return (' \
+              '        SimpleNamespace(automation_id="arrival_a", plugin_id="shared_plugin", version="1.0.4"),' \
+              '        SimpleNamespace(automation_id="arrival_b", plugin_id="shared_plugin", version="1.0.4"),' \
+              '    )' \
+              >"${ROOTS[agent]}/agent/automation_plugins/first_party.py"
+            printf '%s\n' "${restored_sha}" \
+              >"${ROOTS[agent]}/runtime/release_sha"
+            printf '%s' \
+              '{"plugins":{"shared_plugin":{"manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","package_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","version":"1.0.4"}},"release_sha":"cccccccccccccccccccccccccccccccccccccccc","schema_version":1}' \
+              >"${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${restored_sha}/release-index.json"
+            manifest="${stage_root}/rollback-seeds.json"
+            : >"${manifest}"
+            write_restored_first_party_seed_manifest "${manifest}"
+            cat "${manifest}"
+            """
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            {
+                "seeds": [
+                    {
+                        "automation_id": "arrival_a",
+                        "plugin_id": "shared_plugin",
+                        "version": "1.0.4",
+                    },
+                    {
+                        "automation_id": "arrival_b",
+                        "plugin_id": "shared_plugin",
+                        "version": "1.0.4",
+                    },
+                ]
+            },
+            json.loads(completed.stdout),
+        )
 
     def test_incomplete_rollback_attempts_both_restarts_and_preserves_recovery_material(self):
         completed, events, stage_exists, new_venv_exists, _hold_exists = (
