@@ -2603,6 +2603,7 @@ def run_test_generation_write_lock_order_races(case):
     )
     recovery_command["automation_id"] = automation_id
     recovery_command["automation_generation"] = 1
+    recovery_command["automation_invocation_json"] = {}
     recovery_item["status"] = "IN_PROGRESS"
     recovery_run["status"] = "BLOCKED_DATA"
     recovery_repository = case._repository(database)
