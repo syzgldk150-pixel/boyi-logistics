@@ -19,6 +19,10 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from agent.tms_runtime.scripts.login_manager import TMSAuth
+from agent.tms_runtime.scripts.receipts_sync import (
+    _read_user_info_cookie,
+    _resolve_login_site_code_from_user_info,
+)
 
 SCAN_URL = "https://tms.ronghuiwl.com/dataQuery/findPageByCallId"
 CALL_ID = "FIND_COME_SCAN_RECORD"
@@ -27,6 +31,7 @@ DATE_TIME_FMT = "%Y/%m/%d %H:%M:%S"
 DEFAULT_SITE_CODE = "73901"
 DEFAULT_SCAN_TYPE = "\u5230\u4ef6"
 DEFAULT_PAGE_SIZE = 500
+DEFAULT_MAX_PAGES = 500
 
 
 def parse_date(value: str) -> _dt.date:
@@ -213,7 +218,16 @@ def normalize_scan_row(item: Dict[str, Any]) -> Optional[Dict[str, str]]:
         return None
     destination = item.get("DESTINATION")
     destination_text = str(destination).strip() if destination is not None else ""
-    return {"bill_code": code_text, "destination": destination_text}
+    scan_type = str(item.get("SCAN_TYPE") or "").strip()
+    scan_time = str(item.get("SCAN_DATE") or item.get("REGISTER_DATE") or "").strip()
+    scan_site = str(item.get("SCAN_SITE") or "").strip()
+    return {
+        "bill_code": code_text,
+        "destination": destination_text,
+        "scan_type": scan_type,
+        "scan_time": scan_time,
+        "scan_site": scan_site,
+    }
 
 
 def collect_scan_rows(
@@ -223,18 +237,27 @@ def collect_scan_rows(
     scan_type: str,
     page_size: int,
     timeout: float,
+    max_pages: int = DEFAULT_MAX_PAGES,
 ) -> List[Dict[str, str]]:
     logger = logging.getLogger(__name__)
     headers = build_headers()
     date_range_json = json.dumps(date_range, ensure_ascii=False)
 
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str, str]] = set()
+    scan_identity_rows: dict[tuple[str, str, str], Dict[str, str]] = {}
     rows: List[Dict[str, str]] = []
     page_index = 0
 
     while True:
         payload = build_payload(date_range_json, site_code, scan_type, page_index, page_size)
         raw = fetch_page(session, payload, headers, timeout, page_index)
+        if not isinstance(raw, dict):
+            raise RuntimeError(f"TMS scan page {page_index} returned a non-object response")
+        raw_data = raw.get("data")
+        if raw_data is None and isinstance(raw.get("result"), dict):
+            raw_data = raw["result"].get("data")
+        if not isinstance(raw_data, list):
+            raise RuntimeError(f"TMS scan page {page_index} response is missing the data list")
         items = extract_data_list(raw)
         if not items:
             logger.debug("No data on page %s; stop.", page_index)
@@ -244,11 +267,24 @@ def collect_scan_rows(
         for item in items:
             row = normalize_scan_row(item)
             if row is None:
+                raise RuntimeError(f"TMS scan page {page_index} contains a row without BILL_CODE")
+            scan_identity = (row["bill_code"], row.get("scan_type", ""), row.get("scan_time", ""))
+            previous = scan_identity_rows.get(scan_identity)
+            if previous is not None and previous != row:
+                raise RuntimeError(
+                    "TMS scan duplicate has conflicting data: "
+                    f"{row['bill_code']} {row.get('scan_type', '')} {row.get('scan_time', '')}"
+                )
+            scan_identity_rows[scan_identity] = row
+            identity = (
+                row["bill_code"],
+                row.get("scan_type", ""),
+                row.get("scan_time", ""),
+                row.get("scan_site", ""),
+            )
+            if identity in seen:
                 continue
-            code_text = row["bill_code"]
-            if code_text in seen:
-                continue
-            seen.add(code_text)
+            seen.add(identity)
             rows.append(row)
             added += 1
 
@@ -260,6 +296,10 @@ def collect_scan_rows(
             len(rows),
         )
         page_index += 1
+        if page_index >= max_pages:
+            raise RuntimeError(
+                f"TMS scan pagination reached max_pages={max_pages} before an empty terminal page"
+            )
 
     return rows
 
@@ -286,7 +326,15 @@ def collect_bill_codes(
 def format_scan_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
     formatted: List[Dict[str, str]] = []
     for row in rows:
-        formatted.append({"扫描单号": row["bill_code"], "目的地": row["destination"]})
+        formatted.append(
+            {
+                "扫描单号": row["bill_code"],
+                "目的地": row["destination"],
+                "扫描类型": row.get("scan_type", ""),
+                "扫描时间": row.get("scan_time", ""),
+                "扫描网点": row.get("scan_site", ""),
+            }
+        )
     return formatted
 
 
@@ -337,6 +385,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--site-code", default=DEFAULT_SITE_CODE, help="Site code for SCAN_SITE_CODE/LOGIN_SITE_CODE.")
     parser.add_argument("--scan-type", default=DEFAULT_SCAN_TYPE, help="SCAN_TYPE value.")
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size (default: 500).")
+    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES, help="Pagination safety limit.")
     parser.add_argument("--timeout", type=float, default=20, help="Request timeout in seconds.")
     parser.add_argument("--out", default="", help="Optional output file path.")
     parser.add_argument(
@@ -401,6 +450,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 scan_type=str(args.scan_type),
                 page_size=page_size,
                 timeout=timeout,
+                max_pages=int(args.max_pages),
             )
             output_rows = format_scan_rows(rows)
             output_text = json.dumps(output_rows, ensure_ascii=False, indent=2)
@@ -462,9 +512,12 @@ def run_once(params: Dict[str, Any]) -> Any:
     end_dt = parse_datetime(str(end_value)) if end_value else None
 
     page_size = int(_get_param(params, "page_size", "pageSize", default=DEFAULT_PAGE_SIZE))
+    max_pages = int(_get_param(params, "max_pages", "maxPages", default=DEFAULT_MAX_PAGES))
     timeout = float(_get_param(params, "timeout", default=20))
     if page_size <= 0:
         raise ValueError("page-size must be > 0")
+    if max_pages <= 0:
+        raise ValueError("max-pages must be > 0")
     if timeout <= 0:
         raise ValueError("timeout must be > 0")
 
@@ -488,13 +541,22 @@ def run_once(params: Dict[str, Any]) -> Any:
     base_date = resolve_base_date(target_date, start_dt, end_dt)
     date_range = build_date_range(base_date, start_dt, end_dt)
 
-    site_code = str(_get_param(params, "site_code", "siteCode", default=DEFAULT_SITE_CODE))
+    explicit_site_code = _get_param(params, "site_code", "siteCode")
     scan_type = str(_get_param(params, "scan_type", "scanType", default=DEFAULT_SCAN_TYPE))
 
-    auth = TMSAuth()
+    session_profile = str(_get_param(params, "session_profile", default="default"))
+    auth = TMSAuth(profile=session_profile)
     session = auth.login_and_get_session()
     if session is None:
         raise RuntimeError("Login failed; session is None")
+    if _coerce_bool(_get_param(params, "use_login_site_code", default=False)):
+        site_code = str(explicit_site_code or "").strip()
+        if not site_code:
+            site_code = _resolve_login_site_code_from_user_info(_read_user_info_cookie(session))
+        if not site_code:
+            raise RuntimeError("TMS 登录态缺少 loginSiteCode，无法准确查询本站签收扫描")
+    else:
+        site_code = str(explicit_site_code or DEFAULT_SITE_CODE)
 
     if output_format == "json":
         rows = collect_scan_rows(
@@ -504,6 +566,7 @@ def run_once(params: Dict[str, Any]) -> Any:
             scan_type=scan_type,
             page_size=page_size,
             timeout=timeout,
+            max_pages=max_pages,
         )
         output_rows = format_scan_rows(rows)
         output_text = json.dumps(output_rows, ensure_ascii=False, indent=2)

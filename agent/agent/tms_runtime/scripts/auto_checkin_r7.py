@@ -465,6 +465,24 @@ def find_status_checkbox_locator(page, *, status_text: str):
     return None
 
 
+def find_first_row_by_status(page, *, status_text: str):
+    """Return the first body row whose transport status exactly matches."""
+
+    status_text = (status_text or "").strip()
+    if not status_text:
+        return None
+    rows = page.locator(
+        'xpath=//div[contains(@class,"el-table__body-wrapper")]'
+        '//tr[contains(@class,"el-table__row")]'
+        '[.//td[3]//*[normalize-space(.)="'
+        + status_text
+        + '"]]'
+    )
+    if _exists(rows):
+        return rows.first
+    return None
+
+
 def find_status_checkbox_locator_with_departure(page, *, status_text: str, departure_time_text: str):
     status_text = (status_text or "").strip()
     departure_time_text = (departure_time_text or "").strip()
@@ -581,6 +599,14 @@ def find_row_by_task_no(page, *, task_no: str):
     )
     if _exists(row):
         return row.first
+    rows = page.locator(
+        'xpath=//div[contains(@class,"el-table__body-wrapper")]'
+        '//tr[contains(@class,"el-table__row")]'
+    )
+    for index in range(_count(rows)):
+        candidate = rows.nth(index)
+        if _row_cell_text(candidate, column_index=2) == task_no:
+            return candidate
     return None
 
 
@@ -1587,8 +1613,9 @@ def run_once(params: Optional[dict] = None) -> dict:
             }
 
         stage = "search"
-        checkbox = find_status_checkbox_locator(page, status_text=status_text)
-        if checkbox is None or not _exists(checkbox):
+        target_row = find_first_row_by_status(page, status_text=status_text)
+        checkbox = find_checkbox_locator_for_row(page, target_row)
+        if target_row is None or checkbox is None or not _exists(checkbox):
             stage = "not_found"
             _diagnose_status_row(page, status_text=status_text)
             return {
@@ -1600,9 +1627,21 @@ def run_once(params: Optional[dict] = None) -> dict:
                 "cost_sec": round(time.time() - started, 3),
             }
 
+        task_no = _row_cell_text(target_row, column_index=2)
+        if not task_no:
+            stage = "task_identifier_missing"
+            return {
+                "ok": False,
+                "stage": stage,
+                "message": "target row has no transport task number",
+                "detail": {"status_text": status_text, "url": page.url},
+                "ts": _now_iso(),
+                "cost_sec": round(time.time() - started, 3),
+            }
+
         stage = "checkbox_clicked"
         log(f"已找到“{status_text}”行复选框，准备勾选…")
-        if not ensure_status_checkbox_checked(page, status_text=status_text):
+        if not ensure_checkbox_checked(checkbox):
             stage = "checkbox_not_checked"
             return {
                 "ok": False,
@@ -1663,8 +1702,15 @@ def run_once(params: Optional[dict] = None) -> dict:
         except Exception:
             pass
 
-        verify_checkbox = find_status_checkbox_locator(page, status_text=verify_status_text)
-        if verify_checkbox is None or not _exists(verify_checkbox):
+        verify_row = find_row_by_task_no(page, task_no=task_no)
+        observed_status = _row_cell_text(verify_row, column_index=3) if verify_row is not None else ""
+        verify_checkbox = find_checkbox_locator_for_row(page, verify_row)
+        if (
+            verify_row is None
+            or observed_status != verify_status_text
+            or verify_checkbox is None
+            or not _exists(verify_checkbox)
+        ):
             stage = "verify_not_found"
             _diagnose_status_row(page, status_text=verify_status_text)
             return {
@@ -1674,6 +1720,8 @@ def run_once(params: Optional[dict] = None) -> dict:
                 "detail": {
                     "status_text": status_text,
                     "verify_status_text": verify_status_text,
+                    "task_number": task_no,
+                    "observed_status": observed_status,
                     "url": page.url,
                     "confirm_clicks": int(confirm_clicks),
                     "confirm_clicks_max": int(confirm_clicks_max),
@@ -1682,7 +1730,7 @@ def run_once(params: Optional[dict] = None) -> dict:
                 "cost_sec": round(time.time() - started, 3),
             }
 
-        if not ensure_status_checkbox_checked(page, status_text=verify_status_text):
+        if not ensure_checkbox_checked(verify_checkbox):
             stage = "verify_not_checked"
             return {
                 "ok": False,
@@ -1691,6 +1739,8 @@ def run_once(params: Optional[dict] = None) -> dict:
                 "detail": {
                     "status_text": status_text,
                     "verify_status_text": verify_status_text,
+                    "task_number": task_no,
+                    "observed_status": observed_status,
                     "url": page.url,
                     "confirm_clicks": int(confirm_clicks),
                     "confirm_clicks_max": int(confirm_clicks_max),
@@ -1707,6 +1757,8 @@ def run_once(params: Optional[dict] = None) -> dict:
             "detail": {
                 "status_text": status_text,
                 "verify_status_text": verify_status_text,
+                "task_number": task_no,
+                "observed_status": observed_status,
                 "url": page.url,
                 "confirm_clicks": int(confirm_clicks),
                 "confirm_clicks_max": int(confirm_clicks_max),

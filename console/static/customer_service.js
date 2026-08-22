@@ -239,15 +239,26 @@
       };
     }
 
-    async function postJson(url, payload) {
+    function newBrowserRequestUuid() {
+      if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
+        throw new Error("当前浏览器无法生成安全的请求标识，写入计划未提交。");
+      }
+      return window.crypto.randomUUID();
+    }
+
+    async function postJson(url, payload, options = {}) {
+      const headers = { "Content-Type": "application/json" };
+      if (options.command === true) {
+        headers["X-Browser-Request-UUID"] = options.requestUuid || newBrowserRequestUuid();
+      }
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload || {}),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.message || data.error || `HTTP ${response.status}`);
+        throw new Error(data.message || data.error?.message || data.error || `HTTP ${response.status}`);
       }
       return data;
     }
@@ -432,7 +443,7 @@
           platforms: selectedPlatforms(),
           account_ids: accountIds,
           filters: filters(),
-        });
+        }, { command: true });
         renderRows(data.rows || []);
         refreshBadges(data.rows || [], data.errors || []);
         const errorText = data.errors && data.errors.length ? `，${data.errors.length} 个账号异常` : "";
@@ -591,6 +602,7 @@
         platform: row.platform,
         account_id: row.account_id,
         src: sourceHref,
+        request_uuid: newBrowserRequestUuid(),
       });
       return `/customer-service/problems/attachments/preview?${params.toString()}`;
     }
@@ -927,7 +939,7 @@
           platform: row.platform,
           account_id: row.account_id,
           item: row,
-        });
+        }, { command: true });
         state.selectedDetails = data.details || data.detail || [];
         renderProblemModal(row, state.selectedDetails);
       } catch (error) {
@@ -950,18 +962,31 @@
       setReplySubmitting(true);
       setStatus("回复提交中...");
       try {
-        const data = await postJson("/customer-service/problems/reply", {
-          platform: row.platform,
-          account_id: row.account_id,
-          item: row,
-          payload: {
-            reply_text: replyText,
-            prob_status: status,
-            old_prob_status: row.status || "",
-            REVERSION: replyText,
+        const data = await postJson(
+          "/customer-service/problems/reply",
+          {
+            platform: row.platform,
+            account_id: row.account_id,
+            item: row,
+            payload: {
+              reply_text: replyText,
+              prob_status: status,
+              old_prob_status: row.status || "",
+              REVERSION: replyText,
+            },
           },
-        });
+          { command: true },
+        );
         assertActionSucceeded(data, "回复失败");
+        if (data.pending) {
+          const replyTextNode = $("[data-cs-reply-text]");
+          if (replyTextNode) replyTextNode.value = "";
+          setStatus(
+            data.message || `回复计划已提交（Run ${data.run_id || "待生成"}）`,
+            "success",
+          );
+          return;
+        }
         row.status = status;
         row.reply_text = replyText;
         row.reply_content = replyText;
@@ -1014,13 +1039,20 @@
               problem_cause: form.problem_cause.value.trim(),
             };
       try {
-        await postJson("/customer-service/problems/publish", {
-          platform,
-          account_id: accountId,
-          payload,
-        });
+        const data = await postJson(
+          "/customer-service/problems/publish",
+          {
+            platform,
+            account_id: accountId,
+            payload,
+          },
+          { command: true },
+        );
         publishModal.hidden = true;
-        setStatus("问题件已提交发布", "success");
+        setStatus(
+          data.message || `发布计划已提交（Run ${data.run_id || "待生成"}）`,
+          "success",
+        );
       } catch (error) {
         setStatus(error.message || "发布失败", "error");
       }

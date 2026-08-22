@@ -307,6 +307,41 @@ class SessionPersistenceMixin:
         except Exception as exc:
             raise TMSAuthStateError("AUTH_REQUIRED", f"共享登录态文件损坏: {exc}") from exc
 
+    def _normalize_ronghui_user_context_state_locked(self) -> tuple[str, str, bool]:
+        storage_state = self._load_storage_state()
+        config = self.resolve_login_config()
+        host = urlparse(config.base_origin).hostname or "tms.ronghuiwl.com"
+        changed, context_status = normalize_ronghui_user_info_storage_state(storage_state, host=host)
+        if changed:
+            self._state_store.write_dict(self._storage_state_path, storage_state)
+            cookies = storage_state.get("cookies")
+            if isinstance(cookies, list):
+                self._cookies_path.write_text(
+                    json.dumps(cookies, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+        error_by_status = {
+            "missing": "融辉登录态缺少页面用户上下文，请重新登录。",
+            "incomplete": "融辉登录态的页面用户上下文不完整，请重新登录。",
+            "conflicting": "融辉登录态的页面用户上下文不一致，请重新登录。",
+        }
+        return context_status, error_by_status.get(context_status, ""), changed
+
+    def _invalidate_ronghui_context_locked(self, error_text: str) -> None:
+        for path in (self._pending_storage_state_path, self._pending_login_state_path):
+            path.unlink(missing_ok=True)
+        self._save_meta(
+            {
+                "status": "expired",
+                "last_validation_at": _format_ts(_now_ts()),
+                "last_error_summary": error_text,
+                "authenticated_at": "",
+                "pending_since": "",
+                "expires_at": "",
+            }
+        )
+
     def _persist_storage_state_locked(self, context: Any, page: Any) -> dict[str, Any]:
         if self._is_yunda_mode():
             report_meta = self._ensure_yunda_report_session_in_browser_locked(context, page)
@@ -322,6 +357,11 @@ class SessionPersistenceMixin:
             json.dumps(cookies, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        if not self._is_yunda_mode():
+            context_status, context_error, _context_changed = self._normalize_ronghui_user_context_state_locked()
+            if context_status != "ready":
+                self._invalidate_ronghui_context_locked(context_error)
+                raise TMSAuthStateError("AUTH_REQUIRED", context_error)
         expires_at = ""
         cookie_expiries = [
             float(cookie.get("expires"))

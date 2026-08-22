@@ -1,15 +1,87 @@
 ---
 module: 项目总览
 type: 架构文档
-tags: [项目总览, 模块关系, 本地控制台, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
-related: [ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
+tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
+related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: 架构基线已完成
-updated: 2026-08-11
+updated: 2026-08-16
 ---
 
 # 物流 Agent 项目总览
 
 > 本文件是项目总览的唯一规范副本；仓库根或 `agent/` 根目录不得保留同名重复文档。
+
+## 2026-08-15 自动化插件、账号/资源池与系统定时
+
+- 签名插件只安装可复用动作，不携带业务账号、资源详情或实际定时。每次安装由服务端创建独立
+  `automation_id`，重复实例各自选择业务账号、资源、系统定时和项目权限。
+- 业务账号的凭据与登录态只在“业务账号”模块维护；自动化页不再显示顶部登录绿点、登录态
+  popover、凭据表单或账号管理快捷入口。项目卡只消费 Agent 返回的安全账号投影。
+- `workflow_resources` 的 Token、表格 ID、读写范围、路径、配置哈希/版本和原始配置只留在 Agent。
+  Catalog 只暴露 `resource_id/name/kind/status`，Console 按签名 manifest 的 role+kind 精确筛选，
+  不默认选择第一项；资源池不可用、字段漂移、缺失/停用或类型不符时阻断配置和运行。
+- `none/daily_times/startup` 等定时在插件安装后由系统项目配置保存，不属于 ZIP/manifest；配置、
+  账号/资源绑定、入口、定时和权限使用同一版本化合同，任何漂移都会 fail closed 并使授权 stale。
+
+## 2026-08-13 Agent 统一控制平面
+
+- 保留 Agent + Console 双服务。Agent 内新增持久化 Command Gateway、Work Item、Run、
+  Step、Approval、Evidence、Domain Event 与 MySQL Outbox，不新增 LLM 服务或 Kafka。
+- Console、飞书、APScheduler、Webhook、客服/回单业务入口和兼容工具 API 统一先提交
+  Command；只有 WorkflowRunner 可以调用工具执行端口。登录/验证码、Console 本地 OCR 与
+  博益手工运单 CRUD 继续使用原边界。
+- LLM 目录只开放明确标记的只读/计算能力；风险、权限、审批、工具版本、Evidence 和写后
+  条件全部来自受管 `registry.yaml`。第三方写入要求独立 `super_admin` 审批与写后验证，除非 Scheduler 命中当前有效的精确任务豁免，
+  删除、付款及通用不可逆覆盖禁用。
+- 新增 Console“事项中心”，只代理 Agent `/internal/v1/*`，展示事项、运行步骤、计划、
+  审批、Evidence 与时间线；所有写动作使用真实管理员会话和同源校验。
+- 共享内部 Token 只证明服务调用方；Console 使用独立 HMAC 把真实 MySQL 管理员身份与
+  精确请求绑定。工具子进程不继承管理 Token，只能用 WorkflowRunner 签发的短期能力访问
+  精确 TMS target。韵达/融辉活动原页同源代理和旧韵达 JSON 录单入口暂时固定返回 410，
+  在迁移到独立来源前不调用 Agent；本地 OCR、博益手工 CRUD 与控制平面命令保持可用。
+- “每日应签”和融辉/韵达双向客服问题件作为首期只读事项投影。每日应签以 MySQL 账本和
+  真实主单签收事件为准；问题件必须全账号、双方向、全分页，列表消失后按外部 ID 精确
+  详情复核，不能把未知状态当成关闭。
+- 新投影只影子运行并保存集合哈希、差异和完整性。连续三个完整业务日满足切换标准且差异
+  经管理员确认后，才允许替换首页口径。
+- 完整设计、状态机、权限、API、迁移和发布门禁见 `control_plane_v1.md`。
+
+## 2026-08-14 每任务定时审批策略（实施/发布契约）
+
+- 定时写操作不再依赖“某类任务一律免审”的规则。每个持久化 `scheduled_tasks` 行默认
+  `REQUIRE_EACH_RUN`；只有符合工具 `approval.mode: schedule_allowlist` 资格的任务，才可由
+  签名真实 MySQL Console 会话中的 `super_admin` 单独设置为 `EXACT_SCHEDULE_EXEMPT`。
+- 免审仅对 Scheduler Command 生效。Console 立即运行、飞书、Webhook 和其他手工入口即使使用
+  同一个工具/任务，仍需常规审批；Basic Auth、普通管理员及浏览器传入的身份/哈希均不能配置策略。
+- Agent 服务端生成策略行为哈希，覆盖任务 ID、工具/版本、完整参数和账号、cron、启用状态、
+  治理字段、postconditions、动态规则和配置版本。任务显示名称不是行为，故不进入哈希；任何其他
+  受绑定配置或工具治理变更使原豁免 stale 并恢复逐次审批。
+- 生产已执行的 `014_control_plane_task_cutover.sql` 按生产迁移历史校验和保持字节不可变；后续安全
+  修正由 `015` 至 `018` 前向迁移完成。`015` 保存任务配置版本、当前策略及不可变策略审计；
+  `016` 把每日应签收敛为独立 R13 来源账号加唯一的邵阳大祥站 TMS 账号；`017` 精确升级两条
+  打卡和财务任务契约；`018` 建立项目、配置、代际、26 项资源闭包和授权证据。各迁移先完整备份
+  业务行，并提供可重入的恢复与重应用入口。
+- 首次 post-018 bootstrap 精确核验 71 条历史身份（57 typed +14 deferred R7）、68 条启用和 16 个
+  项目策略；项目分布固定为 10 个 LEGACY、6 个 REQUIRE，并由 55 条已启用旧任务的 grant/退休事件
+  证明。marker 已存在后管理员可合法启停、改 schedule 或策略；后续发布不固定 typed 行数，但当前
+  committed 项目与首次 marker/source snapshot 必须分别闭合，stale 授权只按逐次审批解释。
+- 两项打卡使用 `clock_in_dual` v1.1，绑定精确账号/会话。外部写的安全契约是：不盲目重试、ACK
+  只是执行证据而非独立读后验证、未知结果转为阻塞。财务启动补拉使用独立持久化任务
+  `finance_startup_catchup` 的有效策略，不存在静态免审旁路。
+- 发布在迁移和重启前根据有效外部写策略快照计算动态静默窗口；若将与外部写任务相撞，发布停止。
+  停止服务前还会阻断正在 `RUNNING`/`VERIFYING` 的外部写、财务写或 destructive step。这些都是
+  上线门禁，不是对某两个打卡任务的永久硬编码。
+- 新 Agent 在发布 health/identity/post-018 project manifest/依赖记录全部通过前，以 release hold 同时保持 Scheduler
+  paused 和 WorkflowRunner held（零领取、零 active Run）。该 held 进程不注册
+  `finance_startup_catchup` DateTrigger，reload 与发布激活也不补建、改期或强制执行；只有未来未处于 hold 的
+  正常服务启动才按持久化任务的启用状态注册启动补拉。签名管理接口先恢复并确认两者均可运行，再删除匹配
+  本次 SHA 的 marker；删除前崩溃会让下一次启动继续 hold，响应丢失可幂等重试。该激活请求是发布提交点，
+  发送后不再自动回滚可能已开始的业务动作。
+- 保存或清除自动化账号凭据会先用账号级 MySQL 执行锁阻断显式或财务同步隐式引用账号的全部非终态受保护
+  Run，再原子撤销精确定时免审并保留策略/Outbox 审计；锁、活动 Run 检查或撤权失败时凭据保持不变。
+  每个受保护步骤在同一账号锁内重查当前策略并提交 `RUNNING`，旧免审失效时回到审批，已开始写只 reconcile。人工 terminal retry
+  只支持原计划全部为 read/compute，任何写计划都必须
+  新建 Command 并重新进入策略与审批，不能沿用 Scheduler 身份或历史豁免重放。
 
 ## 2026-08-11 架构基线
 
@@ -76,26 +148,27 @@ updated: 2026-08-11
 
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
 - 项目级本地控制台已接入 `OCR / 价格获取 / 财务对账 / 车辆调度 / AI客服` 5 个模块入口。
-- 目前可交互运行的是 `OCR 工作区`、`融辉/韵达财务工作台` 和 `车辆调度工作区`。
-- 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；旧 `finance_reconciliation/` Excel ETL 保持独立。
+- 目前可交互运行的是 `OCR 工作区`、`融辉财务工作台` 和 `车辆调度工作区`；韵达财务适配器待真实来源验收后再启用。
+- 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；当前生产只调度融辉三个财务角色，逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已从线上运行时删除。
 - `车辆调度` 已完成工作区页面（车辆列表、调度看板、快速调度面板），当前使用演示数据。
 - `AI客服` 当前没有单独目录，运行时能力集中在 `agent/`、`feishu/` 和飞书工具链。
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
-- Phase 7 迁移所需的飞书表格、Webhook 等资源配置现统一保存在 Agent MySQL 的 `workflow_resources` 表中；运行时与控制台均直接读取这套独立配置，不再依赖 N8N sqlite。
-- `sync_daily_should_sign` 使用 R13 独立 SSO，账号资源通过 `workflow_resources.phase7.r13_credentials` 维护，不复用顶部共享 TMS 登录态。
+- Phase 7 迁移所需的飞书表格、Webhook 等资源配置统一保存在 Agent MySQL 的 `workflow_resources` 表中，不再依赖 N8N sqlite；Console 只读取闭合安全 descriptor，不直接读取 Token、表格 ID、范围、路径或原始配置。
+- `sync_daily_should_sign` 必须显式绑定独立的 `r13_account_id` 与唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
+- R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
 - `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由 `agent/tools/` 和 `agent/tms_runtime/` 统一承载；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
 - `sync_yunda_dispatch_forecast` 使用韵达独立登录态 `yunda`，默认每天 17:00 拉取次日“网点派件量预测主单表”并按应派时间覆盖写入飞书多维表格；融辉既有自动化继续使用 `ronghui/default` 登录态。
 - `sync_yunda_send_waybills` 使用同一套韵达登录态 `yunda`，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入 `phase7.yunda_send_waybills_bitable`；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
-- `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。
-- `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 会用当天扫描数据反推缺失主单，补抓详情后追加到统计输出。
+- `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。该接入当前只完成 Command/Gateway 治理：在缺少真实任务 ID 集合与远端版本的权威只读预览前，计划固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不会执行第三方打卡写入。
+- `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
 - 2026-05-18：`sync_arrival_stats` 会把 `20055750680002` 这类融辉纯数字子单归并到主单 `2005575068`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
-- `sync_arrival_stats` 默认以扫描索引中的子单扫描数作为到货件数；主单总件数不参与统计计数，避免把仍在上游分拨的子单误算为到货。`count_result.quantity_gaps` 仅作为“扫描子单数低于主单总件数”的审计提示。
-- `scan_codes` 表自 2026-04-26 起改为 UPSERT 累积写入：每次 `sync_arrival_stats` / `sync_scan_codes` 不再 TRUNCATE，而是按 `raw_code` 主键合并历史扫描记录。统计列含义随之从「当日件数」更名为「累计到货件数」。`scan_window_days`（默认 1）控制每次拉取 `/get_scan` 的时间窗，`scan_codes_retention_days`（默认 30）控制保留期；首次部署可临时传 `scan_window_days=30` 一次性回填历史。
-- `sync_arrival_stats` 现额外输出「未齐货物」清单到 `phase7.pending_arrivals_sheet`，由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除；如未在 `workflow_resources` 中配置该资源，写入步骤会被自动跳过。
+- `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。
+- `scan_codes` 表按 `raw_code` 主键 UPSERT 累积；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
+- `sync_arrival_stats` 的「未齐货物」飞书清单是可选输出。迁移生成的签名插件实例默认使用 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不要求存在 `phase7.pending_arrivals_sheet`；只有先在 `workflow_resources` 配置并显式绑定该资源，再把开关改为 false 才会写入。清单仍由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除。
 - `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
 - 2026-05-22: `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。
@@ -107,9 +180,8 @@ updated: 2026-08-11
 - 2026-05-31：自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
 - 2026-08-11：账号页统一所有系统的管理契约：“立即登录”执行真实登录，自动登录只控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
 
-## 2026-04-03 Update
+## 2026-04-03 历史更新
 
-- 新增控制台入口 `/automations`，用于统一维护 Agent 自动化参数，并在页面顶部按分类管理 TMS融辉图片验证码登录态（旧短信验证码页兼容）与韵达账号密码/图片验证码登录态。
-- `/automations` 顶部现支持保存默认账号、密码；融辉当前不再要求手机号，旧短信页出现时仍可使用保存的手机号。本地验证通过前不进入 ECS 切换。
-- 控制台页现在直接操作共享 MySQL 中的 `workflow_resources` 与 `scheduled_tasks`。
+- 当时新增 `/automations` 统一维护 Agent 自动化参数；其中顶部登录态、默认账号/密码和直接资源配置入口已由 2026-08-15 插件项目页取代，凭据与登录态现只在“业务账号”模块维护。
+- 当前 Console 不直接操作 `workflow_resources` 的完整配置；只消费 Agent 的安全资源 descriptor。`scheduled_tasks` 由安装后的系统项目定时配置生成和维护。
 - 任务在控制台保存后会触发 Agent `/admin/reload`，把最新的调度定义即时重载到 APScheduler。

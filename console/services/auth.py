@@ -1,5 +1,7 @@
 """Console application services grouped by business responsibility."""
 
+from collections.abc import Mapping
+
 from console.app_support import *  # noqa: F403
 from console.navigation import (
     MobileNavigationValidationError,
@@ -9,6 +11,58 @@ from console.navigation import (
 
 
 class AuthServiceMixin:
+    def _require_same_origin_write(self, handler: BaseHTTPRequestHandler) -> bool:
+        """Require browser writes to originate from this Console host."""
+
+        host = str(handler.headers.get("Host") or "").strip().lower()
+        source = str(
+            handler.headers.get("Origin") or handler.headers.get("Referer") or ""
+        ).strip()
+        parsed = urlparse(source)
+        if (
+            host
+            and parsed.scheme.lower() in {"http", "https"}
+            and parsed.netloc.lower() == host
+        ):
+            return True
+
+        message = "请求来源校验失败，请从当前 Console 页面重试。"
+        self._send_json(
+            handler,
+            HTTPStatus.FORBIDDEN,
+            {
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "CSRF_ORIGIN_REJECTED",
+                    "message": message,
+                },
+                # Keep the established Console error fields for older callers.
+                "error_code": "CSRF_ORIGIN_REJECTED",
+                "message": message,
+            },
+        )
+        return False
+
+    @staticmethod
+    def _is_super_admin_user(user: Mapping[str, Any] | None) -> bool:
+        value = user or {}
+        return (
+            not bool(value.get("is_legacy_basic_auth"))
+            and str(value.get("role") or "") == "super_admin"
+            and int(value.get("id") or 0) > 0
+        )
+
+    def _require_super_admin_account_write(self, handler: BaseHTTPRequestHandler) -> bool:
+        if self._is_super_admin_user(current_admin_user()):
+            return True
+        self._send_text(
+            handler,
+            HTTPStatus.FORBIDDEN,
+            "Super administrator permission is required.",
+        )
+        return False
+
     def _ensure_authorized(self, handler: BaseHTTPRequestHandler) -> bool:
         user = self._authenticated_user_from_request(handler)
         if user:
@@ -55,6 +109,8 @@ class AuthServiceMixin:
             "avatar_path": str(session.get("avatar_path") or ""),
             "avatar_url": self._admin_avatar_url(str(session.get("avatar_path") or "")),
             "ui_preferences_json": str(session.get("ui_preferences_json") or "{}"),
+            "control_plane_role": str(session.get("control_plane_role") or "admin"),
+            "role": str(session.get("role") or "admin"),
             "is_legacy_basic_auth": False,
         }
         self._set_current_admin_user(handler, user)
@@ -77,6 +133,8 @@ class AuthServiceMixin:
             "avatar_path": "",
             "avatar_url": "",
             "ui_preferences_json": "{}",
+            "role": "legacy_admin",
+            "control_plane_role": "legacy_admin",
             "is_legacy_basic_auth": True,
         }
 
@@ -280,15 +338,63 @@ class AuthServiceMixin:
             {"ok": True, "data": {"routes": list(routes)}, "error": None},
         )
 
-    def _render_admin_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
+    def _render_admin_accounts(
+        self,
+        handler: BaseHTTPRequestHandler,
+        query: dict,
+        *,
+        binding_challenge: dict[str, Any] | None = None,
+    ) -> None:
+        session_user = current_admin_user() or {}
+        is_super_admin = str(
+            session_user.get("control_plane_role") or session_user.get("role") or ""
+        ) == "super_admin"
+        binding_status: dict[str, Any] = {}
+        if is_super_admin:
+            result = self._agent_request(
+                "GET",
+                "/internal/v1/admin/feishu-approval-binding",
+                timeout=12,
+            )
+            if result.get("ok") and isinstance(result.get("data"), dict):
+                binding_status = dict(result["data"])
         template = self.template_env.get_template("admin_accounts.html")
         body = template.render(
             app_title=self.settings.app_title,
             users=self.repository.list_admin_users(),
+            is_super_admin=is_super_admin,
+            feishu_binding=binding_status,
+            binding_challenge=binding_challenge,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )
         self._send_html(handler, body)
+
+    def _handle_feishu_approval_binding(self, handler: BaseHTTPRequestHandler, *, revoke: bool) -> None:
+        method = "DELETE" if revoke else "POST"
+        endpoint = (
+            "/internal/v1/admin/feishu-approval-binding"
+            if revoke
+            else "/internal/v1/admin/feishu-approval-binding/challenge"
+        )
+        result = self._agent_request(method, endpoint, payload={}, timeout=12)
+        if not result.get("ok") or not isinstance(result.get("data"), dict):
+            self._redirect(
+                handler,
+                "/settings/accounts?kind=warning&message=飞书审批绑定操作失败",
+            )
+            return
+        if revoke:
+            self._redirect(
+                handler,
+                "/settings/accounts?kind=success&message=飞书审批身份已解绑",
+            )
+            return
+        self._render_admin_accounts(
+            handler,
+            {},
+            binding_challenge=dict(result["data"]),
+        )
 
     def _render_automation_accounts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         accounts, account_warning = self._fetch_automation_accounts(force=False, prefer_cached=True)
@@ -567,13 +673,19 @@ class AuthServiceMixin:
     def _automation_account_options_by_system(self, accounts: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         options: dict[str, list[dict[str, Any]]] = {}
         for account in accounts:
-            if not bool(account.get("is_active", True)):
-                continue
+            account = dict(account)
+            status = account.get("status") if isinstance(account.get("status"), dict) else {}
+            session_ready = (
+                not bool(account.get("session_capable"))
+                or str(status.get("status") or "").strip() == "authenticated"
+            )
+            account["binding_usable"] = bool(account.get("is_active", True)) and session_ready
             system = str(account.get("system") or "").strip().lower()
             options.setdefault(system, []).append(account)
         for system, rows in options.items():
             rows.sort(
                 key=lambda item: (
+                    not bool(item.get("binding_usable")),
                     not bool(item.get("is_default")),
                     str(item.get("name") or item.get("account_id") or ""),
                 )
@@ -589,8 +701,9 @@ class AuthServiceMixin:
     ) -> list[dict[str, Any]]:
         workflow = workflow or automation_workflow_definition(task_id)
         raw_roles = workflow.get("account_roles")
-        roles = raw_roles if isinstance(raw_roles, list) else []
-        if not roles:
+        roles_declared = isinstance(raw_roles, list)
+        roles = raw_roles if roles_declared else []
+        if not roles and not roles_declared:
             normalized = normalize_task_group_id(task_id)
             tool_name_value = str(tool_name or workflow.get("tool_name") or "").strip()
             provider_value = str(provider or "").strip().lower()
@@ -599,7 +712,7 @@ class AuthServiceMixin:
             elif tool_name_value == "sync_daily_should_sign" or normalized.startswith("daily_sign"):
                 roles = [
                     {"label": "R13应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
-                    {"label": "补地址账号", "field": "detail_account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
+                    {"label": "TMS邵阳大祥站账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
                 ]
             elif provider_value == "yunda" or tool_name_value.startswith("sync_yunda_"):
                 roles = [{"label": "运行账号", "field": "account_id", "system": "yunda", "default_account_id": "yunda_default"}]
@@ -617,21 +730,42 @@ class AuthServiceMixin:
         for role in roles:
             if not isinstance(role, dict):
                 continue
-            system = str(role.get("system") or "").strip().lower()
-            if system not in AUTOMATION_ACCOUNT_SYSTEM_LABELS:
+            allowed_systems = role.get("allowed_systems")
+            if isinstance(allowed_systems, list):
+                systems = [
+                    str(item or "").strip().lower()
+                    for item in allowed_systems
+                    if str(item or "").strip().lower() in AUTOMATION_ACCOUNT_SYSTEM_LABELS
+                ]
+            else:
+                system = str(role.get("system") or "").strip().lower()
+                systems = [system] if system in AUTOMATION_ACCOUNT_SYSTEM_LABELS else []
+            systems = list(dict.fromkeys(systems))
+            if not systems:
                 continue
-            field = str(role.get("field") or "account_id").strip() or "account_id"
+            system = systems[0]
+            field = str(role.get("field") or role.get("role") or "account_id").strip()
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", field):
+                continue
             normalized_roles.append(
                 {
                     "label": str(role.get("label") or "运行账号").strip() or "运行账号",
                     "field": field,
                     "system": system,
-                    "system_label": AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(system, system),
+                    "systems": systems,
+                    "system_label": " / ".join(
+                        AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(item, item) for item in systems
+                    ),
                     "default_account_id": str(
                         role.get("default_account_id")
                         or AUTOMATION_DEFAULT_ACCOUNT_IDS.get(system, "")
                     ).strip(),
                     "required": bool(role.get("required", True)),
+                    "binding_cardinality": (
+                        "many"
+                        if str(role.get("binding_cardinality") or "one") == "many"
+                        else "one"
+                    ),
                 }
             )
         return normalized_roles
@@ -669,7 +803,16 @@ class AuthServiceMixin:
         options_by_system = self._automation_account_options_by_system(accounts)
         for task in tasks:
             task_id = str(task.get("task_id") or "")
-            workflow = automation_workflow_definition(task_id)
+            workflow = dict(automation_workflow_definition(task_id))
+            plugin = task.get("plugin")
+            if isinstance(plugin, dict):
+                workflow["account_roles"] = list(plugin.get("account_roles") or [])
+            plugin_account_bindings = (
+                plugin.get("account_bindings")
+                if isinstance(plugin, dict)
+                and isinstance(plugin.get("account_bindings"), dict)
+                else {}
+            )
             try:
                 payload = json.loads(str(task.get("tool_params_json") or "{}"))
             except json.JSONDecodeError:
@@ -685,24 +828,72 @@ class AuthServiceMixin:
                 str(task.get("provider") or ""),
             ):
                 system = str(role.get("system") or "").strip().lower()
-                options = list(options_by_system.get(system, []))
+                systems = list(role.get("systems") or [system])
+                options = [
+                    account
+                    for allowed_system in systems
+                    for account in options_by_system.get(str(allowed_system), [])
+                ]
                 option_ids = {str(item.get("account_id") or "") for item in options}
                 field = str(role.get("field") or "account_id")
-                selected = str(payload.get(field) or "").strip()
-                if not selected and field == "account_id":
-                    selected = str(payload.get("accountId") or "").strip()
-                if selected not in option_ids:
-                    default_account_id = str(role.get("default_account_id") or "").strip()
-                    selected = (
-                        default_account_id
-                        if default_account_id in option_ids
-                        else str(options[0].get("account_id") or "") if options else ""
+                many = role.get("binding_cardinality") == "many"
+                if isinstance(plugin, dict):
+                    # Installed projects are configured only from the core-owned
+                    # project binding.  Legacy cron parameters remain readable
+                    # migration evidence, never an execution/config authority.
+                    raw_configured = plugin_account_bindings.get(field)
+                    configured_account_ids = (
+                        [str(item or "").strip() for item in raw_configured]
+                        if isinstance(raw_configured, list)
+                        else [str(raw_configured or "").strip()]
                     )
+                else:
+                    configured_account_id = str(payload.get(field) or "").strip()
+                    if not configured_account_id and field == "account_id":
+                        configured_account_id = str(payload.get("accountId") or "").strip()
+                    configured_account_ids = [configured_account_id]
+                configured_account_ids = [item for item in configured_account_ids if item]
+                if not many and len(configured_account_ids) > 1:
+                    configured_account_ids = configured_account_ids[:1]
+                selected_account_ids = [
+                    item for item in configured_account_ids if item in option_ids
+                ]
+                selected_accounts = [
+                    item
+                    for item in options
+                    if str(item.get("account_id") or "") in selected_account_ids
+                ]
+                configured_invalid = len(selected_account_ids) != len(configured_account_ids)
+                unavailable = any(
+                    not bool(account.get("binding_usable")) for account in selected_accounts
+                )
+                blocked = configured_invalid or unavailable or (
+                    bool(role.get("required", True)) and not selected_accounts
+                )
+                if configured_invalid:
+                    blocked_reason = "已保存账号不存在或不属于此角色"
+                elif not selected_accounts:
+                    blocked_reason = "未选择账号"
+                elif any(not bool(account.get("is_active", True)) for account in selected_accounts):
+                    blocked_reason = "已保存账号已停用"
+                elif any(
+                    bool(account.get("session_capable"))
+                    and not bool(account.get("binding_usable"))
+                    for account in selected_accounts
+                ):
+                    blocked_reason = "已保存账号登录态无效"
+                else:
+                    blocked_reason = ""
                 role_bindings.append(
                     {
                         **role,
                         "options": options,
-                        "selected_account_id": selected,
+                        "selected_account_ids": selected_account_ids,
+                        "selected_account_id": selected_account_ids[0]
+                        if selected_account_ids
+                        else "",
+                        "blocked": blocked,
+                        "blocked_reason": blocked_reason if blocked else "",
                     }
                 )
 
@@ -712,6 +903,21 @@ class AuthServiceMixin:
             task["account_system_label"] = str(first_role.get("system_label") or "")
             task["account_options"] = list(first_role.get("options") or [])
             task["selected_account_id"] = str(first_role.get("selected_account_id") or "")
+            account_block_reasons = [
+                str(role.get("blocked_reason") or "")
+                for role in role_bindings
+                if role.get("blocked") and str(role.get("blocked_reason") or "")
+            ]
+            task["account_blocked"] = bool(account_block_reasons)
+            task["account_block_reasons"] = account_block_reasons
+            if account_block_reasons:
+                task["can_run_now"] = False
+                task["plugin_blocked"] = True
+                existing_warning = str(task.get("plugin_warning") or "").strip()
+                account_warning = "；".join(dict.fromkeys(account_block_reasons))
+                task["plugin_warning"] = "；".join(
+                    item for item in (existing_warning, account_warning) if item
+                )
 
     def _handle_automation_account_post(self, handler: BaseHTTPRequestHandler, path: str) -> bool:
         if path == "/automation-accounts/create":
@@ -932,6 +1138,8 @@ class AuthServiceMixin:
         return None
 
     def _handle_admin_account_create(self, handler: BaseHTTPRequestHandler) -> None:
+        if not self._require_super_admin_account_write(handler):
+            return
         values = self._parse_urlencoded_form(handler)
         username = str(values.get("username", "") or "").strip()
         display_name = str(values.get("display_name", "") or "").strip()
@@ -954,6 +1162,8 @@ class AuthServiceMixin:
         self._redirect_with_message(handler, "/settings/accounts", f"账号已创建：{username}", "success")
 
     def _handle_admin_account_toggle(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        if not self._require_super_admin_account_write(handler):
+            return
         user_id = self._parse_admin_user_id(path, "toggle")
         if user_id is None:
             self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
@@ -972,6 +1182,8 @@ class AuthServiceMixin:
         self._redirect_with_message(handler, "/settings/accounts", message, "success")
 
     def _handle_admin_account_reset_password(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        if not self._require_super_admin_account_write(handler):
+            return
         user_id = self._parse_admin_user_id(path, "reset-password")
         if user_id is None:
             self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
@@ -986,6 +1198,27 @@ class AuthServiceMixin:
             return
         self.repository.update_admin_user_password(user_id, hash_admin_password(password))
         self._redirect_with_message(handler, "/settings/accounts", "密码已重置，原有会话已失效。", "success")
+
+    def _handle_admin_account_role(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        current_user = current_admin_user() or {}
+        if bool(current_user.get("is_legacy_basic_auth")) or str(current_user.get("role") or "") != "super_admin":
+            self._send_text(handler, HTTPStatus.FORBIDDEN, "Super administrator permission is required.")
+            return
+        user_id = self._parse_admin_user_id(path, "role")
+        if user_id is None or not self.repository.get_admin_user(user_id):
+            self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
+            return
+        values = self._parse_urlencoded_form(handler)
+        role = str(values.get("role") or "").strip()
+        if role not in {"admin", "super_admin"}:
+            self._redirect_with_message(handler, "/settings/accounts", "管理员角色无效。", "warning")
+            return
+        try:
+            self.repository.set_admin_user_role(user_id, role)
+        except ValueError as exc:
+            self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+            return
+        self._redirect_with_message(handler, "/settings/accounts", "管理员角色已更新，原会话已失效。", "success")
 
     def _handle_admin_avatar_upload(self, handler: BaseHTTPRequestHandler) -> None:
         user = current_admin_user() or {}

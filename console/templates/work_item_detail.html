@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block body_class %}control-plane-page-body{% endblock %}
+{% block title %}事项详情 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}事项详情{% endblock %}
+{% block subtitle %}计划、证据和执行时间线{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/control_plane.css?v=20260813-1">
+{% endblock %}
+
+{% block page_actions %}
+  <a class="ghost-btn" href="/work-items"><i data-feather="arrow-left"></i><span>返回事项中心</span></a>
+{% endblock %}
+
+{% block content %}
+<article class="cp-page cp-detail" data-cp-detail-page data-work-item-id="{{ work_item_id | e }}">
+  <div class="cp-feedback" data-cp-detail-feedback role="status" aria-live="polite"></div>
+
+  <header class="cp-detail-header" data-cp-detail-header aria-busy="true">
+    <div class="cp-detail-heading">
+      <span class="cp-status cp-status--neutral" data-cp-detail-status>读取中</span>
+      <p class="cp-eyebrow" data-cp-detail-id>{{ work_item_id }}</p>
+      <h2 data-cp-detail-title>正在读取事项…</h2>
+      <p data-cp-detail-reason></p>
+    </div>
+    <dl class="cp-meta-grid" data-cp-detail-meta></dl>
+    <div class="cp-action-bar" data-cp-action-bar aria-label="事项操作"></div>
+  </header>
+
+  <div class="cp-detail-layout">
+    <div class="cp-detail-main">
+      <section class="cp-section" aria-labelledby="cp-plan-heading">
+        <div class="cp-section-heading">
+          <div><p class="cp-eyebrow">受约束执行</p><h3 id="cp-plan-heading">当前计划</h3></div>
+          <span class="cp-plan-hash" data-cp-plan-hash></span>
+        </div>
+        <div data-cp-plan-content class="cp-section-content" aria-busy="true">
+          <p class="cp-muted">正在读取计划…</p>
+        </div>
+      </section>
+
+      <section class="cp-section" aria-labelledby="cp-evidence-heading">
+        <div class="cp-section-heading">
+          <div><p class="cp-eyebrow">权威来源</p><h3 id="cp-evidence-heading">证据</h3></div>
+          <span data-cp-evidence-count></span>
+        </div>
+        <div data-cp-evidence-list class="cp-record-list" aria-busy="true">
+          <p class="cp-muted">正在读取证据…</p>
+        </div>
+      </section>
+    </div>
+
+    <aside class="cp-detail-aside" aria-label="执行状态与时间线">
+      <section class="cp-section" aria-labelledby="cp-run-heading">
+        <div class="cp-section-heading">
+          <div><p class="cp-eyebrow">Agent Run</p><h3 id="cp-run-heading">当前执行</h3></div>
+          <span data-cp-poll-state></span>
+        </div>
+        <div data-cp-run-content class="cp-section-content" aria-busy="true">
+          <p class="cp-muted">正在读取执行状态…</p>
+        </div>
+      </section>
+
+      <section class="cp-section" aria-labelledby="cp-timeline-heading">
+        <div class="cp-section-heading">
+          <div><p class="cp-eyebrow">Audit Trail</p><h3 id="cp-timeline-heading">时间线</h3></div>
+          <span data-cp-timeline-count></span>
+        </div>
+        <ol data-cp-timeline-list class="cp-timeline" aria-busy="true">
+          <li class="cp-muted">正在读取时间线…</li>
+        </ol>
+      </section>
+    </aside>
+  </div>
+
+  <dialog class="cp-dialog" data-cp-approval-dialog aria-labelledby="cp-approval-title">
+    <form method="dialog" data-cp-approval-form>
+      <div class="cp-dialog-heading">
+        <div><p class="cp-eyebrow">计划审批</p><h2 id="cp-approval-title" data-cp-approval-title>审批当前计划</h2></div>
+        <button class="cp-icon-button" value="cancel" aria-label="关闭审批窗口"><i data-feather="x"></i></button>
+      </div>
+      <label class="cp-field">
+        <span>计划哈希</span>
+        <input type="text" data-cp-approval-plan-hash readonly>
+      </label>
+      <label class="cp-field">
+        <span>审批意见</span>
+        <textarea data-cp-approval-comment maxlength="2000" rows="4" placeholder="说明批准或驳回原因"></textarea>
+      </label>
+      <div class="cp-dialog-actions">
+        <button class="ghost-btn" value="cancel">取消</button>
+        <button class="primary-btn" type="submit" value="default" data-cp-approval-submit>提交决定</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="cp-dialog" data-cp-run-action-dialog aria-labelledby="cp-run-action-title">
+    <form method="dialog" data-cp-run-action-form>
+      <div class="cp-dialog-heading">
+        <div><p class="cp-eyebrow">执行操作</p><h2 id="cp-run-action-title" data-cp-run-action-title>处理当前执行</h2></div>
+        <button class="cp-icon-button" value="cancel" aria-label="关闭执行操作窗口"><i data-feather="x"></i></button>
+      </div>
+      <label class="cp-field">
+        <span data-cp-run-action-label>说明</span>
+        <textarea data-cp-run-action-value maxlength="4000" rows="4"></textarea>
+      </label>
+      <div data-cp-clarification-fields hidden>
+        <label class="cp-field">
+          <span>账号 ID（可选，必须是当前系统中的真实账号）</span>
+          <input data-cp-clarification-account-id type="text" maxlength="191" autocomplete="off">
+        </label>
+        <label class="cp-field">
+          <span>参数更新 JSON（可选）</span>
+          <textarea data-cp-clarification-arguments rows="6" spellcheck="false" placeholder='{"field": "value"}'></textarea>
+        </label>
+        <p class="cp-muted">参数必须是 JSON 对象，并重新通过工具 input_schema、账号范围、策略和计划哈希校验；普通说明不会被猜成业务参数。</p>
+      </div>
+      <div class="cp-dialog-actions">
+        <button class="ghost-btn" value="cancel">取消</button>
+        <button class="primary-btn" type="submit" value="default" data-cp-run-action-submit>确认</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="cp-dialog" data-cp-assign-dialog aria-labelledby="cp-assign-title">
+    <form method="dialog" data-cp-assign-form>
+      <div class="cp-dialog-heading">
+        <div><p class="cp-eyebrow">责任归属</p><h2 id="cp-assign-title">分配责任人</h2></div>
+        <button class="cp-icon-button" value="cancel" aria-label="关闭分配窗口"><i data-feather="x"></i></button>
+      </div>
+      <label class="cp-field">
+        <span>责任人管理员 ID</span>
+        <input data-cp-assign-owner type="text" maxlength="128" autocomplete="off" required placeholder="输入 MySQL 管理员 ID">
+      </label>
+      <p class="cp-muted">指派动作会记录真实管理员会话；责任人 ID 不从浏览器 actor 字段读取。</p>
+      <div class="cp-dialog-actions">
+        <button class="ghost-btn" value="cancel">取消</button>
+        <button class="primary-btn" type="submit" value="default">确认分配</button>
+      </div>
+    </form>
+  </dialog>
+</article>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/control_plane.js?v=20260813-1" defer></script>
+{% endblock %}

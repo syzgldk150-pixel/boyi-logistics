@@ -1,9 +1,256 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from shared.manual_entry_contracts import canonical_manual_proxy_path
 
 
 class TmsProxyServiceMixin:
+    _ORIGINAL_PAGE_TICKET_TTL_SECONDS = 30
+    _ORIGINAL_PAGE_CAPABILITY_TTL_SECONDS = 30 * 60
+
+    def _original_page_state(self) -> tuple[threading.Lock, dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        lock = getattr(self, "_original_page_state_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._original_page_state_lock = lock
+            self._original_page_tickets = {}
+            self._original_page_capabilities = {}
+        return lock, self._original_page_tickets, self._original_page_capabilities
+
+    @staticmethod
+    def _request_host(handler: BaseHTTPRequestHandler) -> str:
+        return str(handler.headers.get("Host") or "").strip().lower().split(":", 1)[0]
+
+    def _active_admin_session_for_original_page(self, session_id: str) -> dict[str, Any] | None:
+        if not session_id:
+            return None
+        session = self.repository.get_admin_session(session_id)
+        if not session or not bool(session.get("is_active")):
+            return None
+        if self._coerce_datetime(session.get("expires_at")) <= datetime.now():
+            return None
+        return session
+
+    def _prune_original_page_state(self, now: float) -> None:
+        lock, tickets, capabilities = self._original_page_state()
+        with lock:
+            for store in (tickets, capabilities):
+                expired = [key for key, value in store.items() if float(value.get("expires_at") or 0) <= now]
+                for key in expired:
+                    store.pop(key, None)
+
+    def _mint_isolated_original_page_ticket(
+        self,
+        handler: BaseHTTPRequestHandler,
+        provider: str,
+    ) -> None:
+        if provider not in ORIGINAL_PAGE_PREFIXES:
+            self._send_text(handler, HTTPStatus.NOT_FOUND, "Original page provider not found.")
+            return
+        session_id = self._session_id_from_cookie(handler)
+        if not self._active_admin_session_for_original_page(session_id):
+            self._send_json(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                {"ok": False, "error_code": "MYSQL_ADMIN_SESSION_REQUIRED", "message": "请使用后台登录会话打开原页。"},
+            )
+            return
+        now = time.time()
+        self._prune_original_page_state(now)
+        ticket = secrets.token_urlsafe(32)
+        lock, tickets, _ = self._original_page_state()
+        with lock:
+            tickets[ticket] = {
+                "provider": provider,
+                "session_id": session_id,
+                "expires_at": now + self._ORIGINAL_PAGE_TICKET_TTL_SECONDS,
+            }
+        prefix = ORIGINAL_PAGE_PREFIXES[provider]
+        self._redirect(handler, f"{ORIGINAL_PAGE_ISOLATED_ORIGIN}{prefix}/?ticket={quote(ticket)}")
+
+    def _original_page_capability_from_cookie(
+        self,
+        handler: BaseHTTPRequestHandler,
+        provider: str,
+    ) -> str:
+        raw_cookie = str(handler.headers.get("Cookie") or "")
+        if not raw_cookie:
+            return ""
+        cookie = SimpleCookie()
+        try:
+            cookie.load(raw_cookie)
+        except Exception:
+            return ""
+        morsel = cookie.get(f"shipnow_original_{provider}")
+        return str(morsel.value if morsel else "")
+
+    def _exchange_original_page_ticket(
+        self,
+        handler: BaseHTTPRequestHandler,
+        provider: str,
+        ticket: str,
+    ) -> None:
+        now = time.time()
+        self._prune_original_page_state(now)
+        lock, tickets, capabilities = self._original_page_state()
+        with lock:
+            ticket_state = tickets.pop(ticket, None)
+        if (
+            not ticket_state
+            or ticket_state.get("provider") != provider
+            or float(ticket_state.get("expires_at") or 0) <= now
+        ):
+            self._send_text(handler, HTTPStatus.UNAUTHORIZED, "原页授权已失效，请从运单录入重新打开。")
+            return
+        session_id = str(ticket_state.get("session_id") or "")
+        session = self._active_admin_session_for_original_page(session_id)
+        if not session:
+            self._send_text(handler, HTTPStatus.UNAUTHORIZED, "后台登录会话已失效，请重新登录。")
+            return
+        session_expires_at = self._coerce_datetime(session.get("expires_at")).timestamp()
+        expires_at = min(session_expires_at, now + self._ORIGINAL_PAGE_CAPABILITY_TTL_SECONDS)
+        capability = secrets.token_urlsafe(32)
+        with lock:
+            capabilities[capability] = {
+                "provider": provider,
+                "session_id": session_id,
+                "expires_at": expires_at,
+            }
+        max_age = max(1, int(expires_at - now))
+        prefix = ORIGINAL_PAGE_PREFIXES[provider]
+        cookie_header = (
+            f"shipnow_original_{provider}={capability}; Path={prefix}; HttpOnly; "
+            f"Secure; SameSite=Strict; Max-Age={max_age}"
+        )
+        self._redirect(handler, f"{prefix}/", headers=[("Set-Cookie", cookie_header)])
+
+    def _authorize_isolated_original_page(
+        self,
+        handler: BaseHTTPRequestHandler,
+        provider: str,
+    ) -> bool:
+        now = time.time()
+        self._prune_original_page_state(now)
+        capability = self._original_page_capability_from_cookie(handler, provider)
+        lock, _, capabilities = self._original_page_state()
+        with lock:
+            state = dict(capabilities.get(capability) or {})
+        session = self._active_admin_session_for_original_page(str(state.get("session_id") or ""))
+        if (
+            not state
+            or state.get("provider") != provider
+            or float(state.get("expires_at") or 0) <= now
+            or not session
+        ):
+            self._send_text(handler, HTTPStatus.UNAUTHORIZED, "原页授权已失效，请从运单录入重新打开。")
+            return False
+        self._set_current_admin_user(
+            handler,
+            {
+                "id": int(session.get("user_id") or 0),
+                "username": str(session.get("username") or ""),
+                "display_name": str(session.get("display_name") or ""),
+                "avatar_path": str(session.get("avatar_path") or ""),
+                "avatar_url": self._admin_avatar_url(str(session.get("avatar_path") or "")),
+                "ui_preferences_json": str(session.get("ui_preferences_json") or "{}"),
+                "control_plane_role": str(session.get("control_plane_role") or "admin"),
+                "role": str(session.get("role") or "admin"),
+                "is_legacy_basic_auth": False,
+            },
+        )
+        return True
+
+    def _handle_isolated_original_page_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+        parsed: Any,
+        *,
+        method: str,
+    ) -> bool:
+        if self._request_host(handler) != ORIGINAL_PAGE_ISOLATED_HOST:
+            return False
+        path = str(parsed.path or "")
+        provider = next(
+            (
+                name
+                for name, prefix in ORIGINAL_PAGE_PREFIXES.items()
+                if path == prefix or path.startswith(prefix + "/")
+            ),
+            "",
+        )
+        if not provider:
+            self._redirect(handler, f"{ORIGINAL_PAGE_PRIMARY_ORIGIN}/")
+            return True
+        query = parse_qs(parsed.query)
+        prefix = ORIGINAL_PAGE_PREFIXES[provider]
+        ticket = str((query.get("ticket") or [""])[0]).strip()
+        if ticket:
+            if method.upper() != "GET" or path.rstrip("/") != prefix:
+                self._send_text(handler, HTTPStatus.BAD_REQUEST, "Invalid original page ticket request.")
+                return True
+            self._exchange_original_page_ticket(handler, provider, ticket)
+            return True
+        if not self._authorize_isolated_original_page(handler, provider):
+            return True
+        if method.upper() != "GET":
+            origin = str(handler.headers.get("Origin") or "").strip().rstrip("/")
+            referer = str(handler.headers.get("Referer") or "").strip()
+            origin_allowed = origin == ORIGINAL_PAGE_ISOLATED_ORIGIN if origin else None
+            referer_allowed = referer.startswith(ORIGINAL_PAGE_ISOLATED_ORIGIN + prefix + "/")
+            if origin_allowed is False or (origin_allowed is None and not referer_allowed):
+                self._send_text(handler, HTTPStatus.FORBIDDEN, "Original page write origin rejected.")
+                return True
+        if provider == "yunda":
+            self._handle_yunda_live_proxy(
+                handler,
+                path,
+                method=method,
+                query=query,
+                proxy_prefix=prefix,
+                frame_ancestor_origin=ORIGINAL_PAGE_PRIMARY_ORIGIN,
+            )
+        else:
+            self._handle_ronghui_live_proxy(
+                handler,
+                path,
+                method=method,
+                query=query,
+                proxy_prefix=prefix,
+                frame_ancestor_origin=ORIGINAL_PAGE_PRIMARY_ORIGIN,
+            )
+        return True
+
+    def _active_original_page_proxy_disabled(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+    ) -> bool:
+        raw_path = str(path or "")
+        prefixes = (
+            "/ocr/yunda",
+            RONGHUI_RECEIPT_LIVE_PROXY_PREFIX,
+            YUNDA_RECEIPT_LIVE_PROXY_PREFIX,
+            RONGHUI_LIVE_PROXY_PREFIX,
+            YUNDA_LIVE_PROXY_PREFIX,
+        )
+        if not any(
+            raw_path == prefix or raw_path.startswith(prefix + "/")
+            for prefix in prefixes
+        ):
+            return False
+        self._send_json(
+            handler,
+            HTTPStatus.GONE,
+            {
+                "ok": False,
+                "error_code": "ACTIVE_ORIGINAL_PAGE_DISABLED",
+                "message": (
+                    "第三方活动原页已安全停用；其脚本不能在 Console 管理员同源上下文执行。"
+                ),
+            },
+        )
+        return True
+
     def _parse_json_body(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         content_length = int(handler.headers.get("Content-Length", 0))
         raw = handler.rfile.read(content_length) if content_length else b""
@@ -19,13 +266,15 @@ class TmsProxyServiceMixin:
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
         return handler.rfile.read(content_length) if content_length else b""
 
-    def _yunda_live_remote_path(self, path: str) -> str:
+    def _yunda_live_remote_path(self, path: str, *, proxy_prefix: str = YUNDA_LIVE_PROXY_PREFIX) -> str:
         raw_path = str(path or "").strip()
-        if raw_path.rstrip("/") == YUNDA_LIVE_PROXY_PREFIX:
+        if raw_path.rstrip("/") == proxy_prefix:
             return YUNDA_LIVE_ENTRY_PATH
-        if not raw_path.startswith(YUNDA_LIVE_PROXY_PREFIX + "/"):
+        if not raw_path.startswith(proxy_prefix + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(YUNDA_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(proxy_prefix) :].lstrip("/")
+        )
         return remote_path if remote_path.startswith("/ky_inms/public/") else ""
 
     def _yunda_receipt_live_remote_path(self, path: str) -> str:
@@ -34,16 +283,20 @@ class TmsProxyServiceMixin:
             return YUNDA_RECEIPT_LIVE_ENTRY_PATH
         if not raw_path.startswith(YUNDA_RECEIPT_LIVE_PROXY_PREFIX + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(YUNDA_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(YUNDA_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/")
+        )
         return remote_path if remote_path.startswith("/ky_inms/public/") else ""
 
-    def _ronghui_live_remote_path(self, path: str) -> str:
+    def _ronghui_live_remote_path(self, path: str, *, proxy_prefix: str = RONGHUI_LIVE_PROXY_PREFIX) -> str:
         raw_path = str(path or "").strip()
-        if raw_path.rstrip("/") == RONGHUI_LIVE_PROXY_PREFIX:
+        if raw_path.rstrip("/") == proxy_prefix:
             return ""
-        if not raw_path.startswith(RONGHUI_LIVE_PROXY_PREFIX + "/"):
+        if not raw_path.startswith(proxy_prefix + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(RONGHUI_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(proxy_prefix) :].lstrip("/")
+        )
         return remote_path if any(remote_path.startswith(prefix) for prefix in RONGHUI_LIVE_ALLOWED_PREFIXES) else ""
 
     def _ronghui_receipt_live_remote_path(self, path: str) -> str:
@@ -52,7 +305,9 @@ class TmsProxyServiceMixin:
             return ""
         if not raw_path.startswith(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX + "/"):
             return ""
-        remote_path = "/" + unquote(raw_path[len(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/"))
+        remote_path = canonical_manual_proxy_path(
+            "/" + raw_path[len(RONGHUI_RECEIPT_LIVE_PROXY_PREFIX) :].lstrip("/")
+        )
         return remote_path if any(remote_path.startswith(prefix) for prefix in RONGHUI_LIVE_ALLOWED_PREFIXES) else ""
 
     def _flatten_query(self, query: dict[str, list[str]]) -> str:
@@ -236,22 +491,29 @@ class TmsProxyServiceMixin:
         status: HTTPStatus,
         payload: bytes,
         headers: dict[str, Any],
+        *,
+        frame_ancestor_origin: str = "",
     ) -> None:
         content_type = self._header_value(headers, "Content-Type") or "application/octet-stream"
         cache_control = self._header_value(headers, "Cache-Control") or "no-store"
+        blocked_headers = {
+            "content-type",
+            "content-length",
+            "transfer-encoding",
+            "set-cookie",
+            "cache-control",
+        }
+        if frame_ancestor_origin:
+            blocked_headers.update({"x-frame-options", "content-security-policy"})
         handler.send_response(status)
         handler.send_header("Content-Type", content_type)
         for key, value in (headers or {}).items():
             key_text = str(key)
-            if key_text.lower() in {
-                "content-type",
-                "content-length",
-                "transfer-encoding",
-                "set-cookie",
-                "cache-control",
-            }:
+            if key_text.lower() in blocked_headers:
                 continue
             handler.send_header(key_text, str(value))
+        if frame_ancestor_origin:
+            handler.send_header("Content-Security-Policy", f"frame-ancestors {frame_ancestor_origin}")
         handler.send_header("Cache-Control", cache_control)
         handler.send_header("Content-Length", str(len(payload)))
         handler.end_headers()
@@ -265,6 +527,20 @@ class TmsProxyServiceMixin:
         method: str,
         query: dict[str, list[str]],
     ) -> None:
+        if method.upper() != "GET":
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "RECEIPT_PROXY_WRITE_DISABLED",
+                    "message": "回单原页代理仅供只读查看；审核请通过事项中心提交。",
+                },
+            )
+            return
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         remote_path = self._yunda_receipt_live_remote_path(path)
         if not remote_path:
             self._send_json(
@@ -288,8 +564,13 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={
+                "params": params,
+                "timeout_sec": 180,
+                **self._control_plane_agent_body_context(trusted_context),
+            },
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             self._send_json(
@@ -330,6 +611,20 @@ class TmsProxyServiceMixin:
         method: str,
         query: dict[str, list[str]],
     ) -> None:
+        if method.upper() != "GET":
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "RECEIPT_PROXY_WRITE_DISABLED",
+                    "message": "回单原页代理仅供只读查看；审核请通过事项中心提交。",
+                },
+            )
+            return
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         remote_path = self._ronghui_receipt_live_remote_path(path)
         is_entry_root = str(path or "").strip().rstrip("/") == RONGHUI_RECEIPT_LIVE_PROXY_PREFIX
         if not remote_path and not is_entry_root:
@@ -357,8 +652,13 @@ class TmsProxyServiceMixin:
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={
+                "params": params,
+                "timeout_sec": 180,
+                **self._control_plane_agent_body_context(trusted_context),
+            },
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             if str(result.get("error_code") or "") == "AUTH_REQUIRED":
@@ -417,13 +717,35 @@ class TmsProxyServiceMixin:
         *,
         method: str,
         query: dict[str, list[str]],
+        proxy_prefix: str = YUNDA_LIVE_PROXY_PREFIX,
+        frame_ancestor_origin: str = "",
     ) -> None:
-        remote_path = self._yunda_live_remote_path(path)
+        trusted_context = (
+            self._control_plane_read_context(handler)
+            if method.upper() == "GET"
+            else self._control_plane_write_context(handler)
+        )
+        if trusted_context is None:
+            return
+        remote_path = self._yunda_live_remote_path(path, proxy_prefix=proxy_prefix)
         if not remote_path:
             self._send_json(
                 handler,
                 HTTPStatus.NOT_FOUND,
                 {"ok": False, "message": "韵达原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        if method.upper() != "GET" and not (
+            method.upper() == "POST" and remote_path == YUNDA_LIVE_SAVE_PATH
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
+                    "message": "Only the verified waybill save endpoint may write through this proxy.",
+                },
             )
             return
         request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
@@ -434,15 +756,20 @@ class TmsProxyServiceMixin:
             "query": self._flatten_query(query),
             "headers": self._handler_headers(handler),
             "content_type": request_content_type,
-            "proxy_prefix": YUNDA_LIVE_PROXY_PREFIX,
+            "proxy_prefix": proxy_prefix,
         }
         if request_body:
             params["body_base64"] = base64.b64encode(request_body).decode("ascii")
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={
+                "params": params,
+                "timeout_sec": 180,
+                **self._control_plane_agent_body_context(trusted_context),
+            },
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             self._send_json(
@@ -480,6 +807,7 @@ class TmsProxyServiceMixin:
             response_status,
             self._decode_proxy_body(proxy_payload),
             response_headers,
+            frame_ancestor_origin=frame_ancestor_origin,
         )
 
     def _handle_ronghui_live_proxy(
@@ -489,14 +817,36 @@ class TmsProxyServiceMixin:
         *,
         method: str,
         query: dict[str, list[str]],
+        proxy_prefix: str = RONGHUI_LIVE_PROXY_PREFIX,
+        frame_ancestor_origin: str = "",
     ) -> None:
-        remote_path = self._ronghui_live_remote_path(path)
-        is_entry_root = str(path or "").strip().rstrip("/") == RONGHUI_LIVE_PROXY_PREFIX
+        trusted_context = (
+            self._control_plane_read_context(handler)
+            if method.upper() == "GET"
+            else self._control_plane_write_context(handler)
+        )
+        if trusted_context is None:
+            return
+        remote_path = self._ronghui_live_remote_path(path, proxy_prefix=proxy_prefix)
+        is_entry_root = str(path or "").strip().rstrip("/") == proxy_prefix
         if not remote_path and not is_entry_root:
             self._send_json(
                 handler,
                 HTTPStatus.NOT_FOUND,
                 {"ok": False, "message": "融辉原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
+            )
+            return
+        if method.upper() != "GET" and not (
+            method.upper() == "POST" and remote_path == RONGHUI_LIVE_SAVE_PATH
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
+                    "message": "Only the verified waybill save endpoint may write through this proxy.",
+                },
             )
             return
         request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
@@ -507,15 +857,20 @@ class TmsProxyServiceMixin:
             "query": self._flatten_query(query),
             "headers": self._handler_headers(handler),
             "content_type": request_content_type,
-            "proxy_prefix": RONGHUI_LIVE_PROXY_PREFIX,
+            "proxy_prefix": proxy_prefix,
         }
         if request_body:
             params["body_base64"] = base64.b64encode(request_body).decode("ascii")
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",
-            payload={"params": params, "timeout_sec": 180},
+            payload={
+                "params": params,
+                "timeout_sec": 180,
+                **self._control_plane_agent_body_context(trusted_context),
+            },
             timeout=max(195, self.settings.agent_timeout_seconds),
+            console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
             if str(result.get("error_code") or "") == "AUTH_REQUIRED":
@@ -571,6 +926,7 @@ class TmsProxyServiceMixin:
             response_status,
             self._decode_proxy_body(proxy_payload),
             response_headers,
+            frame_ancestor_origin=frame_ancestor_origin,
         )
 
     def _send_ronghui_auth_required_iframe(self, handler: BaseHTTPRequestHandler, auth_text: str) -> None:
@@ -593,6 +949,7 @@ class TmsProxyServiceMixin:
         *,
         form: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        trusted_context: dict[str, Any] | None = None,
         timeout_sec: int = 180,
     ) -> tuple[HTTPStatus, dict[str, Any]]:
         result = self._agent_request(
@@ -605,6 +962,7 @@ class TmsProxyServiceMixin:
                     "context": context or {},
                 },
                 "timeout_sec": timeout_sec,
+                **(trusted_context or {}),
             },
             timeout=max(timeout_sec + 15, self.settings.agent_timeout_seconds),
         )
@@ -746,6 +1104,9 @@ class TmsProxyServiceMixin:
                 {"ok": False, "message": "韵达动作不存在。", "data": {}, "field_errors": {}, "auth_state": None},
             )
             return
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         body = self._parse_json_body(handler)
         form = body.get("form") if isinstance(body.get("form"), dict) else {}
         context = body.get("context") if isinstance(body.get("context"), dict) else {}
@@ -753,7 +1114,12 @@ class TmsProxyServiceMixin:
         runtime_context = dict(context)
         if client_meta:
             runtime_context["client_meta"] = client_meta
-        status, payload = self._call_yunda_entry_runtime(action, form=form, context=runtime_context)
+        status, payload = self._call_yunda_entry_runtime(
+            action,
+            form=form,
+            context=runtime_context,
+            trusted_context=trusted_context,
+        )
         if status == HTTPStatus.OK:
             payload = self._persist_yunda_runtime_result(action=action, request_body=body, payload=payload)
         self._send_json(handler, status, payload)

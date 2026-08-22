@@ -10,15 +10,16 @@ class SelfPickupDirectRouteTest(unittest.TestCase):
                 request = direct_tool_router.direct_tool_request_from_text(text)
 
                 self.assertIsNotNone(request)
-                self.assertEqual("self_pickup_problem_upload", request["tool_name"])
+                self.assertEqual("preview_self_pickup_problems", request["tool_name"])
+                self.assertEqual({}, request["params"])
+                self.assertEqual("automation_preview", request["mode"])
                 self.assertEqual(
-                    {"dry_run": True, "account_id": "ronghui_self_pickup_problem"},
-                    request["params"],
+                    "builtin.self_pickup_problem_upload",
+                    request["automation_route_key"],
                 )
-                self.assertEqual("reply", request["mode"])
                 self.assertEqual(
-                    {"dry_run": False, "account_id": "ronghui_self_pickup_problem"},
-                    request["confirm_intent"]["execute_params"],
+                    {"dry_run": False},
+                    request["confirm_intent"]["dynamic_inputs"],
                 )
 
 

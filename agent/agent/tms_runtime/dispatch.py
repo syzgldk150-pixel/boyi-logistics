@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import logging
 import os
+import sys
 import time
 import traceback
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ SCRIPTS_PACKAGE = "agent.tms_runtime.scripts"
 class TaskRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     timeout_sec: int = Field(default=600, ge=1, le=24 * 60 * 60)
+    actor: dict[str, Any] | None = None
+    actor_roles: list[str] = Field(default_factory=list)
+    source: str = "legacy_api"
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,7 +55,12 @@ TARGETS: dict[str, Target] = {
     "yunda_waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.yunda_waybill_tracking", func="run_once"),
     "tracking_query": Target(module=f"{SCRIPTS_PACKAGE}.tracking_query", func="run_once"),
     "get_scan": Target(module=f"{SCRIPTS_PACKAGE}.get_scan", func="run_once"),
+    "get_sign_records": Target(module=f"{SCRIPTS_PACKAGE}.get_sign_records", func="run_once"),
     "get_qianshou": Target(module=f"{SCRIPTS_PACKAGE}.get_qianshou", func="run_once"),
+    "get_sign_records": Target(
+        module="agent.tms_runtime.scripts.get_sign_records",
+        func="run_once",
+    ),
     "get_price": Target(module="agent.tms_runtime.scripts.get_price", func="run_once"),
     "get_wangdiansendlist": Target(module=f"{SCRIPTS_PACKAGE}.get_wangdiansendlist", func="run_once"),
     "child_count": Target(module=f"{SCRIPTS_PACKAGE}.child_count", func="run_once"),
@@ -85,7 +95,9 @@ TARGET_ACCOUNT_SYSTEMS: dict[str, str] = {
     "delivery_status": "ronghui",
     "clock_in_dual": "ronghui",
     "get_scan": "ronghui",
+    "get_sign_records": "ronghui",
     "get_qianshou": "r13",
+    "get_sign_records": "ronghui",
     "get_wangdiansendlist": "ronghui",
     "child_count": "ronghui",
     "ronghui_tms_tracking": "ronghui",
@@ -160,10 +172,52 @@ def _sanitize_params_for_log(value: Any) -> Any:
 
 def _load_callable(target: Target) -> Callable[[dict[str, Any]], Any]:
     mod = importlib.import_module(target.module)
+    if target.module.startswith(f"{SCRIPTS_PACKAGE}.") and _script_auth_is_stale(mod):
+        # A legacy bare import can leave a script module cached with a TMSAuth
+        # class from outside the packaged runtime.  Do not execute that mixed
+        # module; rebuild it from the canonical package modules instead.
+        _discard_stale_script_modules(target.module)
+        mod = importlib.import_module(target.module)
     fn = getattr(mod, target.func, None)
     if fn is None or not callable(fn):
         raise AttributeError(f"{target.module}.{target.func} not found or not callable")
     return fn
+
+
+def _module_is_from_scripts(module: object) -> bool:
+    module_file = getattr(module, "__file__", None)
+    if not isinstance(module_file, str):
+        return False
+    try:
+        Path(module_file).resolve().relative_to(SCRIPTS_DIR.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _script_auth_is_stale(module: object) -> bool:
+    """Return whether a runtime script cached an auth class from outside its package."""
+
+    auth = getattr(module, "TMSAuth", None)
+    if auth is None:
+        return False
+    auth_module_name = getattr(auth, "__module__", "")
+    expected_module_name = f"{SCRIPTS_PACKAGE}.login_manager"
+    if auth_module_name != expected_module_name:
+        return True
+    return not _module_is_from_scripts(sys.modules.get(expected_module_name))
+
+
+def _discard_stale_script_modules(module_name: str) -> None:
+    """Remove only the cached runtime script/auth modules that failed isolation."""
+
+    login_manager_name = f"{SCRIPTS_PACKAGE}.login_manager"
+    for stale_name in (module_name, login_manager_name):
+        stale_module = sys.modules.pop(stale_name, None)
+        child_name = stale_name.rsplit(".", 1)[-1]
+        package = sys.modules.get(SCRIPTS_PACKAGE)
+        if stale_module is not None and getattr(package, child_name, None) is stale_module:
+            delattr(package, child_name)
 
 
 def _run_sync(fn: Callable[[dict[str, Any]], Any], params: dict[str, Any]) -> Any:

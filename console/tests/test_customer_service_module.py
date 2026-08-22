@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import sys
@@ -11,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+BROWSER_REQUEST_UUID = "123e4567-e89b-42d3-a456-426614174001"
 if str(CONSOLE_DIR) not in sys.path:
     sys.path.insert(0, str(CONSOLE_DIR))
 
@@ -67,6 +69,18 @@ class CustomerServiceModuleTests(unittest.TestCase):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app.settings = SimpleNamespace(app_title="ShipNow", agent_base_url="http://agent.test", agent_timeout_seconds=30)
         app.repository = _CustomerServiceRepo()
+        app._control_plane_write_context = lambda handler: {
+            "actor": {
+                "actor_type": "console_admin",
+                "actor_id": "9",
+                "roles": ["super_admin"],
+                "display_name": "tester",
+                "authenticated_by": "mysql_admin_session",
+            },
+            "actor_roles": ["super_admin"],
+            "source": "console",
+        }
+        app._control_plane_read_context = app._control_plane_write_context
         app.template_env = Environment(
             loader=FileSystemLoader(CONSOLE_DIR / "templates"),
             autoescape=select_autoescape(["html", "xml"]),
@@ -388,9 +402,17 @@ class CustomerServiceModuleTests(unittest.TestCase):
     def test_customer_service_attachment_preview_streams_agent_image_bytes(self):
         app = self._build_app()
 
-        def fake_call(payload, *, timeout_sec=120):
+        def fake_call(
+            payload,
+            *,
+            trusted_context,
+            browser_request_uuid,
+            timeout_sec=120,
+        ):
             self.assertEqual("fetch_attachment", payload["action"])
             self.assertEqual("yunda-a", payload["account_id"])
+            self.assertEqual(BROWSER_REQUEST_UUID, browser_request_uuid)
+            self.assertEqual("9", trusted_context["actor"]["actor_id"])
             self.assertEqual("https://kyproblem.yunda56.com/ky_problem/public/static/problem/image/a.png", payload["payload"]["source_url"])
             return {
                 "ok": True,
@@ -415,13 +437,58 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 "platform": ["yunda"],
                 "account_id": ["yunda-a"],
                 "src": ["https://kyproblem.yunda56.com/ky_problem/public/static/problem/image/a.png"],
+                "request_uuid": [BROWSER_REQUEST_UUID],
             },
         )
 
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertEqual(b"\x89PNG\r\n\x1a\npayload", handler.wfile.getvalue())
         self.assertIn(("Content-Type", "image/png"), handler.sent_headers)
+        self.assertIn(("X-Content-Type-Options", "nosniff"), handler.sent_headers)
+        self.assertTrue(any(name == "Content-Security-Policy" for name, _value in handler.sent_headers))
         self.assertNotIn("set-cookie", {name.lower() for name, _value in handler.sent_headers})
+
+    def test_customer_service_attachment_preview_rejects_svg_even_when_agent_claims_png(self):
+        app = self._build_app()
+
+        def fake_call(payload, *, trusted_context, browser_request_uuid, timeout_sec=120):
+            return {
+                "ok": True,
+                "data": {
+                    "ok": True,
+                    "data": {
+                        "ok": True,
+                        "content_type": "image/png",
+                        "filename": "payload.svg",
+                        "body_base64": base64.b64encode(
+                            b"<svg xmlns='http://www.w3.org/2000/svg'><script>bad()</script></svg>"
+                        ).decode("ascii"),
+                    },
+                },
+            }
+
+        app._call_customer_service_problem_agent = fake_call
+        handler = _Handler()
+        app._handle_customer_service_attachment_preview(
+            handler,
+            {
+                "platform": ["yunda"],
+                "account_id": ["yunda-a"],
+                "src": ["https://kyproblem.yunda56.com/image/payload.svg"],
+                "request_uuid": [BROWSER_REQUEST_UUID],
+            },
+        )
+
+        self.assertEqual(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, app.sent_status)
+        self.assertFalse(app.sent_payload["ok"])
+
+    def test_customer_service_raster_magic_ignores_claimed_mime(self):
+        app = self._build_app()
+        self.assertEqual("image/jpeg", app._customer_service_raster_mime_type(b"\xff\xd8jpeg"))
+        self.assertEqual("image/png", app._customer_service_raster_mime_type(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual("image/gif", app._customer_service_raster_mime_type(b"GIF87a"))
+        self.assertEqual("image/webp", app._customer_service_raster_mime_type(b"RIFFxxxxWEBP"))
+        self.assertEqual("", app._customer_service_raster_mime_type(b"<?xml version='1.0'?><svg/>"))
 
     def test_problem_settings_get_filters_accounts_and_never_returns_credentials(self):
         app = self._build_app()
@@ -455,7 +522,10 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_customer_service_problem_settings_post(handler)
@@ -473,7 +543,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
         app = self._build_app()
         calls = []
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             params = payload["params"]
             calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
             return {
@@ -509,7 +579,10 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_customer_service_problem_query(handler)
@@ -521,13 +594,16 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertEqual({"739010002", "56739382003"}, {item["account_login"] for item in app.sent_payload["rows"]})
         self.assertEqual("/internal/v1/tms/customer_service_problem", calls[0]["endpoint"])
         self.assertEqual("query", calls[0]["payload"]["params"]["action"])
+        self.assertEqual("console", calls[0]["payload"]["source"])
+        self.assertEqual("console_admin", calls[0]["payload"]["actor"]["actor_type"])
+        self.assertTrue(calls[0]["payload"]["idempotency_key"].startswith("console:9:tool.execute:"))
         self.assertIn("account_login", calls[0]["payload"]["params"])
         self.assertNotIn("password", json.dumps(calls, ensure_ascii=False).lower())
 
     def test_problem_query_filters_739010002_to_shaoyang_operation_site(self):
         app = self._build_app()
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             params = payload["params"]
             if params["account_login"] == "739010002":
                 rows = [
@@ -587,7 +663,10 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_customer_service_problem_query(handler)
@@ -613,7 +692,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
             },
         ]
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             params = payload["params"]
             match = next(item for item in failures if item["account_id"] == params["account_id"])
             return {
@@ -636,7 +715,10 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
         )
 
         app._handle_customer_service_problem_query(handler)
@@ -650,6 +732,158 @@ class CustomerServiceModuleTests(unittest.TestCase):
             {item["error_code"] for item in app.sent_payload["errors"]},
         )
         self.assertEqual({"ronghui-a", "yunda-a"}, {item["account_id"] for item in app.sent_payload["errors"]})
+
+    def test_problem_reply_submits_precise_durable_command(self):
+        app = self._build_app()
+        calls = []
+
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-reply-1",
+                    "work_item_id": "work-item-reply-1",
+                    "run_id": "run-reply-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
+
+        app._agent_request = types.MethodType(agent_request, app)
+        handler = _Handler(
+            json.dumps(
+                {
+                    "platform": "ronghui",
+                    "account_id": "ronghui-a",
+                    "item": {
+                        "external_id": "problem-1",
+                        "source_direction": "published_to_me",
+                        "waybill_no": "2606000040",
+                        "status": "待处理",
+                        "raw": {"token": "must-not-cross-command-boundary"},
+                    },
+                    "payload": {
+                        "reply_text": "已处理",
+                        "prob_status": "已处理",
+                        "old_prob_status": "待处理",
+                        "REVERSION": "legacy duplicate",
+                        "arbitrary_write": {"status": "closed"},
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
+        )
+
+        app._handle_customer_service_problem_agent_action(handler, "reply")
+
+        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
+        self.assertTrue(response["pending"])
+        self.assertEqual("run-reply-1", response["run_id"])
+        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        command = calls[0]["payload"]
+        self.assertEqual("tool.execute", command["command_type"])
+        self.assertEqual(
+            "customer_service_problem_reply",
+            command["parameters"]["tool_name"],
+        )
+        self.assertEqual(
+            f"console:9:tool.execute:{BROWSER_REQUEST_UUID}",
+            command["idempotency_key"],
+        )
+        arguments = command["parameters"]["arguments"]
+        self.assertEqual("problem-1", arguments["external_id"])
+        self.assertEqual("2606000040", arguments["waybill_no"])
+        self.assertEqual("已处理", arguments["reply_text"])
+        self.assertNotIn("raw", arguments)
+        self.assertNotIn("REVERSION", arguments)
+        self.assertNotIn("arbitrary_write", arguments)
+        self.assertEqual("console", command["source"])
+        self.assertEqual(["super_admin"], command["actor_roles"])
+
+    def test_problem_write_requires_stable_browser_request_uuid(self):
+        app = self._build_app()
+
+        def fail_agent(*args, **kwargs):
+            raise AssertionError("missing UUID must fail before Agent submission")
+
+        app._agent_request = fail_agent
+        handler = _Handler(
+            json.dumps(
+                {
+                    "platform": "ronghui",
+                    "account_id": "ronghui-a",
+                    "item": {"external_id": "problem-1"},
+                }
+            ).encode("utf-8"),
+            {"Content-Type": "application/json"},
+        )
+
+        app._handle_customer_service_problem_agent_action(handler, "mark_read")
+
+        response = app.sent_payload
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
+        self.assertFalse(response["ok"])
+        self.assertEqual("BROWSER_REQUEST_UUID_REQUIRED", response["error_code"])
+
+    def test_problem_publish_uses_precise_tool_and_closed_payload(self):
+        app = self._build_app()
+        calls = []
+
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append(payload)
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-publish-1",
+                    "work_item_id": "work-item-publish-1",
+                    "run_id": "run-publish-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
+
+        app._agent_request = types.MethodType(agent_request, app)
+        handler = _Handler(
+            json.dumps(
+                {
+                    "platform": "yunda",
+                    "account_id": "yunda-a",
+                    "payload": {
+                        "ship_no": "Y0001",
+                        "classes_type": "破损",
+                        "prob_text": "外包装破损",
+                        "site_id": ["site-1"],
+                        "unknown": "must-not-cross-command-boundary",
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            {
+                "Content-Type": "application/json",
+                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+            },
+        )
+
+        app._handle_customer_service_problem_agent_action(handler, "publish")
+
+        command = calls[0]
+        self.assertEqual(
+            "customer_service_problem_publish",
+            command["parameters"]["tool_name"],
+        )
+        publish_payload = command["parameters"]["arguments"]["payload"]
+        self.assertEqual(["site-1"], publish_payload["site_id"])
+        self.assertNotIn("unknown", publish_payload)
 
 
 if __name__ == "__main__":

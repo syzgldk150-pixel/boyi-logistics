@@ -19,7 +19,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import is_receipt_like_tracking, sync_console_waybills
-from tools.phase7_sync_common import tms_auth_error_result
+from tools.phase7_sync_common import (
+    bind_explicit_account_id,
+    require_explicit_account_id,
+    tms_auth_error_result,
+)
 from tools.tms_tool import call_http_service
 
 
@@ -489,13 +493,18 @@ def _build_records_for_replace(
 def _build_request_body(params: dict[str, Any], target_date: dt.date) -> dict[str, Any]:
     request_body = params.get("request_body") if isinstance(params.get("request_body"), dict) else {}
     request_params = dict(request_body.get("params") or {})
+    request_params = bind_explicit_account_id(
+        request_params,
+        require_explicit_account_id(params, label="寄件同步"),
+        label="寄件请求",
+    )
     request_params["target_date"] = target_date.isoformat()
     request_params.setdefault("referer", "https://tms.ronghuiwl.com/widget/home")
     if "page_size" not in request_params and "pageSize" not in request_params:
         request_params["page_size"] = params.get("page_size", DEFAULT_PAGE_SIZE)
     if "max_pages" not in request_params:
         request_params["max_pages"] = params.get("max_pages", DEFAULT_MAX_PAGES)
-    for key in ("referer", "extra_filters", "session_profile", "account_id", "accountId"):
+    for key in ("referer", "extra_filters", "session_profile"):
         if params.get(key) not in (None, "") and key not in request_params:
             request_params[key] = params[key]
     return {

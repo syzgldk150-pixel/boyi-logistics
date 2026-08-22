@@ -10,12 +10,17 @@ import threading
 import time
 from html import escape, unescape
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.ronghui_user_context import decode_js_cookie_value, parse_ronghui_user_info_cookie
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
 from agent.tms_runtime.session_broker import get_session_broker
+from shared.manual_entry_contracts import (
+    RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,
+    canonical_manual_proxy_path,
+)
 
 
 ORDER_ENTRY_MENU_ID = "1622"
@@ -46,23 +51,7 @@ RONGHUI_USER_INFO_FIELDS = (
     "loginUserName",
 )
 
-ALLOWED_PATH_PREFIXES = (
-    "/widget/",
-    "/static/",
-    "/dataQuery/",
-    "/dataOperation/",
-    "/minic/",
-    "/address/",
-    "/advancePayment/",
-    "/commonOption/",
-    "/fhdquote/",
-    "/file/",
-    "/map/",
-    "/userView/",
-    "/unauth/download/",
-    "/menuTreeExtend/",
-    "/module/",
-)
+ALLOWED_PATH_PREFIXES = RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES
 RELATIVE_ALLOWED_PATH_PREFIXES = tuple(prefix.lstrip("/") for prefix in ALLOWED_PATH_PREFIXES if prefix.startswith("/"))
 STATIC_SAME_ORIGIN_SUFFIXES = (".css", ".woff", ".woff2", ".ttf", ".eot", ".otf")
 STATIC_FONT_PATH_MARKERS = ("/fonts/", "/font/", "/iconfont/")
@@ -211,18 +200,7 @@ def _js_escape_cookie_value(text: str) -> str:
 
 
 def _decode_js_cookie_value(value: Any) -> str:
-    text = _clean_text(value)
-    if not text:
-        return ""
-
-    def replace_unicode_escape(match: re.Match[str]) -> str:
-        try:
-            return chr(int(match.group(1), 16))
-        except Exception:
-            return match.group(0)
-
-    text = re.sub(r"%u([0-9A-Fa-f]{4})", replace_unicode_escape, text)
-    return unquote(text)
+    return decode_js_cookie_value(value)
 
 
 def _session_cookie_value(session: Any, name: str) -> str:
@@ -250,20 +228,7 @@ def _session_cookie_value(session: Any, name: str) -> str:
 
 
 def _parse_user_info_cookie(value: Any) -> dict[str, Any]:
-    raw = _clean_text(value)
-    if not raw:
-        return {}
-    candidates = [raw, _decode_js_cookie_value(raw)]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            payload = json.loads(candidate)
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
+    return parse_ronghui_user_info_cookie(value)
 
 
 def _client_user_info_cookie_from_session(session: Any) -> str:
@@ -282,7 +247,8 @@ def _client_user_info_cookie_from_session(session: Any) -> str:
 
 
 def _is_allowed_path(path: str) -> bool:
-    return any(path.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
+    canonical = canonical_manual_proxy_path(path)
+    return bool(canonical) and any(canonical.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES)
 
 
 def _is_relative_allowed_path(path: str) -> bool:
@@ -369,10 +335,12 @@ def _target_from_params(
     if parsed.scheme or parsed.netloc:
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != urlparse(RONGHUI_ORIGIN).netloc:
             raise ValueError("Only Ronghui TMS URLs can be proxied.")
-        path = parsed.path
+        path = canonical_manual_proxy_path(parsed.path)
         query_parts = parse_qsl(parsed.query, keep_blank_values=True)
     else:
-        path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+        path = canonical_manual_proxy_path(
+            parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+        )
         query_parts = parse_qsl(parsed.query, keep_blank_values=True)
 
     if raw_query:
@@ -741,6 +709,9 @@ RONGHUI_PREFILL_HELPER = """
 (function () {
   if (window.codexManualPrefill && window.codexManualPrefill.ronghui) return;
   window.codexManualPrefill = window.codexManualPrefill || {};
+  var shipnowParentOrigin = window.location.origin === "https://www.boyi.homes"
+    ? "https://boyi.homes"
+    : window.location.origin;
   function clean(value) { return String(value == null ? "" : value).trim(); }
   function namesOf(spec) {
     var names = [];
@@ -1047,7 +1018,7 @@ RONGHUI_PREFILL_HELPER = """
       window.parent.postMessage({
         type: "SHIPNOW_PREFILL_READY",
         provider: "ronghui"
-      }, window.location.origin);
+      }, shipnowParentOrigin);
     } catch (_) {}
   }
   function waitForRonghuiPrefillReady(attempt) {
@@ -1088,7 +1059,7 @@ RONGHUI_PREFILL_HELPER = """
         filled: filled,
         missing: specs.map(function (spec) { return clean(spec && spec.key) || "unknown"; }),
         error: "融辉原页尚未加载完成"
-      }, window.location.origin);
+      }, shipnowParentOrigin);
       if (serial === prefillRunSerial) activePrefillRunning = false;
       return;
     }
@@ -1108,7 +1079,7 @@ RONGHUI_PREFILL_HELPER = """
       ok: Boolean(filled.length),
       filled: filled,
       missing: missing
-    }, window.location.origin);
+    }, shipnowParentOrigin);
     if (serial === prefillRunSerial) activePrefillRunning = false;
   }
   function startPrefill(message) {
@@ -1124,7 +1095,7 @@ RONGHUI_PREFILL_HELPER = """
   }
   window.addEventListener("message", function (event) {
     var data = event.data || {};
-    if (event.origin !== window.location.origin) return;
+    if (event.origin !== shipnowParentOrigin) return;
     if (data.type !== "SHIPNOW_PREFILL" || data.provider !== "ronghui") return;
     startPrefill(data);
   });

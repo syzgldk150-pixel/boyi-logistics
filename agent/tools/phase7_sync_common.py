@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
@@ -30,6 +30,46 @@ class TMSAuthSyncError(Exception):
     def __init__(self, result: dict[str, Any]):
         self.result = result
         super().__init__(str(result.get("error") or result.get("error_code") or "TMS auth required"))
+
+
+def require_explicit_account_id(params: dict[str, Any], *, label: str) -> str:
+    """Return the approved account id and reject aliases that disagree with it."""
+    account_id = str(params.get("account_id") or "").strip()
+    if not account_id:
+        raise ValueError(f"{label}必须提供唯一 account_id，禁止选择隐式默认账号")
+    account_alias = str(params.get("accountId") or "").strip()
+    if account_alias and account_alias != account_id:
+        raise ValueError(f"{label}的 accountId 与 account_id 不一致")
+    return account_id
+
+
+def bind_explicit_account_id(
+    request_params: dict[str, Any],
+    account_id: str,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    """Bind one approved account to a nested request without overwriting conflicts."""
+    bound = dict(request_params)
+    nested_ids = {
+        str(bound.get(key) or "").strip()
+        for key in ("account_id", "accountId")
+        if str(bound.get(key) or "").strip()
+    }
+    if nested_ids and nested_ids != {account_id}:
+        raise ValueError(f"{label}中的账号与控制平面批准的 account_id 不一致")
+    bound.pop("accountId", None)
+    bound["account_id"] = account_id
+    return bound
+
+
+def normalize_explicit_account_params(params: dict[str, Any], *, label: str) -> dict[str, Any]:
+    """Canonicalize the top-level account field before any external call."""
+    account_id = require_explicit_account_id(params, label=label)
+    normalized = dict(params)
+    normalized.pop("accountId", None)
+    normalized["account_id"] = account_id
+    return normalized
 
 
 def _first_text(*values: Any) -> str:
@@ -168,14 +208,29 @@ def list_record_ids(base_token: str, table_id: str, params: dict) -> tuple[list[
     return record_ids, list_result
 
 
-def sync_bitable_snapshot(resource_key: str, records: list[dict], params: dict) -> dict:
+def sync_bitable_snapshot(
+    resource_key: str,
+    records: list[dict],
+    params: dict,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict:
     base_token, table_id = resolve_bitable_target(params, resource_key)
     existing_record_ids, list_result = list_record_ids(base_token, table_id, params)
     if existing_record_ids is None:
         return {"error": "飞书读取现有多维表记录失败", "feishu_result": list_result}
 
+    write_started = False
+
+    def mark_mutation_started() -> None:
+        nonlocal write_started
+        if not write_started and mark_write_started is not None:
+            mark_write_started()
+        write_started = True
+
     delete_result: dict[str, Any] | None = None
     if existing_record_ids:
+        mark_mutation_started()
         delete_result = feishu_operation(
             "delete_records",
             {
@@ -200,6 +255,7 @@ def sync_bitable_snapshot(resource_key: str, records: list[dict], params: dict) 
         "results": [],
     }
     if records:
+        mark_mutation_started()
         write_result = feishu_operation(
             "write_records",
             {
@@ -292,8 +348,32 @@ def _append_feishu_error(base: str, result: dict[str, Any]) -> str:
     return f"{base}: {detail}" if detail else base
 
 
-def sync_sheet_snapshot(resource_key: str, values: list[list[Any]], params: dict) -> dict:
+def sync_sheet_snapshot(
+    resource_key: str,
+    values: list[list[Any]],
+    params: dict,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict:
     spreadsheet_token, value_range = resolve_sheet_target(params, resource_key)
+
+    write_started = False
+
+    def mark_mutation_started() -> None:
+        nonlocal write_started
+        if not write_started and mark_write_started is not None:
+            mark_write_started()
+        write_started = True
+
+    def mutate_feishu(action: str, payload: dict) -> dict:
+        if mark_write_started is None:
+            return feishu_operation(action, payload)
+        return feishu_operation(
+            action,
+            payload,
+            mark_write_started=mark_mutation_started,
+        )
+
     clear_result: dict[str, Any] | None = None
     clear_range = str(params.get("clear_range") or "").strip()
     if not clear_range:
@@ -304,7 +384,7 @@ def sync_sheet_snapshot(resource_key: str, values: list[list[Any]], params: dict
 
     clear_shape = _parse_range_shape(clear_range)
     if clear_shape is not None:
-        clear_result = feishu_operation(
+        clear_result = mutate_feishu(
             "clear_sheet",
             {
                 "spreadsheet_token": spreadsheet_token,
@@ -321,7 +401,7 @@ def sync_sheet_snapshot(resource_key: str, values: list[list[Any]], params: dict
 
     write_result: dict[str, Any]
     if values:
-        write_result = feishu_operation(
+        write_result = mutate_feishu(
             "write_sheet",
             {
                 "spreadsheet_token": spreadsheet_token,

@@ -8,45 +8,62 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
-from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 from agent.tms_runtime.scripts.finance_capture_common import CaptureResult, FinanceCaptureError, clean_text
+from shared.finance.sources import (
+    FINANCE_SOURCE_SPECS,
+    enabled_finance_source_specs,
+    finance_source_spec,
+)
 
 
 TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_RESCAN_DAYS = 7
 EARLIEST_DATE_UNCONFIRMED = "EARLIEST_DATE_UNCONFIRMED"
 
-DEFAULT_FINANCE_ACCOUNT_ROLES: tuple[tuple[str, str], ...] = (
-    ("ronghui", PRICE_ACCOUNT_ID),
-    ("ronghui", "ronghui_daxiang_s"),
-    ("ronghui", "ronghui_self_pickup_problem"),
-    ("yunda", "yunda_default"),
+DEFAULT_FINANCE_ACCOUNT_ROLES: tuple[tuple[str, str], ...] = tuple(
+    (spec.platform, spec.account_id) for spec in enabled_finance_source_specs()
 )
 
 
 def _requested_account_specs(*, platform: str = "", account_id: str = "") -> list[tuple[str, str]]:
-    """Return only explicitly approved finance roles, without consulting credentials."""
+    """Return only production-ready finance roles, without consulting credentials."""
 
     requested_platform = clean_text(platform).lower()
     requested_account = clean_text(account_id)
-    if requested_platform and requested_platform not in {"ronghui", "yunda"}:
-        raise FinanceSyncError("INVALID_PARAMS", "platform 必须是 ronghui/yunda")
+    declared_platforms = {spec.platform for spec in FINANCE_SOURCE_SPECS}
+    if requested_platform and requested_platform not in declared_platforms:
+        raise FinanceSyncError("INVALID_PARAMS", "platform 不在已声明的财务来源范围内")
     if requested_account:
         matches = [
             spec
-            for spec in DEFAULT_FINANCE_ACCOUNT_ROLES
-            if spec[1] == requested_account
+            for spec in FINANCE_SOURCE_SPECS
+            if spec.account_id == requested_account
         ]
         if len(matches) != 1:
             raise FinanceSyncError("ACCOUNT_NOT_ALLOWED", "指定账号不在财务采集角色白名单内")
-        if requested_platform and matches[0][0] != requested_platform:
+        source = matches[0]
+        if requested_platform and source.platform != requested_platform:
             raise FinanceSyncError("ACCOUNT_ROLE_MISMATCH", "指定账号与平台不匹配")
-        return matches
-    return [
-        spec
-        for spec in DEFAULT_FINANCE_ACCOUNT_ROLES
-        if not requested_platform or spec[0] == requested_platform
+        if not source.production_ready:
+            raise FinanceSyncError(
+                "FINANCE_SOURCE_NOT_ENABLED",
+                f"{source.platform_label}财务来源未启用：{source.reason}",
+            )
+        return [(source.platform, source.account_id)]
+    matches = [
+        (spec.platform, spec.account_id)
+        for spec in enabled_finance_source_specs()
+        if not requested_platform or spec.platform == requested_platform
     ]
+    if requested_platform and not matches:
+        declared = next(
+            spec for spec in FINANCE_SOURCE_SPECS if spec.platform == requested_platform
+        )
+        raise FinanceSyncError(
+            "FINANCE_SOURCE_NOT_ENABLED",
+            f"{declared.platform_label}财务来源未启用：{declared.reason}",
+        )
+    return matches
 
 
 class FinanceSyncError(RuntimeError):
@@ -309,6 +326,12 @@ def _safe_error(exc: BaseException) -> tuple[str, str]:
     return type(exc).__name__[:64], "财务同步内部阶段失败；异常详情已脱敏"
 
 
+def _safe_error_stage(exc: BaseException) -> str:
+    if isinstance(exc, FinanceCaptureError):
+        return clean_text(getattr(exc, "stage", ""))[:64]
+    return ""
+
+
 def _close_adapter(adapter: Any) -> None:
     close = getattr(adapter, "close", None)
     if callable(close):
@@ -316,6 +339,149 @@ def _close_adapter(adapter: Any) -> None:
             close()
         except Exception:
             pass
+
+
+def finance_direction_amounts(
+    income_value: Any,
+    expense_value: Any,
+    *,
+    stage: str,
+    shared_api: Any | None = None,
+) -> tuple[str, Any, Any]:
+    """Normalize one signed amount direction for both legacy and plugin paths."""
+
+    api = shared_api or _shared_finance_api()
+    try:
+        income = api.quantize_storage(income_value)
+        expense = api.quantize_storage(expense_value)
+        zero = api.quantize_storage("0.0000")
+    except Exception as exc:
+        raise FinanceSyncError("AMOUNT_INVALID", f"{stage} 金额格式异常") from exc
+    if income < zero or expense < zero or (income == zero) == (expense == zero):
+        raise FinanceSyncError("AMOUNT_DIRECTION_INVALID", f"{stage} 收入/支出方向不唯一")
+    return ("income" if income > zero else "expense", income, expense)
+
+
+def finance_transaction_from_capture_row(
+    row: Mapping[str, Any],
+    binding: FinanceAccountBinding,
+    *,
+    shared_api: Any | None = None,
+) -> Any:
+    """Build the canonical finance transaction without duplicating business rules."""
+
+    api = shared_api or _shared_finance_api()
+    platform = clean_text(row.get("platform"))
+    if platform != binding.system:
+        raise FinanceSyncError("ACCOUNT_ROLE_MISMATCH", "明细平台与账号角色不匹配")
+    direction, income, expense = finance_direction_amounts(
+        row.get("income"),
+        row.get("expend"),
+        stage="transaction",
+        shared_api=api,
+    )
+    primary_fee_name = clean_text(row.get("fee_level_1") or row.get("fee_name"))
+    if not primary_fee_name:
+        raise FinanceSyncError("FIELD_DRIFT", "明细缺少一级费用项目")
+    source_reference = clean_text(row.get("source_reference") or row.get("balance_order"))
+    source_payload = row.get("source_payload")
+    if source_payload is None:
+        source_payload = {}
+    if not isinstance(source_payload, Mapping):
+        raise FinanceSyncError("FIELD_DRIFT", "明细 source_payload 结构异常")
+    return api.TransactionRecord(
+        platform=platform,
+        account_id=binding.account_id,
+        login_account=binding.login_account,
+        source_record_key=clean_text(row.get("source_id")),
+        business_date=row.get("target_date"),
+        primary_fee_name=primary_fee_name,
+        secondary_fee_name=clean_text(row.get("fee_level_2")),
+        direction=direction,
+        income=income,
+        expense=expense,
+        transaction_at=row.get("trade_time"),
+        before_balance=row.get("old_amount"),
+        after_balance=row.get("new_amount"),
+        waybill_no=clean_text(
+            row.get("waybill_no") or row.get("bill_code") or row.get("logistics_id")
+        ),
+        source_reference=source_reference,
+        remark=clean_text(row.get("remark")),
+        source_payload=dict(source_payload),
+    )
+
+
+def finance_summary_from_capture_row(
+    row: Mapping[str, Any],
+    binding: FinanceAccountBinding,
+    *,
+    shared_api: Any | None = None,
+) -> Any:
+    """Build the canonical finance summary without duplicating business rules."""
+
+    api = shared_api or _shared_finance_api()
+    platform = clean_text(row.get("platform"))
+    if platform != binding.system:
+        raise FinanceSyncError("ACCOUNT_ROLE_MISMATCH", "汇总平台与账号角色不匹配")
+    direction, income, expense = finance_direction_amounts(
+        row.get("income"),
+        row.get("expend"),
+        stage="summary",
+        shared_api=api,
+    )
+    primary_fee_name = clean_text(row.get("fee_level_1") or row.get("fee_name"))
+    if not primary_fee_name:
+        raise FinanceSyncError("SUMMARY_FIELD_DRIFT", "汇总缺少一级费用项目")
+    return api.SummarySnapshot(
+        platform=platform,
+        account_id=binding.account_id,
+        target_date=row.get("snapshot_date"),
+        primary_fee_name=primary_fee_name,
+        secondary_fee_name=clean_text(row.get("fee_level_2")),
+        direction=direction,
+        income=income,
+        expense=expense,
+    )
+
+
+def validate_finance_capture_result(
+    capture: CaptureResult,
+    transactions: Sequence[Any],
+    summaries: Sequence[Any],
+    *,
+    repository: FinanceRepositoryProtocol,
+    shared_api: Any | None = None,
+) -> Any:
+    """Run the single shared pre-commit validator for every finance executor."""
+
+    api = shared_api or _shared_finance_api()
+    page_row_counts = capture.validation.get("page_row_counts")
+    if not isinstance(page_row_counts, (list, tuple)):
+        raise FinanceSyncError("UNVERIFIED_TOTAL", "采集结果缺少逐页行数证据")
+    validation_context: Mapping[str, Any] = {}
+    if transactions:
+        first = transactions[0]
+        validation_context = repository.get_validation_context(
+            platform=first.platform,
+            account_id=first.account_id,
+            target_date=first.business_date,
+            source_record_keys=[record.source_record_key for record in transactions],
+        )
+        if not isinstance(validation_context, Mapping):
+            raise FinanceSyncError("VALIDATION_CONTEXT_INVALID", "共享验证上下文结构异常")
+    evidence = api.CaptureEvidence(
+        remote_total=capture.validation.get("source_total"),
+        page_row_counts=tuple(page_row_counts),
+        transactions=transactions,
+        summaries=summaries,
+        summary_semantics=capture.summary_semantics,
+        intended_write_count=len(transactions),
+        response_valid=True,
+        known_fee_items=validation_context.get("known_fee_items", ()),
+        previous_record_payloads=validation_context.get("previous_record_payloads", {}),
+    )
+    return api.validate_finance_capture(evidence)
 
 
 class FinanceSyncService:
@@ -333,128 +499,83 @@ class FinanceSyncService:
         self.adapter_factory = adapter_factory
         self.shared_api = shared_api or _shared_finance_api()
         self.now = now or (lambda: dt.datetime.now(TZ))
+        self.current_stage = "initialized"
 
     def _transaction(self, row: Mapping[str, Any], binding: FinanceAccountBinding) -> Any:
-        platform = clean_text(row.get("platform"))
-        if platform != binding.system:
-            raise FinanceSyncError("ACCOUNT_ROLE_MISMATCH", "明细平台与账号角色不匹配")
-        direction, income, expense = self._direction_amounts(
-            row.get("income"),
-            row.get("expend"),
-            stage="transaction",
-        )
-        primary_fee_name = clean_text(row.get("fee_level_1") or row.get("fee_name"))
-        if not primary_fee_name:
-            raise FinanceSyncError("FIELD_DRIFT", "明细缺少一级费用项目")
-        source_reference = clean_text(row.get("source_reference") or row.get("balance_order"))
-        source_payload = row.get("source_payload")
-        if source_payload is None:
-            source_payload = {}
-        if not isinstance(source_payload, Mapping):
-            raise FinanceSyncError("FIELD_DRIFT", "明细 source_payload 结构异常")
-        return self.shared_api.TransactionRecord(
-            platform=platform,
-            account_id=binding.account_id,
-            login_account=binding.login_account,
-            source_record_key=clean_text(row.get("source_id")),
-            business_date=row.get("target_date"),
-            primary_fee_name=primary_fee_name,
-            secondary_fee_name=clean_text(row.get("fee_level_2")),
-            direction=direction,
-            income=income,
-            expense=expense,
-            transaction_at=row.get("trade_time"),
-            before_balance=row.get("old_amount"),
-            after_balance=row.get("new_amount"),
-            waybill_no=clean_text(
-                row.get("waybill_no")
-                or row.get("bill_code")
-                or row.get("logistics_id")
-            ),
-            source_reference=source_reference,
-            remark=clean_text(row.get("remark")),
-            source_payload=dict(source_payload),
+        return finance_transaction_from_capture_row(
+            row,
+            binding,
+            shared_api=self.shared_api,
         )
 
     def _summary(self, row: Mapping[str, Any], binding: FinanceAccountBinding) -> Any:
-        platform = clean_text(row.get("platform"))
-        if platform != binding.system:
-            raise FinanceSyncError("ACCOUNT_ROLE_MISMATCH", "汇总平台与账号角色不匹配")
-        direction, income, expense = self._direction_amounts(
-            row.get("income"),
-            row.get("expend"),
-            stage="summary",
-        )
-        primary_fee_name = clean_text(row.get("fee_level_1") or row.get("fee_name"))
-        if not primary_fee_name:
-            raise FinanceSyncError("SUMMARY_FIELD_DRIFT", "汇总缺少一级费用项目")
-        return self.shared_api.SummarySnapshot(
-            platform=platform,
-            account_id=binding.account_id,
-            target_date=row.get("snapshot_date"),
-            primary_fee_name=primary_fee_name,
-            secondary_fee_name=clean_text(row.get("fee_level_2")),
-            direction=direction,
-            income=income,
-            expense=expense,
+        return finance_summary_from_capture_row(
+            row,
+            binding,
+            shared_api=self.shared_api,
         )
 
     def _direction_amounts(self, income_value: Any, expense_value: Any, *, stage: str) -> tuple[str, Any, Any]:
-        try:
-            income = self.shared_api.quantize_storage(income_value)
-            expense = self.shared_api.quantize_storage(expense_value)
-            zero = self.shared_api.quantize_storage("0.0000")
-        except Exception as exc:
-            raise FinanceSyncError("AMOUNT_INVALID", f"{stage} 金额格式异常") from exc
-        if income < zero or expense < zero or (income == zero) == (expense == zero):
-            raise FinanceSyncError("AMOUNT_DIRECTION_INVALID", f"{stage} 收入/支出方向不唯一")
-        return ("income" if income > zero else "expense", income, expense)
+        return finance_direction_amounts(
+            income_value,
+            expense_value,
+            stage=stage,
+            shared_api=self.shared_api,
+        )
 
     def _validation(self, capture: CaptureResult, transactions: Sequence[Any], summaries: Sequence[Any]) -> Any:
-        page_row_counts = capture.validation.get("page_row_counts")
-        if not isinstance(page_row_counts, (list, tuple)):
-            raise FinanceSyncError("UNVERIFIED_TOTAL", "采集结果缺少逐页行数证据")
-        validation_context: Mapping[str, Any] = {}
-        if transactions:
-            first = transactions[0]
-            validation_context = self.repository.get_validation_context(
-                platform=first.platform,
-                account_id=first.account_id,
-                target_date=first.business_date,
-                source_record_keys=[record.source_record_key for record in transactions],
-            )
-            if not isinstance(validation_context, Mapping):
-                raise FinanceSyncError("VALIDATION_CONTEXT_INVALID", "共享验证上下文结构异常")
-        evidence = self.shared_api.CaptureEvidence(
-            remote_total=capture.validation.get("source_total"),
-            page_row_counts=tuple(page_row_counts),
-            transactions=transactions,
-            summaries=summaries,
-            intended_write_count=len(transactions),
-            response_valid=True,
-            known_fee_items=validation_context.get("known_fee_items", ()),
-            previous_record_payloads=validation_context.get("previous_record_payloads", {}),
+        return validate_finance_capture_result(
+            capture,
+            transactions,
+            summaries,
+            repository=self.repository,
+            shared_api=self.shared_api,
         )
-        return self.shared_api.validate_finance_capture(evidence)
 
     def run(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self.current_stage = "plan_request"
         plan = plan_sync_request(params, now=self.now())
         platform = clean_text(params.get("platform")).lower()
         account_id = clean_text(params.get("account_id"))
+        self.current_stage = "schema_validation"
         self.repository.initialize_schema()
         retry_targets: list[Mapping[str, Any]] = []
+        skipped_disabled: list[dict[str, str]] = []
         if plan["mode"] == "retry":
             retry_targets = list(self.repository.list_retry_targets(plan["batch_id"]))
             if not retry_targets:
                 raise FinanceSyncError("RETRY_TARGETS_EMPTY", "指定批次没有可重试失败项")
+            enabled_retry_targets: list[Mapping[str, Any]] = []
+            for row in retry_targets:
+                target_platform = clean_text(row.get("platform")).lower()
+                target_account_id = clean_text(row.get("account_id"))
+                source = finance_source_spec(target_platform, target_account_id)
+                if source is None:
+                    raise FinanceSyncError("ACCOUNT_NOT_ALLOWED", "重试批次包含财务角色白名单外账号")
+                if not source.production_ready:
+                    skipped_disabled.append(
+                        {
+                            "platform": source.platform,
+                            "account_id": source.account_id,
+                            "target_date": clean_text(row.get("target_date")),
+                            "status": source.status,
+                            "reason": source.reason,
+                        }
+                    )
+                    continue
+                enabled_retry_targets.append(row)
+            if not enabled_retry_targets:
+                raise FinanceSyncError(
+                    "FINANCE_SOURCE_NOT_ENABLED",
+                    "指定批次仅包含尚未启用的财务来源，不能重试",
+                )
+            retry_targets = enabled_retry_targets
             target_specs = sorted(
                 {
                     (clean_text(row.get("platform")).lower(), clean_text(row.get("account_id")))
                     for row in retry_targets
                 }
             )
-            if any(spec not in DEFAULT_FINANCE_ACCOUNT_ROLES for spec in target_specs):
-                raise FinanceSyncError("ACCOUNT_NOT_ALLOWED", "重试批次包含财务角色白名单外账号")
             retry_dates = [_parse_date(row.get("target_date"), field="target_date") for row in retry_targets]
             plan.update(
                 {
@@ -467,7 +588,9 @@ class FinanceSyncService:
         else:
             target_specs = _requested_account_specs(platform=platform, account_id=account_id)
 
+        self.current_stage = "seed_fee_mappings"
         self.repository.seed_fee_mappings()
+        self.current_stage = "create_batch"
         batch_id = self.repository.create_batch(
             trigger_type="startup" if params.get("_startup_catchup") else plan["mode"],
             start_date=plan["start_date"],
@@ -479,6 +602,7 @@ class FinanceSyncService:
 
         successes: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        self.current_stage = "sync_accounts"
         for target_platform, target_account_id in target_specs:
             dates = list(plan["dates"])
             if retry_targets:
@@ -519,6 +643,7 @@ class FinanceSyncService:
                 binding = resolved_bindings[0]
             except Exception as exc:
                 code, message = _safe_error(exc)
+                error_stage = _safe_error_stage(exc)
                 for target_date in dates:
                     self.repository.start_failed_run(
                         batch_id=batch_id,
@@ -534,6 +659,8 @@ class FinanceSyncService:
                             "account_id": target_account_id,
                             "target_date": target_date.isoformat(),
                             "error_code": code,
+                            "error_message": message,
+                            "error_stage": error_stage,
                         }
                     )
                 continue
@@ -544,6 +671,7 @@ class FinanceSyncService:
                 context = dict(adapter.discover())
             except Exception as exc:
                 code, message = _safe_error(exc)
+                error_stage = _safe_error_stage(exc)
                 for target_date in dates:
                     run_id = self.repository.start_run(
                         batch_id=batch_id,
@@ -554,7 +682,16 @@ class FinanceSyncService:
                         target_date=target_date,
                     )
                     self.repository.fail_run(run_id=run_id, error_code=code, error_message=message)
-                    failures.append({"platform": binding.system, "account_id": binding.account_id, "target_date": target_date.isoformat(), "error_code": code})
+                    failures.append(
+                        {
+                            "platform": binding.system,
+                            "account_id": binding.account_id,
+                            "target_date": target_date.isoformat(),
+                            "error_code": code,
+                            "error_message": message,
+                            "error_stage": error_stage,
+                        }
+                    )
                 if adapter is not None:
                     _close_adapter(adapter)
                 continue
@@ -631,6 +768,7 @@ class FinanceSyncService:
                     )
                 except Exception as exc:
                     code, message = _safe_error(exc)
+                    error_stage = _safe_error_stage(exc)
                     if run_id is None:
                         run_id = self.repository.start_run(
                             batch_id=batch_id,
@@ -649,25 +787,46 @@ class FinanceSyncService:
                             "account_id": binding.account_id,
                             "target_date": target_date.isoformat(),
                             "error_code": code,
+                            "error_message": message,
+                            "error_stage": error_stage,
                         }
                     )
             if adapter is not None:
                 _close_adapter(adapter)
 
+        self.current_stage = "finalize_batch"
         status = self.repository.finalize_batch(batch_id)
         if failures and not successes:
-            first_code = failures[0]["error_code"]
-            raise FinanceSyncError(first_code, "全部财务账号/日期同步失败")
-        return {
-            "ok": True,
-            "partial_success": bool(failures),
+            first_failure = failures[0]
+            first_code = first_failure["error_code"]
+            first_message = clean_text(first_failure.get("error_message"))
+            first_stage = clean_text(first_failure.get("error_stage"))
+            detail = first_message or "全部财务账号/日期同步失败"
+            if first_stage:
+                detail = f"{detail}（stage={first_stage}）"
+            raise FinanceSyncError(first_code, detail)
+        partial_failure = bool(failures)
+        result = {
+            "ok": not partial_failure,
+            "success": not partial_failure,
+            "partial_success": partial_failure,
             "batch_id": batch_id,
             "mode": plan["mode"],
             "start_date": plan["start_date"].isoformat(),
             "end_date": plan["end_date"].isoformat(),
             "successful_runs": len(successes),
             "failed_runs": len(failures),
+            "skipped_disabled": skipped_disabled,
+            "skipped_disabled_count": len(skipped_disabled),
             "runs": successes + failures,
             "status": clean_text(getattr(status, "value", status)),
             "earliest_date_status": plan.get("earliest_date_status"),
         }
+        if partial_failure:
+            result.update(
+                {
+                    "error_code": "FINANCE_SYNC_PARTIAL_FAILED",
+                    "error": "部分财务账号或日期同步失败；成功快照已保留，可在同步记录中重试失败项",
+                }
+            )
+        return result

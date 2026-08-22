@@ -10,6 +10,8 @@ import json
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
+from shared.automation_project_manifest import automation_id_for_reviewed_task
+
 
 ConnectionFactory = Callable[[], Any]
 
@@ -92,8 +94,10 @@ class ScheduledTaskRepository:
 
     def list_tasks(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
         sql = """
-            SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                   last_run, last_status, last_duration_ms, last_message, created_at
+            SELECT id, automation_id, automation_generation, name, tool_name, tool_params,
+                   cron_expression, enabled,
+                   last_run, last_status, last_duration_ms, last_message,
+                   configuration_version, updated_at, created_at
             FROM scheduled_tasks
         """
         if enabled_only:
@@ -105,7 +109,7 @@ class ScheduledTaskRepository:
                 rows = list(cursor.fetchall() or [])
         for row in rows:
             row["tool_params"] = _decode_json(row.get("tool_params"), {})
-            for field in ("last_run", "created_at"):
+            for field in ("last_run", "updated_at", "created_at"):
                 row[field] = _format_datetime(row.get(field))
         return rows
 
@@ -114,8 +118,10 @@ class ScheduledTaskRepository:
             with _cursor(connection, self._cursor_factory) as cursor:
                 cursor.execute(
                     """
-                    SELECT id, name, tool_name, tool_params, cron_expression, enabled,
-                           last_run, last_status, last_duration_ms, last_message, created_at
+                    SELECT id, automation_id, automation_generation, name, tool_name,
+                           tool_params, cron_expression, enabled,
+                           last_run, last_status, last_duration_ms, last_message,
+                           configuration_version, updated_at, created_at
                     FROM scheduled_tasks WHERE id=%s
                     """,
                     (task_id,),
@@ -124,7 +130,7 @@ class ScheduledTaskRepository:
         if not row:
             return None
         row["tool_params"] = _decode_json(row.get("tool_params"), {})
-        for field in ("last_run", "created_at"):
+        for field in ("last_run", "updated_at", "created_at"):
             row[field] = _format_datetime(row.get(field))
         return row
 
@@ -135,12 +141,28 @@ class ScheduledTaskRepository:
 
     @staticmethod
     def _upsert_cursor(cursor: Any, task: dict[str, Any]) -> None:
+        # MySQL evaluates single-table assignments from left to right.  Keep
+        # the version predicate before overwriting configuration columns so a
+        # material edit invalidates any exact-schedule policy atomically.
+        changed = """(
+            NOT (tool_name <=> VALUES(tool_name))
+            OR NOT (tool_params <=> VALUES(tool_params))
+            OR NOT (cron_expression <=> VALUES(cron_expression))
+            OR NOT (enabled <=> VALUES(enabled))
+            OR (
+                VALUES(automation_id) IS NOT NULL
+                AND NOT (automation_id <=> VALUES(automation_id))
+            )
+        )"""
         cursor.execute(
-            """
+            f"""
             INSERT INTO scheduled_tasks
-                (id, name, tool_name, tool_params, cron_expression, enabled)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                (id, automation_id, name, tool_name, tool_params, cron_expression, enabled)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+                configuration_version = configuration_version + IF({changed}, 1, 0),
+                updated_at = IF({changed}, CURRENT_TIMESTAMP(6), updated_at),
+                automation_id = COALESCE(VALUES(automation_id), automation_id),
                 name = VALUES(name),
                 tool_name = VALUES(tool_name),
                 tool_params = VALUES(tool_params),
@@ -149,6 +171,8 @@ class ScheduledTaskRepository:
             """,
             (
                 task["id"],
+                task.get("automation_id")
+                or automation_id_for_reviewed_task(str(task.get("id") or "")),
                 task["name"],
                 task["tool_name"],
                 json.dumps(task.get("tool_params") or {}, ensure_ascii=False),
@@ -184,7 +208,8 @@ class ScheduledTaskRepository:
                 cursor.execute(
                     """
                     UPDATE scheduled_tasks
-                    SET last_run=NOW(), last_status=%s, last_duration_ms=%s, last_message=%s
+                    SET last_run=NOW(), last_status=%s, last_duration_ms=%s,
+                        last_message=%s, updated_at=updated_at
                     WHERE id=%s
                     """,
                     (last_status, last_duration_ms, last_message, task_id),
@@ -204,7 +229,8 @@ class ScheduledTaskRepository:
         placeholders = ", ".join("%s" for _ in task_ids)
         sql = (
             "UPDATE scheduled_tasks "
-            "SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s "
+            "SET last_run=%s, last_status=%s, last_duration_ms=%s, last_message=%s, "
+            "updated_at=updated_at "
             f"WHERE id IN ({placeholders})"
         )
         with _connection(self._connection_factory) as connection:
@@ -223,8 +249,16 @@ class WorkflowResourceRepository:
         self._cursor_factory = cursor_factory
 
     def list_records(self, *, include_config: bool = True) -> list[dict[str, Any]]:
-        columns = "resource_key, config_json, source, updated_at, created_at" if include_config else (
-            "resource_key, source, updated_at, created_at"
+        columns = (
+            "resource_key, config_json, source, configuration_version, "
+            "config_sha256, "
+            "SHA2(CAST(config_json AS CHAR CHARACTER SET utf8mb4), 256) "
+            "AS computed_config_sha256, updated_at, created_at"
+            if include_config
+            else (
+                "resource_key, source, configuration_version, config_sha256, "
+                "updated_at, created_at"
+            )
         )
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
@@ -233,6 +267,7 @@ class WorkflowResourceRepository:
         for row in rows:
             if include_config:
                 row["config"] = _decode_json(row.get("config_json"), {})
+                self._validate_integrity(row)
             for field in ("updated_at", "created_at"):
                 row[field] = _format_datetime(row.get(field))
         return rows
@@ -242,7 +277,11 @@ class WorkflowResourceRepository:
             with _cursor(connection, self._cursor_factory) as cursor:
                 cursor.execute(
                     """
-                    SELECT resource_key, config_json, source, updated_at, created_at
+                    SELECT resource_key, config_json, source,
+                           configuration_version, config_sha256,
+                           SHA2(CAST(config_json AS CHAR CHARACTER SET utf8mb4), 256)
+                               AS computed_config_sha256,
+                           updated_at, created_at
                     FROM workflow_resources WHERE resource_key=%s
                     """,
                     (resource_key,),
@@ -251,23 +290,65 @@ class WorkflowResourceRepository:
         if not row:
             return None
         row["config"] = _decode_json(row.get("config_json"), {})
+        self._validate_integrity(row)
         for field in ("updated_at", "created_at"):
             row[field] = _format_datetime(row.get(field))
         return row
 
     def upsert(self, resource_key: str, config: dict[str, Any], *, source: str) -> None:
+        encoded = json.dumps(
+            config,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO workflow_resources (resource_key, config_json, source)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO workflow_resources (
+                        resource_key, config_json, config_sha256, source,
+                        configuration_version
+                    )
+                    VALUES (
+                        %s,
+                        CAST(%s AS JSON),
+                        SHA2(
+                            CAST(CAST(%s AS JSON) AS CHAR CHARACTER SET utf8mb4),
+                            256
+                        ),
+                        %s,
+                        1
+                    )
                     ON DUPLICATE KEY UPDATE
+                        configuration_version = configuration_version + IF(
+                            NOT (config_json <=> VALUES(config_json))
+                            OR NOT (source <=> VALUES(source)),
+                            1,
+                            0
+                        ),
+                        config_sha256 = SHA2(
+                            CAST(VALUES(config_json) AS CHAR CHARACTER SET utf8mb4),
+                            256
+                        ),
                         config_json = VALUES(config_json),
                         source = VALUES(source)
                     """,
-                    (resource_key, json.dumps(config, ensure_ascii=False), source),
+                    (resource_key, encoded, encoded, source),
                 )
+
+    @staticmethod
+    def _validate_integrity(row: dict[str, Any]) -> None:
+        version = row.get("configuration_version")
+        persisted = str(row.get("config_sha256") or "").lower()
+        computed = str(row.pop("computed_config_sha256", "") or "").lower()
+        if (
+            type(version) is not int
+            or version <= 0
+            or len(persisted) != 64
+            or persisted != computed
+        ):
+            raise ValueError("workflow resource revision is invalid")
 
 
 class WaybillRepository:
@@ -348,6 +429,63 @@ class WaybillRepository:
             with _cursor(connection, self._cursor_factory) as cursor:
                 cursor.execute(sql, params)
                 return self._row_to_dict(cursor.fetchone())
+
+    def list_by_numbers(self, waybill_numbers: list[str]) -> list[dict[str, Any]]:
+        """Read every row matching one bounded, binary-exact identity set."""
+
+        if not isinstance(waybill_numbers, list):
+            raise ValueError("waybill_numbers must be a list")
+        identities = [str(value or "").strip() for value in waybill_numbers]
+        if (
+            not identities
+            or len(identities) > 20_000
+            or any(not identity for identity in identities)
+            or len(identities) != len(set(identities))
+        ):
+            raise ValueError("waybill_numbers must be unique, non-empty, and bounded")
+        placeholders = ", ".join("%s" for _ in identities)
+        with _connection(self._connection_factory) as connection:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT * FROM waybills
+                    WHERE BINARY waybill_no IN ({placeholders})
+                    ORDER BY BINARY waybill_no, id
+                    """,
+                    identities,
+                )
+                rows = [
+                    converted
+                    for row in cursor.fetchall() or []
+                    if (converted := self._row_to_dict(row)) is not None
+                ]
+        requested = set(identities)
+        if any(str(row.get("waybill_no") or "").strip() not in requested for row in rows):
+            raise RuntimeError("waybill exact-set query returned an extra identity")
+        return rows
+
+    def list_by_source_date(self, *, source: str, target_date: str) -> list[dict[str, Any]]:
+        """Freshly read one exact source/date projection for postcondition checks."""
+
+        source_text = str(source or "").strip()
+        date_text = str(target_date or "").strip()
+        if not source_text or not date_text:
+            raise ValueError("source and target_date are required")
+        with _connection(self._connection_factory) as connection:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                cursor.execute(
+                    """
+                    SELECT * FROM waybills
+                    WHERE source=%s AND open_date=%s
+                    ORDER BY waybill_no, id
+                    """,
+                    (source_text, date_text),
+                )
+                return [
+                    converted
+                    for row in cursor.fetchall() or []
+                    if (converted := self._row_to_dict(row)) is not None
+                ]
 
     def sync_records(
         self,
@@ -444,6 +582,7 @@ class WaybillRepository:
         status: str,
         *,
         validate_schema: bool = True,
+        mark_write_started: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         normalized_status = self.normalize_status(status)
         clean_numbers = list(dict.fromkeys(str(value or "").strip() for value in waybill_numbers if str(value or "").strip()))
@@ -454,8 +593,10 @@ class WaybillRepository:
         placeholders = ", ".join("%s" for _ in clean_numbers)
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
+                if mark_write_started is not None:
+                    mark_write_started()
                 cursor.execute(
-                    f"UPDATE waybills SET status = %s, updated_at = NOW() WHERE waybill_no IN ({placeholders}) AND status <> 'cancelled'",
+                    f"UPDATE waybills SET status = %s, updated_at = NOW() WHERE BINARY waybill_no IN ({placeholders}) AND status <> 'cancelled'",
                     [normalized_status, *clean_numbers],
                 )
                 updated = int(cursor.rowcount or 0)

@@ -7,7 +7,7 @@ import platform
 import re
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from typing import Any, Callable
 
 import pymysql
 from shared.runtime_repositories import WaybillRepository
@@ -447,7 +447,59 @@ def sync_console_waybills(
     )
 
 
-def update_console_waybill_statuses(waybill_numbers: list[str], status: str) -> dict[str, Any]:
+def list_console_waybills_by_source_date(
+    *,
+    source: str,
+    target_date: date | str,
+) -> list[dict[str, Any]]:
+    """Return the exact persisted projection used for fresh write verification."""
+
+    source_text = _clean_text(source)[:32]
+    date_text = target_date.isoformat() if isinstance(target_date, date) else _clean_text(target_date)
+    if not source_text or not date_text:
+        raise ValueError("source and target_date are required")
+    ensure_console_waybill_table()
+    return WaybillRepository(_connect).list_by_source_date(
+        source=source_text,
+        target_date=date_text,
+    )
+
+
+def get_console_waybill_by_number(waybill_no: str) -> dict[str, Any] | None:
+    """Read one current console waybill without changing projection state."""
+
+    identity = _clean_text(waybill_no)
+    if not identity:
+        raise ValueError("waybill_no is required")
+    ensure_console_waybill_table()
+    return WaybillRepository(_connect).get_by_number(identity)
+
+
+def list_console_waybills_by_numbers(
+    waybill_numbers: list[str],
+) -> list[dict[str, Any]]:
+    """Read one bounded, binary-exact waybill identity set without mutation."""
+
+    if not isinstance(waybill_numbers, list):
+        raise ValueError("waybill_numbers must be a list")
+    identities = [_clean_text(value) for value in waybill_numbers]
+    if (
+        not identities
+        or len(identities) > 20_000
+        or any(not identity for identity in identities)
+        or len(identities) != len(set(identities))
+    ):
+        raise ValueError("waybill_numbers must be unique, non-empty, and bounded")
+    ensure_console_waybill_table()
+    return WaybillRepository(_connect).list_by_numbers(identities)
+
+
+def update_console_waybill_statuses(
+    waybill_numbers: list[str],
+    status: str,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     normalized_status = normalize_console_waybill_status(status)
     if normalized_status not in CONSOLE_WAYBILL_STATUS_VALUES:
         return {"ok": False, "error": "invalid status", "updated": 0}
@@ -461,11 +513,10 @@ def update_console_waybill_statuses(waybill_numbers: list[str], status: str) -> 
     if not clean_numbers:
         return {"ok": True, "updated": 0, "status": normalized_status}
 
-    ensure_console_waybill_table()
     return WaybillRepository(_connect).update_statuses(
         clean_numbers,
         normalized_status,
-        validate_schema=False,
+        mark_write_started=mark_write_started,
     )
 
 
@@ -642,7 +693,7 @@ def list_scan_codes() -> list[dict[str, str]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT raw_code, destination, code_type
+                SELECT raw_code, destination, code_type, main_tracking
                 FROM scan_codes
                 ORDER BY destination, raw_code
                 """
@@ -655,6 +706,7 @@ def list_scan_codes() -> list[dict[str, str]]:
             "raw_code": _clean_text(row.get("raw_code")),
             "destination": _clean_text(row.get("destination")),
             "code_type": _clean_text(row.get("code_type")),
+            "main_tracking": _clean_text(row.get("main_tracking")),
         }
         for row in rows
         if row.get("raw_code")

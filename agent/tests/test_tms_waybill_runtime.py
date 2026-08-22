@@ -2474,26 +2474,45 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         }
 
         checks = [
-            (arrive_list_sync_tool.run_arrive_list_sync, "tools.arrive_list_sync_tool.call_http_service", {}),
-            (scan_sync_tool.run_scan_sync, "tools.scan_sync_tool.call_http_service", {}),
-            (daily_sign_sync_tool.run_daily_sign_sync, "tools.daily_sign_sync_tool.call_http_service", {}),
-            (site_send_list_sync_tool.run_site_send_list_sync, "tools.site_send_list_sync_tool.call_http_service", {}),
+            (
+                arrive_list_sync_tool.run_arrive_list_sync,
+                "tools.arrive_list_sync_tool.call_http_service",
+                {"account_id": "ronghui-test"},
+            ),
+            (
+                scan_sync_tool.run_scan_sync,
+                "tools.scan_sync_tool.call_http_service",
+                {"account_id": "ronghui-test"},
+            ),
+            (
+                site_send_list_sync_tool.run_site_send_list_sync,
+                "tools.site_send_list_sync_tool.call_http_service",
+                {"account_id": "ronghui-test"},
+            ),
             (
                 yunda_dispatch_forecast_sync_tool.run_yunda_dispatch_forecast_sync,
                 "tools.yunda_dispatch_forecast_sync_tool.call_http_service",
-                {},
+                {"account_id": "yunda-test"},
             ),
             (
                 yunda_send_waybills_sync_tool.run_yunda_send_waybills_sync,
                 "tools.yunda_send_waybills_sync_tool.call_http_service",
-                {},
+                {"account_id": "yunda-test"},
             ),
             (
                 delivery_status_sync_tool.run_delivery_status_sync,
                 "tools.delivery_status_sync_tool.call_http_service",
-                {"bill_codes": "R0001", "record_ids": "rec-1"},
+                {
+                    "account_id": "ronghui-test",
+                    "bill_codes": "R0001",
+                    "record_ids": "rec-1",
+                },
             ),
-            (send_order_sync_tool.run_send_order_sync, "tools.send_order_sync_tool.call_http_service", {}),
+            (
+                send_order_sync_tool.run_send_order_sync,
+                "tools.send_order_sync_tool.call_http_service",
+                {"account_id": "ronghui-test"},
+            ),
         ]
 
         for runner, patch_target, params in checks:

@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import types
 import unittest
 from http import HTTPStatus
@@ -11,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+BROWSER_REQUEST_UUID = "123e4567-e89b-42d3-a456-426614174000"
 
 from console.app import LocalDocFlowApp
 from console.finance_service import FinanceValidationError
@@ -20,7 +22,11 @@ from console.navigation import CONSOLE_NAVIGATION
 class _Handler:
     def __init__(self, body=None):
         payload = json.dumps(body or {}, ensure_ascii=False).encode("utf-8")
-        self.headers = {"Content-Length": str(len(payload))}
+        self.headers = {
+            "Content-Length": str(len(payload)),
+            "Content-Type": "application/json",
+            "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
+        }
         self.rfile = io.BytesIO(payload)
         self.wfile = io.BytesIO()
 
@@ -52,17 +58,32 @@ class _FakeFinanceService:
     def list_sync_batches(self, query):
         return self._result("sync_batches", query)
 
-    def start_sync(self, body):
+    def list_review_cases(self, query):
+        return self._result("review_cases", query)
+
+    def list_waybill_facts(self, query):
+        return self._result("waybill_facts", query)
+
+    def knowledge_status(self):
+        return self._result("knowledge")
+
+    def build_sync_arguments(self, body):
         return self._result("sync", body)
 
-    def start_backfill(self, body):
+    def build_backfill_arguments(self, body):
         return self._result("backfill", body)
 
     def save_fee_mapping(self, fee_item_id, body, *, changed_by):
         return self._result("save_mapping", fee_item_id, body, changed_by=changed_by)
 
-    def retry_batch(self, batch_id):
+    def build_retry_arguments(self, batch_id):
         return self._result("retry_batch", batch_id)
+
+    def analyze_review_cases(self, body):
+        return self._result("analyze_reviews", body)
+
+    def reject_review_case(self, review_case_id, body, *, changed_by):
+        return self._result("reject_review", review_case_id, body, changed_by=changed_by)
 
 
 class FinanceModuleWorkbenchTests(unittest.TestCase):
@@ -78,6 +99,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.sent_status = None
         self.sent_payload = None
         self.sent_html = ""
+        self.command_submissions = []
 
         def send_json(app, handler, status, payload):
             self.sent_status = status
@@ -89,6 +111,39 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
 
         self.app._send_json = types.MethodType(send_json, self.app)
         self.app._send_html = types.MethodType(send_html, self.app)
+        self.app._control_plane_write_context = lambda _handler: {
+            "actor": {"actor_id": "7"},
+            "actor_roles": ["super_admin"],
+            "source": "console",
+            "_console_principal": {"actor_id": "7"},
+        }
+
+        def submit_command(app, **kwargs):
+            self.command_submissions.append(kwargs)
+            return {
+                "ok": True,
+                "status": HTTPStatus.ACCEPTED,
+                "data": {
+                    "command_id": "command-1",
+                    "work_item_id": "work-item-1",
+                    "run_id": "run-1",
+                    "status": "RECEIVED",
+                    "reused": False,
+                    "next_poll_after_ms": 1000,
+                },
+            }
+
+        def send_receipt(app, handler, result, *, message):
+            self.sent_status = HTTPStatus.ACCEPTED
+            self.sent_payload = {
+                "ok": True,
+                "pending": True,
+                "message": message,
+                **result["data"],
+            }
+
+        self.app._submit_console_tool_command = types.MethodType(submit_command, self.app)
+        self.app._send_console_command_receipt = types.MethodType(send_receipt, self.app)
 
     def test_sidebar_links_to_dedicated_finance_workbench(self):
         item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/modules/finance")
@@ -96,7 +151,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertEqual("dollar-sign", item["icon"])
         self.assertEqual("财务模块", item["label"])
 
-    def test_finance_route_renders_specialized_four_tab_workbench(self):
+    def test_finance_route_renders_specialized_six_tab_workbench(self):
         self.app._render_finance(_Handler(), {})
 
         self.assertEqual(HTTPStatus.OK, self.sent_status)
@@ -105,6 +160,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('data-finance-tab="entries"', self.sent_html)
         self.assertIn('data-finance-tab="mappings"', self.sent_html)
         self.assertIn('data-finance-tab="sync"', self.sent_html)
+        self.assertIn('data-finance-tab="reviews"', self.sent_html)
+        self.assertIn('data-finance-tab="waybill-facts"', self.sent_html)
         self.assertNotIn("module-detail-sections", self.sent_html)
 
     def test_finance_assets_are_page_scoped_and_no_chart_library_is_global(self):
@@ -127,16 +184,37 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('data-finance-account-table', template)
         self.assertIn("金额单位：元", template)
 
-    def test_booking_fee_lists_are_platform_specific_and_not_hardcoded(self):
-        template = (CONSOLE_DIR / "templates" / "finance.html").read_text(encoding="utf-8")
+    def test_rendered_platform_controls_only_expose_enabled_ronghui(self):
+        self.app._render_finance(_Handler(), {})
+        rendered = self.sent_html
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
-        self.assertIn('id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"', template)
-        self.assertIn('id="finance-booking-yunda" data-finance-booking-fee-items="yunda"', template)
+        platform_selects = re.findall(
+            r'<select (?:data-finance-platform|name="platform")>(.*?)</select>',
+            rendered,
+            flags=re.DOTALL,
+        )
+        self.assertEqual(5, len(platform_selects))
+        for options in platform_selects:
+            self.assertEqual(["all", "ronghui"], re.findall(r'<option value="([^"]+)">', options))
+        self.assertIn(
+            'id="finance-booking-ronghui" data-finance-booking-fee-items="ronghui"',
+            rendered,
+        )
+        self.assertNotIn('data-finance-booking-fee-items="yunda"', rendered)
         self.assertIn("payload.booking_fee_items", script)
-        self.assertNotIn("集配站费用", template)
-        self.assertNotIn("增值服务费", template)
-        self.assertNotIn("平台费", template)
+        self.assertNotIn("集配站费用", rendered)
+        self.assertNotIn("增值服务费", rendered)
+        self.assertNotIn("平台费", rendered)
+
+    def test_frontend_keeps_yunda_label_only_for_historical_sync_records(self):
+        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
+
+        self.assertIn('yunda: "韵达"', script)
+        self.assertIn(
+            "failedSources.map((source) => `${platformLabel(source.platform)}",
+            script,
+        )
 
     def test_accessibility_and_responsive_states_are_present(self):
         template = (CONSOLE_DIR / "templates" / "finance.html").read_text(encoding="utf-8")
@@ -165,13 +243,21 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
         self.assertIn('row[`${key}_plot`]', script)
-        self.assertIn("waybill_cost_plot", script)
-        self.assertIn("operating_cost_plot", script)
+        self.assertIn("waybill_net_plot", script)
+        self.assertIn("operating_net_plot", script)
         self.assertNotIn("parseFloat(row.income", script)
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
 
-    def test_all_nine_finance_api_routes_are_registered(self):
+    def test_frontend_submits_stable_browser_uuid_and_uses_run_receipt(self):
+        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
+
+        self.assertIn('"X-Browser-Request-UUID": newBrowserRequestUuid()', script)
+        self.assertIn("receipt?.run_id", script)
+        self.assertIn("事项中心完成审批", script)
+        self.assertNotIn("await loadBatches();\n        await loadOverview();", script)
+
+    def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
         routes = (
             "/finance/summary",
@@ -183,6 +269,11 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "/finance/backfill",
             "/finance/fee-mappings/\\d+",
             "/finance/sync-batches/\\d+/retry",
+            "/finance/review-cases",
+            "/finance/waybill-facts",
+            "/finance/knowledge",
+            "/finance/reviews/analyze",
+            "/finance/review-cases/\\d+/reject",
         )
 
         for route in routes:
@@ -196,22 +287,30 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
     def test_get_handlers_return_consistent_success_envelope(self):
         for resource in ("summary", "trend", "entries", "fee_mappings", "sync_batches"):
             with self.subTest(resource=resource):
-                self.app._handle_finance_get(_Handler(), resource, {"platform": ["yunda"]})
+                self.app._handle_finance_get(_Handler(), resource, {"platform": ["ronghui"]})
                 self.assertEqual(HTTPStatus.OK, self.sent_status)
                 self.assertTrue(self.sent_payload["ok"])
                 self.assertEqual(resource, self.sent_payload["data"]["resource"])
 
     def test_post_handlers_cover_sync_backfill_mapping_and_retry(self):
         self.app._handle_finance_post(_Handler({"rescan_days": 7}), "sync")
-        self.assertEqual("sync", self.sent_payload["data"]["resource"])
+        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
+        self.assertTrue(self.sent_payload["pending"])
+        self.assertEqual("sync_finance_bills", self.command_submissions[-1]["tool_name"])
+        self.assertEqual("sync", self.command_submissions[-1]["arguments"]["resource"])
+        self.assertEqual(BROWSER_REQUEST_UUID, self.command_submissions[-1]["browser_request_uuid"])
 
         self.app._handle_finance_post(
             _Handler({"start_date": "2026-07-01", "end_date": "2026-07-11"}),
             "backfill",
         )
-        self.assertEqual("backfill", self.sent_payload["data"]["resource"])
+        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
+        self.assertEqual("backfill", self.command_submissions[-1]["arguments"]["resource"])
 
-        with patch("console.app.current_admin_user", return_value={"username": "admin"}):
+        with patch(
+            "console.services.monitoring_finance.current_admin_user",
+            return_value={"username": "admin"},
+        ):
             self.app._handle_finance_post(
                 _Handler({"fee_level": "operating"}),
                 "save_mapping",
@@ -225,7 +324,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "retry_batch",
             path="/finance/sync-batches/8/retry",
         )
-        self.assertEqual("retry_batch", self.sent_payload["data"]["resource"])
+        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
+        self.assertEqual("retry_batch", self.command_submissions[-1]["arguments"]["resource"])
 
     def test_validation_errors_are_readable_json(self):
         self.app.finance_service.fail_next = True

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from config import Settings
+from console.config import Settings
 
 
 DEFAULT_TEMPLATE_NAME = "template_new"

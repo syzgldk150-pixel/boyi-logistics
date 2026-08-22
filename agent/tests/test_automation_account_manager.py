@@ -60,6 +60,213 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertEqual(status["label"], "已退出")
         self.assertTrue(status["session_capable"])
 
+    def test_credentials_change_guard_covers_local_save_and_clear(self):
+        credential_path = account_manager_module._local_credential_path("r7_default")
+        guard_calls = []
+        active_changes = set()
+
+        def begin_change(account_id):
+            self.assertNotIn(account_id, active_changes)
+            active_changes.add(account_id)
+            guard_calls.append(("begin", account_id, credential_path.exists()))
+
+            def finish_change():
+                guard_calls.append(("finish", account_id, credential_path.exists()))
+                active_changes.remove(account_id)
+
+            return finish_change
+
+        self.manager.set_credentials_change_guard(begin_change)
+
+        self.manager.save_credentials(
+            "r7_default",
+            username="r7-user",
+            password="r7-password",
+        )
+        self.manager.clear_credentials("r7_default")
+
+        self.assertEqual(
+            guard_calls,
+            [
+                ("begin", "r7_default", False),
+                ("finish", "r7_default", True),
+                ("begin", "r7_default", True),
+                ("finish", "r7_default", False),
+            ],
+        )
+        self.assertEqual(active_changes, set())
+        self.assertFalse(credential_path.exists())
+
+    def test_credentials_change_guard_cleanup_runs_when_file_write_fails(self):
+        active_changes = set()
+
+        def begin_change(account_id):
+            active_changes.add(account_id)
+
+            def finish_change():
+                active_changes.remove(account_id)
+
+            return finish_change
+
+        self.manager.set_credentials_change_guard(begin_change)
+        with patch.object(
+            account_manager_module,
+            "_write_json",
+            side_effect=OSError("synthetic file write failure"),
+        ):
+            with self.assertRaises(OSError):
+                self.manager.save_credentials(
+                    "r7_default",
+                    username="replacement-user",
+                    password="replacement-password",
+                )
+
+        self.assertEqual(active_changes, set())
+
+    def test_credentials_change_guard_cleanup_runs_when_broker_save_or_clear_fails(self):
+        class FailingBroker:
+            @staticmethod
+            def save_credentials(**_credentials):
+                raise RuntimeError("synthetic broker save failure")
+
+            @staticmethod
+            def clear_saved_credentials():
+                raise RuntimeError("synthetic broker clear failure")
+
+        active_changes = set()
+        guard_calls = []
+
+        def begin_change(account_id):
+            active_changes.add(account_id)
+            guard_calls.append(("begin", account_id))
+
+            def finish_change():
+                guard_calls.append(("finish", account_id))
+                active_changes.remove(account_id)
+
+            return finish_change
+
+        self.manager.set_credentials_change_guard(begin_change)
+        with patch.object(
+            account_manager_module,
+            "get_session_broker",
+            return_value=FailingBroker(),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.manager.save_credentials(
+                    "ronghui_default",
+                    username="replacement-user",
+                    password="replacement-password",
+                )
+            self.assertEqual(active_changes, set())
+            with self.assertRaises(RuntimeError):
+                self.manager.clear_credentials("ronghui_default")
+
+        self.assertEqual(active_changes, set())
+        self.assertEqual(
+            guard_calls,
+            [
+                ("begin", "ronghui_default"),
+                ("finish", "ronghui_default"),
+                ("begin", "ronghui_default"),
+                ("finish", "ronghui_default"),
+            ],
+        )
+
+    def test_credentials_change_guard_failure_preserves_existing_credentials(self):
+        self.manager.save_credentials(
+            "r7_default",
+            username="original-user",
+            password="original-password",
+        )
+
+        def fail_closed(_account_id):
+            raise RuntimeError("synthetic policy store failure")
+
+        self.manager.set_credentials_change_guard(fail_closed)
+        with self.assertRaises(TMSAuthStateError) as save_error:
+            self.manager.save_credentials(
+                "r7_default",
+                username="replacement-user",
+                password="replacement-password",
+            )
+        with self.assertRaises(TMSAuthStateError) as clear_error:
+            self.manager.clear_credentials("r7_default")
+
+        private = self.manager.private_credentials("r7_default")
+        self.assertEqual(
+            save_error.exception.code,
+            "CREDENTIAL_POLICY_REVOCATION_FAILED",
+        )
+        self.assertEqual(
+            clear_error.exception.code,
+            "CREDENTIAL_POLICY_REVOCATION_FAILED",
+        )
+        self.assertEqual(private["username"], "original-user")
+        self.assertEqual(private["password"], "original-password")
+
+    def test_invalid_credentials_never_start_policy_change_guard(self):
+        guard_calls = []
+
+        def begin_change(account_id):
+            guard_calls.append(account_id)
+            return lambda: None
+
+        self.manager.set_credentials_change_guard(begin_change)
+
+        with self.assertRaises(TMSAuthStateError) as error:
+            self.manager.save_credentials(
+                "r7_default",
+                username="",
+                password="",
+            )
+
+        self.assertEqual(error.exception.code, "AUTH_REQUIRED")
+        self.assertEqual(guard_calls, [])
+
+    def test_credentials_change_guard_failure_never_calls_tms_broker_writes(self):
+        class RecordingBroker:
+            def __init__(self):
+                self.save_calls = []
+                self.clear_calls = 0
+
+            def save_credentials(self, **credentials):
+                self.save_calls.append(dict(credentials))
+
+            def clear_saved_credentials(self):
+                self.clear_calls += 1
+
+        broker = RecordingBroker()
+
+        def fail_closed(_account_id):
+            raise RuntimeError("synthetic policy store failure")
+
+        self.manager.set_credentials_change_guard(fail_closed)
+        with patch.object(
+            account_manager_module,
+            "get_session_broker",
+            return_value=broker,
+        ):
+            with self.assertRaises(TMSAuthStateError) as save_error:
+                self.manager.save_credentials(
+                    "ronghui_default",
+                    username="replacement-user",
+                    password="replacement-password",
+                )
+            with self.assertRaises(TMSAuthStateError) as clear_error:
+                self.manager.clear_credentials("ronghui_default")
+
+        self.assertEqual(
+            save_error.exception.code,
+            "CREDENTIAL_POLICY_REVOCATION_FAILED",
+        )
+        self.assertEqual(
+            clear_error.exception.code,
+            "CREDENTIAL_POLICY_REVOCATION_FAILED",
+        )
+        self.assertEqual(broker.save_calls, [])
+        self.assertEqual(broker.clear_calls, 0)
+
     def test_r7_and_r13_share_unified_login_auto_login_and_logout_controls(self):
         class FakeSSOAuth:
             def __init__(self):
