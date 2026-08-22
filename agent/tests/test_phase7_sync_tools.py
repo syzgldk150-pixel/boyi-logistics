@@ -2583,6 +2583,109 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(["list_records"], no_op_actions)
         self.assertEqual([], no_op_marks)
 
+    def test_sheet_snapshot_marks_after_cold_cache_resolution_and_before_mutation(self):
+        params = {
+            "spreadsheet_token": "sheet-token",
+            "range": "Data!A2:F2",
+            "clear_range": "Data!A2:F2",
+        }
+        feishu_cli_tool._SHEET_REF_CACHE.clear()
+        feishu_cli_tool._SHEET_INFO_CACHE.clear()
+        failed_calls: list[str] = []
+        failed_marks: list[str] = []
+
+        def metadata_failure(method, path, payload=None, timeout=30):
+            failed_calls.append(method)
+            self.assertTrue(path.endswith("/sheets/query"))
+            return {"error": "sheet metadata unavailable"}
+
+        with patch("tools.feishu_cli_tool._call_open_api", side_effect=metadata_failure):
+            failed = phase7_sync_common.sync_sheet_snapshot(
+                "phase7.site_send_sheet",
+                [["WB-1", "发货站", "纸箱", 1, 2, "目的站"]],
+                params,
+                mark_write_started=lambda: failed_marks.append("started"),
+            )
+
+        self.assertIn("error", failed)
+        self.assertEqual(["GET"], failed_calls)
+        self.assertEqual([], failed_marks)
+
+        feishu_cli_tool._SHEET_REF_CACHE.clear()
+        feishu_cli_tool._SHEET_INFO_CACHE.clear()
+        mutation_calls: list[str] = []
+        mutation_marks: list[str] = []
+
+        def sheet_write_path(method, path, payload=None, timeout=30):
+            if method in {"DELETE", "POST", "PUT"}:
+                self.assertEqual(["started"], mutation_marks)
+                mutation_calls.append(method)
+                return {"code": 0, "data": {}}
+            self.assertEqual("GET", method)
+            self.assertTrue(path.endswith("/sheets/query"))
+            return {
+                "code": 0,
+                "data": {
+                    "sheets": [
+                        {
+                            "sheet_id": "sheet-data",
+                            "title": "Data",
+                            "gridProperties": {"rowCount": 100},
+                        }
+                    ]
+                },
+            }
+
+        with patch("tools.feishu_cli_tool._call_open_api", side_effect=sheet_write_path):
+            written = phase7_sync_common.sync_sheet_snapshot(
+                "phase7.site_send_sheet",
+                [["WB-1", "发货站", "纸箱", 1, 2, "目的站"]],
+                params,
+                mark_write_started=lambda: mutation_marks.append("started"),
+            )
+
+        self.assertTrue(written["ok"])
+        self.assertEqual(["DELETE", "PUT"], mutation_calls)
+        self.assertEqual(["started"], mutation_marks)
+
+        feishu_cli_tool._SHEET_REF_CACHE.clear()
+        feishu_cli_tool._SHEET_INFO_CACHE.clear()
+        no_op_calls: list[str] = []
+        no_op_marks: list[str] = []
+
+        def empty_sheet_path(method, path, payload=None, timeout=30):
+            no_op_calls.append(method)
+            self.assertEqual("GET", method)
+            self.assertTrue(path.endswith("/sheets/query"))
+            return {
+                "code": 0,
+                "data": {
+                    "sheets": [
+                        {
+                            "sheet_id": "sheet-data",
+                            "title": "Data",
+                            "gridProperties": {"rowCount": 1},
+                        }
+                    ]
+                },
+            }
+
+        with patch("tools.feishu_cli_tool._call_open_api", side_effect=empty_sheet_path):
+            no_op = phase7_sync_common.sync_sheet_snapshot(
+                "phase7.site_send_sheet",
+                [],
+                {
+                    "spreadsheet_token": "sheet-token",
+                    "range": "Data!A2:F100",
+                    "clear_range": "Data!A2:F100",
+                },
+                mark_write_started=lambda: no_op_marks.append("started"),
+            )
+
+        self.assertTrue(no_op["ok"])
+        self.assertEqual(["GET"], no_op_calls)
+        self.assertEqual([], no_op_marks)
+
     def test_sheet_snapshot_includes_clear_error_detail(self):
         resource = {
             "spreadsheet_token": "sheet-token",

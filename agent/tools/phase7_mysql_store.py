@@ -7,7 +7,7 @@ import platform
 import re
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from typing import Any, Callable
 
 import pymysql
 from shared.runtime_repositories import WaybillRepository
@@ -494,7 +494,12 @@ def list_console_waybills_by_numbers(
     return WaybillRepository(_connect).list_by_numbers(identities)
 
 
-def update_console_waybill_statuses(waybill_numbers: list[str], status: str) -> dict[str, Any]:
+def update_console_waybill_statuses(
+    waybill_numbers: list[str],
+    status: str,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     normalized_status = normalize_console_waybill_status(status)
     if normalized_status not in CONSOLE_WAYBILL_STATUS_VALUES:
         return {"ok": False, "error": "invalid status", "updated": 0}
@@ -508,11 +513,10 @@ def update_console_waybill_statuses(waybill_numbers: list[str], status: str) -> 
     if not clean_numbers:
         return {"ok": True, "updated": 0, "status": normalized_status}
 
-    ensure_console_waybill_table()
     return WaybillRepository(_connect).update_statuses(
         clean_numbers,
         normalized_status,
-        validate_schema=False,
+        mark_write_started=mark_write_started,
     )
 
 

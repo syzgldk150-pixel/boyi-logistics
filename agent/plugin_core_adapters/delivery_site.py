@@ -28,9 +28,12 @@ SiteBitableSync = Callable[
     [str, list[dict[str, Any]], dict[str, Any], WriteStartMarker],
     Mapping[str, Any],
 ]
-SiteSheetSync = Callable[[str, list[list[Any]], dict[str, Any]], Mapping[str, Any]]
+SiteSheetSync = Callable[
+    [str, list[list[Any]], dict[str, Any], WriteStartMarker],
+    Mapping[str, Any],
+]
 ProjectionRead = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
-ProjectionWrite = Callable[[list[str], str], Mapping[str, Any]]
+ProjectionWrite = Callable[[list[str], str, WriteStartMarker], Mapping[str, Any]]
 
 
 _MAX_RECORDS = 20_000
@@ -103,10 +106,16 @@ def _default_site_sheet_sync(
     resource_id: str,
     rows: list[list[Any]],
     params: dict[str, Any],
+    write_started: WriteStartMarker,
 ) -> Mapping[str, Any]:
     from tools.phase7_sync_common import sync_sheet_snapshot
 
-    return sync_sheet_snapshot(resource_id, rows, params)
+    return sync_sheet_snapshot(
+        resource_id,
+        rows,
+        params,
+        mark_write_started=write_started,
+    )
 
 
 def _default_projection_read(
@@ -120,10 +129,15 @@ def _default_projection_read(
 def _default_projection_write(
     bill_codes: list[str],
     status: str,
+    write_started: WriteStartMarker,
 ) -> Mapping[str, Any]:
     from tools.phase7_mysql_store import update_console_waybill_statuses
 
-    return update_console_waybill_statuses(bill_codes, status)
+    return update_console_waybill_statuses(
+        bill_codes,
+        status,
+        mark_write_started=write_started,
+    )
 
 
 def _describe_authenticated_account(
@@ -644,7 +658,6 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
-            mark_write_started(write_started)
             response = sync_sheet(
                 resource_id,
                 rows,
@@ -656,6 +669,7 @@ def build_production_delivery_site_ports(
                     "as": "bot",
                     "dry_run": False,
                 },
+                write_started,
             )
         except Exception as exc:
             write_error = exc
@@ -761,8 +775,7 @@ def build_production_delivery_site_ports(
         write_error: Exception | None = None
         response: object = None
         try:
-            mark_write_started(write_started)
-            response = write_projection(list(bill_codes), status)
+            response = write_projection(list(bill_codes), status, write_started)
         except Exception as exc:
             write_error = exc
         try:

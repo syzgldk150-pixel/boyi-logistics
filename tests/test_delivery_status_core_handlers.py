@@ -227,8 +227,15 @@ def test_production_delivery_handlers_use_only_low_level_ports() -> None:
         row.update(waybill_no="R001", status=projection_status)
         return [row]
 
-    def write_projection(numbers: list[str], status: str) -> dict[str, Any]:
+    def write_projection(
+        numbers: list[str],
+        status: str,
+        *,
+        mark_write_started=None,
+    ) -> dict[str, Any]:
         nonlocal projection_status
+        if mark_write_started is not None:
+            mark_write_started()
         assert numbers == ["R001"]
         projection_status = status
         return {"ok": True, "updated": 1}

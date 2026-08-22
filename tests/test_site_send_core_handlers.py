@@ -175,8 +175,10 @@ def test_production_site_resource_handlers_use_exact_bound_resource_ids(monkeypa
         ]
         return {"ok": True, "written": 1}
 
-    def sheet(resource_id, rows, params):
+    def sheet(resource_id, rows, params, *, mark_write_started=None):
         nonlocal sheet_rows
+        if mark_write_started is not None:
+            mark_write_started()
         calls.append(("sheet", resource_id, rows))
         assert params == {
             "spreadsheet_token": "sheet-test",
