@@ -2499,6 +2499,90 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("write_sheet", feishu_op.call_args_list[1].args[0])
         self.assertEqual("Sheet1!A2:G3", feishu_op.call_args_list[1].args[1]["range"])
 
+    def test_bitable_snapshot_marks_only_at_first_real_mutation(self):
+        params = {"base_token": "base-token", "table_id": "table-id"}
+
+        with patch(
+            "tools.phase7_sync_common.feishu_operation",
+            return_value={"error": "list failed"},
+        ) as feishu_op:
+            marks: list[str] = []
+            result = phase7_sync_common.sync_bitable_snapshot(
+                "phase7.site_send_bitable",
+                [{"fields": {"运单编号": "WB-1"}}],
+                params,
+                mark_write_started=lambda: marks.append("started"),
+            )
+
+        self.assertIn("error", result)
+        self.assertEqual([], marks)
+        self.assertEqual(["list_records"], [call.args[0] for call in feishu_op.call_args_list])
+
+        delete_actions: list[str] = []
+
+        def delete_path(action, _params):
+            delete_actions.append(action)
+            if action == "list_records":
+                return {"items": [{"record_id": "old-record"}]}
+            self.assertEqual(["started"], delete_marks)
+            if action == "delete_records":
+                return {"ok": True, "deleted": 1}
+            return {"ok": True, "written": 1}
+
+        delete_marks: list[str] = []
+        with patch("tools.phase7_sync_common.feishu_operation", side_effect=delete_path):
+            deleted = phase7_sync_common.sync_bitable_snapshot(
+                "phase7.site_send_bitable",
+                [{"fields": {"运单编号": "WB-1"}}],
+                params,
+                mark_write_started=lambda: delete_marks.append("started"),
+            )
+
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(["list_records", "delete_records", "write_records"], delete_actions)
+        self.assertEqual(["started"], delete_marks)
+
+        write_actions: list[str] = []
+
+        def write_path(action, _params):
+            write_actions.append(action)
+            if action == "list_records":
+                return {"items": []}
+            self.assertEqual(["started"], write_marks)
+            return {"ok": True, "written": 1}
+
+        write_marks: list[str] = []
+        with patch("tools.phase7_sync_common.feishu_operation", side_effect=write_path):
+            written = phase7_sync_common.sync_bitable_snapshot(
+                "phase7.site_send_bitable",
+                [{"fields": {"运单编号": "WB-1"}}],
+                params,
+                mark_write_started=lambda: write_marks.append("started"),
+            )
+
+        self.assertTrue(written["ok"])
+        self.assertEqual(["list_records", "write_records"], write_actions)
+        self.assertEqual(["started"], write_marks)
+
+        no_op_actions: list[str] = []
+        no_op_marks: list[str] = []
+
+        def no_op_path(action, _params):
+            no_op_actions.append(action)
+            return {"items": []}
+
+        with patch("tools.phase7_sync_common.feishu_operation", side_effect=no_op_path):
+            no_op = phase7_sync_common.sync_bitable_snapshot(
+                "phase7.site_send_bitable",
+                [],
+                params,
+                mark_write_started=lambda: no_op_marks.append("started"),
+            )
+
+        self.assertTrue(no_op["ok"])
+        self.assertEqual(["list_records"], no_op_actions)
+        self.assertEqual([], no_op_marks)
+
     def test_sheet_snapshot_includes_clear_error_detail(self):
         resource = {
             "spreadsheet_token": "sheet-token",

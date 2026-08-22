@@ -470,11 +470,13 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
         resource_id: str,
         records: list[dict[str, Any]],
         params: dict[str, Any],
+        write_started,
     ) -> Mapping[str, Any]:
         nonlocal bitable_rows
         assert resource_id == _SITE_BITABLE_ID
         assert params["base_token"] == "site-base"
         assert params["table_id"] == "site-table"
+        write_started()
         assert bitable_marks == ["started"]
         sync_calls.append(("bitable", resource_id, params["target_date"]))
         bitable_rows = [
@@ -577,10 +579,10 @@ def test_site_bitable_post_write_anomalies_are_unknown(
             "_meta": {"resource_key": resource_id},
         },
         feishu_operation=feishu,
-        site_bitable_sync=lambda resource_id, records, params: {
-            "ok": True,
-            "written": 1,
-        },
+        site_bitable_sync=lambda resource_id, records, params, write_started: (
+            (write_started() if write_started is not None else None)
+            or {"ok": True, "written": 1}
+        ),
     )
 
     with pytest.raises(PluginExecutionError) as exc:
@@ -677,7 +679,10 @@ def test_site_write_response_loss_is_unknown_and_target_date_is_required() -> No
                 "_meta": {"resource_key": resource_id},
             },
             feishu_operation=feishu,
-            site_bitable_sync=sync,
+            site_bitable_sync=lambda resource_id, records, params, write_started: (
+                (write_started() if write_started is not None else None)
+                or sync(resource_id, records, params)
+            ),
         )
     )
     context = _site_context(
@@ -770,8 +775,10 @@ def test_site_sinks_reject_zero_partial_or_extra_write_counts(
         assert action == "read_sheet"
         return {"values": deepcopy(sheet_rows)}
 
-    def sync_bitable(resource_id, records, params):
+    def sync_bitable(resource_id, records, params, write_started):
         nonlocal bitable_rows
+        if write_started is not None:
+            write_started()
         bitable_rows = [
             {"record_id": f"new-{index}", "fields": deepcopy(row["fields"])} for index, row in enumerate(records)
         ]

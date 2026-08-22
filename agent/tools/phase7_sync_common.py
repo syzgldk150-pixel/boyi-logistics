@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from agent.workflow_resource_store import get_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
@@ -208,14 +208,29 @@ def list_record_ids(base_token: str, table_id: str, params: dict) -> tuple[list[
     return record_ids, list_result
 
 
-def sync_bitable_snapshot(resource_key: str, records: list[dict], params: dict) -> dict:
+def sync_bitable_snapshot(
+    resource_key: str,
+    records: list[dict],
+    params: dict,
+    *,
+    mark_write_started: Callable[[], None] | None = None,
+) -> dict:
     base_token, table_id = resolve_bitable_target(params, resource_key)
     existing_record_ids, list_result = list_record_ids(base_token, table_id, params)
     if existing_record_ids is None:
         return {"error": "飞书读取现有多维表记录失败", "feishu_result": list_result}
 
+    write_started = False
+
+    def mark_mutation_started() -> None:
+        nonlocal write_started
+        if not write_started and mark_write_started is not None:
+            mark_write_started()
+        write_started = True
+
     delete_result: dict[str, Any] | None = None
     if existing_record_ids:
+        mark_mutation_started()
         delete_result = feishu_operation(
             "delete_records",
             {
@@ -240,6 +255,7 @@ def sync_bitable_snapshot(resource_key: str, records: list[dict], params: dict) 
         "results": [],
     }
     if records:
+        mark_mutation_started()
         write_result = feishu_operation(
             "write_records",
             {
