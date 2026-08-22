@@ -7,7 +7,7 @@ from typing import Any, Mapping
 import pytest
 
 from agent.automation_plugins import first_party_handlers as handler_module
-from agent.automation_plugins.broker import BrokerGrant
+from agent.automation_plugins.broker import BrokerGrant, VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.core_adapter import (
     AccountManagerSessionResolver,
     CoreBrokerInvocationContext,
@@ -76,6 +76,7 @@ def _context(
     action: str,
     operation: str = "browser.invoke",
     resource_id: str | None = None,
+    mark_write_started: Any = None,
 ) -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id=f"instance-{tool_name}",
@@ -86,6 +87,7 @@ def _context(
         role=role,
         account_ids=account_ids,
         resource_id=resource_id,
+        mark_write_started=mark_write_started,
     )
 
 
@@ -1286,6 +1288,62 @@ def test_yunda_handlers_use_exact_account_resource_roles_and_closed_schemas() ->
             },
         )
     assert exc.value.code == "BROKER_ARGUMENT_INVALID"
+
+
+def test_empty_yunda_dispatch_append_is_a_closed_verified_noop() -> None:
+    write_markers: list[str] = []
+
+    def append_noop(
+        resource_id: str,
+        records: list[dict[str, Any]],
+        target_date: str,
+        ensure_fields: bool,
+    ) -> Mapping[str, Any]:
+        assert resource_id == "resource-dispatch"
+        assert records == []
+        assert target_date == "2026-08-16"
+        assert ensure_fields is True
+        return {
+            "ok": True,
+            "record_count": 0,
+            "written": 0,
+            "verified": True,
+            "readback_count": 0,
+            "readback_sha256": "0" * 64,
+            "no_op": True,
+        }
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=lambda _account_id: {},
+            append_yunda_dispatch_bitable=append_noop,
+        ),
+        cursor_secret=_SECRET,
+    )
+    result = handlers[(
+        "network.request",
+        "feishu.bitable.append_yunda_dispatch_forecast",
+    )](
+        _context(
+            tool_name="sync_yunda_dispatch_forecast",
+            role="dispatch_forecast_bitable",
+            account_ids=(),
+            action="feishu.bitable.append_yunda_dispatch_forecast",
+            operation="network.request",
+            resource_id="resource-dispatch",
+            mark_write_started=lambda: write_markers.append("started"),
+        ),
+        {
+            "records": [],
+            "target_date": "2026-08-16",
+            "ensure_fields": True,
+        },
+    )
+
+    assert write_markers == []
+    assert result[VERIFIED_WRITE_NOOP_FIELD] is True
+    assert result["committed"] is True
+    assert result["verified"] is True
 
 
 def test_production_yunda_sources_use_exact_profile_and_low_level_primitives(

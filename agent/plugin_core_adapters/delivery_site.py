@@ -71,6 +71,32 @@ def _write_unknown(message: str, *, cause: Exception | None = None) -> NoReturn:
     raise error from cause
 
 
+def _write_started(marker: WriteStartMarker) -> bool:
+    """Return the delegated marker state when the closed handler tracks it."""
+
+    return (
+        getattr(marker, "observable", False) is True
+        and getattr(marker, "started", False) is True
+    )
+
+
+def _nested_write_failure(
+    marker: WriteStartMarker,
+    message: str,
+    *,
+    cause: Exception | None = None,
+) -> NoReturn:
+    """Keep a pre-write nested failure out of unknown-write recovery."""
+
+    if getattr(marker, "observable", False) is True and not _write_started(marker):
+        error = _error(message, "FAILED_BEFORE_WRITE")
+    else:
+        error = _error(message, "WRITE_OUTCOME_UNKNOWN")
+    if cause is None:
+        raise error
+    raise error from cause
+
+
 def _default_resource_loader(resource_id: str) -> Mapping[str, Any] | None:
     from agent.workflow_resource_store import get_workflow_resource
 
@@ -593,6 +619,17 @@ def build_production_delivery_site_ports(
             )
         except Exception as exc:
             write_error = exc
+        if write_error is not None and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "site-send Bitable write failed before mutation",
+                cause=write_error,
+            )
+        if isinstance(response, Mapping) and (response.get("error") or response.get("errors")) and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "site-send Bitable write failed before mutation",
+            )
         try:
             after = _site_bitable_snapshot(
                 _read_all_bitable(
@@ -673,6 +710,17 @@ def build_production_delivery_site_ports(
             )
         except Exception as exc:
             write_error = exc
+        if write_error is not None and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "site-send Sheet write failed before mutation",
+                cause=write_error,
+            )
+        if isinstance(response, Mapping) and (response.get("error") or response.get("errors")) and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "site-send Sheet write failed before mutation",
+            )
         try:
             after = _site_sheet_snapshot(
                 _read_sheet(
@@ -778,6 +826,17 @@ def build_production_delivery_site_ports(
             response = write_projection(list(bill_codes), status, write_started)
         except Exception as exc:
             write_error = exc
+        if write_error is not None and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "delivery projection update failed before mutation",
+                cause=write_error,
+            )
+        if isinstance(response, Mapping) and (response.get("error") or response.get("errors")) and not _write_started(write_started):
+            _nested_write_failure(
+                write_started,
+                "delivery projection update failed before mutation",
+            )
         try:
             after = _projection_snapshot(read_projection(bill_codes), bill_codes)
         except Exception as exc:

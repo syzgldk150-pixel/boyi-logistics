@@ -328,6 +328,49 @@ def test_dispatch_bitable_write_is_followed_by_a_fresh_exact_resource_read(
     assert len(result["readback_sha256"]) == 64
 
 
+def test_empty_dispatch_append_is_a_verified_read_only_noop(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        adapters,
+        "_exact_workflow_resource",
+        lambda *_args, **_kwargs: {"base_token": "base", "table_id": "table"},
+    )
+    monkeypatch.setattr(
+        dispatch_sink,
+        "_ensure_fields",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an empty append must not mutate Bitable schema"
+        ),
+    )
+
+    def operation(action: str, _params: object):
+        calls.append(action)
+        assert action == "list_records"
+        return {"data": {"items": [], "has_more": False}}
+
+    monkeypatch.setattr(feishu_cli_tool, "feishu_operation", operation)
+    result = adapters._append_yunda_dispatch_bitable(
+        "resource",
+        [],
+        "2026-08-16",
+        True,
+    )
+
+    assert calls == ["list_records"]
+    assert result | {
+        "ok": True,
+        "record_count": 0,
+        "written": 0,
+        "verified": True,
+        "readback_count": 0,
+        "no_op": True,
+    } == result
+    assert len(result["readback_sha256"]) == 64
+
+
 @pytest.mark.parametrize("case", ["zero", "multiple", "incomplete"])
 def test_dispatch_bitable_non_exact_readback_is_write_outcome_unknown(
     monkeypatch: pytest.MonkeyPatch,

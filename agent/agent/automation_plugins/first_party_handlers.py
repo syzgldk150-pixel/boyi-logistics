@@ -19,6 +19,7 @@ from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
 )
+from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.first_party_handler_common import (
     _CUSTOMER_IDENTITY_DOMAIN,
@@ -1605,6 +1606,7 @@ class _FirstPartyCoreHandlers:
         identity_field: str,
         port: YundaResourceCommitPort | None,
         label: str,
+        allow_verified_empty_noop: bool = False,
     ) -> Mapping[str, Any]:
         _require_context(context, tool_name=tool_name, role=role)
         resource_id = str(context.resource_id or "").strip()
@@ -1615,7 +1617,9 @@ class _FirstPartyCoreHandlers:
             fields=fields,
             identity_field=identity_field,
         )
-        self._mark_write_started(context)
+        empty_noop = allow_verified_empty_noop and not records
+        if not empty_noop:
+            self._mark_write_started(context)
         try:
             raw = port(resource_id, records, target_date, ensure_fields)
         except PluginExecutionError as exc:
@@ -1663,6 +1667,15 @@ class _FirstPartyCoreHandlers:
                 "Yunda resource readback evidence is invalid",
                 "WRITE_OUTCOME_UNKNOWN",
             )
+        if empty_noop and (
+            raw.get("no_op") is not True
+            or raw.get("written") != 0
+            or raw.get("readback_count") != 0
+        ):
+            raise _error(
+                "Yunda empty append was not proven to be a no-op",
+                "WRITE_OUTCOME_UNKNOWN",
+            )
         proof = {
             "target_date": target_date,
             "record_count": len(records),
@@ -1675,10 +1688,13 @@ class _FirstPartyCoreHandlers:
             value = raw.get(key)
             if isinstance(value, (bool, int)):
                 proof[key] = value
-        return {
+        result = {
             **proof,
             "evidence_ref": self._codec.evidence(context, label, proof),
         }
+        if empty_noop:
+            result[VERIFIED_WRITE_NOOP_FIELD] = True
+        return result
 
     def append_yunda_dispatch_bitable(
         self,
@@ -1694,6 +1710,7 @@ class _FirstPartyCoreHandlers:
             identity_field="主单号",
             port=self._ports.append_yunda_dispatch_bitable,
             label="yunda-dispatch-bitable-append",
+            allow_verified_empty_noop=True,
         )
 
     def replace_yunda_send_bitable(

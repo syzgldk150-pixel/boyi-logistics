@@ -92,12 +92,36 @@ _IDEMPOTENCY_FIELDS = ("idempotency_key", "contract_sha256")
 _RECORD_COLLECTION_FIELDS = (
     "records", "values", "bill_codes", "outcomes", "transactions", "items",
 )
+# This field is an internal, core-handler-to-broker contract. A signed write
+# normally has to cross the durable write-attempt marker. The sole exception
+# is a verified empty-input no-op, where crossing that boundary would itself
+# create a false unknown-write recovery obligation. It is removed before the
+# response reaches plugin payload code.
+VERIFIED_WRITE_NOOP_FIELD = "_broker_verified_write_noop_v1"
 
 
 def recoverable_write_action_contracts() -> frozenset[tuple[str, str, str]]:
     """Expose the Broker close-set for signed-manifest contract tests."""
 
     return _RECOVERABLE_WRITE_ACTIONS
+
+
+def _is_verified_write_noop(result: Mapping[str, Any]) -> bool:
+    """Accept only the narrow closed result shape for a write no-op."""
+
+    return (
+        result.get(VERIFIED_WRITE_NOOP_FIELD) is True
+        and result.get("committed") is True
+        and result.get("verified") is True
+        and result.get("record_count") == 0
+        and result.get("readback_count") == 0
+        and result.get("written") == 0
+        and isinstance(result.get("readback_sha256"), str)
+        and len(str(result["readback_sha256"])) == 64
+        and all(character in "0123456789abcdef" for character in str(result["readback_sha256"]).lower())
+        and isinstance(result.get("evidence_ref"), str)
+        and bool(str(result["evidence_ref"]).strip())
+    )
 
 
 def _sha256_text(value: str) -> str:
@@ -725,16 +749,25 @@ class LocalCoreAutomationBroker:
                 arguments=dict(request["arguments"]),
                 mark_write_started=mark_write_started,
             )
-            if mark_write_started is not None and not mark_write_started.started():
-                # A write adapter that returns without crossing the marker has
-                # not established a durable boundary and must never be treated
-                # as a successful invocation.
-                raise PluginExecutionError(
-                    "core broker write adapter did not mark its started boundary",
-                    code="WRITE_ATTEMPT_START_NOT_RECORDED",
-                )
-            _assert_redacted(result)
-            response = {"ok": True, "data": dict(result)}
+            public_result = dict(result)
+            if mark_write_started is not None:
+                verified_noop = _is_verified_write_noop(public_result)
+                if verified_noop and mark_write_started.started():
+                    raise PluginExecutionError(
+                        "core broker write no-op crossed its started boundary",
+                        code="WRITE_ATTEMPT_NOOP_MARKED",
+                    )
+                if not verified_noop and not mark_write_started.started():
+                    # A write adapter that returns without crossing the marker
+                    # has not established a durable boundary and must never be
+                    # treated as a successful invocation.
+                    raise PluginExecutionError(
+                        "core broker write adapter did not mark its started boundary",
+                        code="WRITE_ATTEMPT_START_NOT_RECORDED",
+                    )
+                public_result.pop(VERIFIED_WRITE_NOOP_FIELD, None)
+            _assert_redacted(public_result)
+            response = {"ok": True, "data": public_result}
         except Exception as exc:
             response = {
                 "ok": False,

@@ -440,6 +440,133 @@ def test_delivery_pre_write_identity_failure_does_not_mark_write_started() -> No
     assert write_calls == []
 
 
+def test_nested_bitable_list_failure_is_failed_before_write() -> None:
+    marks: list[str] = []
+    read_count = 0
+
+    def nested_list_failure(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        nonlocal read_count
+        assert action == "list_records"
+        read_count += 1
+        if read_count == 1:
+            return {"data": {"items": [], "has_more": False}}
+        return {"error": "Bitable list unavailable"}
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        resource_loader=lambda resource_id: {
+            "resource_kind": "feishu_bitable",
+            "base_token": "base-test",
+            "table_id": "table-test",
+            "_meta": {"resource_key": resource_id},
+        },
+        feishu_operation=nested_list_failure,
+        site_bitable_sync=lambda *_args: nested_list_failure("list_records", {}),
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("network.request", "feishu.bitable.replace_snapshot")](
+            _site_context(
+                action="feishu.bitable.replace_snapshot",
+                role="site_send_bitable",
+                resource_id=_SITE_BITABLE_ID,
+                mark_write_started=lambda: marks.append("started"),
+            ),
+            {"records": [_site_record("WB-1")], "target_date": "2026-08-15"},
+        )
+
+    assert exc.value.code == "FAILED_BEFORE_WRITE"
+    assert marks == []
+    assert read_count == 2
+
+
+def test_nested_sheet_metadata_failure_is_failed_before_write() -> None:
+    marks: list[str] = []
+    reads: list[str] = []
+
+    def read_sheet(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        assert action == "read_sheet"
+        reads.append(action)
+        return {"values": []}
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        resource_loader=lambda resource_id: {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "sheet-test",
+            "range": "Data!A2:F20",
+            "_meta": {"resource_key": resource_id},
+        },
+        feishu_operation=read_sheet,
+        site_sheet_sync=lambda *_args: {"error": "fresh metadata unavailable"},
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("network.request", "feishu.sheet.replace")](
+            _site_context(
+                action="feishu.sheet.replace",
+                role="site_send_sheet",
+                resource_id=_SITE_SHEET_ID,
+                mark_write_started=lambda: marks.append("started"),
+            ),
+            {
+                "values": [["WB-1", "发货站", "纸箱", 0, 0, "目的站"]],
+                "target_date": "2026-08-15",
+            },
+        )
+
+    assert exc.value.code == "FAILED_BEFORE_WRITE"
+    assert marks == []
+    assert reads == ["read_sheet"]
+
+
+def test_nested_projection_schema_failure_is_failed_before_write() -> None:
+    marks: list[str] = []
+    rows = {"WB-1": _projection_row("WB-1", "in_transit")}
+
+    def invalid_projection(*_args: object) -> Mapping[str, Any]:
+        raise PluginExecutionError("projection schema changed", code="BROKER_SOURCE_INVALID")
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        projection_read=lambda codes: [deepcopy(rows[code]) for code in codes],
+        projection_write=invalid_projection,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("projection.invoke", "waybill.delivery_status.update")](
+            _projection_context(mark_write_started=lambda: marks.append("started")),
+            {"bill_codes": ["WB-1"], "status": "signed"},
+        )
+
+    assert exc.value.code == "FAILED_BEFORE_WRITE"
+    assert marks == []
+
+
+def test_nested_projection_failure_after_marker_is_unknown() -> None:
+    marks: list[str] = []
+    rows = {"WB-1": _projection_row("WB-1", "in_transit")}
+
+    def lost_response(_codes: list[str], _status: str, marker) -> Mapping[str, Any]:
+        marker()
+        raise TimeoutError("response lost after write attempt")
+
+    ports = build_production_delivery_site_ports(
+        account_manager=_Manager(),
+        projection_read=lambda codes: [deepcopy(rows[code]) for code in codes],
+        projection_write=lost_response,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        _delivery_handlers(ports)[("projection.invoke", "waybill.delivery_status.update")](
+            _projection_context(mark_write_started=lambda: marks.append("started")),
+            {"bill_codes": ["WB-1"], "status": "signed"},
+        )
+
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert marks == ["started"]
+
+
 def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> None:
     bitable_rows = [_external_site_row("old", "OLD")]
     sheet_rows: list[list[Any]] = [["OLD", "旧站", "袋", 1, 2, "旧目的"]]
