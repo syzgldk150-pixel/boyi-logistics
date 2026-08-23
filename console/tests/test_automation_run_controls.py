@@ -377,6 +377,18 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("if (data.attention)", source)
         self.assertIn("pendingRun && !data.attention", source)
 
+    def test_approved_batch_attention_states_stop_tracking_when_settled(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("const settledCount = terminalCount + attentionCount;", source)
+        self.assertIn("if (settledCount < total)", source)
+        self.assertIn("const activeStates = states.filter", source)
+        self.assertIn("if (attentionCount > 0)", source)
+        self.assertNotIn("Number(state.next_poll_after_ms) ||", source)
+        self.assertNotIn("卡片会继续跟踪", source)
+
 
 if __name__ == "__main__":
     unittest.main()

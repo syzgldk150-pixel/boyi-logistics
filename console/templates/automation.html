@@ -2024,9 +2024,15 @@
           if (!state || state.error) {
             throw new Error(state?.error || "Run 状态暂不可用");
           }
+          const statePollAfterMs = Number(state.next_poll_after_ms);
+          const receiptPollAfterMs = Number(receipt.next_poll_after_ms);
           return {
             status: String(state.status || "").toUpperCase(),
-            next_poll_after_ms: Number(state.next_poll_after_ms) || receipt.next_poll_after_ms || 1000,
+            next_poll_after_ms: Number.isFinite(statePollAfterMs) && statePollAfterMs >= 0
+              ? statePollAfterMs
+              : Number.isFinite(receiptPollAfterMs) && receiptPollAfterMs > 0
+                ? receiptPollAfterMs
+                : 1000,
           };
         }));
         if (generation !== approvedBatchGeneration) return;
@@ -2034,8 +2040,9 @@
         const total = states.length;
         const terminalCount = states.filter(state => batchTerminalStatuses.has(state.status)).length;
         const runningCount = states.filter(state => state.status === "RUNNING" || state.status === "VERIFYING").length;
-        if (terminalCount < total) {
-          const attentionCount = states.filter(state => batchAttentionStatuses.has(state.status)).length;
+        const attentionCount = states.filter(state => batchAttentionStatuses.has(state.status)).length;
+        const settledCount = terminalCount + attentionCount;
+        if (settledCount < total) {
           const knownCount = states.filter(state => (
             batchTerminalStatuses.has(state.status)
             || batchQueuedStatuses.has(state.status)
@@ -2052,19 +2059,46 @@
                 : "已批准，等待执行";
           updateApprovedBatchPill(
             label,
-            terminalCount,
+            settledCount,
             total,
           );
           if (attentionCount) {
             renderFeedback(form, {
               kind: "warning",
               title: "执行需要处理",
-              message: `${attentionCount} 个 Run 正在等待补充信息、登录恢复或可重试状态处理，卡片会继续跟踪。`,
+              message: `${attentionCount} 个 Run 正在等待补充信息、登录恢复或可重试状态处理；其余 Run 继续跟踪。`,
               showTimer: false,
             });
           }
-          const nextPollAfterMs = Math.min(...states.map(state => state.next_poll_after_ms));
+          const activeStates = states.filter(state => (
+            !batchTerminalStatuses.has(state.status)
+            && !batchAttentionStatuses.has(state.status)
+          ));
+          const nextPollAfterMs = Math.min(...activeStates.map(state => state.next_poll_after_ms));
           scheduleApprovedBatchPoll(receipts, generation, nextPollAfterMs);
+          return;
+        }
+
+        if (attentionCount > 0) {
+          const message = `${attentionCount} 个 Run 需要补充信息、恢复登录或人工处理；已停止自动跟踪。`;
+          updateApprovedBatchPill("执行需要处理", settledCount, total);
+          setRunUiState({
+            running: false,
+            awaitingApproval: false,
+            pendingRun: false,
+            batchTracking: false,
+            cancelRequested: false,
+            runId: "",
+          });
+          renderFeedback(form, {
+            kind: "warning",
+            title: "执行需要处理",
+            message,
+            showTimer: false,
+          });
+          announceApprovedBatch(message);
+          approvedBatchReceipts = [];
+          approvedBatchPollTimer = null;
           return;
         }
 
