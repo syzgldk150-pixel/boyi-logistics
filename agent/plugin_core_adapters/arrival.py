@@ -99,6 +99,9 @@ _NUMERIC_RECORD_FIELDS = frozenset(
         "pending_quantity",
     }
 )
+_ARRIVE_NUMERIC_SHEET_COLUMNS = frozenset(
+    index for index, field in enumerate(_ARRIVE_FIELDS) if field in _NUMERIC_RECORD_FIELDS
+)
 _SHEET_RANGE_RE = re.compile(
     r"(?P<sheet>[^!]+)!(?P<start>[A-Z]+)(?P<start_row>[1-9][0-9]*):"
     r"(?P<end>[A-Z]+)(?P<end_row>[1-9][0-9]*)"
@@ -298,10 +301,23 @@ def _sheet_values(result: object) -> list[list[Any]]:
     raise ValueError("sheet response has no values")
 
 
-def _canonical_rows(rows: Sequence[Sequence[object]], *, width: int) -> list[list[str]]:
+def _canonical_rows(
+    rows: Sequence[Sequence[object]],
+    *,
+    width: int,
+    numeric_columns: frozenset[int] = frozenset(),
+) -> list[list[str]]:
     output: list[list[str]] = []
     for row in rows:
-        values = [_canonical_scalar(cell) for cell in row]
+        values: list[str] = []
+        for index, cell in enumerate(row):
+            value = _canonical_scalar(cell)
+            if index in numeric_columns and value:
+                try:
+                    value = _canonical_scalar(Decimal(value))
+                except InvalidOperation as exc:
+                    raise ValueError("sheet numeric cell is invalid") from exc
+            values.append(value)
         if len(values) > width and any(values[width:]):
             raise ValueError("sheet row has unexpected cells")
         output.append(values[:width] + [""] * max(0, width - len(values)))
@@ -329,6 +345,19 @@ def _fresh_sheet_rows(
         return _canonical_rows(_sheet_values(raw), width=width)
     except Exception as exc:
         _unknown("arrival sheet fresh readback failed", cause=exc)
+
+
+def _canonical_arrive_readback(
+    rows: Sequence[Sequence[object]], *, width: int
+) -> list[list[str]]:
+    try:
+        return _canonical_rows(
+            rows,
+            width=width,
+            numeric_columns=_ARRIVE_NUMERIC_SHEET_COLUMNS,
+        )
+    except ValueError as exc:
+        _unknown("arrive sheet fresh readback has invalid numeric cells", cause=exc)
 
 
 def _write_sheet_call(action: str, params: dict[str, Any]) -> bool:
@@ -722,7 +751,11 @@ def _replace_arrive_sheet(
     width = 18
     expected_title = [_build_title({"target_date": target_date})] if title is not None else []
     try:
-        expected_canonical = _canonical_rows(expected_rows, width=width)
+        expected_canonical = _canonical_rows(
+            expected_rows,
+            width=width,
+            numeric_columns=_ARRIVE_NUMERIC_SHEET_COLUMNS,
+        )
         title_canonical = _canonical_rows(expected_title, width=width)
     except ValueError as exc:
         raise _error("arrive sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
@@ -742,6 +775,7 @@ def _replace_arrive_sheet(
         },
     )
     observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
+    observed_rows = _canonical_arrive_readback(observed_rows, width=width)
     if observed_rows == []:
         if expected_rows:
             _write_sheet_call(
@@ -755,6 +789,7 @@ def _replace_arrive_sheet(
                 },
             )
             observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
+            observed_rows = _canonical_arrive_readback(observed_rows, width=width)
             if observed_rows != expected_canonical:
                 _unknown("arrive sheet data write was not confirmed by fresh readback")
     elif observed_rows != expected_canonical:
