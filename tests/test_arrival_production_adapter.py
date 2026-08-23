@@ -217,8 +217,8 @@ def test_scan_cleanup_requires_fresh_absence_of_stale_rows_and_preserves_fresh_r
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rows = [
-        {"raw_code": "STALE", "stale": True},
-        {"raw_code": "FRESH", "stale": False},
+        {"snapshot_date": "2026-07-01", "raw_code": "STALE", "stale": True},
+        {"snapshot_date": "2026-08-24", "raw_code": "FRESH", "stale": False},
     ]
 
     def cleanup(_retention_days: int) -> dict[str, Any]:
@@ -236,6 +236,22 @@ def test_scan_cleanup_requires_fresh_absence_of_stale_rows_and_preserves_fresh_r
         "deleted": 1,
         "skipped": False,
     }
+
+
+def test_scan_cleanup_verifies_each_daily_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    before = [
+        {"snapshot_date": "2026-08-23", "raw_code": "SAME", "stale": False},
+        {"snapshot_date": "2026-08-24", "raw_code": "SAME", "stale": False},
+    ]
+    observations = iter([before, [before[1]]])
+
+    monkeypatch.setattr(arrival, "_cleanup_scans", lambda _days: {"ok": True, "deleted": 0})
+    monkeypatch.setattr(arrival, "_observe_cleanup", lambda _days: deepcopy(next(observations)))
+
+    with pytest.raises(PluginExecutionError) as exc:
+        arrival._cleanup_scan_snapshot(30)
+
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
 def test_arrive_sheet_uses_exact_resource_and_accepts_only_exact_dated_readback(

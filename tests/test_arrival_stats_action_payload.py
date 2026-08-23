@@ -66,3 +66,4 @@ def test_empty_source_clears_snapshots_without_creating_archive() -> None:
     assert result["meta"]["record_count"] == 0
     assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
     assert "feishu.sheet.add" not in calls
+    assert calls.index("scan.snapshot.cleanup") < calls.index("scan.snapshot.read")

@@ -574,11 +574,11 @@ def _observe_cleanup(retention_days: int) -> Sequence[Mapping[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT raw_code, destination, code_type, main_tracking,
+                SELECT snapshot_date, raw_code, destination, code_type, main_tracking,
                        last_seen_at, seen_count,
-                       (last_seen_at < NOW() - INTERVAL %s DAY) AS stale
+                       (snapshot_date < CURDATE() - INTERVAL %s DAY) AS stale
                 FROM scan_codes
-                ORDER BY raw_code
+                ORDER BY snapshot_date, raw_code
                 """,
                 (retention_days,),
             )
@@ -613,9 +613,12 @@ def _cleanup_scan_snapshot(retention_days: int) -> Mapping[str, Any]:
         _unknown("scan cleanup fresh readback failed", cause=exc)
     if any(bool(row.get("stale")) for row in after):
         _unknown("scan cleanup fresh readback still contains expired identities")
-    after_ids = {str(row.get("raw_code") or "") for row in after}
+    after_ids = {
+        (str(row.get("snapshot_date") or ""), str(row.get("raw_code") or ""))
+        for row in after
+    }
     retained = {
-        str(row.get("raw_code") or "")
+        (str(row.get("snapshot_date") or ""), str(row.get("raw_code") or ""))
         for row in before
         if not bool(row.get("stale"))
     }
