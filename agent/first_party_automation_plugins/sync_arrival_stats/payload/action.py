@@ -484,15 +484,6 @@ def run_action(
         )
         evidence_refs.append(broker_evidence_ref(scan_write, "scan snapshot"))
 
-    accumulated_result, accumulated_ref = _projection_read(
-        broker,
-        action="scan.snapshot.read",
-        arguments={"target_date": target_date},
-        label="accumulated scan snapshot",
-    )
-    evidence_refs.append(accumulated_ref)
-    accumulated_scan = _persisted_scan_rows(accumulated_result)
-
     if not dry_run:
         retention = _bounded_limit(
             arguments.get("scan_codes_retention_days"),
@@ -512,6 +503,15 @@ def run_action(
             allow_skipped=True,
         )
         evidence_refs.append(broker_evidence_ref(cleanup, "scan snapshot cleanup"))
+
+    accumulated_result, accumulated_ref = _projection_read(
+        broker,
+        action="scan.snapshot.read",
+        arguments={"target_date": target_date},
+        label="accumulated scan snapshot",
+    )
+    evidence_refs.append(accumulated_ref)
+    accumulated_scan = _persisted_scan_rows(accumulated_result)
 
     existing_trackings = {str(row["tracking_number"]) for row in arrive_records}
     missing = sorted(current_main - existing_trackings)
