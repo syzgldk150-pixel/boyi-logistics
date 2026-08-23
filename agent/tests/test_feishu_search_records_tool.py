@@ -12,6 +12,44 @@ from tools import feishu_cli_tool  # noqa: E402
 
 
 class FeishuSearchRecordsToolTests(unittest.TestCase):
+    def test_get_record_reads_one_exact_bitable_identity(self):
+        calls = []
+
+        def fake_call_open_api(method, path, payload=None, timeout=30):
+            calls.append({"method": method, "path": path, "payload": payload, "timeout": timeout})
+            return {
+                "ok": True,
+                "data": {
+                    "record": {
+                        "record_id": "rec-1",
+                        "fields": {"运单编号": "WB-1", "签收状态": "未签收"},
+                    }
+                },
+            }
+
+        with patch("tools.feishu_cli_tool._call_open_api", side_effect=fake_call_open_api):
+            result = feishu_cli_tool.feishu_operation(
+                "get_record",
+                {
+                    "base_token": "base",
+                    "table_id": "table",
+                    "record_id": "rec-1",
+                },
+            )
+
+        self.assertEqual("rec-1", result["data"]["record"]["record_id"])
+        self.assertEqual(
+            [
+                {
+                    "method": "GET",
+                    "path": "/open-apis/bitable/v1/apps/base/tables/table/records/rec-1",
+                    "payload": None,
+                    "timeout": 30,
+                }
+            ],
+            calls,
+        )
+
     def test_search_records_uses_bitable_record_search_filter_without_full_scan(self):
         calls = []
 

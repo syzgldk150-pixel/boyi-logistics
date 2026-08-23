@@ -210,8 +210,22 @@ def test_production_delivery_handlers_use_only_low_level_ports() -> None:
                         {
                             "record_id": "record-1",
                             "fields": {"运单编号": "R001", "签收状态": bitable_status},
-                        }
+                    }
                 ],
+            }
+        if action == "get_record":
+            assert params["record_id"] == "record-1"
+            return {
+                "ok": True,
+                "data": {
+                    "record": {
+                        "record_id": "record-1",
+                        "fields": {
+                            "运单编号": "R001",
+                            "签收状态": bitable_status,
+                        },
+                    }
+                },
             }
         if action == "write_records":
             assert params["records"] == [

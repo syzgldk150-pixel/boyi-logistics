@@ -85,6 +85,17 @@ def _bitable_row(record_id: str, waybill_no: str, status: str) -> dict[str, Any]
     }
 
 
+def _exact_bitable_record(
+    rows: list[dict[str, Any]],
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    record_id = str(params.get("record_id") or "")
+    matches = [row for row in rows if row["record_id"] == record_id]
+    if len(matches) != 1:
+        return {"error": "record unavailable"}
+    return {"data": {"record": deepcopy(matches[0])}}
+
+
 def _projection_row(waybill_no: str, status: str) -> dict[str, str]:
     row = {field: "" for field in CONSOLE_WAYBILL_FIELDS}
     row["waybill_no"] = waybill_no
@@ -138,16 +149,16 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
         "WB-1": _projection_row("WB-1", "in_transit"),
         "WB-2": _projection_row("WB-2", "in_transit"),
     }
-    reads: list[tuple[str, str, int]] = []
+    reads: list[tuple[str, str, str]] = []
     bitable_marks: list[str] = []
     projection_marks: list[str] = []
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
         assert params["base_token"] == "base-test"
         assert params["table_id"] == "table-test"
-        if action == "list_records":
-            reads.append((action, params["table_id"], params["offset"]))
-            return {"items": deepcopy(bitable_rows), "has_more": False}
+        if action == "get_record":
+            reads.append((action, params["table_id"], params["record_id"]))
+            return _exact_bitable_record(bitable_rows, params)
         assert action == "write_records"
         assert bitable_marks == ["started"]
         assert set(params) == {
@@ -205,10 +216,16 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
     assert bitable["written"] == 2
     assert projection["committed"] is True
     assert projection["updated"] == 2
-    assert len(reads) == 2
+    assert len(reads) == 4
     assert bitable_marks == ["started"]
     assert projection_marks == ["started"]
-    assert all(table_id == "table-test" and offset == 0 for _, table_id, offset in reads)
+    assert all(table_id == "table-test" for _, table_id, _ in reads)
+    assert [record_id for _, _, record_id in reads] == [
+        "record-1",
+        "record-2",
+        "record-1",
+        "record-2",
+    ]
     assert "base-test" not in bitable["evidence_ref"]
     assert _RESOURCE_ID not in bitable["evidence_ref"]
     assert "ronghui-test" not in projection["evidence_ref"]
@@ -323,8 +340,8 @@ def test_delivery_bitable_rejects_zero_partial_or_extra_write_counts(
     ]
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
-        if action == "list_records":
-            return {"items": deepcopy(rows), "has_more": False}
+        if action == "get_record":
+            return _exact_bitable_record(rows, params)
         assert action == "write_records"
         for update in params["records"]:
             next(row for row in rows if row["record_id"] == update["record_id"])["fields"].update(update["fields"])
@@ -381,7 +398,7 @@ def test_delivery_pre_write_snapshot_failure_does_not_mark_write_started() -> No
     write_calls: list[object] = []
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
-        if action == "list_records":
+        if action == "get_record":
             raise RuntimeError("fresh snapshot unavailable")
         write_calls.append(params)
         return {"ok": True, "written": 1}
@@ -413,8 +430,12 @@ def test_delivery_pre_write_identity_failure_does_not_mark_write_started() -> No
     write_calls: list[object] = []
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
-        if action == "list_records":
-            return {"items": [_bitable_row("other-record", "WB-OTHER", "未签收")], "has_more": False}
+        if action == "get_record":
+            return {
+                "data": {
+                    "record": _bitable_row("other-record", "WB-OTHER", "未签收")
+                }
+            }
         write_calls.append(params)
         return {"ok": True, "written": 1}
 
@@ -1044,8 +1065,8 @@ def test_delivery_bitable_marker_callback_failure_is_failed_before_write() -> No
     write_calls: list[str] = []
 
     def feishu(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
-        if action == "list_records":
-            return {"items": deepcopy(rows), "has_more": False}
+        if action == "get_record":
+            return _exact_bitable_record(rows, _params)
         write_calls.append(action)
         raise AssertionError("write must not run after marker receipt failure")
 
