@@ -798,6 +798,12 @@ def _replace_arrive_sheet(
         title is not None and title["sheet"] != template["sheet"]
     ):
         raise _error("the exact arrive sheet ranges changed identity", "BROKER_RESOURCE_MISMATCH")
+    row_offset = template["start_row"] - clear["start_row"]
+    if row_offset < 0:
+        raise _error(
+            "the arrive sheet template starts before its managed clear range",
+            "BROKER_RESOURCE_MISMATCH",
+        )
     from tools.arrive_list_sync_tool import _build_title
     from tools.phase7_sync_common import build_range_from_template, parse_a1_range
 
@@ -809,6 +815,11 @@ def _replace_arrive_sheet(
             expected_rows,
             width=width,
             numeric_columns=_ARRIVE_NUMERIC_SHEET_COLUMNS,
+        )
+        expected_snapshot = (
+            [[""] * width for _ in range(row_offset)] + expected_canonical
+            if expected_canonical
+            else []
         )
         title_canonical = _canonical_rows(expected_title, width=width)
     except ValueError as exc:
@@ -844,11 +855,11 @@ def _replace_arrive_sheet(
             )
             observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
             observed_rows = _canonical_arrive_readback(observed_rows, width=width)
-            if observed_rows != expected_canonical:
-                _log_sheet_mismatch("data_write", expected_canonical, observed_rows)
+            if observed_rows != expected_snapshot:
+                _log_sheet_mismatch("data_write", expected_snapshot, observed_rows)
                 _unknown("arrive sheet data write was not confirmed by fresh readback")
-    elif observed_rows != expected_canonical:
-        _log_sheet_mismatch("clear", expected_canonical, observed_rows)
+    elif observed_rows != expected_snapshot:
+        _log_sheet_mismatch("clear", expected_snapshot, observed_rows)
         _unknown("arrive sheet clear was not confirmed by fresh readback")
 
     if title is not None:
