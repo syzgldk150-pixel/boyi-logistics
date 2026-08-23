@@ -28,7 +28,7 @@
 - Modify: `tests/test_arrival_production_adapter.py`
 - Modify: `agent/plugin_core_adapters/arrival.py`
 
-- [ ] **Step 1: Write the failing response-loss regression test**
+- [x] **Step 1: Write the failing response-loss regression test**
 
 Add a test that supplies an empty `rows` list, a resource with `range`, `clear_range`, and `title_range`, and a fake Feishu operation whose clear call returns an ambiguous false response even though the following fresh read reports an empty data region. Assert that `_replace_arrive_sheet(resource_id, [], "2026-08-24")` still writes the date title, reads it back, returns `verified=True`, `record_count=0`, and never writes a data-row range.
 
@@ -51,11 +51,11 @@ def test_empty_arrive_sheet_reconciles_clear_response_loss_and_updates_title(mon
     # helpers in this test module, then assert the verified zero-row result.
 ```
 
-- [ ] **Step 2: Run the single test and verify RED**
+- [x] **Step 2: Run the single test and verify RED**
 
 Run the test with the bundled Python executable. Expected: failure because the current `write_ok` gate skips the title write after the ambiguous clear response and fresh title readback does not match.
 
-- [ ] **Step 3: Implement postcondition-driven phases**
+- [x] **Step 3: Implement postcondition-driven phases**
 
 Change `_replace_arrive_sheet` to:
 
@@ -77,11 +77,11 @@ if title is not None:
 
 The clear, data, and title operations remain bound to their signed ranges. A response value alone never proves success; each phase advances only after its fresh readback.
 
-- [ ] **Step 4: Run all arrival adapter tests and verify GREEN**
+- [x] **Step 4: Run all arrival adapter tests and verify GREEN**
 
 Run `tests/test_arrival_production_adapter.py`. Expected: all tests pass, including exact mismatch and pre-write binding failures.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 Stage only the adapter and its test, review the cached diff, and commit `fix: verify empty arrive sheet snapshots`.
 
@@ -95,7 +95,7 @@ Stage only the adapter and its test, review the cached diff, and commit `fix: ve
 - Modify: `agent/first_party_automation_plugins/sync_arrive_list/payload/action.py`
 - Modify as required by failing tests: current snapshot action payloads named in the design spec
 
-- [ ] **Step 1: Write failing action-result tests**
+- [x] **Step 1: Write failing action-result tests**
 
 For each current snapshot action, supply a complete zero-record source and exact successful zero-record Broker readbacks. Assert:
 
@@ -107,11 +107,11 @@ assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
 
 Also assert the exact expected clear operations occur, date arguments equal the target business day, and write-style scan batches or append operations are absent when there are no candidates.
 
-- [ ] **Step 2: Run each new test and verify RED where reporting is missing**
+- [x] **Step 2: Run each new test and verify RED where reporting is missing**
 
 Expected: existing safe empty paths complete, while result labels such as `all_snapshots_committed`, `writes_committed`, or `requested_sinks_committed` fail the new `no_data_cleared` assertion.
 
-- [ ] **Step 3: Add minimal result classification**
+- [x] **Step 3: Add minimal result classification**
 
 After all required empty target readbacks are verified, assign:
 
@@ -121,11 +121,11 @@ execution_result = "no_data_cleared" if authoritative_record_count == 0 else exi
 
 Do not weaken existing clear/readback behavior, add generic write access, or convert read failures into zero records.
 
-- [ ] **Step 4: Run signed action and Broker suites**
+- [x] **Step 4: Run signed action and Broker suites**
 
 Run the four targeted action test modules plus `tests/test_first_party_core_handlers.py`, `tests/test_delivery_site_production_adapter.py`, and `tests/test_yunda_source_contracts.py`. Expected: all pass.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 Stage only the action payloads and tests changed by this task, review, and commit `fix: report verified empty automation snapshots`.
 
@@ -137,7 +137,7 @@ Stage only the action payloads and tests changed by this task, review, and commi
 - Modify: `console/services/automation.py`
 - Modify: `console/templates/automation.html`
 
-- [ ] **Step 1: Write failing backend tests**
+- [x] **Step 1: Write failing backend tests**
 
 Add cases for `BLOCKED_DATA` and `BLOCKED_LOGIN` asserting the output payload contains `attention=True`, `pending=True`, `running=False`, a normalized error summary, and an attention poll interval of zero.
 
@@ -147,15 +147,15 @@ self.assertEqual("数据阻塞", payload["attention_title"])
 self.assertEqual(0, payload["next_poll_after_ms"])
 ```
 
-- [ ] **Step 2: Write failing template tests**
+- [x] **Step 2: Write failing template tests**
 
 Assert the rendered JavaScript contains dedicated `renderAttentionRun`, labels `数据阻塞` and `登录已失效`, and does not schedule `setTimeout` when `data.attention` is true.
 
-- [ ] **Step 3: Run targeted Console tests and verify RED**
+- [x] **Step 3: Run targeted Console tests and verify RED**
 
 Expected: failures because all nonterminal statuses currently project as generic pending Runs.
 
-- [ ] **Step 4: Implement attention projection and rendering**
+- [x] **Step 4: Implement attention projection and rendering**
 
 In the backend, derive attention state without changing the durable Run:
 
@@ -179,7 +179,7 @@ if (data.running || awaitingApproval || (pendingRun && !data.attention)) {
 }
 ```
 
-- [ ] **Step 5: Run all Console tests and commit**
+- [x] **Step 5: Run all Console tests and commit**
 
 Expected: Console suite passes. Commit `fix: show blocked automation runs explicitly`.
 
@@ -190,19 +190,19 @@ Expected: Console suite passes. Commit `fix: show blocked automation runs explic
 - Modify: `agent/first_party_automation_plugins/digests.json`
 - Test: signed package manifest, release-scope, upgrade, generation-stability, and Broker security suites
 
-- [ ] **Step 1: Write or update the release-version assertion and verify RED**
+- [x] **Step 1: Write or update the release-version assertion and verify RED**
 
 Set the expected first-party release to `1.0.9`; it must fail while production code still reports `1.0.8`.
 
-- [ ] **Step 2: Set `FIRST_PARTY_PACKAGE_VERSION = "1.0.9"`**
+- [x] **Step 2: Set `FIRST_PARTY_PACKAGE_VERSION = "1.0.9"`**
 
 Refresh canonical payload digests only with the repository release builder. Deferred R7 identities remain unchanged.
 
-- [ ] **Step 3: Run signed release boundary tests**
+- [x] **Step 3: Run signed release boundary tests**
 
 Expected: all package digests, manifests, action contracts, upgrade generations, and write locators pass.
 
-- [ ] **Step 4: Commit Task 4**
+- [x] **Step 4: Commit Task 4**
 
 Commit only version/digest and release-test changes as `build: release verified empty snapshot plugins`.
 
@@ -212,7 +212,7 @@ Commit only version/digest and release-test changes as `build: release verified 
 - Update: `docs/superpowers/plans/2026-08-24-verified-empty-snapshot-plan.md` checkboxes
 - No credential or private-key files may be added
 
-- [ ] **Step 1: Run full local gates**
+- [x] **Step 1: Run full local gates**
 
 Run Agent, Console, shared, MySQL-scenario-compatible unit suites, Ruff, compilation, tool registry, repository hygiene, import boundaries, internal API contracts, and sensitive-path scans. Expected: all pass.
 
