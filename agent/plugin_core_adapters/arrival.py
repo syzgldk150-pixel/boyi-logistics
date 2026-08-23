@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -140,7 +141,8 @@ def _canonical_scalar(value: object) -> str:
         if number == number.to_integral_value():
             return str(int(number))
         return format(number.normalize(), "f")
-    return str(value).strip()
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    return unicodedata.normalize("NFC", text).strip()
 
 
 def _canonical_record_scalar(field: str, value: object) -> str:
