@@ -34,7 +34,6 @@ _QUARTER_HOUR_DAILY_TIMES = tuple(
 )
 class AutomationProjectReleaseManifestError(RuntimeError):
     """A value-free reason a post-018 release must remain held."""
-
     def __init__(self, code: str, *, count: int = 1) -> None:
         super().__init__(code)
         self.code = str(code)
@@ -44,22 +43,34 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
 
     committed_generation = row.get("committed_generation")
     target_generation = row.get("target_generation")
+    max_generation = row.get("max_generation")
     target_state = row.get("target_generation_state")
     target_base_generation = row.get("target_base_generation")
     target_lineage_is_safe = (
         target_state == "PREPARED"
         and target_base_generation == committed_generation
-    ) or (target_state is None and target_base_generation is None)
+        and max_generation == target_generation
+    ) or (
+        target_state is None
+        and target_base_generation is None
+        and max_generation == committed_generation
+    )
     return bool(
         row.get("project_state") == "UPGRADING"
+        and row.get("reconcile_state") == "PREPARING"
         and type(committed_generation) is int
         and type(target_generation) is int
-        and target_generation > committed_generation
+        and target_generation == committed_generation + 1
+        and row.get("policy_project_generation") == target_generation
         and row.get("generation_state") == "BLOCKED"
         and row.get("generation_error_code") == "WRITE_OUTCOME_UNKNOWN"
         and target_lineage_is_safe
+        and type(row.get("unsafe_non_disposed_other_count")) is int
+        and row.get("unsafe_non_disposed_other_count") == 0
+        and type(row.get("active_current_lease_count")) is int
+        and row.get("active_current_lease_count") == 0
         and type(row.get("unknown_write_count")) is int
-        and row.get("unknown_write_count") == 1
+        and row.get("unknown_write_count") > 0
     )
 def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
     """Recognize an un-runnable upgrade whose target row can be rebuilt."""
@@ -80,8 +91,8 @@ def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
         and row.get("generation_error_code") is None
         and row.get("target_generation_state") is None
         and row.get("target_base_generation") is None
-        and type(row.get("non_disposed_other_count")) is int
-        and row.get("non_disposed_other_count") == 0
+        and type(row.get("unsafe_non_disposed_other_count")) is int
+        and row.get("unsafe_non_disposed_other_count") == 0
         and type(row.get("unknown_write_count")) is int
         and row.get("unknown_write_count") == 0
     )
@@ -259,9 +270,13 @@ def _project_schedule_runtime_invalid_code(
                 row.get("target_generation"),
                 row.get("max_generation"),
             ),
-            "NON_DISPOSED_OTHERS_"
+            "UNSAFE_NON_DISPOSED_OTHERS_"
             + _unknown_write_lease_diagnostic(
-                row.get("non_disposed_other_count")
+                row.get("unsafe_non_disposed_other_count")
+            ),
+            "ACTIVE_CURRENT_LEASES_"
+            + _unknown_write_lease_diagnostic(
+                row.get("active_current_lease_count")
             ),
             "COMMITTED_STATE_"
             + _safe_enum_diagnostic(
@@ -313,27 +328,27 @@ def typed_project_scheduled_write_crons(
                generation.error_code AS generation_error_code,
                target_generation.state AS target_generation_state,
                target_generation.base_committed_generation AS target_base_generation,
-               (
-                   SELECT CAST(
-                       COALESCE(MAX(history.generation), 0) AS UNSIGNED
-                   )
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id=BINARY project.automation_id
-               ) AS max_generation,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id=BINARY project.automation_id
-                     AND history.generation<>project.committed_generation
-                     AND history.state<>'DISPOSED'
-               ) AS non_disposed_other_count,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generation_leases AS lease
-                   WHERE BINARY lease.automation_id=BINARY project.automation_id
-                     AND lease.generation=project.committed_generation
-                     AND lease.outcome='WRITE_OUTCOME_UNKNOWN'
-               ) AS unknown_write_count,
+               (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
+                FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id=BINARY project.automation_id) AS max_generation,
+               (SELECT COUNT(*) FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id=BINARY project.automation_id
+                  AND history.generation<>project.committed_generation
+                  AND history.generation<>project.target_generation AND history.state<>'DISPOSED'
+                  AND NOT (history.generation<project.committed_generation
+                    AND history.state='BLOCKED' AND history.error_code='WRITE_OUTCOME_UNKNOWN'
+                    AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
+                      WHERE BINARY archive_lease.automation_id=BINARY history.automation_id
+                        AND archive_lease.generation=history.generation
+                        AND archive_lease.outcome='WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id=BINARY project.automation_id
+                  AND lease.generation=project.committed_generation
+                  AND lease.outcome IN ('RUNNING', 'VERIFYING')) AS active_current_lease_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id=BINARY project.automation_id
+                  AND lease.generation=project.committed_generation
+                  AND lease.outcome='WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
                generation.snapshot_json
         FROM scheduled_tasks AS task
         INNER JOIN automation_projects AS project
@@ -1042,27 +1057,27 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                target_generation.base_committed_generation
                    AS target_base_generation,
                policy.project_generation AS policy_project_generation,
-               (
-                   SELECT CAST(
-                       COALESCE(MAX(history.generation), 0) AS UNSIGNED
-                   )
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id = BINARY project.automation_id
-               ) AS max_generation,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id = BINARY project.automation_id
-                     AND history.generation <> project.committed_generation
-                     AND history.state <> 'DISPOSED'
-               ) AS non_disposed_other_count,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generation_leases AS lease
-                   WHERE BINARY lease.automation_id = BINARY project.automation_id
-                     AND lease.generation = project.committed_generation
-                     AND lease.outcome = 'WRITE_OUTCOME_UNKNOWN'
-               ) AS unknown_write_count,
+               (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
+                FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id = BINARY project.automation_id) AS max_generation,
+               (SELECT COUNT(*) FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id = BINARY project.automation_id
+                  AND history.generation <> project.committed_generation
+                  AND history.generation <> project.target_generation AND history.state <> 'DISPOSED'
+                  AND NOT (history.generation < project.committed_generation
+                    AND history.state = 'BLOCKED' AND history.error_code = 'WRITE_OUTCOME_UNKNOWN'
+                    AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
+                      WHERE BINARY archive_lease.automation_id = BINARY history.automation_id
+                        AND archive_lease.generation = history.generation
+                        AND archive_lease.outcome = 'WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id = BINARY project.automation_id
+                  AND lease.generation = project.committed_generation
+                  AND lease.outcome IN ('RUNNING', 'VERIFYING')) AS active_current_lease_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id = BINARY project.automation_id
+                  AND lease.generation = project.committed_generation
+                  AND lease.outcome = 'WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
                generation.schedule_sha256 AS generation_schedule_sha256,
                generation.compiled_invocations_sha256
                    AS generation_invocations_sha256,

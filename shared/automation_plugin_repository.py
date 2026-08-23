@@ -134,6 +134,7 @@ _GENERATION_HASH_FIELDS = (
     "policy_contract_sha256",
 )
 _ARCHIVAL_UNKNOWN_WRITE = "_archival_unknown_write"
+FIRST_PARTY_RELEASE_ACTOR_ID = "system:release:first-party-upgrade"
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -179,6 +180,7 @@ def _project_generation_stage(
     generation_rows: Sequence[Mapping[str, Any]],
     *,
     allow_initial: bool,
+    allow_current_unknown_write: bool = False,
 ) -> AutomationProjectGenerationStage:
     """Plan one exact project generation without mutating persistence."""
 
@@ -243,18 +245,29 @@ def _project_generation_stage(
             )
         next_generation = 1
     else:
+        committed_state = normalized_rows.get(
+            committed_generation,
+            (None, False),
+        )
+        current_unknown_write = (
+            allow_current_unknown_write
+            and reconcile_state == "BLOCKED_UNKNOWN_WRITE"
+            and target_generation == committed_generation
+            and configured in {True, 1}
+            and committed_state == ("BLOCKED", True)
+        )
         if (
-            reconcile_state != "STABLE"
-            or target_generation != committed_generation
-            or configured not in {True, 1}
+            not current_unknown_write
+            and (
+                reconcile_state != "STABLE"
+                or target_generation != committed_generation
+                or configured not in {True, 1}
+            )
         ):
             raise ConcurrentUpdateError(
                 "automation project must be stable before a generation can advance"
             )
-        if (
-            normalized_rows.get(committed_generation, (None, False))[0]
-            != "COMMITTED"
-        ):
+        if not current_unknown_write and committed_state[0] != "COMMITTED":
             raise OrchestrationPersistenceError(
                 "stable automation project has no committed generation record"
             )
@@ -301,6 +314,8 @@ def _prepared_configuration_upgrade_stage(
     project: Mapping[str, Any],
     current_config: Mapping[str, Any],
     generation_rows: Sequence[Mapping[str, Any]],
+    *,
+    allow_current_unknown_write: bool = False,
 ) -> AutomationProjectGenerationStage:
     """Reuse only the exact empty target opened by a configuration save."""
 
@@ -324,9 +339,6 @@ def _prepared_configuration_upgrade_stage(
 
     # Validate the lineage by projecting the persisted project back to the
     # closed state from which save_project_config opened this exact target.
-    closed_project = dict(project)
-    closed_project["target_generation"] = committed_generation
-    closed_project["reconcile_state"] = "STABLE"
     target_rows = tuple(
         row
         for row in generation_rows
@@ -337,11 +349,26 @@ def _prepared_configuration_upgrade_stage(
         for row in generation_rows
         if row.get("generation") != target_generation
     )
+    committed_rows = tuple(
+        row
+        for row in lineage_rows
+        if row.get("generation") == committed_generation
+    )
+    closed_project = dict(project)
+    closed_project["target_generation"] = committed_generation
+    closed_project["reconcile_state"] = (
+        "BLOCKED_UNKNOWN_WRITE"
+        if len(committed_rows) == 1
+        and committed_rows[0].get("state") == "BLOCKED"
+        and committed_rows[0].get(_ARCHIVAL_UNKNOWN_WRITE) is True
+        else "STABLE"
+    )
     closed_stage = _project_generation_stage(
         closed_project,
         current_config,
         lineage_rows,
         allow_initial=False,
+        allow_current_unknown_write=allow_current_unknown_write,
     )
     if closed_stage.target_generation != target_generation:
         raise ConcurrentUpdateError(
@@ -1269,6 +1296,7 @@ class AutomationPluginRepository(
         actor_role: str,
         expected_record_version: int,
         prepared_configuration_request_id: str | None = None,
+        allow_blocked_unknown_write_archive: bool = False,
     ) -> dict[str, Any]:
         """Stage an immutable target version without changing live execution.
 
@@ -1289,6 +1317,15 @@ class AutomationPluginRepository(
         safe_role = _required_text(actor_role, "actor_role")
         if safe_role != "super_admin":
             raise ValueError("plugin upgrade requires a super_admin actor")
+        if type(allow_blocked_unknown_write_archive) is not bool:
+            raise ValueError("unknown-write archive authority must be boolean")
+        if (
+            allow_blocked_unknown_write_archive
+            and safe_actor != FIRST_PARTY_RELEASE_ACTOR_ID
+        ):
+            raise ValueError(
+                "unknown-write archive authority belongs to first-party release"
+            )
         safe_expected_version = _positive_int(
             expected_record_version,
             "expected_record_version",
@@ -1311,6 +1348,8 @@ class AutomationPluginRepository(
             request_payload["prepared_configuration_request_id"] = (
                 safe_prepared_configuration_request
             )
+        if allow_blocked_unknown_write_archive:
+            request_payload["blocked_unknown_write_archive"] = True
         request_payload_sha256 = _json_hash(request_payload)
 
         with self.cursor() as cursor:
@@ -1396,6 +1435,9 @@ class AutomationPluginRepository(
                     project=project,
                     current_config=current_config,
                     allow_initial=False,
+                    allow_current_unknown_write=(
+                        allow_blocked_unknown_write_archive
+                    ),
                 )
             else:
                 cursor.execute(
@@ -1462,6 +1504,9 @@ class AutomationPluginRepository(
                     project,
                     current_config,
                     generation_rows,
+                    allow_current_unknown_write=(
+                        allow_blocked_unknown_write_archive
+                    ),
                 )
             next_generation = generation_stage.target_generation
 
@@ -1625,6 +1670,7 @@ class AutomationPluginRepository(
         project: Mapping[str, Any],
         current_config: Mapping[str, Any],
         allow_initial: bool = False,
+        allow_current_unknown_write: bool = False,
     ) -> AutomationProjectGenerationStage:
         project_id = _required_text(automation_id, "automation_id")
         if str(project.get("automation_id") or "") != project_id:
@@ -1640,6 +1686,7 @@ class AutomationPluginRepository(
             current_config,
             generation_rows,
             allow_initial=allow_initial,
+            allow_current_unknown_write=allow_current_unknown_write,
         )
 
     def lock_project_generation_history(
@@ -1648,20 +1695,21 @@ class AutomationPluginRepository(
         *,
         committed_generation: Any,
     ) -> tuple[dict[str, Any], ...]:
-        """Lock generation history and prove any unknown-write archives.
+        """Lock generation history and prove unknown-write predecessors.
 
-        A successor generation can make an earlier unknown-write generation an
-        immutable audit archive. Such a row remains ``BLOCKED`` by design and
-        is stageable only while its matching unknown-write lease is locked in
-        the same transaction. Other non-disposed historical states still fail
-        closed in ``_project_generation_stage``.
+        A successor generation makes a blocked unknown-write predecessor an
+        immutable audit archive. Both an already historical row and the
+        currently committed predecessor are stageable only while a matching
+        unknown-write lease is locked in the same transaction. Other blocked
+        or non-disposed states still fail closed in
+        ``_project_generation_stage``.
         """
 
         project_id = _required_text(automation_id, "automation_id")
         with self.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT generation, state
+                SELECT generation, state, error_code
                 FROM automation_project_generations
                 WHERE automation_id=%s
                 ORDER BY generation FOR UPDATE
@@ -1669,7 +1717,7 @@ class AutomationPluginRepository(
                 (project_id,),
             )
             generation_rows = tuple(_rows(cursor))
-        blocked_archives = tuple(
+        blocked_predecessors = tuple(
             sorted(
                 {
                     generation
@@ -1677,36 +1725,52 @@ class AutomationPluginRepository(
                     if row.get("state") == "BLOCKED"
                     and type(generation := row.get("generation")) is int
                     and generation > 0
-                    and generation != committed_generation
+                    and type(committed_generation) is int
+                    and generation <= committed_generation
                 }
             )
         )
-        if not blocked_archives:
+        if not blocked_predecessors:
             return generation_rows
 
-        placeholders = ", ".join("%s" for _ in blocked_archives)
+        placeholders = ", ".join("%s" for _ in blocked_predecessors)
         with self.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT generation, lease_id
+                SELECT generation, lease_id, outcome
                 FROM automation_project_generation_leases
                 WHERE automation_id=%s
                   AND generation IN ({placeholders})
-                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                  AND outcome IN (
+                      'RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN'
+                  )
                 ORDER BY generation, lease_id FOR UPDATE
                 """,
-                (project_id, *blocked_archives),
+                (project_id, *blocked_predecessors),
             )
+            lease_rows = tuple(_rows(cursor))
             unknown_generations = {
                 row.get("generation")
-                for row in _rows(cursor)
+                for row in lease_rows
                 if type(row.get("generation")) is int
+                and row.get("outcome") == "WRITE_OUTCOME_UNKNOWN"
+            }
+            active_generations = {
+                row.get("generation")
+                for row in lease_rows
+                if type(row.get("generation")) is int
+                and row.get("outcome") in {"RUNNING", "VERIFYING"}
             }
         return tuple(
             {
                 **row,
                 _ARCHIVAL_UNKNOWN_WRITE: (
                     row.get("generation") in unknown_generations
+                    and (
+                        row.get("generation") != committed_generation
+                        or row.get("generation") not in active_generations
+                    )
+                    and row.get("error_code") == "WRITE_OUTCOME_UNKNOWN"
                 ),
             }
             for row in generation_rows
@@ -1761,6 +1825,7 @@ class AutomationPluginRepository(
         actor_role: str,
         request_id: str,
         expected_project_configuration_version: int,
+        allow_blocked_unknown_write_archive: bool = False,
     ) -> dict[str, Any]:
         """CAS project settings, schedules and authorization in one Unit of Work.
 
@@ -1778,6 +1843,18 @@ class AutomationPluginRepository(
         normalized_actor = _required_text(actor_id, "actor_id")
         normalized_role = _required_text(actor_role, "actor_role")
         normalized_request = _required_text(request_id, "request_id")
+        if type(allow_blocked_unknown_write_archive) is not bool:
+            raise ValueError("unknown-write archive authority must be boolean")
+        if (
+            allow_blocked_unknown_write_archive
+            and (
+                normalized_actor != FIRST_PARTY_RELEASE_ACTOR_ID
+                or normalized_role != "super_admin"
+            )
+        ):
+            raise ValueError(
+                "unknown-write archive authority belongs to first-party release"
+            )
         if not all(
             isinstance(value, Mapping)
             for value in (config, account_bindings, resource_bindings, compiled_invocations)
@@ -1829,6 +1906,8 @@ class AutomationPluginRepository(
             "device_id": device_id,
             "expected_project_configuration_version": expected_version,
         }
+        if allow_blocked_unknown_write_archive:
+            request_payload["blocked_unknown_write_archive"] = True
         request_payload_sha256 = _json_hash(request_payload)
 
         with self.cursor() as cursor:
@@ -1924,6 +2003,7 @@ class AutomationPluginRepository(
                 project=project,
                 current_config=current_config,
                 allow_initial=True,
+                allow_current_unknown_write=allow_blocked_unknown_write_archive,
             )
             target_generation = generation_stage.target_generation
             committed_generation = generation_stage.committed_generation
