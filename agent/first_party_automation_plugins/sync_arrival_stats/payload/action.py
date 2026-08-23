@@ -681,7 +681,11 @@ def run_action(
             "arrival statistics snapshot",
         )
         evidence_refs.append(broker_evidence_ref(arrival_snapshot, "arrival statistics snapshot"))
-        commit_state = "all_required_outputs_committed"
+        commit_state = (
+            "no_data_cleared"
+            if not export_records
+            else "all_required_outputs_committed"
+        )
 
     data: dict[str, object] = {
         "dry_run": dry_run,

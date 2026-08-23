@@ -400,7 +400,7 @@ def run_action(
             evidence_refs.append(
                 broker_evidence_ref(projection, "delivery-status projection update")
             )
-        execution_result = "writes_committed"
+        execution_result = "no_data" if not pending_records else "writes_committed"
 
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
     data = {
