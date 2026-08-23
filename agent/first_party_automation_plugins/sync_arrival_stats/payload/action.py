@@ -484,15 +484,6 @@ def run_action(
         )
         evidence_refs.append(broker_evidence_ref(scan_write, "scan snapshot"))
 
-    accumulated_result, accumulated_ref = _projection_read(
-        broker,
-        action="scan.snapshot.read",
-        arguments={"target_date": target_date},
-        label="accumulated scan snapshot",
-    )
-    evidence_refs.append(accumulated_ref)
-    accumulated_scan = _persisted_scan_rows(accumulated_result)
-
     if not dry_run:
         retention = _bounded_limit(
             arguments.get("scan_codes_retention_days"),
@@ -512,6 +503,15 @@ def run_action(
             allow_skipped=True,
         )
         evidence_refs.append(broker_evidence_ref(cleanup, "scan snapshot cleanup"))
+
+    accumulated_result, accumulated_ref = _projection_read(
+        broker,
+        action="scan.snapshot.read",
+        arguments={"target_date": target_date},
+        label="accumulated scan snapshot",
+    )
+    evidence_refs.append(accumulated_ref)
+    accumulated_scan = _persisted_scan_rows(accumulated_result)
 
     existing_trackings = {str(row["tracking_number"]) for row in arrive_records}
     missing = sorted(current_main - existing_trackings)
@@ -620,7 +620,7 @@ def run_action(
             if pending_write.get("skipped") is True:
                 warnings.append("optional pending-arrivals sheet was unavailable")
 
-        if arguments.get("archive_snapshot", True) is True:
+        if stats_records and arguments.get("archive_snapshot", True) is True:
             archive = _committed(
                 broker(
                     "network.request",
@@ -681,7 +681,11 @@ def run_action(
             "arrival statistics snapshot",
         )
         evidence_refs.append(broker_evidence_ref(arrival_snapshot, "arrival statistics snapshot"))
-        commit_state = "all_required_outputs_committed"
+        commit_state = (
+            "no_data_cleared"
+            if not export_records
+            else "all_required_outputs_committed"
+        )
 
     data: dict[str, object] = {
         "dry_run": dry_run,

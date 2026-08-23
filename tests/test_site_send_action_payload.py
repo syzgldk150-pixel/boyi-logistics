@@ -185,6 +185,8 @@ def test_site_send_action_clears_both_resources_for_an_empty_source():
         ("feishu.bitable.replace_snapshot", []),
         ("feishu.sheet.replace", []),
     ]
+    assert result["meta"]["record_count"] == 0
+    assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
 
 
 @pytest.mark.parametrize(

@@ -375,7 +375,9 @@ def run_action(
             evidence_refs.extend(batch_refs)
         if len(skipped_signed_codes) != len(set(skipped_signed_codes)):
             raise ValueError("scan-next batches returned duplicate skipped identities")
-        execution_result = "snapshot_and_batches_verified"
+        execution_result = (
+            "no_data_cleared" if not snapshot else "snapshot_and_batches_verified"
+        )
 
     scheduled = sum(len(batch) for batch in batches)
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()

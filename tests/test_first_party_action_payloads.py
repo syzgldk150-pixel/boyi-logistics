@@ -1287,8 +1287,8 @@ def test_arrival_stats_payload_owns_union_counting_and_commit_order(manifests) -
         "ronghui.scan.read_page",
         "arrival.snapshot.completed_before",
         "scan.snapshot.replace",
-        "scan.snapshot.read",
         "scan.snapshot.cleanup",
+        "scan.snapshot.read",
         "waybill.snapshot.replace",
         "feishu.sheet.replace",
         "feishu.sheet.replace",
@@ -1325,8 +1325,8 @@ def test_arrival_stats_payload_owns_union_counting_and_commit_order(manifests) -
         "ronghui.scan.read_page",
         "arrival.snapshot.completed_before",
         "scan.snapshot.replace",
-        "scan.snapshot.read",
         "scan.snapshot.cleanup",
+        "scan.snapshot.read",
         "waybill.snapshot.replace",
         "feishu.sheet.replace",
         "feishu.sheet.replace",
@@ -2147,23 +2147,31 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
         ),
     )
 
-    def replace_scans(records):
+    def replace_scans(records, target_date):
         call_order.append("scan-snapshot")
+        assert target_date == "2026-08-15"
         assert records[0]["main_tracking"] == main
         return {"ok": True, "upserted": len(records)}
 
-    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes", replace_scans)
+    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", replace_scans)
+    scan_rows = [
+        {
+            "raw_code": child,
+            "destination": "station",
+            "code_type": "child",
+            "main_tracking": main,
+        }
+    ]
     monkeypatch.setattr(
-            "tools.phase7_mysql_store.list_scan_codes",
-            lambda: call_order.append("scan-read")
-            or [
-                {
-                    "raw_code": child,
-                    "destination": "station",
-                    "code_type": "child",
-                    "main_tracking": main,
-                }
-            ],
+        "tools.phase7_mysql_store.list_scan_codes_for_date",
+        lambda target_date: (
+            call_order.append("scan-read")
+            or (scan_rows if target_date == "2026-08-15" else [])
+        ),
+    )
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.list_scan_codes",
+        lambda: call_order.append("scan-read") or scan_rows,
     )
     from plugin_core_adapters import arrival as arrival_adapter
     from tools.daily_sign_store import snapshot_fingerprint
@@ -2334,8 +2342,8 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
             "completed-history",
             "scan-snapshot",
             "scan-read",
-            "scan-read",
             "scan-cleanup",
+            "scan-read",
             "waybill-detail",
             "waybill-snapshot",
             "sheet:stats-primary-resource:stats",
@@ -2361,8 +2369,8 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
         "completed-history",
         "scan-snapshot",
         "scan-read",
-        "scan-read",
         "scan-cleanup",
+        "scan-read",
         "waybill-detail",
         "waybill-snapshot",
         "sheet:stats-primary-resource:stats",

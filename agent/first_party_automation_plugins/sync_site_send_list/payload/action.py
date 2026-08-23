@@ -227,7 +227,9 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": page_count,
-            "execution_result": "both_snapshots_committed",
+            "execution_result": (
+                "no_data_cleared" if not normalized else "both_snapshots_committed"
+            ),
         },
     }
     result_ref, result_proof = executor_success_evidence(

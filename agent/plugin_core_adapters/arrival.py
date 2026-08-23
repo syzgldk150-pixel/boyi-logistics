@@ -574,11 +574,11 @@ def _observe_cleanup(retention_days: int) -> Sequence[Mapping[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT raw_code, destination, code_type, main_tracking,
+                SELECT snapshot_date, raw_code, destination, code_type, main_tracking,
                        last_seen_at, seen_count,
-                       (last_seen_at < NOW() - INTERVAL %s DAY) AS stale
+                       (snapshot_date < CURDATE() - INTERVAL %s DAY) AS stale
                 FROM scan_codes
-                ORDER BY raw_code
+                ORDER BY snapshot_date, raw_code
                 """,
                 (retention_days,),
             )
@@ -613,9 +613,12 @@ def _cleanup_scan_snapshot(retention_days: int) -> Mapping[str, Any]:
         _unknown("scan cleanup fresh readback failed", cause=exc)
     if any(bool(row.get("stale")) for row in after):
         _unknown("scan cleanup fresh readback still contains expired identities")
-    after_ids = {str(row.get("raw_code") or "") for row in after}
+    after_ids = {
+        (str(row.get("snapshot_date") or ""), str(row.get("raw_code") or ""))
+        for row in after
+    }
     retained = {
-        str(row.get("raw_code") or "")
+        (str(row.get("snapshot_date") or ""), str(row.get("raw_code") or ""))
         for row in before
         if not bool(row.get("stale"))
     }
@@ -717,12 +720,18 @@ def _replace_arrive_sheet(
 
     expected_rows = [list(row) for row in rows]
     width = 18
+    expected_title = [_build_title({"target_date": target_date})] if title is not None else []
+    try:
+        expected_canonical = _canonical_rows(expected_rows, width=width)
+        title_canonical = _canonical_rows(expected_title, width=width)
+    except ValueError as exc:
+        raise _error("arrive sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
     clear_shape = parse_a1_range(clear["range"])
     blank_values = [
         ["" for _ in range(clear_shape["col_count"])]
         for _ in range(clear_shape["row_count"])
     ]
-    write_ok = _write_sheet_call(
+    _write_sheet_call(
         "write_sheet",
         {
             "spreadsheet_token": resource["spreadsheet_token"],
@@ -732,19 +741,26 @@ def _replace_arrive_sheet(
             "dry_run": False,
         },
     )
-    if write_ok and expected_rows:
-        write_ok = _write_sheet_call(
-            "write_sheet",
-            {
-                "spreadsheet_token": resource["spreadsheet_token"],
-                "range": build_range_from_template(template["range"], len(expected_rows), width),
-                "values": expected_rows,
-                "as": "bot",
-                "dry_run": False,
-            },
-        )
-    expected_title = [_build_title({"target_date": target_date})] if title is not None else []
-    if write_ok and title is not None:
+    observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
+    if observed_rows == []:
+        if expected_rows:
+            _write_sheet_call(
+                "write_sheet",
+                {
+                    "spreadsheet_token": resource["spreadsheet_token"],
+                    "range": build_range_from_template(template["range"], len(expected_rows), width),
+                    "values": expected_rows,
+                    "as": "bot",
+                    "dry_run": False,
+                },
+            )
+            observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
+            if observed_rows != expected_canonical:
+                _unknown("arrive sheet data write was not confirmed by fresh readback")
+    elif observed_rows != expected_canonical:
+        _unknown("arrive sheet clear was not confirmed by fresh readback")
+
+    if title is not None:
         _write_sheet_call(
             "write_sheet",
             {
@@ -755,19 +771,11 @@ def _replace_arrive_sheet(
                 "dry_run": False,
             },
         )
-    observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
-    observed_title = (
-        _fresh_sheet_rows(resource, title["range"], width=width)
-        if title is not None
-        else []
-    )
-    try:
-        expected_canonical = _canonical_rows(expected_rows, width=width)
-        title_canonical = _canonical_rows(expected_title, width=width)
-    except ValueError as exc:
-        raise _error("arrive sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
-    if observed_rows != expected_canonical or observed_title != title_canonical:
-        _unknown("arrive sheet fresh readback did not match the exact dated snapshot")
+        observed_title = _fresh_sheet_rows(resource, title["range"], width=width)
+        if observed_title != title_canonical:
+            _unknown("arrive sheet title write was not confirmed by fresh readback")
+    else:
+        observed_title = []
     return {
         "ok": True,
         "verified": True,

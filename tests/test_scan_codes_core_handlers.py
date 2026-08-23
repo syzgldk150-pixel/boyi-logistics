@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Any, Mapping
 from unittest.mock import patch
 
@@ -84,22 +85,19 @@ def test_scan_snapshot_production_port_requires_exact_fresh_readback(
     writes: list[list[dict[str, str]]] = []
     reads = 0
 
-    def write(records):
+    def write(records, target_date):
+        assert target_date == "2026-08-15"
         writes.append(records)
         return {"ok": True, "upserted": len(records)}
 
-    def read():
+    def read(target_date):
+        assert target_date == "2026-08-15"
         nonlocal reads
         reads += 1
-        return [*rows, {
-            "raw_code": "historical",
-            "destination": "旧站",
-            "code_type": "main",
-            "main_tracking": "historical",
-        }]
+        return rows
 
-    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes", write)
-    monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes", read)
+    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", write)
+    monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes_for_date", read)
 
     result = replace_scan_snapshot_verified(rows, "2026-08-15")
 
@@ -114,6 +112,135 @@ def test_scan_snapshot_production_port_requires_exact_fresh_readback(
     assert reads == 1
 
 
+def test_empty_scan_snapshot_rejects_stale_rows_after_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_rows = _snapshot_rows()
+
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.replace_scan_codes_snapshot",
+        lambda records, target_date: {
+            "ok": True,
+            "replaced": len(records),
+            "target_date": target_date,
+        },
+    )
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.list_scan_codes_for_date",
+        lambda _target_date: stale_rows,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        replace_scan_snapshot_verified([], "2026-08-24")
+
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_scan_snapshot_response_loss_is_reconciled_by_exact_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _snapshot_rows()
+
+    def lost_response(_records, _target_date):
+        raise TimeoutError("response lost after commit")
+
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.replace_scan_codes_snapshot",
+        lost_response,
+    )
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.list_scan_codes_for_date",
+        lambda _target_date: rows,
+    )
+
+    result = replace_scan_snapshot_verified(rows, "2026-08-24")
+
+    assert result["verified"] is True
+    assert result["readback_count"] == len(rows)
+
+
+@pytest.mark.parametrize("rows", [[], _snapshot_rows()], ids=["empty", "populated"])
+def test_scan_snapshot_store_atomically_deletes_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, str]],
+) -> None:
+    from tools import phase7_mysql_store
+
+    events: list[str] = []
+
+    class Cursor:
+        rowcount = 3
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, statement, params=None):
+            assert "DELETE FROM scan_codes" in statement
+            assert "snapshot_date = %s" in statement
+            assert params == ("2026-08-24",)
+            events.append("delete")
+
+        def executemany(self, statement, values):
+            assert "INSERT INTO scan_codes" in statement
+            assert "snapshot_date" in statement
+            assert "last_seen_at" in statement
+            assert len(values) == len(rows)
+            assert all(value[-2] == "2026-08-24" for value in values)
+            assert all(value[-1] == "2026-08-24" for value in values)
+            events.append("insert")
+
+    class Connection:
+        def begin(self):
+            events.append("begin")
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(phase7_mysql_store, "ensure_phase7_tables", lambda: None)
+    monkeypatch.setattr(phase7_mysql_store, "_connect", Connection)
+
+    result = phase7_mysql_store.replace_scan_codes_snapshot(rows, "2026-08-24")
+
+    assert result == {
+        "ok": True,
+        "deleted": 3,
+        "replaced": len(rows),
+        "target_date": "2026-08-24",
+    }
+    assert events == [
+        "begin",
+        "delete",
+        *(["insert"] if rows else []),
+        "commit",
+        "close",
+    ]
+
+
+def test_scan_snapshot_schema_preserves_same_identity_across_dates() -> None:
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "agent"
+        / "migrations"
+        / "026_scan_code_daily_identity.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "ADD COLUMN snapshot_date DATE" in migration
+    assert "SET snapshot_date = DATE(last_seen_at)" in migration
+    assert "ADD PRIMARY KEY (snapshot_date, raw_code)" in migration
+
+
 @pytest.mark.parametrize("case", ["response_loss", "zero", "multiple", "mismatch"])
 def test_scan_snapshot_production_port_fails_unknown_without_retry(
     monkeypatch: pytest.MonkeyPatch,
@@ -123,14 +250,14 @@ def test_scan_snapshot_production_port_fails_unknown_without_retry(
     write_calls = 0
     read_calls = 0
 
-    def write(_records):
+    def write(_records, _target_date):
         nonlocal write_calls
         write_calls += 1
         if case == "response_loss":
             raise TimeoutError("lost response")
         return {"ok": True, "upserted": len(rows)}
 
-    def read():
+    def read(_target_date):
         nonlocal read_calls
         read_calls += 1
         if case == "zero":
@@ -141,15 +268,15 @@ def test_scan_snapshot_production_port_fails_unknown_without_retry(
         changed[1]["destination"] = "错误站"
         return changed
 
-    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes", write)
-    monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes", read)
+    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", write)
+    monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes_for_date", read)
 
     with pytest.raises(PluginExecutionError) as exc:
         replace_scan_snapshot_verified(rows, "2026-08-15")
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
     assert write_calls == 1
-    assert read_calls == (0 if case == "response_loss" else 1)
+    assert read_calls == 1
 
 
 def test_scan_snapshot_core_handler_rejects_ack_or_tampered_readback_proof() -> None:

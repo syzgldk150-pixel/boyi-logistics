@@ -62,6 +62,10 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def test_first_party_release_version_is_1_0_9() -> None:
+    assert FIRST_PARTY_PACKAGE_VERSION == "1.0.9"
+
+
 class _CatalogRepository:
     def __init__(self, instance: PluginInstanceRecord) -> None:
         self.instance = instance
