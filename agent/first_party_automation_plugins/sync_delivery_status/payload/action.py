@@ -429,7 +429,7 @@ def run_action(
     evidence_refs.append(result_ref)
     return success_result(
         data=data,
-        source_system=("ronghui" if dry_run else "ronghui+feishu+internal_projection"),
+        source_system=("ronghui" if dry_run else "ronghui+feishu+mysql"),
         record_count=len(pending_records),
         pagination_complete=True,
         evidence_refs=evidence_refs,

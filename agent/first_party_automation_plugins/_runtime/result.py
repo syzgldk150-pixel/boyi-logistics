@@ -43,7 +43,7 @@ def success_result(
     """Build the only success shape accepted from a first-party payload."""
 
     source = str(source_system or "").strip()
-    if not source or len(source) > 128:
+    if not source or len(source) > 32:
         raise ValueError("source_system is invalid")
     if isinstance(record_count, bool) or not isinstance(record_count, int) or record_count < 0:
         raise ValueError("record_count is invalid")

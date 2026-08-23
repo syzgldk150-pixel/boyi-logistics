@@ -1030,7 +1030,7 @@ def run_action(
     if sql_only:
         source_system = "ronghui+internal_projection" if sync_sql and not dry_run else "ronghui"
     elif sync_sql and not dry_run:
-        source_system = "ronghui+feishu+internal_projection"
+        source_system = "ronghui+feishu+mysql"
     else:
         source_system = "ronghui+feishu"
     return success_result(
