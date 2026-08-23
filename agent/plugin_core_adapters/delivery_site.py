@@ -308,6 +308,55 @@ def _read_all_bitable(
     )
 
 
+def _read_exact_bitable_records(
+    invoke: FeishuOperation,
+    *,
+    base_token: str,
+    table_id: str,
+    record_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Read only exact write targets so unrelated table rows cannot block proof."""
+
+    output: list[dict[str, Any]] = []
+    for record_id in record_ids:
+        try:
+            result = invoke(
+                "get_record",
+                {
+                    "base_token": base_token,
+                    "table_id": table_id,
+                    "record_id": record_id,
+                    "as": "bot",
+                    "dry_run": False,
+                },
+            )
+        except PluginExecutionError:
+            raise
+        except Exception as exc:
+            raise _error(
+                "Bitable exact record read failed",
+                "BROKER_RESOURCE_UNAVAILABLE",
+            ) from exc
+        if not isinstance(result, Mapping) or result.get("error") or result.get("errors"):
+            raise _error(
+                "Bitable exact record read failed",
+                "BROKER_RESOURCE_UNAVAILABLE",
+            )
+        data = result.get("data")
+        record = data.get("record") if isinstance(data, Mapping) else None
+        if (
+            not isinstance(record, Mapping)
+            or str(record.get("record_id") or record.get("id") or "").strip()
+            != record_id
+        ):
+            raise _error(
+                "Bitable exact record identity changed",
+                "BROKER_SOURCE_INVALID",
+            )
+        output.append(dict(record))
+    return output
+
+
 def _field_text(value: object) -> str:
     if value is None:
         return ""
@@ -778,11 +827,13 @@ def build_production_delivery_site_ports(
         )
         base_token = str(resource["base_token"])
         table_id = str(resource["table_id"])
+        target_record_ids = [record["record_id"] for record in records]
         before = _delivery_bitable_snapshot(
-            _read_all_bitable(
+            _read_exact_bitable_records(
                 invoke_feishu,
                 base_token=base_token,
                 table_id=table_id,
+                record_ids=target_record_ids,
             )
         )
         by_id = {row["record_id"]: dict(row) for row in before}
@@ -827,10 +878,11 @@ def build_production_delivery_site_ports(
             )
         try:
             after = _delivery_bitable_snapshot(
-                _read_all_bitable(
+                _read_exact_bitable_records(
                     invoke_feishu,
                     base_token=base_token,
                     table_id=table_id,
+                    record_ids=target_record_ids,
                 )
             )
         except Exception as exc:
