@@ -7,7 +7,7 @@ related:
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-16
+updated: 2026-08-23
 ---
 
 # 自动化插件平台
@@ -214,12 +214,16 @@ started writes 的失败保存为 `FAILED_BEFORE_WRITE`，任何已开始但未�
 外部网页、Office、飞书或财务写入不可逆，不能伪造 inverse。活跃、`VERIFYING`、过期但未定论的
 lease 或未知写结果都会阻断 dispose，直到权威读后核验或人工处置。
 
-未知写不会被清除、伪造为成功或自动重放。若当前代已精确落为 `BLOCKED` 且存在同代
-`WRITE_OUTCOME_UNKNOWN` lease，平台允许一个独立、完整 `PREPARED` 后继代在提交事务中同时锁定
-项目、前代与 lease 后原子成为新的 committed route；前代保持 `BLOCKED`，lease 和历史 Run/Evidence
-保持不可变，并作为不可删除的审计归档退出运行健康阻断。此例外只适用于已经不再路由的精确未知写
-前代：当前代未知写、普通 `BLOCKED`、缺少未知写 lease、配置或 effect 未闭合仍然 fail closed；旧代的
-异步 release/finalize 也只能更新旧代，不能把已经切换的新路由重新标成 `BLOCKED_UNKNOWN_WRITE`。
+未知写不会被清除、伪造为成功或自动重放。当前 committed generation 已精确落为 `BLOCKED` 时，
+项目保持冻结且不可运行；若策略仍绑定当前代，启动 reconcile 只隔离该项目，不会自行创建下一代或
+阻断其他项目启动。只有签名首方发布 bootstrap 能在同一事务内证明 generation 的
+`error_code=WRITE_OUTCOME_UNKNOWN`、至少一条同代未知写 lease 且当前代没有 `RUNNING/VERIFYING`
+lease 后，显式把配置、插件和策略绑定到精确下一代；普通 Console 保存和通用插件升级不能使用该
+能力。独立、完整的后继代在提交事务中再次锁定项目、前代与未知写 lease 后原子成为新的 committed
+route；前代保持 `BLOCKED`，全部 lease 和历史 Run/Evidence 保持不可变，并作为不可删除的审计归档
+退出运行健康阻断。已经退出路由的历史隔离代允许切换前取得的迟到 finalizer 完成，但它只能更新旧代，
+不能把新 committed 路由重新标成 `BLOCKED_UNKNOWN_WRITE`。普通 `BLOCKED`、错误码不符、零条未知写
+lease、当前代仍有活动写租约或配置/effect 未闭合均继续 fail closed。
 
 ### Broker write receipts and recovery
 
