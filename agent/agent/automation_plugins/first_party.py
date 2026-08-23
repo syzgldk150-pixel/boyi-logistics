@@ -2133,70 +2133,99 @@ def bootstrap_first_party_plugins(
             raise PluginPackageError("first-party provider returned an unsupported trust source")
         versions: list[PluginVersionRecord] = []
         newly_materialized: list[PluginVersionRecord] = []
-        for descriptor in descriptors:
-            existing = repository.get_package_version(descriptor.plugin_id, descriptor.version)
-            if existing is not None:
-                if (
-                    existing.plugin_id != descriptor.plugin_id
-                    or existing.version != descriptor.version
-                    or existing.package_sha256 != descriptor.package_sha256
-                    or existing.manifest_sha256 != descriptor.manifest_sha256
-                    or existing.trust_source != descriptor.trust_source
-                    or canonical_json_bytes(existing.manifest)
-                    != canonical_json_bytes(descriptor.manifest)
-                    or existing.install_root is None
-                ):
-                    raise PluginPackageError(
-                        f"existing first-party package is stale or not materialized: {descriptor.plugin_id}"
+
+        def discard_unpersisted_materializations() -> list[tuple[str, str, str]]:
+            cleanup_errors: list[tuple[str, str, str]] = []
+            for version in reversed(newly_materialized):
+                try:
+                    installed = repository.get_package_version(
+                        version.plugin_id,
+                        version.version,
                     )
-                if descriptor.trust_source == PluginTrustSource.ED25519_FIRST_PARTY:
-                    if not isinstance(
-                        package_materializer,
-                        FirstPartyPackageRecoveryMaterializerPort,
+                    if installed is None and version.install_root:
+                        assert package_materializer is not None
+                        package_materializer.discard(version)
+                except Exception as exc:
+                    cleanup_errors.append(
+                        (version.plugin_id, version.version, type(exc).__name__)
+                    )
+            return cleanup_errors
+
+        try:
+            for descriptor in descriptors:
+                existing = repository.get_package_version(
+                    descriptor.plugin_id,
+                    descriptor.version,
+                )
+                if existing is not None:
+                    if (
+                        existing.plugin_id != descriptor.plugin_id
+                        or existing.version != descriptor.version
+                        or existing.package_sha256 != descriptor.package_sha256
+                        or existing.manifest_sha256 != descriptor.manifest_sha256
+                        or existing.trust_source != descriptor.trust_source
+                        or canonical_json_bytes(existing.manifest)
+                        != canonical_json_bytes(descriptor.manifest)
+                        or existing.install_root is None
                     ):
                         raise PluginPackageError(
-                            "signed first-party recovery materializer is required: "
+                            "existing first-party package is stale or not materialized: "
                             f"{descriptor.plugin_id}"
                         )
-                    rebuilt = package_materializer.recover_missing(
-                        persisted=existing,
-                        descriptor=descriptor,
-                    )
-                    if rebuilt is not None:
-                        newly_materialized.append(rebuilt)
-                # ``existing`` is deliberately retained: a rebuilt record is
-                # only filesystem proof and must never replace immutable DB
-                # bytes during the idempotent registration below.
-                versions.append(existing)
-                continue
-            if descriptor.install_root is None:
-                if package_materializer is None:
+                    if descriptor.trust_source == PluginTrustSource.ED25519_FIRST_PARTY:
+                        if not isinstance(
+                            package_materializer,
+                            FirstPartyPackageRecoveryMaterializerPort,
+                        ):
+                            raise PluginPackageError(
+                                "signed first-party recovery materializer is required: "
+                                f"{descriptor.plugin_id}"
+                            )
+                        rebuilt = package_materializer.recover_missing(
+                            persisted=existing,
+                            descriptor=descriptor,
+                        )
+                        if rebuilt is not None:
+                            newly_materialized.append(rebuilt)
+                    # ``existing`` is deliberately retained: a rebuilt record
+                    # is only filesystem proof and must never replace immutable
+                    # DB bytes during the idempotent registration below.
+                    versions.append(existing)
+                    continue
+                if descriptor.install_root is None:
+                    if package_materializer is None:
+                        raise PluginPackageError(
+                            "first-party package materializer is required: "
+                            f"{descriptor.plugin_id}"
+                        )
+                    descriptor = package_materializer.materialize(descriptor)
+                    newly_materialized.append(descriptor)
+                if descriptor.install_root is None:
                     raise PluginPackageError(
-                        f"first-party package materializer is required: {descriptor.plugin_id}"
+                        f"first-party package was not materialized: {descriptor.plugin_id}"
                     )
-                descriptor = package_materializer.materialize(descriptor)
-                newly_materialized.append(descriptor)
-            if descriptor.install_root is None:
-                raise PluginPackageError(
-                    f"first-party package was not materialized: {descriptor.plugin_id}"
-                )
-            versions.append(descriptor)
-        seeds = release_first_party_instance_seeds()
-        try:
+                versions.append(descriptor)
+            seeds = release_first_party_instance_seeds()
             persisted = repository.bootstrap_missing(
                 tuple(versions),
                 seeds,
                 release_sha=current_release_sha.lower(),
             )
-        except Exception:
-            for version in newly_materialized:
-                installed = repository.get_package_version(version.plugin_id, version.version)
-                if installed is None and version.install_root:
-                    # The materializer owns this exact immutable root.  A
-                    # concurrent successful transaction is detected above and
-                    # keeps it intact.
-                    assert package_materializer is not None
-                    package_materializer.discard(version)
+        except Exception as bootstrap_error:
+            cleanup_errors = discard_unpersisted_materializations()
+            if cleanup_errors:
+                if isinstance(bootstrap_error, AutomationPluginError):
+                    original_error = f"{bootstrap_error.code}: {bootstrap_error}"
+                else:
+                    original_error = type(bootstrap_error).__name__.upper()
+                cleanup_summary = ", ".join(
+                    f"{plugin_id}@{version}:{error_type}"
+                    for plugin_id, version, error_type in cleanup_errors
+                )
+                raise PluginPackageError(
+                    f"first-party bootstrap failed ({original_error}); "
+                    f"materialization cleanup failed: {cleanup_summary}"
+                ) from bootstrap_error
             raise
         expected_instances = release_first_party_automation_ids()
         if set(persisted.created) & set(persisted.existing):
