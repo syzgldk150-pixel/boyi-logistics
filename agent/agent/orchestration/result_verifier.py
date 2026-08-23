@@ -207,7 +207,13 @@ class ResultVerifier:
                     )
                 if name == "executor_reported_success":
                     digest = sha256_json(normalized.data)
-                    expected_ref = f"tool-result:{step.tool_name}:{digest}"
+                    plugin_runtime = capability.get("_plugin_runtime")
+                    proof_identity = (
+                        str(plugin_runtime.get("plugin_id") or "").strip()
+                        if isinstance(plugin_runtime, Mapping)
+                        else ""
+                    ) or step.tool_name
+                    expected_ref = f"tool-result:{proof_identity}:{digest}"
                     details = proof.get("details")
                     if (
                         str(proof.get("evidence_ref") or "") != expected_ref
