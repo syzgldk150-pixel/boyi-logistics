@@ -12,6 +12,7 @@ from agent.automation_plugins.delivery_site_handlers import (
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from plugin_core_adapters.delivery_site import build_production_delivery_site_ports
+from plugin_core_adapters.first_party import _site_send_read_page
 from tools.phase7_mysql_store import CONSOLE_WAYBILL_FIELDS
 
 
@@ -19,6 +20,98 @@ _SECRET = b"delivery-site-fresh-readback-test-secret"
 _RESOURCE_ID = "phase7.delivery_status_bitable"
 _SITE_BITABLE_ID = "phase7.site_send_bitable"
 _SITE_SHEET_ID = "phase7.site_send_sheet"
+
+
+def _stub_site_send_read(
+    monkeypatch,
+    *,
+    canonical_bill_code: str | None = None,
+    list_bill_code: str | None = None,
+):
+    from agent.tms_runtime.scripts import get_infor as bill_info
+    from agent.tms_runtime.scripts import get_wangdiansendlist as source
+    from agent.tms_runtime.scripts.login_manager import TMSAuth
+
+    monkeypatch.setattr(TMSAuth, "login_and_get_session", lambda _self: object())
+    monkeypatch.setattr(source, "build_date_range", lambda *_args: {})
+    monkeypatch.setattr(source, "build_payload", lambda *_args: {})
+    monkeypatch.setattr(source, "build_headers", lambda: {})
+    monkeypatch.setattr(source, "fetch_page", lambda *_args: {})
+    monkeypatch.setattr(
+        source,
+        "extract_rows",
+        lambda _raw: [
+            {
+                "BILL_CODE": "WB-1",
+                "SCAN_SITE": "发货站",
+                "DESTINATION": "目的站",
+                "PIECE_NUMBER": 1,
+                "SETTLEMENT_WEIGHT": 2,
+            }
+        ],
+    )
+    monkeypatch.setattr(source, "fetch_bill_info_html", lambda *_args, **_kwargs: "<html />")
+    detail_fields = {source.LABEL_PACK_TYPE: "纸箱"}
+    if canonical_bill_code is not None:
+        detail_fields[bill_info.LABEL_BILL_CODE] = canonical_bill_code
+    if list_bill_code is not None:
+        detail_fields[source.LABEL_BILL_CODE] = list_bill_code
+    monkeypatch.setattr(source, "parse_bill_info_html", lambda _html: detail_fields)
+    return source
+
+
+def test_site_send_detail_without_identity_echo_keeps_exact_requested_binding(
+    monkeypatch,
+) -> None:
+    _stub_site_send_read(monkeypatch)
+
+    result = _site_send_read_page(
+        {"session_profile": "profile-test"},
+        "2026-08-23",
+        0,
+        100,
+    )
+
+    assert result["items"] == [
+        {
+            "tracking_number": "WB-1",
+            "send_site": "发货站",
+            "package_type": "纸箱",
+            "destination": "目的站",
+            "pieces": 1,
+            "weight": 2,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("canonical_bill_code", "list_bill_code"),
+    [
+        ("WB-OTHER", None),
+        (None, "WB-OTHER"),
+        ("WB-1", "WB-OTHER"),
+    ],
+)
+def test_site_send_detail_rejects_any_mismatched_bill_identity(
+    monkeypatch,
+    canonical_bill_code,
+    list_bill_code,
+) -> None:
+    _stub_site_send_read(
+        monkeypatch,
+        canonical_bill_code=canonical_bill_code,
+        list_bill_code=list_bill_code,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc_info:
+        _site_send_read_page(
+            {"session_profile": "profile-test"},
+            "2026-08-23",
+            0,
+            100,
+        )
+
+    assert exc_info.value.code == "BROKER_SOURCE_INVALID"
 
 
 class _Manager:

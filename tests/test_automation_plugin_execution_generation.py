@@ -428,7 +428,8 @@ def _step(tool_name: str) -> PlanStep:
 def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path: Path) -> None:
     capability = _capability(tmp_path)
     leases = _LeaseRepository({"project-a": capability})
-    sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"]))))
+    plugin_id = str(capability["_plugin_runtime"]["plugin_id"])
+    sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(plugin_id)))
     router = PluginExecutionRouter(
         core_executor=_Core(),
         capability_issuer=_Issuer(),
@@ -453,7 +454,7 @@ def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path:
     )
 
     assert isinstance(raw, GenerationBoundResult)
-    assert "account_id" not in _plugin_result(str(capability["name"]))["meta"]
+    assert "account_id" not in _plugin_result(plugin_id)["meta"]
     assert "account_id" not in raw["meta"]
     assert leases.released[0][1] == RuntimeLeaseOutcome.VERIFYING
     assert leases.verifying
@@ -523,7 +524,11 @@ def test_router_requires_exact_server_owned_project_generation(
     expected_code: str,
 ) -> None:
     capability = _capability(tmp_path)
-    sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"]))))
+    sandbox = _OutputSandbox(
+        canonical_json_bytes(
+            _plugin_result(str(capability["_plugin_runtime"]["plugin_id"]))
+        )
+    )
     router = PluginExecutionRouter(
         core_executor=_Core(),
         capability_issuer=_Issuer(),
@@ -548,7 +553,11 @@ def test_router_requires_exact_server_owned_project_generation(
 
 def test_router_defaults_to_release_hold_before_generation_lease(tmp_path: Path) -> None:
     capability = _capability(tmp_path)
-    sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"]))))
+    sandbox = _OutputSandbox(
+        canonical_json_bytes(
+            _plugin_result(str(capability["_plugin_runtime"]["plugin_id"]))
+        )
+    )
     router = PluginExecutionRouter(
         core_executor=_Core(),
         capability_issuer=_Issuer(),
@@ -636,7 +645,11 @@ def test_started_write_lease_release_failure_returns_governing_unknown(tmp_path:
         core_executor=_Core(),
         capability_issuer=_Issuer(started_mutating_calls=1),
         integrity_verifier=_Integrity(),
-        sandbox_launcher=_OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"])))),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(
+                _plugin_result(str(capability["_plugin_runtime"]["plugin_id"]))
+            )
+        ),
         generation_leases=_ReleaseFailingLeaseRepository({"project-a": capability}),
         release_hold_provider=lambda: False,
     )
@@ -687,7 +700,11 @@ def test_zero_started_writes_keep_lease_release_failure_behavior(tmp_path: Path)
         core_executor=_Core(),
         capability_issuer=_Issuer(started_mutating_calls=0),
         integrity_verifier=_Integrity(),
-        sandbox_launcher=_OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"])))),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(
+                _plugin_result(str(capability["_plugin_runtime"]["plugin_id"]))
+            )
+        ),
         generation_leases=_ReleaseFailingLeaseRepository({"project-a": capability}),
         release_hold_provider=lambda: False,
     )
@@ -713,7 +730,11 @@ def test_lease_run_binding_mismatch_blocks_before_plugin_launch(tmp_path: Path) 
             )
 
     leases = _MismatchedLeaseRepository({"project-a": capability})
-    sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(str(capability["name"]))))
+    sandbox = _OutputSandbox(
+        canonical_json_bytes(
+            _plugin_result(str(capability["_plugin_runtime"]["plugin_id"]))
+        )
+    )
     router = PluginExecutionRouter(
         core_executor=_Core(),
         capability_issuer=_Issuer(),
