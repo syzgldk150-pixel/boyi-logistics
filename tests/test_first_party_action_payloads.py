@@ -2152,7 +2152,7 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
         assert records[0]["main_tracking"] == main
         return {"ok": True, "upserted": len(records)}
 
-    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes", replace_scans)
+    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", replace_scans)
     monkeypatch.setattr(
             "tools.phase7_mysql_store.list_scan_codes",
             lambda: call_order.append("scan-read")

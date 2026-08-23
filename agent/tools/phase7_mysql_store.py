@@ -635,6 +635,27 @@ def _scan_row_tuple(row: dict[str, str]) -> tuple[str, str, str, str]:
     )
 
 
+_SCAN_CODES_UPSERT_SQL = """
+    INSERT INTO scan_codes (
+        raw_code, destination, code_type, main_tracking, last_seen_at, seen_count
+    ) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, 1)
+    ON DUPLICATE KEY UPDATE
+        destination = VALUES(destination),
+        code_type = VALUES(code_type),
+        main_tracking = VALUES(main_tracking),
+        last_seen_at = CURRENT_TIMESTAMP,
+        seen_count = seen_count + 1
+"""
+
+
+def _upsert_scan_rows(cur: Any, rows: list[dict[str, str]]) -> None:
+    if rows:
+        cur.executemany(
+            _SCAN_CODES_UPSERT_SQL,
+            [_scan_row_tuple(row) for row in rows],
+        )
+
+
 def replace_scan_codes(rows: list[dict[str, str]]) -> dict[str, Any]:
     """Upsert scan rows so historical scans accumulate across runs.
 
@@ -645,22 +666,28 @@ def replace_scan_codes(rows: list[dict[str, str]]) -> dict[str, Any]:
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            if rows:
-                cur.executemany(
-                    """
-                    INSERT INTO scan_codes (
-                        raw_code, destination, code_type, main_tracking, last_seen_at, seen_count
-                    ) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, 1)
-                    ON DUPLICATE KEY UPDATE
-                        destination = VALUES(destination),
-                        code_type = VALUES(code_type),
-                        main_tracking = VALUES(main_tracking),
-                        last_seen_at = CURRENT_TIMESTAMP,
-                        seen_count = seen_count + 1
-                    """,
-                    [_scan_row_tuple(row) for row in rows],
-                )
+            _upsert_scan_rows(cur, rows)
         return {"ok": True, "upserted": len(rows), "replaced": len(rows)}
+    finally:
+        conn.close()
+
+
+def replace_scan_codes_snapshot(rows: list[dict[str, str]]) -> dict[str, Any]:
+    """Atomically replace the complete signed scan snapshot."""
+
+    ensure_phase7_tables()
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM scan_codes")
+            deleted = int(cur.rowcount or 0)
+            _upsert_scan_rows(cur, rows)
+        conn.commit()
+        return {"ok": True, "deleted": deleted, "replaced": len(rows)}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
