@@ -290,7 +290,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
     evidence_refs.append(result_ref)
     return success_result(
         data=data,
-        source_system="ronghui+feishu+internal_projection",
+        source_system="ronghui+feishu+mysql",
         record_count=len(records),
         pagination_complete=True,
         evidence_refs=evidence_refs,
