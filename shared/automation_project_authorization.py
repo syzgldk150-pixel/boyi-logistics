@@ -578,6 +578,12 @@ def _full_auto_restriction(
         elif idempotency_mode == "key":
             if not _named_values(idempotency.get("key_fields")):
                 return "IDEMPOTENCY_KEY_REQUIRED"
+        elif idempotency_mode == "parameters":
+            # The core registry treats the complete closed input object as the
+            # idempotency identity. This mode therefore has no separate key
+            # fields, but remains a valid signed write contract.
+            if idempotency.get("key_fields") != []:
+                return "WRITE_IDEMPOTENCY_CONTRACT_INVALID"
         else:
             return "WRITE_IDEMPOTENCY_CONTRACT_INVALID"
     return None
