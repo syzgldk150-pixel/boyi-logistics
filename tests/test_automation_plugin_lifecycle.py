@@ -792,6 +792,278 @@ def test_bootstrap_uses_original_database_record_after_root_rebuild(
     assert database_record is persisted
 
 
+def test_bootstrap_discards_earlier_materializations_when_later_package_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests = resolve_first_party_manifests(ToolRegistry())
+    first_manifest = manifests["sync_arrive_list"]
+    second_manifest = manifests["sync_scan_codes"]
+    descriptors = tuple(
+        PluginVersionRecord(
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            package_sha256=character * 64,
+            manifest_sha256=manifest.manifest_sha256,
+            manifest=manifest.to_mapping(),
+            trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+            install_root=None,
+        )
+        for manifest, character in (
+            (first_manifest, "a"),
+            (second_manifest, "b"),
+        )
+    )
+    discarded: list[PluginVersionRecord] = []
+
+    class Provider:
+        def load_versions(self, **_kwargs):
+            return descriptors
+
+        def materialize(self, descriptor):
+            if descriptor.plugin_id == second_manifest.plugin_id:
+                raise PluginConflictError("simulated later package conflict")
+            return replace(
+                descriptor,
+                install_root=f"/immutable/{descriptor.plugin_id}/{descriptor.version}",
+            )
+
+        def discard(self, version):
+            discarded.append(version)
+
+    class Repository:
+        def get_package_version(self, _plugin_id, _version):
+            return None
+
+        def bootstrap_missing(self, *_args, **_kwargs):
+            raise AssertionError("an incomplete release must not reach persistence")
+
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_plugin_ids",
+        lambda: frozenset(item.plugin_id for item in descriptors),
+    )
+
+    provider = Provider()
+    result = bootstrap_first_party_plugins(
+        Repository(),
+        core_catalog=ToolRegistry(),
+        current_release_sha="c" * 40,
+        expected_release_sha="c" * 40,
+        package_provider=provider,
+        package_materializer=provider,
+    )
+
+    assert not result.ok
+    assert "PLUGIN_VERSION_CONFLICT" in result.rejected["*"]
+    assert [item.plugin_id for item in discarded] == [first_manifest.plugin_id]
+
+
+def test_bootstrap_discards_only_unpersisted_materialization_after_db_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests = resolve_first_party_manifests(ToolRegistry())
+    selected = (manifests["sync_arrive_list"], manifests["sync_scan_codes"])
+    descriptors = tuple(
+        PluginVersionRecord(
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            package_sha256=character * 64,
+            manifest_sha256=manifest.manifest_sha256,
+            manifest=manifest.to_mapping(),
+            trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+            install_root=None,
+        )
+        for manifest, character in zip(selected, ("a", "b"), strict=True)
+    )
+    persisted: dict[tuple[str, str], PluginVersionRecord] = {}
+    discarded: list[PluginVersionRecord] = []
+
+    class Provider:
+        def load_versions(self, **_kwargs):
+            return descriptors
+
+        def materialize(self, descriptor):
+            return replace(
+                descriptor,
+                install_root=f"/immutable/{descriptor.plugin_id}/{descriptor.version}",
+            )
+
+        def discard(self, version):
+            discarded.append(version)
+
+    class Repository:
+        def get_package_version(self, plugin_id, version):
+            return persisted.get((plugin_id, version))
+
+        def bootstrap_missing(self, versions, *_args, **_kwargs):
+            persisted[(versions[0].plugin_id, versions[0].version)] = versions[0]
+            raise RuntimeError("simulated response loss after partial persistence")
+
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_plugin_ids",
+        lambda: frozenset(item.plugin_id for item in descriptors),
+    )
+
+    provider = Provider()
+    result = bootstrap_first_party_plugins(
+        Repository(),
+        core_catalog=ToolRegistry(),
+        current_release_sha="c" * 40,
+        expected_release_sha="c" * 40,
+        package_provider=provider,
+        package_materializer=provider,
+    )
+
+    assert not result.ok
+    assert result.rejected["*"] == "BOOTSTRAP_FAILED: RuntimeError"
+    assert [item.plugin_id for item in discarded] == [descriptors[1].plugin_id]
+
+
+def test_bootstrap_preserves_rebuilt_persisted_root_when_later_package_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests = resolve_first_party_manifests(ToolRegistry())
+    persisted_manifest = manifests["sync_arrive_list"]
+    failing_manifest = manifests["sync_scan_codes"]
+    persisted = PluginVersionRecord(
+        plugin_id=persisted_manifest.plugin_id,
+        version=persisted_manifest.version,
+        package_sha256="a" * 64,
+        manifest_sha256=persisted_manifest.manifest_sha256,
+        manifest=persisted_manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root="/immutable/sync_arrive_list/persisted",
+    )
+    failing = PluginVersionRecord(
+        plugin_id=failing_manifest.plugin_id,
+        version=failing_manifest.version,
+        package_sha256="b" * 64,
+        manifest_sha256=failing_manifest.manifest_sha256,
+        manifest=failing_manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root=None,
+    )
+    discarded: list[PluginVersionRecord] = []
+
+    class Provider:
+        def load_versions(self, **_kwargs):
+            return (replace(persisted, install_root=None), failing)
+
+        def recover_missing(self, *, persisted, descriptor):
+            return persisted
+
+        def materialize(self, descriptor):
+            raise PluginConflictError(f"simulated conflict for {descriptor.plugin_id}")
+
+        def discard(self, version):
+            discarded.append(version)
+
+    class Repository:
+        def get_package_version(self, plugin_id, version):
+            if (plugin_id, version) == (persisted.plugin_id, persisted.version):
+                return persisted
+            return None
+
+        def bootstrap_missing(self, *_args, **_kwargs):
+            raise AssertionError("an incomplete release must not reach persistence")
+
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_plugin_ids",
+        lambda: frozenset({persisted.plugin_id, failing.plugin_id}),
+    )
+
+    provider = Provider()
+    result = bootstrap_first_party_plugins(
+        Repository(),
+        core_catalog=ToolRegistry(),
+        current_release_sha="c" * 40,
+        expected_release_sha="c" * 40,
+        package_provider=provider,
+        package_materializer=provider,
+    )
+
+    assert not result.ok
+    assert "PLUGIN_VERSION_CONFLICT" in result.rejected["*"]
+    assert discarded == []
+
+
+def test_bootstrap_cleanup_reports_original_error_and_all_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests = resolve_first_party_manifests(ToolRegistry())
+    selected = (
+        manifests["sync_arrive_list"],
+        manifests["sync_arrival_stats"],
+        manifests["sync_scan_codes"],
+    )
+    descriptors = tuple(
+        PluginVersionRecord(
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            package_sha256=character * 64,
+            manifest_sha256=manifest.manifest_sha256,
+            manifest=manifest.to_mapping(),
+            trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+            install_root=None,
+        )
+        for manifest, character in zip(selected, ("a", "b", "c"), strict=True)
+    )
+    cleanup_attempts: list[str] = []
+    materialized_ids: set[str] = set()
+
+    class Provider:
+        def load_versions(self, **_kwargs):
+            return descriptors
+
+        def materialize(self, descriptor):
+            if descriptor.plugin_id == descriptors[2].plugin_id:
+                raise PluginConflictError("original later-package conflict")
+            materialized_ids.add(descriptor.plugin_id)
+            return replace(
+                descriptor,
+                install_root=f"/immutable/{descriptor.plugin_id}/{descriptor.version}",
+            )
+
+        def discard(self, version):
+            cleanup_attempts.append(version.plugin_id)
+            raise OSError("simulated exact-root removal failure")
+
+    class Repository:
+        def get_package_version(self, plugin_id, _version):
+            if plugin_id in materialized_ids and plugin_id == descriptors[1].plugin_id:
+                cleanup_attempts.append(plugin_id)
+                raise RuntimeError("simulated cleanup ownership query failure")
+            return None
+
+        def bootstrap_missing(self, *_args, **_kwargs):
+            raise AssertionError("an incomplete release must not reach persistence")
+
+    monkeypatch.setattr(
+        first_party_module,
+        "release_first_party_plugin_ids",
+        lambda: frozenset(item.plugin_id for item in descriptors),
+    )
+
+    provider = Provider()
+    result = bootstrap_first_party_plugins(
+        Repository(),
+        core_catalog=ToolRegistry(),
+        current_release_sha="d" * 40,
+        expected_release_sha="d" * 40,
+        package_provider=provider,
+        package_materializer=provider,
+    )
+
+    assert not result.ok
+    summary = result.rejected["*"]
+    assert "PLUGIN_VERSION_CONFLICT: original later-package conflict" in summary
+    assert f"{descriptors[1].plugin_id}@{descriptors[1].version}:RuntimeError" in summary
+    assert f"{descriptors[0].plugin_id}@{descriptors[0].version}:OSError" in summary
+    assert cleanup_attempts == [descriptors[1].plugin_id, descriptors[0].plugin_id]
+
+
 def test_hard_uninstall_waits_for_exact_cleanup_ack_and_deletes_db_before_fs(
     tmp_path: Path,
 ) -> None:
