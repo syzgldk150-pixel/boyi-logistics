@@ -399,6 +399,28 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
         self.assertEqual("2026-06-19", payload["end_date"])
         self.assertEqual("23:59:59", payload["end_time"])
 
+    def test_build_yunda_issue_payload_uses_original_page_date_window(self):
+        with patch.object(
+            customer_service_problem,
+            "_yunda_issue_today",
+            return_value=customer_service_problem.dt.date(2026, 8, 23),
+        ):
+            payload = customer_service_problem.build_yunda_issue_list_payload({})
+
+        self.assertEqual("2026-08-21", payload["start_date"])
+        self.assertEqual("00:00:00", payload["start_time"])
+        self.assertEqual("2026-08-23", payload["end_date"])
+        self.assertEqual("23:59:59", payload["end_time"])
+
+    def test_build_yunda_issue_payload_rejects_half_date_range(self):
+        with self.assertRaisesRegex(
+            customer_service_problem.CustomerServiceProblemError,
+            "同时提供开始和结束日期",
+        ):
+            customer_service_problem.build_yunda_issue_list_payload(
+                {"date_from": "2026-08-21"}
+            )
+
     def test_yunda_post_json_omits_empty_strings_but_keeps_zero_values(self):
         captured = {}
 
@@ -441,6 +463,17 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
         self.assertNotIn("issuer_site", captured["data"])
         self.assertEqual("0", captured["data"]["is_replay"])
         self.assertEqual(1, captured["data"]["page"])
+
+        customer_service_problem._yunda_post_json(
+            Session(),
+            customer_service_problem.YUNDA_ISSUE_LIST_URL,
+            {"start_date": "2026-08-21", "problem_type": "", "page": 1},
+            referer=f"{customer_service_problem.YUNDA_PUBLIC_ROOT}/issue/index.html",
+            label="发布列表",
+            preserve_empty=True,
+        )
+        self.assertIn("problem_type", captured["data"])
+        self.assertEqual("", captured["data"]["problem_type"])
 
     def test_build_ronghui_query_payload_uses_date_range_json_value(self):
         payload = customer_service_problem.build_ronghui_query_payload(
