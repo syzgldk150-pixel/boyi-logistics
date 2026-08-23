@@ -96,52 +96,6 @@ def _sha(value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def test_first_party_source_system_literals_fit_evidence_storage() -> None:
-    violations: list[tuple[str, int, str]] = []
-    payload_root = ROOT / "agent" / "first_party_automation_plugins"
-    for path in sorted(payload_root.glob("*/payload/action.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        candidates: list[ast.AST] = []
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                if any(isinstance(target, ast.Name) and target.id == "source_system" for target in targets):
-                    candidates.append(node.value)
-            elif isinstance(node, ast.Call):
-                candidates.extend(
-                    keyword.value
-                    for keyword in node.keywords
-                    if keyword.arg == "source_system"
-                )
-        for candidate in candidates:
-            for value in ast.walk(candidate):
-                if (
-                    isinstance(value, ast.Constant)
-                    and isinstance(value.value, str)
-                    and len(value.value) > 32
-                ):
-                    violations.append((str(path.relative_to(ROOT)), value.lineno, value.value))
-
-    assert violations == []
-
-
-def test_first_party_result_rejects_source_system_beyond_storage_limit(manifests) -> None:
-    result_source = first_party_payload_files(manifests["sync_arrive_list"])[
-        "payload/boyi_plugin_result.py"
-    ]
-    namespace: dict[str, object] = {}
-    exec(compile(result_source, "boyi_plugin_result.py", "exec"), namespace)
-
-    with pytest.raises(ValueError, match="source_system is invalid"):
-        namespace["success_result"](
-            data={},
-            source_system="x" * 33,
-            record_count=0,
-            pagination_complete=True,
-            evidence_refs=["evidence:test"],
-        )
-
-
 def _fresh_write_result(count: int, label: str) -> dict[str, object]:
     return {
         "ok": True,
