@@ -2107,7 +2107,10 @@ check_health() {
   fi
   for target in "${health_targets[@]}"; do
     healthy=0
-    for attempt in {1..15}; do
+    # A first-party version upgrade can spend more than 30 seconds reconciling
+    # generations before Uvicorn exposes /health. Keep the release hold active
+    # and allow one minute for the bounded startup to finish.
+    for attempt in {1..30}; do
       if [[ "${target}" == "agent" ]]; then
         body="$(curl -fsS --max-time 5 http://127.0.0.1:9000/health 2>/dev/null || true)"
         if RELEASE_BODY="${body}" RELEASE_EXPECTED="${RELEASE_SHA}" "${PYTHON_BINS[agent]}" - <<'PY'
