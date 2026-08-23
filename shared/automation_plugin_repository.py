@@ -133,6 +133,7 @@ _GENERATION_HASH_FIELDS = (
     "governance_anchor_sha256",
     "policy_contract_sha256",
 )
+_ARCHIVAL_UNKNOWN_WRITE = "_archival_unknown_write"
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -213,14 +214,17 @@ def _project_generation_stage(
         raise OrchestrationPersistenceError(
             "automation project configured state is invalid"
         )
-    normalized_rows: dict[int, str] = {}
+    normalized_rows: dict[int, tuple[str, bool]] = {}
     try:
         for row in generation_rows:
             generation = _positive_int(row.get("generation"), "generation")
             state = str(row.get("state") or "")
             if state not in _GENERATION_STATES or generation in normalized_rows:
                 raise ValueError("invalid generation history")
-            normalized_rows[generation] = state
+            normalized_rows[generation] = (
+                state,
+                row.get(_ARCHIVAL_UNKNOWN_WRITE) is True,
+            )
     except ValueError as exc:
         raise OrchestrationPersistenceError(
             "automation project generation history is invalid"
@@ -247,14 +251,18 @@ def _project_generation_stage(
             raise ConcurrentUpdateError(
                 "automation project must be stable before a generation can advance"
             )
-        if normalized_rows.get(committed_generation) != "COMMITTED":
+        if (
+            normalized_rows.get(committed_generation, (None, False))[0]
+            != "COMMITTED"
+        ):
             raise OrchestrationPersistenceError(
                 "stable automation project has no committed generation record"
             )
         maximum = max(normalized_rows)
         if set(normalized_rows) != set(range(1, maximum + 1)) or any(
             state != "DISPOSED"
-            for generation, state in normalized_rows.items()
+            and not (state == "BLOCKED" and archival_unknown_write)
+            for generation, (state, archival_unknown_write) in normalized_rows.items()
             if generation != committed_generation
         ):
             raise ConcurrentUpdateError(
@@ -1446,17 +1454,10 @@ class AutomationPluginRepository(
                     raise ConcurrentUpdateError(
                         "prepared configuration policy is not bound to the project target"
                     )
-                with self.cursor() as generation_cursor:
-                    generation_cursor.execute(
-                        """
-                        SELECT generation, state
-                        FROM automation_project_generations
-                        WHERE automation_id=%s
-                        ORDER BY generation FOR UPDATE
-                        """,
-                        (project_id,),
-                    )
-                    generation_rows = _rows(generation_cursor)
+                generation_rows = self.lock_project_generation_history(
+                    project_id,
+                    committed_generation=project.get("committed_generation"),
+                )
                 generation_stage = _prepared_configuration_upgrade_stage(
                     project,
                     current_config,
@@ -1630,6 +1631,33 @@ class AutomationPluginRepository(
             raise OrchestrationPersistenceError(
                 "automation project generation identity changed"
             )
+        generation_rows = self.lock_project_generation_history(
+            project_id,
+            committed_generation=project.get("committed_generation"),
+        )
+        return _project_generation_stage(
+            project,
+            current_config,
+            generation_rows,
+            allow_initial=allow_initial,
+        )
+
+    def lock_project_generation_history(
+        self,
+        automation_id: str,
+        *,
+        committed_generation: Any,
+    ) -> tuple[dict[str, Any], ...]:
+        """Lock generation history and prove any unknown-write archives.
+
+        A successor generation can make an earlier unknown-write generation an
+        immutable audit archive. Such a row remains ``BLOCKED`` by design and
+        is stageable only while its matching unknown-write lease is locked in
+        the same transaction. Other non-disposed historical states still fail
+        closed in ``_project_generation_stage``.
+        """
+
+        project_id = _required_text(automation_id, "automation_id")
         with self.cursor() as cursor:
             cursor.execute(
                 """
@@ -1640,12 +1668,48 @@ class AutomationPluginRepository(
                 """,
                 (project_id,),
             )
-            generation_rows = _rows(cursor)
-        return _project_generation_stage(
-            project,
-            current_config,
-            generation_rows,
-            allow_initial=allow_initial,
+            generation_rows = tuple(_rows(cursor))
+        blocked_archives = tuple(
+            sorted(
+                {
+                    generation
+                    for row in generation_rows
+                    if row.get("state") == "BLOCKED"
+                    and type(generation := row.get("generation")) is int
+                    and generation > 0
+                    and generation != committed_generation
+                }
+            )
+        )
+        if not blocked_archives:
+            return generation_rows
+
+        placeholders = ", ".join("%s" for _ in blocked_archives)
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT generation, lease_id
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s
+                  AND generation IN ({placeholders})
+                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                ORDER BY generation, lease_id FOR UPDATE
+                """,
+                (project_id, *blocked_archives),
+            )
+            unknown_generations = {
+                row.get("generation")
+                for row in _rows(cursor)
+                if type(row.get("generation")) is int
+            }
+        return tuple(
+            {
+                **row,
+                _ARCHIVAL_UNKNOWN_WRITE: (
+                    row.get("generation") in unknown_generations
+                ),
+            }
+            for row in generation_rows
         )
 
     def apply_project_generation_stage(
