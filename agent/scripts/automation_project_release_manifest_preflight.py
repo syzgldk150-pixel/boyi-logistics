@@ -74,6 +74,25 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
         and type(row.get("unknown_write_count")) is int
         and row.get("unknown_write_count") > 0
     )
+def _bootstrap_generation_may_be_blocked(
+    project: Mapping[str, Any], generation: Mapping[str, Any]
+) -> bool:
+    return bool(
+        (
+            project.get("generation_state") == "BLOCKED"
+            and project.get("generation") == generation.get("generation")
+            and (project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE" or is_staged_unknown_write_quarantine(project))
+        )
+        or (
+            generation.get("generation_state") == "BLOCKED"
+            and project.get("reconcile_state") == "STABLE"
+            and project.get("generation_state") == "COMMITTED"
+            and project.get("unsafe_non_disposed_other_count") == 0
+            and project.get("active_current_lease_count") == 0
+            and isinstance(generation.get("generation"), int)
+            and generation.get("generation") < project.get("generation")
+        )
+    )
 def is_staged_recoverable_runtime(row: Mapping[str, Any]) -> bool:
     """Recognize an un-runnable target at a repository-produced recovery point."""
 
@@ -1026,28 +1045,16 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
     placeholders = ", ".join("%s" for _ in project_ids)
     cursor.execute(
         f"""
-        SELECT project.automation_id, project.plugin_id, project.enabled,
-               project.state AS project_state,
-               project.target_generation, project.committed_generation,
-               project.reconcile_state,
-               config.config_version, config.configured,
-               config.config_json, config.config_sha256,
-               config.account_bindings_json,
-               config.account_bindings_sha256,
-               config.resource_bindings_json,
-               config.resource_bindings_sha256,
-               config.enabled_entrypoints_json,
-               config.enabled_entrypoints_sha256,
-               config.desired_schedule_json, config.desired_schedule_sha256,
-               config.compiled_invocations_json,
-               config.compiled_invocations_sha256,
+        SELECT project.automation_id, project.plugin_id, project.enabled, project.state AS project_state,
+               project.target_generation, project.committed_generation, project.reconcile_state,
+               config.config_version, config.configured, config.config_json, config.config_sha256, config.account_bindings_json, config.account_bindings_sha256,
+               config.resource_bindings_json, config.resource_bindings_sha256, config.enabled_entrypoints_json, config.enabled_entrypoints_sha256,
+               config.desired_schedule_json, config.desired_schedule_sha256, config.compiled_invocations_json, config.compiled_invocations_sha256,
                config.device_id, config.device_binding_sha256,
-               generation.generation,
-               generation.state AS generation_state,
+               generation.generation, generation.state AS generation_state,
                generation.error_code AS generation_error_code,
                target_generation.state AS target_generation_state,
-               target_generation.base_committed_generation
-                   AS target_base_generation,
+               target_generation.base_committed_generation AS target_base_generation,
                policy.project_generation AS policy_project_generation,
                (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
                 FROM automation_project_generations AS history
@@ -1061,7 +1068,10 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                     AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
                       WHERE BINARY archive_lease.automation_id = BINARY history.automation_id
                         AND archive_lease.generation = history.generation
-                        AND archive_lease.outcome = 'WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
+                        AND archive_lease.outcome = 'WRITE_OUTCOME_UNKNOWN')
+                    AND NOT EXISTS (SELECT 1 FROM automation_project_generation_leases AS active_archive_lease
+                      WHERE BINARY active_archive_lease.automation_id = BINARY history.automation_id
+                        AND active_archive_lease.generation = history.generation AND active_archive_lease.outcome IN ('RUNNING', 'VERIFYING')))) AS unsafe_non_disposed_other_count,
                (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
                 WHERE BINARY lease.automation_id = BINARY project.automation_id
                   AND lease.generation = project.committed_generation
@@ -1070,21 +1080,14 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                 WHERE BINARY lease.automation_id = BINARY project.automation_id
                   AND lease.generation = project.committed_generation
                   AND lease.outcome = 'WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
-               generation.schedule_sha256 AS generation_schedule_sha256,
-               generation.compiled_invocations_sha256
-                   AS generation_invocations_sha256,
-               generation.snapshot_json AS generation_snapshot_json,
-               generation.snapshot_sha256 AS generation_snapshot_sha256
+               generation.schedule_sha256 AS generation_schedule_sha256, generation.compiled_invocations_sha256 AS generation_invocations_sha256,
+               generation.snapshot_json AS generation_snapshot_json, generation.snapshot_sha256 AS generation_snapshot_sha256
         FROM automation_projects AS project
-        INNER JOIN automation_project_configs AS config
-          ON BINARY config.automation_id = BINARY project.automation_id
-        INNER JOIN automation_project_policies AS policy
-          ON BINARY policy.automation_id = BINARY project.automation_id
-        INNER JOIN automation_project_generations AS generation
-          ON BINARY generation.automation_id = BINARY project.automation_id
+        INNER JOIN automation_project_configs AS config ON BINARY config.automation_id = BINARY project.automation_id
+        INNER JOIN automation_project_policies AS policy ON BINARY policy.automation_id = BINARY project.automation_id
+        INNER JOIN automation_project_generations AS generation ON BINARY generation.automation_id = BINARY project.automation_id
          AND generation.generation = project.committed_generation
-        LEFT JOIN automation_project_generations AS target_generation
-          ON BINARY target_generation.automation_id = BINARY project.automation_id
+        LEFT JOIN automation_project_generations AS target_generation ON BINARY target_generation.automation_id = BINARY project.automation_id
          AND target_generation.generation = project.target_generation
         WHERE project.automation_id IN ({placeholders})
         ORDER BY project.automation_id
@@ -1506,6 +1509,8 @@ def _validate_release_projects_and_tasks(
         stable_runtime = (
             project.get("reconcile_state") == "STABLE"
             and project.get("generation_state") == "COMMITTED"
+            and project.get("unsafe_non_disposed_other_count") == 0
+            and project.get("active_current_lease_count") == 0
         )
         unavailable_runtime = (
             not expect_initial_production_manifest
@@ -2497,12 +2502,7 @@ def _validate_bootstrap_and_policy_state(
             backups=backups,
             allow_blocked=(
                 not expect_initial_production_manifest
-                and project.get("generation_state") == "BLOCKED"
-                and (
-                    project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
-                    or is_staged_unknown_write_quarantine(project)
-                )
-                and project.get("generation") == generation_row.get("generation")
+                and _bootstrap_generation_may_be_blocked(project, generation_row)
             ),
         )
         try:
