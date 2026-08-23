@@ -54,12 +54,13 @@ from shared.automation_project_manifest import (
 )
 from shared.automation_plugin_repository import (
     AutomationPluginPreparedTargetOccupied,
+    FIRST_PARTY_RELEASE_ACTOR_ID,
 )
 
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
 _MIGRATION_ACTOR_ROLE = "migration_authority"
-_FIRST_PARTY_RELEASE_ACTOR_ID = "system:release:first-party-upgrade"
+_FIRST_PARTY_RELEASE_ACTOR_ID = FIRST_PARTY_RELEASE_ACTOR_ID
 _FIRST_PARTY_RELEASE_ACTOR_ROLE = "super_admin"
 _REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN"
 _PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO"
@@ -331,6 +332,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         expected_current_version: str,
         expected_record_version: int,
         prepared_configuration_request_id: str | None = None,
+        allow_blocked_unknown_write_archive: bool = False,
     ) -> PluginInstanceRecord:
         automation_id = str(automation_id or "").strip()
         actor_id = str(actor_id or "").strip()
@@ -340,6 +342,19 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         if not automation_id or not actor_id or actor_role != "super_admin":
             raise PluginConflictError(
                 "plugin upgrade requires an authenticated super administrator",
+                code="PLUGIN_UPGRADE_FORBIDDEN",
+            )
+        if type(allow_blocked_unknown_write_archive) is not bool:
+            raise PluginConflictError(
+                "unknown-write archive authority is invalid",
+                code="PLUGIN_UPGRADE_FORBIDDEN",
+            )
+        if (
+            allow_blocked_unknown_write_archive
+            and actor_id != _FIRST_PARTY_RELEASE_ACTOR_ID
+        ):
+            raise PluginConflictError(
+                "unknown-write archive authority belongs to first-party release",
                 code="PLUGIN_UPGRADE_FORBIDDEN",
             )
         try:
@@ -500,6 +515,8 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 stage_arguments["prepared_configuration_request_id"] = (
                     prepared_configuration_request_id
                 )
+            if allow_blocked_unknown_write_archive:
+                stage_arguments["allow_blocked_unknown_write_archive"] = True
             staged = uow.automation_plugins.stage_project_upgrade(
                 automation_id,
                 **stage_arguments,
@@ -605,6 +622,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         version: PluginVersionRecord,
         release_sha: str,
         expected_current_version: str,
+        allow_blocked_unknown_write_archive: bool,
     ) -> tuple[str, int, str | None]:
         """Recompile preserved settings against a signed first-party target.
 
@@ -775,6 +793,9 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     expected_project_configuration_version=int(
                         config.get("config_version") or 0
                     ),
+                    allow_blocked_unknown_write_archive=(
+                        allow_blocked_unknown_write_archive
+                    ),
                 )
                 uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
                     seed.automation_id,
@@ -813,7 +834,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         created: list[str] = []
         existing: list[str] = []
         upgrades: list[
-            tuple[FirstPartyInstanceSeed, PluginVersionRecord, str]
+            tuple[FirstPartyInstanceSeed, PluginVersionRecord, str, bool]
         ] = []
         with self._orchestration.unit_of_work() as uow:
             for version in versions:
@@ -864,21 +885,34 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                             and current.get("target_generation")
                             == committed_generation
                         ):
-                            committed = uow.automation_plugins.get_generation_row(
-                                seed.automation_id,
-                                committed_generation,
-                                for_update=True,
+                            generation_rows = (
+                                uow.automation_plugins.lock_project_generation_history(
+                                    seed.automation_id,
+                                    committed_generation=committed_generation,
+                                )
+                            )
+                            committed = next(
+                                (
+                                    row
+                                    for row in generation_rows
+                                    if row.get("generation") == committed_generation
+                                ),
+                                None,
                             )
                             blocked_unknown_write = bool(
                                 isinstance(committed, Mapping)
                                 and committed.get("state") == "BLOCKED"
-                                and uow.automation_plugins.has_unknown_generation_write_row(
-                                    seed.automation_id,
-                                    committed_generation,
+                                and committed.get("_archival_unknown_write") is True
+                            )
+                        if closed_stable_lineage or blocked_unknown_write:
+                            upgrades.append(
+                                (
+                                    seed,
+                                    version,
+                                    current_version,
+                                    blocked_unknown_write,
                                 )
                             )
-                        if closed_stable_lineage and not blocked_unknown_write:
-                            upgrades.append((seed, version, current_version))
                     existing.append(seed.automation_id)
                     continue
                 manifest = AutomationPluginManifest.from_mapping(version.manifest)
@@ -1015,13 +1049,21 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         # boundary.  A crash after configuration preparation is safe: the old
         # signed package remains active, and the same release request resumes
         # staging on the next startup.
-        for seed, version, current_version in upgrades:
+        for (
+            seed,
+            version,
+            current_version,
+            allow_blocked_unknown_write_archive,
+        ) in upgrades:
             prepared_version, record_version, prepared_configuration_request_id = (
                 self._prepare_first_party_upgrade_configuration(
                     seed=seed,
                     version=version,
                     release_sha=release_sha,
                     expected_current_version=current_version,
+                    allow_blocked_unknown_write_archive=(
+                        allow_blocked_unknown_write_archive
+                    ),
                 )
             )
             if prepared_version == version.version:
@@ -1046,6 +1088,8 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 "expected_current_version": current_version,
                 "expected_record_version": record_version,
             }
+            if allow_blocked_unknown_write_archive:
+                upgrade_arguments["allow_blocked_unknown_write_archive"] = True
             if prepared_configuration_request_id is not None:
                 upgrade_arguments["prepared_configuration_request_id"] = (
                     prepared_configuration_request_id

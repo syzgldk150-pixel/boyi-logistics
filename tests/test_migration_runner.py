@@ -1813,13 +1813,18 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "target_generation": 4,
             "project_enabled": 1,
             "project_state": "UPGRADING",
-            "reconcile_state": "PREPARING",
+            "reconcile_state": "READY_TO_COMMIT",
             "policy_mode": "PROJECT_FULL_AUTO",
             "generation_state": "BLOCKED",
             "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
             "target_generation_state": "PREPARED",
             "target_base_generation": 3,
-            "unknown_write_count": 1,
+            "policy_project_generation": 4,
+            "max_generation": 4,
+            "non_disposed_other_count": 1,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
+            "unknown_write_count": 2,
             "snapshot_json": {
                 "automation_id": "arrive_list",
                 "generation": 3,
@@ -1863,9 +1868,11 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             sql for sql, _ in cursor.calls if sql.startswith("SELECT task.id AS task_id")
         )
         self.assertIn("FROM automation_project_generation_leases AS lease", typed_query)
+        self.assertIn("AS unsafe_non_disposed_other_count", typed_query)
+        self.assertIn("lease.outcome IN ('RUNNING', 'VERIFYING')", typed_query)
         self.assertIn("lease.outcome='WRITE_OUTCOME_UNKNOWN'", typed_query)
         self.assertIn(
-            "CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED )",
+            "CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)",
             typed_query,
         )
 
@@ -1880,13 +1887,18 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "committed_generation": 3,
             "target_generation": 4,
             "project_enabled": 1,
-            "project_state": "UPGRADING",
+            "project_state": "ENABLED",
             "reconcile_state": "PREPARING",
             "policy_mode": "PROJECT_FULL_AUTO",
             "generation_state": "BLOCKED",
             "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
             "target_generation_state": None,
             "target_base_generation": None,
+            "policy_project_generation": 4,
+            "max_generation": 3,
+            "non_disposed_other_count": 0,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 1,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -1927,7 +1939,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "scheduled_write_window=ok checked_schedules=0"
         )
 
-    def test_scheduled_write_window_excludes_staged_missing_target_runtime(self):
+    def test_scheduled_write_window_keeps_runnable_config_save_runtime(self):
         typed_row = {
             "task_id": "arrive_list_0500",
             "automation_id": "arrive_list",
@@ -1938,7 +1950,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "committed_generation": 3,
             "target_generation": 4,
             "project_enabled": 1,
-            "project_state": "UPGRADING",
+            "project_state": "ENABLED",
             "reconcile_state": "PREPARING",
             "policy_mode": "PROJECT_FULL_AUTO",
             "generation_state": "COMMITTED",
@@ -1948,6 +1960,8 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "policy_project_generation": 4,
             "max_generation": 3,
             "non_disposed_other_count": 0,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 0,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -1958,34 +1972,110 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 },
             },
         }
-        cursor = _WindowCursor(
-            [],
-            policy_exists=True,
-            candidate_rows=[],
-            project_schema_exists=True,
-            project_rows=[typed_row],
+        checkpoints = (
+            (None, None, "PREPARING", 3),
+            ("TARGET", 3, "PREPARING", 4),
+            ("PREPARING", 3, "PREPARING", 4),
+            ("WAITING_COEFFECTS", 3, "WAITING_COEFFECTS", 4),
+            ("PREPARED", 3, "READY_TO_COMMIT", 4),
         )
-        connection = _WindowConnection(cursor)
+        for target_state, target_base, reconcile_state, maximum in checkpoints:
+            row = {
+                **typed_row,
+                "target_generation_state": target_state,
+                "target_base_generation": target_base,
+                "reconcile_state": reconcile_state,
+                "max_generation": maximum,
+            }
+            cursor = _WindowCursor(
+                [], policy_exists=True, candidate_rows=[],
+                project_schema_exists=True, project_rows=[row],
+            )
+            connection = _WindowConnection(cursor)
+            with (
+                patch.object(self.runner, "_connect", return_value=connection),
+                patch("builtins.print") as print_mock,
+            ):
+                result = self.runner.check_scheduled_write_window(
+                    before_minutes=60,
+                    after_minutes=45,
+                    now=datetime(2026, 8, 14, 5, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                )
+            with self.subTest(target_state=target_state):
+                self.assertEqual(1, result)
+                rendered = " ".join(str(call) for call in print_mock.call_args_list)
+                self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
+
+        invalid_row = {**typed_row, "target_generation": 5}
+        cursor = _WindowCursor(
+            [], policy_exists=True, candidate_rows=[],
+            project_schema_exists=True, project_rows=[invalid_row],
+        )
         with (
-            patch.object(self.runner, "_connect", return_value=connection),
+            patch.object(self.runner, "_connect", return_value=_WindowConnection(cursor)),
             patch("builtins.print") as print_mock,
         ):
             result = self.runner.check_scheduled_write_window(
                 before_minutes=60,
                 after_minutes=45,
-                now=datetime(
-                    2026,
-                    8,
-                    14,
-                    5,
-                    0,
-                    tzinfo=ZoneInfo("Asia/Shanghai"),
-                ),
+                now=datetime(2026, 8, 14, 5, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
             )
+        self.assertEqual(1, result)
+        rendered = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("PROJECT_SCHEDULE_RUNTIME_INVALID", rendered)
+        self.assertIn("CHECK_PROJECT_STATE_INVALID", rendered)
 
-        self.assertEqual(0, result)
-        print_mock.assert_called_once_with(
-            "scheduled_write_window=ok checked_schedules=0"
+    def test_release_preflight_accepts_repository_runtime_checkpoints(self):
+        helper = self.runner._AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER
+        base = {
+            "committed_generation": 3,
+            "target_generation": 4,
+            "policy_project_generation": 4,
+            "generation_state": "COMMITTED",
+            "generation_error_code": None,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
+            "unknown_write_count": 0,
+        }
+        checkpoints = (
+            {
+                "project_state": "ENABLED", "reconcile_state": "PREPARING",
+                "target_generation_state": None, "target_base_generation": None,
+                "max_generation": 3,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "PREPARING",
+                "target_generation_state": "TARGET", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "PREPARING",
+                "target_generation_state": "PREPARING", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "WAITING_COEFFECTS",
+                "target_generation_state": "WAITING_COEFFECTS", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "READY_TO_COMMIT",
+                "target_generation_state": "PREPARED", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+        )
+        for checkpoint in checkpoints:
+            for project_state in ("ENABLED", "UPGRADING"):
+                with self.subTest(checkpoint=checkpoint, project_state=project_state):
+                    self.assertTrue(
+                        helper.is_staged_recoverable_runtime(
+                            {**base, **checkpoint, "project_state": project_state}
+                        )
+                    )
+        self.assertFalse(
+            helper.is_staged_recoverable_runtime(
+                {**base, **checkpoints[-1], "reconcile_state": "PREPARING"}
+            )
         )
 
     def test_scheduled_write_window_missing_target_runtime_fails_closed(self):
@@ -2009,6 +2099,8 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "policy_project_generation": 4,
             "max_generation": 3,
             "non_disposed_other_count": 0,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 0,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -2025,7 +2117,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             {"target_generation": 5},
             {"policy_project_generation": 3},
             {"max_generation": 4},
-            {"non_disposed_other_count": 1},
+            {"unsafe_non_disposed_other_count": 1},
             {"generation_state": "BLOCKED"},
             {"generation_error_code": "RUNTIME_ROOT_MISSING"},
             {"target_generation_state": "TARGET"},
@@ -2078,7 +2170,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "committed_generation": 3,
             "target_generation": 4,
             "project_enabled": 1,
-            "project_state": "UPGRADING",
+            "project_state": "ENABLED",
             "reconcile_state": "PREPARING",
             "policy_mode": "PROJECT_FULL_AUTO",
             "generation_state": "COMMITTED",
@@ -2088,6 +2180,8 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "policy_project_generation": 4,
             "max_generation": 3,
             "non_disposed_other_count": 0,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 0,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -2156,6 +2250,11 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
             "target_generation_state": "PREPARED",
             "target_base_generation": 3,
+            "policy_project_generation": 4,
+            "max_generation": 4,
+            "non_disposed_other_count": 1,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 1,
             "snapshot_json": {
                 "automation_id": "arrive_list",
@@ -2168,14 +2267,14 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         }
         mutations = (
             (
+                "wrong reconcile state",
+                {"reconcile_state": "PREPARING"},
+                "RECONCILE_STATE_PREPARING",
+            ),
+            (
                 "missing lease",
                 {"unknown_write_count": 0},
                 "UNKNOWN_WRITE_LEASES_ZERO",
-            ),
-            (
-                "duplicate lease",
-                {"unknown_write_count": 2},
-                "UNKNOWN_WRITE_LEASES_MULTIPLE",
             ),
             (
                 "wrong error",
@@ -2191,6 +2290,21 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 "target not newer",
                 {"target_generation": 3},
                 "TARGET_RELATION_MATCH",
+            ),
+            (
+                "policy not advanced",
+                {"policy_project_generation": 3},
+                "POLICY_TARGET_RELATION_BEHIND",
+            ),
+            (
+                "unsafe open generation",
+                {"unsafe_non_disposed_other_count": 1},
+                "UNSAFE_NON_DISPOSED_OTHERS_ONE",
+            ),
+            (
+                "active committed lease",
+                {"active_current_lease_count": 1},
+                "ACTIVE_CURRENT_LEASES_ONE",
             ),
             (
                 "target not prepared",
@@ -2266,6 +2380,8 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "policy_project_generation": "SENSITIVE_POLICY_GENERATION_SENTINEL",
             "max_generation": "SENSITIVE_MAX_GENERATION_SENTINEL",
             "non_disposed_other_count": "SENSITIVE_OPEN_GENERATION_COUNT_SENTINEL",
+            "unsafe_non_disposed_other_count": "SENSITIVE_UNSAFE_GENERATION_SENTINEL",
+            "active_current_lease_count": "SENSITIVE_ACTIVE_LEASE_SENTINEL",
             "generation_state": "SENSITIVE_COMMITTED_STATE_SENTINEL",
             "generation_error_code": "SENSITIVE_ERROR_SENTINEL",
             "target_generation_state": "SENSITIVE_TARGET_STATE_SENTINEL",
@@ -2312,6 +2428,8 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
         self.assertIn("MAX_COMMITTED_RELATION_INVALID", rendered)
         self.assertIn("TARGET_MAX_NEXT_INVALID", rendered)
         self.assertIn("NON_DISPOSED_OTHERS_INVALID", rendered)
+        self.assertIn("UNSAFE_NON_DISPOSED_OTHERS_INVALID", rendered)
+        self.assertIn("ACTIVE_CURRENT_LEASES_INVALID", rendered)
         self.assertIn("COMMITTED_STATE_OTHER", rendered)
         self.assertIn("COMMITTED_ERROR_OTHER", rendered)
         self.assertIn("TARGET_STATE_OTHER", rendered)
@@ -2326,6 +2444,8 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "SENSITIVE_POLICY_GENERATION_SENTINEL",
             "SENSITIVE_MAX_GENERATION_SENTINEL",
             "SENSITIVE_OPEN_GENERATION_COUNT_SENTINEL",
+            "SENSITIVE_UNSAFE_GENERATION_SENTINEL",
+            "SENSITIVE_ACTIVE_LEASE_SENTINEL",
             "SENSITIVE_COMMITTED_STATE_SENTINEL",
             "SENSITIVE_ERROR_SENTINEL",
             "SENSITIVE_TARGET_STATE_SENTINEL",
@@ -2355,6 +2475,11 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "generation_error_code": "WRITE_OUTCOME_UNKNOWN",
             "target_generation_state": "PREPARED",
             "target_base_generation": 3,
+            "policy_project_generation": 4,
+            "max_generation": 4,
+            "non_disposed_other_count": 1,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 1,
             "snapshot_json": {
                 "automation_id": "arrive_list",

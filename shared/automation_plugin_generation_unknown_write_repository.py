@@ -107,7 +107,7 @@ def lock_archival_unknown_predecessor(
     if expected_committed is not None:
         cursor.execute(
             """
-            SELECT state
+            SELECT state, error_code
             FROM automation_project_generations
             WHERE automation_id=%s AND generation=%s FOR UPDATE
             """,
@@ -120,17 +120,30 @@ def lock_archival_unknown_predecessor(
             )
         predecessor_state = str(predecessor.get("state") or "")
         if predecessor_state == "BLOCKED":
+            if predecessor.get("error_code") != "WRITE_OUTCOME_UNKNOWN":
+                raise ConcurrentUpdateError(
+                    "blocked predecessor does not carry unknown-write evidence"
+                )
             cursor.execute(
                 """
-                SELECT lease_id
+                SELECT lease_id, outcome
                 FROM automation_project_generation_leases
                 WHERE automation_id=%s AND generation=%s
-                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                  AND outcome IN ('RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN')
                 FOR UPDATE
                 """,
                 (automation_id, expected_committed),
             )
-            if not _rows(cursor):
+            leases = tuple(_rows(cursor))
+            if any(
+                row.get("outcome") in {"RUNNING", "VERIFYING"} for row in leases
+            ):
+                raise ConcurrentUpdateError(
+                    "blocked predecessor still has active runtime leases"
+                )
+            if not any(
+                row.get("outcome") == "WRITE_OUTCOME_UNKNOWN" for row in leases
+            ):
                 raise ConcurrentUpdateError(
                     "blocked predecessor has no unknown-write lease"
                 )

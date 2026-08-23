@@ -19,6 +19,9 @@ from shared.automation_plugin_repository import (
     _validated_worker_inbound_envelope,
     _worker_status_body,
 )
+from shared.automation_plugin_generation_unknown_write_repository import (
+    lock_archival_unknown_predecessor,
+)
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
 from shared.feishu_approval_repository import FeishuApprovalRepository
 from shared.orchestration_repository_support import (
@@ -247,6 +250,36 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_archival_commit_rejects_active_predecessor_lease(self):
+        cursor = _ScriptedCursor(
+            [
+                (
+                    "FROM automation_project_generations",
+                    {"state": "BLOCKED", "error_code": "WRITE_OUTCOME_UNKNOWN"},
+                    0,
+                ),
+                (
+                    "FROM automation_project_generation_leases",
+                    [
+                        {"lease_id": "unknown", "outcome": "WRITE_OUTCOME_UNKNOWN"},
+                        {"lease_id": "active", "outcome": "VERIFYING"},
+                    ],
+                    0,
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(ConcurrentUpdateError, "active runtime leases"):
+            lock_archival_unknown_predecessor(
+                cursor,
+                automation_id="instance-one",
+                expected_committed=1,
+            )
+        self.assertIn(
+            "outcome IN ('RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN')",
+            " ".join(cursor.executions[1][0].split()),
+        )
+
     def test_generic_upgrade_replays_event_from_before_prepared_target_support(self):
         request_id = str(uuid.uuid4())
         payload = {
@@ -489,6 +522,141 @@ class AutomationPluginRepositoryTests(TestCase):
                 ),
             )
 
+    def test_configuration_generation_rejects_current_unknown_write(self):
+        project, config, _policy = _configuration_save_rows()
+        project["reconcile_state"] = "BLOCKED_UNKNOWN_WRITE"
+        blocked_current = {
+            "generation": 1,
+            "state": "BLOCKED",
+            "_archival_unknown_write": True,
+        }
+
+        with self.assertRaises(ConcurrentUpdateError):
+            _configuration_target_generation(
+                project,
+                config,
+                (blocked_current,),
+            )
+        with self.assertRaises(ConcurrentUpdateError):
+            _configuration_target_generation(
+                project,
+                config,
+                ({"generation": 1, "state": "BLOCKED"},),
+            )
+
+    def test_configuration_unknown_write_archive_authority_is_release_only(self):
+        repository = AutomationPluginRepository(_Connection())
+
+        with self.assertRaisesRegex(ValueError, "belongs to first-party release"):
+            repository.save_project_config(
+                "instance-one",
+                config={},
+                account_bindings={},
+                resource_bindings={},
+                enabled_entrypoints=(),
+                schedule={"kind": "none", "times": [], "enabled": False},
+                compiled_invocations={},
+                device_binding=None,
+                actor_id="console-admin",
+                actor_role="super_admin",
+                request_id=str(uuid.uuid4()),
+                expected_project_configuration_version=1,
+                allow_blocked_unknown_write_archive=True,
+            )
+
+    def test_generation_stage_locks_current_unknown_write_evidence(self):
+        project, config, _policy = _configuration_save_rows()
+        project["reconcile_state"] = "BLOCKED_UNKNOWN_WRITE"
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_project_generations",
+                    [
+                        {
+                            "generation": 1,
+                            "state": "BLOCKED",
+                            "error_code": "WRITE_OUTCOME_UNKNOWN",
+                        }
+                    ],
+                    0,
+                ),
+                (
+                    "FROM automation_project_generation_leases",
+                    [
+                        {
+                            "generation": 1,
+                            "lease_id": "lease-current",
+                            "outcome": "WRITE_OUTCOME_UNKNOWN",
+                        },
+                        {
+                            "generation": 1,
+                            "lease_id": "lease-current-second",
+                            "outcome": "WRITE_OUTCOME_UNKNOWN",
+                        },
+                    ],
+                    0,
+                ),
+            ]
+        )
+        repository = AutomationPluginRepository(connection)
+
+        stage = repository.lock_project_generation_stage(
+            "instance-one",
+            project=project,
+            current_config=config,
+            allow_current_unknown_write=True,
+        )
+
+        self.assertEqual(2, stage.target_generation)
+        self.assertEqual(1, stage.committed_generation)
+        self.assertEqual(
+            ("instance-one", 1),
+            connection.cursor_instance.executions[1][1],
+        )
+
+    def test_generation_stage_rejects_active_current_unknown_write_lease(self):
+        project, config, _policy = _configuration_save_rows()
+        project["reconcile_state"] = "BLOCKED_UNKNOWN_WRITE"
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_project_generations",
+                    [
+                        {
+                            "generation": 1,
+                            "state": "BLOCKED",
+                            "error_code": "WRITE_OUTCOME_UNKNOWN",
+                        }
+                    ],
+                    0,
+                ),
+                (
+                    "FROM automation_project_generation_leases",
+                    [
+                        {
+                            "generation": 1,
+                            "lease_id": "lease-unknown",
+                            "outcome": "WRITE_OUTCOME_UNKNOWN",
+                        },
+                        {
+                            "generation": 1,
+                            "lease_id": "lease-active",
+                            "outcome": "VERIFYING",
+                        },
+                    ],
+                    0,
+                ),
+            ]
+        )
+
+        with self.assertRaises(ConcurrentUpdateError):
+            AutomationPluginRepository(connection).lock_project_generation_stage(
+                "instance-one",
+                project=project,
+                current_config=config,
+                allow_current_unknown_write=True,
+            )
+
     def test_generation_stage_locks_unknown_write_archive_evidence(self):
         project, config, _policy = _configuration_save_rows()
         project.update({"target_generation": 2, "committed_generation": 2})
@@ -497,14 +665,24 @@ class AutomationPluginRepositoryTests(TestCase):
                 (
                     "FROM automation_project_generations",
                     [
-                        {"generation": 1, "state": "BLOCKED"},
+                        {
+                            "generation": 1,
+                            "state": "BLOCKED",
+                            "error_code": "WRITE_OUTCOME_UNKNOWN",
+                        },
                         {"generation": 2, "state": "COMMITTED"},
                     ],
                     0,
                 ),
                 (
                     "FROM automation_project_generation_leases",
-                    [{"generation": 1, "lease_id": "lease-one"}],
+                    [
+                        {
+                            "generation": 1,
+                            "lease_id": "lease-one",
+                            "outcome": "WRITE_OUTCOME_UNKNOWN",
+                        }
+                    ],
                     0,
                 ),
             ]
@@ -546,6 +724,28 @@ class AutomationPluginRepositoryTests(TestCase):
                     {"generation": 2, "state": "PREPARED"},
                 ),
             )
+
+    def test_plugin_upgrade_reuses_configuration_target_from_current_unknown_write(self):
+        project, config, _policy = _configuration_save_rows()
+        project["target_generation"] = 2
+        project["reconcile_state"] = "PREPARING"
+
+        stage = _prepared_configuration_upgrade_stage(
+            project,
+            config,
+            (
+                {
+                    "generation": 1,
+                    "state": "BLOCKED",
+                    "error_code": "WRITE_OUTCOME_UNKNOWN",
+                    "_archival_unknown_write": True,
+                },
+            ),
+            allow_current_unknown_write=True,
+        )
+
+        self.assertEqual(2, stage.target_generation)
+        self.assertEqual(1, stage.committed_generation)
 
     def test_initial_configuration_stages_generation_one_and_binds_policy(self):
         project, config, _policy = _configuration_save_rows()
