@@ -376,8 +376,7 @@ def typed_project_scheduled_write_crons(
             )
         task_id = row.get("task_id")
         quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
-        staged_missing_target = is_staged_recoverable_runtime(row)
-        isolated_runtime = quarantined_unknown_write or staged_missing_target
+        isolated_runtime = quarantined_unknown_write or (is_staged_recoverable_runtime(row) and row.get("project_state") != "ENABLED")
         runtime_issue = _scheduled_write_runtime_validation_issue(
             row,
             seen_task_ids=seen_task_ids,
