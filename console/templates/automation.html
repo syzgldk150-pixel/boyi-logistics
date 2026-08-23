@@ -1264,6 +1264,7 @@
     let approvedBatchGeneration = 0;
     let approvedBatchReceipts = [];
     let approvedBatchStates = new Map();
+    let termAttentionLatched = false;
     let runUiState = {
       running: false,
       awaitingApproval: false,
@@ -1748,6 +1749,7 @@
       }
 
       function renderAttentionRun(data) {
+        termAttentionLatched = true;
         const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
         const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
         const status = String(data.status || "").toUpperCase();
@@ -1884,7 +1886,7 @@
             termStatus.textContent = "连接失败";
             termStatus.className = "auto-terminal-status auto-terminal-status--error";
           }
-          if (runUiState.running || termDrawer.dataset.runStartedAt) {
+          if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt)) {
             termPollTimer = setTimeout(pollOutput, 3000);
           }
         }
@@ -1892,6 +1894,7 @@
 
       startPolling = function(startedAt = "") {
         if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
+        termAttentionLatched = false;
         termOffset = 0;
         termNeedsFinalRuntimePoll = false;
         termFinalRuntimePollCount = 0;
@@ -2544,6 +2547,11 @@
           try {
             outputState = await fetchOutputState({ offset: 0 });
           } catch {}
+
+          if (outputState?.attention) {
+            renderAttentionRun(outputState);
+            return;
+          }
 
           const awaitingApproval = !!outputState?.awaiting_approval || String(outputState?.status || "").toUpperCase() === "WAITING_APPROVAL";
           if (outputState && awaitingApproval) {
