@@ -463,6 +463,66 @@ class AutomationPluginRepositoryTests(TestCase):
                 with self.assertRaises(ConcurrentUpdateError):
                     _configuration_target_generation(project, config, rows)
 
+    def test_configuration_generation_advances_past_proven_unknown_write_archive(self):
+        project, config, _policy = _configuration_save_rows()
+        project.update({"target_generation": 2, "committed_generation": 2})
+        archived_history = (
+            {
+                "generation": 1,
+                "state": "BLOCKED",
+                "_archival_unknown_write": True,
+            },
+            {"generation": 2, "state": "COMMITTED"},
+        )
+
+        self.assertEqual(
+            3,
+            _configuration_target_generation(project, config, archived_history),
+        )
+        with self.assertRaises(ConcurrentUpdateError):
+            _configuration_target_generation(
+                project,
+                config,
+                (
+                    {"generation": 1, "state": "BLOCKED"},
+                    {"generation": 2, "state": "COMMITTED"},
+                ),
+            )
+
+    def test_generation_stage_locks_unknown_write_archive_evidence(self):
+        project, config, _policy = _configuration_save_rows()
+        project.update({"target_generation": 2, "committed_generation": 2})
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_project_generations",
+                    [
+                        {"generation": 1, "state": "BLOCKED"},
+                        {"generation": 2, "state": "COMMITTED"},
+                    ],
+                    0,
+                ),
+                (
+                    "FROM automation_project_generation_leases",
+                    [{"generation": 1, "lease_id": "lease-one"}],
+                    0,
+                ),
+            ]
+        )
+        repository = AutomationPluginRepository(connection)
+
+        stage = repository.lock_project_generation_stage(
+            "instance-one",
+            project=project,
+            current_config=config,
+        )
+
+        self.assertEqual(3, stage.target_generation)
+        self.assertEqual(
+            ("instance-one", 1),
+            connection.cursor_instance.executions[1][1],
+        )
+
     def test_plugin_upgrade_reuses_only_exact_empty_configuration_target(self):
         project, config, _policy = _configuration_save_rows()
         project["target_generation"] = 2
