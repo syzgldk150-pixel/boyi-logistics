@@ -365,6 +365,22 @@ def test_canonical_rows_treats_sheet_line_endings_and_unicode_nfc_as_equivalent(
     assert expected == observed
 
 
+def test_arrive_readback_normalizes_compatibility_text_only_for_remarks() -> None:
+    expected = arrival._canonical_arrive_readback(
+        [["Ｘ１２３", "", "", "", "", "", "", "", "备注\u00a0ＡＢＣ"]],
+        width=9,
+    )
+    observed = arrival._canonical_arrive_readback(
+        [["X123", "", "", "", "", "", "", "", "备注 ABC"]],
+        width=9,
+    )
+
+    assert expected[0][8] == observed[0][8]
+    assert expected[0][0] == "Ｘ１２３"
+    assert observed[0][0] == "X123"
+    assert expected != observed
+
+
 def test_arrive_sheet_readback_respects_template_offset_within_clear_range(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -535,6 +551,35 @@ def test_arrive_sheet_binding_failure_stays_prewrite_and_never_calls_feishu(
         )
 
     assert exc.value.code == "BROKER_RESOURCE_UNAVAILABLE"
+    assert writes == []
+
+
+def test_arrive_sheet_invalid_expected_numeric_value_stays_prewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-arrive-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "range": "Arrive!A2:R100",
+        "clear_range": "Arrive!A2:R100",
+        "title_range": "Arrive!A1:R1",
+        "_meta": {"resource_key": resource_id},
+    }
+    row = [_record().get(field) for field in _FIELDS]
+    row[4] = "not-a-number"
+    writes: list[object] = []
+    monkeypatch.setattr(arrival, "_load_resource", lambda _resource_id: resource)
+    monkeypatch.setattr(
+        arrival,
+        "_write_sheet_call",
+        lambda action, params: writes.append((action, params)) or True,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        arrival._replace_arrive_sheet(resource_id, [row], "2026-08-15")
+
+    assert exc.value.code == "BROKER_ARGUMENT_INVALID"
     assert writes == []
 
 
