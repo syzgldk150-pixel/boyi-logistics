@@ -47,18 +47,18 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
     target_state = row.get("target_generation_state")
     target_base_generation = row.get("target_base_generation")
     target_lineage_is_safe = (
-        target_state == "PREPARED"
+        row.get("project_state") == "UPGRADING" and row.get("reconcile_state") == "READY_TO_COMMIT"
+        and target_state == "PREPARED"
         and target_base_generation == committed_generation
         and max_generation == target_generation
     ) or (
-        target_state is None
+        row.get("project_state") in {"ENABLED", "UPGRADING"} and row.get("reconcile_state") == "PREPARING"
+        and target_state is None
         and target_base_generation is None
         and max_generation == committed_generation
     )
     return bool(
-        row.get("project_state") == "UPGRADING"
-        and row.get("reconcile_state") == "PREPARING"
-        and type(committed_generation) is int
+        type(committed_generation) is int
         and type(target_generation) is int
         and target_generation == committed_generation + 1
         and row.get("policy_project_generation") == target_generation
@@ -79,7 +79,7 @@ def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
     target_generation = row.get("target_generation")
     max_generation = row.get("max_generation")
     return bool(
-        row.get("project_state") == "UPGRADING"
+        row.get("project_state") in {"ENABLED", "UPGRADING"}
         and row.get("reconcile_state") == "PREPARING"
         and type(committed_generation) is int
         and type(target_generation) is int

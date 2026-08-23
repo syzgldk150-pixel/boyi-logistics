@@ -236,7 +236,6 @@ def _valid_world(preflight):
             "target_base_generation": None,
             "policy_project_generation": 1,
             "max_generation": 1,
-            "non_disposed_other_count": 0,
             "unsafe_non_disposed_other_count": 0,
             "active_current_lease_count": 0,
             "unknown_write_count": 0,
@@ -733,7 +732,7 @@ def test_later_release_accepts_staged_unknown_write_quarantine(
         project_state="UPGRADING",
         target_generation=3,
         committed_generation=2,
-        reconcile_state="PREPARING",
+        reconcile_state="READY_TO_COMMIT",
         generation=2,
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
@@ -741,7 +740,6 @@ def test_later_release_accepts_staged_unknown_write_quarantine(
         target_base_generation=2,
         policy_project_generation=3,
         max_generation=3,
-        non_disposed_other_count=2,
         unsafe_non_disposed_other_count=0,
         active_current_lease_count=0,
         unknown_write_count=unknown_write_count,
@@ -767,7 +765,7 @@ def test_later_release_accepts_staged_unknown_write_with_missing_target(prefligh
     contract, schedules, backups, projects = _valid_world(preflight)
     project = projects[sorted(contract["release_projects"])[0]]
     project.update(
-        project_state="UPGRADING",
+        project_state="ENABLED",
         target_generation=2,
         reconcile_state="PREPARING",
         generation_state="BLOCKED",
@@ -776,7 +774,6 @@ def test_later_release_accepts_staged_unknown_write_with_missing_target(prefligh
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
         unsafe_non_disposed_other_count=0,
         active_current_lease_count=0,
         unknown_write_count=1,
@@ -795,7 +792,7 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
     contract, schedules, backups, projects = _valid_world(preflight)
     project = projects[sorted(contract["release_projects"])[0]]
     project.update(
-        project_state="UPGRADING",
+        project_state="ENABLED",
         target_generation=2,
         reconcile_state="PREPARING",
         generation_state="COMMITTED",
@@ -804,7 +801,6 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
         unsafe_non_disposed_other_count=0,
         unknown_write_count=0,
     )
@@ -847,7 +843,6 @@ def test_staged_missing_target_runtime_fails_closed(preflight, mutation):
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
         unknown_write_count=0,
     )
     project.update(mutation)
@@ -877,7 +872,6 @@ def test_initial_release_rejects_staged_missing_target_runtime(preflight):
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
         unknown_write_count=0,
     )
 
@@ -896,6 +890,7 @@ def test_initial_release_rejects_staged_missing_target_runtime(preflight):
 @pytest.mark.parametrize(
     "mutation",
     (
+        {"reconcile_state": "PREPARING"},
         {"reconcile_state": "ERROR"},
         {"target_generation": 3},
         {"policy_project_generation": 1},
@@ -917,14 +912,13 @@ def test_staged_unknown_write_quarantine_fails_closed(preflight, mutation):
     project.update(
         project_state="UPGRADING",
         target_generation=2,
-        reconcile_state="PREPARING",
+        reconcile_state="READY_TO_COMMIT",
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
         target_generation_state="PREPARED",
         target_base_generation=1,
         policy_project_generation=2,
         max_generation=2,
-        non_disposed_other_count=1,
         unsafe_non_disposed_other_count=0,
         active_current_lease_count=0,
         unknown_write_count=1,
@@ -949,14 +943,13 @@ def test_initial_release_rejects_staged_unknown_write_quarantine(preflight):
     project.update(
         project_state="UPGRADING",
         target_generation=2,
-        reconcile_state="PREPARING",
+        reconcile_state="READY_TO_COMMIT",
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
         target_generation_state="PREPARED",
         target_base_generation=1,
         policy_project_generation=2,
         max_generation=2,
-        non_disposed_other_count=1,
         unsafe_non_disposed_other_count=0,
         active_current_lease_count=0,
         unknown_write_count=1,
