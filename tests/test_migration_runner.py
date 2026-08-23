@@ -1939,7 +1939,7 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "scheduled_write_window=ok checked_schedules=0"
         )
 
-    def test_scheduled_write_window_excludes_staged_missing_target_runtime(self):
+    def test_scheduled_write_window_keeps_runnable_config_save_runtime(self):
         typed_row = {
             "task_id": "arrive_list_0500",
             "automation_id": "arrive_list",
@@ -1997,10 +1997,9 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual(0, result)
-        print_mock.assert_called_once_with(
-            "scheduled_write_window=ok checked_schedules=0"
-        )
+        self.assertEqual(1, result)
+        rendered = " ".join(str(call) for call in print_mock.call_args_list)
+        self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
 
     def test_release_preflight_accepts_repository_runtime_checkpoints(self):
         helper = self.runner._AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER
