@@ -1972,34 +1972,58 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                 },
             },
         }
-        cursor = _WindowCursor(
-            [],
-            policy_exists=True,
-            candidate_rows=[],
-            project_schema_exists=True,
-            project_rows=[typed_row],
+        checkpoints = (
+            (None, None, "PREPARING", 3),
+            ("TARGET", 3, "PREPARING", 4),
+            ("PREPARING", 3, "PREPARING", 4),
+            ("WAITING_COEFFECTS", 3, "WAITING_COEFFECTS", 4),
+            ("PREPARED", 3, "READY_TO_COMMIT", 4),
         )
-        connection = _WindowConnection(cursor)
+        for target_state, target_base, reconcile_state, maximum in checkpoints:
+            row = {
+                **typed_row,
+                "target_generation_state": target_state,
+                "target_base_generation": target_base,
+                "reconcile_state": reconcile_state,
+                "max_generation": maximum,
+            }
+            cursor = _WindowCursor(
+                [], policy_exists=True, candidate_rows=[],
+                project_schema_exists=True, project_rows=[row],
+            )
+            connection = _WindowConnection(cursor)
+            with (
+                patch.object(self.runner, "_connect", return_value=connection),
+                patch("builtins.print") as print_mock,
+            ):
+                result = self.runner.check_scheduled_write_window(
+                    before_minutes=60,
+                    after_minutes=45,
+                    now=datetime(2026, 8, 14, 5, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                )
+            with self.subTest(target_state=target_state):
+                self.assertEqual(1, result)
+                rendered = " ".join(str(call) for call in print_mock.call_args_list)
+                self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
+
+        invalid_row = {**typed_row, "target_generation": 5}
+        cursor = _WindowCursor(
+            [], policy_exists=True, candidate_rows=[],
+            project_schema_exists=True, project_rows=[invalid_row],
+        )
         with (
-            patch.object(self.runner, "_connect", return_value=connection),
+            patch.object(self.runner, "_connect", return_value=_WindowConnection(cursor)),
             patch("builtins.print") as print_mock,
         ):
             result = self.runner.check_scheduled_write_window(
                 before_minutes=60,
                 after_minutes=45,
-                now=datetime(
-                    2026,
-                    8,
-                    14,
-                    5,
-                    0,
-                    tzinfo=ZoneInfo("Asia/Shanghai"),
-                ),
+                now=datetime(2026, 8, 14, 5, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
             )
-
         self.assertEqual(1, result)
         rendered = " ".join(str(call) for call in print_mock.call_args_list)
-        self.assertIn("SCHEDULED_WRITE_WINDOW_ACTIVE", rendered)
+        self.assertIn("PROJECT_SCHEDULE_RUNTIME_INVALID", rendered)
+        self.assertIn("CHECK_PROJECT_STATE_INVALID", rendered)
 
     def test_release_preflight_accepts_repository_runtime_checkpoints(self):
         helper = self.runner._AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER
@@ -2041,10 +2065,13 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             },
         )
         for checkpoint in checkpoints:
-            with self.subTest(checkpoint=checkpoint):
-                self.assertTrue(
-                    helper.is_staged_recoverable_runtime({**base, **checkpoint})
-                )
+            for project_state in ("ENABLED", "UPGRADING"):
+                with self.subTest(checkpoint=checkpoint, project_state=project_state):
+                    self.assertTrue(
+                        helper.is_staged_recoverable_runtime(
+                            {**base, **checkpoint, "project_state": project_state}
+                        )
+                    )
         self.assertFalse(
             helper.is_staged_recoverable_runtime(
                 {**base, **checkpoints[-1], "reconcile_state": "PREPARING"}

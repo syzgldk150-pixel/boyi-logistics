@@ -129,12 +129,18 @@ def lock_archival_unknown_predecessor(
                 SELECT lease_id, outcome
                 FROM automation_project_generation_leases
                 WHERE automation_id=%s AND generation=%s
-                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                  AND outcome IN ('RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN')
                 FOR UPDATE
                 """,
                 (automation_id, expected_committed),
             )
             leases = tuple(_rows(cursor))
+            if any(
+                row.get("outcome") in {"RUNNING", "VERIFYING"} for row in leases
+            ):
+                raise ConcurrentUpdateError(
+                    "blocked predecessor still has active runtime leases"
+                )
             if not any(
                 row.get("outcome") == "WRITE_OUTCOME_UNKNOWN" for row in leases
             ):
