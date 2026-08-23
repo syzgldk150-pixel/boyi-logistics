@@ -341,6 +341,23 @@ def test_arrive_sheet_accepts_feishu_numeric_readback_formatting(
     assert result["verified"] is True
 
 
+def test_sheet_mismatch_shape_reports_only_position_and_lengths() -> None:
+    summary = arrival._sheet_mismatch_shape(
+        [["private-expected", "same"]],
+        [["private-observed", "same"]],
+    )
+
+    assert summary == {
+        "expected_rows": 1,
+        "observed_rows": 1,
+        "first_row": 0,
+        "first_column": 0,
+        "expected_length": 16,
+        "observed_length": 16,
+    }
+    assert "private" not in repr(summary)
+
+
 def test_empty_arrive_sheet_reconciles_clear_response_loss_and_updates_title(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
