@@ -40,6 +40,8 @@ YUNDA_QUERY_REPLY_URL = f"{YUNDA_PUBLIC_ROOT}/query/replyInfo.html"
 YUNDA_ISSUE_LIST_URL = f"{YUNDA_PUBLIC_ROOT}/issue/list.html"
 YUNDA_ISSUE_SAVE_URL = f"{YUNDA_PUBLIC_ROOT}/issue/save.html"
 YUNDA_UPLOAD_URL = f"{YUNDA_PUBLIC_ROOT}/issue/uploadImg.html"
+SHANGHAI_TZ = dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai")
+YUNDA_ISSUE_DEFAULT_LOOKBACK_DAYS = 2
 
 SUPPORTED_PLATFORMS = {"ronghui", "yunda"}
 SUPPORTED_ACTIONS = {"query", "detail", "mark_read", "reply", "publish", "upload_attachment", "fetch_attachment"}
@@ -1022,11 +1024,28 @@ def build_yunda_query_payload(filters: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _yunda_issue_today() -> dt.date:
+    return dt.datetime.now(SHANGHAI_TZ).date()
+
+
 def build_yunda_issue_list_payload(filters: dict[str, Any]) -> dict[str, Any]:
     filters = filters if isinstance(filters, dict) else {}
     page = _coerce_int(filters.get("page"), default=1, minimum=1, maximum=9999)
     rows = _coerce_int(filters.get("rows") or filters.get("page_size"), default=50, minimum=1, maximum=200)
     start_date, start_time, end_date, end_time = _yunda_origin_date_parts(filters)
+    if not start_date and not end_date:
+        today = _yunda_issue_today()
+        start_date = (
+            today - dt.timedelta(days=YUNDA_ISSUE_DEFAULT_LOOKBACK_DAYS)
+        ).isoformat()
+        start_time = "00:00:00"
+        end_date = today.isoformat()
+        end_time = "23:59:59"
+    elif not start_date or not end_date:
+        raise CustomerServiceProblemError(
+            "INVALID_DATE_RANGE",
+            "韵达发布问题件查询必须同时提供开始和结束日期。",
+        )
     return {
         "bl_attachment": _clean_text(filters.get("bl_attachment")),
         "ship_no": _clean_text(filters.get("ship_no") or filters.get("q") or filters.get("waybill_no")),
@@ -1079,8 +1098,22 @@ def _raise_if_yunda_auth_required(response: Any, body: str) -> None:
         raise TMSAuthStateError("AUTH_REQUIRED", "韵达接口返回空响应，请重新登录韵达账号。")
 
 
-def _yunda_post_json(session: Any, url: str, data: dict[str, Any], *, referer: str, label: str) -> Any:
-    response = session.post(url, data=_compact_yunda_payload(data), headers=_yunda_headers(referer), timeout=30)
+def _yunda_post_json(
+    session: Any,
+    url: str,
+    data: dict[str, Any],
+    *,
+    referer: str,
+    label: str,
+    preserve_empty: bool = False,
+) -> Any:
+    request_data = dict(data) if preserve_empty else _compact_yunda_payload(data)
+    response = session.post(
+        url,
+        data=request_data,
+        headers=_yunda_headers(referer),
+        timeout=30,
+    )
     body = str(getattr(response, "text", "") or "")
     _raise_if_yunda_auth_required(response, body)
     if hasattr(response, "raise_for_status"):
@@ -1100,13 +1133,22 @@ def _yunda_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
         payload = build_yunda_issue_list_payload(filters)
         source_direction = "published"
         label = "发布列表"
+        preserve_empty = True
     else:
         url = YUNDA_QUERY_LIST_URL
         referer = f"{YUNDA_PUBLIC_ROOT}/query/index.html"
         payload = build_yunda_query_payload(filters)
         source_direction = "query"
         label = "查询列表"
-    data = _yunda_post_json(session, url, payload, referer=referer, label=label)
+        preserve_empty = False
+    data = _yunda_post_json(
+        session,
+        url,
+        payload,
+        referer=referer,
+        label=label,
+        preserve_empty=preserve_empty,
+    )
     raw_rows = _extract_rows(data)
     rows = normalize_problem_rows(
         "yunda",

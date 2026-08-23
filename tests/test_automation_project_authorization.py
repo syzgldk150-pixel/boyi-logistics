@@ -61,7 +61,14 @@ class _Catalog:
             raise ValueError("invalid arguments")
 
 
-def _capability(name: str, *, project_allowed=True, evidence=True, retry=None):
+def _capability(
+    name: str,
+    *,
+    project_allowed=True,
+    evidence=True,
+    retry=None,
+    idempotency=None,
+):
     return {
         "name": name,
         "version": "1.0.0",
@@ -70,7 +77,7 @@ def _capability(name: str, *, project_allowed=True, evidence=True, retry=None):
         "approval": {"mode": "required", "required_role": "super_admin"},
         "permissions": {"required_roles": ["super_admin"]},
         "account_scope": {"required": True, "allow_implicit_default": False},
-        "idempotency": {"mode": "none", "key_fields": []},
+        "idempotency": idempotency or {"mode": "none", "key_fields": []},
         "retry": retry or {"safe": False, "max_attempts": 1},
         "evidence": (
             {"required": True, "required_fields": ["source", "execution_result"]}
@@ -201,6 +208,25 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
                 )
                 self.assertTrue(contract.can_full_auto)
                 self.assertIsNone(contract.restriction_code)
+
+    def test_closed_parameter_idempotent_write_can_be_full_auto(self):
+        _capability_row, _definition_row, _fragment_row, contract = self._compile(
+            "sync_daily_should_sign",
+            idempotency={"mode": "parameters", "key_fields": []},
+        )
+
+        self.assertTrue(contract.can_full_auto)
+        self.assertIsNone(contract.restriction_code)
+
+        _capability_row, _definition_row, _fragment_row, invalid = self._compile(
+            "sync_daily_should_sign",
+            idempotency={"mode": "parameters", "key_fields": ["account_id"]},
+        )
+        self.assertFalse(invalid.can_full_auto)
+        self.assertEqual(
+            "WRITE_IDEMPOTENCY_CONTRACT_INVALID",
+            invalid.restriction_code,
+        )
 
     def test_project_mode_does_not_reapply_governance_eligibility(self):
         _cap, _definition_row, _fragment_row, missing = self._compile(

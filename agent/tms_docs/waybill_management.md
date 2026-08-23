@@ -49,7 +49,7 @@
   - `https://tms.ronghuiwl.com/minic/combobox?optionCode=TAB_DISPATCH_MODE&_=%3CTS%3E`
   - `https://tms.ronghuiwl.com/minic/combobox?optionCode=VIP_Added_Services&_=%3CTS%3E`
   - `https://tms.ronghuiwl.com/minic/combobox?optionCode=PAYMENT_TYPE&_=%3CTS%3E`
-- 本次 live 点击未拿到稳定主查询请求，通常是因为页面需要先录入单号、先选择页签，或查询逻辑在脚本内先做前置校验。
+- 输入单号后的主查询请求为 `POST /dataQuery/findAllByCallId?id=FIND_BILL_SEND`；请求体使用 `BILL_CODE=单号1,单号2`，并带 `pageIndex/pageSize/sortField/sortOrder/totalColumns`。此分支返回 JSON 数组，不使用分页对象。
 - 页面脚本提示接口：
   - `/dataQuery/findAllByCallId?id=FIND_PLAN_GOODS_ROUTE`
   - `/dataOperation/saveTables`
@@ -65,7 +65,7 @@
   - `/dataQuery/findAllByCallId?id=FIND_CREATE_BILL_DESTINATION`
 
 **Field Mapping**
-- 用户输入参数：本次 live 查询没有稳定提取到，通常是页面先走前置校验、需要先录入单号，或查询不是默认页签。
+- 用户输入参数：`searchOrderInput` 去除首尾空白后将换行转换为逗号，并以当前 `CODE_TYPE` 的值作为请求键；默认按运单查询时即为 `BILL_CODE`。输入单号时其他筛选条件不会提交。
 - text/value 到提交字段：`BL_VIP` -> `BL_VIP`；`SEND_DATE` -> `SEND_DATE`；`SEND_SITE_CODE` -> `SEND_SITE_CODE`；`REGISTER_SITE_CODE` -> `REGISTER_SITE_CODE`；`TAKE_PIECE_EMPLOYEE_CODE` -> `TAKE_PIECE_EMPLOYEE_CODE`
 
 **State / Validation Logic**
@@ -76,7 +76,7 @@
 - 前置校验/状态相关 CALL_ID：`FIND_TAB_EXCEPTION_REPORT_AUDIT`、`FIND_COUNTY_COMBOBOX_PAGE`、`FIND_BILL_CHECK`、`FIND_SITE_INFO_BY_SITE_CODE`、`FIND_BALANCE_ACCOUNT_ADD_BILL`、`FIND_SITE_EXT_BY_CODE`
 
 **Automation Notes**
-- 更适合先走 DOM：当前没有稳定主查询请求，优先把页面交互顺序跑通。
+- 按单号只读查询应直接复刻上述闭合请求；不得把 `CODE_TYPE` 与 `searchOrderInput` 原样提交到分页接口，否则服务端不会按单号筛选。
 - 存在保存链路，自动化时必须区分“只读查询”和“真正落库”的动作。
 - 页面识别建议：优先用 `pageId=3Xunbl4w7zKXRvd522bJyYD84YvJykGgJXhKek` + 页面标题联合识别。
 
