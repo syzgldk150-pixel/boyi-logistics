@@ -4,7 +4,6 @@ Query delivery sign status by bill codes using Ronghui TMS data query.
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import re
 from typing import Any, Dict, Iterable, List, Optional
@@ -14,7 +13,7 @@ import requests
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 
 
-DATA_QUERY_URL = "https://tms.ronghuiwl.com/dataQuery/findPageByCallId"
+DATA_QUERY_URL = "https://tms.ronghuiwl.com/dataQuery/findAllByCallId"
 CALL_ID = "FIND_BILL_SEND"
 DEFAULT_REFERER = "https://tms.ronghuiwl.com/widget/home"
 
@@ -46,16 +45,6 @@ BILL_KEYS = (
     "master_bill",
     "masterBill",
 )
-
-
-def _build_date_range(target_date: Optional[dt.date] = None) -> Dict[str, str]:
-    if target_date is None:
-        target_date = dt.date.today()
-    date_str = target_date.strftime("%Y/%m/%d")
-    return {
-        "start": f"{date_str} 00:00:00",
-        "end": f"{date_str} 23:59:59",
-    }
 
 
 def _ensure_daxiang_user(auth: TMSAuth) -> None:
@@ -145,96 +134,33 @@ def _get_param(params: Optional[Dict[str, Any]], *keys: str, default: Any = None
     return default
 
 
-def _resolve_date_range(params: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
-    raw_range = _get_param(params, "date_range", "dateRange", default=None)
-    if isinstance(raw_range, str):
-        try:
-            parsed = json.loads(raw_range)
-        except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            raw_range = parsed
-    if isinstance(raw_range, dict) and raw_range.get("start") and raw_range.get("end"):
-        return {"start": str(raw_range["start"]), "end": str(raw_range["end"])}
-
-    target_date = _get_param(params, "target_date", "targetDate", default=None)
-    if target_date:
-        return _build_date_range(dt.date.fromisoformat(str(target_date)))
-
-    start = _get_param(params, "start", "start_date", "startDate", default=None)
-    end = _get_param(params, "end", "end_date", "endDate", default=None)
-    if start or end:
-        return {"start": str(start or ""), "end": str(end or "")}
-
-    return None
-
-
 def build_payload(
     bill_codes: List[str],
-    date_range: Optional[Dict[str, str]] = None,
     page_index: int = 0,
     page_size: int = 200,
 ) -> Dict[str, str]:
-    search_input = "\n".join(code for code in bill_codes if code)
-    date_payload = json.dumps(date_range or {}, ensure_ascii=True)
-
-    payload: Dict[str, str] = {
-        "CODE_TYPE": "BILL_CODE",
-        "searchOrderInput": search_input,
-        "searchDateType": "REGISTER_DATE",
-        "SEARCH_DATE_RANGE1": date_payload,
-        "SEARCH_DATE_RANGE2": json.dumps({}, ensure_ascii=True),
-        "BL_SIGNS_MARKING": "",
-        "SEND_SITE_CODE": "",
-        "SEND_AREA_CODE": "",
-        "CUSTOMER_NAME": "",
-        "TAKE_PIECE_EMPLOYEE_CODE": "",
-        "REGISTER_SITE_CODE": "",
-        "SEND_PROVINCE": "",
-        "ORDER_TYPE": "",
-        "IS_XX": "",
-        "IS_LOAN": "",
-        "BL_VIP": "",
-        "DISPATCH_SITE_CODE": "",
-        "WAITNOTIFY_SEND": "",
-        "ACCEPT_AREA_CODE": "",
-        "WAITNOTIFY_SEND_STATUS": "",
-        "DISPATCH_MODE": "",
-        "SEND_MAN": "",
-        "PAYMENT_TYPE": "",
-        "ACCEPT_MAN": "",
-        "DESTINATION_CENTER_CODE": "",
-        "DISPATCH_PROVINCE": "",
-        "PRODUCT_CODE": "",
-        "DESTINATION_TYPE": "",
-        "isSort": "",
-        "SEND_BUSINESS_TYPE": "",
-        "DISP_BUSINESS_TYPE": "",
-        "SEARCH_DATE_RANGE": date_payload,
-        "REGISTER_DATE": date_payload,
-        "ORDER_BY_CREATE_DATE": "ORDER_BY_DATE",
-        "IS_SORT": "1",
-        "ORDER_TYPE_TEXT": "",
+    requested = [_normalize_bill_code(code) for code in bill_codes]
+    if not requested or any(not code for code in requested):
+        raise ValueError("Missing bill codes")
+    return {
+        "BILL_CODE": ",".join(requested),
         "pageIndex": str(page_index),
         "pageSize": str(page_size),
         "sortField": "",
         "sortOrder": "",
         "totalColumns": "[]",
     }
-    return payload
 
 
 def fetch_delivery_status(
     session: requests.Session,
     bill_codes: List[str],
-    date_range: Optional[Dict[str, str]] = None,
     page_index: int = 0,
     page_size: int = 200,
     referer: Optional[str] = None,
 ) -> Dict[str, Any]:
     payload = build_payload(
         bill_codes,
-        date_range=date_range,
         page_index=page_index,
         page_size=page_size,
     )
@@ -249,37 +175,25 @@ def fetch_delivery_status(
         timeout=20,
     )
     resp.raise_for_status()
-    return resp.json()
+    raw = resp.json()
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError("Ronghui delivery-status response is invalid")
+    return {"data": raw, "total": len(raw)}
 
 
 def iter_pages(
     session: requests.Session,
     bill_codes: List[str],
-    date_range: Optional[Dict[str, str]] = None,
     page_size: int = 200,
     referer: Optional[str] = None,
 ) -> Iterable[Dict[str, Any]]:
-    page_index = 0
-    while True:
-        raw = fetch_delivery_status(
-            session,
-            bill_codes,
-            date_range=date_range,
-            page_index=page_index,
-            page_size=page_size,
-            referer=referer,
-        )
-        yield raw
-        total = raw.get("total")
-        if total is None:
-            break
-        try:
-            total = int(total)
-        except (TypeError, ValueError):
-            break
-        if (page_index + 1) * page_size >= total:
-            break
-        page_index += 1
+    yield fetch_delivery_status(
+        session,
+        bill_codes,
+        page_index=0,
+        page_size=page_size,
+        referer=referer,
+    )
 
 
 def normalize_records(raw_items: List[Dict[str, Any]], bill_codes: List[str]) -> List[Dict[str, Any]]:
@@ -334,7 +248,6 @@ def run_once(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     if not bill_codes:
         raise ValueError("Missing bill codes")
 
-    date_range = _resolve_date_range(params)
     page_size = int(_get_param(params, "page_size", "pageSize", default=max(100, len(bill_codes))))
     page_size = max(1, page_size)
     referer = _get_param(params, "referer", default=None)
@@ -345,7 +258,6 @@ def run_once(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     for raw in iter_pages(
         session,
         bill_codes,
-        date_range=date_range,
         page_size=page_size,
         referer=referer,
     ):
