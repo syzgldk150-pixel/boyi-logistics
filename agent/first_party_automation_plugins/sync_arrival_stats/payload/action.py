@@ -620,7 +620,7 @@ def run_action(
             if pending_write.get("skipped") is True:
                 warnings.append("optional pending-arrivals sheet was unavailable")
 
-        if arguments.get("archive_snapshot", True) is True:
+        if stats_records and arguments.get("archive_snapshot", True) is True:
             archive = _committed(
                 broker(
                     "network.request",
