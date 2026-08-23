@@ -2147,23 +2147,31 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
         ),
     )
 
-    def replace_scans(records):
+    def replace_scans(records, target_date):
         call_order.append("scan-snapshot")
+        assert target_date == "2026-08-15"
         assert records[0]["main_tracking"] == main
         return {"ok": True, "upserted": len(records)}
 
     monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", replace_scans)
+    scan_rows = [
+        {
+            "raw_code": child,
+            "destination": "station",
+            "code_type": "child",
+            "main_tracking": main,
+        }
+    ]
     monkeypatch.setattr(
-            "tools.phase7_mysql_store.list_scan_codes",
-            lambda: call_order.append("scan-read")
-            or [
-                {
-                    "raw_code": child,
-                    "destination": "station",
-                    "code_type": "child",
-                    "main_tracking": main,
-                }
-            ],
+        "tools.phase7_mysql_store.list_scan_codes_for_date",
+        lambda target_date: (
+            call_order.append("scan-read")
+            or (scan_rows if target_date == "2026-08-15" else [])
+        ),
+    )
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.list_scan_codes",
+        lambda: call_order.append("scan-read") or scan_rows,
     )
     from plugin_core_adapters import arrival as arrival_adapter
     from tools.daily_sign_store import snapshot_fingerprint
