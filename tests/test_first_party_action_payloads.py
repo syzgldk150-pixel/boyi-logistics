@@ -882,6 +882,8 @@ def test_customer_problem_payload_owns_pagination_dedupe_and_recheck() -> None:
     assert result["error"] is None
     assert result["meta"]["pagination_complete"] is True
     assert result["meta"]["record_count"] == 2
+    assert result["meta"]["source_system"] == "customer_service_sources"
+    assert len(result["meta"]["source_system"]) <= 32
     assert result["meta"]["evidence_refs"] == [
         "broker-evidence:page-1",
         "broker-evidence:page-2",

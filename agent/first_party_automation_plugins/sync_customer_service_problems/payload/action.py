@@ -339,7 +339,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
             "configured_accounts_queried": True,
             },
         },
-        source_system="configured_customer_service_sources",
+        source_system="customer_service_sources",
         record_count=len(records),
         pagination_complete=True,
         evidence_refs=evidence_refs,

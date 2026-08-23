@@ -115,6 +115,24 @@ def _upsert_record(base_token: str, table_id: str, record: dict, params: dict) -
     return run_lark_cli(args, timeout=30)
 
 
+def get_bitable_record(base_token: str, table_id: str, record_id: str) -> dict:
+    """Read one exact Bitable record by its immutable record identity."""
+
+    clean_base_token = str(base_token or "").strip()
+    clean_table_id = str(table_id or "").strip()
+    clean_record_id = str(record_id or "").strip()
+    if not clean_base_token or not clean_table_id or not clean_record_id:
+        return {"error": "get_record 缺少 base_token、table_id 或 record_id"}
+    return _call_open_api(
+        "GET",
+        (
+            f"/open-apis/bitable/v1/apps/{clean_base_token}/tables/"
+            f"{clean_table_id}/records/{clean_record_id}"
+        ),
+        timeout=30,
+    )
+
+
 def _delete_record(base_token: str, table_id: str, record_id: str, params: dict) -> dict:
     args = [
         "base",
@@ -730,6 +748,13 @@ def feishu_operation(
         if errors:
             response["errors"] = errors
         return response
+
+    if action == "get_record":
+        return get_bitable_record(
+            str(params.get("base_token") or params.get("app_token") or ""),
+            str(params.get("table_id") or ""),
+            str(params.get("record_id") or ""),
+        )
 
     if action == "list_fields":
         base_token = str(params.get("base_token") or params.get("app_token") or "")
