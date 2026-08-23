@@ -182,6 +182,45 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertTrue(payload["awaiting_approval"])
         self.assertEqual("WAITING_APPROVAL", payload["status"])
 
+    def test_output_poll_projects_blocked_runs_as_attention_without_polling(self):
+        for run_status, expected_title in (
+            ("BLOCKED_DATA", "数据阻塞"),
+            ("BLOCKED_LOGIN", "登录已失效"),
+        ):
+            with self.subTest(run_status=run_status):
+                app = _App(
+                    {
+                        "ok": True,
+                        "status": 200,
+                        "data": {
+                            "run": {
+                                "run_id": "run-blocked-1",
+                                "status": run_status,
+                                "created_at": "2026-08-24 01:00:00",
+                                "error_summary": "需要处理后继续",
+                            },
+                            "next_poll_after_ms": 3000,
+                        },
+                    }
+                )
+
+                app._handle_automation_task_output(
+                    object(),
+                    {
+                        "run_id": ["run-blocked-1"],
+                        "task_id": ["arrive_list"],
+                        "offset": ["0"],
+                    },
+                )
+
+                payload = app.sent[1]
+                self.assertFalse(payload["running"])
+                self.assertTrue(payload["pending"])
+                self.assertTrue(payload["attention"])
+                self.assertEqual(expected_title, payload["attention_title"])
+                self.assertEqual("需要处理后继续", payload["attention_message"])
+                self.assertEqual(0, payload["next_poll_after_ms"])
+
 
 if __name__ == "__main__":
     unittest.main()

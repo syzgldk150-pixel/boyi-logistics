@@ -366,6 +366,17 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("signal: controller.signal", terminal_fetch_block)
         self.assertIn("clearTimeout(timeoutId)", terminal_fetch_block)
 
+    def test_blocked_runs_render_attention_and_do_not_keep_polling(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function renderAttentionRun(data)", source)
+        self.assertIn('"数据阻塞"', source)
+        self.assertIn('"登录已失效"', source)
+        self.assertIn("if (data.attention)", source)
+        self.assertIn("pendingRun && !data.attention", source)
+
 
 if __name__ == "__main__":
     unittest.main()

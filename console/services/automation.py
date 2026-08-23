@@ -1393,8 +1393,17 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             status = str(run.get("status") or "").upper()
             terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
             running_statuses = {"RUNNING", "VERIFYING"}
+            attention_titles = {
+                "BLOCKED_DATA": "数据阻塞",
+                "BLOCKED_LOGIN": "登录已失效",
+                "NEEDS_CLARIFICATION": "需要补充信息",
+                "FAILED_RETRYABLE": "执行暂时失败",
+            }
             is_terminal = status in terminal_statuses
             awaiting_approval = status == "WAITING_APPROVAL"
+            attention_title = attention_titles.get(status, "")
+            attention = bool(attention_title)
+            attention_message = normalize_feedback_text(run.get("error_summary") or "")
             state_line = f"Run {run_id} · {status or 'UNKNOWN'}"
             payload: dict[str, Any] = {
                 "lines": [state_line] if offset <= 0 else [],
@@ -1407,7 +1416,12 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "total": 1,
                 "run_id": run_id,
                 "status": status,
-                "next_poll_after_ms": data.get("next_poll_after_ms", 1000),
+                "attention": attention,
+                "attention_title": attention_title,
+                "attention_message": attention_message,
+                "next_poll_after_ms": (
+                    0 if attention else data.get("next_poll_after_ms", 1000)
+                ),
             }
             if is_terminal:
                 cancelled = status == "CANCELLED"
