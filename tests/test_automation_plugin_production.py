@@ -63,7 +63,7 @@ def _sha(value: Any) -> str:
 
 
 def test_first_party_release_version_is_1_0_9() -> None:
-    assert FIRST_PARTY_PACKAGE_VERSION == "1.0.9"
+    assert FIRST_PARTY_PACKAGE_VERSION == "1.0.10"
 
 
 class _CatalogRepository:

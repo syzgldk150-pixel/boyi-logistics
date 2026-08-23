@@ -1132,6 +1132,15 @@ def feishu_operation(
         if not spreadsheet_token or not value_range:
             return {"error": "read_sheet 缺少 spreadsheet_token 或 range"}
 
+        try:
+            value_range = _resolve_sheet_ref_in_range(
+                spreadsheet_token,
+                value_range,
+                require_fresh_metadata=True,
+            )
+        except Exception as exc:
+            return {"error": f"read_sheet metadata resolution failed: {str(exc)[:300]}"}
+
         args = [
             "sheets",
             "+read",
