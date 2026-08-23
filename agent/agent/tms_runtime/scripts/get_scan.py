@@ -192,19 +192,19 @@ def fetch_page(
 
 def extract_data_list(payload: Any) -> List[Dict[str, Any]]:
     if not isinstance(payload, dict):
-        return []
-    data = payload.get("data")
-    if data is None:
-        result = payload.get("result") or {}
-        if isinstance(result, dict):
-            data = result.get("data")
+        raise ValueError("TMS scan response must be an object")
+    if "data" in payload:
+        data = payload["data"]
+    else:
+        result = payload.get("result")
+        if not isinstance(result, dict) or "data" not in result:
+            raise ValueError("TMS scan response is missing the data list")
+        data = result["data"]
     if not isinstance(data, list):
-        return []
-    items: List[Dict[str, Any]] = []
-    for item in data:
-        if isinstance(item, dict):
-            items.append(item)
-    return items
+        raise ValueError("TMS scan response data must be a list")
+    if any(not isinstance(item, dict) for item in data):
+        raise ValueError("TMS scan response contains an invalid row")
+    return list(data)
 
 
 def normalize_scan_row(item: Dict[str, Any]) -> Optional[Dict[str, str]]:

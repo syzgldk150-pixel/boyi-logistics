@@ -293,8 +293,14 @@ def _arrive_list_read_page(
         page_index=page_index,
         page_size=page_size,
     )
-    source_items = fetch_dispatch._extract_data_list(raw)
-    rows = fetch_dispatch.format_records(raw)
+    try:
+        source_items = fetch_dispatch._extract_data_list(raw)
+        rows = fetch_dispatch.format_records(raw)
+    except (TypeError, ValueError) as exc:
+        raise PluginExecutionError(
+            "arrive-list source did not return a valid data list",
+            code="BROKER_SOURCE_INVALID",
+        ) from exc
     if len(rows) != len(source_items):
         raise PluginExecutionError(
             "arrive-list source returned unsupported row structures",
@@ -341,7 +347,13 @@ def _scan_read_page(
         20,
         page_index,
     )
-    source_items = get_scan.extract_data_list(raw)
+    try:
+        source_items = get_scan.extract_data_list(raw)
+    except (TypeError, ValueError) as exc:
+        raise PluginExecutionError(
+            "scan source did not return a valid data list",
+            code="BROKER_SOURCE_INVALID",
+        ) from exc
     rows = [get_scan.normalize_scan_row(item) for item in source_items]
     if any(row is None for row in rows):
         raise PluginExecutionError(

@@ -392,6 +392,19 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertNotIn("Number(state.next_poll_after_ms) ||", source)
         self.assertNotIn("卡片会继续跟踪", source)
 
+    def test_attention_latch_survives_poll_and_request_error_recovery(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("let termAttentionLatched = false;", source)
+        self.assertIn("termAttentionLatched = true;", source)
+        self.assertIn("if (outputState?.attention)", source)
+        self.assertIn(
+            "if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt))",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

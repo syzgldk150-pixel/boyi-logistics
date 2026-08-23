@@ -162,8 +162,10 @@ def _extract_data_list(raw_json: Any) -> List[Any]:
     if isinstance(raw_json, list):
         return raw_json
     if not isinstance(raw_json, dict):
-        return []
-    data = raw_json.get("data")
+        raise ValueError("TMS dispatch response must be an object or list")
+    if "data" not in raw_json:
+        raise ValueError("TMS dispatch response is missing the data list")
+    data = raw_json["data"]
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
@@ -171,7 +173,8 @@ def _extract_data_list(raw_json: Any) -> List[Any]:
             value = data.get(key)
             if isinstance(value, list):
                 return value
-    return []
+        raise ValueError("TMS dispatch response data has no supported list")
+    raise ValueError("TMS dispatch response data must contain a list")
 
 
 FIELDS_ORDER = [
