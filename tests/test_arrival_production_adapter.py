@@ -276,6 +276,59 @@ def test_arrive_sheet_uses_exact_resource_and_accepts_only_exact_dated_readback(
     assert result["target_date"] == "2026-08-15"
 
 
+def test_empty_arrive_sheet_reconciles_clear_response_loss_and_updates_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-arrive-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "range": "Arrive!A2:R100",
+        "clear_range": "Arrive!A2:R100",
+        "title_range": "Arrive!A1:R1",
+        "_meta": {"resource_key": resource_id},
+    }
+    writes: list[tuple[str, list[list[Any]]]] = []
+    observed: dict[str, list[list[Any]]] = {
+        resource["clear_range"]: [],
+        resource["title_range"]: [["旧日期运单编号"]],
+    }
+
+    monkeypatch.setattr(
+        arrival,
+        "_load_resource",
+        lambda exact: resource if exact == resource_id else None,
+    )
+
+    def write(_action: str, params: dict[str, Any]) -> bool:
+        value_range = str(params["range"])
+        values = deepcopy(params["values"])
+        writes.append((value_range, values))
+        if value_range == resource["clear_range"]:
+            observed[value_range] = []
+            return False
+        observed[value_range] = values
+        return True
+
+    def fresh(_resource: dict[str, Any], value_range: str, *, width: int):
+        assert _resource == resource
+        return arrival._canonical_rows(observed[value_range], width=width)
+
+    monkeypatch.setattr(arrival, "_write_sheet_call", write)
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", fresh)
+
+    result = arrival._replace_arrive_sheet(resource_id, [], "2026-08-24")
+
+    assert result["verified"] is True
+    assert result["record_count"] == 0
+    assert result["target_date"] == "2026-08-24"
+    assert [value_range for value_range, _values in writes] == [
+        resource["clear_range"],
+        resource["title_range"],
+    ]
+    assert writes[1][1][0][0] == "08.24运单编号"
+
+
 def test_arrive_sheet_without_optional_title_range_verifies_only_managed_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
