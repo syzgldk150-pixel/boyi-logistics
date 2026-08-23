@@ -482,6 +482,7 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
         version=version,
         release_sha="a" * 40,
         expected_current_version="1.0.0",
+        allow_blocked_unknown_write_archive=False,
     )
     upgrade.assert_called_once()
     call = upgrade.call_args
@@ -490,6 +491,7 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
     assert call.kwargs["expected_current_version"] == "1.0.0"
     assert call.kwargs["expected_record_version"] == 5
     assert "prepared_configuration_request_id" not in call.kwargs
+    assert "allow_blocked_unknown_write_archive" not in call.kwargs
     uuid.UUID(call.kwargs["request_id"])
 
     with (

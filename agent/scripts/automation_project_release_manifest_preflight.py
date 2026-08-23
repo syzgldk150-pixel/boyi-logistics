@@ -1,8 +1,6 @@
 """Fail-closed release validation for migrated first-party automation projects.
 
-The pre-018 scheduler validator remains available through ``run_migrations``.
-This helper owns the post-018 contract so the migration runner stays below its
-file-size ceiling and does not import Agent runtime packages through ``sys.path``.
+Own the post-018 contract without importing Agent runtime packages through ``sys.path``.
 """
 
 from __future__ import annotations
@@ -34,55 +32,66 @@ _QUARTER_HOUR_DAILY_TIMES = tuple(
 )
 class AutomationProjectReleaseManifestError(RuntimeError):
     """A value-free reason a post-018 release must remain held."""
-
     def __init__(self, code: str, *, count: int = 1) -> None:
         super().__init__(code)
         self.code = str(code)
         self.count = max(int(count), 1)
-def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
-    """Recognize only the lease-backed interrupted-upgrade safety fence."""
-
-    committed_generation = row.get("committed_generation")
-    target_generation = row.get("target_generation")
+def _target_runtime_stage_is_recoverable(row: Mapping[str, Any], committed_generation: Any, target_generation: Any) -> bool:
     target_state = row.get("target_generation_state")
     target_base_generation = row.get("target_base_generation")
-    target_lineage_is_safe = (
-        target_state == "PREPARED"
-        and target_base_generation == committed_generation
-    ) or (target_state is None and target_base_generation is None)
+    if target_state is None:
+        return bool(
+            row.get("project_state") in {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING"}
+            and row.get("reconcile_state") == "PREPARING"
+            and target_base_generation is None and row.get("max_generation") == committed_generation
+        )
     return bool(
-        row.get("project_state") == "UPGRADING"
-        and type(committed_generation) is int
+        row.get("project_state") in {"ENABLED", "UPGRADING"} and target_base_generation == committed_generation
+        and row.get("max_generation") == target_generation
+        and (target_state, row.get("reconcile_state"))
+        in {
+            ("TARGET", "PREPARING"), ("PREPARING", "PREPARING"),
+            ("WAITING_COEFFECTS", "WAITING_COEFFECTS"),
+            ("PREPARED", "READY_TO_COMMIT"),
+        }
+    )
+def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
+    """Recognize only the lease-backed interrupted-upgrade safety fence."""
+    committed_generation = row.get("committed_generation")
+    target_generation = row.get("target_generation")
+    return bool(
+        type(committed_generation) is int
         and type(target_generation) is int
-        and target_generation > committed_generation
+        and target_generation == committed_generation + 1
+        and row.get("policy_project_generation") == target_generation
         and row.get("generation_state") == "BLOCKED"
         and row.get("generation_error_code") == "WRITE_OUTCOME_UNKNOWN"
-        and target_lineage_is_safe
+        and _target_runtime_stage_is_recoverable(row, committed_generation, target_generation)
+        and type(row.get("unsafe_non_disposed_other_count")) is int
+        and row.get("unsafe_non_disposed_other_count") == 0
+        and type(row.get("active_current_lease_count")) is int
+        and row.get("active_current_lease_count") == 0
         and type(row.get("unknown_write_count")) is int
-        and row.get("unknown_write_count") == 1
+        and row.get("unknown_write_count") > 0
     )
-def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
-    """Recognize an un-runnable upgrade whose target row can be rebuilt."""
+def is_staged_recoverable_runtime(row: Mapping[str, Any]) -> bool:
+    """Recognize an un-runnable target at a repository-produced recovery point."""
 
     committed_generation = row.get("committed_generation")
     target_generation = row.get("target_generation")
     max_generation = row.get("max_generation")
     return bool(
-        row.get("project_state") == "UPGRADING"
-        and row.get("reconcile_state") == "PREPARING"
-        and type(committed_generation) is int
+        type(committed_generation) is int
         and type(target_generation) is int
         and type(max_generation) is int
-        and target_generation == max_generation + 1
-        and target_generation > committed_generation
+        and target_generation == committed_generation + 1
         and row.get("policy_project_generation") == target_generation
         and row.get("generation_state") == "COMMITTED"
         and row.get("generation_error_code") is None
-        and row.get("target_generation_state") is None
-        and row.get("target_base_generation") is None
-        and type(row.get("non_disposed_other_count")) is int
-        and row.get("non_disposed_other_count") == 0
-        and type(row.get("unknown_write_count")) is int
+        and _target_runtime_stage_is_recoverable(row, committed_generation, target_generation)
+        and type(row.get("unsafe_non_disposed_other_count")) is int
+        and row.get("unsafe_non_disposed_other_count") == 0
+        and row.get("active_current_lease_count") == 0
         and row.get("unknown_write_count") == 0
     )
 
@@ -90,18 +99,10 @@ def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
 _PROJECT_STATE_DIAGNOSTIC_VALUES = frozenset(
     {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING", "UNINSTALLING", "ERROR"}
 )
-_RECONCILE_STATE_DIAGNOSTIC_VALUES = frozenset(
-    {
-        "STABLE",
-        "PREPARING",
-        "WAITING_COEFFECTS",
-        "READY_TO_COMMIT",
-        "DRAINING",
-        "DISPOSING",
-        "BLOCKED_UNKNOWN_WRITE",
-        "ERROR",
-    }
-)
+_RECONCILE_STATE_DIAGNOSTIC_VALUES = frozenset({
+    "STABLE", "PREPARING", "WAITING_COEFFECTS", "READY_TO_COMMIT",
+    "DRAINING", "DISPOSING", "BLOCKED_UNKNOWN_WRITE", "ERROR",
+})
 _GENERATION_STATE_DIAGNOSTIC_VALUES = frozenset(
     {
         "TARGET",
@@ -210,7 +211,13 @@ def _scheduled_write_runtime_validation_issue(
         or row.get("project_enabled") not in {True, 1}
     ):
         return "PROJECT_ENABLED_INVALID"
-    if row.get("project_state") != "ENABLED" and not isolated_runtime:
+    if (
+        row.get("project_state") != "ENABLED" and not isolated_runtime
+    ) or (
+        row.get("project_state") == "ENABLED"
+        and row.get("reconcile_state") in {"PREPARING", "WAITING_COEFFECTS", "READY_TO_COMMIT"}
+        and not isolated_runtime and not is_staged_recoverable_runtime(row)
+    ):
         return "PROJECT_STATE_INVALID"
     if row.get("generation_state") not in {"COMMITTED", "BLOCKED"}:
         return "COMMITTED_STATE_INVALID"
@@ -259,9 +266,13 @@ def _project_schedule_runtime_invalid_code(
                 row.get("target_generation"),
                 row.get("max_generation"),
             ),
-            "NON_DISPOSED_OTHERS_"
+            "UNSAFE_NON_DISPOSED_OTHERS_"
             + _unknown_write_lease_diagnostic(
-                row.get("non_disposed_other_count")
+                row.get("unsafe_non_disposed_other_count")
+            ),
+            "ACTIVE_CURRENT_LEASES_"
+            + _unknown_write_lease_diagnostic(
+                row.get("active_current_lease_count")
             ),
             "COMMITTED_STATE_"
             + _safe_enum_diagnostic(
@@ -313,27 +324,27 @@ def typed_project_scheduled_write_crons(
                generation.error_code AS generation_error_code,
                target_generation.state AS target_generation_state,
                target_generation.base_committed_generation AS target_base_generation,
-               (
-                   SELECT CAST(
-                       COALESCE(MAX(history.generation), 0) AS UNSIGNED
-                   )
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id=BINARY project.automation_id
-               ) AS max_generation,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id=BINARY project.automation_id
-                     AND history.generation<>project.committed_generation
-                     AND history.state<>'DISPOSED'
-               ) AS non_disposed_other_count,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generation_leases AS lease
-                   WHERE BINARY lease.automation_id=BINARY project.automation_id
-                     AND lease.generation=project.committed_generation
-                     AND lease.outcome='WRITE_OUTCOME_UNKNOWN'
-               ) AS unknown_write_count,
+               (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
+                FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id=BINARY project.automation_id) AS max_generation,
+               (SELECT COUNT(*) FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id=BINARY project.automation_id
+                  AND history.generation<>project.committed_generation
+                  AND history.generation<>project.target_generation AND history.state<>'DISPOSED'
+                  AND NOT (history.generation<project.committed_generation
+                    AND history.state='BLOCKED' AND history.error_code='WRITE_OUTCOME_UNKNOWN'
+                    AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
+                      WHERE BINARY archive_lease.automation_id=BINARY history.automation_id
+                        AND archive_lease.generation=history.generation
+                        AND archive_lease.outcome='WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id=BINARY project.automation_id
+                  AND lease.generation=project.committed_generation
+                  AND lease.outcome IN ('RUNNING', 'VERIFYING')) AS active_current_lease_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id=BINARY project.automation_id
+                  AND lease.generation=project.committed_generation
+                  AND lease.outcome='WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
                generation.snapshot_json
         FROM scheduled_tasks AS task
         INNER JOIN automation_projects AS project
@@ -361,8 +372,7 @@ def typed_project_scheduled_write_crons(
             )
         task_id = row.get("task_id")
         quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
-        staged_missing_target = is_staged_missing_target_runtime(row)
-        isolated_runtime = quarantined_unknown_write or staged_missing_target
+        isolated_runtime = quarantined_unknown_write or (is_staged_recoverable_runtime(row) and row.get("project_state") != "ENABLED")
         runtime_issue = _scheduled_write_runtime_validation_issue(
             row,
             seen_task_ids=seen_task_ids,
@@ -421,10 +431,7 @@ def typed_project_scheduled_write_crons(
             if type(cron_expression) is not str or not cron_expression:
                 raise error_class("PROJECT_SCHEDULE_CRON_INVALID")
         if isolated_runtime:
-            # Both exact shapes are un-runnable: either the committed generation
-            # is fenced by an unknown write or the UPGRADING project has no target
-            # row yet. Startup reconciliation may rebuild only the latter after
-            # revalidating every persisted runtime hash.
+            # The committed generation is fenced or a non-ENABLED target is reconciling.
             continue
         if scheduled_write:
             crons.append(cron_expression)
@@ -1042,27 +1049,27 @@ def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str
                target_generation.base_committed_generation
                    AS target_base_generation,
                policy.project_generation AS policy_project_generation,
-               (
-                   SELECT CAST(
-                       COALESCE(MAX(history.generation), 0) AS UNSIGNED
-                   )
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id = BINARY project.automation_id
-               ) AS max_generation,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generations AS history
-                   WHERE BINARY history.automation_id = BINARY project.automation_id
-                     AND history.generation <> project.committed_generation
-                     AND history.state <> 'DISPOSED'
-               ) AS non_disposed_other_count,
-               (
-                   SELECT COUNT(*)
-                   FROM automation_project_generation_leases AS lease
-                   WHERE BINARY lease.automation_id = BINARY project.automation_id
-                     AND lease.generation = project.committed_generation
-                     AND lease.outcome = 'WRITE_OUTCOME_UNKNOWN'
-               ) AS unknown_write_count,
+               (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
+                FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id = BINARY project.automation_id) AS max_generation,
+               (SELECT COUNT(*) FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id = BINARY project.automation_id
+                  AND history.generation <> project.committed_generation
+                  AND history.generation <> project.target_generation AND history.state <> 'DISPOSED'
+                  AND NOT (history.generation < project.committed_generation
+                    AND history.state = 'BLOCKED' AND history.error_code = 'WRITE_OUTCOME_UNKNOWN'
+                    AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
+                      WHERE BINARY archive_lease.automation_id = BINARY history.automation_id
+                        AND archive_lease.generation = history.generation
+                        AND archive_lease.outcome = 'WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id = BINARY project.automation_id
+                  AND lease.generation = project.committed_generation
+                  AND lease.outcome IN ('RUNNING', 'VERIFYING')) AS active_current_lease_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id = BINARY project.automation_id
+                  AND lease.generation = project.committed_generation
+                  AND lease.outcome = 'WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
                generation.schedule_sha256 AS generation_schedule_sha256,
                generation.compiled_invocations_sha256
                    AS generation_invocations_sha256,
@@ -1511,7 +1518,7 @@ def _validate_release_projects_and_tasks(
         )
         staged_missing_target = (
             not expect_initial_production_manifest
-            and is_staged_missing_target_runtime(project)
+            and is_staged_recoverable_runtime(project)
         )
         isolated_runtime = staged_unknown_write or staged_missing_target
         if (
@@ -1569,10 +1576,7 @@ def _validate_release_projects_and_tasks(
             project.get("compiled_invocations_json"),
             code="PROJECT_COMPILED_INVOCATIONS_INVALID",
         )
-        if not isinstance(compiled, dict):
-            raise AutomationProjectReleaseManifestError(
-                "PROJECT_COMPILED_INVOCATIONS_INVALID"
-            )
+        configured_schedule, configured_compiled = desired_schedule, compiled
         generation_snapshot = _decode_json(
             project.get("generation_snapshot_json"),
             code="AUTOMATION_PROJECT_GENERATION_SNAPSHOT_INVALID",
@@ -1587,20 +1591,30 @@ def _validate_release_projects_and_tasks(
             or generation_snapshot.get("automation_id") != automation_id
             or generation_snapshot.get("generation") != generation
             or generation_snapshot.get("plugin_id") != template["tool_name"]
-            or execution_metadata.get("project_config_version") != config_version
-            or not _strict_json_equal(
-                execution_metadata.get("schedule"),
-                desired_schedule,
-            )
-            or not _strict_json_equal(
-                execution_metadata.get("compiled_invocations"),
-                compiled,
+            or (
+                not isolated_runtime
+                and (
+                    execution_metadata.get("project_config_version") != config_version
+                    or not _strict_json_equal(execution_metadata.get("schedule"), desired_schedule)
+                    or not _strict_json_equal(execution_metadata.get("compiled_invocations"), compiled)
+                )
             )
             or project.get("generation_snapshot_sha256")
             != _canonical_sha256(generation_snapshot)
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_GENERATION_SNAPSHOT_INVALID"
+            )
+        if isolated_runtime:
+            config_version = _positive_int(
+                execution_metadata.get("project_config_version"),
+                code="AUTOMATION_PROJECT_CONFIG_VERSION_INVALID",
+            )
+            desired_schedule = execution_metadata.get("schedule")
+            compiled = execution_metadata.get("compiled_invocations")
+        if not isinstance(compiled, dict):
+            raise AutomationProjectReleaseManifestError(
+                "PROJECT_COMPILED_INVOCATIONS_INVALID"
             )
         scheduler_contract = compiled.get("scheduler")
         scheduler_arguments = (
@@ -1664,10 +1678,10 @@ def _validate_release_projects_and_tasks(
         if (
             not _valid_sha256(schedule_hash)
             or not _valid_sha256(invocation_hash)
-            or schedule_hash != _canonical_sha256(desired_schedule)
-            or invocation_hash != _canonical_sha256(compiled)
-            or project.get("generation_schedule_sha256") != schedule_hash
-            or project.get("generation_invocations_sha256") != invocation_hash
+            or schedule_hash != _canonical_sha256(configured_schedule)
+            or invocation_hash != _canonical_sha256(configured_compiled)
+            or project.get("generation_schedule_sha256") != _canonical_sha256(desired_schedule)
+            or project.get("generation_invocations_sha256") != _canonical_sha256(compiled)
         ):
             raise AutomationProjectReleaseManifestError(
                 "AUTOMATION_PROJECT_CONFIG_HASH_MISMATCH"
@@ -2326,7 +2340,7 @@ def _validate_later_project_policy_chain(
             raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_STATE_INVALID") from exc
         return
 
-    isolated_target = is_staged_unknown_write_quarantine(project) or is_staged_missing_target_runtime(project)
+    isolated_target = is_staged_unknown_write_quarantine(project) or is_staged_recoverable_runtime(project)
     expected_generation = project.get("target_generation") if isolated_target else project.get("generation")
     legacy_contract_binding = (
         previous_mode == "PROJECT_FULL_AUTO"

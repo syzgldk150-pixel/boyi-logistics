@@ -345,6 +345,27 @@ class _LowLevelPluginRepository:
     ) -> bool:
         return (automation_id, generation) in self.unknown_writes
 
+    def lock_project_generation_history(
+        self,
+        automation_id: str,
+        *,
+        committed_generation: int,
+    ) -> tuple[dict[str, Any], ...]:
+        rows = []
+        for (project_id, generation), persisted in sorted(self.generations.items()):
+            if project_id != automation_id:
+                continue
+            row = copy.deepcopy(persisted)
+            if (
+                generation <= committed_generation
+                and row.get("state") == "BLOCKED"
+                and row.get("error_code") == "WRITE_OUTCOME_UNKNOWN"
+                and (automation_id, generation) in self.unknown_writes
+            ):
+                row["_archival_unknown_write"] = True
+            rows.append(row)
+        return tuple(rows)
+
     def register_package_version(
         self,
         *,
@@ -382,6 +403,7 @@ class _LowLevelPluginRepository:
         actor_id: str,
         actor_role: str,
         expected_record_version: int,
+        allow_blocked_unknown_write_archive: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "automation_id": automation_id,
@@ -392,6 +414,9 @@ class _LowLevelPluginRepository:
             "actor_id": actor_id,
             "actor_role": actor_role,
             "expected_record_version": expected_record_version,
+            "allow_blocked_unknown_write_archive": (
+                allow_blocked_unknown_write_archive
+            ),
         }
         prior = self.upgrade_requests.get(request_id)
         if prior is not None:
@@ -415,6 +440,11 @@ class _LowLevelPluginRepository:
             or project["state"] not in {"INSTALLED", "ENABLED", "DISABLED"}
         ):
             raise ConcurrentUpdateError("automation project changed before upgrade")
+        if (
+            project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
+            and not allow_blocked_unknown_write_archive
+        ):
+            raise ConcurrentUpdateError("blocked unknown write requires release authority")
         target = self.versions.get((plugin_id, to_version))
         if target is None or target["package_sha256"] != package_sha256:
             raise OrchestrationPersistenceError("upgrade target is not registered")
@@ -826,6 +856,7 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
             version=version_v2,
             release_sha="a" * 40,
             expected_current_version="1.0.0",
+            allow_blocked_unknown_write_archive=False,
         )
     )
 
@@ -843,7 +874,7 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
     assert orchestration.policies.expired == ["upgrade-instance"]
 
 
-def test_first_party_bootstrap_defers_blocked_unknown_write_but_upgrades_stable() -> None:
+def test_first_party_bootstrap_advances_blocked_unknown_write_and_stable_lineages() -> None:
     target_version = _version(_synthetic_manifest("2.0.0"), "2")
     seed = FirstPartyInstanceSeed(
         automation_id="upgrade-instance",
@@ -860,20 +891,10 @@ def test_first_party_bootstrap_defers_blocked_unknown_write_but_upgrades_stable(
     blocked_orchestration.low_level.generations[("upgrade-instance", 1)][
         "state"
     ] = "BLOCKED"
+    blocked_orchestration.low_level.generations[("upgrade-instance", 1)][
+        "error_code"
+    ] = "WRITE_OUTCOME_UNKNOWN"
     blocked_orchestration.low_level.unknown_writes.add(("upgrade-instance", 1))
-    blocked_project_before = copy.deepcopy(
-        blocked_orchestration.low_level.projects["upgrade-instance"]
-    )
-    blocked_config_before = copy.deepcopy(
-        blocked_orchestration.low_level.configs["upgrade-instance"]
-    )
-    blocked_generation_before = copy.deepcopy(
-        blocked_orchestration.low_level.generations[("upgrade-instance", 1)]
-    )
-    blocked_policy_before = copy.deepcopy(
-        blocked_orchestration.policies.policies["upgrade-instance"]
-    )
-
     blocked_result = blocked_repository.bootstrap_missing(
         (target_version,),
         (seed,),
@@ -886,22 +907,25 @@ def test_first_party_bootstrap_defers_blocked_unknown_write_but_upgrades_stable(
         target_version.plugin_id,
         target_version.version,
     ) in blocked_orchestration.low_level.versions
-    assert blocked_orchestration.low_level.upgrade_requests == {}
-    assert (
-        blocked_orchestration.low_level.projects["upgrade-instance"]
-        == blocked_project_before
-    )
-    assert (
-        blocked_orchestration.low_level.configs["upgrade-instance"]
-        == blocked_config_before
-    )
-    assert (
-        blocked_orchestration.low_level.generations[("upgrade-instance", 1)]
-        == blocked_generation_before
-    )
-    assert (
-        blocked_orchestration.policies.policies["upgrade-instance"]
-        == blocked_policy_before
+    assert len(blocked_orchestration.low_level.upgrade_requests) == 1
+    assert next(
+        iter(blocked_orchestration.low_level.upgrade_requests.values())
+    )["allow_blocked_unknown_write_archive"] is True
+    blocked_project = blocked_orchestration.low_level.projects["upgrade-instance"]
+    assert blocked_project["plugin_version"] == "2.0.0"
+    assert blocked_project["state"] == "UPGRADING"
+    assert blocked_project["target_generation"] == 2
+    assert blocked_project["committed_generation"] == 1
+    assert blocked_project["reconcile_state"] == "PREPARING"
+    assert blocked_orchestration.low_level.generations[("upgrade-instance", 1)][
+        "state"
+    ] == "BLOCKED"
+    assert ("upgrade-instance", 1) in blocked_orchestration.low_level.unknown_writes
+    blocked_policy = blocked_orchestration.policies.policies["upgrade-instance"]
+    assert blocked_policy["mode"] == "PROJECT_FULL_AUTO"
+    assert blocked_policy["project_generation"] == 2
+    assert blocked_orchestration.policies.events[-1]["reason"] == (
+        "PLUGIN_VERSION_CHANGED"
     )
 
     stable_repository, stable_orchestration, _stable_v1 = _harness(enabled=True)
@@ -915,6 +939,9 @@ def test_first_party_bootstrap_defers_blocked_unknown_write_but_upgrades_stable(
     assert stable_result.created == ()
     assert stable_result.existing == ("upgrade-instance",)
     assert len(stable_orchestration.low_level.upgrade_requests) == 1
+    assert next(
+        iter(stable_orchestration.low_level.upgrade_requests.values())
+    )["allow_blocked_unknown_write_archive"] is False
     assert stable_orchestration.low_level.projects["upgrade-instance"][
         "plugin_version"
     ] == "2.0.0"

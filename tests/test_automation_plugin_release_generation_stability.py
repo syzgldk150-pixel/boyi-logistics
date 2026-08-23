@@ -1113,6 +1113,65 @@ def test_blocked_current_without_target_prepares_and_commits_successor() -> None
     )
 
 
+def test_blocked_current_without_release_marker_remains_quarantined() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "finance_startup_catchup"
+    current = world.runtime.get_generation(automation_id, 1)
+    assert current is not None
+    world.runtime.generations[(automation_id, 1)] = replace(
+        current,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    world.runtime.unknown_writes.add((automation_id, 1))
+    runtime = world.runtime.runtimes[automation_id]
+    world.runtime.runtimes[automation_id] = replace(
+        runtime,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    project = world.project_repository.projects[automation_id]
+    world.project_repository.projects[automation_id] = replace(
+        project,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+
+    assert _target_service(world).reconcile_project(automation_id) is None
+    assert world.runtime.get_generation(automation_id, 2) is None
+    assert world.runtime.get_generation(automation_id, 1).state is (
+        RuntimeGenerationState.BLOCKED
+    )
+    assert world.runtime.get_project_runtime(automation_id).committed_generation == 1
+
+
+def test_blocked_current_rejects_non_successor_policy_marker() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    automation_id = "finance_startup_catchup"
+    current = world.runtime.get_generation(automation_id, 1)
+    assert current is not None
+    world.runtime.generations[(automation_id, 1)] = replace(
+        current,
+        state=RuntimeGenerationState.BLOCKED,
+    )
+    world.runtime.unknown_writes.add((automation_id, 1))
+    runtime = world.runtime.runtimes[automation_id]
+    world.runtime.runtimes[automation_id] = replace(
+        runtime,
+        reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
+    )
+    world.policy_rows[automation_id] = {
+        **world.policy_rows[automation_id],
+        "project_generation": 3,
+        "version": 2,
+    }
+
+    with pytest.raises(PluginConflictError) as raised:
+        _target_service(world).reconcile_project(automation_id)
+
+    assert raised.value.code == "PLUGIN_POLICY_GENERATION_MISMATCH"
+    assert world.runtime.get_generation(automation_id, 2) is None
+
+
 def test_stable_policy_version_drift_reuses_committed_generation() -> None:
     world = _build_release_world()
     _reconcile_world(world)

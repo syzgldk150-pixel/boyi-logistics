@@ -19,8 +19,15 @@ def run_test_generation_write_lock_order_races(case):
     loss is a valid state-machine result; MySQL deadlocks and a terminal lease
     with an unconverted STARTED receipt are not.
     """
-    from shared.automation_plugin_repository import AutomationPluginRepository
-    from shared.orchestration_repository_support import IdempotencyConflict, _json_hash
+    from shared.automation_plugin_repository import (
+        AutomationPluginRepository,
+        FIRST_PARTY_RELEASE_ACTOR_ID,
+    )
+    from shared.orchestration_repository_support import (
+        ConcurrentUpdateError,
+        IdempotencyConflict,
+        _json_hash,
+    )
 
     database = case.database
     automation_id = f"write_lock_order_{uuid4().hex[:20]}"
@@ -561,6 +568,7 @@ def run_test_generation_write_lock_order_races(case):
     unknown_lease = str(uuid4())
     late_finalizer_lease = str(uuid4())
     successor_lease = str(uuid4())
+    current_unknown_lease = str(uuid4())
     with case._connection(database) as connection:
         archival_repository = AutomationPluginRepository(
             connection,
@@ -589,11 +597,6 @@ def run_test_generation_write_lock_order_races(case):
             unknown_lease,
             outcome="WRITE_OUTCOME_UNKNOWN",
         )
-        archival_repository.commit_generation_cas_row(
-            archival_automation_id,
-            2,
-            expected_committed_generation=1,
-        )
         connection.commit()
 
     with case._connection(database) as connection:
@@ -601,12 +604,24 @@ def run_test_generation_write_lock_order_races(case):
             connection,
             cursor_factory=case.pymysql.cursors.DictCursor,
         )
+        with case.assertRaises(ConcurrentUpdateError):
+            archival_repository.commit_generation_cas_row(
+                archival_automation_id,
+                2,
+                expected_committed_generation=1,
+            )
+        connection.rollback()
         archival_repository.finalize_generation_write_row(
             automation_id=archival_automation_id,
             generation=1,
             lease_id=late_finalizer_lease,
             outcome="WRITE_OUTCOME_UNKNOWN",
             evidence_sha256="e" * 64,
+        )
+        archival_repository.commit_generation_cas_row(
+            archival_automation_id,
+            2,
+            expected_committed_generation=1,
         )
         archival_repository.acquire_committed_generation_lease_row(
             archival_automation_id,
@@ -686,25 +701,70 @@ def run_test_generation_write_lock_order_races(case):
         )
         connection.rollback()
 
+        archival_repository.acquire_committed_generation_lease_row(
+            archival_automation_id,
+            expected_generation=2,
+            expected_manifest_sha256=manifest_sha256,
+            lease_id=current_unknown_lease,
+            orchestration_run_id=run_id,
+            expires_at=datetime.now() + timedelta(minutes=5),
+            lease_owner="integration-current-unknown",
+        )
+        archival_repository.release_generation_lease_row(
+            current_unknown_lease,
+            outcome="WRITE_OUTCOME_UNKNOWN",
+        )
+        connection.commit()
+
+        locked_current = archival_repository.lock_project_generation_history(
+            archival_automation_id,
+            committed_generation=2,
+        )
+        case.assertEqual(
+            [(1, "BLOCKED", True), (2, "BLOCKED", True)],
+            [
+                (
+                    row["generation"],
+                    row["state"],
+                    row.get("_archival_unknown_write", False),
+                )
+                for row in locked_current
+            ],
+        )
+        connection.rollback()
+
         current_config = archival_repository.get_project_config(
             archival_automation_id,
         )
         case.assertIsNotNone(current_config)
-        staged_config = archival_repository.save_project_config(
-            archival_automation_id,
-            config=current_config["config_json"],
-            account_bindings=current_config["account_bindings_json"],
-            resource_bindings=current_config["resource_bindings_json"],
-            enabled_entrypoints=current_config["enabled_entrypoints_json"],
-            schedule=current_config["desired_schedule_json"],
-            compiled_invocations=current_config["compiled_invocations_json"],
-            device_binding=None,
-            actor_id="integration-admin",
-            actor_role="super_admin",
-            request_id=str(uuid4()),
-            expected_project_configuration_version=int(
+        saved_payload = {
+            "config": current_config["config_json"],
+            "account_bindings": current_config["account_bindings_json"],
+            "resource_bindings": current_config["resource_bindings_json"],
+            "enabled_entrypoints": current_config["enabled_entrypoints_json"],
+            "schedule": current_config["desired_schedule_json"],
+            "compiled_invocations": current_config["compiled_invocations_json"],
+            "device_binding": None,
+            "actor_role": "super_admin",
+            "expected_project_configuration_version": int(
                 current_config["config_version"]
             ),
+        }
+        with case.assertRaises(ConcurrentUpdateError):
+            archival_repository.save_project_config(
+                archival_automation_id,
+                **saved_payload,
+                actor_id="integration-admin",
+                request_id=str(uuid4()),
+            )
+        connection.rollback()
+
+        staged_config = archival_repository.save_project_config(
+            archival_automation_id,
+            **saved_payload,
+            actor_id=FIRST_PARTY_RELEASE_ACTOR_ID,
+            request_id=str(uuid4()),
+            allow_blocked_unknown_write_archive=True,
         )
         case.assertEqual(3, staged_config["config_version"])
         staged_project = archival_repository.get_project(archival_automation_id)

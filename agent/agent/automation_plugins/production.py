@@ -941,6 +941,22 @@ class MySQLRuntimeTargetService:
             next_generation = max(1, runtime.target_generation)
         if (
             runtime is not None
+            and runtime.reconcile_state
+            is RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
+            and blocked_unknown_committed
+        ):
+            policy_generation = _required_policy_generation(policy)
+            if policy_generation == runtime.committed_generation:
+                # Unknown-write evidence freezes the current route. Only an
+                # explicit, policy-bound release stage may create a successor.
+                return None
+            if policy_generation != next_generation:
+                raise PluginConflictError(
+                    "project policy is not bound to the desired runtime generation",
+                    code="PLUGIN_POLICY_GENERATION_MISMATCH",
+                )
+        if (
+            runtime is not None
             and runtime.committed_generation is not None
             and runtime.target_generation == runtime.committed_generation
             and runtime.reconcile_state == RuntimeReconcileState.STABLE

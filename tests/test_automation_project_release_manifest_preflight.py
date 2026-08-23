@@ -236,7 +236,8 @@ def _valid_world(preflight):
             "target_base_generation": None,
             "policy_project_generation": 1,
             "max_generation": 1,
-            "non_disposed_other_count": 0,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
             "unknown_write_count": 0,
             "generation_schedule_sha256": preflight._canonical_sha256(
                 desired_schedule
@@ -720,19 +721,37 @@ def test_later_release_accepts_exact_unavailable_runtime(preflight):
     )
 
 
-def test_later_release_accepts_staged_unknown_write_quarantine(preflight):
+@pytest.mark.parametrize("unknown_write_count", (1, 2))
+def test_later_release_accepts_staged_unknown_write_quarantine(
+    preflight,
+    unknown_write_count,
+):
     contract, schedules, backups, projects = _valid_world(preflight)
     project = projects[sorted(contract["release_projects"])[0]]
     project.update(
         project_state="UPGRADING",
-        target_generation=2,
-        reconcile_state="PREPARING",
+        target_generation=3,
+        committed_generation=2,
+        reconcile_state="READY_TO_COMMIT",
+        generation=2,
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
         target_generation_state="PREPARED",
-        target_base_generation=1,
-        unknown_write_count=1,
+        target_base_generation=2,
+        policy_project_generation=3,
+        max_generation=3,
+        unsafe_non_disposed_other_count=0,
+        active_current_lease_count=0,
+        unknown_write_count=unknown_write_count,
     )
+    project["generation_snapshot_json"]["generation"] = 2
+    project["config_version"] += 1
+    project["generation_snapshot_sha256"] = preflight._canonical_sha256(
+        project["generation_snapshot_json"]
+    )
+    for task in schedules.values():
+        if task.get("automation_id") == project["automation_id"]:
+            task["automation_generation"] = 2
 
     preflight._validate_release_projects_and_tasks(
         contract,
@@ -747,13 +766,17 @@ def test_later_release_accepts_staged_unknown_write_with_missing_target(prefligh
     contract, schedules, backups, projects = _valid_world(preflight)
     project = projects[sorted(contract["release_projects"])[0]]
     project.update(
-        project_state="UPGRADING",
+        project_state="ENABLED",
         target_generation=2,
         reconcile_state="PREPARING",
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
         target_generation_state=None,
         target_base_generation=None,
+        policy_project_generation=2,
+        max_generation=1,
+        unsafe_non_disposed_other_count=0,
+        active_current_lease_count=0,
         unknown_write_count=1,
     )
 
@@ -770,7 +793,7 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
     contract, schedules, backups, projects = _valid_world(preflight)
     project = projects[sorted(contract["release_projects"])[0]]
     project.update(
-        project_state="UPGRADING",
+        project_state="ENABLED",
         target_generation=2,
         reconcile_state="PREPARING",
         generation_state="COMMITTED",
@@ -779,9 +802,10 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
+        unsafe_non_disposed_other_count=0,
         unknown_write_count=0,
     )
+    project["config_version"] += 1
 
     preflight._validate_release_projects_and_tasks(
         contract,
@@ -800,7 +824,7 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
         {"target_generation": 3},
         {"policy_project_generation": 1},
         {"max_generation": 2},
-        {"non_disposed_other_count": 1},
+        {"unsafe_non_disposed_other_count": 1},
         {"generation_state": "BLOCKED"},
         {"generation_error_code": "RUNTIME_ROOT_MISSING"},
         {"target_generation_state": "TARGET"},
@@ -821,7 +845,6 @@ def test_staged_missing_target_runtime_fails_closed(preflight, mutation):
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
         unknown_write_count=0,
     )
     project.update(mutation)
@@ -851,7 +874,6 @@ def test_initial_release_rejects_staged_missing_target_runtime(preflight):
         target_base_generation=None,
         policy_project_generation=2,
         max_generation=1,
-        non_disposed_other_count=0,
         unknown_write_count=0,
     )
 
@@ -870,8 +892,14 @@ def test_initial_release_rejects_staged_missing_target_runtime(preflight):
 @pytest.mark.parametrize(
     "mutation",
     (
+        {"reconcile_state": "PREPARING"},
+        {"reconcile_state": "ERROR"},
+        {"target_generation": 3},
+        {"policy_project_generation": 1},
+        {"max_generation": 3},
+        {"unsafe_non_disposed_other_count": 1},
+        {"active_current_lease_count": 1},
         {"unknown_write_count": 0},
-        {"unknown_write_count": 2},
         {"generation_error_code": "RUNTIME_ROOT_MISSING"},
         {"target_generation_state": "PREPARING"},
         {"target_base_generation": 2},
@@ -886,11 +914,15 @@ def test_staged_unknown_write_quarantine_fails_closed(preflight, mutation):
     project.update(
         project_state="UPGRADING",
         target_generation=2,
-        reconcile_state="PREPARING",
+        reconcile_state="READY_TO_COMMIT",
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
         target_generation_state="PREPARED",
         target_base_generation=1,
+        policy_project_generation=2,
+        max_generation=2,
+        unsafe_non_disposed_other_count=0,
+        active_current_lease_count=0,
         unknown_write_count=1,
     )
     project.update(mutation)
@@ -913,11 +945,15 @@ def test_initial_release_rejects_staged_unknown_write_quarantine(preflight):
     project.update(
         project_state="UPGRADING",
         target_generation=2,
-        reconcile_state="PREPARING",
+        reconcile_state="READY_TO_COMMIT",
         generation_state="BLOCKED",
         generation_error_code="WRITE_OUTCOME_UNKNOWN",
         target_generation_state="PREPARED",
         target_base_generation=1,
+        policy_project_generation=2,
+        max_generation=2,
+        unsafe_non_disposed_other_count=0,
+        active_current_lease_count=0,
         unknown_write_count=1,
     )
 
@@ -956,6 +992,9 @@ def test_release_project_query_reads_exact_unknown_write_evidence(preflight):
     assert "LEFT JOIN automation_project_generations AS target_generation" in cursor.sql
     assert "COALESCE(MAX(history.generation), 0) AS UNSIGNED" in cursor.sql
     assert "FROM automation_project_generation_leases AS lease" in cursor.sql
+    assert "AS unsafe_non_disposed_other_count" in cursor.sql
+    assert "archive_lease.outcome = 'WRITE_OUTCOME_UNKNOWN'" in cursor.sql
+    assert "lease.outcome IN ('RUNNING', 'VERIFYING')" in cursor.sql
     assert "lease.outcome = 'WRITE_OUTCOME_UNKNOWN'" in cursor.sql
     assert cursor.params == ("arrive_list",)
 
