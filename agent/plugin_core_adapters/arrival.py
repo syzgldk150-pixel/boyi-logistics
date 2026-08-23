@@ -107,6 +107,9 @@ _NUMERIC_RECORD_FIELDS = frozenset(
 _ARRIVE_NUMERIC_SHEET_COLUMNS = frozenset(
     index for index, field in enumerate(_ARRIVE_FIELDS) if field in _NUMERIC_RECORD_FIELDS
 )
+_ARRIVE_COMPATIBILITY_TEXT_COLUMNS = frozenset(
+    index for index, field in enumerate(_ARRIVE_FIELDS) if field == "remarks"
+)
 _SHEET_RANGE_RE = re.compile(
     r"(?P<sheet>[^!]+)!(?P<start>[A-Z]+)(?P<start_row>[1-9][0-9]*):"
     r"(?P<end>[A-Z]+)(?P<end_row>[1-9][0-9]*)"
@@ -312,12 +315,15 @@ def _canonical_rows(
     *,
     width: int,
     numeric_columns: frozenset[int] = frozenset(),
+    compatibility_text_columns: frozenset[int] = frozenset(),
 ) -> list[list[str]]:
     output: list[list[str]] = []
     for row in rows:
         values: list[str] = []
         for index, cell in enumerate(row):
             value = _canonical_scalar(cell)
+            if index in compatibility_text_columns:
+                value = unicodedata.normalize("NFKC", value)
             if index in numeric_columns and value:
                 try:
                     value = _canonical_scalar(Decimal(value))
@@ -411,6 +417,7 @@ def _canonical_arrive_readback(
             rows,
             width=width,
             numeric_columns=_ARRIVE_NUMERIC_SHEET_COLUMNS,
+            compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
         )
     except ValueError as exc:
         _unknown("arrive sheet fresh readback has invalid numeric cells", cause=exc)
@@ -817,6 +824,7 @@ def _replace_arrive_sheet(
             expected_rows,
             width=width,
             numeric_columns=_ARRIVE_NUMERIC_SHEET_COLUMNS,
+            compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
         )
         expected_snapshot = (
             [[""] * width for _ in range(row_offset)] + expected_canonical
