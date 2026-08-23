@@ -476,6 +476,7 @@ def test_empty_source_clears_the_target_date_in_bitable_and_projection():
     assert result["data"]["written"] == 0
     assert result["data"]["deleted"] == 1
     assert result["data"]["sql_deleted_stale"] == 1
+    assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
     assert not any(call["action"] == "feishu.bitable.write_records" for call in calls)
 
 

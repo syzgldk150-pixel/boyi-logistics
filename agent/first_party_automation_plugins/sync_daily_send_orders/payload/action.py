@@ -1004,16 +1004,20 @@ def run_action(
         ):
             data[key] = sum(int(summary.get(key) or 0) for summary in per_date)
     observed_at = datetime.now(_TIMEZONE).isoformat()
+    if not dry_run and int(data["fetched"]) == 0 and (not sql_only or sync_sql):
+        execution_result = "no_data_cleared"
+    elif dry_run:
+        execution_result = "dry_run_complete"
+    elif sql_only and not sync_sql:
+        execution_result = "source_read_complete"
+    else:
+        execution_result = "requested_sinks_committed"
     data["evidence"] = {
         "source": "signed_first_party_plugin",
         "observed_at": observed_at,
         "pagination_complete": True,
         "broker_call_count": broker_call_count,
-        "execution_result": (
-            "dry_run_complete"
-            if dry_run
-            else ("source_read_complete" if sql_only and not sync_sql else "requested_sinks_committed")
-        ),
+        "execution_result": execution_result,
     }
     if len(set(all_evidence)) != len(all_evidence):
         raise ValueError("send-order broker evidence references are not unique")

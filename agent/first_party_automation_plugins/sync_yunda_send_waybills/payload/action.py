@@ -589,7 +589,6 @@ def run_action(
                 not flags["sql_only"]
                 and flags["sync_sheet"]
                 and len(dates) == 1
-                and records
             ):
                 sheet = _verified_resource(
                     bounded_broker(
@@ -615,6 +614,16 @@ def run_action(
             totals[key] += int(summary.get(key) or 0)
         per_date.append(summary)
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    if (
+        not flags["dry_run"]
+        and totals["fetched"] == 0
+        and (not flags["sql_only"] or flags["sync_sql"])
+    ):
+        execution_result = "no_data_cleared"
+    elif flags["dry_run"]:
+        execution_result = "dry_run_complete"
+    else:
+        execution_result = "requested_sinks_committed"
     data: dict[str, object] = {
         **totals,
         "total": totals["fetched"],
@@ -628,9 +637,7 @@ def run_action(
             "source": "signed_first_party_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
-            "execution_result": (
-                "dry_run_complete" if flags["dry_run"] else "requested_sinks_committed"
-            ),
+            "execution_result": execution_result,
         },
     }
     result_ref, result_proof = executor_success_evidence(

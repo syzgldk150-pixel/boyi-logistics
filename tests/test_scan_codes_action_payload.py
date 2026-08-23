@@ -183,6 +183,36 @@ def test_scan_dry_run_reads_and_plans_but_never_writes():
     assert calls == ["ronghui.scan.read_page"]
 
 
+def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
+    module = _load_action()
+    calls: list[str] = []
+
+    def broker(operation, *, action, role, arguments):
+        del operation, role
+        calls.append(action)
+        if action == "ronghui.scan.read_page":
+            return {
+                "items": [],
+                "pagination_complete": True,
+                "next_cursor": None,
+                "evidence_ref": "evidence:empty-source",
+            }
+        assert action == "scan.snapshot.replace"
+        assert arguments == {"records": [], "target_date": "2026-08-24"}
+        return {
+            "committed": True,
+            "record_count": 0,
+            "evidence_ref": "evidence:empty-snapshot",
+        }
+
+    result = module.run_action({"target_date": "2026-08-24"}, broker)
+
+    assert result["status"] == "SUCCESS"
+    assert result["meta"]["record_count"] == 0
+    assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
+    assert calls == ["ronghui.scan.read_page", "scan.snapshot.replace"]
+
+
 def test_scan_stops_before_next_batch_when_postcondition_proof_changes():
     module = _load_action()
     child = "R123456789010001"
