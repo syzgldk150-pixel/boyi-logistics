@@ -745,6 +745,7 @@ def test_later_release_accepts_staged_unknown_write_quarantine(
         unknown_write_count=unknown_write_count,
     )
     project["generation_snapshot_json"]["generation"] = 2
+    project["config_version"] += 1
     project["generation_snapshot_sha256"] = preflight._canonical_sha256(
         project["generation_snapshot_json"]
     )
@@ -804,6 +805,7 @@ def test_later_release_accepts_staged_missing_target_runtime(preflight):
         unsafe_non_disposed_other_count=0,
         unknown_write_count=0,
     )
+    project["config_version"] += 1
 
     preflight._validate_release_projects_and_tasks(
         contract,

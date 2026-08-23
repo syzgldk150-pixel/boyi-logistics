@@ -19,6 +19,9 @@ from shared.automation_plugin_repository import (
     _validated_worker_inbound_envelope,
     _worker_status_body,
 )
+from shared.automation_plugin_generation_unknown_write_repository import (
+    lock_archival_unknown_predecessor,
+)
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
 from shared.feishu_approval_repository import FeishuApprovalRepository
 from shared.orchestration_repository_support import (
@@ -247,6 +250,36 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_archival_commit_rejects_active_predecessor_lease(self):
+        cursor = _ScriptedCursor(
+            [
+                (
+                    "FROM automation_project_generations",
+                    {"state": "BLOCKED", "error_code": "WRITE_OUTCOME_UNKNOWN"},
+                    0,
+                ),
+                (
+                    "FROM automation_project_generation_leases",
+                    [
+                        {"lease_id": "unknown", "outcome": "WRITE_OUTCOME_UNKNOWN"},
+                        {"lease_id": "active", "outcome": "VERIFYING"},
+                    ],
+                    0,
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(ConcurrentUpdateError, "active runtime leases"):
+            lock_archival_unknown_predecessor(
+                cursor,
+                automation_id="instance-one",
+                expected_committed=1,
+            )
+        self.assertIn(
+            "outcome IN ('RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN')",
+            " ".join(cursor.executions[1][0].split()),
+        )
+
     def test_generic_upgrade_replays_event_from_before_prepared_target_support(self):
         request_id = str(uuid.uuid4())
         payload = {

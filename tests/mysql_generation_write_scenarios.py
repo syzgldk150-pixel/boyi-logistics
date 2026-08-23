@@ -597,11 +597,6 @@ def run_test_generation_write_lock_order_races(case):
             unknown_lease,
             outcome="WRITE_OUTCOME_UNKNOWN",
         )
-        archival_repository.commit_generation_cas_row(
-            archival_automation_id,
-            2,
-            expected_committed_generation=1,
-        )
         connection.commit()
 
     with case._connection(database) as connection:
@@ -609,12 +604,24 @@ def run_test_generation_write_lock_order_races(case):
             connection,
             cursor_factory=case.pymysql.cursors.DictCursor,
         )
+        with case.assertRaises(ConcurrentUpdateError):
+            archival_repository.commit_generation_cas_row(
+                archival_automation_id,
+                2,
+                expected_committed_generation=1,
+            )
+        connection.rollback()
         archival_repository.finalize_generation_write_row(
             automation_id=archival_automation_id,
             generation=1,
             lease_id=late_finalizer_lease,
             outcome="WRITE_OUTCOME_UNKNOWN",
             evidence_sha256="e" * 64,
+        )
+        archival_repository.commit_generation_cas_row(
+            archival_automation_id,
+            2,
+            expected_committed_generation=1,
         )
         archival_repository.acquire_committed_generation_lease_row(
             archival_automation_id,
