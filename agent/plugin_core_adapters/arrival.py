@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -18,6 +19,9 @@ from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
+
+
+logger = logging.getLogger("agent")
 
 
 ProjectionReplacePort = Callable[[list[dict[str, Any]], str], Mapping[str, Any]]
@@ -324,6 +328,56 @@ def _canonical_rows(
     while output and not any(output[-1]):
         output.pop()
     return output
+
+
+def _sheet_mismatch_shape(
+    expected: Sequence[Sequence[str]],
+    observed: Sequence[Sequence[str]],
+) -> dict[str, int]:
+    row_count = max(len(expected), len(observed))
+    for row_index in range(row_count):
+        expected_row = expected[row_index] if row_index < len(expected) else ()
+        observed_row = observed[row_index] if row_index < len(observed) else ()
+        column_count = max(len(expected_row), len(observed_row))
+        for column_index in range(column_count):
+            expected_value = expected_row[column_index] if column_index < len(expected_row) else ""
+            observed_value = observed_row[column_index] if column_index < len(observed_row) else ""
+            if expected_value != observed_value:
+                return {
+                    "expected_rows": len(expected),
+                    "observed_rows": len(observed),
+                    "first_row": row_index,
+                    "first_column": column_index,
+                    "expected_length": len(expected_value),
+                    "observed_length": len(observed_value),
+                }
+    return {
+        "expected_rows": len(expected),
+        "observed_rows": len(observed),
+        "first_row": -1,
+        "first_column": -1,
+        "expected_length": 0,
+        "observed_length": 0,
+    }
+
+
+def _log_sheet_mismatch(
+    stage: str,
+    expected: Sequence[Sequence[str]],
+    observed: Sequence[Sequence[str]],
+) -> None:
+    shape = _sheet_mismatch_shape(expected, observed)
+    logger.warning(
+        "Arrive sheet readback mismatch stage=%s expected_rows=%d observed_rows=%d "
+        "first_row=%d first_column=%d expected_length=%d observed_length=%d",
+        stage,
+        shape["expected_rows"],
+        shape["observed_rows"],
+        shape["first_row"],
+        shape["first_column"],
+        shape["expected_length"],
+        shape["observed_length"],
+    )
 
 
 def _fresh_sheet_rows(
@@ -791,8 +845,10 @@ def _replace_arrive_sheet(
             observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
             observed_rows = _canonical_arrive_readback(observed_rows, width=width)
             if observed_rows != expected_canonical:
+                _log_sheet_mismatch("data_write", expected_canonical, observed_rows)
                 _unknown("arrive sheet data write was not confirmed by fresh readback")
     elif observed_rows != expected_canonical:
+        _log_sheet_mismatch("clear", expected_canonical, observed_rows)
         _unknown("arrive sheet clear was not confirmed by fresh readback")
 
     if title is not None:
@@ -808,6 +864,7 @@ def _replace_arrive_sheet(
         )
         observed_title = _fresh_sheet_rows(resource, title["range"], width=width)
         if observed_title != title_canonical:
+            _log_sheet_mismatch("title", title_canonical, observed_title)
             _unknown("arrive sheet title write was not confirmed by fresh readback")
     else:
         observed_title = []
