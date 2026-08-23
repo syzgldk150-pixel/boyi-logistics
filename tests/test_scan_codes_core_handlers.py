@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Any, Mapping
 from unittest.mock import patch
 
@@ -178,15 +179,16 @@ def test_scan_snapshot_store_atomically_deletes_before_insert(
 
         def execute(self, statement, params=None):
             assert "DELETE FROM scan_codes" in statement
-            assert "last_seen_at >= %s" in statement
-            assert "last_seen_at < %s" in statement
-            assert params == ("2026-08-24", "2026-08-25")
+            assert "snapshot_date = %s" in statement
+            assert params == ("2026-08-24",)
             events.append("delete")
 
         def executemany(self, statement, values):
             assert "INSERT INTO scan_codes" in statement
+            assert "snapshot_date" in statement
             assert "last_seen_at" in statement
             assert len(values) == len(rows)
+            assert all(value[-2] == "2026-08-24" for value in values)
             assert all(value[-1] == "2026-08-24" for value in values)
             events.append("insert")
 
@@ -224,6 +226,19 @@ def test_scan_snapshot_store_atomically_deletes_before_insert(
         "commit",
         "close",
     ]
+
+
+def test_scan_snapshot_schema_preserves_same_identity_across_dates() -> None:
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "agent"
+        / "migrations"
+        / "026_scan_code_daily_identity.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "ADD COLUMN snapshot_date DATE" in migration
+    assert "SET snapshot_date = DATE(last_seen_at)" in migration
+    assert "ADD PRIMARY KEY (snapshot_date, raw_code)" in migration
 
 
 @pytest.mark.parametrize("case", ["response_loss", "zero", "multiple", "mismatch"])

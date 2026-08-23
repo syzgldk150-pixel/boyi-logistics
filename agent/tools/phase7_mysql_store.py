@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable
 
@@ -368,6 +368,7 @@ def ensure_phase7_tables() -> None:
                 ("split_pending_problem_items", "complaint_error_summary"),
                 ("split_pending_problem_items", "complaint_processed_at"),
                 ("scan_codes", "main_tracking"),
+                ("scan_codes", "snapshot_date"),
             }
             missing_columns = sorted(
                 f"{table}.{column}" for table, column in required_columns - columns
@@ -637,8 +638,9 @@ def _scan_row_tuple(row: dict[str, str]) -> tuple[str, str, str, str]:
 
 _SCAN_CODES_UPSERT_SQL = """
     INSERT INTO scan_codes (
-        raw_code, destination, code_type, main_tracking, last_seen_at, seen_count
-    ) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, 1)
+        raw_code, destination, code_type, main_tracking,
+        snapshot_date, last_seen_at, seen_count
+    ) VALUES (%s, %s, %s, %s, CURRENT_DATE, CURRENT_TIMESTAMP, 1)
     ON DUPLICATE KEY UPDATE
         destination = VALUES(destination),
         code_type = VALUES(code_type),
@@ -649,8 +651,9 @@ _SCAN_CODES_UPSERT_SQL = """
 
 _SCAN_CODES_SNAPSHOT_UPSERT_SQL = """
     INSERT INTO scan_codes (
-        raw_code, destination, code_type, main_tracking, last_seen_at, seen_count
-    ) VALUES (%s, %s, %s, %s, %s, 1)
+        raw_code, destination, code_type, main_tracking,
+        snapshot_date, last_seen_at, seen_count
+    ) VALUES (%s, %s, %s, %s, %s, %s, 1)
     ON DUPLICATE KEY UPDATE
         destination = VALUES(destination),
         code_type = VALUES(code_type),
@@ -692,7 +695,6 @@ def replace_scan_codes_snapshot(
 
     ensure_phase7_tables()
     start_date = date.fromisoformat(target_date)
-    end_date = start_date + timedelta(days=1)
     conn = _connect()
     try:
         conn.begin()
@@ -700,15 +702,22 @@ def replace_scan_codes_snapshot(
             cur.execute(
                 """
                 DELETE FROM scan_codes
-                WHERE last_seen_at >= %s AND last_seen_at < %s
+                WHERE snapshot_date = %s
                 """,
-                (start_date.isoformat(), end_date.isoformat()),
+                (start_date.isoformat(),),
             )
             deleted = int(cur.rowcount or 0)
             if rows:
                 cur.executemany(
                     _SCAN_CODES_SNAPSHOT_UPSERT_SQL,
-                    [(*_scan_row_tuple(row), start_date.isoformat()) for row in rows],
+                    [
+                        (
+                            *_scan_row_tuple(row),
+                            start_date.isoformat(),
+                            start_date.isoformat(),
+                        )
+                        for row in rows
+                    ],
                 )
         conn.commit()
         return {
@@ -736,7 +745,7 @@ def cleanup_scan_codes(retention_days: int = 30) -> dict[str, Any]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM scan_codes WHERE last_seen_at < NOW() - INTERVAL %s DAY",
+                "DELETE FROM scan_codes WHERE snapshot_date < CURDATE() - INTERVAL %s DAY",
                 (int(retention_days),),
             )
             deleted = int(cur.rowcount or 0)
@@ -756,10 +765,11 @@ def _list_scan_codes_query(
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT raw_code, destination, code_type, main_tracking
+                SELECT scan_codes.raw_code, scan_codes.destination,
+                       scan_codes.code_type, scan_codes.main_tracking
                 FROM scan_codes
                 {where_sql}
-                ORDER BY destination, raw_code
+                ORDER BY scan_codes.destination, scan_codes.raw_code
                 """,
                 params,
             )
@@ -779,15 +789,24 @@ def _list_scan_codes_query(
 
 
 def list_scan_codes() -> list[dict[str, str]]:
-    return _list_scan_codes_query()
+    return _list_scan_codes_query(
+        where_sql="""
+        INNER JOIN (
+            SELECT raw_code, MAX(snapshot_date) AS snapshot_date
+            FROM scan_codes
+            GROUP BY raw_code
+        ) latest
+            ON latest.raw_code = scan_codes.raw_code
+           AND latest.snapshot_date = scan_codes.snapshot_date
+        """,
+    )
 
 
 def list_scan_codes_for_date(target_date: str) -> list[dict[str, str]]:
     start_date = date.fromisoformat(target_date)
-    end_date = start_date + timedelta(days=1)
     return _list_scan_codes_query(
-        where_sql="WHERE last_seen_at >= %s AND last_seen_at < %s",
-        params=(start_date.isoformat(), end_date.isoformat()),
+        where_sql="WHERE snapshot_date = %s",
+        params=(start_date.isoformat(),),
     )
 
 
