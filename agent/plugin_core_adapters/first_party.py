@@ -370,6 +370,7 @@ def _site_send_read_page(
     fails the whole page when a detail request cannot be proven complete.
     """
 
+    from agent.tms_runtime.scripts import get_infor as bill_info
     from agent.tms_runtime.scripts import get_wangdiansendlist as source
     from agent.tms_runtime.scripts.login_manager import TMSAuth
 
@@ -421,8 +422,14 @@ def _site_send_read_page(
                         "site-send package type source returned an invalid record",
                         code="BROKER_SOURCE_INVALID",
                     )
-                observed_bill_code = str(fields.get(source.LABEL_BILL_CODE) or "").strip()
-                if observed_bill_code != tracking_number:
+                observed_bill_codes = {
+                    str(fields.get(label) or "").strip()
+                    for label in (bill_info.LABEL_BILL_CODE, source.LABEL_BILL_CODE)
+                }
+                if any(
+                    bill_code and bill_code != tracking_number
+                    for bill_code in observed_bill_codes
+                ):
                     raise PluginExecutionError(
                         "site-send package type source identity did not match",
                         code="BROKER_SOURCE_INVALID",

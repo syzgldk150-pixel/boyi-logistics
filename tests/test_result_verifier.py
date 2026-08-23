@@ -62,10 +62,10 @@ def _capability(*, condition: str = "executor_reported_success"):
     }
 
 
-def _verified_result():
+def _verified_result(*, proof_identity: str = "write_tool"):
     data = {"ok": True, "entity_id": "entity-1", "state": "updated"}
     digest = sha256_json(data)
-    evidence_ref = f"tool-result:write_tool:{digest}"
+    evidence_ref = f"tool-result:{proof_identity}:{digest}"
     observed_at = "2026-08-13T00:00:00Z"
     return {
         "status": "SUCCESS",
@@ -95,6 +95,20 @@ def _verified_result():
 
 def test_matching_condition_observation_evidence_and_result_hash_is_accepted():
     outcome = ResultVerifier().verify(_step(), _verified_result(), _capability())
+
+    assert outcome.accepted is True
+    assert outcome.run_status is RunStatus.COMPLETED
+
+
+def test_installed_tool_alias_accepts_generation_bound_plugin_proof_identity():
+    capability = _capability()
+    capability["_plugin_runtime"] = {"plugin_id": "signed_plugin"}
+
+    outcome = ResultVerifier().verify(
+        _step(),
+        _verified_result(proof_identity="signed_plugin"),
+        capability,
+    )
 
     assert outcome.accepted is True
     assert outcome.run_status is RunStatus.COMPLETED
