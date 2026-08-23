@@ -91,14 +91,9 @@ def test_scan_snapshot_production_port_requires_exact_fresh_readback(
     def read():
         nonlocal reads
         reads += 1
-        return [*rows, {
-            "raw_code": "historical",
-            "destination": "旧站",
-            "code_type": "main",
-            "main_tracking": "historical",
-        }]
+        return rows
 
-    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes", write)
+    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", write)
     monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes", read)
 
     result = replace_scan_snapshot_verified(rows, "2026-08-15")
@@ -112,6 +107,104 @@ def test_scan_snapshot_production_port_requires_exact_fresh_readback(
     }
     assert writes == [rows]
     assert reads == 1
+
+
+def test_empty_scan_snapshot_rejects_stale_rows_after_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_rows = _snapshot_rows()
+
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.replace_scan_codes_snapshot",
+        lambda records: {"ok": True, "replaced": len(records)},
+    )
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.list_scan_codes",
+        lambda: stale_rows,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        replace_scan_snapshot_verified([], "2026-08-24")
+
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_scan_snapshot_response_loss_is_reconciled_by_exact_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _snapshot_rows()
+
+    def lost_response(_records):
+        raise TimeoutError("response lost after commit")
+
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.replace_scan_codes_snapshot",
+        lost_response,
+    )
+    monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes", lambda: rows)
+
+    result = replace_scan_snapshot_verified(rows, "2026-08-24")
+
+    assert result["verified"] is True
+    assert result["readback_count"] == len(rows)
+
+
+@pytest.mark.parametrize("rows", [[], _snapshot_rows()], ids=["empty", "populated"])
+def test_scan_snapshot_store_atomically_deletes_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, str]],
+) -> None:
+    from tools import phase7_mysql_store
+
+    events: list[str] = []
+
+    class Cursor:
+        rowcount = 3
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, statement, *_args):
+            assert statement == "DELETE FROM scan_codes"
+            events.append("delete")
+
+        def executemany(self, statement, values):
+            assert "INSERT INTO scan_codes" in statement
+            assert len(values) == len(rows)
+            events.append("insert")
+
+    class Connection:
+        def begin(self):
+            events.append("begin")
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(phase7_mysql_store, "ensure_phase7_tables", lambda: None)
+    monkeypatch.setattr(phase7_mysql_store, "_connect", Connection)
+
+    result = phase7_mysql_store.replace_scan_codes_snapshot(rows)
+
+    assert result == {"ok": True, "deleted": 3, "replaced": len(rows)}
+    assert events == [
+        "begin",
+        "delete",
+        *(["insert"] if rows else []),
+        "commit",
+        "close",
+    ]
 
 
 @pytest.mark.parametrize("case", ["response_loss", "zero", "multiple", "mismatch"])
@@ -141,7 +234,7 @@ def test_scan_snapshot_production_port_fails_unknown_without_retry(
         changed[1]["destination"] = "错误站"
         return changed
 
-    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes", write)
+    monkeypatch.setattr("tools.phase7_mysql_store.replace_scan_codes_snapshot", write)
     monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes", read)
 
     with pytest.raises(PluginExecutionError) as exc:
@@ -149,7 +242,7 @@ def test_scan_snapshot_production_port_fails_unknown_without_retry(
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
     assert write_calls == 1
-    assert read_calls == (0 if case == "response_loss" else 1)
+    assert read_calls == 1
 
 
 def test_scan_snapshot_core_handler_rejects_ack_or_tampered_readback_proof() -> None:

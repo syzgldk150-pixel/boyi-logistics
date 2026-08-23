@@ -386,6 +386,9 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("if (settledCount < total)", source)
         self.assertIn("const activeStates = states.filter", source)
         self.assertIn("if (attentionCount > 0)", source)
+        self.assertIn("let approvedBatchStates = new Map();", source)
+        self.assertIn("const fetchReceipts = receipts.filter", source)
+        self.assertIn("approvedBatchStates.set(state.run_id, state)", source)
         self.assertNotIn("Number(state.next_poll_after_ms) ||", source)
         self.assertNotIn("卡片会继续跟踪", source)
 

@@ -1263,6 +1263,7 @@
     let approvedBatchPollTimer = null;
     let approvedBatchGeneration = 0;
     let approvedBatchReceipts = [];
+    let approvedBatchStates = new Map();
     let runUiState = {
       running: false,
       awaitingApproval: false,
@@ -2019,7 +2020,14 @@
         return;
       }
       try {
-        const states = await Promise.all(receipts.map(async receipt => {
+        const fetchReceipts = receipts.filter(receipt => {
+          const state = approvedBatchStates.get(String(receipt.run_id || ""));
+          return !state || (
+            !batchTerminalStatuses.has(state.status)
+            && !batchAttentionStatuses.has(state.status)
+          );
+        });
+        const freshStates = await Promise.all(fetchReceipts.map(async receipt => {
           const state = await fetchOutputState({ runId: receipt.run_id, offset: 0 });
           if (!state || state.error) {
             throw new Error(state?.error || "Run 状态暂不可用");
@@ -2027,6 +2035,7 @@
           const statePollAfterMs = Number(state.next_poll_after_ms);
           const receiptPollAfterMs = Number(receipt.next_poll_after_ms);
           return {
+            run_id: String(receipt.run_id),
             status: String(state.status || "").toUpperCase(),
             next_poll_after_ms: Number.isFinite(statePollAfterMs) && statePollAfterMs >= 0
               ? statePollAfterMs
@@ -2035,6 +2044,13 @@
                 : 1000,
           };
         }));
+        freshStates.forEach(state => approvedBatchStates.set(state.run_id, state));
+        const states = receipts.map(receipt => (
+          approvedBatchStates.get(String(receipt.run_id || ""))
+        ));
+        if (states.some(state => !state)) {
+          throw new Error("Run 状态集合不完整");
+        }
         if (generation !== approvedBatchGeneration) return;
 
         const total = states.length;
@@ -2098,6 +2114,7 @@
           });
           announceApprovedBatch(message);
           approvedBatchReceipts = [];
+          approvedBatchStates = new Map();
           approvedBatchPollTimer = null;
           return;
         }
@@ -2133,6 +2150,7 @@
         });
         announceApprovedBatch(message);
         approvedBatchReceipts = [];
+        approvedBatchStates = new Map();
         approvedBatchPollTimer = null;
       } catch (error) {
         if (generation !== approvedBatchGeneration) return;
@@ -2163,6 +2181,7 @@
         ));
       if (!valid || receipts.length === 0) return;
 
+      if (!runUiState.batchTracking) approvedBatchStates = new Map();
       const merged = new Map(approvedBatchReceipts.map(receipt => [receipt.run_id, receipt]));
       receipts.forEach(receipt => merged.set(receipt.run_id, receipt));
       approvedBatchReceipts = [...merged.values()];

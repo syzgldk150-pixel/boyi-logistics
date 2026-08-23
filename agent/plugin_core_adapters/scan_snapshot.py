@@ -44,34 +44,33 @@ def replace_scan_snapshot_verified(
     records: list[dict[str, Any]],
     target_date: str,
 ) -> Mapping[str, Any]:
-    """Upsert then freshly prove every intended identity and field."""
+    """Replace then freshly prove the complete intended scan snapshot."""
 
     del target_date
-    from tools.phase7_mysql_store import list_scan_codes, replace_scan_codes
+    from tools.phase7_mysql_store import list_scan_codes, replace_scan_codes_snapshot
 
-    expected = _normalized(records)
+    expected = sorted(_normalized(records), key=lambda row: row["raw_code"])
+    write_error: BaseException | None = None
     try:
-        write_result = replace_scan_codes(records)
+        replace_scan_codes_snapshot(records)
     except Exception as exc:
-        _unknown("scan snapshot write response is unavailable", exc)
-    if not isinstance(write_result, Mapping) or write_result.get("ok") is not True:
-        _unknown("scan snapshot write acknowledgement is not conclusive")
+        write_error = exc
     try:
-        observed = _normalized(list_scan_codes())
+        observed = sorted(_normalized(list_scan_codes()), key=lambda row: row["raw_code"])
     except PluginExecutionError:
         raise
     except Exception as exc:
         _unknown("scan snapshot fresh readback is unavailable", exc)
-    observed_by_identity = {row["raw_code"]: row for row in observed}
-    for row in expected:
-        matches = observed_by_identity.get(row["raw_code"])
-        if matches != row:
-            _unknown("scan snapshot fresh readback does not match the intended row")
+    if observed != expected:
+        _unknown(
+            "scan snapshot fresh readback does not match the complete intended snapshot",
+            write_error,
+        )
     return {
         "ok": True,
         "verified": True,
         "record_count": len(expected),
-        "readback_count": len(expected),
+        "readback_count": len(observed),
         "identities_sha256": scan_snapshot_identities_sha256(expected),
     }
 
