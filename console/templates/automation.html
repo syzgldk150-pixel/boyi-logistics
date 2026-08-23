@@ -1263,6 +1263,8 @@
     let approvedBatchPollTimer = null;
     let approvedBatchGeneration = 0;
     let approvedBatchReceipts = [];
+    let approvedBatchStates = new Map();
+    let termAttentionLatched = false;
     let runUiState = {
       running: false,
       awaitingApproval: false,
@@ -1746,6 +1748,39 @@
         syncRuntimeFeedback(form, null);
       }
 
+      function renderAttentionRun(data) {
+        termAttentionLatched = true;
+        const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
+        const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
+        const status = String(data.status || "").toUpperCase();
+        const fallbackTitles = {
+          BLOCKED_DATA: "数据阻塞",
+          BLOCKED_LOGIN: "登录已失效",
+          NEEDS_CLARIFICATION: "需要补充信息",
+          FAILED_RETRYABLE: "执行暂时失败",
+        };
+        if (startedAt) termDrawer.dataset.runStartedAt = startedAt;
+        if (runId) termDrawer.dataset.runId = runId;
+        stopRunProgress();
+        setRunUiState({
+          running: false,
+          awaitingApproval: false,
+          pendingRun: true,
+          startedAt,
+          cancelRequested: !!data.cancel_requested,
+          runId,
+        });
+        renderFeedback(form, {
+          kind: status === "FAILED_RETRYABLE" ? "error" : "warning",
+          title: data.attention_title || fallbackTitles[status] || "需要处理",
+          message: data.attention_message || "当前 Run 已停止推进，请按提示处理后再继续。",
+          showTimer: false,
+          stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
+          body: status ? `状态：${status}` : "",
+        });
+        syncRuntimeFeedback(form, null);
+      }
+
       async function pollOutput() {
         if (!toolName || runUiState.batchTracking) return;
         try {
@@ -1759,7 +1794,9 @@
           }
           const awaitingApproval = !!data.awaiting_approval || String(data.status || "").toUpperCase() === "WAITING_APPROVAL";
           const pendingRun = !!data.pending && !data.running && !awaitingApproval && !data.runtime;
-          if (awaitingApproval) {
+          if (data.attention) {
+            renderAttentionRun(data);
+          } else if (awaitingApproval) {
             renderAwaitingApproval(data);
           } else if (data.running) {
             const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
@@ -1789,12 +1826,15 @@
             syncRuntimeFeedback(form, data.runtime);
             hideRunFeedback(form);
           }
-          if (!data.running && !awaitingApproval && !pendingRun) {
+          if (!data.running && !awaitingApproval && !pendingRun && !data.attention) {
             stopRunProgress();
             setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
           }
           if (termStatus) {
-            if (awaitingApproval) {
+            if (data.attention) {
+              termStatus.textContent = data.attention_title || "需要处理";
+              termStatus.className = "auto-terminal-status auto-terminal-status--error";
+            } else if (awaitingApproval) {
               termStatus.textContent = "待审批";
               termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
             } else if (pendingRun) {
@@ -1829,11 +1869,11 @@
             }
           }
           // 非终态持续轮询；终态后再轮询若干次，等待 runtime 落库
-          if (data.running || awaitingApproval || pendingRun) {
+          if (data.running || awaitingApproval || (pendingRun && !data.attention)) {
             termNeedsFinalRuntimePoll = false;
             termFinalRuntimePollCount = 0;
             termPollTimer = setTimeout(pollOutput, data.next_poll_after_ms || 1000);
-          } else if (!data.runtime && termFinalRuntimePollCount < 10) {
+          } else if (!data.attention && !data.runtime && termFinalRuntimePollCount < 10) {
             termNeedsFinalRuntimePoll = true;
             termFinalRuntimePollCount += 1;
             termPollTimer = setTimeout(pollOutput, 1000);
@@ -1846,7 +1886,7 @@
             termStatus.textContent = "连接失败";
             termStatus.className = "auto-terminal-status auto-terminal-status--error";
           }
-          if (runUiState.running || termDrawer.dataset.runStartedAt) {
+          if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt)) {
             termPollTimer = setTimeout(pollOutput, 3000);
           }
         }
@@ -1854,6 +1894,7 @@
 
       startPolling = function(startedAt = "") {
         if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
+        termAttentionLatched = false;
         termOffset = 0;
         termNeedsFinalRuntimePoll = false;
         termFinalRuntimePollCount = 0;
@@ -1879,6 +1920,10 @@
           const data = await fetchOutputState({ offset: 0 });
           if (!data) return;
           const awaitingApproval = !!data.awaiting_approval || String(data.status || "").toUpperCase() === "WAITING_APPROVAL";
+          if (data.attention) {
+            renderAttentionRun(data);
+            return;
+          }
           if (awaitingApproval) {
             renderAwaitingApproval(data);
             startPolling(data.started_at || "");
@@ -1978,23 +2023,45 @@
         return;
       }
       try {
-        const states = await Promise.all(receipts.map(async receipt => {
+        const fetchReceipts = receipts.filter(receipt => {
+          const state = approvedBatchStates.get(String(receipt.run_id || ""));
+          return !state || (
+            !batchTerminalStatuses.has(state.status)
+            && !batchAttentionStatuses.has(state.status)
+          );
+        });
+        const freshStates = await Promise.all(fetchReceipts.map(async receipt => {
           const state = await fetchOutputState({ runId: receipt.run_id, offset: 0 });
           if (!state || state.error) {
             throw new Error(state?.error || "Run 状态暂不可用");
           }
+          const statePollAfterMs = Number(state.next_poll_after_ms);
+          const receiptPollAfterMs = Number(receipt.next_poll_after_ms);
           return {
+            run_id: String(receipt.run_id),
             status: String(state.status || "").toUpperCase(),
-            next_poll_after_ms: Number(state.next_poll_after_ms) || receipt.next_poll_after_ms || 1000,
+            next_poll_after_ms: Number.isFinite(statePollAfterMs) && statePollAfterMs >= 0
+              ? statePollAfterMs
+              : Number.isFinite(receiptPollAfterMs) && receiptPollAfterMs > 0
+                ? receiptPollAfterMs
+                : 1000,
           };
         }));
+        freshStates.forEach(state => approvedBatchStates.set(state.run_id, state));
+        const states = receipts.map(receipt => (
+          approvedBatchStates.get(String(receipt.run_id || ""))
+        ));
+        if (states.some(state => !state)) {
+          throw new Error("Run 状态集合不完整");
+        }
         if (generation !== approvedBatchGeneration) return;
 
         const total = states.length;
         const terminalCount = states.filter(state => batchTerminalStatuses.has(state.status)).length;
         const runningCount = states.filter(state => state.status === "RUNNING" || state.status === "VERIFYING").length;
-        if (terminalCount < total) {
-          const attentionCount = states.filter(state => batchAttentionStatuses.has(state.status)).length;
+        const attentionCount = states.filter(state => batchAttentionStatuses.has(state.status)).length;
+        const settledCount = terminalCount + attentionCount;
+        if (settledCount < total) {
           const knownCount = states.filter(state => (
             batchTerminalStatuses.has(state.status)
             || batchQueuedStatuses.has(state.status)
@@ -2011,19 +2078,47 @@
                 : "已批准，等待执行";
           updateApprovedBatchPill(
             label,
-            terminalCount,
+            settledCount,
             total,
           );
           if (attentionCount) {
             renderFeedback(form, {
               kind: "warning",
               title: "执行需要处理",
-              message: `${attentionCount} 个 Run 正在等待补充信息、登录恢复或可重试状态处理，卡片会继续跟踪。`,
+              message: `${attentionCount} 个 Run 正在等待补充信息、登录恢复或可重试状态处理；其余 Run 继续跟踪。`,
               showTimer: false,
             });
           }
-          const nextPollAfterMs = Math.min(...states.map(state => state.next_poll_after_ms));
+          const activeStates = states.filter(state => (
+            !batchTerminalStatuses.has(state.status)
+            && !batchAttentionStatuses.has(state.status)
+          ));
+          const nextPollAfterMs = Math.min(...activeStates.map(state => state.next_poll_after_ms));
           scheduleApprovedBatchPoll(receipts, generation, nextPollAfterMs);
+          return;
+        }
+
+        if (attentionCount > 0) {
+          const message = `${attentionCount} 个 Run 需要补充信息、恢复登录或人工处理；已停止自动跟踪。`;
+          updateApprovedBatchPill("执行需要处理", settledCount, total);
+          setRunUiState({
+            running: false,
+            awaitingApproval: false,
+            pendingRun: false,
+            batchTracking: false,
+            cancelRequested: false,
+            runId: "",
+          });
+          renderFeedback(form, {
+            kind: "warning",
+            title: "执行需要处理",
+            message,
+            showTimer: false,
+          });
+          announceApprovedBatch(message);
+          approvedBatchReceipts = [];
+          approvedBatchStates = new Map();
+          approvedBatchPollTimer = null;
           return;
         }
 
@@ -2058,6 +2153,7 @@
         });
         announceApprovedBatch(message);
         approvedBatchReceipts = [];
+        approvedBatchStates = new Map();
         approvedBatchPollTimer = null;
       } catch (error) {
         if (generation !== approvedBatchGeneration) return;
@@ -2088,6 +2184,7 @@
         ));
       if (!valid || receipts.length === 0) return;
 
+      if (!runUiState.batchTracking) approvedBatchStates = new Map();
       const merged = new Map(approvedBatchReceipts.map(receipt => [receipt.run_id, receipt]));
       receipts.forEach(receipt => merged.set(receipt.run_id, receipt));
       approvedBatchReceipts = [...merged.values()];
@@ -2450,6 +2547,11 @@
           try {
             outputState = await fetchOutputState({ offset: 0 });
           } catch {}
+
+          if (outputState?.attention) {
+            renderAttentionRun(outputState);
+            return;
+          }
 
           const awaitingApproval = !!outputState?.awaiting_approval || String(outputState?.status || "").toUpperCase() === "WAITING_APPROVAL";
           if (outputState && awaitingApproval) {

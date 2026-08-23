@@ -140,6 +140,34 @@ def test_explicit_webhook_mode_preserves_non_signed_status_but_dry_run_never_wri
     assert calls == ["ronghui.delivery_status.read"]
 
 
+def test_empty_pending_view_finishes_without_query_or_write() -> None:
+    module = _load_action()
+    calls: list[str] = []
+
+    def broker(operation, *, action, role, arguments):
+        del operation, role, arguments
+        calls.append(action)
+        if action == "feishu.bitable.list_views":
+            return {
+                "items": [{"view_id": "view-pending", "view_name": "未签收明细"}],
+                "evidence_ref": "evidence:view-list",
+            }
+        assert action == "feishu.bitable.list_records"
+        return {
+            "items": [],
+            "pagination_complete": True,
+            "next_cursor": None,
+            "evidence_ref": "evidence:empty-record-page",
+        }
+
+    result = module.run_action({}, broker)
+
+    assert result["status"] == "SUCCESS"
+    assert result["meta"]["record_count"] == 0
+    assert result["data"]["evidence"]["execution_result"] == "no_data"
+    assert calls == ["feishu.bitable.list_views", "feishu.bitable.list_records"]
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

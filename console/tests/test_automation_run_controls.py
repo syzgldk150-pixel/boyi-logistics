@@ -366,6 +366,45 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("signal: controller.signal", terminal_fetch_block)
         self.assertIn("clearTimeout(timeoutId)", terminal_fetch_block)
 
+    def test_blocked_runs_render_attention_and_do_not_keep_polling(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function renderAttentionRun(data)", source)
+        self.assertIn('"数据阻塞"', source)
+        self.assertIn('"登录已失效"', source)
+        self.assertIn("if (data.attention)", source)
+        self.assertIn("pendingRun && !data.attention", source)
+
+    def test_approved_batch_attention_states_stop_tracking_when_settled(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("const settledCount = terminalCount + attentionCount;", source)
+        self.assertIn("if (settledCount < total)", source)
+        self.assertIn("const activeStates = states.filter", source)
+        self.assertIn("if (attentionCount > 0)", source)
+        self.assertIn("let approvedBatchStates = new Map();", source)
+        self.assertIn("const fetchReceipts = receipts.filter", source)
+        self.assertIn("approvedBatchStates.set(state.run_id, state)", source)
+        self.assertNotIn("Number(state.next_poll_after_ms) ||", source)
+        self.assertNotIn("卡片会继续跟踪", source)
+
+    def test_attention_latch_survives_poll_and_request_error_recovery(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("let termAttentionLatched = false;", source)
+        self.assertIn("termAttentionLatched = true;", source)
+        self.assertIn("if (outputState?.attention)", source)
+        self.assertIn(
+            "if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt))",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

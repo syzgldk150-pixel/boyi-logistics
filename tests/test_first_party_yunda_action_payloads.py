@@ -281,6 +281,61 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
     )
 
 
+def test_yunda_send_empty_source_clears_every_requested_snapshot() -> None:
+    action_module = _load_action("sync_yunda_send_waybills")
+    calls: list[str] = []
+
+    def broker(operation, *, action, role, arguments):
+        del operation, role
+        calls.append(action)
+        if action in {
+            "yunda.send_waybill.list_page",
+            "yunda.special_line.list_page",
+        }:
+            return {
+                "items": [],
+                "next_cursor": None,
+                "pagination_complete": True,
+                "evidence_ref": f"broker-evidence:{action}",
+            }
+        assert arguments["records"] == []
+        assert arguments["target_date"] == "2026-08-24"
+        if action == "waybill.yunda.replace_date":
+            return {
+                "committed": True,
+                "upserted": 0,
+                "deleted_stale": 1,
+                "evidence_ref": "broker-evidence:yunda-empty-projection",
+            }
+        assert action in {
+            "feishu.bitable.replace_yunda_send_waybills_date",
+            "feishu.sheet.replace_yunda_send_waybills",
+        }
+        return {
+            "committed": True,
+            "record_count": 0,
+            "written": 0,
+            "deleted": 1,
+            "verified": True,
+            "readback_count": 0,
+            "readback_sha256": "e" * 64,
+            "evidence_ref": f"broker-evidence:{action}",
+        }
+
+    result = action_module.run_action({"target_date": "2026-08-24"}, broker)
+
+    assert result["status"] == "SUCCESS"
+    assert result["meta"]["record_count"] == 0
+    assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
+    assert calls == [
+        "yunda.send_waybill.list_page",
+        "yunda.special_line.list_page",
+        "feishu.bitable.replace_yunda_send_waybills_date",
+        "waybill.yunda.replace_date",
+        "feishu.sheet.replace_yunda_send_waybills",
+    ]
+
+
 def test_yunda_send_payload_stops_before_crossing_broker_call_budget() -> None:
     action = _load_action("sync_yunda_send_waybills")
     action._MAX_BROKER_CALLS = 1
