@@ -292,6 +292,55 @@ def test_arrive_sheet_uses_exact_resource_and_accepts_only_exact_dated_readback(
     assert result["target_date"] == "2026-08-15"
 
 
+def test_arrive_sheet_accepts_feishu_numeric_readback_formatting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-arrive-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "range": "Arrive!A2:R100",
+        "clear_range": "Arrive!A2:R100",
+        "title_range": "Arrive!A1:R1",
+        "_meta": {"resource_key": resource_id},
+    }
+    expected = [[_record().get(field) for field in _FIELDS]]
+    observed_after_write = deepcopy(expected)
+    observed_after_write[0][4] = 2.0
+    observed_after_write[0][6] = 3.5
+    observed_after_write[0][7] = Decimal("0.1250")
+    observed_after_write[0][13] = 3.5
+    observed_after_write[0][14] = 2.5
+    observed_after_write[0][15] = 12.34
+    observed_after_write[0][17] = 0
+    clear_reads = iter([[], observed_after_write])
+
+    monkeypatch.setattr(
+        arrival,
+        "_load_resource",
+        lambda exact: resource if exact == resource_id else None,
+    )
+    monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
+
+    def fresh(_resource, value_range, *, width):
+        if value_range == resource["clear_range"]:
+            return arrival._canonical_rows(next(clear_reads), width=width)
+        if value_range == resource["title_range"]:
+            from tools.arrive_list_sync_tool import _build_title
+
+            return arrival._canonical_rows(
+                [_build_title({"target_date": "2026-08-15"})],
+                width=width,
+            )
+        raise AssertionError(value_range)
+
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", fresh)
+
+    result = arrival._replace_arrive_sheet(resource_id, expected, "2026-08-15")
+
+    assert result["verified"] is True
+
+
 def test_empty_arrive_sheet_reconciles_clear_response_loss_and_updates_title(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
