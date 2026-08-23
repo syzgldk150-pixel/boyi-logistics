@@ -358,6 +358,13 @@ def test_sheet_mismatch_shape_reports_only_position_and_lengths() -> None:
     assert "private" not in repr(summary)
 
 
+def test_canonical_rows_treats_sheet_line_endings_and_unicode_nfc_as_equivalent() -> None:
+    expected = arrival._canonical_rows([["说明\r第二行", "Cafe\u0301"]], width=2)
+    observed = arrival._canonical_rows([["说明\n第二行", "Café"]], width=2)
+
+    assert expected == observed
+
+
 def test_arrive_sheet_readback_respects_template_offset_within_clear_range(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
