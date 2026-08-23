@@ -38,25 +38,29 @@ class AutomationProjectReleaseManifestError(RuntimeError):
         super().__init__(code)
         self.code = str(code)
         self.count = max(int(count), 1)
-def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
-    """Recognize only the lease-backed interrupted-upgrade safety fence."""
-
-    committed_generation = row.get("committed_generation")
-    target_generation = row.get("target_generation")
-    max_generation = row.get("max_generation")
+def _target_runtime_stage_is_recoverable(row: Mapping[str, Any], committed_generation: Any, target_generation: Any) -> bool:
     target_state = row.get("target_generation_state")
     target_base_generation = row.get("target_base_generation")
-    target_lineage_is_safe = (
-        row.get("project_state") == "UPGRADING" and row.get("reconcile_state") == "READY_TO_COMMIT"
-        and target_state == "PREPARED"
-        and target_base_generation == committed_generation
-        and max_generation == target_generation
-    ) or (
-        row.get("project_state") in {"ENABLED", "UPGRADING"} and row.get("reconcile_state") == "PREPARING"
-        and target_state is None
-        and target_base_generation is None
-        and max_generation == committed_generation
+    if target_state is None:
+        return bool(
+            row.get("project_state") in {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING"}
+            and row.get("reconcile_state") == "PREPARING"
+            and target_base_generation is None and row.get("max_generation") == committed_generation
+        )
+    return bool(
+        row.get("project_state") == "UPGRADING" and target_base_generation == committed_generation
+        and row.get("max_generation") == target_generation
+        and (target_state, row.get("reconcile_state"))
+        in {
+            ("TARGET", "PREPARING"), ("PREPARING", "PREPARING"),
+            ("WAITING_COEFFECTS", "WAITING_COEFFECTS"),
+            ("PREPARED", "READY_TO_COMMIT"),
+        }
     )
+def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
+    """Recognize only the lease-backed interrupted-upgrade safety fence."""
+    committed_generation = row.get("committed_generation")
+    target_generation = row.get("target_generation")
     return bool(
         type(committed_generation) is int
         and type(target_generation) is int
@@ -64,7 +68,7 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
         and row.get("policy_project_generation") == target_generation
         and row.get("generation_state") == "BLOCKED"
         and row.get("generation_error_code") == "WRITE_OUTCOME_UNKNOWN"
-        and target_lineage_is_safe
+        and _target_runtime_stage_is_recoverable(row, committed_generation, target_generation)
         and type(row.get("unsafe_non_disposed_other_count")) is int
         and row.get("unsafe_non_disposed_other_count") == 0
         and type(row.get("active_current_lease_count")) is int
@@ -72,28 +76,24 @@ def is_staged_unknown_write_quarantine(row: Mapping[str, Any]) -> bool:
         and type(row.get("unknown_write_count")) is int
         and row.get("unknown_write_count") > 0
     )
-def is_staged_missing_target_runtime(row: Mapping[str, Any]) -> bool:
-    """Recognize an un-runnable upgrade whose target row can be rebuilt."""
+def is_staged_recoverable_runtime(row: Mapping[str, Any]) -> bool:
+    """Recognize an un-runnable target at a repository-produced recovery point."""
 
     committed_generation = row.get("committed_generation")
     target_generation = row.get("target_generation")
     max_generation = row.get("max_generation")
     return bool(
-        row.get("project_state") in {"ENABLED", "UPGRADING"}
-        and row.get("reconcile_state") == "PREPARING"
-        and type(committed_generation) is int
+        type(committed_generation) is int
         and type(target_generation) is int
         and type(max_generation) is int
-        and target_generation == max_generation + 1
-        and target_generation > committed_generation
+        and target_generation == committed_generation + 1
         and row.get("policy_project_generation") == target_generation
         and row.get("generation_state") == "COMMITTED"
         and row.get("generation_error_code") is None
-        and row.get("target_generation_state") is None
-        and row.get("target_base_generation") is None
+        and _target_runtime_stage_is_recoverable(row, committed_generation, target_generation)
         and type(row.get("unsafe_non_disposed_other_count")) is int
         and row.get("unsafe_non_disposed_other_count") == 0
-        and type(row.get("unknown_write_count")) is int
+        and row.get("active_current_lease_count") == 0
         and row.get("unknown_write_count") == 0
     )
 
@@ -376,7 +376,7 @@ def typed_project_scheduled_write_crons(
             )
         task_id = row.get("task_id")
         quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
-        staged_missing_target = is_staged_missing_target_runtime(row)
+        staged_missing_target = is_staged_recoverable_runtime(row)
         isolated_runtime = quarantined_unknown_write or staged_missing_target
         runtime_issue = _scheduled_write_runtime_validation_issue(
             row,
@@ -1526,7 +1526,7 @@ def _validate_release_projects_and_tasks(
         )
         staged_missing_target = (
             not expect_initial_production_manifest
-            and is_staged_missing_target_runtime(project)
+            and is_staged_recoverable_runtime(project)
         )
         isolated_runtime = staged_unknown_write or staged_missing_target
         if (
@@ -2341,7 +2341,7 @@ def _validate_later_project_policy_chain(
             raise AutomationProjectReleaseManifestError("AUTOMATION_PROJECT_POLICY_STATE_INVALID") from exc
         return
 
-    isolated_target = is_staged_unknown_write_quarantine(project) or is_staged_missing_target_runtime(project)
+    isolated_target = is_staged_unknown_write_quarantine(project) or is_staged_recoverable_runtime(project)
     expected_generation = project.get("target_generation") if isolated_target else project.get("generation")
     legacy_contract_binding = (
         previous_mode == "PROJECT_FULL_AUTO"
