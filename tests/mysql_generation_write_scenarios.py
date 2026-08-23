@@ -517,9 +517,25 @@ def run_test_generation_write_lock_order_races(case):
                 "migration_authority": False,
             }
         )
-        archival_config = archival_repository.initialize_project_config(
+        initial_archival_config = archival_repository.initialize_project_config(
             archival_automation_id,
             enabled_entrypoints=(),
+        )
+        archival_config = archival_repository.save_project_config(
+            archival_automation_id,
+            config={},
+            account_bindings={},
+            resource_bindings={},
+            enabled_entrypoints=(),
+            schedule={"kind": "none", "times": [], "enabled": False},
+            compiled_invocations={},
+            device_binding=None,
+            actor_id="integration-admin",
+            actor_role="super_admin",
+            request_id=str(uuid4()),
+            expected_project_configuration_version=int(
+                initial_archival_config["config_version"]
+            ),
         )
         first_snapshot = generation_snapshot(archival_config, 1)
         prepare_generation(archival_repository, first_snapshot, None)
@@ -648,3 +664,51 @@ def run_test_generation_write_lock_order_races(case):
                 lease_outcomes[late_finalizer_lease],
             )
             case.assertEqual("SUCCEEDED", lease_outcomes[successor_lease])
+
+        archival_repository = AutomationPluginRepository(
+            connection,
+            cursor_factory=case.pymysql.cursors.DictCursor,
+        )
+        locked_history = archival_repository.lock_project_generation_history(
+            archival_automation_id,
+            committed_generation=2,
+        )
+        case.assertEqual(
+            [(1, "BLOCKED", True), (2, "COMMITTED", False)],
+            [
+                (
+                    row["generation"],
+                    row["state"],
+                    row.get("_archival_unknown_write", False),
+                )
+                for row in locked_history
+            ],
+        )
+        connection.rollback()
+
+        current_config = archival_repository.get_project_config(
+            archival_automation_id,
+        )
+        case.assertIsNotNone(current_config)
+        staged_config = archival_repository.save_project_config(
+            archival_automation_id,
+            config=current_config["config_json"],
+            account_bindings=current_config["account_bindings_json"],
+            resource_bindings=current_config["resource_bindings_json"],
+            enabled_entrypoints=current_config["enabled_entrypoints_json"],
+            schedule=current_config["desired_schedule_json"],
+            compiled_invocations=current_config["compiled_invocations_json"],
+            device_binding=None,
+            actor_id="integration-admin",
+            actor_role="super_admin",
+            request_id=str(uuid4()),
+            expected_project_configuration_version=int(
+                current_config["config_version"]
+            ),
+        )
+        case.assertEqual(3, staged_config["config_version"])
+        staged_project = archival_repository.get_project(archival_automation_id)
+        case.assertEqual(3, staged_project["target_generation"])
+        case.assertEqual(2, staged_project["committed_generation"])
+        case.assertEqual("PREPARING", staged_project["reconcile_state"])
+        connection.rollback()
