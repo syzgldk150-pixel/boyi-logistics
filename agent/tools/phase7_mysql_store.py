@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable
 
@@ -647,6 +647,18 @@ _SCAN_CODES_UPSERT_SQL = """
         seen_count = seen_count + 1
 """
 
+_SCAN_CODES_SNAPSHOT_UPSERT_SQL = """
+    INSERT INTO scan_codes (
+        raw_code, destination, code_type, main_tracking, last_seen_at, seen_count
+    ) VALUES (%s, %s, %s, %s, %s, 1)
+    ON DUPLICATE KEY UPDATE
+        destination = VALUES(destination),
+        code_type = VALUES(code_type),
+        main_tracking = VALUES(main_tracking),
+        last_seen_at = VALUES(last_seen_at),
+        seen_count = seen_count + 1
+"""
+
 
 def _upsert_scan_rows(cur: Any, rows: list[dict[str, str]]) -> None:
     if rows:
@@ -672,19 +684,39 @@ def replace_scan_codes(rows: list[dict[str, str]]) -> dict[str, Any]:
         conn.close()
 
 
-def replace_scan_codes_snapshot(rows: list[dict[str, str]]) -> dict[str, Any]:
-    """Atomically replace the complete signed scan snapshot."""
+def replace_scan_codes_snapshot(
+    rows: list[dict[str, str]],
+    target_date: str,
+) -> dict[str, Any]:
+    """Atomically replace only the target day's signed scan snapshot."""
 
     ensure_phase7_tables()
+    start_date = date.fromisoformat(target_date)
+    end_date = start_date + timedelta(days=1)
     conn = _connect()
     try:
         conn.begin()
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM scan_codes")
+            cur.execute(
+                """
+                DELETE FROM scan_codes
+                WHERE last_seen_at >= %s AND last_seen_at < %s
+                """,
+                (start_date.isoformat(), end_date.isoformat()),
+            )
             deleted = int(cur.rowcount or 0)
-            _upsert_scan_rows(cur, rows)
+            if rows:
+                cur.executemany(
+                    _SCAN_CODES_SNAPSHOT_UPSERT_SQL,
+                    [(*_scan_row_tuple(row), start_date.isoformat()) for row in rows],
+                )
         conn.commit()
-        return {"ok": True, "deleted": deleted, "replaced": len(rows)}
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "replaced": len(rows),
+            "target_date": start_date.isoformat(),
+        }
     except Exception:
         conn.rollback()
         raise
@@ -713,17 +745,23 @@ def cleanup_scan_codes(retention_days: int = 30) -> dict[str, Any]:
         conn.close()
 
 
-def list_scan_codes() -> list[dict[str, str]]:
+def _list_scan_codes_query(
+    *,
+    where_sql: str = "",
+    params: tuple[Any, ...] = (),
+) -> list[dict[str, str]]:
     ensure_phase7_tables()
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT raw_code, destination, code_type, main_tracking
                 FROM scan_codes
+                {where_sql}
                 ORDER BY destination, raw_code
-                """
+                """,
+                params,
             )
             rows = cur.fetchall()
     finally:
@@ -738,6 +776,19 @@ def list_scan_codes() -> list[dict[str, str]]:
         for row in rows
         if row.get("raw_code")
     ]
+
+
+def list_scan_codes() -> list[dict[str, str]]:
+    return _list_scan_codes_query()
+
+
+def list_scan_codes_for_date(target_date: str) -> list[dict[str, str]]:
+    start_date = date.fromisoformat(target_date)
+    end_date = start_date + timedelta(days=1)
+    return _list_scan_codes_query(
+        where_sql="WHERE last_seen_at >= %s AND last_seen_at < %s",
+        params=(start_date.isoformat(), end_date.isoformat()),
+    )
 
 
 def _waybill_row_tuple(row: dict[str, Any]) -> tuple[Any, ...]:

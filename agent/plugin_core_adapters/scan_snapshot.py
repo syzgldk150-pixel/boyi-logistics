@@ -46,17 +46,22 @@ def replace_scan_snapshot_verified(
 ) -> Mapping[str, Any]:
     """Replace then freshly prove the complete intended scan snapshot."""
 
-    del target_date
-    from tools.phase7_mysql_store import list_scan_codes, replace_scan_codes_snapshot
+    from tools.phase7_mysql_store import (
+        list_scan_codes_for_date,
+        replace_scan_codes_snapshot,
+    )
 
     expected = sorted(_normalized(records), key=lambda row: row["raw_code"])
     write_error: BaseException | None = None
     try:
-        replace_scan_codes_snapshot(records)
+        replace_scan_codes_snapshot(records, target_date)
     except Exception as exc:
         write_error = exc
     try:
-        observed = sorted(_normalized(list_scan_codes()), key=lambda row: row["raw_code"])
+        observed = sorted(
+            _normalized(list_scan_codes_for_date(target_date)),
+            key=lambda row: row["raw_code"],
+        )
     except PluginExecutionError:
         raise
     except Exception as exc:
