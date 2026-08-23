@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -67,6 +68,30 @@ def test_waybill_projection_accepts_lost_response_only_after_exact_fresh_readbac
     assert result["verified"] is True
     assert result["record_count"] == 1
     assert len(result["readback_sha256"]) == 64
+
+
+def test_waybill_projection_treats_mysql_decimals_as_the_same_signed_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desired = _record()
+    observed = deepcopy(desired)
+    for field in (
+        "actual_weight",
+        "volume",
+        "settlement_weight",
+        "volumetric_weight",
+        "shipping_fee",
+        "pay_on_arrival",
+    ):
+        observed[field] = Decimal(str(observed[field]))
+
+    monkeypatch.setattr(arrival, "_write_waybills", lambda _records: {"ok": True})
+    monkeypatch.setattr(arrival, "_read_waybills", lambda: [observed])
+
+    result = arrival._replace_waybill_snapshot([desired], "2026-08-15")
+
+    assert result["verified"] is True
+    assert result["record_count"] == 1
 
 
 def test_waybill_projection_rejects_zero_or_incomplete_fresh_readback_as_unknown(

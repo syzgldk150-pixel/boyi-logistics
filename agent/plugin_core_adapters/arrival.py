@@ -84,6 +84,21 @@ _SPLIT_FIELDS = (
     "problem_owner_type",
     "problem_cause",
 )
+_NUMERIC_RECORD_FIELDS = frozenset(
+    {
+        "quantity",
+        "actual_weight",
+        "volume",
+        "settlement_weight",
+        "volumetric_weight",
+        "shipping_fee",
+        "pay_on_arrival",
+        "source_row_no",
+        "expected_quantity",
+        "arrived_quantity",
+        "pending_quantity",
+    }
+)
 _SHEET_RANGE_RE = re.compile(
     r"(?P<sheet>[^!]+)!(?P<start>[A-Z]+)(?P<start_row>[1-9][0-9]*):"
     r"(?P<end>[A-Z]+)(?P<end_row>[1-9][0-9]*)"
@@ -121,6 +136,19 @@ def _canonical_scalar(value: object) -> str:
     return str(value).strip()
 
 
+def _canonical_record_scalar(field: str, value: object) -> str:
+    if (
+        field not in _NUMERIC_RECORD_FIELDS
+        or not isinstance(value, str)
+        or not value.strip()
+    ):
+        return _canonical_scalar(value)
+    try:
+        return _canonical_scalar(Decimal(value.strip()))
+    except InvalidOperation as exc:
+        raise ValueError("invalid numeric record field") from exc
+
+
 def _canonical_records(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -131,7 +159,10 @@ def _canonical_records(
     for raw in rows:
         if not isinstance(raw, Mapping) or any(field not in raw for field in fields):
             raise ValueError("record is incomplete")
-        record = {field: _canonical_scalar(raw.get(field)) for field in fields}
+        record = {
+            field: _canonical_record_scalar(field, raw.get(field))
+            for field in fields
+        }
         identity = record[identity_field]
         if not identity or identity in records:
             raise ValueError("record identity is missing or duplicated")
