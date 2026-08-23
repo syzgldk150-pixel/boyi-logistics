@@ -2002,6 +2002,56 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             "scheduled_write_window=ok checked_schedules=0"
         )
 
+    def test_release_preflight_accepts_repository_runtime_checkpoints(self):
+        helper = self.runner._AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER
+        base = {
+            "committed_generation": 3,
+            "target_generation": 4,
+            "policy_project_generation": 4,
+            "generation_state": "COMMITTED",
+            "generation_error_code": None,
+            "unsafe_non_disposed_other_count": 0,
+            "active_current_lease_count": 0,
+            "unknown_write_count": 0,
+        }
+        checkpoints = (
+            {
+                "project_state": "ENABLED", "reconcile_state": "PREPARING",
+                "target_generation_state": None, "target_base_generation": None,
+                "max_generation": 3,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "PREPARING",
+                "target_generation_state": "TARGET", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "PREPARING",
+                "target_generation_state": "PREPARING", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "WAITING_COEFFECTS",
+                "target_generation_state": "WAITING_COEFFECTS", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+            {
+                "project_state": "UPGRADING", "reconcile_state": "READY_TO_COMMIT",
+                "target_generation_state": "PREPARED", "target_base_generation": 3,
+                "max_generation": 4,
+            },
+        )
+        for checkpoint in checkpoints:
+            with self.subTest(checkpoint=checkpoint):
+                self.assertTrue(
+                    helper.is_staged_recoverable_runtime({**base, **checkpoint})
+                )
+        self.assertFalse(
+            helper.is_staged_recoverable_runtime(
+                {**base, **checkpoints[-1], "reconcile_state": "PREPARING"}
+            )
+        )
+
     def test_scheduled_write_window_missing_target_runtime_fails_closed(self):
         base = {
             "task_id": "arrive_list_0500",
