@@ -6,14 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import Actor, ActorType, Command, ContextSnapshot, OrchestrationError
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.scan_preview_binding import (
     SCAN_PREVIEW_CONTEXT_KEY,
     ScanPreviewExpectation,
     consume_scan_preview,
+    ensure_scan_preview_active,
     require_scan_formal_governance,
     resolve_scan_preview,
+    restore_scan_preview_replay,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -228,6 +231,17 @@ def test_preview_expiry_result_tampering_and_argument_drift_fail_closed():
     assert stale.value.code == "SCAN_PREVIEW_STALE"
 
 
+def test_expiry_is_rechecked_after_the_preview_lock_boundary():
+    context = _resolve(
+        _Uow(_fixture(observed_at=NOW - timedelta(minutes=14, seconds=59)))
+    ).context
+
+    with pytest.raises(OrchestrationError) as expired:
+        ensure_scan_preview_active(context, now=NOW + timedelta(seconds=1))
+
+    assert expired.value.code == "SCAN_PREVIEW_EXPIRED"
+
+
 def test_consumption_is_once_only_but_same_command_retry_is_reusable():
     uow = _Uow(_fixture())
     context = _resolve(uow).context
@@ -247,6 +261,132 @@ def test_consumption_is_once_only_but_same_command_retry_is_reusable():
             occurred_at=NOW,
         )
     assert consumed.value.code == "SCAN_PREVIEW_ALREADY_CONSUMED"
+
+
+def test_accepted_command_is_restored_for_same_idempotency_replay_after_expiry():
+    preview_uow = _Uow(_fixture())
+    context = _resolve(preview_uow).context
+    original = _command(context, idempotency_key="formal-replay")
+
+    class _GatewayCommands:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def get_by_idempotency(self, source, idempotency_key, *, for_update=False):
+            del for_update
+            row = self.repository.commands.get((source, idempotency_key))
+            return copy.deepcopy(row) if row is not None else None
+
+    class _GatewayUow:
+        def __init__(self, repository):
+            self.repository = repository
+            self.commands = _GatewayCommands(repository)
+            self.events = repository.events
+            self.work_items = SimpleNamespace(add_entity=lambda _row: None)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, _exc, _tb):
+            return False
+
+        def command_gateway_create(self, command, item, run, event, outbox):
+            del event, outbox
+            identity = (command["source"], command["idempotency_key"])
+            existing = self.repository.commands.get(identity)
+            if existing is not None:
+                assert existing["parameters_json"] == command["parameters"]
+                return {
+                    **self.repository.receipt,
+                    "created": {
+                        "command": False,
+                        "work_item": False,
+                        "run": False,
+                        "event": False,
+                    },
+                }
+            persisted = dict(command)
+            persisted["actor_roles_json"] = list(command["actor_roles"])
+            persisted["entity_refs_json"] = list(command["entity_refs"])
+            persisted["parameters_json"] = dict(command["parameters"])
+            persisted["automation_invocation_json"] = dict(
+                command["automation_invocation"]
+            )
+            self.repository.commands[identity] = persisted
+            self.repository.receipt = {
+                "command_id": command["command_id"],
+                "work_item_id": item["work_item_id"],
+                "run_id": run["run_id"],
+                "event_id": "event-command",
+            }
+            self.repository.runs[run["run_id"]] = {
+                "run_id": run["run_id"],
+                "status": "RECEIVED",
+            }
+            return {
+                **self.repository.receipt,
+                "created": {
+                    "command": True,
+                    "work_item": True,
+                    "run": True,
+                    "event": True,
+                },
+            }
+
+        @staticmethod
+        def commit():
+            return None
+
+    class _GatewayRepository:
+        def __init__(self):
+            self.commands = {}
+            self.events = _Events()
+            self.runs = {}
+            self.receipt = None
+
+        def unit_of_work(self):
+            return _GatewayUow(self)
+
+        def get_run(self, run_id):
+            return copy.deepcopy(self.runs.get(run_id))
+
+    repository = _GatewayRepository()
+    gateway = CommandGateway(repository)
+    first = gateway.submit(
+        original,
+        uow_guard=lambda uow: consume_scan_preview(
+            uow,
+            context=context,
+            command=original,
+            occurred_at=NOW,
+        ),
+    )
+    assert first.reused is False
+    assert len(repository.events.rows) == 1
+
+    with repository.unit_of_work() as replay_uow:
+        replay = restore_scan_preview_replay(
+            replay_uow,
+            source=original.source,
+            idempotency_key=original.idempotency_key,
+            actor=original.actor,
+            trusted_context={},
+            project_instance_id=PROJECT_ID,
+            request_id="formal-request",
+            preview_run_id=RUN_ID,
+        )
+
+    assert replay is not None
+    assert replay.command_id == original.command_id
+    assert replay.correlation_id == original.correlation_id
+    assert replay.parameters == original.parameters
+    assert replay.automation_invocation == original.automation_invocation
+    second = gateway.submit(replay)
+    assert second.reused is True
+    assert second.command_id == first.command_id
+    assert second.work_item_id == first.work_item_id
+    assert second.run_id == first.run_id
+    assert len(repository.events.rows) == 1
 
 
 def test_planner_persists_compact_scan_impact_for_the_signed_project():

@@ -17,8 +17,20 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent.orchestration.approval_service import APPROVAL_TTL
-from agent.orchestration.models import Command, OperationType, OrchestrationError, new_id, sha256_json
-from shared.automation_project_authorization import canonical_sha256
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    EntityRef,
+    OperationType,
+    OrchestrationError,
+    new_id,
+    sha256_json,
+)
+from shared.automation_project_authorization import (
+    AutomationProjectInvocation,
+    canonical_sha256,
+)
 from shared.orchestration_repository_support import IdempotencyConflict
 
 
@@ -252,6 +264,124 @@ def validate_scan_preview_context(value: Any) -> dict[str, Any]:
     if selection > normalized or (selection == 0) != (batches == 0) or evidence_count < 1:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview counts are inconsistent")
     return context
+
+
+def ensure_scan_preview_active(value: Any, *, now: datetime) -> None:
+    """Recheck expiry after the caller has acquired the preview Run lock."""
+
+    context = validate_scan_preview_context(value)
+    checked_now = _aware_utc(now, "now")
+    expires_at = _parse_timestamp(context["expires_at"], "expires_at")
+    if checked_now >= expires_at:
+        raise _error("SCAN_PREVIEW_EXPIRED", "The scan preview is older than fifteen minutes")
+
+
+def restore_scan_preview_replay(
+    uow: Any,
+    *,
+    source: str,
+    idempotency_key: str,
+    actor: Actor,
+    trusted_context: Mapping[str, Any],
+    project_instance_id: str,
+    request_id: str,
+    preview_run_id: str,
+) -> Command | None:
+    """Restore the exact accepted Command so a replay also works after expiry."""
+
+    persisted = uow.commands.get_by_idempotency(
+        source,
+        idempotency_key,
+        for_update=False,
+    )
+    if persisted is None:
+        return None
+    try:
+        if (
+            str(persisted.get("command_type") or "") != "automation.project.invoke"
+            or str(persisted.get("source") or "") != source
+            or str(persisted.get("idempotency_key") or "") != idempotency_key
+            or str(persisted.get("actor_type") or "") != actor.actor_type.value
+            or str(persisted.get("actor_id") or "") != actor.actor_id
+        ):
+            raise ValueError("persisted command identity differs")
+        roles = persisted.get("actor_roles_json", persisted.get("actor_roles"))
+        if not isinstance(roles, list) or tuple(sorted(roles)) != actor.roles:
+            raise ValueError("persisted command actor differs")
+        parameters = _row_mapping(persisted, "parameters_json", "parameters")
+        execution_context = parameters.get("execution_context")
+        preview_context = (
+            execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
+            if isinstance(execution_context, Mapping)
+            else None
+        )
+        validated_context = validate_scan_preview_context(preview_context)
+        if any(
+            execution_context.get(name) != value
+            for name, value in trusted_context.items()
+        ):
+            raise ValueError("persisted trusted transport context differs")
+        if validated_context["preview_run_id"] != normalize_preview_run_id(preview_run_id):
+            raise ValueError("persisted preview identity differs")
+        invocation = AutomationProjectInvocation.from_mapping(
+            _row_mapping(
+                persisted,
+                "automation_invocation_json",
+                "automation_invocation",
+            )
+        )
+        if (
+            invocation.automation_id != project_instance_id
+            or invocation.request_id != request_id
+            or invocation.entrypoint.value != source
+        ):
+            raise ValueError("persisted project invocation differs")
+        raw_refs = persisted.get("entity_refs_json", persisted.get("entity_refs"))
+        if not isinstance(raw_refs, list):
+            raise ValueError("persisted entity references are invalid")
+        refs = tuple(
+            EntityRef(
+                entity_type=str(ref["entity_type"]),
+                entity_id=str(ref["entity_id"]),
+                source_system=str(ref.get("source_system") or ""),
+                relation_type=str(ref.get("relation_type") or "subject"),
+                metadata=(
+                    dict(ref.get("metadata") or {})
+                    if isinstance(ref, Mapping)
+                    else {}
+                ),
+            )
+            for ref in raw_refs
+            if isinstance(ref, Mapping)
+        )
+        if len(refs) != len(raw_refs):
+            raise ValueError("persisted entity references are invalid")
+        requested_at = persisted.get("requested_at")
+        if not isinstance(requested_at, datetime):
+            raise ValueError("persisted request time is invalid")
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=timezone.utc)
+        return Command(
+            command_type="automation.project.invoke",
+            source=source,
+            actor=Actor(
+                ActorType(str(persisted["actor_type"])),
+                str(persisted["actor_id"]),
+                tuple(roles),
+            ),
+            parameters=parameters,
+            idempotency_key=idempotency_key,
+            entity_refs=refs,
+            automation_invocation=invocation,
+            command_id=str(persisted["command_id"]),
+            correlation_id=str(persisted["correlation_id"]),
+            requested_at=requested_at.astimezone(timezone.utc),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OrchestrationError(
+            "REQUEST_ID_REUSED",
+            "Request id was already used for a different scan command",
+        ) from exc
 
 
 def build_scan_preview_impact(

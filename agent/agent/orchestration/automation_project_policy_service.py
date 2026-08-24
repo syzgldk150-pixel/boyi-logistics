@@ -36,9 +36,11 @@ from agent.orchestration.scan_preview_binding import (
     SCAN_PREVIEW_CONTEXT_KEY,
     ScanPreviewExpectation,
     consume_scan_preview,
+    ensure_scan_preview_active,
     normalize_preview_run_id,
     require_scan_formal_governance,
     resolve_scan_preview,
+    restore_scan_preview_replay,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -993,6 +995,13 @@ class AutomationProjectPolicyService:
         self._require_trusted_entrypoint_actor(source, actor)
         safe_id = _automation_id(automation_id)
         safe_request_id = _request_id(request_id)
+        command_idempotency_key = _idempotency_key(
+            idempotency_key
+            or (
+                f"automation:{safe_id}:{source.value}:"
+                f"{actor.actor_id}:{safe_request_id}"
+            )
+        )
         context = _trusted_context(source, trusted_context)
         expected_generation = (
             _positive_int(
@@ -1019,6 +1028,19 @@ class AutomationProjectPolicyService:
         safe_preview_run_id = None
         if preview_run_id is not None:
             safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+            with self._repository.unit_of_work() as uow:
+                replay = restore_scan_preview_replay(
+                    uow,
+                    source=source.value,
+                    idempotency_key=command_idempotency_key,
+                    actor=actor,
+                    trusted_context=context,
+                    project_instance_id=safe_id,
+                    request_id=safe_request_id,
+                    preview_run_id=safe_preview_run_id,
+                )
+            if replay is not None:
+                return self._command_gateway.submit(replay)
             require_scan_formal_governance(entry)
         if (
             expected_generation is not None
@@ -1104,6 +1126,9 @@ class AutomationProjectPolicyService:
             arguments = dict(preview.formal_arguments)
             preview_context = dict(preview.context)
             execution_context[SCAN_PREVIEW_CONTEXT_KEY] = preview_context
+            # A stable preview observation time makes concurrent retries carry
+            # byte-identical immutable Command parameters.
+            execution_context["occurred_at"] = preview_context["observed_at"]
         with self._repository.unit_of_work() as uow:
             policy = uow.automation_projects.get_policy(safe_id)
         if policy is None:
@@ -1131,13 +1156,7 @@ class AutomationProjectPolicyService:
                 "arguments": arguments,
                 "execution_context": execution_context,
             },
-            idempotency_key=_idempotency_key(
-                idempotency_key
-                or (
-                    f"automation:{safe_id}:{source.value}:"
-                    f"{actor.actor_id}:{safe_request_id}"
-                )
-            ),
+            idempotency_key=command_idempotency_key,
             entity_refs=(
                 EntityRef(
                     entity_type="automation_project",
@@ -1179,20 +1198,30 @@ class AutomationProjectPolicyService:
                     now=occurred_at,
                     for_update=True,
                 )
-                if locked_preview.context.get("context_sha256") != preview_context.get(
-                    "context_sha256"
-                ):
-                    raise OrchestrationError(
-                        "SCAN_PREVIEW_STALE",
-                        "The scan preview changed before command acceptance",
-                        details={"status": "BLOCKED_DATA"},
-                    )
-                consume_scan_preview(
-                    uow,
-                    context=locked_preview.context,
-                    command=command,
-                    occurred_at=occurred_at,
+                existing_command = uow.commands.get_by_idempotency(
+                    command.source,
+                    command.idempotency_key,
+                    for_update=True,
                 )
+                if existing_command is None:
+                    ensure_scan_preview_active(
+                        locked_preview.context,
+                        now=datetime.now(timezone.utc),
+                    )
+                    if locked_preview.context.get(
+                        "context_sha256"
+                    ) != preview_context.get("context_sha256"):
+                        raise OrchestrationError(
+                            "SCAN_PREVIEW_STALE",
+                            "The scan preview changed before command acceptance",
+                            details={"status": "BLOCKED_DATA"},
+                        )
+                    consume_scan_preview(
+                        uow,
+                        context=locked_preview.context,
+                        command=command,
+                        occurred_at=occurred_at,
+                    )
 
         return self._command_gateway.submit(command, uow_guard=guard)
 

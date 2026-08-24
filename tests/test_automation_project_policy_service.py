@@ -339,6 +339,13 @@ class _Runs:
         return {"run_id": str(run_id), "status": "WAITING_APPROVAL"}
 
 
+class _Commands:
+    @staticmethod
+    def get_by_idempotency(_source, _idempotency_key, *, for_update=False):
+        del for_update
+        return None
+
+
 class _Uow:
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
@@ -347,6 +354,7 @@ class _Uow:
         self.approvals = _Approvals(repository)
         self.events = _Events(repository)
         self.runs = _Runs(repository)
+        self.commands = _Commands()
         self.scheduled_policies = SimpleNamespace()
         self._snapshot: _State | None = None
 
