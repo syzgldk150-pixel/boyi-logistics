@@ -118,6 +118,45 @@ class WriteImpactPreviewTests(unittest.TestCase):
         )
         validate_write_impact(operation_type=OperationType.EXTERNAL_WRITE, impact=impact)
 
+    def test_self_pickup_formal_selection_has_exact_ordered_waybill_impact(self):
+        impact = build_write_impact(
+            tool_name="automation.self_pickup_problem_upload.run",
+            operation_type=OperationType.EXTERNAL_WRITE,
+            account_id=None,
+            arguments={
+                "dry_run": False,
+                "selected_bill_codes": ["R_SELF", "R_DX_PICK"],
+                "preview_fingerprint": "b" * 64,
+            },
+        )
+
+        assert impact is not None
+        self.assertEqual(
+            ["R_SELF", "R_DX_PICK"],
+            [item["entity_id"] for item in impact["entities"]],
+        )
+        self.assertEqual(
+            "register_arrived_self_pickup_problem",
+            impact["entities"][0]["metadata"]["action"],
+        )
+        validate_write_impact(
+            operation_type=OperationType.EXTERNAL_WRITE,
+            impact=impact,
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            build_write_impact(
+                tool_name="automation.self_pickup_problem_upload.run",
+                operation_type=OperationType.EXTERNAL_WRITE,
+                account_id=None,
+                arguments={
+                    "dry_run": False,
+                    "selected_bill_codes": [f"R{index}" for index in range(251)],
+                    "preview_fingerprint": "b" * 64,
+                },
+            )
+        self.assertEqual("IMPACT_PREVIEW_REQUIRED", raised.exception.code)
+
     def test_split_impact_rejects_unbound_or_ambiguous_selection(self):
         invalid_arguments = (
             {"dry_run": False, "selected_bill_codes": [], "preview_fingerprint": "a" * 64},
@@ -211,6 +250,64 @@ class WriteImpactPreviewTests(unittest.TestCase):
 
         self.assertEqual(
             ["R2", "R1"],
+            [entity["entity_id"] for entity in plan.impact["entities"]],
+        )
+        self.assertEqual(OperationType.EXTERNAL_WRITE, plan.steps[0].operation_type)
+
+    def test_self_pickup_project_formal_plan_uses_exact_selected_waybill_impact(self):
+        tool_name = "automation.self_pickup_problem_upload.run"
+
+        class _Catalog:
+            catalog_hash = "catalog-digest"
+
+            @staticmethod
+            def get_capability(requested_tool_name):
+                if requested_tool_name != tool_name:
+                    return None
+                return {
+                    "version": "1.0.21",
+                    "operation_type": "external_write",
+                    "risk_level": "high",
+                    "llm_exposed": False,
+                    "evidence": [],
+                    "postconditions": [
+                        {"name": "third_party_self_pickup_problem_confirmed"}
+                    ],
+                }
+
+        command = Command(
+            command_type="automation.project.invoke",
+            source="feishu",
+            actor=Actor(ActorType.FEISHU_USER, "user-1", roles=("super_admin",)),
+            parameters={
+                "tool_name": tool_name,
+                "account_id": None,
+                "arguments": {
+                    "dry_run": False,
+                    "selected_bill_codes": ["R_SELF", "R_DX_PICK"],
+                    "preview_fingerprint": "b" * 64,
+                },
+            },
+            idempotency_key="self-pickup-formal-1",
+            automation_invocation=AutomationProjectInvocation(
+                automation_id="self_pickup_problem_upload",
+                automation_generation=1,
+                entrypoint=AutomationEntrypoint.FEISHU,
+                contract_id="self-pickup-contract-v1",
+                contract_hash="c" * 64,
+                policy_version=1,
+                project_configuration_version=1,
+                request_id="self-pickup-formal-1",
+            ),
+        )
+
+        plan = DeterministicPlanner(_Catalog()).plan(
+            command,
+            ContextSnapshot(values={}),
+        )
+
+        self.assertEqual(
+            ["R_SELF", "R_DX_PICK"],
             [entity["entity_id"] for entity in plan.impact["entities"]],
         )
         self.assertEqual(OperationType.EXTERNAL_WRITE, plan.steps[0].operation_type)

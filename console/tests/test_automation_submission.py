@@ -291,7 +291,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("指定日期", fields["target_date"]["label"])
         self.assertIn("默认拉取当天", fields["target_date"]["hint"])
 
-    def test_self_pickup_problem_upload_workflow_is_ronghui_manual_preview(self):
+    def test_self_pickup_problem_upload_catalog_points_to_feishu_confirmation(self):
         workflow = AUTOMATION_WORKFLOW_BY_ID["self_pickup_problem_upload"]
         defaults = build_virtual_task_defaults("self_pickup_problem_upload")
 
@@ -300,6 +300,10 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual(False, defaults["enabled"])
         self.assertEqual(True, defaults["tool_params"]["dry_run"])
         self.assertEqual("ronghui_self_pickup_problem", defaults["tool_params"]["account_id"])
+        self.assertEqual(
+            "飞书自提到货问题件预览 / 确认",
+            workflow["trigger_label"],
+        )
         self.assertEqual("ronghui", automation_task_provider("self_pickup_problem_upload", workflow))
         self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["self_pickup_problem_upload"])
 

@@ -684,8 +684,8 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "tool_name": "self_pickup_problem_upload",
         "note": "读取飞书每日到货表中邵阳自提部及邵阳大祥S站自提且已到齐单号，预览后上传“开单为自提件”问题件；默认不上传截图。",
         "task_mode": "manual",
-        "trigger_label": "手动执行 / 飞书自提到货问题件",
-        "schedule_summary": "手动执行 / 飞书自提到货问题件",
+        "trigger_label": "飞书自提到货问题件预览 / 确认",
+        "schedule_summary": "飞书自提到货问题件预览 / 确认",
         "default_tool_params": {
             "dry_run": True,
             "account_id": "ronghui_self_pickup_problem",

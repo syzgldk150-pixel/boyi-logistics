@@ -328,6 +328,32 @@ def test_split_contract_is_human_triggered_with_verified_selection_fields() -> N
     assert template.legacy_arguments["dry_run"] is True
 
 
+def test_self_pickup_contract_is_feishu_only_with_verified_selection_fields() -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())[
+        "self_pickup_problem_upload"
+    ]
+    source = manifest.to_mapping()
+    template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[
+        "self_pickup_problem_upload"
+    ]
+
+    assert source["version"] == "1.0.21"
+    assert source["allowed_entrypoints"] == ["feishu"]
+    assert source["scheduling"] == {
+        "supported": False,
+        "allowed_kinds": [],
+        "max_daily_times": 0,
+    }
+    assert "console" not in source["invocation_contracts"]
+    assert source["invocation_contracts"]["feishu"]["dynamic_resolvers"] == {
+        "dry_run": "verified_feishu_dry_run",
+        "preview_fingerprint": "verified_feishu_preview_fingerprint",
+        "selected_bill_codes": "verified_feishu_selected_bill_codes",
+    }
+    assert set(template.allowed_entrypoints) == {"feishu"}
+    assert template.legacy_arguments["dry_run"] is True
+
+
 def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None:
     manifest = resolve_first_party_manifests(ToolRegistry())[
         "sync_arrival_stats"
