@@ -40,6 +40,8 @@ SCAN_PREVIEW_CONTEXT_KEY = "scan_preview"
 SCAN_PREVIEW_PAYLOAD_BINDING_FIELD = "_scan_preview_binding"
 SCAN_PREVIEW_CONSUMED_EVENT = "automation.scan_preview.consumed"
 SCAN_PREVIEW_CONTRACT_VERSION = 1
+SCAN_FORMAL_PLUGIN_VERSION = "1.0.23"
+SCAN_FORMAL_POSTCONDITION = "scan_formal_execution_verified"
 SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
     {
         "contract_version",
@@ -117,15 +119,52 @@ def require_scan_formal_governance(entry: Any) -> None:
         if isinstance(permissions, Mapping)
         else None
     )
+    postconditions = anchor.get("postconditions")
+    snapshot = getattr(entry, "committed_snapshot", None)
+    package_sha256 = str(getattr(entry, "package_sha256", "") or "").strip()
+    manifest_sha256 = str(getattr(entry, "manifest_sha256", "") or "").strip()
+    installed_version = str(getattr(entry, "installed_version", "") or "").strip()
+    committed_generation = getattr(entry, "committed_generation", None)
+    target_generation = getattr(entry, "target_generation", None)
+    governance_anchor_sha256 = str(
+        getattr(entry, "governance_anchor_sha256", "") or ""
+    ).strip()
     ready = (
         anchor.get("operation_type") == "external_write"
         and anchor.get("risk_level") == "high"
         and isinstance(approval, Mapping)
+        and approval.get("mode") == "required"
         and approval.get("required_role") == "super_admin"
         and isinstance(required_roles, list)
         and "super_admin" in required_roles
         and anchor.get("project_full_auto_allowed") is True
         and getattr(entry, "project_full_auto_allowed", False) is True
+        and governance_anchor_sha256 == canonical_sha256(anchor)
+        and isinstance(postconditions, list)
+        and postconditions == [{"name": SCAN_FORMAL_POSTCONDITION}]
+        and installed_version == SCAN_FORMAL_PLUGIN_VERSION
+        and bool(_HEX_SHA256.fullmatch(package_sha256))
+        and bool(_HEX_SHA256.fullmatch(manifest_sha256))
+        and isinstance(committed_generation, int)
+        and not isinstance(committed_generation, bool)
+        and committed_generation > 0
+        and committed_generation == target_generation
+        and snapshot is not None
+        and getattr(snapshot, "generation", None) == committed_generation
+        and getattr(snapshot, "plugin_id", None) == SCAN_PLUGIN_ID
+        and getattr(snapshot, "plugin_version", None) == installed_version
+        and getattr(snapshot, "package_sha256", None) == package_sha256
+        and getattr(snapshot, "manifest_sha256", None) == manifest_sha256
+        and getattr(snapshot, "governance_anchor_sha256", None)
+        == governance_anchor_sha256
+        and str(
+            getattr(
+                getattr(snapshot, "trust_source", None),
+                "value",
+                getattr(snapshot, "trust_source", ""),
+            )
+        )
+        == "ed25519_first_party"
     )
     if not ready:
         raise _error(

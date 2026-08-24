@@ -13,6 +13,7 @@ from typing import Any
 
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_PREVIEW,
+    SCAN_PREVIEW_POSTCONDITION,
     first_party_code_owned_plan_fields,
     resolve_scan_capability_phase,
 )
@@ -125,7 +126,11 @@ class DeterministicPlanner:
             raise OrchestrationError("TOOL_VERSION_REQUIRED", f"Tool capability has no version: {tool_name}")
 
         expected_evidence = _object_tuple(capability.get("evidence"), field_name="evidence")
-        postconditions = _object_tuple(capability.get("postconditions"), field_name="postconditions")
+        postconditions = (
+            ({"name": SCAN_PREVIEW_POSTCONDITION},)
+            if scan_phase == SCAN_PHASE_PREVIEW
+            else _object_tuple(capability.get("postconditions"), field_name="postconditions")
+        )
         write_impact = build_scan_preview_impact(
             command=command,
             capability=capability,

@@ -156,7 +156,13 @@ def test_scan_action_owns_classification_batching_verification_and_commit_order(
                     "main_tracking": "R12345678901",
                 },
             ]
-            return {"committed": True, "record_count": 3, "evidence_ref": "evidence:snapshot"}
+            return {
+                "committed": True,
+                "verified": True,
+                "record_count": 3,
+                "identities_sha256": module._canonical_sha256(arguments["records"]),
+                "evidence_ref": "evidence:snapshot",
+            }
         if action == "ronghui.scan_next.submit":
             items = arguments["items"]
             digest = module._canonical_sha256(items)
@@ -205,6 +211,21 @@ def test_scan_action_owns_classification_batching_verification_and_commit_order(
         "skipped_signed_codes": [child_two],
     } == result["data"]
     assert "preview_evidence" not in result["data"]
+    formal_proof = result["meta"]["postcondition_evidence"]["0"]
+    assert formal_proof["condition"] == "scan_formal_execution_verified"
+    assert formal_proof["evidence_ref"].startswith("evidence:verify:")
+    assert formal_proof["details"] | {
+        "phase": "formal",
+        "preview_revalidation_matched": True,
+        "projection_evidence_ref": "evidence:snapshot",
+        "batch_count": 2,
+        "scheduled_items": 2,
+        "scanned": 1,
+        "skipped_signed_count": 1,
+        "external_write_attempted": True,
+    } == formal_proof["details"]
+    assert len(formal_proof["details"]["submit_evidence_refs"]) == 2
+    assert len(formal_proof["details"]["verification_evidence_refs"]) == 2
     assert [call[1] for call in calls] == [
         "ronghui.scan.read_page",
         "scan.snapshot.replace",
@@ -236,6 +257,10 @@ def test_scan_dry_run_reads_and_plans_but_never_writes():
 
     assert result["status"] == "SUCCESS"
     assert result["data"]["dry_run"] is True
+    preview_proof = result["meta"]["postcondition_evidence"]["0"]
+    assert preview_proof["condition"] == "authoritative_scan_preview_returned"
+    assert preview_proof["details"]["write_attempted"] is False
+    assert preview_proof["details"]["source_evidence_refs"] == ["evidence:source"]
     assert calls == ["ronghui.scan.read_page"]
 
 
@@ -333,7 +358,9 @@ def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
         assert arguments == {"records": [], "target_date": "2026-08-24"}
         return {
             "committed": True,
+            "verified": True,
             "record_count": 0,
+            "identities_sha256": module._canonical_sha256([]),
             "evidence_ref": "evidence:empty-snapshot",
         }
 
@@ -345,6 +372,13 @@ def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
     assert result["status"] == "SUCCESS"
     assert result["meta"]["record_count"] == 0
     assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
+    proof = result["meta"]["postcondition_evidence"]["0"]
+    assert proof["condition"] == "scan_formal_execution_verified"
+    assert proof["evidence_ref"] == "evidence:empty-snapshot"
+    assert proof["details"]["batch_count"] == 0
+    assert proof["details"]["submit_evidence_refs"] == []
+    assert proof["details"]["verification_evidence_refs"] == []
+    assert proof["details"]["external_write_attempted"] is False
     assert calls == ["ronghui.scan.read_page", "scan.snapshot.replace"]
 
 
@@ -387,7 +421,9 @@ def test_scan_collapses_duplicate_events_with_the_same_business_destination():
         ]
         return {
             "committed": True,
+            "verified": True,
             "record_count": 1,
+            "identities_sha256": module._canonical_sha256(arguments["records"]),
             "evidence_ref": "evidence:snapshot",
         }
 
@@ -458,7 +494,13 @@ def test_scan_stops_before_next_batch_when_postcondition_proof_changes():
                 "evidence_ref": "evidence:source",
             }
         if action == "scan.snapshot.replace":
-            return {"committed": True, "evidence_ref": "evidence:snapshot"}
+            return {
+                "committed": True,
+                "verified": True,
+                "record_count": len(arguments["records"]),
+                "identities_sha256": module._canonical_sha256(arguments["records"]),
+                "evidence_ref": "evidence:snapshot",
+            }
         if action == "ronghui.scan_next.submit":
             digest = module._canonical_sha256(arguments["items"])
             return {

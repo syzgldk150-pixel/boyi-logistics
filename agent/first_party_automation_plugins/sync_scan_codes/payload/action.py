@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from boyi_plugin_result import (
     broker_evidence_ref,
-    executor_success_evidence,
+    postcondition_proof,
     success_result,
 )
 
@@ -26,6 +26,8 @@ _MAX_BATCHES = 499
 _MAX_ITEMS = 100_000
 _MAX_BROKER_CALLS = 1000
 _PREVIEW_EVIDENCE_CONTRACT_VERSION = 1
+_PREVIEW_POSTCONDITION = "authoritative_scan_preview_returned"
+_FORMAL_POSTCONDITION = "scan_formal_execution_verified"
 _SCAN_PREVIEW_BINDING_FIELD = "_scan_preview_binding"
 _SCAN_PREVIEW_BINDING_FIELDS = frozenset(
     {
@@ -593,6 +595,9 @@ def run_action(
 
     scanned = 0
     skipped_signed_codes: list[str] = []
+    projection_evidence_ref: str | None = None
+    submit_evidence_refs: list[str] = []
+    verification_evidence_refs: list[str] = []
     execution_result = "dry_run_complete"
     if not dry_run:
         projection = _object(
@@ -604,14 +609,25 @@ def run_action(
             ),
             "scan snapshot result",
         )
-        if projection.get("committed") is not True:
-            raise ValueError("scan snapshot was not committed")
-        evidence_refs.append(broker_evidence_ref(projection, "scan snapshot"))
+        expected_projection_sha256 = _canonical_sha256(
+            sorted(snapshot, key=lambda row: row["raw_code"])
+        )
+        if (
+            projection.get("committed") is not True
+            or projection.get("verified") is not True
+            or projection.get("record_count") != len(snapshot)
+            or projection.get("identities_sha256") != expected_projection_sha256
+        ):
+            raise ValueError("scan snapshot was not independently verified")
+        projection_evidence_ref = broker_evidence_ref(projection, "scan snapshot")
+        evidence_refs.append(projection_evidence_ref)
         for batch in batches:
             batch_scanned, skipped, batch_refs = _submitted_batch(batch, broker)
             scanned += batch_scanned
             skipped_signed_codes.extend(skipped)
             evidence_refs.extend(batch_refs)
+            submit_evidence_refs.append(batch_refs[0])
+            verification_evidence_refs.append(batch_refs[1])
         if len(skipped_signed_codes) != len(set(skipped_signed_codes)):
             raise ValueError("scan-next batches returned duplicate skipped identities")
         execution_result = (
@@ -621,6 +637,7 @@ def run_action(
     scheduled = sum(len(batch) for batch in batches)
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
     data = {
+        "phase": "preview" if dry_run else "formal",
         "dry_run": dry_run,
         "target_date": target_date,
         "fetched": len(source_rows),
@@ -642,7 +659,7 @@ def run_action(
         },
     }
     if dry_run:
-        data["preview_evidence"] = _preview_evidence(
+        preview_evidence = _preview_evidence(
             target_date=target_date,
             snapshot=snapshot,
             batches=batches,
@@ -650,14 +667,56 @@ def run_action(
             source_evidence_refs=evidence_refs,
             observed_at=observed_at,
         )
+        data["preview_evidence"] = preview_evidence
+        preview_source_evidence_refs = preview_evidence["source_evidence_refs"]
+        primary_evidence_ref = preview_source_evidence_refs[-1]
+        proof = postcondition_proof(
+            condition=_PREVIEW_POSTCONDITION,
+            observed_at=observed_at,
+            evidence_ref=primary_evidence_ref,
+            details={
+                "phase": "preview",
+                "pagination_complete": True,
+                "source_page_count": preview_evidence["source_page_count"],
+                "normalized_record_count": preview_evidence["normalized_record_count"],
+                "source_snapshot_sha256": preview_evidence["source_snapshot_sha256"],
+                "source_evidence_refs": list(preview_source_evidence_refs),
+                "selection_count": preview_evidence["selection_count"],
+                "selection_sha256": preview_evidence["selection_sha256"],
+                "batch_count": preview_evidence["batch_count"],
+                "batch_plan_sha256": preview_evidence["batch_plan_sha256"],
+                "write_attempted": False,
+            },
+        )
     else:
         data["preview_revalidation"] = preview_revalidation
-    result_ref, result_proof = executor_success_evidence(
-        action_id=ACTION_ID,
-        data=data,
-        observed_at=observed_at,
-    )
-    evidence_refs.append(result_ref)
+        if projection_evidence_ref is None:
+            raise ValueError("scan snapshot proof is missing")
+        primary_evidence_ref = (
+            verification_evidence_refs[-1]
+            if verification_evidence_refs
+            else projection_evidence_ref
+        )
+        proof = postcondition_proof(
+            condition=_FORMAL_POSTCONDITION,
+            observed_at=observed_at,
+            evidence_ref=primary_evidence_ref,
+            details={
+                "phase": "formal",
+                "preview_revalidation_matched": True,
+                "preview_context_sha256": preview_revalidation["context_sha256"],
+                "projection_evidence_ref": projection_evidence_ref,
+                "projection_record_count": len(snapshot),
+                "projection_snapshot_sha256": expected_projection_sha256,
+                "batch_count": len(batches),
+                "scheduled_items": scheduled,
+                "scanned": scanned,
+                "skipped_signed_count": len(skipped_signed_codes),
+                "submit_evidence_refs": submit_evidence_refs,
+                "verification_evidence_refs": verification_evidence_refs,
+                "external_write_attempted": bool(batches),
+            },
+        )
     return success_result(
         data=data,
         source_system="ronghui" if dry_run else "ronghui+internal_projection",
@@ -666,5 +725,5 @@ def run_action(
         evidence_refs=evidence_refs,
         observed_at=observed_at,
         postconditions={"0": True},
-        postcondition_evidence={"0": result_proof},
+        postcondition_evidence={"0": proof},
     )
