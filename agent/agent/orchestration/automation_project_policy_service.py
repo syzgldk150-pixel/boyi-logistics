@@ -32,6 +32,16 @@ from agent.orchestration.models import (
     new_id,
 )
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
+from agent.orchestration.scan_preview_binding import (
+    SCAN_PREVIEW_CONTEXT_KEY,
+    ScanPreviewExpectation,
+    consume_scan_preview,
+    ensure_scan_preview_active,
+    normalize_preview_run_id,
+    require_scan_formal_governance,
+    resolve_scan_preview,
+    restore_scan_preview_replay,
+)
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectContractError,
@@ -131,6 +141,7 @@ _SERVER_CONTEXT_FIELDS = frozenset(
         "source",
         "actor",
         "roles",
+        SCAN_PREVIEW_CONTEXT_KEY,
     }
 )
 class AutomationProjectPolicyService:
@@ -943,12 +954,14 @@ class AutomationProjectPolicyService:
         *,
         request_id: str,
         actor: Actor,
+        preview_run_id: str | None = None,
     ) -> Any:
         return self.invoke_trusted(
             automation_id,
             entrypoint=AutomationEntrypoint.CONSOLE,
             request_id=request_id,
             actor=actor,
+            preview_run_id=preview_run_id,
         )
 
     def invoke_trusted(
@@ -962,6 +975,7 @@ class AutomationProjectPolicyService:
         idempotency_key: str | None = None,
         expected_automation_generation: int | None = None,
         expected_project_configuration_version: int | None = None,
+        preview_run_id: str | None = None,
     ) -> Any:
         """Submit one server-resolved invocation for a trusted entry adapter.
 
@@ -981,6 +995,13 @@ class AutomationProjectPolicyService:
         self._require_trusted_entrypoint_actor(source, actor)
         safe_id = _automation_id(automation_id)
         safe_request_id = _request_id(request_id)
+        command_idempotency_key = _idempotency_key(
+            idempotency_key
+            or (
+                f"automation:{safe_id}:{source.value}:"
+                f"{actor.actor_id}:{safe_request_id}"
+            )
+        )
         context = _trusted_context(source, trusted_context)
         expected_generation = (
             _positive_int(
@@ -1004,6 +1025,25 @@ class AutomationProjectPolicyService:
                 "Trusted non-Console entrypoints must bind a committed generation",
             )
         entry, contract = self._load_contract(safe_id)
+        safe_preview_run_id = None
+        if preview_run_id is not None:
+            safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+            with self._repository.unit_of_work() as uow:
+                replay = restore_scan_preview_replay(
+                    uow,
+                    source=source.value,
+                    idempotency_key=command_idempotency_key,
+                    actor=actor,
+                    trusted_context=context,
+                    project_instance_id=safe_id,
+                    request_id=safe_request_id,
+                    preview_run_id=safe_preview_run_id,
+                    expected_generation=expected_generation,
+                    expected_configuration_version=expected_configuration,
+                )
+            if replay is not None:
+                return self._command_gateway.submit(replay)
+            require_scan_formal_governance(entry)
         if (
             expected_generation is not None
             and contract.automation_generation != expected_generation
@@ -1068,6 +1108,29 @@ class AutomationProjectPolicyService:
                     "PROJECT_DYNAMIC_INPUT_UNAVAILABLE",
                     "Dynamic project invocation input could not be resolved",
                 ) from exc
+        preview_expectation = ScanPreviewExpectation(
+            project_instance_id=safe_id,
+            generation=contract.automation_generation,
+            contract_digest=contract.contract_hash,
+            configuration_version=contract.project_configuration_version,
+        )
+        preview_context: Mapping[str, Any] | None = None
+        if safe_preview_run_id is not None:
+            with self._repository.unit_of_work() as uow:
+                preview = resolve_scan_preview(
+                    uow,
+                    preview_run_id=safe_preview_run_id,
+                    expectation=preview_expectation,
+                    formal_arguments=arguments,
+                    now=occurred_at,
+                    for_update=False,
+                )
+            arguments = dict(preview.formal_arguments)
+            preview_context = dict(preview.context)
+            execution_context[SCAN_PREVIEW_CONTEXT_KEY] = preview_context
+            # A stable preview observation time makes concurrent retries carry
+            # byte-identical immutable Command parameters.
+            execution_context["occurred_at"] = preview_context["observed_at"]
         with self._repository.unit_of_work() as uow:
             policy = uow.automation_projects.get_policy(safe_id)
         if policy is None:
@@ -1095,13 +1158,7 @@ class AutomationProjectPolicyService:
                 "arguments": arguments,
                 "execution_context": execution_context,
             },
-            idempotency_key=_idempotency_key(
-                idempotency_key
-                or (
-                    f"automation:{safe_id}:{source.value}:"
-                    f"{actor.actor_id}:{safe_request_id}"
-                )
-            ),
+            idempotency_key=command_idempotency_key,
             entity_refs=(
                 EntityRef(
                     entity_type="automation_project",
@@ -1134,6 +1191,39 @@ class AutomationProjectPolicyService:
                     "PROJECT_INVOCATION_STALE",
                     "Automation project changed before command acceptance",
                 )
+            if preview_context is not None and safe_preview_run_id is not None:
+                locked_preview = resolve_scan_preview(
+                    uow,
+                    preview_run_id=safe_preview_run_id,
+                    expectation=preview_expectation,
+                    formal_arguments=arguments,
+                    now=occurred_at,
+                    for_update=True,
+                )
+                existing_command = uow.commands.get_by_idempotency(
+                    command.source,
+                    command.idempotency_key,
+                    for_update=True,
+                )
+                if existing_command is None:
+                    ensure_scan_preview_active(
+                        locked_preview.context,
+                        now=datetime.now(timezone.utc),
+                    )
+                    if locked_preview.context.get(
+                        "context_sha256"
+                    ) != preview_context.get("context_sha256"):
+                        raise OrchestrationError(
+                            "SCAN_PREVIEW_STALE",
+                            "The scan preview changed before command acceptance",
+                            details={"status": "BLOCKED_DATA"},
+                        )
+                    consume_scan_preview(
+                        uow,
+                        context=locked_preview.context,
+                        command=command,
+                        occurred_at=occurred_at,
+                    )
 
         return self._command_gateway.submit(command, uow_guard=guard)
 
@@ -1148,6 +1238,7 @@ class AutomationProjectPolicyService:
         idempotency_key: str | None = None,
         expected_automation_generation: int | None = None,
         expected_project_configuration_version: int | None = None,
+        preview_run_id: str | None = None,
         timeout_seconds: float = 1800.0,
     ) -> dict[str, Any]:
         receipt = self.invoke_trusted(
@@ -1161,6 +1252,7 @@ class AutomationProjectPolicyService:
             expected_project_configuration_version=(
                 expected_project_configuration_version
             ),
+            preview_run_id=preview_run_id,
         )
         if self._command_gateway is None:  # defensive; invoke_trusted checked it
             raise OrchestrationError(
