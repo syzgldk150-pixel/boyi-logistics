@@ -14,6 +14,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.code_owned_fields import (
+    SCAN_PHASE_PREVIEW,
+    apply_scan_execution_boundary,
+    resolve_scan_capability_phase,
+)
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     GenerationBoundResult,
@@ -562,6 +567,22 @@ class PluginExecutionRouter:
                 code="PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT",
             )
         resolved = self._lease_capability(lease, automation_id=automation_id)
+        try:
+            initial_scan_phase = resolve_scan_capability_phase(capability, params)
+            resolved_scan_phase = resolve_scan_capability_phase(resolved, params)
+            if initial_scan_phase != resolved_scan_phase:
+                raise ValueError("scan execution phase changed with the generation lease")
+            resolved = apply_scan_execution_boundary(resolved, params)
+        except ValueError as exc:
+            self._generation_leases.release_generation(
+                lease,
+                outcome=RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
+            )
+            raise PluginExecutionError(
+                "scan execution boundary is invalid",
+                code="SCAN_EXECUTION_BOUNDARY_INVALID",
+            ) from exc
+        is_scan_preview = resolved_scan_phase == SCAN_PHASE_PREVIEW
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         execution_state: dict[str, object] = {"process_launched": False, "started_mutating_call_count": None}
         try:
@@ -573,6 +594,13 @@ class PluginExecutionRouter:
                 invocation_id=lease.lease_id,
                 run_binding=run_binding,
             )
+            if is_scan_preview and execution_state["started_mutating_call_count"] != 0:
+                if isinstance(execution_state["started_mutating_call_count"], int):
+                    outcome = RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+                raise PluginExecutionError(
+                    "scan preview write-boundary evidence is unavailable or nonzero",
+                    code="SCAN_PREVIEW_WRITE_BOUNDARY_INVALID",
+                )
             outcome = self._lease_outcome(
                 resolved,
                 result,
@@ -610,6 +638,9 @@ class PluginExecutionRouter:
                         account_ids=tuple(account_ids),
                         account_bindings_sha256=lease.snapshot.account_bindings_sha256,
                         requires_write_verification=(outcome == RuntimeLeaseOutcome.VERIFYING),
+                        started_mutating_call_count=execution_state[
+                            "started_mutating_call_count"
+                        ],
                     ),
                 )
             return result
@@ -621,11 +652,12 @@ class PluginExecutionRouter:
             )
             raise
         except Exception:
-            outcome = self._write_failure_outcome(
-                resolved,
-                process_launched=bool(execution_state["process_launched"]),
-                started_mutating_call_count=execution_state["started_mutating_call_count"],
-            )
+            if outcome is not RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN:
+                outcome = self._write_failure_outcome(
+                    resolved,
+                    process_launched=bool(execution_state["process_launched"]),
+                    started_mutating_call_count=execution_state["started_mutating_call_count"],
+                )
             raise
         finally:
             # ``_execute_plugin`` observes the broker receipt in its own

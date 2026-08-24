@@ -312,6 +312,7 @@ class GenerationVerificationContext:
     account_ids: tuple[str, ...]
     account_bindings_sha256: str
     requires_write_verification: bool
+    started_mutating_call_count: int | None = None
 
 
 class GenerationBoundResult(dict[str, Any]):

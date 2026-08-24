@@ -7,6 +7,14 @@ from typing import Any, Mapping
 
 
 _FIRST_PARTY_TRUST_SOURCE = "ed25519_first_party"
+_SCAN_AUTOMATION_ID = "scan_codes"
+_SCAN_PLUGIN_ID = "sync_scan_codes"
+_SCAN_PREVIEW_BINDING_FIELD = "_scan_preview_binding"
+_SCAN_PREVIEW_BROKER_OPERATION = "browser.invoke"
+_SCAN_PREVIEW_BROKER_ACTION = "ronghui.scan.read_page"
+
+SCAN_PHASE_PREVIEW = "PREVIEW"
+SCAN_PHASE_FORMAL = "FORMAL"
 
 _CODE_OWNED_CONFIG_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
     (
@@ -129,3 +137,103 @@ def normalize_first_party_code_owned_config(
     ):
         normalized["_startup_catchup"] = True
     return normalized
+
+
+def resolve_scan_execution_phase(
+    *,
+    automation_id: str,
+    plugin_id: str,
+    trust_source: str,
+    arguments: Mapping[str, Any],
+) -> str | None:
+    """Resolve the exact first-party scan phase from server-owned arguments.
+
+    ``None`` means that the identity is not the governed scan project.  Exact
+    matches are deliberately strict: preview and formal invocations must be
+    unambiguous, and only the formal phase may carry a preview binding.
+    """
+
+    if (
+        str(automation_id or "").strip() != _SCAN_AUTOMATION_ID
+        or str(plugin_id or "").strip() != _SCAN_PLUGIN_ID
+        or str(trust_source or "").strip() != _FIRST_PARTY_TRUST_SOURCE
+    ):
+        return None
+    dry_run = arguments.get("dry_run")
+    binding_present = _SCAN_PREVIEW_BINDING_FIELD in arguments
+    binding = arguments.get(_SCAN_PREVIEW_BINDING_FIELD)
+    if dry_run is True and not binding_present:
+        return SCAN_PHASE_PREVIEW
+    if (
+        dry_run is False
+        and binding_present
+        and isinstance(binding, Mapping)
+        and bool(binding)
+    ):
+        return SCAN_PHASE_FORMAL
+    raise ValueError("scan execution phase is ambiguous or incomplete")
+
+
+def resolve_scan_capability_phase(
+    capability: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> str | None:
+    runtime = capability.get("_plugin_runtime")
+    if not isinstance(runtime, Mapping):
+        return None
+    return resolve_scan_execution_phase(
+        automation_id=str(runtime.get("automation_id") or ""),
+        plugin_id=str(runtime.get("plugin_id") or ""),
+        trust_source=str(runtime.get("trust_source") or ""),
+        arguments=arguments,
+    )
+
+
+def apply_scan_execution_boundary(
+    capability: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a detached capability with the PREVIEW boundary applied.
+
+    Formal and unrelated capabilities remain byte-for-byte equivalent after a
+    deep copy.  Preview keeps only the signed Ronghui scan-page read grant;
+    every projection, submit, verification, file, network, and office effect
+    is removed before the Broker token is issued.
+    """
+
+    resolved = copy.deepcopy(dict(capability))
+    phase = resolve_scan_capability_phase(resolved, arguments)
+    if phase != SCAN_PHASE_PREVIEW:
+        return resolved
+    metadata = resolved.get("_plugin_runtime")
+    permissions = metadata.get("runtime_permissions") if isinstance(metadata, Mapping) else None
+    operations = permissions.get("broker_operations") if isinstance(permissions, Mapping) else None
+    if not isinstance(operations, list):
+        raise ValueError("scan preview runtime permissions are missing")
+    allowed = [
+        copy.deepcopy(dict(item))
+        for item in operations
+        if isinstance(item, Mapping)
+        and item.get("operation") == _SCAN_PREVIEW_BROKER_OPERATION
+        and item.get("action") == _SCAN_PREVIEW_BROKER_ACTION
+        and item.get("effect") == "read"
+    ]
+    if len(allowed) != 1:
+        raise ValueError("scan preview read permission is missing or ambiguous")
+    max_calls = permissions.get("max_broker_calls")
+    if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls <= 0:
+        raise ValueError("scan preview broker call limit is invalid")
+    restricted_permissions = {
+        "network": False,
+        "browser": True,
+        "office": False,
+        "file_roles": [],
+        "broker_operations": allowed,
+        "max_broker_calls": max_calls,
+    }
+    restricted_metadata = dict(metadata)
+    restricted_metadata["runtime_permissions"] = restricted_permissions
+    resolved["_plugin_runtime"] = restricted_metadata
+    resolved["operation_type"] = "read"
+    resolved["risk_level"] = "low"
+    return resolved

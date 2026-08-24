@@ -200,6 +200,39 @@ def _capability(tmp_path: Path, *, automation_id: str = "project-a") -> dict[str
     }
 
 
+def _scan_capability(tmp_path: Path) -> dict[str, Any]:
+    capability = _capability(tmp_path, automation_id="scan_codes")
+    capability["risk_level"] = "medium"
+    capability["_plugin_runtime"]["plugin_id"] = "sync_scan_codes"
+    capability["_plugin_runtime"]["runtime_permissions"]["broker_operations"] = [
+        {
+            "operation": "browser.invoke",
+            "action": "ronghui.scan.read_page",
+            "roles": ["source"],
+            "effect": "read",
+        },
+        {
+            "operation": "projection.invoke",
+            "action": "scan.snapshot.replace",
+            "roles": ["source"],
+            "effect": "write",
+        },
+        {
+            "operation": "browser.invoke",
+            "action": "ronghui.scan_next.submit",
+            "roles": ["source"],
+            "effect": "write",
+        },
+        {
+            "operation": "browser.invoke",
+            "action": "ronghui.scan_next.verify",
+            "roles": ["source"],
+            "effect": "read",
+        },
+    ]
+    return capability
+
+
 def _snapshot(capability: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
     metadata = capability["_plugin_runtime"]
     return RuntimeGenerationSnapshot(
@@ -295,8 +328,10 @@ class _Issuer:
 
     def __init__(self, *, started_mutating_calls: int = 0) -> None:
         self._started_mutating_calls = started_mutating_calls
+        self.last_issue: dict[str, object] | None = None
 
-    def issue(self, **_: object) -> str:
+    def issue(self, **values: object) -> str:
+        self.last_issue = dict(values)
         return "test-capability"
 
     def revoke(self, capability: str) -> None:
@@ -468,6 +503,108 @@ def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path:
     )
     assert leases.finalized[0][1] == RuntimeLeaseOutcome.WRITE_VERIFIED
     assert leases.verifying == set()
+
+
+def test_scan_preview_uses_read_lease_and_only_the_read_page_broker_grant(
+    tmp_path: Path,
+) -> None:
+    capability = _scan_capability(tmp_path)
+    leases = _LeaseRepository({"scan_codes": capability})
+    issuer = _Issuer()
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=issuer,
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(_plugin_result("sync_scan_codes"))
+        ),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+    adapter = RegisteredToolExecutionAdapter(
+        catalog=_Catalog(capability),
+        executor=router,
+    )
+    step = PlanStep(
+        step_key="preview",
+        tool_name=str(capability["name"]),
+        tool_version="1.0.0",
+        operation_type=OperationType.READ,
+        arguments={"dry_run": True},
+        account_id="account-1",
+        depends_on=(),
+        idempotency_key="preview-1",
+        expected_evidence=(),
+        postconditions=(),
+        risk_level=RiskLevel.LOW,
+        requires_approval=False,
+    )
+
+    raw = asyncio.run(
+        adapter.execute_step(
+            step,
+            run_id=str(uuid.uuid4()),
+            step_id=str(uuid.uuid4()),
+            execution_context={
+                "source": "console",
+                "_automation_project_invocation": _project_invocation(capability),
+            },
+        )
+    )
+
+    assert isinstance(raw, GenerationBoundResult)
+    assert raw.generation_verification.started_mutating_call_count == 0
+    assert raw.generation_verification.requires_write_verification is False
+    assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
+    assert not leases.verifying
+    permissions = issuer.last_issue["runtime_permissions"]
+    assert permissions == {
+        "network": False,
+        "browser": True,
+        "office": False,
+        "file_roles": [],
+        "broker_operations": [
+            {
+                "operation": "browser.invoke",
+                "action": "ronghui.scan.read_page",
+                "roles": ["source"],
+                "effect": "read",
+            }
+        ],
+        "max_broker_calls": 20,
+    }
+    verified = ResultVerifier(leases).verify(step, raw, capability)
+    assert verified.accepted is True
+    assert leases.finalized == []
+
+
+def test_scan_preview_fails_closed_without_authoritative_zero_write_evidence(
+    tmp_path: Path,
+) -> None:
+    capability = _scan_capability(tmp_path)
+    leases = _LeaseRepository({"scan_codes": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(started_mutating_calls=1),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(_plugin_result("sync_scan_codes"))
+        ),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    with pytest.raises(PluginExecutionError) as raised:
+        asyncio.run(
+            router.execute(
+                capability,
+                {"dry_run": True},
+                trusted_invocation_context=_trusted_binding(capability),
+            )
+        )
+
+    assert raised.value.code == "SCAN_PREVIEW_WRITE_BOUNDARY_INVALID"
+    assert leases.released[0][1] is RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
 
 
 def test_generation_change_conflicts_before_subprocess_launch(tmp_path: Path) -> None:

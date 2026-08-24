@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,6 +18,11 @@ from agent.automation_plugins.catalog import (
     PluginCatalog,
     PluginCatalogEntry,
     project_contract_fragment,
+)
+from agent.automation_plugins.code_owned_fields import (
+    SCAN_PHASE_FORMAL,
+    SCAN_PHASE_PREVIEW,
+    resolve_scan_execution_phase,
 )
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import (
@@ -1348,6 +1354,13 @@ class AutomationProjectPolicyService:
                     policy = uow.automation_projects.get_policy(
                         invocation.automation_id,
                     )
+                    policy_events = (
+                        uow.automation_projects.list_policy_events(
+                            invocation.automation_id,
+                        )
+                        if is_scan_preview_project(entry)
+                        else []
+                    )
             else:
                 contract, _config = self._lock_and_compile_contract(
                     project_transaction,
@@ -1358,6 +1371,14 @@ class AutomationProjectPolicyService:
                 policy = project_transaction.automation_projects.get_policy(
                     invocation.automation_id,
                     for_update=True,
+                )
+                policy_events = (
+                    project_transaction.automation_projects.list_policy_events(
+                        invocation.automation_id,
+                        for_update=True,
+                    )
+                    if is_scan_preview_project(entry)
+                    else []
                 )
         except (AutomationProjectContractError, KeyError, ValueError):
             return _project_denied(
@@ -1376,8 +1397,49 @@ class AutomationProjectPolicyService:
         # REQUIRE_EACH_RUN -> PROJECT_FULL_AUTO change wake a waiting Run only
         # to fail it as stale before the current policy can take effect.
         # Contract/generation/configuration matching below remains strict.
+        scan_phase: str | None = None
+        if is_scan_preview_project(entry):
+            if len(plan.steps) != 1:
+                return _project_denied(
+                    "SCAN_EXECUTION_PHASE_INVALID",
+                    "Scan execution requires one exact governed step",
+                )
+            try:
+                scan_phase = resolve_scan_execution_phase(
+                    automation_id=str(getattr(entry, "automation_id", "") or ""),
+                    plugin_id=str(getattr(entry, "plugin_id", "") or ""),
+                    trust_source=str(getattr(entry, "trust_source", "") or ""),
+                    arguments=plan.steps[0].arguments,
+                )
+            except ValueError:
+                return _project_denied(
+                    "SCAN_EXECUTION_PHASE_INVALID",
+                    "Scan execution phase is incomplete or ambiguous",
+                )
+        contract_plan = plan
+        if scan_phase == SCAN_PHASE_PREVIEW:
+            preview_step = plan.steps[0]
+            if (
+                preview_step.operation_type is not OperationType.READ
+                or preview_step.risk_level is not RiskLevel.LOW
+            ):
+                return _project_denied(
+                    "SCAN_EXECUTION_PHASE_INVALID",
+                    "Scan preview plan does not use its effective read-only governance",
+                )
+            try:
+                signed_operation = OperationType(contract.operation_type)
+            except ValueError:
+                return _project_denied(
+                    "PROJECT_INVOCATION_STALE",
+                    "Automation project contract is no longer current",
+                )
+            contract_plan = replace(
+                plan,
+                steps=(replace(preview_step, operation_type=signed_operation),),
+            )
         if not contract.matches_plan(
-            plan,
+            contract_plan,
             invocation,
             source=source,
             execution_context=execution_context,
@@ -1387,6 +1449,14 @@ class AutomationProjectPolicyService:
                 "PROJECT_INVOCATION_STALE",
                 "Automation plan does not match the committed project contract",
             )
+        if is_scan_preview_project(entry):
+            if scan_phase == SCAN_PHASE_PREVIEW:
+                return ProjectPolicyEvaluation(
+                    allowed=True,
+                    requires_approval=False,
+                    code="SCAN_PREVIEW_ALLOWED",
+                    reason="The governed scan preview is read-only",
+                )
         mode = str(policy.get("mode") or "")
         if mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
             legacy_active = self._legacy_schedule_active(policy, contract)
@@ -1411,6 +1481,38 @@ class AutomationProjectPolicyService:
                 return _project_denied(
                     contract.restriction_code or "PROJECT_CONTRACT_NOT_RUNNABLE",
                     "The current signed project contract is not runnable",
+                )
+            latest_policy_event = policy_events[-1] if policy_events else None
+            if scan_phase == SCAN_PHASE_FORMAL and not (
+                isinstance(latest_policy_event, Mapping)
+                and latest_policy_event.get("reason")
+                == SUPER_ADMIN_PROJECT_POLICY_REASON
+                and latest_policy_event.get("to_mode")
+                == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
+                and latest_policy_event.get("actor_role") == "super_admin"
+                and bool(
+                    str(latest_policy_event.get("actor_id") or "").strip()
+                )
+                and latest_policy_event.get("actor_id")
+                == policy.get("approved_by_actor_id")
+                and policy.get("approved_by_actor_role") == "super_admin"
+                and latest_policy_event.get("project_generation")
+                == contract.automation_generation
+                and latest_policy_event.get("project_configuration_version")
+                == contract.project_configuration_version
+                and policy.get("project_generation")
+                == contract.automation_generation
+                and policy.get("project_configuration_version")
+                == contract.project_configuration_version
+            ):
+                return ProjectPolicyEvaluation(
+                    allowed=True,
+                    requires_approval=True,
+                    code="SCAN_FORMAL_APPROVAL_REQUIRED",
+                    reason=(
+                        "Scan full-auto requires an explicit current super-admin "
+                        "policy bound to this generation and configuration"
+                    ),
                 )
             return ProjectPolicyEvaluation(
                 allowed=True,
