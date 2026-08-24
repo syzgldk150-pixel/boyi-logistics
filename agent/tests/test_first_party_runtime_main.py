@@ -49,3 +49,18 @@ def test_action_failure_diagnostic_is_fixed_and_allowlisted() -> None:
     assert code == "ACTION_VALUE_ERROR"
     assert frame.startswith("action.py:")
     assert "business payload" not in frame
+
+
+def test_action_failure_diagnostic_preserves_only_safe_broker_error_codes() -> None:
+    runtime_main = _load_runtime_main()
+
+    code, frame = runtime_main._action_failure_diagnostic(
+        RuntimeError("BROKER_REQUEST_TOO_LARGE")
+    )
+    assert code == "BROKER_REQUEST_TOO_LARGE"
+    assert frame == "runtime"
+
+    code, _frame = runtime_main._action_failure_diagnostic(
+        RuntimeError("business payload must never be emitted")
+    )
+    assert code == "ACTION_RUNTIME_ERROR"

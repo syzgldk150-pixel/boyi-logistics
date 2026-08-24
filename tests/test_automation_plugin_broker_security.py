@@ -104,6 +104,63 @@ def test_broker_accepts_signed_requests_larger_than_asyncio_default_limit(
     assert response == {"ok": True, "data": {"observed_length": 70_000}}
 
 
+def test_sdk_compresses_and_broker_accepts_snapshot_larger_than_legacy_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LargeReadAdapter:
+        async def invoke(self, *, arguments, **_kwargs):
+            return {"observed_length": len(arguments["payload"])}
+
+    async def invoke() -> dict[str, object]:
+        socket_path = tmp_path / "broker.sock"
+        issuer = LocalBrokerCapabilityIssuer(socket_path)
+        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=LargeReadAdapter())
+        await broker.start()
+        try:
+            capability = issuer.issue(
+                automation_id="instance-a",
+                plugin_version="1.0.0",
+                tool_name="automation.instance-a.run",
+                ttl_seconds=60,
+                runtime_permissions={
+                    "browser": True,
+                    "network": False,
+                    "office": False,
+                    "max_broker_calls": 1,
+                    "broker_operations": [
+                        {
+                            "operation": "browser.invoke",
+                            "action": "source.read",
+                            "roles": ["source"],
+                            "effect": "read",
+                        }
+                    ],
+                },
+                account_roles=({"role": "source"},),
+                resource_roles=(),
+                account_bindings={"source": "opaque-binding"},
+                resource_bindings={},
+            )
+            monkeypatch.setenv("BOYI_PLUGIN_BROKER_ENDPOINT", f"unix://{socket_path}")
+            monkeypatch.setenv("BOYI_PLUGIN_EXECUTION_CAPABILITY", capability)
+            monkeypatch.setenv("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "60")
+            namespace: dict[str, object] = {}
+            exec(PLUGIN_SDK_SOURCE, namespace)
+            broker_call = namespace["broker_call"]
+            return await asyncio.to_thread(
+                broker_call,
+                "browser.invoke",
+                action="source.read",
+                role="source",
+                arguments={"payload": "x" * (11 * 1024 * 1024)},
+            )
+        finally:
+            await broker.stop()
+
+    assert asyncio.run(invoke()) == {"observed_length": 11 * 1024 * 1024}
+
+
 def test_sdk_broker_timeout_is_core_owned_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     environment = PluginExecutionRouter._minimal_environment(
         capability="opaque-capability",
@@ -120,10 +177,10 @@ def test_sdk_broker_timeout_is_core_owned_and_bounded(monkeypatch: pytest.Monkey
     monkeypatch.setenv("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "95")
     assert namespace["_broker_timeout"]() == 95
     monkeypatch.setenv("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "0")
-    with pytest.raises(RuntimeError, match="timeout is invalid"):
+    with pytest.raises(RuntimeError, match="BROKER_TIMEOUT_INVALID"):
         namespace["_broker_timeout"]()
     monkeypatch.setenv("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "infinite")
-    with pytest.raises(RuntimeError, match="timeout is unavailable"):
+    with pytest.raises(RuntimeError, match="BROKER_TIMEOUT_UNAVAILABLE"):
         namespace["_broker_timeout"]()
 
 

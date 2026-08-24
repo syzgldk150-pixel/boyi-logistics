@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import subprocess
+import time
 import uuid
 import zipfile
 from io import BytesIO
@@ -636,6 +637,69 @@ def test_registered_core_adapter_revalidates_exact_bound_account(
     )
     assert result == {"count": 1}
     assert calls[0][0].account_ids == ("acct-1",)
+
+
+def test_registered_core_adapter_keeps_event_loop_responsive_for_sync_handler(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = _uploaded_manifest(core_catalog)
+    role = manifest.account_roles[0]["role"]
+
+    class Manager:
+        @staticmethod
+        def require_authenticated_binding(account_id: str) -> dict[str, str]:
+            return {
+                "account_id": account_id,
+                "system": "ronghui",
+                "account_purpose": "general",
+            }
+
+    def handler(_context, _arguments):
+        time.sleep(0.25)
+        return {"count": 1}
+
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers={("browser.invoke", "scan.fetch"): handler},
+        account_resolver=AccountManagerSessionResolver(Manager()),
+    )
+    issuer = LocalBrokerCapabilityIssuer(Path(".task_tmp") / "unused-broker.sock")
+    token = issuer.issue(
+        automation_id="instance-1",
+        plugin_version=manifest.version,
+        tool_name=manifest.tool_contract["name"],
+        ttl_seconds=60,
+        runtime_permissions=manifest.runtime_permissions,
+        account_roles=manifest.account_roles,
+        resource_roles=manifest.resource_roles,
+        account_bindings={role: "acct-1"},
+        resource_bindings={},
+    )
+    grant, binding = issuer.consume(
+        token,
+        request_id=str(uuid.uuid4()),
+        operation="browser.invoke",
+        action="scan.fetch",
+        role=role,
+    )
+
+    async def invoke() -> float:
+        started = time.monotonic()
+        task = asyncio.create_task(
+            adapter.invoke(
+                grant=grant,
+                operation="browser.invoke",
+                action="scan.fetch",
+                role=role,
+                binding=binding,
+                arguments={"query": "x"},
+            )
+        )
+        await asyncio.sleep(0.02)
+        elapsed = time.monotonic() - started
+        assert await task == {"count": 1}
+        return elapsed
+
+    assert asyncio.run(invoke()) < 0.1
 
 
 def test_registered_core_adapter_blocks_unauthenticated_bound_account(

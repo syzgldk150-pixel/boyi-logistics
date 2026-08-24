@@ -7,6 +7,7 @@ returns a credential-bearing object to plugin code.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -323,7 +324,11 @@ class RegisteredCoreAutomationBrokerAdapter:
             grant.tool_name,
             ttl_seconds=capability_ttl,
         ):
-            result = handler(context, dict(arguments))
+            # Most production handlers are synchronous because they drive
+            # browser, database and HTTP adapters. Running them on the broker
+            # event loop blocks Run polling, Scheduler and every other API
+            # request for the full external call duration.
+            result = await asyncio.to_thread(handler, context, dict(arguments))
             if inspect.isawaitable(result):
                 result = await result
         if not isinstance(result, Mapping):

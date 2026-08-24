@@ -10,18 +10,21 @@ import json
 import os
 import socket
 import uuid
+import zlib
 
 _MAX_RESPONSE = 10 * 1024 * 1024
-_MAX_REQUEST = 10 * 1024 * 1024
+_MAX_REQUEST = 64 * 1024 * 1024
+_MAX_COMPRESSED_REQUEST = 16 * 1024 * 1024
+_FRAME_PREFIX = b"BOYI-BROKER-V2 "
 
 
 def _broker_timeout():
     raw = os.environ.get("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "")
     if not raw.isdigit():
-        raise RuntimeError("core broker timeout is unavailable")
+        raise RuntimeError("BROKER_TIMEOUT_UNAVAILABLE")
     value = int(raw)
     if not 1 <= value <= 3600:
-        raise RuntimeError("core broker timeout is invalid")
+        raise RuntimeError("BROKER_TIMEOUT_INVALID")
     return value
 
 
@@ -29,7 +32,7 @@ def broker_call(operation, *, action, role, arguments):
     endpoint = os.environ.get("BOYI_PLUGIN_BROKER_ENDPOINT", "")
     capability = os.environ.get("BOYI_PLUGIN_EXECUTION_CAPABILITY", "")
     if not endpoint.startswith("unix://") or not capability:
-        raise RuntimeError("core broker capability is unavailable")
+        raise RuntimeError("BROKER_CAPABILITY_UNAVAILABLE")
     request = {
         "schema_version": 1,
         "request_id": str(uuid.uuid4()),
@@ -39,13 +42,17 @@ def broker_call(operation, *, action, role, arguments):
         "role": str(role),
         "arguments": dict(arguments),
     }
-    payload = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\\n"
+    payload = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(payload) > _MAX_REQUEST:
-        raise RuntimeError("core broker request is too large")
+        raise RuntimeError("BROKER_REQUEST_TOO_LARGE")
+    compressed = zlib.compress(payload)
+    if len(compressed) > _MAX_COMPRESSED_REQUEST:
+        raise RuntimeError("BROKER_REQUEST_TOO_LARGE")
+    frame = _FRAME_PREFIX + str(len(compressed)).encode("ascii") + b"\\n" + compressed
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(_broker_timeout())
         client.connect(endpoint[len("unix://"):])
-        client.sendall(payload)
+        client.sendall(frame)
         chunks = []
         size = 0
         while True:
@@ -54,7 +61,7 @@ def broker_call(operation, *, action, role, arguments):
                 break
             size += len(chunk)
             if size > _MAX_RESPONSE:
-                raise RuntimeError("core broker response is too large")
+                raise RuntimeError("BROKER_RESPONSE_TOO_LARGE")
             chunks.append(chunk)
     response = json.loads(b"".join(chunks).decode("utf-8"))
     if not isinstance(response, dict) or response.get("ok") is not True:
