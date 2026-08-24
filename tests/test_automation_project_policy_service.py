@@ -472,6 +472,19 @@ class AutomationProjectPolicyServiceTests(TestCase):
             )
         )
 
+    def _set_scan_project(self) -> None:
+        self.entry.automation_id = "scan_codes"
+        self.entry.plugin_id = "sync_scan_codes"
+        self.entry.trust_source = "ed25519_first_party"
+        self.entry.project_full_auto_allowed = True
+        self.entry.governance_anchor = {
+            "operation_type": "internal_projection_write",
+            "risk_level": "medium",
+            "approval": {"required_role": "admin"},
+            "permissions": {"required_roles": ["admin"]},
+            "project_full_auto_allowed": True,
+        }
+
     def test_console_invoke_builds_only_server_owned_project_identity(self):
         receipt = self.service.invoke_console(
             AUTOMATION_ID,
@@ -488,15 +501,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual(CONTRACT_HASH, command.automation_invocation.contract_hash)
 
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
-        self.entry.plugin_id = "sync_scan_codes"
-        self.entry.project_full_auto_allowed = True
-        self.entry.governance_anchor = {
-            "operation_type": "internal_projection_write",
-            "risk_level": "medium",
-            "approval": {"required_role": "admin"},
-            "permissions": {"required_roles": ["admin"]},
-            "project_full_auto_allowed": True,
-        }
+        self._set_scan_project()
 
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_console(
@@ -511,6 +516,49 @@ class AutomationProjectPolicyServiceTests(TestCase):
             raised.exception.code,
         )
         self.assertIsNone(self.gateway.command)
+
+    def test_exact_scan_project_injects_read_only_preview_server_side(self):
+        self._set_scan_project()
+
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-scan-preview",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            {"mode": "saved", "dry_run": True},
+            self.gateway.command.parameters["arguments"],
+        )
+        self.assertNotIn(
+            "scan_preview",
+            self.gateway.command.parameters["execution_context"],
+        )
+
+    def test_trusted_wait_returns_only_bounded_scan_preview_projection(self):
+        self._set_scan_project()
+        projection = {
+            "contract_version": 1,
+            "preview_run_id": "run-invoke",
+            "selection_count": 2,
+            "can_confirm": True,
+        }
+        self.service.get_scan_preview_projection = (  # type: ignore[method-assign]
+            lambda _automation_id, **_kwargs: dict(projection)
+        )
+
+        result = asyncio.run(
+            self.service.invoke_trusted_and_wait(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.CONSOLE,
+                request_id="request-scan-preview-wait",
+                actor=_admin(),
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(projection, result["scan_preview"])
 
     def test_release_hold_blocks_project_writes_and_typed_invoke(self):
         service = AutomationProjectPolicyService(

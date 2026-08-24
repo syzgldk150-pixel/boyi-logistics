@@ -42,6 +42,7 @@ class ProjectInvokeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: str
+    preview_run_id: str | None = None
 
 
 def create_automation_project_router(
@@ -140,6 +141,22 @@ def create_automation_project_router(
             decision="REJECTED",
         )
 
+    @router.get(
+        "/internal/v1/automation-projects/{automation_id}/scan-previews/{preview_run_id}"
+    )
+    async def get_scan_preview(
+        automation_id: str,
+        preview_run_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor_provider(request)
+        return api_success(
+            service_provider().get_scan_preview_projection(
+                automation_id,
+                preview_run_id=preview_run_id,
+            )
+        )
+
     @router.post("/internal/v1/automation-projects/{automation_id}/invoke")
     async def invoke_project(
         automation_id: str,
@@ -150,6 +167,7 @@ def create_automation_project_router(
             automation_id,
             request_id=payload.request_id,
             actor=actor_provider(request),
+            preview_run_id=payload.preview_run_id,
         )
         serialized = receipt.to_dict() if callable(getattr(receipt, "to_dict", None)) else receipt
         return api_success(serialized)
