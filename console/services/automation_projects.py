@@ -83,11 +83,22 @@ AUTOMATION_PLUGIN_RECONCILE_STATES = frozenset(
         "PREPARING",
         "WAITING_COEFFECTS",
         "READY_TO_COMMIT",
+        "DRAINING",
         "DISPOSING",
         "BLOCKED_UNKNOWN_WRITE",
         "ERROR",
     }
 )
+AUTOMATION_PLUGIN_RECONCILE_DISPLAY_STATES = {
+    "PREPARING": "PREPARING",
+    "WAITING_COEFFECTS": "BLOCKED_DEPENDENCY",
+    "READY_TO_COMMIT": "SWITCHING",
+    "DRAINING": "DRAINING",
+    "DISPOSING": "DRAINING",
+    "BLOCKED_UNKNOWN_WRITE": "ERROR",
+    "ERROR": "ERROR",
+    "UNKNOWN": "UNKNOWN",
+}
 AUTOMATION_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 AUTOMATION_PLUGIN_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 AUTOMATION_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
@@ -1035,7 +1046,7 @@ def normalize_automation_plugin_catalog(
         projected_state = str(
             raw.get("state") or ("ENABLED" if enabled else "DISABLED")
         ).strip().upper()
-        state = (
+        project_state = (
             projected_state
             if projected_state in AUTOMATION_PLUGIN_STATE_LABELS
             else "UNKNOWN"
@@ -1046,6 +1057,12 @@ def normalize_automation_plugin_catalog(
             if projected_reconcile_state in AUTOMATION_PLUGIN_RECONCILE_STATES
             else "UNKNOWN"
         )
+        state = project_state
+        if project_state in AUTOMATION_PLUGIN_STABLE_STATES and reconcile_state != "STABLE":
+            state = AUTOMATION_PLUGIN_RECONCILE_DISPLAY_STATES.get(
+                reconcile_state,
+                "UNKNOWN",
+            )
         if (
             automation_id in seen_instances
             or not AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id)
@@ -1243,8 +1260,12 @@ def normalize_automation_plugin_catalog(
                 "configured": configured,
                 "state": state,
                 "status_label": AUTOMATION_PLUGIN_STATE_LABELS[state],
+                "project_state": project_state,
                 "reconcile_state": reconcile_state,
-                "lifecycle_actions_allowed": state in AUTOMATION_PLUGIN_STABLE_STATES,
+                "lifecycle_actions_allowed": (
+                    project_state in AUTOMATION_PLUGIN_STABLE_STATES
+                    and reconcile_state == "STABLE"
+                ),
                 "record_version": record_version,
                 "project_configuration_version": project_configuration_version,
                 "execution_platform": platform,
