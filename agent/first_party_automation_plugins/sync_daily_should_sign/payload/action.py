@@ -67,6 +67,5 @@ def run_action(arguments, broker):
     meta = dict(raw_meta)
     if meta.pop("account_scope", None) != "multi_account" or "account_id" in meta:
         raise ValueError("daily-sign authoritative account scope is invalid")
-    meta["account_id"] = "multi_account"
     result["meta"] = meta
     return validate_result(result)
