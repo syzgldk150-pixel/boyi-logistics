@@ -952,16 +952,16 @@ tools:
 
   - name: sync_scan_codes
     version: "1.0.0"
-    operation_type: internal_projection_write
-    risk_level: medium
+    operation_type: external_write
+    risk_level: high
     llm_exposed: false
     project_full_auto_allowed: true
     approval:
-      mode: schedule_allowlist
-      required_role: admin
+      mode: required
+      required_role: super_admin
     permissions:
       required_roles:
-        - admin
+        - super_admin
     account_scope:
       required: true
       allow_implicit_default: false
@@ -978,7 +978,7 @@ tools:
         - observed_at
         - execution_result
     postconditions:
-      - executor_reported_success
+      - scan_formal_execution_verified
     description: "扫描同步：刷新扫描索引，并按批次触发 scan_next"
     input_schema:
       type: object

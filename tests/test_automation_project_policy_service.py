@@ -493,6 +493,14 @@ class AutomationProjectPolicyServiceTests(TestCase):
     def _scan_policy_subject(self, *, dry_run: bool):
         self._set_scan_project()
         console_contract = _contract().invocation_contracts["console"]
+        scan_invocation_contracts = {
+            source: replace(
+                console_contract,
+                contract_id=source,
+                entrypoint=source,
+            )
+            for source in ("console", "feishu", "webhook")
+        }
         self.contract = replace(
             _contract(),
             automation_id="scan_codes",
@@ -503,8 +511,8 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 {"dry_run", "_scan_preview_binding"}
             ),
             invocation_contracts={
-                "console": replace(
-                    console_contract,
+                source: replace(
+                    contract,
                     input_schema={
                         "type": "object",
                         "properties": {
@@ -517,7 +525,9 @@ class AutomationProjectPolicyServiceTests(TestCase):
                         },
                     },
                 )
+                for source, contract in scan_invocation_contracts.items()
             },
+            allowed_entrypoints=frozenset({"console", "feishu", "webhook"}),
         )
         invocation = AutomationProjectInvocation(
             automation_id="scan_codes",
@@ -579,6 +589,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
 
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
         self._set_scan_project()
+        self.entry.installed_version = "1.0.22"
 
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_console(
@@ -980,17 +991,47 @@ class AutomationProjectPolicyServiceTests(TestCase):
         plan, invocation = self._scan_policy_subject(dry_run=True)
         self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
 
-        decision = self.service.evaluate_invocation(
-            plan,
-            _admin(),
-            "console",
-            {},
-            invocation,
-        )
+        for source in ("console", "feishu", "webhook"):
+            with self.subTest(source=source):
+                decision = self.service.evaluate_invocation(
+                    plan,
+                    _admin(),
+                    source,
+                    {},
+                    replace(
+                        invocation,
+                        entrypoint=AutomationEntrypoint(source),
+                        contract_id=source,
+                    ),
+                )
 
-        self.assertTrue(decision.allowed)
-        self.assertFalse(decision.requires_approval)
-        self.assertEqual("SCAN_PREVIEW_ALLOWED", decision.code)
+                self.assertTrue(decision.allowed)
+                self.assertFalse(decision.requires_approval)
+                self.assertEqual("SCAN_PREVIEW_ALLOWED", decision.code)
+
+    def test_scan_formal_require_each_run_requires_approval_for_all_entrypoints(self):
+        plan, invocation = self._scan_policy_subject(dry_run=False)
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+        execution_context = {
+            "scan_preview": plan.steps[0].arguments["_scan_preview_binding"]
+        }
+
+        for source in ("console", "feishu", "webhook"):
+            with self.subTest(source=source):
+                decision = self.service.evaluate_invocation(
+                    plan,
+                    _admin(),
+                    source,
+                    execution_context,
+                    replace(
+                        invocation,
+                        entrypoint=AutomationEntrypoint(source),
+                        contract_id=source,
+                    ),
+                )
+                self.assertTrue(decision.allowed)
+                self.assertTrue(decision.requires_approval)
+                self.assertEqual("PROJECT_APPROVAL_REQUIRED", decision.code)
 
     def test_scan_formal_full_auto_requires_current_explicit_super_admin_policy(self):
         plan, invocation = self._scan_policy_subject(dry_run=False)
@@ -1037,16 +1078,22 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
             }
         )
-        current = self.service.evaluate_invocation(
-            plan,
-            _admin(),
-            "console",
-            execution_context,
-            invocation,
-        )
-        self.assertTrue(current.allowed)
-        self.assertFalse(current.requires_approval)
-        self.assertEqual("PROJECT_FULL_AUTO", current.code)
+        for source in ("console", "feishu", "webhook"):
+            with self.subTest(source=source):
+                current = self.service.evaluate_invocation(
+                    plan,
+                    _admin(),
+                    source,
+                    execution_context,
+                    replace(
+                        invocation,
+                        entrypoint=AutomationEntrypoint(source),
+                        contract_id=source,
+                    ),
+                )
+                self.assertTrue(current.allowed)
+                self.assertFalse(current.requires_approval)
+                self.assertEqual("PROJECT_FULL_AUTO", current.code)
 
         self.repository.state.policy["project_generation"] = 2
         stale = self.service.evaluate_invocation(

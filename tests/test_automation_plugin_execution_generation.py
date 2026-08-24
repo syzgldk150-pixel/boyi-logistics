@@ -142,6 +142,63 @@ def _plugin_result(tool_name: str) -> dict[str, Any]:
     }
 
 
+def _scan_preview_result() -> dict[str, Any]:
+    observed_at = "2026-08-15T00:00:00Z"
+    evidence_ref = "evidence:scan-source"
+    preview = {
+        "observed_at": observed_at,
+        "pagination_complete": True,
+        "source_page_count": 1,
+        "normalized_record_count": 0,
+        "source_snapshot_sha256": "a" * 64,
+        "source_evidence_refs": [evidence_ref],
+        "selection_count": 0,
+        "selection_sha256": "b" * 64,
+        "batch_count": 0,
+        "batch_plan_sha256": "c" * 64,
+    }
+    return {
+        "status": "SUCCESS",
+        "data": {
+            "phase": "preview",
+            "dry_run": True,
+            "preview_evidence": preview,
+            "evidence": {"observed_at": observed_at},
+        },
+        "meta": {
+            "source_system": "ronghui",
+            "observed_at": observed_at,
+            "record_count": 0,
+            "pagination_complete": True,
+            "evidence_refs": [evidence_ref],
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "authoritative_scan_preview_returned",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": evidence_ref,
+                    "details": {
+                        "phase": "preview",
+                        "pagination_complete": True,
+                        "source_page_count": 1,
+                        "normalized_record_count": 0,
+                        "source_snapshot_sha256": "a" * 64,
+                        "source_evidence_refs": [evidence_ref],
+                        "selection_count": 0,
+                        "selection_sha256": "b" * 64,
+                        "batch_count": 0,
+                        "batch_plan_sha256": "c" * 64,
+                        "write_attempted": False,
+                    },
+                }
+            },
+        },
+        "warnings": [],
+        "error": None,
+    }
+
+
 def _capability(tmp_path: Path, *, automation_id: str = "project-a") -> dict[str, Any]:
     root = tmp_path / automation_id
     (root / "venv" / "bin").mkdir(parents=True)
@@ -202,6 +259,10 @@ def _capability(tmp_path: Path, *, automation_id: str = "project-a") -> dict[str
 
 def _scan_capability(tmp_path: Path) -> dict[str, Any]:
     capability = _capability(tmp_path, automation_id="scan_codes")
+    capability["output_schema"]["properties"]["data"] = {
+        "type": "object",
+        "additionalProperties": True,
+    }
     capability["risk_level"] = "medium"
     capability["_plugin_runtime"]["plugin_id"] = "sync_scan_codes"
     capability["_plugin_runtime"]["runtime_permissions"]["broker_operations"] = [
@@ -516,7 +577,7 @@ def test_scan_preview_uses_read_lease_and_only_the_read_page_broker_grant(
         capability_issuer=issuer,
         integrity_verifier=_Integrity(),
         sandbox_launcher=_OutputSandbox(
-            canonical_json_bytes(_plugin_result("sync_scan_codes"))
+            canonical_json_bytes(_scan_preview_result())
         ),
         generation_leases=leases,
         release_hold_provider=lambda: False,
