@@ -9,14 +9,41 @@ from agent.automation_plugins.configuration import (
     AutomationProjectConfigurationService,
 )
 from agent.automation_plugins.code_owned_fields import (
+    SCAN_PHASE_FORMAL,
+    SCAN_PHASE_PREVIEW,
     first_party_code_owned_config_fields,
     first_party_code_owned_plan_fields,
     normalize_first_party_code_owned_config,
+    resolve_scan_execution_phase,
 )
 from agent.automation_plugins.errors import PluginConflictError
 
 
 FIRST_PARTY_TRUST = "ed25519_first_party"
+
+
+def test_scan_phase_requires_binding_absence_or_a_nonempty_formal_binding() -> None:
+    identity = {
+        "automation_id": "scan_codes",
+        "plugin_id": "sync_scan_codes",
+        "trust_source": FIRST_PARTY_TRUST,
+    }
+    assert resolve_scan_execution_phase(
+        **identity,
+        arguments={"dry_run": True},
+    ) == SCAN_PHASE_PREVIEW
+    assert resolve_scan_execution_phase(
+        **identity,
+        arguments={"dry_run": False, "_scan_preview_binding": {"proof": "x"}},
+    ) == SCAN_PHASE_FORMAL
+    for arguments in (
+        {"dry_run": True, "_scan_preview_binding": None},
+        {"dry_run": True, "_scan_preview_binding": {}},
+        {"dry_run": False},
+        {"dry_run": False, "_scan_preview_binding": None},
+    ):
+        with pytest.raises(ValueError, match="ambiguous or incomplete"):
+            resolve_scan_execution_phase(**identity, arguments=arguments)
 
 
 def test_code_owned_fields_require_exact_first_party_instance_identity() -> None:

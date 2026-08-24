@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.models import Actor, ActorType, Command, ContextSnapshot, OrchestrationError
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    ContextSnapshot,
+    OperationType,
+    OrchestrationError,
+    RiskLevel,
+)
 from agent.orchestration.planner import DeterministicPlanner
+from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.scan_preview_binding import (
     SCAN_PREVIEW_CONTEXT_KEY,
     ScanPreviewExpectation,
@@ -577,10 +587,29 @@ def test_planner_keeps_dry_run_preview_free_of_formal_binding():
                 },
             }
 
-    plan = DeterministicPlanner(_Catalog()).plan(preview, ContextSnapshot(values={}))
+    snapshot = ContextSnapshot(values={})
+    catalog = _Catalog()
+    plan = DeterministicPlanner(catalog).plan(preview, snapshot)
 
     assert plan.steps[0].arguments["dry_run"] is True
     assert "_scan_preview_binding" not in plan.steps[0].arguments
+    assert plan.steps[0].operation_type is OperationType.READ
+    assert plan.steps[0].risk_level is RiskLevel.LOW
+    assert PlanValidator(catalog).validate(plan, snapshot) is plan
+
+    forged = replace(
+        plan,
+        steps=(
+            replace(
+                plan.steps[0],
+                operation_type=OperationType.INTERNAL_PROJECTION_WRITE,
+                risk_level=RiskLevel.MEDIUM,
+            ),
+        ),
+    )
+    with pytest.raises(OrchestrationError) as rejected:
+        PlanValidator(catalog).validate(forged, snapshot)
+    assert rejected.value.code == "TOOL_OPERATION_CHANGED"
 
 
 def test_planner_rejects_caller_supplied_scan_payload_binding():
@@ -623,6 +652,53 @@ def test_planner_rejects_caller_supplied_scan_payload_binding():
     with pytest.raises(OrchestrationError) as rejected:
         DeterministicPlanner(_Catalog()).plan(forged, ContextSnapshot(values={}))
 
+    assert rejected.value.code == "SCAN_PREVIEW_CONTEXT_INVALID"
+
+
+def test_scan_phase_rejects_present_null_binding_instead_of_treating_it_as_absent():
+    context = _resolve(_Uow(_fixture())).context
+    formal = _command(context)
+    invalid = Command(
+        command_type=formal.command_type,
+        source=formal.source,
+        actor=formal.actor,
+        parameters={
+            "tool_name": f"automation.{PROJECT_ID}.run",
+            "arguments": {
+                **FORMAL_ARGUMENTS,
+                "dry_run": True,
+                "_scan_preview_binding": None,
+            },
+            "execution_context": {},
+        },
+        idempotency_key="preview-null-binding",
+        automation_invocation=formal.automation_invocation,
+    )
+
+    class _Catalog:
+        catalog_hash = "catalog-digest"
+
+        @staticmethod
+        def get_capability(_tool_name):
+            return {
+                "version": "1.0.0",
+                "operation_type": "external_write",
+                "risk_level": "high",
+                "llm_exposed": False,
+                "evidence": [],
+                "postconditions": [],
+                "_plugin_runtime": {
+                    "automation_id": PROJECT_ID,
+                    "plugin_id": "sync_scan_codes",
+                    "trust_source": "ed25519_first_party",
+                },
+            }
+
+    with pytest.raises(OrchestrationError) as rejected:
+        DeterministicPlanner(_Catalog()).plan(
+            invalid,
+            ContextSnapshot(values={}),
+        )
     assert rejected.value.code == "SCAN_PREVIEW_CONTEXT_INVALID"
 
 

@@ -184,6 +184,37 @@ def test_high_risk_write_submission_is_separate_from_super_admin_approval() -> N
     assert decision.required_role == "super_admin"
 
 
+def test_exact_scan_preview_uses_read_policy_instead_of_static_write_approval() -> None:
+    capability = _capability(
+        OperationType.INTERNAL_PROJECTION_WRITE,
+        roles=["super_admin"],
+        approval={"mode": "required", "required_role": "super_admin"},
+    )
+    capability["_plugin_runtime"] = {
+        "automation_id": "scan_codes",
+        "plugin_id": "sync_scan_codes",
+        "trust_source": "ed25519_first_party",
+    }
+    engine = PolicyEngine(
+        _Catalog(capability, tool_name="automation.scan_codes.run")
+    )
+
+    decision = engine.evaluate(
+        _plan(
+            OperationType.READ,
+            RiskLevel.LOW,
+            arguments={"dry_run": True},
+            tool_name="automation.scan_codes.run",
+        ),
+        Actor(ActorType.CONSOLE_ADMIN, "admin-1", roles=("admin",)),
+        source="console",
+    )
+
+    assert decision.allowed is True
+    assert decision.requires_approval is False
+    assert decision.risk_level is RiskLevel.LOW
+
+
 def _clock_policy(group_id: str) -> tuple[PolicyEngine, Plan, Actor, dict]:
     profile = APPROVED_SCHEDULED_TASK_PROFILES[group_id]
     task_id = next(iter(profile.approved_task_ids))

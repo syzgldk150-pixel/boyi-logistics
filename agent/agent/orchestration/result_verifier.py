@@ -282,6 +282,11 @@ class ResultVerifier:
                 "Plugin generation lease kind does not match the planned operation",
             )
         if not is_write:
+            if verification.started_mutating_call_count != 0:
+                return self._failure(
+                    "GENERATION_READ_WRITE_BOUNDARY_INVALID",
+                    "Plugin read execution has no authoritative zero-write proof",
+                )
             return outcome
         if self._generation_leases is None:
             return self._failure(

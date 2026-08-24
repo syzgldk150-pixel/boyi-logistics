@@ -13,6 +13,7 @@ from agent.automation_plugins.broker import (
     LocalCoreAutomationBroker,
     _assert_redacted,
 )
+from agent.automation_plugins.code_owned_fields import apply_scan_execution_boundary
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
@@ -218,6 +219,90 @@ def test_read_broker_failure_never_counts_as_a_started_write(tmp_path: Path) -> 
         role="source",
     )
     assert issuer.started_mutating_call_count(capability) == 0
+
+
+@pytest.mark.parametrize(
+    ("operation", "action"),
+    (
+        ("projection.invoke", "scan.snapshot.replace"),
+        ("browser.invoke", "ronghui.scan_next.submit"),
+        ("browser.invoke", "ronghui.scan_next.verify"),
+    ),
+)
+def test_scan_preview_broker_rejects_every_non_page_read_before_dispatch(
+    tmp_path: Path,
+    operation: str,
+    action: str,
+) -> None:
+    capability = apply_scan_execution_boundary(
+        {
+            "operation_type": "internal_projection_write",
+            "risk_level": "medium",
+            "_plugin_runtime": {
+                "automation_id": "scan_codes",
+                "plugin_id": "sync_scan_codes",
+                "trust_source": "ed25519_first_party",
+                "runtime_permissions": {
+                    "browser": True,
+                    "network": False,
+                    "office": False,
+                    "file_roles": [],
+                    "max_broker_calls": 10,
+                    "broker_operations": [
+                        {
+                            "operation": "browser.invoke",
+                            "action": "ronghui.scan.read_page",
+                            "roles": ["source"],
+                            "effect": "read",
+                        },
+                        {
+                            "operation": "projection.invoke",
+                            "action": "scan.snapshot.replace",
+                            "roles": ["source"],
+                            "effect": "write",
+                        },
+                        {
+                            "operation": "browser.invoke",
+                            "action": "ronghui.scan_next.submit",
+                            "roles": ["source"],
+                            "effect": "write",
+                        },
+                        {
+                            "operation": "browser.invoke",
+                            "action": "ronghui.scan_next.verify",
+                            "roles": ["source"],
+                            "effect": "read",
+                        },
+                    ],
+                },
+            },
+        },
+        {"dry_run": True},
+    )
+    issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock")
+    token = issuer.issue(
+        automation_id="scan_codes",
+        plugin_version="1.0.0",
+        tool_name="sync_scan_codes",
+        ttl_seconds=60,
+        runtime_permissions=capability["_plugin_runtime"]["runtime_permissions"],
+        account_roles=({"role": "source"},),
+        resource_roles=(),
+        account_bindings={"source": "opaque-binding"},
+        resource_bindings={},
+    )
+
+    with pytest.raises(PluginExecutionError) as raised:
+        issuer.consume(
+            token,
+            request_id=str(uuid.uuid4()),
+            operation=operation,
+            action=action,
+            role="source",
+        )
+
+    assert raised.value.code == "BROKER_OPERATION_DENIED"
+    assert issuer.started_mutating_call_count(token) == 0
 
 
 def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: Path) -> None:

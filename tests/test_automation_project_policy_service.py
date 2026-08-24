@@ -181,6 +181,8 @@ class _State:
             "version": 1,
             "project_generation": 1,
             "project_configuration_version": 1,
+            "approved_by_actor_id": None,
+            "approved_by_actor_role": None,
         }
         self.pending: list[dict] = []
         self.decisions: list[dict] = []
@@ -202,7 +204,8 @@ class _AutomationProjects:
         return [dict(self._state.policy)]
 
     def get_policy(self, automation_id, **_kwargs):
-        return dict(self._state.policy) if automation_id == AUTOMATION_ID else None
+        del automation_id
+        return dict(self._state.policy)
 
     def get_event_by_request(self, automation_id, request_id, **_kwargs):
         return next(
@@ -216,9 +219,11 @@ class _AutomationProjects:
         )
 
     def list_policy_events(self, automation_id, **_kwargs):
-        if automation_id != AUTOMATION_ID:
-            return []
-        return [copy.deepcopy(row) for row in self._state.policy_events]
+        return [
+            copy.deepcopy(row)
+            for row in self._state.policy_events
+            if row.get("automation_id") == automation_id
+        ]
 
     def update_policy(self, automation_id, *, expected_version, **values):
         if automation_id != AUTOMATION_ID or self._state.policy["version"] != expected_version:
@@ -403,12 +408,12 @@ class _Catalog:
         self._entry = entry
 
     def require(self, automation_id):
-        if automation_id != AUTOMATION_ID:
+        if automation_id != self._entry.automation_id:
             raise KeyError(automation_id)
         return self._entry
 
     def get(self, automation_id):
-        return self._entry if automation_id == AUTOMATION_ID else None
+        return self._entry if automation_id == self._entry.automation_id else None
 
     def list(self):
         return (self._entry,)
@@ -484,6 +489,78 @@ class AutomationProjectPolicyServiceTests(TestCase):
             "permissions": {"required_roles": ["admin"]},
             "project_full_auto_allowed": True,
         }
+
+    def _scan_policy_subject(self, *, dry_run: bool):
+        self._set_scan_project()
+        console_contract = _contract().invocation_contracts["console"]
+        self.contract = replace(
+            _contract(),
+            automation_id="scan_codes",
+            tool_name="automation.scan_codes.run",
+            operation_type=OperationType.INTERNAL_PROJECTION_WRITE.value,
+            risk_level=RiskLevel.MEDIUM.value,
+            code_owned_plan_fields=frozenset(
+                {"dry_run", "_scan_preview_binding"}
+            ),
+            invocation_contracts={
+                "console": replace(
+                    console_contract,
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string"},
+                            "dry_run": {"type": "boolean"},
+                            "_scan_preview_binding": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            },
+                        },
+                    },
+                )
+            },
+        )
+        invocation = AutomationProjectInvocation(
+            automation_id="scan_codes",
+            automation_generation=1,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="console",
+            contract_hash=CONTRACT_HASH,
+            policy_version=1,
+            project_configuration_version=1,
+            request_id="scan-policy",
+        )
+        arguments = {"mode": "saved", "dry_run": dry_run}
+        if not dry_run:
+            arguments["_scan_preview_binding"] = {"context_sha256": "a" * 64}
+        plan = Plan(
+            command_type="automation.project.invoke",
+            context_fingerprint="context-one",
+            tool_catalog_hash="catalog-one",
+            steps=(
+                PlanStep(
+                    step_key="execute",
+                    tool_name="automation.scan_codes.run",
+                    tool_version="1.0.0",
+                    operation_type=(
+                        OperationType.READ
+                        if dry_run
+                        else OperationType.INTERNAL_PROJECTION_WRITE
+                    ),
+                    arguments=arguments,
+                    account_id=None,
+                    depends_on=(),
+                    idempotency_key="scan-step",
+                    expected_evidence=(),
+                    postconditions=(),
+                    risk_level=RiskLevel.LOW if dry_run else RiskLevel.MEDIUM,
+                    requires_approval=not dry_run,
+                ),
+            ),
+            automation_id="scan_codes",
+            automation_generation=1,
+            automation_contract_hash=CONTRACT_HASH,
+        )
+        return plan, invocation
 
     def test_console_invoke_builds_only_server_owned_project_identity(self):
         receipt = self.service.invoke_console(
@@ -898,6 +975,113 @@ class AutomationProjectPolicyServiceTests(TestCase):
 
         self.assertTrue(approval_required.allowed)
         self.assertTrue(approval_required.requires_approval)
+
+    def test_scan_preview_never_requires_formal_project_approval(self):
+        plan, invocation = self._scan_policy_subject(dry_run=True)
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+
+        decision = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.requires_approval)
+        self.assertEqual("SCAN_PREVIEW_ALLOWED", decision.code)
+
+    def test_scan_formal_full_auto_requires_current_explicit_super_admin_policy(self):
+        plan, invocation = self._scan_policy_subject(dry_run=False)
+        execution_context = {
+            "scan_preview": plan.steps[0].arguments["_scan_preview_binding"]
+        }
+        self.repository.state.policy.update(
+            {
+                "mode": "PROJECT_FULL_AUTO",
+                "approved_by_actor_id": "system:migration",
+                "approved_by_actor_role": "system",
+            }
+        )
+
+        migrated = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            execution_context,
+            invocation,
+        )
+        self.assertTrue(migrated.allowed)
+        self.assertTrue(migrated.requires_approval)
+        self.assertEqual("SCAN_FORMAL_APPROVAL_REQUIRED", migrated.code)
+
+        self.repository.state.policy.update(
+            {
+                "approved_by_actor_id": "admin-one",
+                "approved_by_actor_role": "super_admin",
+                "project_generation": 1,
+                "project_configuration_version": 1,
+            }
+        )
+        self.repository.state.policy_events.append(
+            {
+                "automation_id": "scan_codes",
+                "request_id": "scan-full-auto-current",
+                "from_mode": "REQUIRE_EACH_RUN",
+                "to_mode": "PROJECT_FULL_AUTO",
+                "project_generation": 1,
+                "project_configuration_version": 1,
+                "actor_id": "admin-one",
+                "actor_role": "super_admin",
+                "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
+            }
+        )
+        current = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            execution_context,
+            invocation,
+        )
+        self.assertTrue(current.allowed)
+        self.assertFalse(current.requires_approval)
+        self.assertEqual("PROJECT_FULL_AUTO", current.code)
+
+        self.repository.state.policy["project_generation"] = 2
+        stale = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            execution_context,
+            invocation,
+        )
+        self.assertTrue(stale.allowed)
+        self.assertTrue(stale.requires_approval)
+
+        self.repository.state.policy["project_generation"] = 1
+        self.repository.state.policy_events.append(
+            {
+                "automation_id": "scan_codes",
+                "request_id": "scan-config-advanced",
+                "from_mode": "PROJECT_FULL_AUTO",
+                "to_mode": "PROJECT_FULL_AUTO",
+                "project_generation": 1,
+                "project_configuration_version": 1,
+                "actor_id": "admin-one",
+                "actor_role": "super_admin",
+                "reason": "PROJECT_CONFIGURATION_CHANGED",
+            }
+        )
+        lineage_advanced = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            execution_context,
+            invocation,
+        )
+        self.assertTrue(lineage_advanced.allowed)
+        self.assertTrue(lineage_advanced.requires_approval)
 
     def test_policy_version_drift_rechecks_current_durable_mode(self):
         invocation = _invocation()
