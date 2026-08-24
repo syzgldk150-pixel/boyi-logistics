@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import subprocess
+import sys
 import time
 import uuid
 import zipfile
@@ -384,6 +385,11 @@ def test_linux_venv_interpreter_stays_in_immutable_root(
     assert python_path.is_file()
     assert not python_path.is_symlink()
     assert python_path.is_relative_to(version_root.resolve())
+    assert not (python_path.parent / "python3").exists()
+    assert not (
+        python_path.parent / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    ).exists()
+    assert not (version_root / "venv" / "lib64").is_symlink()
     completed = subprocess.run(
         [str(python_path), "-I", "-c", "import sys; print(sys.prefix)"],
         check=True,
@@ -391,6 +397,55 @@ def test_linux_venv_interpreter_stays_in_immutable_root(
         text=True,
     )
     assert Path(completed.stdout.strip()).resolve().is_relative_to(version_root.resolve())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux copied-venv layout")
+def test_incomplete_venv_preserves_disk_error_and_cleans_staging(
+    core_catalog: ToolRegistry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = resolve_release_first_party_manifests(core_catalog)["sync_arrive_list"]
+    storage = FilesystemPluginStorage(tmp_path / "plugins")
+    version_root = storage.create_staging_root(manifest.plugin_id, manifest.version)
+    (version_root / "package" / "payload").mkdir(parents=True)
+
+    def fail_after_interpreter_copy(_builder: object, env_dir: str | Path) -> None:
+        venv_root = Path(env_dir)
+        (venv_root / "bin").mkdir(parents=True)
+        (venv_root / "lib").mkdir()
+        (venv_root / "bin" / "python").write_bytes(b"python")
+        (venv_root / "bin" / "python3").write_bytes(b"partial")
+        (venv_root / "lib64").symlink_to("lib", target_is_directory=True)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(
+        "agent.automation_plugins.storage.venv.EnvBuilder.create",
+        fail_after_interpreter_copy,
+    )
+    with pytest.raises(OSError, match="No space left on device"):
+        LockedVirtualEnvironmentBuilder().build(version_root, manifest)
+
+    assert (version_root / "venv" / "bin" / "python").is_file()
+    assert not (version_root / "venv" / "bin" / "python3").exists()
+    assert not (version_root / "venv" / "lib64").is_symlink()
+    storage.discard_staging_root(version_root)
+    assert not version_root.exists()
+
+
+def test_copied_venv_normalization_is_unchanged_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    venv_root = tmp_path / "venv"
+    alias = venv_root / "Scripts" / "python3.exe"
+    alias.parent.mkdir(parents=True)
+    alias.write_bytes(b"unchanged")
+    monkeypatch.setattr("agent.automation_plugins.storage.os.name", "nt")
+
+    LockedVirtualEnvironmentBuilder._normalize_copied_venv(venv_root)
+
+    assert alias.read_bytes() == b"unchanged"
 
 
 def test_linux_materialize_and_bubblewrap_cannot_read_host_sibling(
