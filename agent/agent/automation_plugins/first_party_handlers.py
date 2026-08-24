@@ -821,6 +821,7 @@ class _FirstPartyCoreHandlers:
         purpose: str,
         reader: PageReaderPort | None,
         target_date_required: bool,
+        authoritative_total_required: bool = False,
     ) -> Mapping[str, Any]:
         _require_context(context, tool_name=tool_name, role="account_id")
         if reader is None:
@@ -858,6 +859,11 @@ class _FirstPartyCoreHandlers:
         raw = reader(descriptor, bound_date, page_index, size)
         if not isinstance(raw, Mapping):
             raise _error("source page adapter returned an invalid response", "BROKER_SOURCE_INVALID")
+        if authoritative_total_required and raw.get("total_authoritative") is not True:
+            raise _error(
+                "scan source must declare an authoritative total",
+                "BROKER_SOURCE_TOTAL_REQUIRED",
+            )
         items, total, next_count, complete = _declared_page_result(
             raw,
             expected_total=expected_total,
@@ -937,6 +943,7 @@ class _FirstPartyCoreHandlers:
             ),
             reader=self._ports.scan_read_page,
             target_date_required=True,
+            authoritative_total_required=context.tool_name == _SCAN_TOOL,
         )
         result["items"] = _strict_record_list(
             result["items"],
