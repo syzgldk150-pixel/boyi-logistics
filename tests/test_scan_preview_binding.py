@@ -166,12 +166,24 @@ def _resolve(uow, *, now=NOW):
     )
 
 
-def _command(context, *, idempotency_key="formal-command-1") -> Command:
+def _command(
+    context,
+    *,
+    idempotency_key="formal-command-1",
+    entrypoint=AutomationEntrypoint.CONSOLE,
+    actor=None,
+    trusted_context=None,
+) -> Command:
+    resolved_actor = actor or Actor(
+        ActorType.CONSOLE_ADMIN,
+        "admin-1",
+        ("super_admin",),
+    )
     invocation = AutomationProjectInvocation(
         automation_id=PROJECT_ID,
         automation_generation=7,
-        entrypoint=AutomationEntrypoint.CONSOLE,
-        contract_id="console",
+        entrypoint=entrypoint,
+        contract_id=entrypoint.value,
         contract_hash=CONTRACT_DIGEST,
         policy_version=2,
         project_configuration_version=3,
@@ -179,12 +191,18 @@ def _command(context, *, idempotency_key="formal-command-1") -> Command:
     )
     return Command(
         command_type="automation.project.invoke",
-        source="console",
-        actor=Actor(ActorType.CONSOLE_ADMIN, "admin-1", ("super_admin",)),
+        source=entrypoint.value,
+        actor=resolved_actor,
         parameters={
             "tool_name": f"automation.{PROJECT_ID}.run",
             "arguments": {**FORMAL_ARGUMENTS, "dry_run": False},
-            "execution_context": {SCAN_PREVIEW_CONTEXT_KEY: dict(context)},
+            "execution_context": {
+                "project_request_id": "formal-request",
+                "entrypoint": entrypoint.value,
+                "occurred_at": context["observed_at"],
+                **dict(trusted_context or {}),
+                SCAN_PREVIEW_CONTEXT_KEY: dict(context),
+            },
         },
         idempotency_key=idempotency_key,
         automation_invocation=invocation,
@@ -266,7 +284,19 @@ def test_consumption_is_once_only_but_same_command_retry_is_reusable():
 def test_accepted_command_is_restored_for_same_idempotency_replay_after_expiry():
     preview_uow = _Uow(_fixture())
     context = _resolve(preview_uow).context
-    original = _command(context, idempotency_key="formal-replay")
+    trusted_context = {
+        "task_id": "scheduled-scan",
+        "scheduled_for": "2026-08-24T12:00:00+08:00",
+        "cron_expression": "0 12 * * *",
+        "configuration_version": 3,
+    }
+    original = _command(
+        context,
+        idempotency_key="formal-replay",
+        entrypoint=AutomationEntrypoint.SCHEDULER,
+        actor=Actor(ActorType.SCHEDULER, "scheduled-scan", ("system",)),
+        trusted_context=trusted_context,
+    )
 
     class _GatewayCommands:
         def __init__(self, repository):
@@ -370,10 +400,12 @@ def test_accepted_command_is_restored_for_same_idempotency_replay_after_expiry()
             source=original.source,
             idempotency_key=original.idempotency_key,
             actor=original.actor,
-            trusted_context={},
+            trusted_context=trusted_context,
             project_instance_id=PROJECT_ID,
             request_id="formal-request",
             preview_run_id=RUN_ID,
+            expected_generation=7,
+            expected_configuration_version=3,
         )
 
     assert replay is not None
@@ -387,6 +419,58 @@ def test_accepted_command_is_restored_for_same_idempotency_replay_after_expiry()
     assert second.work_item_id == first.work_item_id
     assert second.run_id == first.run_id
     assert len(repository.events.rows) == 1
+
+    with repository.unit_of_work() as replay_uow, pytest.raises(
+        OrchestrationError
+    ) as omitted_transport:
+        restore_scan_preview_replay(
+            replay_uow,
+            source=original.source,
+            idempotency_key=original.idempotency_key,
+            actor=original.actor,
+            trusted_context={},
+            project_instance_id=PROJECT_ID,
+            request_id="formal-request",
+            preview_run_id=RUN_ID,
+            expected_generation=7,
+            expected_configuration_version=3,
+        )
+    assert omitted_transport.value.code == "REQUEST_ID_REUSED"
+
+    for generation, configuration in ((8, 3), (7, 4)):
+        with repository.unit_of_work() as replay_uow, pytest.raises(
+            OrchestrationError
+        ) as stale:
+            restore_scan_preview_replay(
+                replay_uow,
+                source=original.source,
+                idempotency_key=original.idempotency_key,
+                actor=original.actor,
+                trusted_context=trusted_context,
+                project_instance_id=PROJECT_ID,
+                request_id="formal-request",
+                preview_run_id=RUN_ID,
+                expected_generation=generation,
+                expected_configuration_version=configuration,
+            )
+        assert stale.value.code == "PROJECT_INVOCATION_STALE"
+
+    with repository.unit_of_work() as replay_uow, pytest.raises(
+        OrchestrationError
+    ) as wrong_preview:
+        restore_scan_preview_replay(
+            replay_uow,
+            source=original.source,
+            idempotency_key=original.idempotency_key,
+            actor=original.actor,
+            trusted_context=trusted_context,
+            project_instance_id=PROJECT_ID,
+            request_id="formal-request",
+            preview_run_id="22222222-2222-4222-8222-222222222222",
+            expected_generation=7,
+            expected_configuration_version=3,
+        )
+    assert wrong_preview.value.code == "REQUEST_ID_REUSED"
 
 
 def test_planner_persists_compact_scan_impact_for_the_signed_project():

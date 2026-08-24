@@ -1038,6 +1038,8 @@ class AutomationProjectPolicyService:
                     project_instance_id=safe_id,
                     request_id=safe_request_id,
                     preview_run_id=safe_preview_run_id,
+                    expected_generation=expected_generation,
+                    expected_configuration_version=expected_configuration,
                 )
             if replay is not None:
                 return self._command_gateway.submit(replay)

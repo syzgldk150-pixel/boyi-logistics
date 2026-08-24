@@ -286,6 +286,8 @@ def restore_scan_preview_replay(
     project_instance_id: str,
     request_id: str,
     preview_run_id: str,
+    expected_generation: int | None,
+    expected_configuration_version: int | None,
 ) -> Command | None:
     """Restore the exact accepted Command so a replay also works after expiry."""
 
@@ -316,10 +318,18 @@ def restore_scan_preview_replay(
             else None
         )
         validated_context = validate_scan_preview_context(preview_context)
-        if any(
-            execution_context.get(name) != value
-            for name, value in trusted_context.items()
-        ):
+        persisted_transport = {
+            name: value
+            for name, value in execution_context.items()
+            if name
+            not in {
+                "project_request_id",
+                "entrypoint",
+                "occurred_at",
+                SCAN_PREVIEW_CONTEXT_KEY,
+            }
+        }
+        if persisted_transport != dict(trusted_context):
             raise ValueError("persisted trusted transport context differs")
         if validated_context["preview_run_id"] != normalize_preview_run_id(preview_run_id):
             raise ValueError("persisted preview identity differs")
@@ -336,6 +346,18 @@ def restore_scan_preview_replay(
             or invocation.entrypoint.value != source
         ):
             raise ValueError("persisted project invocation differs")
+        if (
+            expected_generation is not None
+            and invocation.automation_generation != expected_generation
+        ) or (
+            expected_configuration_version is not None
+            and invocation.project_configuration_version
+            != expected_configuration_version
+        ):
+            raise OrchestrationError(
+                "PROJECT_INVOCATION_STALE",
+                "Automation project generation or configuration changed before replay",
+            )
         raw_refs = persisted.get("entity_refs_json", persisted.get("entity_refs"))
         if not isinstance(raw_refs, list):
             raise ValueError("persisted entity references are invalid")
