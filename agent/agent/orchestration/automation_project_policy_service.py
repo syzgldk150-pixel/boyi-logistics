@@ -37,10 +37,12 @@ from agent.orchestration.scan_preview_binding import (
     ScanPreviewExpectation,
     consume_scan_preview,
     ensure_scan_preview_active,
+    is_scan_preview_project,
     normalize_preview_run_id,
     require_scan_formal_governance,
     resolve_scan_preview,
     restore_scan_preview_replay,
+    scan_preview_public_projection,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -948,6 +950,36 @@ class AutomationProjectPolicyService:
                 self._wake_runner(run_id)
         return result
 
+    def get_scan_preview_projection(
+        self,
+        automation_id: str,
+        *,
+        preview_run_id: str,
+    ) -> dict[str, Any]:
+        """Project one verified preview without exposing persisted item evidence."""
+
+        safe_id = _automation_id(automation_id)
+        entry, contract = self._load_contract(safe_id)
+        if not is_scan_preview_project(entry):
+            raise OrchestrationError(
+                "SCAN_PREVIEW_PROJECT_INVALID",
+                "A scan preview is only available for the signed scan project",
+                details={"status": "BLOCKED_DATA"},
+            )
+        expectation = ScanPreviewExpectation(
+            project_instance_id=safe_id,
+            generation=contract.automation_generation,
+            contract_digest=contract.contract_hash,
+            configuration_version=contract.project_configuration_version,
+        )
+        with self._repository.unit_of_work() as uow:
+            return scan_preview_public_projection(
+                uow,
+                preview_run_id=preview_run_id,
+                expectation=expectation,
+                now=datetime.now(timezone.utc),
+            )
+
     def invoke_console(
         self,
         automation_id: str,
@@ -1025,6 +1057,7 @@ class AutomationProjectPolicyService:
                 "Trusted non-Console entrypoints must bind a committed generation",
             )
         entry, contract = self._load_contract(safe_id)
+        scan_preview_project = is_scan_preview_project(entry)
         safe_preview_run_id = None
         if preview_run_id is not None:
             safe_preview_run_id = normalize_preview_run_id(preview_run_id)
@@ -1108,6 +1141,8 @@ class AutomationProjectPolicyService:
                     "PROJECT_DYNAMIC_INPUT_UNAVAILABLE",
                     "Dynamic project invocation input could not be resolved",
                 ) from exc
+        if scan_preview_project and safe_preview_run_id is None:
+            arguments["dry_run"] = True
         preview_expectation = ScanPreviewExpectation(
             project_instance_id=safe_id,
             generation=contract.automation_generation,
@@ -1264,7 +1299,7 @@ class AutomationProjectPolicyService:
             timeout_seconds=timeout_seconds,
         )
         status = str(run.get("status") or "")
-        return {
+        result = {
             "success": status == "COMPLETED",
             "status": status,
             "command_id": str(run.get("command_id") or receipt.command_id),
@@ -1276,6 +1311,14 @@ class AutomationProjectPolicyService:
                 redact_text(run.get("error_summary"))[:500] or None
             ),
         }
+        if status == "COMPLETED" and preview_run_id is None:
+            entry, _contract = self._load_contract(automation_id)
+            if is_scan_preview_project(entry):
+                result["scan_preview"] = self.get_scan_preview_projection(
+                    automation_id,
+                    preview_run_id=str(run.get("run_id") or receipt.run_id),
+                )
+        return result
 
     def evaluate_invocation(
         self,
