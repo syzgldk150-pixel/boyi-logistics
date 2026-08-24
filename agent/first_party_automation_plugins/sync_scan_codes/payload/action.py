@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -26,6 +26,35 @@ _MAX_BATCHES = 499
 _MAX_ITEMS = 100_000
 _MAX_BROKER_CALLS = 1000
 _PREVIEW_EVIDENCE_CONTRACT_VERSION = 1
+_SCAN_PREVIEW_BINDING_FIELD = "_scan_preview_binding"
+_SCAN_PREVIEW_BINDING_FIELDS = frozenset(
+    {
+        "contract_version",
+        "plugin_id",
+        "preview_run_id",
+        "preview_step_id",
+        "preview_result_sha256",
+        "project_instance_id",
+        "generation",
+        "contract_digest",
+        "configuration_version",
+        "target_date",
+        "observed_at",
+        "expires_at",
+        "source_page_count",
+        "normalized_record_count",
+        "source_snapshot_sha256",
+        "source_evidence_count",
+        "source_evidence_refs_sha256",
+        "selection_count",
+        "selection_sha256",
+        "batch_count",
+        "batch_plan_sha256",
+        "formal_arguments_sha256",
+        "context_sha256",
+    }
+)
+_HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _R_CHILD_TRACKING_RE = re.compile(r"^(?:R\d{11}|RC\d{10})\d{4}$")
 _RONGHUI_NUMERIC_CHILD_TRACKING_RE = re.compile(r"^200\d{11}$")
 _ALLOWED_ARGUMENTS = frozenset(
@@ -36,6 +65,7 @@ _ALLOWED_ARGUMENTS = frozenset(
         "max_batches",
         "skip_bill_codes",
         "dry_run",
+        _SCAN_PREVIEW_BINDING_FIELD,
     }
 )
 _SOURCE_FIELDS = frozenset(
@@ -98,6 +128,156 @@ def _canonical_sha256(value: object) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _binding_int(value: object, label: str, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"scan preview {label} is invalid")
+    return value
+
+
+def _binding_digest(value: object, label: str) -> str:
+    result = _text(value, label, maximum=64)
+    if not _HEX_SHA256_RE.fullmatch(result):
+        raise ValueError(f"scan preview {label} is invalid")
+    return result
+
+
+def _binding_timestamp(value: object, label: str) -> datetime:
+    raw = _text(value, label, maximum=64)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"scan preview {label} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"scan preview {label} is invalid")
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_preview_binding(
+    raw: object,
+    *,
+    formal_arguments: Mapping[str, object],
+    target_date: str,
+    source_pages: int,
+    snapshot: list[dict[str, str]],
+    batches: list[list[dict[str, str]]],
+) -> dict[str, object]:
+    binding = _object(raw, "scan preview binding")
+    if set(binding) != _SCAN_PREVIEW_BINDING_FIELDS:
+        raise ValueError("scan preview binding schema is invalid")
+    supplied_context_sha256 = _binding_digest(
+        binding.get("context_sha256"),
+        "context_sha256",
+    )
+    unhashed = dict(binding)
+    unhashed.pop("context_sha256")
+    if _canonical_sha256(unhashed) != supplied_context_sha256:
+        raise ValueError("scan preview binding digest is stale")
+    if binding.get("contract_version") != _PREVIEW_EVIDENCE_CONTRACT_VERSION:
+        raise ValueError("scan preview binding version is unsupported")
+    if binding.get("plugin_id") != ACTION_ID:
+        raise ValueError("scan preview binding plugin identity is invalid")
+    for field in (
+        "preview_run_id",
+        "preview_step_id",
+        "project_instance_id",
+    ):
+        if not _text(binding.get(field), field, maximum=128):
+            raise ValueError(f"scan preview {field} is missing")
+    for field in (
+        "preview_result_sha256",
+        "contract_digest",
+        "source_snapshot_sha256",
+        "source_evidence_refs_sha256",
+        "selection_sha256",
+        "batch_plan_sha256",
+        "formal_arguments_sha256",
+    ):
+        _binding_digest(binding.get(field), field)
+    _binding_int(binding.get("generation"), "generation", minimum=1, maximum=2**63 - 1)
+    _binding_int(
+        binding.get("configuration_version"),
+        "configuration_version",
+        minimum=1,
+        maximum=2**63 - 1,
+    )
+    expected_source_pages = _binding_int(
+        binding.get("source_page_count"),
+        "source_page_count",
+        minimum=1,
+        maximum=_MAX_SOURCE_PAGES,
+    )
+    expected_normalized = _binding_int(
+        binding.get("normalized_record_count"),
+        "normalized_record_count",
+        minimum=0,
+        maximum=_MAX_ITEMS,
+    )
+    _binding_int(
+        binding.get("source_evidence_count"),
+        "source_evidence_count",
+        minimum=1,
+        maximum=_MAX_SOURCE_PAGES,
+    )
+    expected_selection = _binding_int(
+        binding.get("selection_count"),
+        "selection_count",
+        minimum=0,
+        maximum=_MAX_ITEMS,
+    )
+    expected_batches = _binding_int(
+        binding.get("batch_count"),
+        "batch_count",
+        minimum=0,
+        maximum=_MAX_BATCHES,
+    )
+    observed_at = _binding_timestamp(binding.get("observed_at"), "observed_at")
+    expires_at = _binding_timestamp(binding.get("expires_at"), "expires_at")
+    if expires_at != observed_at + timedelta(minutes=15):
+        raise ValueError("scan preview binding expiry is invalid")
+    if datetime.now(timezone.utc) >= expires_at:
+        raise ValueError("scan preview binding expired before formal execution")
+    if binding.get("target_date") != target_date:
+        raise ValueError("scan preview target date changed before formal execution")
+    if _canonical_sha256(formal_arguments) != binding["formal_arguments_sha256"]:
+        raise ValueError("scan preview formal arguments changed before execution")
+
+    planned_items = [item for batch in batches for item in batch]
+    comparisons = {
+        "source_page_count": (source_pages, expected_source_pages),
+        "normalized_record_count": (len(snapshot), expected_normalized),
+        "source_snapshot_sha256": (
+            _canonical_sha256(snapshot),
+            binding["source_snapshot_sha256"],
+        ),
+        "selection_count": (len(planned_items), expected_selection),
+        "selection_sha256": (
+            _canonical_sha256(planned_items),
+            binding["selection_sha256"],
+        ),
+        "batch_count": (len(batches), expected_batches),
+        "batch_plan_sha256": (
+            _canonical_sha256(batches),
+            binding["batch_plan_sha256"],
+        ),
+    }
+    changed = [name for name, (actual, expected) in comparisons.items() if actual != expected]
+    if changed:
+        raise ValueError(
+            "scan preview authoritative revalidation changed: " + ", ".join(changed)
+        )
+    return {
+        "verified": True,
+        "preview_run_id": binding["preview_run_id"],
+        "preview_step_id": binding["preview_step_id"],
+        "context_sha256": supplied_context_sha256,
+        "target_date": target_date,
+        "source_snapshot_sha256": binding["source_snapshot_sha256"],
+        "selection_sha256": binding["selection_sha256"],
+        "batch_plan_sha256": binding["batch_plan_sha256"],
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _normalize_source_row(raw: object) -> dict[str, str]:
@@ -385,11 +565,28 @@ def run_action(
     dry_run = values.get("dry_run", False)
     if not isinstance(dry_run, bool):
         raise ValueError("dry_run must be boolean")
+    raw_preview_binding = values.get(_SCAN_PREVIEW_BINDING_FIELD)
+    if dry_run and raw_preview_binding is not None:
+        raise ValueError("dry-run scan cannot receive a formal preview binding")
+    if not dry_run and raw_preview_binding is None:
+        raise ValueError("formal scan execution requires a preview binding")
     target_date = _target_date(values)
     source_rows, source_pages, evidence_refs = _collect_source(target_date, broker)
     snapshot = _normalize_snapshot(source_rows)
     candidates = _candidate_items(snapshot, skipped=_skip_codes(values.get("skip_bill_codes")))
     batches, omitted = _batch_plan(candidates, values)
+    preview_revalidation: dict[str, object] | None = None
+    if not dry_run:
+        formal_arguments = dict(values)
+        formal_arguments.pop(_SCAN_PREVIEW_BINDING_FIELD)
+        preview_revalidation = _validate_preview_binding(
+            raw_preview_binding,
+            formal_arguments=formal_arguments,
+            target_date=target_date,
+            source_pages=source_pages,
+            snapshot=snapshot,
+            batches=batches,
+        )
     estimated_calls = source_pages + (0 if dry_run else 1 + (2 * len(batches)))
     if estimated_calls > _MAX_BROKER_CALLS:
         raise ValueError("scan execution exceeds its signed broker-call budget")
@@ -453,6 +650,8 @@ def run_action(
             source_evidence_refs=evidence_refs,
             observed_at=observed_at,
         )
+    else:
+        data["preview_revalidation"] = preview_revalidation
     result_ref, result_proof = executor_success_evidence(
         action_id=ACTION_ID,
         data=data,

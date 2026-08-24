@@ -26,7 +26,7 @@ from shared.automation_project_authorization import (
 from shared.orchestration_repository_support import IdempotencyConflict
 
 
-PROJECT_ID = "scan_project"
+PROJECT_ID = "scan_codes"
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 CONTRACT_DIGEST = "c" * 64
 NOW = datetime(2026, 8, 24, 4, 0, tzinfo=timezone.utc)
@@ -494,7 +494,7 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
                 "_plugin_runtime": {
                     "automation_id": PROJECT_ID,
                     "plugin_id": "sync_scan_codes",
-                    "trust_source": "first_party",
+                    "trust_source": "ed25519_first_party",
                 },
             }
 
@@ -506,6 +506,92 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
         "preview_result_sha256"
     ]
     assert len(plan.impact["preview_fingerprint"]) == 64
+    assert plan.steps[0].arguments["_scan_preview_binding"] == context
+    assert "items" not in plan.steps[0].arguments["_scan_preview_binding"]
+
+
+def test_planner_keeps_dry_run_preview_free_of_formal_binding():
+    context = _resolve(_Uow(_fixture())).context
+    formal = _command(context)
+    preview = Command(
+        command_type=formal.command_type,
+        source=formal.source,
+        actor=formal.actor,
+        parameters={
+            "tool_name": f"automation.{PROJECT_ID}.run",
+            "arguments": {**FORMAL_ARGUMENTS, "dry_run": True},
+            "execution_context": {},
+        },
+        idempotency_key="preview-command-2",
+        automation_invocation=formal.automation_invocation,
+    )
+
+    class _Catalog:
+        catalog_hash = "catalog-digest"
+
+        @staticmethod
+        def get_capability(_tool_name):
+            return {
+                "version": "1.0.0",
+                "operation_type": "internal_projection_write",
+                "risk_level": "medium",
+                "llm_exposed": False,
+                "evidence": [],
+                "postconditions": [],
+                "_plugin_runtime": {
+                    "automation_id": PROJECT_ID,
+                    "plugin_id": "sync_scan_codes",
+                    "trust_source": "ed25519_first_party",
+                },
+            }
+
+    plan = DeterministicPlanner(_Catalog()).plan(preview, ContextSnapshot(values={}))
+
+    assert plan.steps[0].arguments["dry_run"] is True
+    assert "_scan_preview_binding" not in plan.steps[0].arguments
+
+
+def test_planner_rejects_caller_supplied_scan_payload_binding():
+    context = _resolve(_Uow(_fixture())).context
+    formal = _command(context)
+    forged = Command(
+        command_type=formal.command_type,
+        source=formal.source,
+        actor=formal.actor,
+        parameters={
+            **dict(formal.parameters),
+            "arguments": {
+                **dict(formal.parameters["arguments"]),
+                "_scan_preview_binding": dict(context),
+            },
+        },
+        idempotency_key="forged-binding",
+        automation_invocation=formal.automation_invocation,
+    )
+
+    class _Catalog:
+        catalog_hash = "catalog-digest"
+
+        @staticmethod
+        def get_capability(_tool_name):
+            return {
+                "version": "1.0.0",
+                "operation_type": "internal_projection_write",
+                "risk_level": "medium",
+                "llm_exposed": False,
+                "evidence": [],
+                "postconditions": [],
+                "_plugin_runtime": {
+                    "automation_id": PROJECT_ID,
+                    "plugin_id": "sync_scan_codes",
+                    "trust_source": "ed25519_first_party",
+                },
+            }
+
+    with pytest.raises(OrchestrationError) as rejected:
+        DeterministicPlanner(_Catalog()).plan(forged, ContextSnapshot(values={}))
+
+    assert rejected.value.code == "SCAN_PREVIEW_CONTEXT_INVALID"
 
 
 def test_formal_path_remains_disabled_until_signed_external_governance_is_ready():

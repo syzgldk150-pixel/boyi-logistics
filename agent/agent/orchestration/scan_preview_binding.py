@@ -36,6 +36,7 @@ from shared.orchestration_repository_support import IdempotencyConflict
 
 SCAN_PLUGIN_ID = "sync_scan_codes"
 SCAN_PREVIEW_CONTEXT_KEY = "scan_preview"
+SCAN_PREVIEW_PAYLOAD_BINDING_FIELD = "_scan_preview_binding"
 SCAN_PREVIEW_CONSUMED_EVENT = "automation.scan_preview.consumed"
 SCAN_PREVIEW_CONTRACT_VERSION = 1
 _MAX_SOURCE_PAGES = 500
@@ -414,13 +415,12 @@ def build_scan_preview_impact(
     account_id: str | None,
     arguments: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    execution_context = command.parameters.get("execution_context")
-    raw_context = (
-        execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
-        if isinstance(execution_context, Mapping)
-        else None
+    context = scan_preview_payload_binding(
+        command=command,
+        capability=capability,
+        arguments=arguments,
     )
-    if raw_context is None:
+    if context is None:
         return None
     if operation_type not in {
         OperationType.INTERNAL_PROJECTION_WRITE,
@@ -430,23 +430,6 @@ def build_scan_preview_impact(
             "SCAN_PREVIEW_CONTEXT_INVALID",
             "Scan preview context is attached to an unsupported operation type",
         )
-    context = validate_scan_preview_context(raw_context)
-    invocation = command.automation_invocation
-    runtime = capability.get("_plugin_runtime")
-    if invocation is None or not isinstance(runtime, Mapping):
-        raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview has no signed project runtime")
-    if (
-        str(runtime.get("plugin_id") or "") != SCAN_PLUGIN_ID
-        or str(runtime.get("automation_id") or "") != context["project_instance_id"]
-        or invocation.automation_id != context["project_instance_id"]
-        or invocation.automation_generation != context["generation"]
-        or invocation.contract_hash != context["contract_digest"]
-        or invocation.project_configuration_version != context["configuration_version"]
-        or str(command.parameters.get("tool_name") or "")
-        != f"automation.{context['project_instance_id']}.run"
-        or canonical_sha256(arguments) != context["formal_arguments_sha256"]
-    ):
-        raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview does not match the signed command")
     payload = {
         "tool_name": str(command.parameters["tool_name"]),
         "operation_type": operation_type.value,
@@ -481,6 +464,48 @@ def build_scan_preview_impact(
     }
     payload["preview_fingerprint"] = sha256_json(payload)
     return payload
+
+
+def scan_preview_payload_binding(
+    *,
+    command: Command,
+    capability: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return the exact server-owned context admitted to the signed payload."""
+
+    execution_context = command.parameters.get("execution_context")
+    raw_context = (
+        execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
+        if isinstance(execution_context, Mapping)
+        else None
+    )
+    if raw_context is None:
+        return None
+    context = validate_scan_preview_context(raw_context)
+    invocation = command.automation_invocation
+    runtime = capability.get("_plugin_runtime")
+    if invocation is None or not isinstance(runtime, Mapping):
+        raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview has no signed project runtime")
+    formal_arguments = dict(arguments)
+    supplied_binding = formal_arguments.pop(SCAN_PREVIEW_PAYLOAD_BINDING_FIELD, None)
+    if (
+        str(runtime.get("plugin_id") or "") != SCAN_PLUGIN_ID
+        or str(runtime.get("automation_id") or "") != context["project_instance_id"]
+        or invocation.automation_id != context["project_instance_id"]
+        or invocation.automation_generation != context["generation"]
+        or invocation.contract_hash != context["contract_digest"]
+        or invocation.project_configuration_version != context["configuration_version"]
+        or str(command.parameters.get("tool_name") or "")
+        != f"automation.{context['project_instance_id']}.run"
+        or canonical_sha256(formal_arguments) != context["formal_arguments_sha256"]
+        or (
+            supplied_binding is not None
+            and supplied_binding != context
+        )
+    ):
+        raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview does not match the signed command")
+    return context
 
 
 def consume_scan_preview(

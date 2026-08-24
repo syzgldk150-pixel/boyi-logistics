@@ -1018,6 +1018,114 @@ tools:
         dry_run:
           type: boolean
           description: "仅演练，不写 MySQL/不真正执行 scan_next"
+        _scan_preview_binding:
+          type: object
+          additionalProperties: false
+          description: "仅由控制平面注入的已消费扫描预览摘要；Console、飞书、Webhook 和项目配置均不可提供"
+          properties:
+            contract_version:
+              type: integer
+              enum: [1]
+            plugin_id:
+              type: string
+              enum: [sync_scan_codes]
+            preview_run_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+            preview_step_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+            preview_result_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            project_instance_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+            generation:
+              type: integer
+              minimum: 1
+            contract_digest:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            configuration_version:
+              type: integer
+              minimum: 1
+            target_date:
+              type: string
+              pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            observed_at:
+              type: string
+              minLength: 1
+              maxLength: 64
+            expires_at:
+              type: string
+              minLength: 1
+              maxLength: 64
+            source_page_count:
+              type: integer
+              minimum: 1
+              maximum: 500
+            normalized_record_count:
+              type: integer
+              minimum: 0
+              maximum: 100000
+            source_snapshot_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            source_evidence_count:
+              type: integer
+              minimum: 1
+              maximum: 500
+            source_evidence_refs_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            selection_count:
+              type: integer
+              minimum: 0
+              maximum: 100000
+            selection_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            batch_count:
+              type: integer
+              minimum: 0
+              maximum: 499
+            batch_plan_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            formal_arguments_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            context_sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+          required:
+            - contract_version
+            - plugin_id
+            - preview_run_id
+            - preview_step_id
+            - preview_result_sha256
+            - project_instance_id
+            - generation
+            - contract_digest
+            - configuration_version
+            - target_date
+            - observed_at
+            - expires_at
+            - source_page_count
+            - normalized_record_count
+            - source_snapshot_sha256
+            - source_evidence_count
+            - source_evidence_refs_sha256
+            - selection_count
+            - selection_sha256
+            - batch_count
+            - batch_plan_sha256
+            - formal_arguments_sha256
+            - context_sha256
       required: [account_id]
     output_schema:
       type: object
