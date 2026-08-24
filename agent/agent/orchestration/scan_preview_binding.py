@@ -34,6 +34,7 @@ from shared.automation_project_authorization import (
 from shared.orchestration_repository_support import IdempotencyConflict
 
 
+SCAN_PROJECT_ID = "scan_codes"
 SCAN_PLUGIN_ID = "sync_scan_codes"
 SCAN_PREVIEW_CONTEXT_KEY = "scan_preview"
 SCAN_PREVIEW_PAYLOAD_BINDING_FIELD = "_scan_preview_binding"
@@ -62,12 +63,35 @@ class ScanPreviewResolution:
     formal_arguments: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class _PersistedScanPreview:
+    run_id: str
+    step: Mapping[str, Any]
+    preview_arguments: Mapping[str, Any]
+    evidence: Mapping[str, Any]
+    result_digest: str
+    observed_at: datetime
+    expires_at: datetime
+
+
+def is_scan_preview_project(entry: Any) -> bool:
+    """Match only the reviewed first-party scan project identity."""
+
+    return (
+        str(getattr(entry, "automation_id", "") or "").strip()
+        == SCAN_PROJECT_ID
+        and str(getattr(entry, "plugin_id", "") or "").strip()
+        == SCAN_PLUGIN_ID
+        and str(getattr(entry, "trust_source", "") or "").strip()
+        == "ed25519_first_party"
+    )
+
+
 def require_scan_formal_governance(entry: Any) -> None:
     """Keep the binding dormant until the signed scan tool is formally safe."""
 
-    plugin_id = str(getattr(entry, "plugin_id", "") or "").strip()
     anchor = getattr(entry, "governance_anchor", None)
-    if plugin_id != SCAN_PLUGIN_ID or not isinstance(anchor, Mapping):
+    if not is_scan_preview_project(entry) or not isinstance(anchor, Mapping):
         raise _error(
             "SCAN_PREVIEW_PROJECT_INVALID",
             "A scan preview can only be bound to the signed scan automation project",
@@ -107,8 +131,95 @@ def resolve_scan_preview(
 ) -> ScanPreviewResolution:
     """Resolve and fully validate one persisted, completed preview run."""
 
-    safe_run_id = normalize_preview_run_id(preview_run_id)
     checked_now = _aware_utc(now, "now")
+    persisted = _load_persisted_scan_preview(
+        uow,
+        preview_run_id=preview_run_id,
+        expectation=expectation,
+        now=checked_now,
+        for_update=for_update,
+    )
+    if checked_now >= persisted.expires_at:
+        raise _error("SCAN_PREVIEW_EXPIRED", "The scan preview is older than fifteen minutes")
+
+    bound_formal_arguments = _bind_formal_arguments(
+        persisted.preview_arguments,
+        formal_arguments,
+        target_date=str(persisted.evidence["target_date"]),
+    )
+    context: dict[str, Any] = {
+        "contract_version": SCAN_PREVIEW_CONTRACT_VERSION,
+        "plugin_id": SCAN_PLUGIN_ID,
+        "preview_run_id": persisted.run_id,
+        "preview_step_id": str(persisted.step.get("step_id") or "").strip(),
+        "preview_result_sha256": persisted.result_digest,
+        "project_instance_id": expectation.project_instance_id,
+        "generation": expectation.generation,
+        "contract_digest": expectation.contract_digest,
+        "configuration_version": expectation.configuration_version,
+        "target_date": persisted.evidence["target_date"],
+        "observed_at": _iso_utc(persisted.observed_at),
+        "expires_at": _iso_utc(persisted.expires_at),
+        "source_page_count": persisted.evidence["source_page_count"],
+        "normalized_record_count": persisted.evidence["normalized_record_count"],
+        "source_snapshot_sha256": persisted.evidence["source_snapshot_sha256"],
+        "source_evidence_count": len(persisted.evidence["source_evidence_refs"]),
+        "source_evidence_refs_sha256": canonical_sha256(
+            persisted.evidence["source_evidence_refs"]
+        ),
+        "selection_count": persisted.evidence["selection_count"],
+        "selection_sha256": persisted.evidence["selection_sha256"],
+        "batch_count": persisted.evidence["batch_count"],
+        "batch_plan_sha256": persisted.evidence["batch_plan_sha256"],
+        "formal_arguments_sha256": canonical_sha256(bound_formal_arguments),
+    }
+    context["context_sha256"] = canonical_sha256(context)
+    return ScanPreviewResolution(
+        context=context,
+        formal_arguments=bound_formal_arguments,
+    )
+
+
+def scan_preview_public_projection(
+    uow: Any,
+    *,
+    preview_run_id: str,
+    expectation: ScanPreviewExpectation,
+    now: datetime,
+) -> dict[str, Any]:
+    """Return the one bounded entrypoint-safe projection of a preview Run."""
+
+    checked_now = _aware_utc(now, "now")
+    persisted = _load_persisted_scan_preview(
+        uow,
+        preview_run_id=preview_run_id,
+        expectation=expectation,
+        now=checked_now,
+        for_update=False,
+    )
+    return {
+        "contract_version": SCAN_PREVIEW_CONTRACT_VERSION,
+        "preview_run_id": persisted.run_id,
+        "target_date": persisted.evidence["target_date"],
+        "observed_at": _iso_utc(persisted.observed_at),
+        "expires_at": _iso_utc(persisted.expires_at),
+        "source_page_count": persisted.evidence["source_page_count"],
+        "normalized_record_count": persisted.evidence["normalized_record_count"],
+        "selection_count": persisted.evidence["selection_count"],
+        "batch_count": persisted.evidence["batch_count"],
+        "can_confirm": checked_now < persisted.expires_at,
+    }
+
+
+def _load_persisted_scan_preview(
+    uow: Any,
+    *,
+    preview_run_id: str,
+    expectation: ScanPreviewExpectation,
+    now: datetime,
+    for_update: bool,
+) -> _PersistedScanPreview:
+    safe_run_id = normalize_preview_run_id(preview_run_id)
     run = uow.runs.get(safe_run_id, for_update=for_update)
     if run is None:
         raise _error("SCAN_PREVIEW_NOT_FOUND", "The scan preview run was not found")
@@ -153,45 +264,16 @@ def resolve_scan_preview(
 
     validated = _validate_preview_evidence(evidence, preview_arguments)
     observed_at = _parse_timestamp(validated["observed_at"], "observed_at")
-    if observed_at > checked_now:
+    if observed_at > now:
         raise _error("SCAN_PREVIEW_INVALID", "The scan preview observation time is in the future")
-    expires_at = observed_at + APPROVAL_TTL
-    if checked_now >= expires_at:
-        raise _error("SCAN_PREVIEW_EXPIRED", "The scan preview is older than fifteen minutes")
-
-    bound_formal_arguments = _bind_formal_arguments(
-        preview_arguments,
-        formal_arguments,
-        target_date=validated["target_date"],
-    )
-    context: dict[str, Any] = {
-        "contract_version": SCAN_PREVIEW_CONTRACT_VERSION,
-        "plugin_id": SCAN_PLUGIN_ID,
-        "preview_run_id": safe_run_id,
-        "preview_step_id": str(step.get("step_id") or "").strip(),
-        "preview_result_sha256": result_digest,
-        "project_instance_id": expectation.project_instance_id,
-        "generation": expectation.generation,
-        "contract_digest": expectation.contract_digest,
-        "configuration_version": expectation.configuration_version,
-        "target_date": validated["target_date"],
-        "observed_at": _iso_utc(observed_at),
-        "expires_at": _iso_utc(expires_at),
-        "source_page_count": validated["source_page_count"],
-        "normalized_record_count": validated["normalized_record_count"],
-        "source_snapshot_sha256": validated["source_snapshot_sha256"],
-        "source_evidence_count": len(validated["source_evidence_refs"]),
-        "source_evidence_refs_sha256": canonical_sha256(validated["source_evidence_refs"]),
-        "selection_count": validated["selection_count"],
-        "selection_sha256": validated["selection_sha256"],
-        "batch_count": validated["batch_count"],
-        "batch_plan_sha256": validated["batch_plan_sha256"],
-        "formal_arguments_sha256": canonical_sha256(bound_formal_arguments),
-    }
-    context["context_sha256"] = canonical_sha256(context)
-    return ScanPreviewResolution(
-        context=context,
-        formal_arguments=bound_formal_arguments,
+    return _PersistedScanPreview(
+        run_id=safe_run_id,
+        step=dict(step),
+        preview_arguments=dict(preview_arguments),
+        evidence=validated,
+        result_digest=result_digest,
+        observed_at=observed_at,
+        expires_at=observed_at + APPROVAL_TTL,
     )
 
 

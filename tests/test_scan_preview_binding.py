@@ -17,6 +17,7 @@ from agent.orchestration.scan_preview_binding import (
     require_scan_formal_governance,
     resolve_scan_preview,
     restore_scan_preview_replay,
+    scan_preview_public_projection,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -222,6 +223,37 @@ def test_completed_preview_binds_exact_evidence_without_copying_bill_list():
     )
     assert "items" not in resolved.context
     assert resolved.context["expires_at"] == "2026-08-24T04:13:00Z"
+
+
+def test_public_preview_projection_is_bounded_and_marks_expiry() -> None:
+    active = scan_preview_public_projection(
+        _Uow(_fixture()),
+        preview_run_id=RUN_ID,
+        expectation=_expectation(),
+        now=NOW,
+    )
+
+    assert active == {
+        "contract_version": 1,
+        "preview_run_id": RUN_ID,
+        "target_date": "2026-08-24",
+        "observed_at": "2026-08-24T03:58:00Z",
+        "expires_at": "2026-08-24T04:13:00Z",
+        "source_page_count": 1,
+        "normalized_record_count": 3,
+        "selection_count": 2,
+        "batch_count": 2,
+        "can_confirm": True,
+    }
+    assert not any("sha256" in field or field == "items" for field in active)
+
+    expired = scan_preview_public_projection(
+        _Uow(_fixture(observed_at=NOW - timedelta(minutes=16))),
+        preview_run_id=RUN_ID,
+        expectation=_expectation(),
+        now=NOW,
+    )
+    assert expired["can_confirm"] is False
 
 
 def test_preview_expiry_result_tampering_and_argument_drift_fail_closed():
@@ -596,7 +628,9 @@ def test_planner_rejects_caller_supplied_scan_payload_binding():
 
 def test_formal_path_remains_disabled_until_signed_external_governance_is_ready():
     entry = SimpleNamespace(
+        automation_id="scan_codes",
         plugin_id="sync_scan_codes",
+        trust_source="ed25519_first_party",
         project_full_auto_allowed=True,
         governance_anchor={
             "operation_type": "internal_projection_write",

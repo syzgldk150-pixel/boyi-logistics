@@ -592,6 +592,40 @@ def test_catalog_projects_exact_first_party_code_owned_fields(
     assert "recheck_items" not in projected["config_schema"]["properties"]
 
 
+def test_catalog_projects_exact_scan_preview_code_owned_fields(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = resolve_release_first_party_manifests(core_catalog)["sync_scan_codes"]
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="1" * 64,
+        manifest_sha256=manifest.manifest_sha256,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root="/srv/plugins/scan",
+    )
+    instance = PluginInstanceRecord(
+        automation_id="scan_codes",
+        display_name="scan",
+        plugin_id=manifest.plugin_id,
+        state=PluginProjectState.ENABLED,
+        active_version=version,
+    )
+    catalog = PluginCatalog(_CatalogRepository(instance))
+
+    assert project_contract_fragment(catalog.require(instance.automation_id))[
+        "code_owned_plan_fields"
+    ] == ["_scan_preview_binding", "dry_run"]
+    projected = catalog.safe_projection()["instances"][0]
+    assert projected["code_owned_config_fields"] == [
+        "_scan_preview_binding",
+        "dry_run",
+    ]
+    assert "_scan_preview_binding" not in projected["config_schema"]["properties"]
+    assert "dry_run" not in projected["config_schema"]["properties"]
+
+
 def test_broker_grant_is_bounded_and_request_replay_is_rejected(
     core_catalog: ToolRegistry,
     tmp_path: Path,

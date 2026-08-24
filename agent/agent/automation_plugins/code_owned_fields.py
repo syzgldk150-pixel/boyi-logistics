@@ -12,7 +12,10 @@ _CODE_OWNED_CONFIG_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
     (
         "scan_codes",
         "sync_scan_codes",
-    ): ("_scan_preview_binding",),
+    ): (
+        "_scan_preview_binding",
+        "dry_run",
+    ),
     (
         "customer_problems_shadow",
         "sync_customer_service_problems",
@@ -47,7 +50,10 @@ _CODE_OWNED_PLAN_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
     (
         "scan_codes",
         "sync_scan_codes",
-    ): ("_scan_preview_binding",),
+    ): (
+        "_scan_preview_binding",
+        "dry_run",
+    ),
     (
         "customer_problems_shadow",
         "sync_customer_service_problems",
