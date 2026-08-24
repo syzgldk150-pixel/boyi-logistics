@@ -2,11 +2,11 @@
 
 更新时间：2026-08-25
 
-状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 只读核验、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 本地测试、CI 和独立只读审查证据，以及 TASK-010C8 / TASK-010C9 本地测试和独立只读审查证据
+状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 本地测试、CI 和独立只读审查证据，以及 TASK-010C8 / TASK-010C9 本地测试和独立只读审查证据
 
-基线：`main` at `996ca43`
+基线：`main` at `ce3471f`
 
-重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-010C9 均未连接 ECS、未查询生产数据库、未执行生产扫描，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
+重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-010C11 均未连接 ECS、未查询生产数据库、未执行生产扫描，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
 
 ## 当前阶段
 
@@ -14,7 +14,7 @@
 |---|---|---|
 | Phase 0：理解系统 | 已完成 | TASK-000 已完成本地源码、迁移、文档和测试资产审计 |
 | Phase 1：建立治理 | 已完成 | TASK-001 三份治理文档已经 PR #85 合并；TASK-001A 状态账本纠偏已经 PR #87 合并 |
-| Phase 2：保护现有自动化 | 进行中 | TASK-010A、TASK-010B、TASK-010C1、TASK-010C2、TASK-010C3、TASK-010C4、TASK-010C5、TASK-010C6、TASK-010C7、TASK-010C8、TASK-010C9 已完成；TASK-011 至 TASK-013 尚未实施 |
+| Phase 2：保护现有自动化 | 进行中 | TASK-010A、TASK-010B、TASK-010C1 至 TASK-010C11 已完成；扫描治理实现和 TASK-011 至 TASK-013 尚未实施 |
 | Phase 3：轻量插件管理 | 主要能力已存在，未验收 | 当前仓库已有插件生命周期；后续只做差距验收 |
 | Phase 4：自动化中心 | 主要能力已存在，未验收 | Catalog 驱动列表、项目配置和飞书路由已经存在 |
 | Phase 5：模块注册 | 未开始 | 通用菜单、权限和模块状态注册尚未建立 |
@@ -154,7 +154,9 @@
 - 已实现 Console 入口：TASK-010C7 仅对精确首方 `scan_codes` 项目提供“生成预览 → 显示有限公共摘要 → 使用新请求身份明确确认”的内联两步交互；正式完成不会再次投影成新预览，过期、失效、冲突和正式关闭均显式阻断
 - 已实现飞书入口：TASK-010C8 让精确 `builtin.scan_codes` 文本和菜单入口只生成公共预览；原发起人必须在十五分钟内发送新的“确认扫描”事件，确认态不落盘且服务重启不恢复，结果未知只允许原事件精确重放，已消费或治理关闭保持终态阻断
 - 已实现 Webhook 入口：TASK-010C9 让精确 `webhook/phase7/scan` 从已验签请求中提取并删除保留 `preview_run_id`，只以新的 `source_event_id` 请求正式执行；其他路由、冲突值、非规范 UUID 和字段走私均显式拒绝
-- 当前限制：扫描插件仍维持 `internal_projection_write`、medium，正式路径继续由签名治理关闭条件阻断；治理升级尚未实施，因此没有开放第三方写入
+- 已完成治理审计：TASK-010C10 确认不能只翻转 `external_write`、high、`super_admin` 和 full-auto 四项治理字段；当前顶层 `executor_reported_success` 不能替代融辉服务端扫描账本证明，预览和正式执行也不能继续共享同一套有效风险与审批语义
+- 已冻结治理合同：TASK-010C11 将预览定义为代码专属只读阶段，将正式执行定义为绑定预览后的外部写阶段，并冻结两阶段审批、写后证明、零候选和治理开门条件
+- 当前限制：扫描插件仍维持 `internal_projection_write`、medium，正式路径继续由签名治理关闭条件阻断；TASK-010C11 只冻结合同，没有开放第三方写入
 - 生产状态：未核验
 
 #### TASK-010C5 扫描入口适配合同
@@ -241,6 +243,80 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 - 后续先在控制平面建立代码专属预览注入与公共预览投影，再逐个适配 Console、飞书和 Webhook；三类入口不得在一个 TASK 中同时改造。
 - 三个入口全部通过验收后，才能单独审查 `external_write`、high、`super_admin` 与项目全自动许可的签名治理升级。
 - 治理升级完成仍不等于生产启用；ECS 发布、服务重启和生产插件切换继续单独确认。
+
+#### TASK-010C11 扫描分阶段治理与正式写后证明合同
+
+##### 适用身份与阶段判定
+
+本合同只适用于 `automation_id=scan_codes`、`plugin_id=sync_scan_codes`、`trust_source=ed25519_first_party` 的精确签名项目，不能按工具名称后缀、入口文本或调用方字段扩大到其他项目。
+
+| 阶段 | 唯一判定 | 非法组合 |
+|---|---|---|
+| `PREVIEW` | 控制平面注入 `dry_run=true`，不存在 `_scan_preview_binding`，执行上下文不存在正式预览绑定 | 调用方提交 `dry_run`、绑定字段或预览上下文；`dry_run=true` 同时带正式绑定 |
+| `FORMAL` | `dry_run=false`，控制平面已从一个有效且未消费的预览 Run 注入 `_scan_preview_binding`，执行上下文携带同一份已校验 compact 预览上下文 | 缺少绑定、绑定与上下文不一致、调用方构造绑定、未知或非布尔 `dry_run` |
+
+- 阶段必须由一个共享的代码专属解析函数确定，Planner、PlanValidator、PolicyEngine、项目策略和 ResultVerifier 不得各自复制判定规则。
+- 无法唯一判断时必须以 `SCAN_PREVIEW_CONTEXT_INVALID` 或既有更精确错误失败，不能默认为预览或正式执行。
+- LLM 仍不得选择或构造任一阶段；三类入口只提交服务端合同允许的请求身份和 `preview_run_id`。
+
+##### 有效治理合同
+
+签名 capability 表示正式执行的最高权限边界，最终必须是：
+
+- `operation_type=external_write`
+- `risk_level=high`
+- `approval.mode=required`
+- `approval.required_role=super_admin`
+- `permissions.required_roles` 包含 `super_admin`
+- `project_full_auto_allowed=true`
+- 正式 postcondition 精确为 `scan_formal_execution_verified`
+
+在该签名上限内，两阶段采用以下有效治理：
+
+| 阶段 | 有效 operation/risk | 逐次审批 | 权限语义 |
+|---|---|---|---|
+| `PREVIEW` | `read` / `low` | 不创建正式写审批；项目处于 `REQUIRE_EACH_RUN` 也可先生成预览 | 仍须通过已签名入口、项目合同、当前代际/配置和既有入口身份校验；仅生成预览不要求 `super_admin` |
+| `FORMAL` + `REQUIRE_EACH_RUN` | `external_write` / `high` | 必须由 `super_admin` 作出单次审批决定 | 明确确认只表示提交正式请求，不能替代治理审批 |
+| `FORMAL` + `PROJECT_FULL_AUTO` | `external_write` / `high` | 不再逐次审批 | 当前策略必须由 `super_admin` 明确保存，且策略记录的项目代际和配置版本与本次签名合同完全一致；每次仍校验入口、预览和写后证明 |
+
+项目禁用、合同失效、代际或配置不一致时，两阶段都必须拒绝。`PROJECT_FULL_AUTO` 是正式执行授权，不是普通默认值；代码合并、插件安装或预览确认均不得隐式切换项目策略。由 bootstrap、迁移或其他 `actor_role=system` 建立的 `PROJECT_FULL_AUTO` 对扫描正式阶段只能按 `REQUIRE_EACH_RUN` 生效；插件代际升级后，旧代际上的 super-admin 策略也不能自动授权新合同，必须由 super-admin 在新代际和当前配置上重新明确保存。
+
+##### 两阶段 postcondition
+
+`PREVIEW` 的有效 Step postcondition 为 `authoritative_scan_preview_returned`：
+
+- 证明必须绑定本次权威扫描分页的 evidence 引用和同一 `observed_at`。
+- 结果必须包含 C2 已冻结的完整分页、来源快照、选择和批次计数/摘要，并明确 `write_attempted=false`。
+- 预览执行不得出现 `projection.invoke/scan.snapshot.replace`、`ronghui.scan_next.submit` 或 `ronghui.scan_next.verify`。
+
+`FORMAL` 的签名 postcondition 为 `scan_formal_execution_verified`：
+
+- 正式结果必须记录 `phase=formal`、预览重读已匹配、投影提交 evidence、批次数、计划提交数、已扫描数、已签跳过数和全部批次验证 evidence 引用。
+- 当 `batch_count>0` 时，每个批次必须先取得 `ronghui.scan_next.submit` 回执，再取得对应 `ronghui.scan_next.verify` 的 `server_ledger_verified`；验证引用数量必须与批次数相等，且 `scheduled_items = scanned + skipped_signed_count`。
+- postcondition 的主 evidence 引用必须是最后一个批次验证引用；其 details 中列出的投影和全部批次验证引用都必须存在于同一结果的 `evidence_refs`。
+- 当 `batch_count=0` 时，不得调用 submit/verify，也不得伪称服务端账本已验证；postcondition 改由已读回确认的投影 evidence 支撑，并明确 `external_write_attempted=false`、验证引用为空。
+- 任一提交结果未知、验证缺失、引用数量不符、计数不守恒、证据不属于本次结果或观测时间不一致，ResultVerifier 必须返回 `POSTCONDITION_UNVERIFIED` 或更严格的 `WRITE_OUTCOME_UNKNOWN`，不得标记 Run 完成。
+
+##### 正式治理开门条件
+
+`require_scan_formal_governance()` 必须同时验证以下全部条件，任一不符继续返回 `SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED`：
+
+1. 精确首方签名项目身份。
+2. 静态治理为 `external_write`、high、`approval.mode=required`、`required_role=super_admin`。
+3. 权限角色包含 `super_admin`，manifest 与项目条目都允许 project full-auto。
+4. 静态正式 postcondition 精确等于单项 `scan_formal_execution_verified`。
+5. 当前包版本、manifest 和项目代际由既有签名与 digest 机制一致绑定；不能接受旧包配新 registry。
+
+该治理门只允许控制平面创建 `FORMAL` Command，不改变生产插件状态，也不代表 ECS 已安装新代际。
+
+##### 实施拆分与验收顺序
+
+1. `TASK-010C12` 实现共享阶段解析、预览有效 Plan/Policy、扫描 full-auto 授权来源校验和执行边界。PREVIEW 的执行 capability 只能调用 `browser.invoke/ronghui.scan.read_page`，不得取得写 generation lease；Broker 必须在分发前拒绝 `scan.snapshot.replace`、`ronghui.scan_next.submit`、`ronghui.scan_next.verify` 及其他写 effect，并由核心执行记录生成 `write_attempted=false` 的不可伪造证据。registry、签名 payload、包版本、digest 和正式治理门保持原值，因此正式外部写继续关闭。
+2. `TASK-010C13` 在一个原子变更中把核心预览无写证据纳入 `authoritative_scan_preview_returned`，实现正式 `scan_formal_execution_verified` 与 ResultVerifier 精确校验、治理门收紧，并同步 registry、签名 payload、`sync_scan_codes` 下一包版本、迁移矩阵和 `digests.json`。
+3. C13 必须覆盖 Console、飞书、Webhook 的预览免正式审批，`REQUIRE_EACH_RUN` 正式审批，显式 `PROJECT_FULL_AUTO` 正式免逐次审批，以及缺失/篡改/零候选证明分支。
+4. 本地和 CI 验收只证明仓库合同可发布；插件安装、generation reconcile、项目权限切换、ECS 发布、服务重启和任何真实扫描仍分别需要生产授权。
+
+本合同不新增第二个扫描插件、不拆分项目实例、不新增数据库字段、不改变三类入口协议，也不为其他 dry-run 工具建立通用动态权限框架。
 
 ### TASK-011 候选：统计
 
@@ -348,15 +424,17 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 | TASK-010C7 Console 扫描两步入口适配 | 已完成 | 精确首方扫描在 Console 中先生成并展示有限公共预览，再以新浏览器请求身份明确确认；本地相关回归 117 项和 67 个子测试通过，桌面与手机端静态视觉验收及独立只读审查通过 | 无 |
 | TASK-010C8 飞书扫描两步入口适配 | 已完成 | 精确扫描文本和菜单先返回闭合公共预览，并以不落盘 pending 约束原发起人的明确确认/取消；相关回归 163 项和 27 个子测试、三项仓库守卫及独立只读审查通过 | 无 |
 | TASK-010C9 Webhook 扫描两步入口适配 | 已完成 | 精确验签扫描 Webhook 先返回公共预览，再以新的事件身份和专用预览参数明确确认；保留字段不进入动态参数，非扫描路由和非规范表示 fail closed；相关回归 66 项和 22 个子测试、三项仓库守卫及独立只读审查通过 | 无 |
+| TASK-010C10 扫描正式治理升级审计 | 已完成 | 只读确认直接翻转四项治理字段会在阶段审批与顶层写后证明未闭合时提前开门；Sol Advisor 独立终审结论为 fix-first | 无 |
+| TASK-010C11 扫描分阶段治理与正式写后证明合同冻结 | 已完成 | 冻结 PREVIEW/FORMAL 唯一判定、有效审批与权限、两阶段 postcondition、零候选语义、治理开门条件和两步实现顺序 | 无 |
 | TASK-011 统计稳定性检查 | 未授权 | — | — |
 | TASK-012 分批稳定性检查 | 未授权 | — | — |
 | TASK-013 自提问题件稳定性检查 | 未授权 | — | — |
 
 ## 下一步
 
-TASK-010C9 已完成 Webhook 两步入口适配、本地回归和独立只读审查；没有修改 Console、飞书、数据库或生产环境。正式外部写继续保持关闭。
+TASK-010C10 已完成治理升级审计，TASK-010C11 已冻结分阶段治理和正式写后证明合同；没有修改 Agent、Console、registry、签名包、数据库或生产环境。正式外部写继续保持关闭。
 
-下一 TASK 建议为 `TASK-010C10 扫描正式治理升级审计`。先只读核验签名清单、首方包、项目全自动许可、审批角色与真实外部写影响是否已经满足 `external_write`、high、`super_admin` 升级条件；审计结论单独验收后才能授权代码修改。禁止在审计 TASK 中修改数据库、ECS、生产插件状态、operation type、risk level、权限或签名治理。
+下一 TASK 为 `TASK-010C12 扫描分阶段计划、审批与执行边界支持`。实现精确首方扫描的共享阶段解析，PREVIEW 的 `read/low` 与免正式写审批，扫描 full-auto 的 super-admin/代际/配置来源校验，以及预览 Broker 写操作分发前拒绝和核心无写证据；禁止在 C12 修改 registry、签名 payload、包版本、digest、正式治理门、数据库或生产状态。
 
 ## 状态更新规则
 
