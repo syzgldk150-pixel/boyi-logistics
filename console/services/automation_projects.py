@@ -1245,6 +1245,31 @@ def normalize_automation_plugin_catalog(
                     "项目配置尚未闭合；请展开项目设置检查必填字段、账号和资源"
                 )
         missing_requirements = list(dict.fromkeys(missing_requirements))[:20]
+        lifecycle_actions_allowed = (
+            project_state in AUTOMATION_PLUGIN_STABLE_STATES
+            and reconcile_state == "STABLE"
+        )
+        disable_allowed = bool(enabled) and project_state not in {
+            "UPGRADING",
+            "UNINSTALLING",
+            "UNKNOWN",
+        }
+        blocked = (
+            not configured
+            or bool(missing_requirements)
+            or state not in AUTOMATION_PLUGIN_STABLE_STATES
+            or (platform == "windows" and device is None)
+            or not entrypoints_valid
+            or not scheduling_valid
+            or not schedule_valid
+            or not roles_valid
+            or not config_schema_supported
+            or not code_owned_config_fields_valid
+            or not account_bindings_valid
+            or not resource_bindings_valid
+            or not resource_bindings_ready
+            or not enabled_entrypoints_valid
+        )
         seen_instances.add(automation_id)
         instances.append(
             {
@@ -1262,10 +1287,12 @@ def normalize_automation_plugin_catalog(
                 "status_label": AUTOMATION_PLUGIN_STATE_LABELS[state],
                 "project_state": project_state,
                 "reconcile_state": reconcile_state,
-                "lifecycle_actions_allowed": (
-                    project_state in AUTOMATION_PLUGIN_STABLE_STATES
-                    and reconcile_state == "STABLE"
+                "lifecycle_actions_allowed": lifecycle_actions_allowed,
+                "menu_actions_allowed": lifecycle_actions_allowed or disable_allowed,
+                "enable_allowed": (
+                    not enabled and lifecycle_actions_allowed and not blocked
                 ),
+                "disable_allowed": disable_allowed,
                 "record_version": record_version,
                 "project_configuration_version": project_configuration_version,
                 "execution_platform": platform,
@@ -1300,22 +1327,7 @@ def normalize_automation_plugin_catalog(
                 "enabled_entrypoints": enabled_entrypoints,
                 "device": device,
                 "missing_requirements": missing_requirements,
-                "blocked": (
-                    not configured
-                    or bool(missing_requirements)
-                    or state not in AUTOMATION_PLUGIN_STABLE_STATES
-                    or (platform == "windows" and device is None)
-                    or not entrypoints_valid
-                    or not scheduling_valid
-                    or not schedule_valid
-                    or not roles_valid
-                    or not config_schema_supported
-                    or not code_owned_config_fields_valid
-                    or not account_bindings_valid
-                    or not resource_bindings_valid
-                    or not resource_bindings_ready
-                    or not enabled_entrypoints_valid
-                ),
+                "blocked": blocked,
             }
         )
 
