@@ -276,26 +276,28 @@ def _clock_in(account_id: str | None, arguments: Mapping[str, Any]) -> dict[str,
     }
 
 
-def _split_pending_problem(
-    account_id: str | None,
+def _exact_selected_waybills(
     arguments: Mapping[str, Any],
-) -> dict[str, Any]:
+    *,
+    tool_label: str,
+    maximum: int,
+) -> tuple[list[str], str]:
     if arguments.get("dry_run") is not False:
         raise _preview_required(
-            "split pending problem upload",
+            tool_label,
             "formal execution must explicitly set dry_run=false",
         )
     raw_codes = arguments.get("selected_bill_codes")
-    if not isinstance(raw_codes, list) or not raw_codes or len(raw_codes) > 90:
+    if not isinstance(raw_codes, list) or not raw_codes or len(raw_codes) > maximum:
         raise _preview_required(
-            "split pending problem upload",
-            "one to 90 exact selected waybills are required",
+            tool_label,
+            f"one to {maximum} exact selected waybills are required",
         )
     selected: list[str] = []
     for raw in raw_codes:
         if not isinstance(raw, str):
             raise _preview_required(
-                "split pending problem upload",
+                tool_label,
                 "selected waybills must be strings",
             )
         code = raw.strip()
@@ -316,21 +318,37 @@ def _split_pending_problem(
             or would_normalize
         ):
             raise _preview_required(
-                "split pending problem upload",
+                tool_label,
                 "selected waybills must be canonical exact identifiers",
             )
         selected.append(code)
     if len(selected) != len(set(selected)):
         raise _preview_required(
-            "split pending problem upload",
+            tool_label,
             "selected waybills must be unique",
         )
     preview_fingerprint = str(arguments.get("preview_fingerprint") or "").strip()
     if re.fullmatch(r"[0-9a-f]{64}", preview_fingerprint) is None:
         raise _preview_required(
-            "split pending problem upload",
+            tool_label,
             "a signed preview fingerprint is required",
         )
+    return selected, preview_fingerprint
+
+
+def _selected_problem_impact(
+    account_id: str | None,
+    arguments: Mapping[str, Any],
+    *,
+    tool_label: str,
+    maximum: int,
+    action: str,
+) -> dict[str, Any]:
+    selected, preview_fingerprint = _exact_selected_waybills(
+        arguments,
+        tool_label=tool_label,
+        maximum=maximum,
+    )
     selector = {
         "account_id": str(account_id or "").strip(),
         "preview_fingerprint": preview_fingerprint,
@@ -342,7 +360,7 @@ def _split_pending_problem(
                 entity_type="waybill",
                 entity_id=code,
                 source_system="ronghui",
-                action="register_split_or_undelivered_problem",
+                action=action,
                 metadata={
                     "preview_fingerprint": preview_fingerprint,
                     "selection_index": index,
@@ -357,11 +375,38 @@ def _split_pending_problem(
     }
 
 
+def _split_pending_problem(
+    account_id: str | None,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _selected_problem_impact(
+        account_id,
+        arguments,
+        tool_label="split pending problem upload",
+        maximum=90,
+        action="register_split_or_undelivered_problem",
+    )
+
+
+def _self_pickup_problem(
+    account_id: str | None,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _selected_problem_impact(
+        account_id,
+        arguments,
+        tool_label="self-pickup problem upload",
+        maximum=250,
+        action="register_arrived_self_pickup_problem",
+    )
+
+
 _EXACT_BUILDERS: dict[str, ImpactBuilder] = {
     "receipts_audit": _receipt_audit,
     "clock_in_dual": _clock_in,
     "customer_service_problem_mark_read": _mark_read,
     "customer_service_problem_reply": _reply,
     "customer_service_problem_publish": _publish,
+    "automation.self_pickup_problem_upload.run": _self_pickup_problem,
     "automation.split_pending_problem_upload.run": _split_pending_problem,
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import mimetypes
 import os
@@ -479,6 +480,50 @@ def _candidate_preview(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for item in records
     ]
+
+
+def _canonical_preview_count(value: Any, label: str) -> str:
+    number = _parse_count(value)
+    if number is None or not number.is_finite() or number < 0:
+        raise RuntimeError(f"{label} is not a complete numeric count")
+    return (
+        str(number.quantize(Decimal("1")))
+        if number == number.to_integral_value()
+        else format(number.normalize(), "f")
+    )
+
+
+def _preview_fingerprint(records: list[dict[str, Any]]) -> str:
+    material = [
+        {
+            "arrival_count": _canonical_preview_count(
+                item.get("arrival_count"),
+                f"{item.get('bill_code')} arrival count",
+            ),
+            "bill_code": _clean_text(item.get("bill_code")),
+            "delivery_method": _clean_text(item.get("delivery_method")),
+            "destination_site": _clean_text(item.get("destination_site")),
+            "goods_count": _canonical_preview_count(
+                item.get("goods_count"),
+                f"{item.get('bill_code')} goods count",
+            ),
+            "problem_cause_sha256": hashlib.sha256(
+                _clean_text(item.get("problem_cause")).encode("utf-8")
+            ).hexdigest(),
+            "problem_owner_type": _clean_text(item.get("problem_owner_type")),
+            "problem_type": _clean_text(item.get("problem_type")),
+            "source_id": _clean_text(item.get("source_id")),
+        }
+        for item in records
+    ]
+    encoded = json.dumps(
+        material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _records_by_source(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -996,6 +1041,7 @@ def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
             "message": f"演练：候选 {len(records)} 单，未上传问题件",
             "candidate_count": len(records),
             "candidates": preview,
+            "preview_fingerprint": _preview_fingerprint(records),
             "source_summaries": summaries,
             "source": source,
             "account_id": account_id,

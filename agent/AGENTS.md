@@ -200,6 +200,7 @@ docs/
 - MySQL 表 `split_pending_problem_items` 分别保存 `complaint_status` 与问题件 `upload_status`；同类型刷新保留历史步骤结果，完整成功单隐藏，失败或未完成步骤继续显示，类型变化才重置。
 - 正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 必须由飞书 pending 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
 - 业务顺序为 `0 < 已到 < 应到` 先差错、再问题件，`已到=0` 只登记“有发未到”问题件。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单独立读回投诉与问题件，并验证 Sheet、MySQL 快照/结果和每日应签事件，不能用提交返回的 `saved/success` 代替 Evidence。
+- 自提问题件只允许飞书固定命令预览后确认全部候选，确认参数必须恢复一至二百五十个规范、唯一、有序运单号及 64 位预览指纹，并调用 `automation.self_pickup_problem_upload.run`；Scheduler、Console、LLM 和旧 `self_pickup_problem_upload` 直达工具均不能正式上传。签名动作在首个写入前重读完整来源、复核指纹并预检全部目标，随后逐单写入且分别从问题件列表独立读回。
 
 ## 每日应签共享台账
 

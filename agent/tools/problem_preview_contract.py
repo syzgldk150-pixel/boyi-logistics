@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -18,6 +19,7 @@ def run_read_only_preview(
     tool_name: str,
     runner: PreviewRunner,
     account_fields: tuple[str, ...] = ("account_id",),
+    require_preview_fingerprint: bool = False,
 ) -> dict[str, Any]:
     """Force the legacy implementation into dry-run and emit the governed result contract."""
 
@@ -31,6 +33,7 @@ def run_read_only_preview(
             code="INVALID_ARGUMENTS",
             message="Only the explicit project account bindings are accepted by this preview tool.",
         )
+
     account_bindings: dict[str, str] = {}
     for field_name in account_fields:
         account_id = str(arguments.get(field_name) or "").strip()
@@ -80,6 +83,40 @@ def run_read_only_preview(
             code="INVALID_PREVIEW_CONTRACT",
             message="The preview lacks an exact candidate count, source proof, or account binding.",
         )
+
+    if require_preview_fingerprint:
+        fingerprint = raw.get("preview_fingerprint")
+        if not isinstance(fingerprint, str) or re.fullmatch(
+            r"[0-9a-f]{64}", fingerprint
+        ) is None:
+            return _failed(
+                account_id=account_id,
+                code="INVALID_PREVIEW_CONTRACT",
+                message="The preview lacks a canonical fingerprint.",
+            )
+        seen_codes: set[str] = set()
+        for item in candidates:
+            bill_code = item.get("bill_code")
+            if (
+                not isinstance(bill_code, str)
+                or bill_code != bill_code.strip()
+                or not bill_code
+                or len(bill_code) > 128
+                or any(character.isspace() for character in bill_code)
+                or bill_code.startswith("=")
+                or (
+                    len(bill_code) >= 2
+                    and bill_code[0] == bill_code[-1]
+                    and bill_code[0] in {"'", '"'}
+                )
+                or bill_code in seen_codes
+            ):
+                return _failed(
+                    account_id=account_id,
+                    code="INVALID_PREVIEW_CONTRACT",
+                    message="The preview contains an ambiguous candidate identity.",
+                )
+            seen_codes.add(bill_code)
 
     data = dict(raw)
     digest = hashlib.sha256(

@@ -173,6 +173,7 @@ docs/
 - 只有原发起人在有效 pending 内完成明确选择与确认后，飞书固定命令才可调用签名项目 `automation.split_pending_problem_upload.run`；Scheduler、Console、LLM 和旧同名工具均不能执行正式上传。
 - `selected_bill_codes` 和 `preview_fingerprint` 必须由飞书 pending 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
 - 业务顺序为少货/分批先差错、再问题件，有发未到只登记问题件。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单独立读回投诉与问题件，并验证 Sheet、MySQL 快照/结果和每日应签事件，不能用提交返回的 `saved/success` 代替 Evidence。
+- 自提问题件只允许飞书固定命令预览后确认全部候选，确认参数必须恢复一至二百五十个规范、唯一、有序运单号及 64 位预览指纹，并调用 `automation.self_pickup_problem_upload.run`；Scheduler、Console、LLM 和旧 `self_pickup_problem_upload` 直达工具均不能正式上传。签名动作在首个写入前重读完整来源、复核指纹并预检全部目标，随后逐单写入且分别从问题件列表独立读回。
 - 到货统计成功后仍直接用本次 A:S 统计结果刷新“分批及有发未到表”和 MySQL 未齐快照；全部到齐时清空旧行，人工确认也不得绕过控制平面门禁产生融辉业务写。
 - 到货统计的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1。
 - 投诉页面能力位于不可独立调度的 `agent/tms_runtime/scripts/ronghui_split_complaint.py`；旧独立工具与运行时 target 已删除。

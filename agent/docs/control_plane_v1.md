@@ -172,16 +172,20 @@ Run 租约，避免审批回退与 executor 启动交叉。已有 `RUNNING/VERIF
 - `automation.split_pending_problem_upload.run`：只接受飞书固定命令从同一次预览恢复的一至九十个规范、
   唯一、有序运单号及 64 位预览指纹；计划哈希绑定该精确选择，正式动作在任何写入前重读来源与快照、
   复核指纹并完成全部目标预检，写入后分别读回投诉、问题件、Sheet、快照、结果与每日应签事件。
+- `automation.self_pickup_problem_upload.run`：只接受飞书固定命令从同一次预览恢复的一至二百五十个规范、
+  唯一、有序运单号及 64 位预览指纹；计划哈希绑定该精确集合，正式动作在任何写入前重读完整来源、
+  复核指纹并完成全部目标的问题件预检，随后逐单写入并从独立问题件列表读回验证。
 
 `preview_self_pickup_problems` 与 `preview_split_pending_problems` 是独立的低风险只读能力：只接受显式
 `account_id`，封装器强制旧实现以 `dry_run=true` 运行，并把候选、来源、观测时间、完整性和 Evidence
-纳入统一结果契约。飞书仍用既有格式展示候选并保存 pending 选择，但确认动作提交的仍是原
-`external_write` 工具。
+纳入统一结果契约。两类飞书固定命令保存短期 pending，并在确认时把同一次预览的明确候选集合和指纹
+提交到对应签名项目；Scheduler、Console 和 LLM 均不提供这两类正式执行入口。
 
 以下正式写能力虽已注册、入口也只能经 Gateway，但因为候选预览尚未同时形成可批准的精确影响范围和
 权威写后读回证明，固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不能进入第三方写执行：
 
-- `self_pickup_problem_upload`：只读候选已可预览，但尚无受管来源版本、精确候选指纹及目标问题件读回；
+- `self_pickup_problem_upload`：旧直达工具仍固定阻断；只能使用上述
+  `automation.self_pickup_problem_upload.run` 精确项目入口；
 - `r7_arrival_checkin`、`r7_departure_checkin`：尚无真实任务 ID 集合与远端版本预览；
 - `customer_service_problem_upload_attachment`：尚未同时绑定文件内容哈希和外部目标。
 

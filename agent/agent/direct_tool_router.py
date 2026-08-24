@@ -1428,7 +1428,35 @@ def format_self_pickup_problem_upload_reply(result: dict[str, Any]) -> str:
             if candidate_count > preview_count:
                 lines.append(f"... 其余 {candidate_count - preview_count} 单已省略")
         lines.append("")
-        lines.append('确认上传请回复"确认"，放弃请回复"取消"。10 分钟内有效。')
+        fingerprint = payload.get("preview_fingerprint")
+        candidate_codes = [
+            item.get("bill_code")
+            for item in candidates
+            if isinstance(item, dict)
+        ]
+        preview_can_confirm = (
+            0 < candidate_count <= 250
+            and candidate_count == len(candidates)
+            and all(
+                isinstance(code, str)
+                and code == code.strip()
+                and code
+                and len(code) <= 128
+                and not any(character.isspace() for character in code)
+                for code in candidate_codes
+            )
+            and len(candidate_codes) == len(set(candidate_codes))
+            and isinstance(fingerprint, str)
+            and re.fullmatch(r"[0-9a-f]{64}", fingerprint) is not None
+        )
+        if candidate_count == 0:
+            lines.append("当前没有可上传运单，本次不生成确认操作。")
+        elif candidate_count > 250:
+            lines.append("候选超过单次签名上限，本次不生成确认操作。")
+        elif not preview_can_confirm:
+            lines.append("预览证据不完整，本次不生成确认操作；请重新发起预览。")
+        else:
+            lines.append('确认上传全部候选请回复"确认"，放弃请回复"取消"。10 分钟内有效。')
         return "\n".join(lines)
 
     if stage == "no_candidates" or candidate_count == 0:

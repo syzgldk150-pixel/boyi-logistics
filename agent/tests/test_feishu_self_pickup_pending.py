@@ -7,7 +7,7 @@ from feishu import message_handler
 
 
 class FeishuSelfPickupPendingTests(unittest.TestCase):
-    def test_self_pickup_zero_candidate_preview_still_allows_cancel(self):
+    def test_self_pickup_zero_candidate_preview_does_not_offer_confirmation(self):
         replies: list[str] = []
         pending_store: dict[str, dict[str, Any]] = {}
         calls: list[tuple[str, dict[str, Any]]] = []
@@ -20,6 +20,8 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                     "data": {
                         "stage": "dry_run",
                         "candidate_count": 0,
+                        "candidates": [],
+                        "preview_fingerprint": "a" * 64,
                         "table_token": "tbl_test",
                         "sheet_name": "每日到货表",
                         "upload_images": False,
@@ -80,23 +82,13 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                 ],
                 calls,
             )
-            self.assertEqual("confirm_action", pending_store["chat-1"]["type"])
-            self.assertEqual(
-                {"dry_run": False},
-                pending_store["chat-1"]["dynamic_inputs"],
-            )
-            self.assertEqual(
-                "builtin.self_pickup_problem_upload",
-                pending_store["chat-1"]["automation_route_key"],
-            )
-            self.assertFalse(message_handler._contains_account_override(pending_store["chat-1"]))
+            self.assertNotIn("chat-1", pending_store)
             self.assertIn("待上传自提到货问题件候选 0 单", replies[-1])
-            self.assertIn('确认上传请回复"确认"', replies[-1])
-
-            asyncio.run(message_handler._process_and_reply("取消", "user-1", "chat-1"))
+            self.assertIn("当前没有可上传运单", replies[-1])
+            self.assertNotIn('回复"确认"', replies[-1])
 
         self.assertNotIn("chat-1", pending_store)
-        self.assertIn("已取消：自提到货问题件", replies[-1])
+        self.assertNotIn("已取消：自提到货问题件", replies[-1])
 
 
     def test_deprecated_split_commands_are_blocked_before_agent(self):
