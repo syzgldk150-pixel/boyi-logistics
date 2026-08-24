@@ -193,13 +193,13 @@ docs/
 ## 分批差错及问题件
 
 - 飞书文本仅精确指令“分批”触发低风险只读工具 `preview_split_pending_problems`；自提问题件预览使用 `preview_self_pickup_problems`。两条封装器只接受显式 `account_id` 并强制旧实现 `dry_run=true`，任何写入参数都会被拒绝；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
-- 交互仍可生成 dry-run 编号列表和选择快照，但正式第三方写当前固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`：在按每个运单从目标系统读回问题件/差错记录并形成权威写后 Evidence 之前，不得因用户确认而执行。
+- 交互先生成 dry-run 编号列表和选择快照；只有原发起人在有效 pending 内完成明确选择与确认后，飞书固定命令才可调用签名项目 `automation.split_pending_problem_upload.run`。Scheduler、Console、LLM 和旧同名工具均不能执行正式上传。
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
 - `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉差错或问题件上报。
 - `sync_arrival_stats` 的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1，历史回填必须使用独立扫描同步工具。
 - MySQL 表 `split_pending_problem_items` 分别保存 `complaint_status` 与问题件 `upload_status`；同类型刷新保留历史步骤结果，完整成功单隐藏，失败或未完成步骤继续显示，类型变化才重置。
-- 历史正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 仅保留为离线/测试契约，不构成控制平面可执行条件；不得以工具返回的 `saved/success` 代替第三方读后验证。
-- 历史业务顺序为 `0 < 已到 < 应到` 先差错、再问题件，`已到=0` 只登记“有发未到”问题件；该写链在新的权威读后验证器落地前保持停用。
+- 正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 必须由飞书 pending 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
+- 业务顺序为 `0 < 已到 < 应到` 先差错、再问题件，`已到=0` 只登记“有发未到”问题件。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单独立读回投诉与问题件，并验证 Sheet、MySQL 快照/结果和每日应签事件，不能用提交返回的 `saved/success` 代替 Evidence。
 
 ## 每日应签共享台账
 
