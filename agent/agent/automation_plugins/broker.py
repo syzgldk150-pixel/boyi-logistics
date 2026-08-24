@@ -11,6 +11,7 @@ import re
 import secrets
 import threading
 import uuid
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +34,10 @@ _OPERATIONS = frozenset(
     }
 )
 _SENSITIVE_KEYS = ("password", "cookie", "credential", "secret", "token", "session")
-_MAX_BROKER_REQUEST_BYTES = 10 * 1024 * 1024
+_BROKER_FRAME_PREFIX = b"BOYI-BROKER-V2 "
+_MAX_BROKER_LEGACY_REQUEST_BYTES = 10 * 1024 * 1024
+_MAX_BROKER_COMPRESSED_REQUEST_BYTES = 16 * 1024 * 1024
+_MAX_BROKER_REQUEST_BYTES = 64 * 1024 * 1024
 _RECOVERABLE_WRITE_ACTIONS = frozenset(
     {
         ("arrive_list", "projection.invoke", "waybill.snapshot.replace"),
@@ -704,7 +708,7 @@ class LocalCoreAutomationBroker:
         self._server = await asyncio.start_unix_server(
             self._handle,
             path=str(path),
-            limit=_MAX_BROKER_REQUEST_BYTES + 1,
+            limit=_MAX_BROKER_LEGACY_REQUEST_BYTES + 1,
         )
         path.chmod(0o600)
 
@@ -752,13 +756,7 @@ class LocalCoreAutomationBroker:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         response: dict[str, Any]
         try:
-            payload = await reader.readline()
-            if (
-                not payload
-                or len(payload) > _MAX_BROKER_REQUEST_BYTES
-                or not payload.endswith(b"\n")
-            ):
-                raise PluginExecutionError("core broker request is empty or too large")
+            payload = await self._read_request_payload(reader)
             request = json.loads(payload.decode("utf-8"))
             if not isinstance(request, dict) or set(request) != {
                 "schema_version",
@@ -826,7 +824,82 @@ class LocalCoreAutomationBroker:
         data = canonical_json_bytes(response)
         if len(data) > 10 * 1024 * 1024:
             data = canonical_json_bytes({"ok": False, "error_code": "BROKER_RESPONSE_TOO_LARGE"})
-        writer.write(data)
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.write(data)
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    @staticmethod
+    async def _read_request_payload(reader: asyncio.StreamReader) -> bytes:
+        """Read one bounded request, accepting the legacy line protocol.
+
+        Current signed packages use a compressed length-prefixed frame so a
+        legitimate snapshot is not constrained by ``StreamReader.readline``.
+        The decoded request remains strictly bounded. Older committed
+        generations keep their original newline protocol until their leases
+        drain.
+        """
+
+        try:
+            first_line = await reader.readline()
+        except (asyncio.LimitOverrunError, ValueError) as exc:
+            raise PluginExecutionError(
+                "core broker request is too large",
+                code="BROKER_REQUEST_TOO_LARGE",
+            ) from exc
+        if not first_line or not first_line.endswith(b"\n"):
+            raise PluginExecutionError(
+                "core broker request is incomplete",
+                code="BROKER_REQUEST_INVALID",
+            )
+        if not first_line.startswith(_BROKER_FRAME_PREFIX):
+            if len(first_line) > _MAX_BROKER_LEGACY_REQUEST_BYTES:
+                raise PluginExecutionError(
+                    "core broker request is too large",
+                    code="BROKER_REQUEST_TOO_LARGE",
+                )
+            return first_line[:-1]
+
+        raw_length = first_line[len(_BROKER_FRAME_PREFIX) : -1]
+        if not raw_length.isdigit() or len(raw_length) > 9:
+            raise PluginExecutionError(
+                "core broker frame length is invalid",
+                code="BROKER_REQUEST_INVALID",
+            )
+        compressed_length = int(raw_length)
+        if not 1 <= compressed_length <= _MAX_BROKER_COMPRESSED_REQUEST_BYTES:
+            raise PluginExecutionError(
+                "core broker request is too large",
+                code="BROKER_REQUEST_TOO_LARGE",
+            )
+        try:
+            compressed = await reader.readexactly(compressed_length)
+        except asyncio.IncompleteReadError as exc:
+            raise PluginExecutionError(
+                "core broker request is incomplete",
+                code="BROKER_REQUEST_INVALID",
+            ) from exc
+        decompressor = zlib.decompressobj()
+        try:
+            payload = decompressor.decompress(
+                compressed,
+                _MAX_BROKER_REQUEST_BYTES + 1,
+            )
+        except zlib.error as exc:
+            raise PluginExecutionError(
+                "core broker request compression is invalid",
+                code="BROKER_REQUEST_INVALID",
+            ) from exc
+        if (
+            len(payload) > _MAX_BROKER_REQUEST_BYTES
+            or decompressor.unconsumed_tail
+            or not decompressor.eof
+            or decompressor.unused_data
+        ):
+            raise PluginExecutionError(
+                "core broker request is too large or invalid",
+                code="BROKER_REQUEST_TOO_LARGE",
+            )
+        return payload

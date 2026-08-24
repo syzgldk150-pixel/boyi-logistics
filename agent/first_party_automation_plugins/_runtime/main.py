@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import traceback
 from collections.abc import Mapping
@@ -22,6 +23,7 @@ _REQUEST_FIELDS = {
     "arguments",
 }
 _FORBIDDEN_KEYS = ("password", "cookie", "credential", "secret", "token", "session")
+_SAFE_BROKER_ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{2,63}\Z")
 
 
 def _reject_sensitive(value: object) -> None:
@@ -54,7 +56,12 @@ def _action_failure_diagnostic(exc: BaseException) -> tuple[str, str]:
     elif isinstance(exc, TypeError):
         code = "ACTION_TYPE_ERROR"
     elif isinstance(exc, RuntimeError):
-        code = "ACTION_RUNTIME_ERROR"
+        safe_code = str(exc)
+        code = (
+            safe_code
+            if _SAFE_BROKER_ERROR_CODE.fullmatch(safe_code)
+            else "ACTION_RUNTIME_ERROR"
+        )
     else:
         code = "ACTION_FAILED"
     frame_label = "runtime"
