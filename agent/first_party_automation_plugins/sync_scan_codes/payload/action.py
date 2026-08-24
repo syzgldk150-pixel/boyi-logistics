@@ -25,6 +25,7 @@ _MAX_BATCH_SIZE = 200
 _MAX_BATCHES = 499
 _MAX_ITEMS = 100_000
 _MAX_BROKER_CALLS = 1000
+_PREVIEW_EVIDENCE_CONTRACT_VERSION = 1
 _R_CHILD_TRACKING_RE = re.compile(r"^(?:R\d{11}|RC\d{10})\d{4}$")
 _RONGHUI_NUMERIC_CHILD_TRACKING_RE = re.compile(r"^200\d{11}$")
 _ALLOWED_ARGUMENTS = frozenset(
@@ -340,6 +341,40 @@ def _submitted_batch(
     )
 
 
+def _preview_evidence(
+    *,
+    target_date: str,
+    snapshot: list[dict[str, str]],
+    batches: list[list[dict[str, str]]],
+    source_pages: int,
+    source_evidence_refs: list[str],
+    observed_at: str,
+) -> dict[str, object]:
+    planned_items = [
+        {
+            "bill_code": item["bill_code"],
+            "station_name": item["station_name"],
+        }
+        for batch in batches
+        for item in batch
+    ]
+    return {
+        "contract_version": _PREVIEW_EVIDENCE_CONTRACT_VERSION,
+        "target_date": target_date,
+        "observed_at": observed_at,
+        "pagination_complete": True,
+        "source_page_count": source_pages,
+        "normalized_record_count": len(snapshot),
+        "source_snapshot_sha256": _canonical_sha256(snapshot),
+        "source_evidence_refs": list(source_evidence_refs),
+        "selection_count": len(planned_items),
+        "selection_sha256": _canonical_sha256(planned_items),
+        "batch_count": len(batches),
+        "batch_plan_sha256": _canonical_sha256(batches),
+        "items": planned_items,
+    }
+
+
 def run_action(
     arguments: dict[str, object],
     broker: Callable[..., object],
@@ -409,6 +444,15 @@ def run_action(
             "execution_result": execution_result,
         },
     }
+    if dry_run:
+        data["preview_evidence"] = _preview_evidence(
+            target_date=target_date,
+            snapshot=snapshot,
+            batches=batches,
+            source_pages=source_pages,
+            source_evidence_refs=evidence_refs,
+            observed_at=observed_at,
+        )
     result_ref, result_proof = executor_success_evidence(
         action_id=ACTION_ID,
         data=data,

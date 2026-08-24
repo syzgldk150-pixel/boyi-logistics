@@ -30,6 +30,7 @@ from agent.automation_plugins.errors import (
     PluginSignatureError,
 )
 from agent.automation_plugins.first_party import (
+    FIRST_PARTY_PACKAGE_VERSION,
     SourceFirstPartyPackageProvider,
     expected_first_party_automation_ids,
     expected_first_party_plugin_ids,
@@ -274,6 +275,17 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert all(manifest.runtime["kind"] == "python_subprocess" for manifest in manifests.values())
     assert all(manifest.runtime_permissions["max_broker_calls"] > 0 for manifest in manifests.values())
     assert all(manifest.runtime_permissions["broker_operations"] for manifest in manifests.values())
+    assert manifests["sync_scan_codes"].version == "1.0.21"
+    assert {
+        manifest.version
+        for plugin_id, manifest in manifests.items()
+        if plugin_id != "sync_scan_codes"
+    } == {FIRST_PARTY_PACKAGE_VERSION}
+    assert {
+        seed.version
+        for seed in seeds
+        if seed.plugin_id == "sync_scan_codes"
+    } == {"1.0.21"}
     customer = manifests["sync_customer_service_problems"]
     assert customer.account_roles[0]["collection"] is True
     assert customer.account_roles[0]["argument_field"] is None
