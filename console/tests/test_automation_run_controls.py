@@ -72,6 +72,59 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertNotIn('data-run-cancel', html)
         self.assertIn("/automations/tasks/cancel", html)
 
+    def test_exact_scan_project_renders_inline_preview_confirmation(self):
+        html = self._render(
+            {
+                "task_id": "scan_codes",
+                "task_mode": "manual",
+                "name_value": "扫描",
+                "tool_name_value": "automation.scan_codes.run",
+                "cron_expression_value": "",
+                "schedule_time_values": [],
+                "tool_params_json": "{}",
+                "tool_param_fields": [],
+                "search_text": "扫描 scan_codes",
+                "last_activity_value": "",
+                "sort_order": 1,
+                "is_schedulable": False,
+                "schedule_supported": False,
+                "schedule_editable": False,
+                "has_webhook": False,
+                "enabled_value": False,
+                "is_open": False,
+                "feedback": None,
+                "last_error_summary": "",
+                "last_run_value": "",
+                "resource_bindings": [],
+                "account_role_bindings": [],
+                "plugin": {
+                    "plugin_id": "sync_scan_codes",
+                    "record_version": 1,
+                    "project_configuration_version": 1,
+                    "version": "1.0.22",
+                    "state": "ENABLED",
+                    "status_label": "已启用",
+                    "platform_label": "服务器",
+                    "execution_platform": "server",
+                    "can_schedule": False,
+                    "enabled": True,
+                    "lifecycle_actions_allowed": False,
+                    "config_fields": [],
+                    "resource_roles": [],
+                    "entrypoints": [],
+                },
+            }
+        )
+
+        self.assertIn('data-scan-preview-workflow="true"', html)
+        self.assertIn("生成预览", html)
+        self.assertIn("data-scan-preview-panel", html)
+        self.assertIn("data-scan-preview-confirm", html)
+        self.assertIn("data-scan-preview-regenerate", html)
+        self.assertIn("待扫描", html)
+        self.assertNotIn("selection_sha256", html)
+        self.assertNotIn("source_evidence_refs", html)
+
     def test_scheduled_task_without_schedule_still_renders_toggle_and_settings(self):
         html = self._render(
             {
@@ -365,6 +418,94 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("AbortController", terminal_fetch_block)
         self.assertIn("signal: controller.signal", terminal_fetch_block)
         self.assertIn("clearTimeout(timeoutId)", terminal_fetch_block)
+
+    def test_scan_confirmation_uses_stable_request_uuid_and_only_public_run_id(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        confirm_index = source.index(
+            'fetch("/automations/tasks/confirm-scan-preview"'
+        )
+        confirm_block = source[confirm_index - 240 : confirm_index + 700]
+        self.assertIn('task_id: "scan_codes"', confirm_block)
+        self.assertIn("preview_run_id: previewRunId", confirm_block)
+        self.assertIn('"X-Browser-Request-UUID": confirmationRequestId', confirm_block)
+        self.assertNotIn("dry_run", confirm_block)
+        self.assertNotIn("selection_sha256", confirm_block)
+        self.assertIn(
+            "activeScanConfirmationRequestId || window.crypto.randomUUID()",
+            source,
+        )
+        self.assertIn(
+            "activeScanConfirmationRequestId = confirmationRequestId",
+            source,
+        )
+        self.assertIn(
+            "页面会复用原请求标识，不会创建第二次正式请求",
+            source,
+        )
+        self.assertIn('"SCAN_PREVIEW_ALREADY_CONSUMED"', source)
+        fetch_index = source.index(
+            'fetch("/automations/tasks/confirm-scan-preview"'
+        )
+        confirm_handler_index = source.rindex(
+            'scanPreviewConfirm.addEventListener("click"',
+            0,
+            fetch_index,
+        )
+        self.assertLess(
+            source.index(
+                "setScanConfirmationRetryOnly(true)",
+                confirm_handler_index,
+            ),
+            fetch_index,
+        )
+        self.assertIn(
+            "if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;\n        clearScanPreview();",
+            source,
+        )
+        self.assertIn(
+            "if (isScanPreviewWorkflow && scanConfirmationRetryOnly)",
+            source,
+        )
+        self.assertIn(
+            "|| (isScanPreviewWorkflow && scanConfirmationRetryOnly)",
+            source,
+        )
+        self.assertIn(
+            "|| (isScanPreviewWorkflow && scanPreviewTerminalBlocked)",
+            source,
+        )
+        self.assertIn(
+            "if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;",
+            source,
+        )
+        self.assertIn(
+            "if (isScanPreviewWorkflow && scanPreviewTerminalBlocked)",
+            source,
+        )
+        self.assertIn(
+            "当前页面不会生成新的扫描预览",
+            source,
+        )
+        render_preview_index = source.index("function renderScanPreview(preview)")
+        next_preview_index = source.index(
+            "const nextPreviewId",
+            render_preview_index,
+        )
+        self.assertLess(
+            source.index(
+                "if (scanPreviewTerminalBlocked) return;",
+                render_preview_index,
+            ),
+            next_preview_index,
+        )
+        render_preview_block = source[render_preview_index:next_preview_index]
+        self.assertNotIn("setScanPreviewTerminalBlocked(false)", render_preview_block)
+        self.assertIn("clearScanPreview({ force: true })", source)
+        self.assertIn('termDrawer.dataset.scanPhase = "formal"', source)
+        self.assertIn('termDrawer.dataset.scanPhase = "preview"', source)
 
     def test_blocked_runs_render_attention_and_do_not_keep_polling(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(

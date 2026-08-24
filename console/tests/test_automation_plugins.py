@@ -725,6 +725,20 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         source = (CONSOLE_DIR / "services" / "automation.py").read_text(encoding="utf-8")
         self.assertNotIn("/worker-binding", source)
 
+    def test_scan_preview_confirmation_has_one_explicit_console_route(self):
+        called = []
+        app = SimpleNamespace(
+            _handle_automation_account_post=lambda *_args: False,
+            _handle_scan_preview_confirmation=lambda handler: called.append(handler),
+        )
+        handler = object()
+        path = "/automations/tasks/confirm-scan-preview"
+
+        self.assertTrue(
+            automation_routes.handle_post(app, handler, path, path, {})
+        )
+        self.assertEqual([handler], called)
+
 
 class AutomationPluginTemplateTests(unittest.TestCase):
     @classmethod
