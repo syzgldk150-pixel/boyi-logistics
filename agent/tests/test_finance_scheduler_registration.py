@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
@@ -238,6 +238,37 @@ class _ReleaseScheduler:
 
 
 class FinanceSchedulerRegistrationTests(unittest.TestCase):
+    @staticmethod
+    def _project_startup_task(**overrides):
+        return {
+            "id": "project_startup_001",
+            "name": "Project startup",
+            "tool_name": "automation.project_startup.run",
+            "tool_params": {"source": "scheduler"},
+            "cron_expression": "@startup",
+            "enabled": True,
+            "configuration_version": 6,
+            "automation_id": "project_startup",
+            "automation_generation": 9,
+            **overrides,
+        }
+
+    @staticmethod
+    def _scheduler_job_state(job):
+        return {
+            "id": job.id,
+            "func": job.func,
+            "trigger": str(job.trigger),
+            "args": tuple(job.args),
+            "kwargs": dict(job.kwargs),
+            "name": job.name,
+            "executor": job.executor,
+            "misfire_grace_time": job.misfire_grace_time,
+            "coalesce": job.coalesce,
+            "max_instances": job.max_instances,
+            "next_run_time": getattr(job, "next_run_time", None),
+        }
+
     def test_scheduler_failure_message_keeps_control_plane_code_and_summary(self):
         scheduler_module = _scheduler_module_for_gate_tests()
 
@@ -415,12 +446,16 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
 
         async def exercise_held_startup(marker: Path, release_sha: str) -> None:
             core = _AgentCore()
+            core.memory.rows.append(self._project_startup_task())
             scheduler = init_scheduler(core, include_startup_catchup=False)
             self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+            self.assertIsNone(scheduler.get_job("project_startup_001"))
 
             reloaded = scheduler_module.reload_scheduler(core)
             self.assertNotIn("finance_startup_catchup", reloaded["job_ids"])
+            self.assertNotIn("project_startup_001", reloaded["job_ids"])
             self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+            self.assertIsNone(scheduler.get_job("project_startup_001"))
 
             scheduler.start(paused=True)
             try:
@@ -429,12 +464,14 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 self.assertTrue(marker.exists())
                 await asyncio.sleep(0)
                 self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+                self.assertIsNone(scheduler.get_job("project_startup_001"))
                 self.assertEqual([], core.calls)
 
                 scheduler_module.consume_scheduler_release_hold(release_sha)
                 await asyncio.sleep(0)
                 self.assertFalse(marker.exists())
                 self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+                self.assertIsNone(scheduler.get_job("project_startup_001"))
                 self.assertEqual([], core.calls)
             finally:
                 scheduler.shutdown(wait=False)
@@ -454,6 +491,299 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             finally:
                 scheduler_module._scheduler = previous_scheduler
                 scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_project_startup_task_registers_one_stable_daily_generation(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [self._project_startup_task()]
+        invoker = _ProjectInvoker()
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            scheduler = init_scheduler(
+                core,
+                automation_project_invoker=invoker,
+                include_startup_catchup=True,
+            )
+            job = scheduler.get_job("project_startup_001")
+            self.assertIsNotNone(job)
+            self.assertEqual(1, job.max_instances)
+            self.assertTrue(job.coalesce)
+            self.assertEqual(300, job.misfire_grace_time)
+
+            asyncio.run(job.func())
+            self.assertEqual(1, len(invoker.calls))
+            automation_id, trusted = invoker.calls[0]
+            self.assertEqual("project_startup", automation_id)
+            self.assertEqual(9, trusted["expected_automation_generation"])
+            self.assertEqual(6, trusted["expected_project_configuration_version"])
+            scheduled_for = trusted["trusted_context"]["scheduled_for"]
+            occurrence = datetime.fromisoformat(scheduled_for)
+            self.assertEqual(timedelta(hours=8), occurrence.utcoffset())
+            self.assertEqual((0, 0, 0, 0), (
+                occurrence.hour,
+                occurrence.minute,
+                occurrence.second,
+                occurrence.microsecond,
+            ))
+            self.assertEqual(
+                f"scheduler:project_startup_001:v6:g9:{scheduled_for}",
+                trusted["idempotency_key"],
+            )
+
+            asyncio.run(job.func())
+            self.assertEqual(
+                invoker.calls[0][1]["request_id"],
+                invoker.calls[1][1]["request_id"],
+            )
+
+            asyncio.run(
+                scheduler_module._execute_scheduled_tool(
+                    core,
+                    task_id="project_startup_001",
+                    tool_name="automation.project_startup.run",
+                    arguments={},
+                    scheduled_for=occurrence,
+                    cron_expression="@startup",
+                    configuration_version=6,
+                    automation_id="project_startup",
+                    automation_generation=10,
+                    automation_project_invoker=invoker,
+                )
+            )
+            self.assertEqual(
+                f"scheduler:project_startup_001:v6:g10:{scheduled_for}",
+                invoker.calls[2][1]["request_id"],
+            )
+            self.assertNotEqual(
+                invoker.calls[0][1]["request_id"],
+                invoker.calls[2][1]["request_id"],
+            )
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_reload_replaces_daily_jobs_and_removes_disabled_rows(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "daily_refresh",
+                "name": "Daily refresh",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+            {
+                "id": "disable_on_reload",
+                "name": "Disabled on reload",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "15 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            scheduler = init_scheduler(core, include_startup_catchup=False)
+            old_job = scheduler.get_job("daily_refresh")
+            self.assertIsNotNone(old_job)
+            core.memory.rows = [
+                {
+                    **core.memory.rows[0],
+                    "cron_expression": "25 1 * * *",
+                    "configuration_version": 3,
+                },
+                {**core.memory.rows[1], "enabled": False},
+            ]
+
+            reloaded = scheduler_module.reload_scheduler(core)
+
+            self.assertEqual(["daily_refresh"], reloaded["job_ids"])
+            refreshed = scheduler.get_job("daily_refresh")
+            self.assertIsNotNone(refreshed)
+            self.assertIsNot(old_job, refreshed)
+            self.assertIn("hour='1'", str(refreshed.trigger))
+            self.assertIn("minute='25'", str(refreshed.trigger))
+            self.assertIsNone(scheduler.get_job("disable_on_reload"))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_reload_applies_regular_changes_when_finance_startup_gate_blocks(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "daily_refresh",
+                "name": "Daily refresh",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+            {
+                "id": "finance_startup_catchup",
+                "name": "Finance startup catch-up",
+                "tool_name": "automation.finance_startup_catchup.run",
+                "tool_params": {},
+                "cron_expression": "@startup",
+                "enabled": True,
+                "configuration_version": 8,
+                "automation_id": "finance_startup_catchup",
+                "automation_generation": 4,
+            },
+        ]
+        core.finance_startup_gate_provider = _StartupGate(_ready_startup_gate())
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            scheduler = init_scheduler(core, include_startup_catchup=True)
+            self.assertIsNotNone(scheduler.get_job("finance_startup_catchup"))
+            core.memory.rows[0] = {
+                **core.memory.rows[0],
+                "cron_expression": "25 1 * * *",
+                "configuration_version": 3,
+            }
+            core.finance_startup_gate_provider = _StartupGate(
+                _ready_startup_gate(runnable=False, runtime_status="BLOCKED")
+            )
+
+            reloaded = scheduler_module.reload_scheduler(core)
+
+            self.assertEqual(["daily_refresh"], reloaded["job_ids"])
+            refreshed = scheduler.get_job("daily_refresh")
+            self.assertIsNotNone(refreshed)
+            self.assertIn("hour='1'", str(refreshed.trigger))
+            self.assertIn("minute='25'", str(refreshed.trigger))
+            self.assertIsNone(scheduler.get_job("finance_startup_catchup"))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_reload_invalid_plan_preserves_existing_jobs(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "stable_daily",
+                "name": "Stable daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            async def exercise() -> None:
+                scheduler = init_scheduler(core, include_startup_catchup=False)
+                scheduler.start(paused=True)
+                try:
+                    before = self._scheduler_job_state(scheduler.get_job("stable_daily"))
+                    core.memory.rows[0]["cron_expression"] = "not a cron expression"
+
+                    with self.assertRaisesRegex(ValueError, "Invalid cron expression"):
+                        scheduler_module.reload_scheduler(core)
+
+                    self.assertEqual(
+                        before,
+                        self._scheduler_job_state(scheduler.get_job("stable_daily")),
+                    )
+                finally:
+                    scheduler.shutdown(wait=False)
+
+            asyncio.run(exercise())
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_reload_registration_failure_restores_exact_previous_jobs(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "first_daily",
+                "name": "First daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+            {
+                "id": "second_daily",
+                "name": "Second daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "15 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            async def exercise() -> None:
+                scheduler = init_scheduler(core, include_startup_catchup=False)
+                scheduler.start(paused=True)
+                try:
+                    before = {
+                        job.id: self._scheduler_job_state(job)
+                        for job in scheduler.get_jobs()
+                    }
+                    original_add_job = scheduler_module._add_job
+                    calls = 0
+
+                    def fail_second_registration(*args, **kwargs):
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            raise RuntimeError("injected registration failure")
+                        return original_add_job(*args, **kwargs)
+
+                    with patch.object(
+                        scheduler_module,
+                        "_add_job",
+                        side_effect=fail_second_registration,
+                    ), self.assertRaisesRegex(RuntimeError, "injected registration failure"):
+                        scheduler_module.reload_scheduler(core)
+
+                    after = {
+                        job.id: self._scheduler_job_state(job)
+                        for job in scheduler.get_jobs()
+                    }
+                    self.assertEqual(before, after)
+                finally:
+                    scheduler.shutdown(wait=False)
+
+            asyncio.run(exercise())
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
 
     def test_unheld_startup_scheduler_registers_gap_only_catchup(self):
         if not HAS_APSCHEDULER:

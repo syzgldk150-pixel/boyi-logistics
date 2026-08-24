@@ -110,6 +110,16 @@ AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE = re.compile(
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
 AUTOMATION_PLUGIN_CONFIG_MAX_FIELDS = 100
 AUTOMATION_PLUGIN_CONFIG_MAX_BYTES = 128 * 1024
+AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES = 96
+AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES = frozenset(
+    {
+        "ACTIVE",
+        "DISABLED",
+        "ENTRYPOINT_DISABLED",
+        "BLOCKED_GENERATION",
+        "REFRESH_FAILED",
+    }
+)
 AUTOMATION_PLUGIN_CONFIG_COPY = {
     "dry_run": ("仅预览，不写入", "开启后只检查和预览结果，不会真正修改业务系统或表格。"),
     "target_date": ("业务日期", "留空时使用当天；需要补跑历史数据时再选择日期。"),
@@ -2445,7 +2455,7 @@ class AutomationProjectsServiceMixin:
             if isinstance(raw_times, list) and isinstance(schedule_enabled, bool):
                 schedule_times = [str(item or "").strip() for item in raw_times]
                 times_valid = (
-                    len(schedule_times) <= 50
+                    len(schedule_times) <= AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES
                     and len(schedule_times) == len(set(schedule_times))
                     and all(
                         re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", item)
@@ -2533,12 +2543,40 @@ class AutomationProjectsServiceMixin:
             response_data["project_configuration_version"] = new_version
         if isinstance(raw_data.get("configured"), bool):
             response_data["configured"] = raw_data["configured"]
+        runtime_state = str(
+            raw_data.get("schedule_runtime_state") or "REFRESH_FAILED"
+        ).strip().upper()
+        if runtime_state not in AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES:
+            runtime_state = "REFRESH_FAILED"
+        response_data["schedule_runtime_state"] = runtime_state
+        response_data["schedule_runtime_enabled"] = bool(
+            raw_data.get("schedule_runtime_enabled") is True
+            and runtime_state == "ACTIVE"
+        )
+        response_data["scheduler_refresh_completed"] = bool(
+            raw_data.get("scheduler_refresh_completed") is True
+        )
+        messages = {
+            "ACTIVE": "项目设置已保存，运行中定时已按新配置刷新。",
+            "DISABLED": "项目设置已保存，运行中定时已关闭。",
+            "ENTRYPOINT_DISABLED": (
+                "项目设置已保存；定时时间已保留，但系统定时入口关闭，当前不会运行。"
+            ),
+            "BLOCKED_GENERATION": (
+                "项目设置已保存，但新运行代际尚未就绪；请使用同一请求重试，"
+                "系统不会沿用旧权限执行。"
+            ),
+            "REFRESH_FAILED": (
+                "项目设置已保存，但运行中调度器刷新失败；旧任务集保持不变，"
+                "请使用同一请求重试。"
+            ),
+        }
         self._send_json(
             handler,
             HTTPStatus.OK,
             {
                 "ok": True,
                 "data": response_data,
-                "message": "项目账号、资源、入口与运行配置已保存；权限会按新配置重新核验。",
+                "message": messages[runtime_state],
             },
         )

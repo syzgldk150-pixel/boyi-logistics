@@ -398,7 +398,11 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
         )
         manifest = {
             "allowed_entrypoints": ["scheduler", "console"],
-            "scheduling": {"supported": True},
+            "scheduling": {
+                "supported": True,
+                "allowed_kinds": ["daily_times", "startup"],
+                "max_daily_times": 8,
+            },
             "runtime": {
                 "kind": "core_tool_ref",
                 "tool_name": "sync_scan_codes",

@@ -118,6 +118,10 @@ actor、`automation_id`、manifest 或签名/完整性内部字段。读取目�
 配置、入口和系统定时在同一个 CAS 事务内保存并立即使旧授权 stale。保存或升级后同步尝试 reconcile；
 依赖未就绪时响应只投影 `PREPARING/BLOCKED_DEPENDENCY`，不得宣称完成或提前启用。启用必须再次
 确认当前 desired material 已有完全匹配的 `STABLE committed_generation`。
+配置幂等重放还须精确匹配操作者身份和事件目标配置版本，后续配置漂移后不得读回最新值冒充旧请求结果。
+稳定 generation 提交后，管理 API 在 Agent 事件循环内原子刷新 APScheduler；完整注册计划先校验，任何
+加载失败都恢复旧 Job、返回 `REFRESH_FAILED`，调用方以同一请求 UUID 重试。`startup` 项目使用一次性
+DateTrigger 和“上海业务日 + 配置版本”的稳定 Command 身份；release hold 启动不注册任何 startup Job。
 Console 启用/停用使用浏览器动作 UUID 与实例 `record_version` 做精确 CAS，并在同一事务写入
 `PLUGIN_STATE_CHANGED` 事件，绑定目标状态、CAS 前后版本和签名管理员身份；响应丢失后重放同一 UUID
 只读回该次结果，不得再次推进。启用必须等待稳定 committed generation；停用作为止损动作可在依赖
@@ -265,7 +269,8 @@ Scheduler、Console、飞书和 Webhook 入口共享同一项目策略。`PROJEC
 任一项缺失都不可运行，不得回退成审批模式。权限保存只写策略与审计，不创建 runtime generation。
 
 `enabled_entrypoints` 可为允许入口的任意子集（含空集）。关闭入口后由服务器阻断；Scheduler 关闭时
-保留管理员设置的时间，但提交代际将对应 `scheduled_tasks` 物化为 disabled，不注册或触发 Job。
+保留管理员设置的时间，但提交代际将对应 `scheduled_tasks` 物化为 disabled，不注册或触发 Job；管理
+响应和 Console 必须显示 `ENTRYPOINT_DISABLED`，不能把已保留时间误写成运行中定时已开启。
 
 卡片内批量审批只提交服务端返回的待审批集合摘要和请求 UUID。服务端锁内重验项目、角色、plan
 hash 与集合；集合变化、任一计划失效或角色不足时零批准，不允许部分成功。每条 Run 仍保存独立

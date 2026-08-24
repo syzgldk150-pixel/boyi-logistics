@@ -651,7 +651,13 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             forwarded.update(method=method, endpoint=endpoint, **kwargs)
             return {
                 "ok": True,
-                "data": {"configured": True, "project_configuration_version": 10},
+                "data": {
+                    "configured": True,
+                    "project_configuration_version": 10,
+                    "schedule_runtime_state": "ACTIVE",
+                    "schedule_runtime_enabled": True,
+                    "scheduler_refresh_completed": True,
+                },
             }
 
         app._agent_request = agent_request
@@ -672,6 +678,83 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual("17", forwarded["console_principal"]["actor_id"])
         for forbidden in ("actor", "source", "task_ids", "cron", "policy_hash"):
             self.assertNotIn(forbidden, forwarded["payload"])
+        self.assertEqual("ACTIVE", captured["payload"]["data"]["schedule_runtime_state"])
+        self.assertIn("已按新配置刷新", captured["payload"]["message"])
+
+    def test_configuration_accepts_96_times_and_rejects_97(self):
+        allowed_times = [
+            f"{minute // 60:02d}:{minute % 60:02d}"
+            for minute in range(0, 24 * 60, 15)
+        ]
+        self.assertEqual(96, len(allowed_times))
+        payload = self._configuration_payload()
+        payload["schedule"]["times"] = allowed_times
+        app, captured = self._app()
+        calls = []
+        app._agent_request = lambda *args, **kwargs: (
+            calls.append((args, kwargs))
+            or {
+                "ok": True,
+                "data": {
+                    "project_configuration_version": 10,
+                    "schedule_runtime_state": "ACTIVE",
+                    "schedule_runtime_enabled": True,
+                    "scheduler_refresh_completed": True,
+                },
+            }
+        )
+
+        app._handle_automation_plugin_configuration_save(
+            self._handler(payload),
+            "finance_action_east",
+        )
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(allowed_times, calls[0][1]["payload"]["schedule"]["times"])
+
+        rejected = self._configuration_payload()
+        rejected["schedule"]["times"] = [
+            f"{minute // 60:02d}:{minute % 60:02d}" for minute in range(97)
+        ]
+        app, captured = self._app()
+        app._agent_request = lambda *_args, **_kwargs: self.fail("must not call Agent")
+        app._handle_automation_plugin_configuration_save(
+            self._handler(rejected),
+            "finance_action_east",
+        )
+        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+
+    def test_configuration_reports_persisted_but_not_active_schedule_states(self):
+        scenarios = {
+            "ENTRYPOINT_DISABLED": "当前不会运行",
+            "BLOCKED_GENERATION": "尚未就绪",
+            "REFRESH_FAILED": "刷新失败",
+        }
+        for state, message in scenarios.items():
+            with self.subTest(state=state):
+                app, captured = self._app()
+                app._agent_request = lambda *_args, **_kwargs: {
+                    "ok": True,
+                    "data": {
+                        "project_configuration_version": 10,
+                        "schedule_runtime_state": state,
+                        "schedule_runtime_enabled": False,
+                        "scheduler_refresh_completed": state
+                        == "ENTRYPOINT_DISABLED",
+                    },
+                }
+
+                app._handle_automation_plugin_configuration_save(
+                    self._handler(self._configuration_payload()),
+                    "finance_action_east",
+                )
+
+                self.assertEqual(HTTPStatus.OK, captured["status"])
+                self.assertEqual(
+                    state,
+                    captured["payload"]["data"]["schedule_runtime_state"],
+                )
+                self.assertIn(message, captured["payload"]["message"])
 
     def test_configuration_rejects_browser_actor_cron_hash_and_task_ids(self):
         for forbidden in ("actor", "source", "cron_expression", "task_ids", "manifest_hash"):
@@ -997,6 +1080,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertEqual(2, card.count("data-project-policy-mode"))
         self.assertIn("data-plugin-configuration-save", card)
         self.assertIn("data-plugin-schedule-kind", card)
+        self.assertIn("data-plugin-schedule-effect", card)
         self.assertIn('value="acct-east" selected', account_select)
         self.assertNotIn('value="acct-first" selected', account_select)
         self.assertIn('value="phase7.bound_sheet" selected', resource_select)
@@ -1018,6 +1102,12 @@ class AutomationPluginTemplateTests(unittest.TestCase):
 
         self.assertIn('aria-haspopup="dialog"', template_source)
         self.assertIn("data-plugin-file-choose", template_source)
+        self.assertIn("BLOCKED_GENERATION", script_source)
+        self.assertIn("REFRESH_FAILED", script_source)
+        self.assertIn(
+            'form.querySelector(\'input[name="project_plugin_instance"]\')',
+            template_source,
+        )
         self.assertIn('accept=".zip,application/zip"', template_source)
         self.assertIn('dropZone?.addEventListener("dragenter"', script_source)
         self.assertIn('dropZone?.addEventListener("drop"', script_source)

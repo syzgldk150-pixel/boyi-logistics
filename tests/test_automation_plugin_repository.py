@@ -4,6 +4,7 @@ import base64
 import hashlib
 from datetime import datetime
 import uuid
+from typing import Any
 from unittest import TestCase
 
 from shared.automation_plugin_repository import (
@@ -1149,8 +1150,11 @@ class AutomationPluginRepositoryTests(TestCase):
                     {
                         "event_type": "CONFIGURATION_UPDATED",
                         "metadata_json": {
-                            "request_payload_sha256": _json_hash(request_payload)
+                            "request_payload_sha256": _json_hash(request_payload),
+                            "to_project_configuration_version": 3,
                         },
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
                     },
                     0,
                 ),
@@ -1168,6 +1172,152 @@ class AutomationPluginRepositoryTests(TestCase):
         sql_statements = [" ".join(sql.split()) for sql, _ in connection.cursor_instance.executions]
         self.assertFalse(any("automation_project_generations" in sql for sql in sql_statements))
         self.assertFalse(any(sql.startswith("UPDATE") for sql in sql_statements))
+
+    def test_configuration_replay_rejects_actor_target_and_later_version_drift(self):
+        request_id = str(uuid.uuid4())
+        project, config, _policy = _configuration_save_rows()
+        request_payload = {
+            "config": {"marker": "B"},
+            "account_bindings": {},
+            "resource_bindings": {},
+            "enabled_entrypoints": ["console"],
+            "schedule": {"kind": "none", "times": [], "enabled": False},
+            "compiled_invocations": {
+                "console": {
+                    "arguments": {"marker": "B"},
+                    "dynamic_resolvers": {},
+                }
+            },
+            "device_id": None,
+            "expected_project_configuration_version": 2,
+        }
+        base_event = {
+            "event_type": "CONFIGURATION_UPDATED",
+            "metadata_json": {
+                "request_payload_sha256": _json_hash(request_payload),
+                "to_project_configuration_version": 3,
+            },
+            "actor_id": "admin-one",
+            "actor_role": "super_admin",
+        }
+        scenarios = (
+            (
+                {**config, "config_version": 3},
+                {**base_event, "actor_id": "admin-two"},
+                "different input",
+            ),
+            (
+                {**config, "config_version": 3},
+                {
+                    **base_event,
+                    "metadata_json": {
+                        **base_event["metadata_json"],
+                        "to_project_configuration_version": 4,
+                    },
+                },
+                "different input",
+            ),
+            (
+                {**config, "config_version": 4},
+                base_event,
+                "changed after",
+            ),
+        )
+
+        for current_config, event, message in scenarios:
+            with self.subTest(message=message):
+                connection = _ScriptedConnection(
+                    [
+                        ("FROM automation_projects AS project", project, 0),
+                        ("FROM automation_project_configs", current_config, 0),
+                        ("FROM automation_project_events", event, 0),
+                    ]
+                )
+                with self.assertRaisesRegex(IdempotencyConflict, message):
+                    _save_configuration(
+                        AutomationPluginRepository(connection),
+                        request_id=request_id,
+                    )
+
+    def test_repository_enforces_signed_schedule_kinds_and_daily_limit(self):
+        project, _config, _policy = _configuration_save_rows()
+        project = {
+            **project,
+            "manifest_json": {
+                **project["manifest_json"],
+                "allowed_entrypoints": ["console", "scheduler"],
+                "scheduling": {
+                    "supported": True,
+                    "allowed_kinds": ["startup"],
+                    "max_daily_times": 1,
+                },
+            },
+        }
+
+        def save(schedule: dict[str, Any]) -> None:
+            AutomationPluginRepository(
+                _ScriptedConnection(
+                    [("FROM automation_projects AS project", project, 0)]
+                )
+            ).save_project_config(
+                "instance-one",
+                config={"marker": "B"},
+                account_bindings={},
+                resource_bindings={},
+                enabled_entrypoints=("console", "scheduler"),
+                schedule=schedule,
+                compiled_invocations={
+                    "console": {
+                        "arguments": {"marker": "B"},
+                        "dynamic_resolvers": {},
+                    },
+                    "scheduler": {
+                        "arguments": {"marker": "B"},
+                        "dynamic_resolvers": {},
+                    },
+                },
+                device_binding=None,
+                actor_id="admin-one",
+                actor_role="super_admin",
+                request_id=str(uuid.uuid4()),
+                expected_project_configuration_version=2,
+            )
+
+        with self.assertRaisesRegex(
+            OrchestrationPersistenceError,
+            "signed plugin kinds",
+        ):
+            save(
+                {
+                    "kind": "daily_times",
+                    "times": ["08:00"],
+                    "enabled": True,
+                }
+            )
+
+        daily_project = {
+            **project,
+            "manifest_json": {
+                **project["manifest_json"],
+                "scheduling": {
+                    "supported": True,
+                    "allowed_kinds": ["daily_times"],
+                    "max_daily_times": 1,
+                },
+            },
+        }
+        project = daily_project
+        with self.assertRaisesRegex(
+            OrchestrationPersistenceError,
+            "signed plugin daily limit",
+        ):
+            save(
+                {
+                    "kind": "daily_times",
+                    "times": ["08:00", "09:00"],
+                    "enabled": True,
+                }
+            )
 
     def test_configuration_change_preserves_the_selected_project_policy_mode(self):
         for mode in ("LEGACY_SCHEDULE_ONLY", "PROJECT_FULL_AUTO"):
