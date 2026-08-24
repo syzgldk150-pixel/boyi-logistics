@@ -146,8 +146,15 @@ def _collect_source(
             row = _normalize_source_row(raw)
             identity = row["bill_code"]
             previous = rows.get(identity)
-            if previous is not None and previous != row:
-                raise ValueError("scan source returned conflicting duplicate identities")
+            # Ronghui may return the same bill more than once when its scan
+            # timestamp/site metadata differs.  The persisted scan index owns
+            # only bill identity and destination, so equivalent destination
+            # duplicates are one business record; a destination conflict is
+            # still ambiguous and must fail closed.
+            if previous is not None and previous["destination"] != row["destination"]:
+                raise ValueError("scan source returned conflicting duplicate destinations")
+            if previous is not None:
+                continue
             rows[identity] = row
         if len(rows) > _MAX_ITEMS:
             raise ValueError("scan source exceeds its signed row limit")
