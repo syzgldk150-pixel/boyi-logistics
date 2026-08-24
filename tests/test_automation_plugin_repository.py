@@ -250,6 +250,229 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_plugin_state_change_is_audited_with_the_same_cas(self):
+        request_id = str(uuid.uuid4())
+        project = {
+            "automation_id": "instance-one",
+            "state": "ENABLED",
+            "enabled": 1,
+            "record_version": 7,
+        }
+        connection = _ScriptedConnection(
+            [
+                ("FROM automation_projects", project, 0),
+                ("FROM automation_project_events", None, 0),
+                ("UPDATE automation_projects", None, 1),
+                ("INSERT INTO automation_project_events", None, 1),
+            ]
+        )
+
+        changed = AutomationPluginRepository(
+            connection
+        ).set_project_enabled_with_audit(
+            "instance-one",
+            enabled=False,
+            expected_record_version=7,
+            actor_id="admin-one",
+            actor_role="super_admin",
+            request_id=request_id,
+        )
+
+        self.assertEqual("DISABLED", changed["state"])
+        self.assertFalse(changed["enabled"])
+        self.assertEqual(8, changed["record_version"])
+        insert_sql, insert_params = connection.cursor_instance.executions[3]
+        self.assertIn("PLUGIN_STATE_CHANGED", insert_sql)
+        self.assertEqual("instance-one", insert_params[0])
+        self.assertEqual(request_id, insert_params[1])
+        self.assertEqual("ENABLED", insert_params[2])
+        self.assertEqual("DISABLED", insert_params[3])
+        self.assertEqual("admin-one", insert_params[6])
+        self.assertEqual("super_admin", insert_params[7])
+
+    def test_plugin_state_response_loss_replays_without_second_update(self):
+        request_id = str(uuid.uuid4())
+        payload = {
+            "enabled": False,
+            "expected_record_version": 7,
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects",
+                    {
+                        "automation_id": "instance-one",
+                        "state": "DISABLED",
+                        "enabled": 0,
+                        "record_version": 8,
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "PLUGIN_STATE_CHANGED",
+                        "metadata_json": {
+                            "request_payload_sha256": _json_hash(payload),
+                        },
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                    },
+                    0,
+                ),
+            ]
+        )
+
+        replayed = AutomationPluginRepository(
+            connection
+        ).set_project_enabled_with_audit(
+            "instance-one",
+            enabled=False,
+            expected_record_version=7,
+            actor_id="admin-one",
+            actor_role="super_admin",
+            request_id=request_id,
+        )
+
+        self.assertEqual("DISABLED", replayed["state"])
+        self.assertEqual(2, len(connection.cursor_instance.executions))
+
+    def test_plugin_state_request_id_cannot_be_reused_with_new_input(self):
+        request_id = str(uuid.uuid4())
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects",
+                    {
+                        "automation_id": "instance-one",
+                        "state": "DISABLED",
+                        "enabled": 0,
+                        "record_version": 8,
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "PLUGIN_STATE_CHANGED",
+                        "metadata_json": {
+                            "request_payload_sha256": _json_hash(
+                                {
+                                    "enabled": False,
+                                    "expected_record_version": 7,
+                                }
+                            ),
+                        },
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                    },
+                    0,
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(IdempotencyConflict, "different input"):
+            AutomationPluginRepository(
+                connection
+            ).set_project_enabled_with_audit(
+                "instance-one",
+                enabled=True,
+                expected_record_version=7,
+                actor_id="admin-one",
+                actor_role="super_admin",
+                request_id=request_id,
+            )
+
+    def test_plugin_state_request_id_cannot_be_replayed_by_another_actor(self):
+        request_id = str(uuid.uuid4())
+        payload = {
+            "enabled": False,
+            "expected_record_version": 7,
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects",
+                    {
+                        "automation_id": "instance-one",
+                        "state": "DISABLED",
+                        "enabled": 0,
+                        "record_version": 8,
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "PLUGIN_STATE_CHANGED",
+                        "metadata_json": {
+                            "request_payload_sha256": _json_hash(payload),
+                        },
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                    },
+                    0,
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(IdempotencyConflict, "different input"):
+            AutomationPluginRepository(
+                connection
+            ).set_project_enabled_with_audit(
+                "instance-one",
+                enabled=False,
+                expected_record_version=7,
+                actor_id="admin-two",
+                actor_role="super_admin",
+                request_id=request_id,
+            )
+
+    def test_plugin_state_replay_rejects_later_project_drift(self):
+        request_id = str(uuid.uuid4())
+        payload = {
+            "enabled": False,
+            "expected_record_version": 7,
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects",
+                    {
+                        "automation_id": "instance-one",
+                        "state": "DISABLED",
+                        "enabled": 0,
+                        "record_version": 9,
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "PLUGIN_STATE_CHANGED",
+                        "metadata_json": {
+                            "request_payload_sha256": _json_hash(payload),
+                        },
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                    },
+                    0,
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(IdempotencyConflict, "changed after"):
+            AutomationPluginRepository(
+                connection
+            ).set_project_enabled_with_audit(
+                "instance-one",
+                enabled=False,
+                expected_record_version=7,
+                actor_id="admin-one",
+                actor_role="super_admin",
+                request_id=request_id,
+            )
+
     def test_archival_commit_rejects_active_predecessor_lease(self):
         cursor = _ScriptedCursor(
             [

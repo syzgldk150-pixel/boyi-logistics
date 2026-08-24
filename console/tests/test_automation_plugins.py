@@ -213,6 +213,8 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 self.assertEqual(label, instance["status_label"])
                 self.assertTrue(instance["blocked"])
                 self.assertFalse(instance["lifecycle_actions_allowed"])
+                self.assertTrue(instance["disable_allowed"])
+                self.assertTrue(instance["menu_actions_allowed"])
 
     def test_stable_generation_keeps_project_state_and_lifecycle_actions(self):
         payload = _catalog_payload()
@@ -225,6 +227,21 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("已启用", instance["status_label"])
         self.assertFalse(instance["blocked"])
         self.assertTrue(instance["lifecycle_actions_allowed"])
+        self.assertTrue(instance["disable_allowed"])
+        self.assertTrue(instance["menu_actions_allowed"])
+        self.assertFalse(instance["enable_allowed"])
+
+    def test_stable_disabled_project_can_be_enabled(self):
+        payload = _catalog_payload()
+        payload["instances"][0]["enabled"] = False
+        payload["instances"][0]["state"] = "DISABLED"
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        instance = instances[0]
+        self.assertFalse(instance["disable_allowed"])
+        self.assertTrue(instance["enable_allowed"])
+        self.assertTrue(instance["menu_actions_allowed"])
 
     def test_code_owned_projection_must_not_overlap_browser_schema(self):
         payload = _catalog_payload()
@@ -670,6 +687,65 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
                 self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
 
+    def test_enable_and_disable_forward_only_cas_state_dto(self):
+        for action, enabled in (("enable", True), ("disable", False)):
+            with self.subTest(action=action):
+                app, captured = self._app()
+                forwarded = {}
+
+                def agent_request(method, endpoint, **kwargs):
+                    forwarded.update(method=method, endpoint=endpoint, **kwargs)
+                    return {"ok": True, "data": {"state": action.upper()}}
+
+                app._agent_request = agent_request
+                app._handle_automation_plugin_instance_action(
+                    self._handler(
+                        {
+                            "request_id": REQUEST_ID,
+                            "expected_record_version": 4,
+                        }
+                    ),
+                    "finance_action_east",
+                    action,
+                )
+
+                self.assertEqual(HTTPStatus.OK, captured["status"])
+                self.assertEqual("POST", forwarded["method"])
+                self.assertEqual(
+                    "/internal/v1/automation/instances/finance_action_east/state",
+                    forwarded["endpoint"],
+                )
+                self.assertEqual(
+                    {
+                        "enabled": enabled,
+                        "request_id": REQUEST_ID,
+                        "expected_record_version": 4,
+                    },
+                    forwarded["payload"],
+                )
+                self.assertEqual("17", forwarded["console_principal"]["actor_id"])
+
+    def test_enable_and_disable_reject_browser_owned_state_fields(self):
+        for action in ("enable", "disable"):
+            with self.subTest(action=action):
+                app, captured = self._app()
+                app._agent_request = lambda *_args, **_kwargs: self.fail(
+                    "must not call Agent"
+                )
+                app._handle_automation_plugin_instance_action(
+                    self._handler(
+                        {
+                            "request_id": REQUEST_ID,
+                            "expected_record_version": 4,
+                            "enabled": action == "enable",
+                        }
+                    ),
+                    "finance_action_east",
+                    action,
+                )
+
+                self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+
     def test_install_has_no_browser_automation_id_or_digest_and_cleans_staged_zip(self):
         package_buffer = io.BytesIO()
         with zipfile.ZipFile(package_buffer, "w") as archive:
@@ -957,11 +1033,15 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "{% if not plugin.lifecycle_actions_allowed %}disabled aria-disabled=\"true\"{% endif %}",
+            "{% if not plugin.menu_actions_allowed %}disabled aria-disabled=\"true\"{% endif %}",
             source,
         )
         self.assertIn(
-            "task.plugin_blocked or not plugin.lifecycle_actions_allowed",
+            "data-plugin-instance-action=\"disable\" {% if not plugin.disable_allowed %}disabled{% endif %}",
+            source,
+        )
+        self.assertIn(
+            "data-plugin-instance-action=\"enable\" {% if not plugin.enable_allowed %}disabled",
             source,
         )
         full_auto_line = next(
