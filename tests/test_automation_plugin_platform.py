@@ -277,11 +277,17 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert all(manifest.runtime_permissions["broker_operations"] for manifest in manifests.values())
     assert manifests["sync_scan_codes"].version == "1.0.23"
     assert manifests["sync_arrival_stats"].version == "1.0.21"
+    assert manifests["split_pending_problem_upload"].version == "1.0.21"
     assert manifests["sync_arrival_stats"].runtime_permissions["max_broker_calls"] == 1000
     assert {
         manifest.version
         for plugin_id, manifest in manifests.items()
-        if plugin_id not in {"sync_arrival_stats", "sync_scan_codes"}
+        if plugin_id
+        not in {
+            "split_pending_problem_upload",
+            "sync_arrival_stats",
+            "sync_scan_codes",
+        }
     } == {FIRST_PARTY_PACKAGE_VERSION}
     assert {
         seed.version
@@ -292,6 +298,11 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
         seed.version
         for seed in seeds
         if seed.plugin_id == "sync_arrival_stats"
+    } == {"1.0.21"}
+    assert {
+        seed.version
+        for seed in seeds
+        if seed.plugin_id == "split_pending_problem_upload"
     } == {"1.0.21"}
     customer = manifests["sync_customer_service_problems"]
     assert customer.account_roles[0]["collection"] is True

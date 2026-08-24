@@ -702,11 +702,11 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "display_name": "分批/未到问题件上传",
         "tool_name": "split_pending_problem_upload",
         "note": "读取每日到货表，刷新分批及有发未到 Sheet/MySQL 当前快照，并逐单上传融辉问题件。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务 / 手动执行 / 飞书上传分批/未到问题件",
-        "schedule_summary": "",
+        "task_mode": "manual",
+        "trigger_label": "飞书分批预览 / 选择 / 确认",
+        "schedule_summary": "飞书分批预览 / 选择 / 确认",
         "default_tool_params": {
-            "dry_run": False,
+            "dry_run": True,
             "account_id": "ronghui_default",
         },
         "account_roles": [
