@@ -479,6 +479,31 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual(1, command.automation_invocation.automation_generation)
         self.assertEqual(CONTRACT_HASH, command.automation_invocation.contract_hash)
 
+    def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
+        self.entry.plugin_id = "sync_scan_codes"
+        self.entry.project_full_auto_allowed = True
+        self.entry.governance_anchor = {
+            "operation_type": "internal_projection_write",
+            "risk_level": "medium",
+            "approval": {"required_role": "admin"},
+            "permissions": {"required_roles": ["admin"]},
+            "project_full_auto_allowed": True,
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-scan-formal-disabled",
+                actor=_admin(),
+                preview_run_id="11111111-1111-4111-8111-111111111111",
+            )
+
+        self.assertEqual(
+            "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
+            raised.exception.code,
+        )
+        self.assertIsNone(self.gateway.command)
+
     def test_release_hold_blocks_project_writes_and_typed_invoke(self):
         service = AutomationProjectPolicyService(
             self.repository,

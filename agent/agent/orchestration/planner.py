@@ -26,6 +26,7 @@ from agent.orchestration.models import (
 )
 from agent.orchestration.impact_preview import build_write_impact
 from agent.orchestration.ports import ToolCatalogPort
+from agent.orchestration.scan_preview_binding import build_scan_preview_impact
 
 
 CUSTOMER_PROBLEM_SYNC_TOOL = "sync_customer_service_problems"
@@ -90,7 +91,13 @@ class DeterministicPlanner:
 
         expected_evidence = _object_tuple(capability.get("evidence"), field_name="evidence")
         postconditions = _object_tuple(capability.get("postconditions"), field_name="postconditions")
-        write_impact = build_write_impact(
+        write_impact = build_scan_preview_impact(
+            command=command,
+            capability=capability,
+            operation_type=operation_type,
+            account_id=account_id,
+            arguments=arguments,
+        ) or build_write_impact(
             tool_name=tool_name,
             operation_type=operation_type,
             account_id=account_id,
