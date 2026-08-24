@@ -76,6 +76,7 @@ _SCHEDULER_CONSOLE = frozenset({"scheduler", "console"})
 _SCHEDULER_CONSOLE_FEISHU = frozenset({"scheduler", "console", "feishu"})
 _CONSOLE_FEISHU = frozenset({"console", "feishu"})
 _CONSOLE_FEISHU_WEBHOOK = frozenset({"console", "feishu", "webhook"})
+_FEISHU = frozenset({"feishu"})
 
 _FINANCE_ACCOUNT_ROLE_NAMES = (
     "finance_quote_source",
@@ -252,8 +253,8 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
     "split_pending_problem_upload": FirstPartyMigrationInstanceTemplate(
         automation_id="split_pending_problem_upload",
         tool_name="split_pending_problem_upload",
-        legacy_arguments={"dry_run": False, "account_id": "ronghui_default"},
-        allowed_entrypoints=_SCHEDULER_CONSOLE_FEISHU,
+        legacy_arguments={"dry_run": True, "account_id": "ronghui_default"},
+        allowed_entrypoints=_FEISHU,
         legacy_account_bindings={"account_id": "ronghui_default"},
         resource_bindings={
             "feishu_route": "automation.feishu_route.split_pending_problem_upload",

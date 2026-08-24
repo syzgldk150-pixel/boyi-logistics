@@ -23,7 +23,6 @@ _BLOCKED_WRITE_TOOLS = {
     "r7_arrival_checkin": "target tasks are selected by live status and have no exact task-id preview",
     "r7_departure_checkin": "target tasks are selected by live status/class/time and have no exact task-id preview",
     "customer_service_problem_upload_attachment": "the local file has no approved content hash and external target preview",
-    "split_pending_problem_upload": "target problem and complaint records have no governed read-after-write verifier",
 }
 
 
@@ -277,10 +276,92 @@ def _clock_in(account_id: str | None, arguments: Mapping[str, Any]) -> dict[str,
     }
 
 
+def _split_pending_problem(
+    account_id: str | None,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    if arguments.get("dry_run") is not False:
+        raise _preview_required(
+            "split pending problem upload",
+            "formal execution must explicitly set dry_run=false",
+        )
+    raw_codes = arguments.get("selected_bill_codes")
+    if not isinstance(raw_codes, list) or not raw_codes or len(raw_codes) > 90:
+        raise _preview_required(
+            "split pending problem upload",
+            "one to 90 exact selected waybills are required",
+        )
+    selected: list[str] = []
+    for raw in raw_codes:
+        if not isinstance(raw, str):
+            raise _preview_required(
+                "split pending problem upload",
+                "selected waybills must be strings",
+            )
+        code = raw.strip()
+        would_normalize = (
+            raw != code
+            or code.startswith("=")
+            or (
+                len(code) >= 2
+                and code[0] == code[-1]
+                and code[0] in {"'", '"'}
+            )
+            or (code.endswith(".0") and code[:-2].isdigit())
+        )
+        if (
+            not code
+            or len(code) > 128
+            or any(character.isspace() for character in code)
+            or would_normalize
+        ):
+            raise _preview_required(
+                "split pending problem upload",
+                "selected waybills must be canonical exact identifiers",
+            )
+        selected.append(code)
+    if len(selected) != len(set(selected)):
+        raise _preview_required(
+            "split pending problem upload",
+            "selected waybills must be unique",
+        )
+    preview_fingerprint = str(arguments.get("preview_fingerprint") or "").strip()
+    if re.fullmatch(r"[0-9a-f]{64}", preview_fingerprint) is None:
+        raise _preview_required(
+            "split pending problem upload",
+            "a signed preview fingerprint is required",
+        )
+    selector = {
+        "account_id": str(account_id or "").strip(),
+        "preview_fingerprint": preview_fingerprint,
+        "selected_bill_codes": selected,
+    }
+    return {
+        "entities": [
+            _entity(
+                entity_type="waybill",
+                entity_id=code,
+                source_system="ronghui",
+                action="register_split_or_undelivered_problem",
+                metadata={
+                    "preview_fingerprint": preview_fingerprint,
+                    "selection_index": index,
+                },
+            )
+            for index, code in enumerate(selected)
+        ],
+        "source_version": _selector_source_version(selector),
+        "revalidation": (
+            "signed_preview_fingerprint_all_target_preflight_and_independent_read_after_write"
+        ),
+    }
+
+
 _EXACT_BUILDERS: dict[str, ImpactBuilder] = {
     "receipts_audit": _receipt_audit,
     "clock_in_dual": _clock_in,
     "customer_service_problem_mark_read": _mark_read,
     "customer_service_problem_reply": _reply,
     "customer_service_problem_publish": _publish,
+    "automation.split_pending_problem_upload.run": _split_pending_problem,
 }

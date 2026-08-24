@@ -189,4 +189,4 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - `CLAUDE.md`
 
 
-- 自动化目录新增“分批/未到问题件上传”：工具 `split_pending_problem_upload`，支持手动和可配置定时任务，默认不启用定时；资源 `phase7.split_pending_source_sheet`、`phase7.split_pending_target_sheet` 均为必填，账号角色默认 `ronghui_default`。
+- 自动化目录“分批/未到问题件上传”只显示项目状态，不提供 Console 执行入口，也不开放定时执行；预览、人工选择、确认以及正式上传所需的预览指纹只由飞书固定命令注入。工具 `split_pending_problem_upload` 的来源/目标资源均为必填，账号角色默认 `ronghui_default`。

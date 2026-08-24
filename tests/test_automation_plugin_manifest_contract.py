@@ -296,6 +296,38 @@ def test_arrival_contract_uses_instance_sheet_roles_and_no_outbound_flow() -> No
     assert "arrival_stats_pending_sheet" not in compiled.resource_bindings
 
 
+def test_split_contract_is_human_triggered_with_verified_selection_fields() -> None:
+    manifest = resolve_first_party_manifests(ToolRegistry())[
+        "split_pending_problem_upload"
+    ]
+    source = manifest.to_mapping()
+    template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[
+        "split_pending_problem_upload"
+    ]
+
+    assert source["version"] == "1.0.21"
+    assert source["allowed_entrypoints"] == ["feishu"]
+    assert source["scheduling"] == {
+        "supported": False,
+        "allowed_kinds": [],
+        "max_daily_times": 0,
+    }
+    assert "console" not in source["invocation_contracts"]
+    expected_dynamic = {
+        "dry_run": "verified_{entrypoint}_dry_run",
+        "preview_fingerprint": "verified_{entrypoint}_preview_fingerprint",
+        "selected_bill_codes": "verified_{entrypoint}_selected_bill_codes",
+    }
+    entrypoint = "feishu"
+    assert source["invocation_contracts"][entrypoint]["dynamic_resolvers"] == {
+        field: resolver.format(entrypoint=entrypoint)
+        for field, resolver in expected_dynamic.items()
+    }
+    assert source["invocation_contracts"][entrypoint]["argument_template"] == {}
+    assert set(template.allowed_entrypoints) == {"feishu"}
+    assert template.legacy_arguments["dry_run"] is True
+
+
 def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None:
     manifest = resolve_first_party_manifests(ToolRegistry())[
         "sync_arrival_stats"

@@ -168,7 +168,10 @@ Run 租约，避免审批回退与 executor 启动交叉。已有 `RUNNING/VERIF
 
 - `receipts_audit`、`clock_in_dual`：审批哈希绑定精确回单/运单或站点动作；
 - `customer_service_problem_mark_read`、`customer_service_problem_reply`、
-  `customer_service_problem_publish`：绑定平台、账号、外部问题件或运单，以及完整发布载荷哈希。
+  `customer_service_problem_publish`：绑定平台、账号、外部问题件或运单，以及完整发布载荷哈希；
+- `automation.split_pending_problem_upload.run`：只接受飞书固定命令从同一次预览恢复的一至九十个规范、
+  唯一、有序运单号及 64 位预览指纹；计划哈希绑定该精确选择，正式动作在任何写入前重读来源与快照、
+  复核指纹并完成全部目标预检，写入后分别读回投诉、问题件、Sheet、快照、结果与每日应签事件。
 
 `preview_self_pickup_problems` 与 `preview_split_pending_problems` 是独立的低风险只读能力：只接受显式
 `account_id`，封装器强制旧实现以 `dry_run=true` 运行，并把候选、来源、观测时间、完整性和 Evidence
@@ -179,7 +182,6 @@ Run 租约，避免审批回退与 executor 启动交叉。已有 `RUNNING/VERIF
 权威写后读回证明，固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不能进入第三方写执行：
 
 - `self_pickup_problem_upload`：只读候选已可预览，但尚无受管来源版本、精确候选指纹及目标问题件读回；
-- `split_pending_problem_upload`：虽已绑定预览指纹和所选运单，但目标问题件/差错记录尚无权威读后核验；
 - `r7_arrival_checkin`、`r7_departure_checkin`：尚无真实任务 ID 集合与远端版本预览；
 - `customer_service_problem_upload_attachment`：尚未同时绑定文件内容哈希和外部目标。
 
