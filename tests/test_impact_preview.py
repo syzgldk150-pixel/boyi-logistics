@@ -3,7 +3,19 @@ from __future__ import annotations
 import unittest
 
 from agent.orchestration.impact_preview import build_write_impact, validate_write_impact
-from agent.orchestration.models import OperationType, OrchestrationError
+from agent.orchestration.models import (
+    Actor,
+    ActorType,
+    Command,
+    ContextSnapshot,
+    OperationType,
+    OrchestrationError,
+)
+from agent.orchestration.planner import DeterministicPlanner
+from shared.automation_project_authorization import (
+    AutomationEntrypoint,
+    AutomationProjectInvocation,
+)
 
 
 class WriteImpactPreviewTests(unittest.TestCase):
@@ -76,28 +88,132 @@ class WriteImpactPreviewTests(unittest.TestCase):
         self.assertEqual("R0002", impact["entities"][0]["entity_id"])
         self.assertRegex(impact["entities"][0]["metadata"]["payload_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_split_stays_blocked_until_read_after_write_verification_exists(self):
+    def test_split_formal_selection_has_exact_ordered_waybill_impact(self):
         with self.assertRaises(OrchestrationError) as raised:
             build_write_impact(
-                tool_name="split_pending_problem_upload",
+                tool_name="automation.split_pending_problem_upload.run",
                 operation_type=OperationType.EXTERNAL_WRITE,
                 account_id="account-1",
                 arguments={"dry_run": True},
             )
         self.assertEqual("IMPACT_PREVIEW_REQUIRED", raised.exception.code)
 
-        with self.assertRaises(OrchestrationError) as raised:
-            build_write_impact(
-                tool_name="split_pending_problem_upload",
-                operation_type=OperationType.EXTERNAL_WRITE,
-                account_id="account-1",
-                arguments={
+        impact = build_write_impact(
+            tool_name="automation.split_pending_problem_upload.run",
+            operation_type=OperationType.EXTERNAL_WRITE,
+            account_id="account-1",
+            arguments={
+                "dry_run": False,
+                "selected_bill_codes": ["R2", "R1"],
+                "preview_fingerprint": "a" * 64,
+            },
+        )
+
+        assert impact is not None
+        self.assertEqual(["R2", "R1"], [item["entity_id"] for item in impact["entities"]])
+        self.assertEqual([0, 1], [item["metadata"]["selection_index"] for item in impact["entities"]])
+        self.assertEqual(
+            "signed_preview_fingerprint_all_target_preflight_and_independent_read_after_write",
+            impact["revalidation"],
+        )
+        validate_write_impact(operation_type=OperationType.EXTERNAL_WRITE, impact=impact)
+
+    def test_split_impact_rejects_unbound_or_ambiguous_selection(self):
+        invalid_arguments = (
+            {"dry_run": False, "selected_bill_codes": [], "preview_fingerprint": "a" * 64},
+            {
+                "dry_run": False,
+                "selected_bill_codes": ["R1", "R1"],
+                "preview_fingerprint": "a" * 64,
+            },
+            {
+                "dry_run": False,
+                "selected_bill_codes": ["R 1"],
+                "preview_fingerprint": "a" * 64,
+            },
+            {
+                "dry_run": False,
+                "selected_bill_codes": ["=R1"],
+                "preview_fingerprint": "a" * 64,
+            },
+            {
+                "dry_run": False,
+                "selected_bill_codes": ["R1"],
+                "preview_fingerprint": "not-a-fingerprint",
+            },
+            {
+                "dry_run": False,
+                "selected_bill_codes": [f"R{index}" for index in range(91)],
+                "preview_fingerprint": "a" * 64,
+            },
+        )
+        for arguments in invalid_arguments:
+            with self.subTest(arguments=arguments), self.assertRaises(OrchestrationError) as raised:
+                build_write_impact(
+                    tool_name="automation.split_pending_problem_upload.run",
+                    operation_type=OperationType.EXTERNAL_WRITE,
+                    account_id="account-1",
+                    arguments=arguments,
+                )
+            self.assertEqual("IMPACT_PREVIEW_REQUIRED", raised.exception.code)
+
+    def test_split_project_formal_plan_uses_exact_selected_waybill_impact(self):
+        tool_name = "automation.split_pending_problem_upload.run"
+
+        class _Catalog:
+            catalog_hash = "catalog-digest"
+
+            @staticmethod
+            def get_capability(requested_tool_name):
+                if requested_tool_name != tool_name:
+                    return None
+                return {
+                    "version": "1.0.21",
+                    "operation_type": "external_write",
+                    "risk_level": "high",
+                    "llm_exposed": False,
+                    "evidence": [],
+                    "postconditions": [
+                        {"name": "third_party_split_problem_confirmed"}
+                    ],
+                }
+
+        command = Command(
+            command_type="automation.project.invoke",
+            source="feishu",
+            actor=Actor(ActorType.FEISHU_USER, "user-1", roles=("super_admin",)),
+            parameters={
+                "tool_name": tool_name,
+                "account_id": "account-1",
+                "arguments": {
                     "dry_run": False,
                     "selected_bill_codes": ["R2", "R1"],
                     "preview_fingerprint": "a" * 64,
                 },
-            )
-        self.assertEqual("IMPACT_PREVIEW_REQUIRED", raised.exception.code)
+            },
+            idempotency_key="split-formal-1",
+            automation_invocation=AutomationProjectInvocation(
+                automation_id="split_pending_problem_upload",
+                automation_generation=1,
+                entrypoint=AutomationEntrypoint.FEISHU,
+                contract_id="split-contract-v1",
+                contract_hash="b" * 64,
+                policy_version=1,
+                project_configuration_version=1,
+                request_id="split-formal-1",
+            ),
+        )
+
+        plan = DeterministicPlanner(_Catalog()).plan(
+            command,
+            ContextSnapshot(values={}),
+        )
+
+        self.assertEqual(
+            ["R2", "R1"],
+            [entity["entity_id"] for entity in plan.impact["entities"]],
+        )
+        self.assertEqual(OperationType.EXTERNAL_WRITE, plan.steps[0].operation_type)
 
     def test_broad_and_unregistered_writes_fail_closed(self):
         for tool_name in (
@@ -105,6 +221,7 @@ class WriteImpactPreviewTests(unittest.TestCase):
             "r7_arrival_checkin",
             "r7_departure_checkin",
             "customer_service_problem_upload_attachment",
+            "split_pending_problem_upload",
             "future_external_write",
         ):
             with self.subTest(tool_name=tool_name), self.assertRaises(OrchestrationError) as raised:

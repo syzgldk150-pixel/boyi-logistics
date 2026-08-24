@@ -202,3 +202,4 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - 复核页支持置信度着色、填写人选择、键盘快捷交互（Tab/Enter/Ctrl+Enter）
 - 货拉拉调度地图配置从项目根目录 `.env` 读取 `AMAP_API_KEY`，如 Key 要求安全密钥，则同时配置 `AMAP_API_secret`（兼容旧变量名 `AMAP_SECURITY_CODE`）
 - 不要把真实密钥写进代码文件
+- 自动化目录“分批/未到问题件上传”只显示项目状态，不提供 Console 执行入口，也不开放定时执行；预览、人工选择、确认以及正式上传所需的预览指纹只由飞书固定命令注入。工具 `split_pending_problem_upload` 的来源/目标资源均为必填，账号角色默认 `ronghui_default`。

@@ -303,6 +303,18 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("ronghui", automation_task_provider("self_pickup_problem_upload", workflow))
         self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["self_pickup_problem_upload"])
 
+    def test_split_pending_problem_upload_catalog_points_to_feishu_selection(self):
+        workflow = AUTOMATION_WORKFLOW_BY_ID["split_pending_problem_upload"]
+        defaults = build_virtual_task_defaults("split_pending_problem_upload")
+
+        self.assertEqual("split_pending_problem_upload", workflow["tool_name"])
+        self.assertEqual("manual", defaults["task_mode"])
+        self.assertEqual(False, defaults["enabled"])
+        self.assertEqual(True, defaults["tool_params"]["dry_run"])
+        self.assertEqual("飞书分批预览 / 选择 / 确认", workflow["trigger_label"])
+        self.assertEqual("ronghui", automation_task_provider("split_pending_problem_upload", workflow))
+        self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["split_pending_problem_upload"])
+
     def test_daily_sign_account_roles_select_r13_and_one_tms_account(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         tasks = [
