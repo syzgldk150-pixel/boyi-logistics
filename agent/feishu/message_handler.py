@@ -63,6 +63,8 @@ R7_DEPARTURE_PENDING_TTL = 600
 R7_DEPARTURE_TASK_ID = "r7_departure_checkin"
 R7_DEPARTURE_DEFAULT_PLATE = "湘AK6980"
 SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
+SELF_PICKUP_PREVIEW_TOOL_NAME = "preview_self_pickup_problems"
+SELF_PICKUP_MAX_SELECTED = 250
 SPLIT_SELECTION_TTL = 600
 SPLIT_TOOL_NAME = "split_pending_problem_upload"
 SPLIT_PREVIEW_TOOL_NAME = "preview_split_pending_problems"
@@ -358,6 +360,48 @@ def _project_preview_params(route_key: str, tool_name: str) -> dict[str, Any]:
             )
         params[role] = binding
     return params
+
+
+def _self_pickup_confirmation_inputs(result: dict[str, Any]) -> dict[str, Any] | None:
+    payload = result.get("data") if isinstance(result.get("data"), dict) else {}
+    candidates = payload.get("candidates")
+    fingerprint = payload.get("preview_fingerprint")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    if len(candidates) > SELF_PICKUP_MAX_SELECTED:
+        return None
+    if not isinstance(fingerprint, str) or re.fullmatch(
+        r"[0-9a-f]{64}", fingerprint
+    ) is None:
+        return None
+    selected: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if not isinstance(item, dict):
+            return None
+        bill_code = item.get("bill_code")
+        if (
+            not isinstance(bill_code, str)
+            or bill_code != bill_code.strip()
+            or not bill_code
+            or len(bill_code) > 128
+            or any(character.isspace() for character in bill_code)
+            or bill_code.startswith("=")
+            or (
+                len(bill_code) >= 2
+                and bill_code[0] == bill_code[-1]
+                and bill_code[0] in {"'", '"'}
+            )
+            or bill_code in seen
+        ):
+            return None
+        seen.add(bill_code)
+        selected.append(bill_code)
+    return {
+        "dry_run": False,
+        "preview_fingerprint": fingerprint,
+        "selected_bill_codes": selected,
+    }
 
 
 async def _invoke_automation_project(
@@ -2567,16 +2611,20 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         if confirm_intent and result.get("success"):
-            set_pending(
-                chat_id,
-                {
-                    "type": "confirm_action",
-                    "tool_name": tool_name,
-                    "automation_route_key": automation_route_key,
-                    "dynamic_inputs": confirm_intent.get("dynamic_inputs") or {},
-                    "description": confirm_intent.get("description") or tool_name,
-                },
-            )
+            confirmation_inputs = dict(confirm_intent.get("dynamic_inputs") or {})
+            if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME:
+                confirmation_inputs = _self_pickup_confirmation_inputs(result)
+            if confirmation_inputs is not None:
+                set_pending(
+                    chat_id,
+                    {
+                        "type": "confirm_action",
+                        "tool_name": tool_name,
+                        "automation_route_key": automation_route_key,
+                        "dynamic_inputs": confirmation_inputs,
+                        "description": confirm_intent.get("description") or tool_name,
+                    },
+                )
         if selection_intent and tool_name == SPLIT_PREVIEW_TOOL_NAME and result.get("success"):
             payload = result.get("data") if isinstance(result.get("data"), dict) else result
             candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []

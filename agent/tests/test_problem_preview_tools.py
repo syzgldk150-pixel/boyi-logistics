@@ -9,6 +9,7 @@ def _preview_payload(account_id: str):
         "account_id": account_id,
         "candidate_count": 1,
         "candidates": [{"bill_code": "R_TEST"}],
+        "preview_fingerprint": "a" * 64,
         "source": {"resource_key": "test"},
     }
 
@@ -90,6 +91,23 @@ def test_preview_rejects_candidate_count_mismatch():
         runner=lambda _params: {
             **_preview_payload("ronghui_default"),
             "candidate_count": 2,
+        },
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["error"]["code"] == "INVALID_PREVIEW_CONTRACT"
+
+
+def test_self_pickup_preview_rejects_missing_fingerprint():
+    result = preview_self_pickup_problems(
+        {
+            "account_id": "ronghui_self_pickup_problem",
+            "daxiang_s_account_id": "ronghui_daxiang_s",
+        },
+        runner=lambda _params: {
+            key: value
+            for key, value in _preview_payload("ronghui_self_pickup_problem").items()
+            if key != "preview_fingerprint"
         },
     )
 
