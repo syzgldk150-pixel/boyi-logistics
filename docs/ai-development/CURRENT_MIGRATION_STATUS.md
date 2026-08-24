@@ -2,11 +2,11 @@
 
 更新时间：2026-08-25
 
-状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 至 TASK-010C9 本地测试、CI 和独立只读审查证据、TASK-010C12 / TASK-010C13 本地测试、CI 和独立只读审查证据、TASK-011 至 TASK-013 本地审计、实现、测试与独立只读审查证据，以及 TASK-020 本地审计、实现与测试证据
+状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 至 TASK-010C9 本地测试、CI 和独立只读审查证据、TASK-010C12 / TASK-010C13 本地测试、CI 和独立只读审查证据、TASK-011 至 TASK-013 本地审计、实现、测试与独立只读审查证据，以及 TASK-020、TASK-021 本地审计、实现与测试证据
 
-基线：`main` at `c795d0b`
+基线：`main` at `ec14a3c`
 
-重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-020 均未连接 ECS、未查询生产数据库、未执行生产自动化，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
+重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-021 均未连接 ECS、未查询生产数据库、未执行生产自动化，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
 
 ## 当前阶段
 
@@ -15,7 +15,7 @@
 | Phase 0：理解系统 | 已完成 | TASK-000 已完成本地源码、迁移、文档和测试资产审计 |
 | Phase 1：建立治理 | 已完成 | TASK-001 三份治理文档已经 PR #85 合并；TASK-001A 状态账本纠偏已经 PR #87 合并 |
 | Phase 2：保护现有自动化 | 已完成 | TASK-010A、TASK-010B、TASK-010C1 至 TASK-010C13、TASK-011、TASK-012、TASK-013 已完成本地保护与验收；生产状态均未核验 |
-| Phase 3：轻量插件管理 | 进行中 | TASK-020 已完成插件状态投影验收；TASK-021、TASK-022 待执行 |
+| Phase 3：轻量插件管理 | 进行中 | TASK-020、TASK-021 已完成；TASK-022 待执行 |
 | Phase 4：自动化中心 | 主要能力已存在，未验收 | Catalog 驱动列表、项目配置和飞书路由已经存在 |
 | Phase 5：模块注册 | 未开始 | 通用菜单、权限和模块状态注册尚未建立 |
 | Phase 6：AI Assistant | 部分存在 | 已有受限 LLM 工具路由，经营分析查询能力尚未建立 |
@@ -367,9 +367,17 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 
 - 复用能力：现有签名插件平台已经持久化 `INSTALLED/ENABLED/DISABLED/UPGRADING/UNINSTALLING/ERROR` 项目状态、独立 generation 协调状态、乐观锁版本、审计事件和 fail-closed Catalog，无需新表或第二套生命周期。
 - 状态修复：Console 现在把项目主状态与 generation 协调状态共同投影为操作员状态；`PREPARING/WAITING_COEFFECTS/READY_TO_COMMIT/DRAINING/DISPOSING/BLOCKED_UNKNOWN_WRITE/ERROR` 及未知协调值均显示为明确的非稳定状态。
-- 操作保护：只有 `INSTALLED/ENABLED/DISABLED + STABLE` 可执行插件生命周期动作；其他组合一律阻断运行与管理动作，不再把正在准备、依赖阻断、切换、排空或异常的项目误显示为稳定启用。
+- 操作保护：只有 `INSTALLED/ENABLED/DISABLED + STABLE` 可启用、升级、配置或卸载；其他组合一律阻断运行，不再把正在准备、依赖阻断、切换、排空或异常的项目误显示为稳定启用。紧急停用入口在 TASK-021 按后端真实合同单独保留。
 - 验证：状态定向测试 27 项和 22 个子测试、Console 完整测试 487 项和 183 个子测试、插件生命周期相关回归 104 项和 22 个子测试、根测试 1612 项和 277 个子测试通过；29 项环境型用例跳过；四项仓库守卫、Ruff 与 diff 检查通过。
 - 数据库：无迁移；生产状态未核验。
+
+### TASK-021 已完成：后台启停
+
+- 复用链路：Console 只接受真实 `super_admin` 会话、同源请求、浏览器 UUID 和实例 `record_version`，经签名内部 API 调用 Agent；启用仍须通过 release hold、项目材料未漂移和精确 `STABLE committed_generation` 检查。
+- 幂等审计：启用/停用现在在同一事务内完成状态 CAS 与 `PLUGIN_STATE_CHANGED` 事件写入，事件绑定请求 UUID、目标状态、CAS 前后版本和签名管理员身份。只有 Catalog 精确呈现 `expected_record_version + 1` 及同一目标状态时，版本不匹配请求才进入审计重放探测；响应丢失后重放同一请求只读回精确结果，参数、身份、版本形状或后续状态不同均显式冲突。
+- 止损语义：generation 准备、等待依赖、切换、排空或错误期间仍禁止运行、启用、升级、配置和卸载；只要项目主状态尚未进入升级/卸载且仍为 enabled，Console 保留精确 CAS 停用入口，允许撤销新运行权限。
+- 验证：定向回归 89 项和 48 个子测试、根测试 1622 项和 277 个子测试、Agent 完整测试 906 项和 140 个子测试、Console 完整测试 490 项和 187 个子测试通过；30 项环境型用例跳过；四项仓库守卫、Ruff 与 diff 检查通过。
+- 数据库：复用既有 `automation_project_events`，无迁移；生产状态未核验，未执行真实启停。
 
 ## 目标能力差距
 
@@ -396,7 +404,7 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 
 ### 需要先验收再判断
 
-- 插件启停、升级和卸载的生产体验
+- 插件升级和卸载的生产体验
 - 定时配置与入口开关的完整性
 - 自动化列表是否仍存在遗留静态卡或兼容入口
 - 飞书 route 唯一性、pending 恢复和取消行为
@@ -447,13 +455,14 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 | TASK-011 统计稳定性检查 | 已完成 | `sync_arrival_stats` 1.0.21 修复 dry-run 当天扫描漏算，将详情读取与调用预算校验前移到所有写入之前，并锁定 20,000 条来源上限；定向回归 134 项、完整根测试 1605 项和 270 个子测试、完整 Agent 测试 902 项和 140 个子测试通过，30 项环境型用例跳过，四项仓库守卫与 Ruff 通过，Sol Advisor 独立终审 `SHIP` | 无 |
 | TASK-012 分批稳定性检查 | 已完成 | `split_pending_problem_upload` 1.0.21 对齐可用入口，真实项目计划具备精确选择影响范围；仅保留飞书两步确认，Scheduler、Console 执行入口关闭；完整本地回归、四项守卫和 Sol Advisor 独立终审通过 | 无 |
 | TASK-013 自提问题件稳定性检查 | 已完成 | `self_pickup_problem_upload` 1.0.21 仅保留飞书两步确认，预览、pending、Planner 和签名动作共同绑定完整候选集合与指纹；完整本地回归、四项守卫和 Sol Advisor 独立终审通过 | 无 |
-| TASK-020 插件状态管理 | 已完成 | 复用现有生命周期与 generation 状态，Console 合并投影并仅允许稳定组合执行管理动作；完整本地回归和四项守卫通过 | 无 |
+| TASK-020 插件状态管理 | 已完成 | 复用现有生命周期与 generation 状态，Console 合并投影并对非稳定组合阻断运行；完整本地回归和四项守卫通过 | 无 |
+| TASK-021 后台启停 | 已完成 | 启停状态 CAS 与审计事件同事务提交，响应丢失可精确幂等重放；稳定代际启用与协调期紧急停用边界已锁定 | 无 |
 
 ## 下一步
 
-TASK-020 已完成插件状态管理验收。现有插件平台已经具备持久化生命周期、generation 协调、CAS 和审计，不新增框架或数据库；Console 补齐主状态与协调状态的联合投影，只有稳定组合允许生命周期操作。完整根、Console、生命周期相关回归和四项仓库守卫均通过。
+TASK-021 已完成后台启停验收。启停复用现有管理 API、超级管理员身份、release hold、依赖就绪和版本 CAS；新增同事务幂等审计，响应丢失可按同一 UUID 精确读回。Console 只在稳定代际允许启用，同时保留协调期紧急停用的止损入口。完整根、Agent、Console、定向回归和四项仓库守卫均通过。
 
-下一 TASK 为 `TASK-021 后台启停`。只验收并补齐现有 Console 启用/停用入口、权限、CAS、依赖门禁与反馈，不执行生产插件切换。生产插件安装、generation reconcile、项目策略切换、ECS 发布、服务重启和真实自动化仍不在仓库 TASK 授权内。
+下一 TASK 为 `TASK-022 定时配置管理`。只验收并补齐现有项目定时 DTO、入口开关、CAS、调度物化和 Console 反馈，不执行生产定时变更。生产插件安装、generation reconcile、项目策略切换、ECS 发布、服务重启和真实自动化仍不在仓库 TASK 授权内。
 
 ## 状态更新规则
 

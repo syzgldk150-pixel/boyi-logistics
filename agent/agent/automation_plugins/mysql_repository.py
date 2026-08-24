@@ -1135,12 +1135,14 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         request_id: str,
         expected_record_version: int,
     ) -> PluginInstanceRecord:
-        del actor_id, actor_role, request_id
         with self._orchestration.unit_of_work() as uow:
-            uow.automation_plugins.set_project_enabled(
+            uow.automation_plugins.set_project_enabled_with_audit(
                 automation_id,
                 enabled=enabled,
                 expected_record_version=expected_record_version,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                request_id=request_id,
             )
             uow.commit()
         persisted = self.get_instance(automation_id)

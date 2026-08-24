@@ -118,6 +118,10 @@ actor、`automation_id`、manifest 或签名/完整性内部字段。读取目�
 配置、入口和系统定时在同一个 CAS 事务内保存并立即使旧授权 stale。保存或升级后同步尝试 reconcile；
 依赖未就绪时响应只投影 `PREPARING/BLOCKED_DEPENDENCY`，不得宣称完成或提前启用。启用必须再次
 确认当前 desired material 已有完全匹配的 `STABLE committed_generation`。
+Console 启用/停用使用浏览器动作 UUID 与实例 `record_version` 做精确 CAS，并在同一事务写入
+`PLUGIN_STATE_CHANGED` 事件，绑定目标状态、CAS 前后版本和签名管理员身份；响应丢失后重放同一 UUID
+只读回该次结果，不得再次推进。启用必须等待稳定 committed generation；停用作为止损动作可在依赖
+协调中撤销新运行权限，但升级或卸载中的实例仍拒绝并发停用。
 
 业务账号池和资源池只能通过闭合安全 descriptor 进入管理投影。资源 descriptor 精确为
 `resource_id/name/kind/status`；Token、表格 ID、读写范围、文件路径、配置哈希/版本和原始配置留在
