@@ -12,6 +12,7 @@ import socket
 import uuid
 
 _MAX_RESPONSE = 10 * 1024 * 1024
+_MAX_REQUEST = 10 * 1024 * 1024
 
 
 def _broker_timeout():
@@ -39,7 +40,7 @@ def broker_call(operation, *, action, role, arguments):
         "arguments": dict(arguments),
     }
     payload = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\\n"
-    if len(payload) > 1024 * 1024:
+    if len(payload) > _MAX_REQUEST:
         raise RuntimeError("core broker request is too large")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(_broker_timeout())

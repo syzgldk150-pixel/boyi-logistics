@@ -213,6 +213,87 @@ def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
     assert calls == ["ronghui.scan.read_page", "scan.snapshot.replace"]
 
 
+def test_scan_collapses_duplicate_events_with_the_same_business_destination():
+    module = _load_action()
+    source = [
+        {
+            "bill_code": "R12345678901",
+            "destination": "总站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-24 08:00:00",
+            "scan_site": "网点一",
+        },
+        {
+            "bill_code": "R12345678901",
+            "destination": "总站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-24 08:05:00",
+            "scan_site": "网点二",
+        },
+    ]
+
+    def broker(_operation, *, action, role, arguments):
+        del role
+        if action == "ronghui.scan.read_page":
+            return {
+                "items": source,
+                "pagination_complete": True,
+                "next_cursor": None,
+                "evidence_ref": "evidence:duplicate-source",
+            }
+        assert action == "scan.snapshot.replace"
+        assert arguments["records"] == [
+            {
+                "raw_code": "R12345678901",
+                "destination": "总站",
+                "code_type": "main",
+                "main_tracking": "R12345678901",
+            }
+        ]
+        return {
+            "committed": True,
+            "record_count": 1,
+            "evidence_ref": "evidence:snapshot",
+        }
+
+    result = module.run_action({"target_date": "2026-08-24"}, broker)
+
+    assert result["status"] == "SUCCESS"
+    assert result["data"]["fetched"] == 1
+
+
+def test_scan_rejects_duplicate_bill_with_conflicting_destination():
+    module = _load_action()
+
+    def broker(_operation, *, action, role, arguments):
+        del role, arguments
+        assert action == "ronghui.scan.read_page"
+        return {
+            "items": [
+                {
+                    "bill_code": "R12345678901",
+                    "destination": "A站",
+                    "scan_type": "到货",
+                    "scan_time": "2026-08-24 08:00:00",
+                    "scan_site": "网点一",
+                },
+                {
+                    "bill_code": "R12345678901",
+                    "destination": "B站",
+                    "scan_type": "到货",
+                    "scan_time": "2026-08-24 08:05:00",
+                    "scan_site": "网点二",
+                },
+            ],
+            "pagination_complete": True,
+            "next_cursor": None,
+            "evidence_ref": "evidence:conflicting-source",
+        }
+
+    with pytest.raises(ValueError, match="conflicting duplicate destinations"):
+        module.run_action({"target_date": "2026-08-24"}, broker)
+
+
 def test_scan_stops_before_next_batch_when_postcondition_proof_changes():
     module = _load_action()
     child = "R123456789010001"
