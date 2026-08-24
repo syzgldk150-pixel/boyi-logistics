@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from typing import Any
+import uuid
 
 import pytest
 
@@ -37,6 +39,55 @@ def _load_action():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _formal_arguments(module, arguments, source_rows):
+    values = {**arguments, "dry_run": False}
+    target_date = module._target_date(values)
+    unique_source_rows = {}
+    for item in source_rows:
+        normalized = module._normalize_source_row(item)
+        previous = unique_source_rows.get(normalized["bill_code"])
+        if previous is not None and previous["destination"] != normalized["destination"]:
+            raise ValueError("test preview source contains conflicting destinations")
+        unique_source_rows.setdefault(normalized["bill_code"], normalized)
+    snapshot = module._normalize_snapshot(
+        [unique_source_rows[key] for key in sorted(unique_source_rows)]
+    )
+    candidates = module._candidate_items(
+        snapshot,
+        skipped=module._skip_codes(values.get("skip_bill_codes")),
+    )
+    batches, _omitted = module._batch_plan(candidates, values)
+    planned_items = [item for batch in batches for item in batch]
+    observed_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    binding = {
+        "contract_version": 1,
+        "plugin_id": "sync_scan_codes",
+        "preview_run_id": str(uuid.uuid4()),
+        "preview_step_id": str(uuid.uuid4()),
+        "preview_result_sha256": "1" * 64,
+        "project_instance_id": "scan_codes",
+        "generation": 1,
+        "contract_digest": "2" * 64,
+        "configuration_version": 1,
+        "target_date": target_date,
+        "observed_at": observed_at.isoformat(),
+        "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
+        "source_page_count": 1,
+        "normalized_record_count": len(snapshot),
+        "source_snapshot_sha256": module._canonical_sha256(snapshot),
+        "source_evidence_count": 1,
+        "source_evidence_refs_sha256": module._canonical_sha256(["evidence:preview"]),
+        "selection_count": len(planned_items),
+        "selection_sha256": module._canonical_sha256(planned_items),
+        "batch_count": len(batches),
+        "batch_plan_sha256": module._canonical_sha256(batches),
+        "formal_arguments_sha256": module._canonical_sha256(values),
+    }
+    binding["context_sha256"] = module._canonical_sha256(binding)
+    values["_scan_preview_binding"] = binding
+    return values
 
 
 def test_scan_action_owns_classification_batching_verification_and_commit_order():
@@ -132,10 +183,14 @@ def test_scan_action_owns_classification_batching_verification_and_commit_order(
         raise AssertionError((operation, action, role, arguments))
 
     result = module.run_action(
-        {
-            "target_date": "2026-08-15",
-            "batch_size": 1,
-        },
+        _formal_arguments(
+            module,
+            {
+                "target_date": "2026-08-15",
+                "batch_size": 1,
+            },
+            source,
+        ),
         broker,
     )
 
@@ -282,7 +337,10 @@ def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
             "evidence_ref": "evidence:empty-snapshot",
         }
 
-    result = module.run_action({"target_date": "2026-08-24"}, broker)
+    result = module.run_action(
+        _formal_arguments(module, {"target_date": "2026-08-24"}, []),
+        broker,
+    )
 
     assert result["status"] == "SUCCESS"
     assert result["meta"]["record_count"] == 0
@@ -333,7 +391,10 @@ def test_scan_collapses_duplicate_events_with_the_same_business_destination():
             "evidence_ref": "evidence:snapshot",
         }
 
-    result = module.run_action({"target_date": "2026-08-24"}, broker)
+    result = module.run_action(
+        _formal_arguments(module, {"target_date": "2026-08-24"}, source),
+        broker,
+    )
 
     assert result["status"] == "SUCCESS"
     assert result["data"]["fetched"] == 1
@@ -368,7 +429,10 @@ def test_scan_rejects_duplicate_bill_with_conflicting_destination():
         }
 
     with pytest.raises(ValueError, match="conflicting duplicate destinations"):
-        module.run_action({"target_date": "2026-08-24"}, broker)
+        module.run_action(
+            {"target_date": "2026-08-24", "dry_run": True},
+            broker,
+        )
 
 
 def test_scan_stops_before_next_batch_when_postcondition_proof_changes():
@@ -418,7 +482,22 @@ def test_scan_stops_before_next_batch_when_postcondition_proof_changes():
         raise AssertionError(action)
 
     with pytest.raises(ValueError, match="postcondition"):
-        module.run_action({"target_date": "2026-08-15"}, broker)
+        module.run_action(
+            _formal_arguments(
+                module,
+                {"target_date": "2026-08-15"},
+                [
+                    {
+                        "bill_code": child,
+                        "destination": "A站",
+                        "scan_type": "到货",
+                        "scan_time": "2026-08-15 08:00:00",
+                        "scan_site": "测试网点",
+                    }
+                ],
+            ),
+            broker,
+        )
 
     assert calls == [
         "ronghui.scan.read_page",
@@ -448,3 +527,110 @@ def test_scan_rejects_untrusted_or_ambiguous_arguments(arguments):
 
     with pytest.raises(ValueError):
         module.run_action(arguments, lambda *args, **kwargs: {})
+
+
+def test_formal_scan_requires_preview_binding_before_any_write():
+    module = _load_action()
+    calls: list[str] = []
+
+    def broker(_operation, *, action, role, arguments):
+        del role, arguments
+        calls.append(action)
+        assert action == "ronghui.scan.read_page"
+        return {
+            "items": [],
+            "pagination_complete": True,
+            "next_cursor": None,
+            "evidence_ref": "evidence:source",
+        }
+
+    with pytest.raises(ValueError, match="requires a preview binding"):
+        module.run_action({"target_date": "2026-08-15"}, broker)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "message"),
+    [
+        ("source_snapshot_sha256", "3" * 64, "source_snapshot_sha256"),
+        ("selection_sha256", "4" * 64, "selection_sha256"),
+        ("batch_plan_sha256", "5" * 64, "batch_plan_sha256"),
+    ],
+)
+def test_formal_scan_revalidates_exact_preview_hashes_before_any_write(
+    field,
+    replacement,
+    message,
+):
+    module = _load_action()
+    child = "R123456789010001"
+    source = [
+        {
+            "bill_code": child,
+            "destination": "A站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-15 08:00:00",
+            "scan_site": "测试网点",
+        }
+    ]
+    arguments = _formal_arguments(
+        module,
+        {"target_date": "2026-08-15"},
+        source,
+    )
+    binding = arguments["_scan_preview_binding"]
+    binding[field] = replacement
+    binding["context_sha256"] = module._canonical_sha256(
+        {key: value for key, value in binding.items() if key != "context_sha256"}
+    )
+    calls: list[str] = []
+
+    def broker(_operation, *, action, role, arguments):
+        del role, arguments
+        calls.append(action)
+        assert action == "ronghui.scan.read_page"
+        return {
+            "items": source,
+            "pagination_complete": True,
+            "next_cursor": None,
+            "evidence_ref": "evidence:fresh-source",
+        }
+
+    with pytest.raises(ValueError, match=message):
+        module.run_action(arguments, broker)
+
+    assert calls == ["ronghui.scan.read_page"]
+
+
+def test_formal_scan_rejects_expired_preview_before_any_write():
+    module = _load_action()
+    arguments = _formal_arguments(
+        module,
+        {"target_date": "2026-08-15"},
+        [],
+    )
+    binding = arguments["_scan_preview_binding"]
+    expired_observation = datetime.now(timezone.utc) - timedelta(minutes=20)
+    binding["observed_at"] = expired_observation.isoformat()
+    binding["expires_at"] = (expired_observation + timedelta(minutes=15)).isoformat()
+    binding["context_sha256"] = module._canonical_sha256(
+        {key: value for key, value in binding.items() if key != "context_sha256"}
+    )
+    calls: list[str] = []
+
+    def broker(_operation, *, action, role, arguments):
+        del role, arguments
+        calls.append(action)
+        assert action == "ronghui.scan.read_page"
+        return {
+            "items": [],
+            "pagination_complete": True,
+            "next_cursor": None,
+            "evidence_ref": "evidence:fresh-source",
+        }
+
+    with pytest.raises(ValueError, match="expired"):
+        module.run_action(arguments, broker)
+
+    assert calls == ["ronghui.scan.read_page"]

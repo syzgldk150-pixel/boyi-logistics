@@ -26,6 +26,7 @@ from agent.automation_plugins.first_party import (
 from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
 from tests.first_party_action_payload_support import (
     WriteAttemptReceiptCaptureMixin,
+    build_scan_preview_binding,
     load_first_party_action,
 )
 from agent.automation_plugins.core_adapter import (
@@ -2521,6 +2522,22 @@ def test_scan_codes_runs_router_to_fresh_server_verifier(
         ),
         cursor_secret=b"scan-router-fresh-readback-secret-v1",
     )
+    formal_arguments = {
+        "target_date": "2026-08-15",
+        "batch_size": 200,
+        "dry_run": False,
+    }
+    snapshot = [
+        {"raw_code": main_code, "destination": "总站", "code_type": "main", "main_tracking": main_code},
+        {"raw_code": child_code, "destination": "A站", "code_type": "child", "main_tracking": main_code},
+    ]
+    preview_binding = build_scan_preview_binding(
+        formal_arguments=formal_arguments,
+        snapshot=snapshot,
+        batches=[[{"bill_code": child_code, "station_name": "A站"}]],
+        project_instance_id="scan-codes-instance",
+        canonical_sha256=_sha,
+    )
     raw, verified, leases = _execute_yunda_write_generation(
         tmp_path=tmp_path,
         capability=capability,
@@ -2528,9 +2545,8 @@ def test_scan_codes_runs_router_to_fresh_server_verifier(
         manager=manager,
         resource_resolver=_ExactResourceResolver({}),
         arguments={
-            "target_date": "2026-08-15",
-            "batch_size": 200,
-            "dry_run": False,
+            **formal_arguments,
+            "_scan_preview_binding": preview_binding,
         },
     )
 
