@@ -240,7 +240,7 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
             "account_id": "ronghui_self_pickup_problem",
             "daxiang_s_account_id": "ronghui_daxiang_s",
         },
-        allowed_entrypoints=_CONSOLE_FEISHU,
+        allowed_entrypoints=_FEISHU,
         legacy_account_bindings={
             "account_id": "ronghui_self_pickup_problem",
             "daxiang_s_account_id": "ronghui_daxiang_s",

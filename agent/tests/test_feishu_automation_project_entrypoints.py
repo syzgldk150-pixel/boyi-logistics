@@ -671,7 +671,12 @@ def test_self_pickup_preview_uses_committed_accounts_and_confirmation_uses_route
             "success": True,
             "data": {
                 "stage": "dry_run",
-                "candidate_count": 0,
+                "candidate_count": 2,
+                "candidates": [
+                    {"bill_code": "R_SELF"},
+                    {"bill_code": "R_DX_PICK"},
+                ],
+                "preview_fingerprint": "f" * 64,
                 "source_summaries": [],
             },
         }
@@ -719,7 +724,11 @@ def test_self_pickup_preview_uses_committed_accounts_and_confirmation_uses_route
         _run_verified_text("yes", event_id="event-confirm")
 
     assert service.calls[-1]["event_id"] == "event-confirm"
-    assert service.calls[-1]["envelope"]["body"] == {"dry_run": False}
+    assert service.calls[-1]["envelope"]["body"] == {
+        "dry_run": False,
+        "selected_bill_codes": ["R_SELF", "R_DX_PICK"],
+        "preview_fingerprint": "f" * 64,
+    }
 
 
 def test_split_preview_selection_and_confirmation_preserve_signed_dynamic_fields():

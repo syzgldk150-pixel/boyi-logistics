@@ -47,6 +47,7 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
             result = self_pickup_problem_upload.run_once({"dry_run": True})
 
         self.assertEqual(2, result["candidate_count"])
+        self.assertRegex(result["preview_fingerprint"], r"^[0-9a-f]{64}$")
         source_summaries = {item["source_id"]: item for item in result["source_summaries"]}
         self.assertEqual(
             ["R_SELF"],

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from agent.tms_runtime.scripts import self_pickup_problem_upload as legacy_action
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "agent" / "first_party_automation_plugins" / "self_pickup_problem_upload"
@@ -148,6 +150,26 @@ def test_preview_owns_exact_source_filtering_deduplication_and_fingerprint():
     assert proof["condition"] == "third_party_self_pickup_problem_confirmed"
     assert proof["details"]["write_attempted"] is False
     _assert_no_resource_locations(result)
+
+
+def test_legacy_read_only_preview_fingerprint_matches_signed_candidate_material():
+    action, _ = _load_action()
+    rows = _source_rows()
+    legacy_records = legacy_action._collect_waybills_from_values(
+        rows,
+        source_rules=legacy_action._source_rules({}),
+        source_sheet_id="sheet-1",
+        source_sheet_title="每日到货表",
+    )
+    signed_candidates, _duplicates = action._collect_candidates(
+        rows,
+        include_daxiang=True,
+        limit=None,
+    )
+
+    assert legacy_action._preview_fingerprint(
+        legacy_records
+    ) == action._preview_fingerprint(signed_candidates)
 
 
 def test_formal_selection_preflights_every_target_before_create_and_verifies_each_write():
