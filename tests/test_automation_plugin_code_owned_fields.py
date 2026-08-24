@@ -21,6 +21,16 @@ FIRST_PARTY_TRUST = "ed25519_first_party"
 
 def test_code_owned_fields_require_exact_first_party_instance_identity() -> None:
     assert first_party_code_owned_config_fields(
+        automation_id="scan_codes",
+        plugin_id="sync_scan_codes",
+        trust_source=FIRST_PARTY_TRUST,
+    ) == ("_scan_preview_binding",)
+    assert first_party_code_owned_plan_fields(
+        automation_id="scan_codes",
+        plugin_id="sync_scan_codes",
+        trust_source=FIRST_PARTY_TRUST,
+    ) == ("_scan_preview_binding",)
+    assert first_party_code_owned_config_fields(
         automation_id="customer_problems_shadow",
         plugin_id="sync_customer_service_problems",
         trust_source=FIRST_PARTY_TRUST,
@@ -65,6 +75,16 @@ def test_code_owned_fields_require_exact_first_party_instance_identity() -> None
 
 
 def test_persisted_code_owned_config_normalization_is_detached_and_closed() -> None:
+    assert normalize_first_party_code_owned_config(
+        automation_id="scan_codes",
+        plugin_id="sync_scan_codes",
+        trust_source=FIRST_PARTY_TRUST,
+        config={
+            "target_date": "2026-08-24",
+            "_scan_preview_binding": {"forged": True},
+        },
+    ) == {"target_date": "2026-08-24"}
+
     source = {
         "direction": "both",
         "recheck_items": [{"dedupe_key": "problem:one"}],
