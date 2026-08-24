@@ -20,11 +20,16 @@ from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
+    PluginProjectState,
     PluginTrustSource,
     RuntimeReconcileState,
 )
 from agent.automation_plugins.ports import PluginStoragePort
 from agent.orchestration.models import Actor, ActorType
+from shared.orchestration_repository_support import (
+    ConcurrentUpdateError,
+    IdempotencyConflict,
+)
 
 
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -505,10 +510,42 @@ class AutomationPluginManagementService:
         self._require_mutation_allowed()
         entry = self._catalog.require(automation_id)
         if entry.record_version != expected_record_version:
-            raise PluginConflictError(
-                "automation instance version changed before state update",
-                code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+            # A committed state change can outlive its HTTP response.  Let the
+            # audited repository prove an exact retry before rejecting the
+            # stale catalog version; never reconcile or prepare new work here.
+            # The catalog must first have the only shape an exact lost-response
+            # replay can produce.  This prevents the probe from creating a new
+            # enable that bypasses readiness checks if versions race forward.
+            target_state = (
+                PluginProjectState.ENABLED.value
+                if enabled
+                else PluginProjectState.DISABLED.value
             )
+            projected_state = getattr(entry.state, "value", entry.state)
+            if (
+                entry.record_version != expected_record_version + 1
+                or bool(entry.enabled) is not bool(enabled)
+                or projected_state != target_state
+            ):
+                raise PluginConflictError(
+                    "automation instance version changed before state update",
+                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                )
+            try:
+                instance = self._lifecycle.set_enabled(
+                    automation_id,
+                    enabled=enabled,
+                    actor_id=actor.actor_id,
+                    actor_role=role,
+                    request_id=request_id,
+                    expected_record_version=expected_record_version,
+                )
+            except (ConcurrentUpdateError, IdempotencyConflict) as exc:
+                raise PluginConflictError(
+                    "automation instance version changed before state update",
+                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                ) from exc
+            return self._instance_projection(instance)
         if enabled:
             expected_material = (
                 entry.installed_version,

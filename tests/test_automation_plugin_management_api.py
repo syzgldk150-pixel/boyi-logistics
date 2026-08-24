@@ -30,6 +30,7 @@ from agent.automation_plugins.models import (
 )
 from agent.automation_plugins.storage import FilesystemPluginStorage
 from agent.orchestration.models import Actor, ActorType
+from shared.orchestration_repository_support import IdempotencyConflict
 
 
 def _console_actor(*, super_admin: bool = True) -> Actor:
@@ -394,6 +395,209 @@ def test_enable_requires_exact_committed_generation_before_lifecycle_call() -> N
         )
     assert error.value.code == "PLUGIN_GENERATION_NOT_READY"
     assert target_calls == ["automation-1"]
+    assert lifecycle_calls == []
+
+
+def test_disable_revokes_authority_while_generation_is_reconciling() -> None:
+    lifecycle_calls: list[dict[str, Any]] = []
+    target_calls: list[str] = []
+    catalog = _Catalog(
+        _entry(
+            enabled=True,
+            state=PluginProjectState.ENABLED.value,
+            reconcile_state=RuntimeReconcileState.PREPARING,
+        )
+    )
+
+    def set_enabled(automation_id: str, **kwargs: Any) -> SimpleNamespace:
+        lifecycle_calls.append({"automation_id": automation_id, **kwargs})
+        return SimpleNamespace(
+            automation_id=automation_id,
+            plugin_id="example_action",
+            display_name="Example action",
+            active_version=SimpleNamespace(version="1.0.0"),
+            enabled=False,
+            state=PluginProjectState.DISABLED,
+            record_version=4,
+            target_generation=2,
+            committed_generation=1,
+            reconcile_state=RuntimeReconcileState.PREPARING,
+        )
+
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(set_enabled=set_enabled),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(
+            reconcile_project=lambda automation_id: target_calls.append(automation_id)
+        ),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    result = service.set_enabled(
+        "automation-1",
+        enabled=False,
+        request_id=str(uuid.uuid4()),
+        expected_record_version=3,
+        actor=_console_actor(),
+    )
+
+    assert result["enabled"] is False
+    assert result["state"] == "DISABLED"
+    assert target_calls == []
+    assert lifecycle_calls[0]["expected_record_version"] == 3
+
+
+def test_state_response_loss_retry_reaches_audited_lifecycle_without_reconcile() -> None:
+    catalog = _Catalog(
+        _entry(
+            enabled=True,
+            state=PluginProjectState.ENABLED.value,
+            reconcile_state=RuntimeReconcileState.PREPARING,
+        )
+    )
+    target_calls: list[str] = []
+    lifecycle_calls: list[dict[str, Any]] = []
+    request_id = str(uuid.uuid4())
+
+    def set_enabled(automation_id: str, **kwargs: Any) -> SimpleNamespace:
+        lifecycle_calls.append({"automation_id": automation_id, **kwargs})
+        if len(lifecycle_calls) == 1:
+            catalog.current = _entry(
+                enabled=False,
+                state=PluginProjectState.DISABLED.value,
+                record_version=4,
+                reconcile_state=RuntimeReconcileState.PREPARING,
+            )
+        elif lifecycle_calls[-1] != lifecycle_calls[0]:
+            raise IdempotencyConflict("plugin state request was reused")
+        return SimpleNamespace(
+            automation_id=automation_id,
+            plugin_id="example_action",
+            display_name="Example action",
+            active_version=SimpleNamespace(version="1.0.0"),
+            enabled=False,
+            state=PluginProjectState.DISABLED,
+            record_version=4,
+            target_generation=2,
+            committed_generation=1,
+            reconcile_state=RuntimeReconcileState.PREPARING,
+        )
+
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(set_enabled=set_enabled),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(
+            reconcile_project=lambda automation_id: target_calls.append(automation_id)
+        ),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    first = service.set_enabled(
+        "automation-1",
+        enabled=False,
+        request_id=request_id,
+        expected_record_version=3,
+        actor=_console_actor(),
+    )
+    retried = service.set_enabled(
+        "automation-1",
+        enabled=False,
+        request_id=request_id,
+        expected_record_version=3,
+        actor=_console_actor(),
+    )
+
+    assert first == retried
+    assert first["enabled"] is False
+    assert target_calls == []
+    assert len(lifecycle_calls) == 2
+    assert {call["request_id"] for call in lifecycle_calls} == {request_id}
+    assert {call["expected_record_version"] for call in lifecycle_calls} == {3}
+
+
+def test_stale_state_request_fails_closed_when_audited_lifecycle_rejects_it() -> None:
+    lifecycle_calls: list[dict[str, Any]] = []
+
+    def reject_state_change(automation_id: str, **kwargs: Any) -> None:
+        lifecycle_calls.append({"automation_id": automation_id, **kwargs})
+        raise IdempotencyConflict("plugin state request was reused")
+
+    service = AutomationPluginManagementService(
+        catalog=_Catalog(
+            _entry(
+                enabled=True,
+                state=PluginProjectState.ENABLED.value,
+                record_version=4,
+            )
+        ),  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(set_enabled=reject_state_change),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(
+            reconcile_project=lambda _automation_id: (_ for _ in ()).throw(
+                AssertionError("stale retries must not reconcile")
+            )
+        ),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    with pytest.raises(PluginConflictError) as error:
+        service.set_enabled(
+            "automation-1",
+            enabled=True,
+            request_id=str(uuid.uuid4()),
+            expected_record_version=3,
+            actor=_console_actor(),
+        )
+
+    assert error.value.code == "PLUGIN_INSTANCE_VERSION_CONFLICT"
+    assert len(lifecycle_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "current_entry",
+    (
+        _entry(record_version=2),
+        _entry(
+            enabled=False,
+            state=PluginProjectState.DISABLED.value,
+            record_version=4,
+        ),
+    ),
+)
+def test_stale_state_request_with_non_replay_shape_never_calls_lifecycle(
+    current_entry: SimpleNamespace,
+) -> None:
+    lifecycle_calls: list[dict[str, Any]] = []
+    service = AutomationPluginManagementService(
+        catalog=_Catalog(current_entry),  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(
+            set_enabled=lambda *args, **kwargs: lifecycle_calls.append(kwargs)
+        ),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    with pytest.raises(PluginConflictError) as error:
+        service.set_enabled(
+            "automation-1",
+            enabled=True,
+            request_id=str(uuid.uuid4()),
+            expected_record_version=3,
+            actor=_console_actor(),
+        )
+
+    assert error.value.code == "PLUGIN_INSTANCE_VERSION_CONFLICT"
     assert lifecycle_calls == []
 
 

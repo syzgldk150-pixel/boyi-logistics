@@ -2403,6 +2403,143 @@ class AutomationPluginRepository(
             raise OrchestrationPersistenceError("automation project disappeared")
         return project
 
+    def set_project_enabled_with_audit(
+        self,
+        automation_id: str,
+        *,
+        enabled: bool,
+        expected_record_version: int,
+        actor_id: str,
+        actor_role: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """CAS one Console state change with an idempotent audit event."""
+
+        project_id = _required_text(automation_id, "automation_id")
+        expected_version = _positive_int(
+            expected_record_version,
+            "expected_record_version",
+        )
+        normalized_actor = _required_text(actor_id, "actor_id")
+        normalized_role = _required_text(actor_role, "actor_role")
+        normalized_request = _required_text(request_id, "request_id")
+        target_enabled = bool(enabled)
+        target_state = "ENABLED" if target_enabled else "DISABLED"
+        request_payload = {
+            "enabled": target_enabled,
+            "expected_record_version": expected_version,
+        }
+        request_payload_sha256 = _json_hash(request_payload)
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM automation_projects
+                WHERE automation_id=%s FOR UPDATE
+                """,
+                (project_id,),
+            )
+            project = _row_dict(cursor, cursor.fetchone())
+            if project is None:
+                raise OrchestrationPersistenceError(
+                    "automation project is not installed"
+                )
+            cursor.execute(
+                """
+                SELECT * FROM automation_project_events
+                WHERE automation_id=%s AND request_id=%s FOR UPDATE
+                """,
+                (project_id, normalized_request),
+            )
+            prior_event = _decode_row(
+                _row_dict(cursor, cursor.fetchone()),
+                ("metadata_json",),
+            )
+
+            if prior_event is not None:
+                metadata = prior_event.get("metadata_json")
+                if (
+                    prior_event.get("event_type") != "PLUGIN_STATE_CHANGED"
+                    or not isinstance(metadata, Mapping)
+                    or metadata.get("request_payload_sha256")
+                    != request_payload_sha256
+                    or prior_event.get("actor_id") != normalized_actor
+                    or prior_event.get("actor_role") != normalized_role
+                ):
+                    raise IdempotencyConflict(
+                        "plugin state request was reused with different input"
+                    )
+                if (
+                    project.get("state") != target_state
+                    or bool(project.get("enabled")) is not target_enabled
+                    or project.get("record_version") != expected_version + 1
+                ):
+                    raise IdempotencyConflict(
+                        "plugin state changed after the idempotent request"
+                    )
+                return project
+
+            from_state = str(project.get("state") or "")
+            if (
+                project.get("record_version") != expected_version
+                or from_state in {"UNINSTALLING", "UPGRADING"}
+            ):
+                raise ConcurrentUpdateError(
+                    "automation project instance version changed"
+                )
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET enabled=%s, state=%s, record_version=record_version+1,
+                    updated_at=NOW(6)
+                WHERE automation_id=%s AND record_version=%s
+                  AND state NOT IN ('UNINSTALLING', 'UPGRADING')
+                """,
+                (
+                    target_enabled,
+                    target_state,
+                    project_id,
+                    expected_version,
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError(
+                    "automation project instance version changed"
+                )
+            event_metadata = {
+                "request_payload_sha256": request_payload_sha256,
+                "enabled": target_enabled,
+                "from_record_version": expected_version,
+                "to_record_version": expected_version + 1,
+            }
+            cursor.execute(
+                """
+                INSERT INTO automation_project_events (
+                    automation_id, request_id, event_type, from_state, to_state,
+                    metadata_json, metadata_sha256, actor_id, actor_role
+                ) VALUES (
+                    %s, %s, 'PLUGIN_STATE_CHANGED', %s, %s,
+                    %s, %s, %s, %s
+                )
+                """,
+                (
+                    project_id,
+                    normalized_request,
+                    from_state,
+                    target_state,
+                    _json_param(event_metadata, {}),
+                    _json_hash(event_metadata),
+                    normalized_actor,
+                    normalized_role,
+                ),
+            )
+        return {
+            **project,
+            "enabled": target_enabled,
+            "state": target_state,
+            "record_version": expected_version + 1,
+        }
+
     def list_invalid_scheduled_project_links(self) -> list[dict[str, Any]]:
         """Return only safe identifiers; never include cron parameters."""
 

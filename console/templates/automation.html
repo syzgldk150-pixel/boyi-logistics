@@ -386,7 +386,7 @@
             </div>
             {% if can_manage_plugins %}
             <div class="automation-plugin-menu-wrap">
-              <button class="ghost-btn automation-plugin-menu-toggle" type="button" data-plugin-menu-toggle aria-expanded="false" aria-label="管理 {{ task.name_value }}" title="{{ '更多操作' if plugin.lifecycle_actions_allowed else '当前状态不可执行项目操作' }}" {% if not plugin.lifecycle_actions_allowed %}disabled aria-disabled="true"{% endif %}>
+              <button class="ghost-btn automation-plugin-menu-toggle" type="button" data-plugin-menu-toggle aria-expanded="false" aria-label="管理 {{ task.name_value }}" title="{{ '更多操作' if plugin.menu_actions_allowed else '当前状态不可执行项目操作' }}" {% if not plugin.menu_actions_allowed %}disabled aria-disabled="true"{% endif %}>
                 <i data-feather="more-horizontal"></i>
               </button>
               <div class="automation-plugin-menu" data-plugin-menu hidden>
@@ -396,9 +396,9 @@
                 </label>
                 <button class="automation-plugin-menu-item" type="button" data-plugin-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级此项目</button>
                 {% if plugin.enabled %}
-                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="disable" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>停用此项目</button>
+                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>停用此项目</button>
                 {% else %}
-                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="enable" {% if task.plugin_blocked or not plugin.lifecycle_actions_allowed %}disabled title="{{ '当前状态不可启用' if not plugin.lifecycle_actions_allowed else '请先补齐账号、资源和设备配置' }}"{% endif %}>启用此项目</button>
+                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="enable" {% if not plugin.enable_allowed %}disabled title="{{ '当前状态不可启用' if not plugin.lifecycle_actions_allowed else '请先补齐账号、资源和设备配置' }}"{% endif %}>启用此项目</button>
                 {% endif %}
                 <button class="automation-plugin-menu-item automation-plugin-menu-item--danger" type="button" data-plugin-instance-action="uninstall" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>卸载此项目</button>
               </div>
