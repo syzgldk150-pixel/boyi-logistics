@@ -914,6 +914,7 @@
               <i data-feather="plus"></i>
               添加时间
             </button>
+            {% if task.plugin %}<p class="auto-account-blocked" data-plugin-schedule-effect {% if not (task.plugin.schedule.enabled and 'scheduler' not in task.plugin.enabled_entrypoints) %}hidden{% endif %}>定时时间会保留，但“系统定时”入口关闭，当前不会运行。</p>{% endif %}
             {% if task.plugin %}<p class="auto-webhook-note">定时由系统设置维护；浏览器只提交时间与启停状态，任务 ID 和 Cron 由 Agent 生成。{% if task.plugin_schedule_source == 'legacy_migration' %} 当前显示旧定时迁移值，首次保存后切换为项目权威。{% endif %}</p>{% endif %}
           </div>
           {% endif %}
@@ -1266,6 +1267,7 @@
 
   /* ── toggle 自动保存 ── */
   async function autoSaveToggle(form) {
+    if (form.querySelector('input[name="project_plugin_instance"]')) return;
     serializeForm(form);
     const fd = new FormData(form);
     const body = new URLSearchParams();
