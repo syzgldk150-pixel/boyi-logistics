@@ -114,6 +114,231 @@ def test_installed_tool_alias_accepts_generation_bound_plugin_proof_identity():
     assert outcome.run_status is RunStatus.COMPLETED
 
 
+def _scan_step(*, dry_run: bool) -> PlanStep:
+    return PlanStep(
+        step_key="scan",
+        tool_name="automation.scan_codes.run",
+        tool_version="1.0.23",
+        operation_type=OperationType.READ if dry_run else OperationType.EXTERNAL_WRITE,
+        arguments=(
+            {"dry_run": True}
+            if dry_run
+            else {"dry_run": False, "_scan_preview_binding": {"context_sha256": "c" * 64}}
+        ),
+        account_id="account-1",
+        depends_on=(),
+        idempotency_key="scan-1",
+        expected_evidence=(),
+        postconditions=(
+            {"name": "authoritative_scan_preview_returned"}
+            if dry_run
+            else {"name": "scan_formal_execution_verified"}
+        ,),
+        risk_level=RiskLevel.LOW if dry_run else RiskLevel.HIGH,
+        requires_approval=not dry_run,
+    )
+
+
+def _scan_capability():
+    capability = _capability(condition="scan_formal_execution_verified")
+    capability["output_schema"]["properties"]["data"] = {
+        "type": "object",
+        "additionalProperties": True,
+    }
+    capability["_plugin_runtime"] = {
+        "automation_id": "scan_codes",
+        "plugin_id": "sync_scan_codes",
+        "trust_source": "ed25519_first_party",
+    }
+    return capability
+
+
+def _scan_result(*, dry_run: bool, batch_count: int = 1):
+    observed_at = "2026-08-24T00:00:00Z"
+    source_refs = ["evidence:source"]
+    if dry_run:
+        preview = {
+            "observed_at": observed_at,
+            "pagination_complete": True,
+            "source_page_count": 1,
+            "normalized_record_count": 1,
+            "source_snapshot_sha256": "a" * 64,
+            "source_evidence_refs": source_refs,
+            "selection_count": 1,
+            "selection_sha256": "b" * 64,
+            "batch_count": 1,
+            "batch_plan_sha256": "c" * 64,
+        }
+        details = {
+            "phase": "preview",
+            "pagination_complete": True,
+            "source_page_count": 1,
+            "normalized_record_count": 1,
+            "source_snapshot_sha256": "a" * 64,
+            "source_evidence_refs": source_refs,
+            "selection_count": 1,
+            "selection_sha256": "b" * 64,
+            "batch_count": 1,
+            "batch_plan_sha256": "c" * 64,
+            "write_attempted": False,
+        }
+        condition = "authoritative_scan_preview_returned"
+        primary = source_refs[-1]
+        evidence_refs = source_refs
+        data = {
+            "phase": "preview",
+            "dry_run": True,
+            "preview_evidence": preview,
+            "evidence": {"observed_at": observed_at},
+        }
+    else:
+        projection = "evidence:projection"
+        submit_refs = [f"evidence:submit:{index}" for index in range(batch_count)]
+        verification_refs = [f"evidence:verify:{index}" for index in range(batch_count)]
+        scheduled = batch_count
+        details = {
+            "phase": "formal",
+            "preview_revalidation_matched": True,
+            "preview_context_sha256": "c" * 64,
+            "projection_evidence_ref": projection,
+            "projection_record_count": 1,
+            "projection_snapshot_sha256": "a" * 64,
+            "batch_count": batch_count,
+            "scheduled_items": scheduled,
+            "scanned": scheduled,
+            "skipped_signed_count": 0,
+            "submit_evidence_refs": submit_refs,
+            "verification_evidence_refs": verification_refs,
+            "external_write_attempted": bool(batch_count),
+        }
+        condition = "scan_formal_execution_verified"
+        primary = verification_refs[-1] if verification_refs else projection
+        batch_refs = [
+            ref
+            for pair in zip(submit_refs, verification_refs, strict=True)
+            for ref in pair
+        ]
+        evidence_refs = source_refs + [projection] + batch_refs
+        data = {
+            "phase": "formal",
+            "dry_run": False,
+            "batches": batch_count,
+            "normalized": 1,
+            "scheduled_items": scheduled,
+            "scanned": scheduled,
+            "skipped_signed_count": 0,
+            "preview_revalidation": {
+                "verified": True,
+                "context_sha256": "c" * 64,
+                "source_snapshot_sha256": "a" * 64,
+            },
+            "evidence": {"observed_at": observed_at},
+        }
+    return {
+        "status": "SUCCESS",
+        "data": data,
+        "meta": {
+            "source_system": "ronghui",
+            "observed_at": observed_at,
+            "record_count": 1,
+            "pagination_complete": True,
+            "evidence_refs": evidence_refs,
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": condition,
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": primary,
+                    "details": details,
+                }
+            },
+        },
+        "warnings": [],
+        "error": None,
+    }
+
+
+def _generation_bound_scan(result, *, requires_write: bool, started_writes: int):
+    return GenerationBoundResult(
+        result,
+        verification=GenerationVerificationContext(
+            automation_id="scan_codes",
+            generation=1,
+            lease_id="c0f9af26-8a75-469c-89a7-94fbce2453ad",
+            account_ids=("account-1",),
+            account_bindings_sha256="d" * 64,
+            requires_write_verification=requires_write,
+            started_mutating_call_count=started_writes,
+        ),
+    )
+
+
+class _FinalizingGenerationLeases:
+    def __init__(self):
+        self.outcomes = []
+
+    def finalize_generation_write(self, **values):
+        self.outcomes.append(values["outcome"])
+
+
+def test_scan_preview_requires_plugin_claim_and_core_zero_write_proof():
+    result = _scan_result(dry_run=True)
+    accepted = ResultVerifier().verify(
+        _scan_step(dry_run=True),
+        _generation_bound_scan(result, requires_write=False, started_writes=0),
+        _scan_capability(),
+    )
+    assert accepted.accepted is True
+
+    result["meta"]["postcondition_evidence"]["0"]["details"]["write_attempted"] = True
+    rejected = ResultVerifier().verify(
+        _scan_step(dry_run=True),
+        _generation_bound_scan(result, requires_write=False, started_writes=0),
+        _scan_capability(),
+    )
+    assert rejected.code == "POSTCONDITION_UNVERIFIED"
+
+
+@pytest.mark.parametrize("batch_count", [0, 2])
+def test_scan_formal_requires_complete_batch_proof_and_count_conservation(batch_count):
+    leases = _FinalizingGenerationLeases()
+    result = _scan_result(dry_run=False, batch_count=batch_count)
+    outcome = ResultVerifier(leases).verify(
+        _scan_step(dry_run=False),
+        _generation_bound_scan(
+            result,
+            requires_write=True,
+            started_writes=1 + batch_count,
+        ),
+        _scan_capability(),
+    )
+    assert outcome.accepted is True
+    assert leases.outcomes
+
+
+def test_scan_formal_missing_verification_or_tampered_conservation_is_rejected():
+    result = _scan_result(dry_run=False, batch_count=2)
+    result["meta"]["postcondition_evidence"]["0"]["details"][
+        "verification_evidence_refs"
+    ].pop()
+    missing = ResultVerifier(_FinalizingGenerationLeases()).verify(
+        _scan_step(dry_run=False),
+        _generation_bound_scan(result, requires_write=True, started_writes=3),
+        _scan_capability(),
+    )
+    assert missing.code == "POSTCONDITION_UNVERIFIED"
+
+    result = _scan_result(dry_run=False, batch_count=2)
+    result["data"]["scanned"] = 1
+    tampered = ResultVerifier(_FinalizingGenerationLeases()).verify(
+        _scan_step(dry_run=False),
+        _generation_bound_scan(result, requires_write=True, started_writes=3),
+        _scan_capability(),
+    )
+    assert tampered.code == "POSTCONDITION_UNVERIFIED"
+
+
 def test_write_finalization_persistence_failure_remains_unknown_and_recoverable():
     class _FailingGenerationLeases:
         def finalize_generation_write(self, **_kwargs):

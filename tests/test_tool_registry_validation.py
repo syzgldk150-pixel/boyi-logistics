@@ -424,7 +424,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
             "sync_daily_should_sign",
             "sync_site_send_list",
             "sync_arrive_list",
-            "sync_scan_codes",
             "sync_arrival_stats",
             "sync_yunda_dispatch_forecast",
             "sync_yunda_send_waybills",
@@ -439,6 +438,7 @@ class ToolRegistryValidationTests(unittest.TestCase):
             "self_pickup_problem_upload",
             "split_pending_problem_upload",
             "r7_departure_checkin",
+            "sync_scan_codes",
         }
 
         for name in internal_syncs:

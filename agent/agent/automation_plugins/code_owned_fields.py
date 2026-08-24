@@ -15,6 +15,8 @@ _SCAN_PREVIEW_BROKER_ACTION = "ronghui.scan.read_page"
 
 SCAN_PHASE_PREVIEW = "PREVIEW"
 SCAN_PHASE_FORMAL = "FORMAL"
+SCAN_PREVIEW_POSTCONDITION = "authoritative_scan_preview_returned"
+SCAN_FORMAL_POSTCONDITION = "scan_formal_execution_verified"
 
 _CODE_OWNED_CONFIG_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
     (
@@ -236,4 +238,5 @@ def apply_scan_execution_boundary(
     resolved["_plugin_runtime"] = restricted_metadata
     resolved["operation_type"] = "read"
     resolved["risk_level"] = "low"
+    resolved["postconditions"] = [{"name": SCAN_PREVIEW_POSTCONDITION}]
     return resolved

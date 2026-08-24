@@ -13,6 +13,12 @@ from agent.automation_plugins.models import (
     GenerationVerificationContext,
     RuntimeLeaseOutcome,
 )
+from agent.automation_plugins.code_owned_fields import (
+    SCAN_FORMAL_POSTCONDITION,
+    SCAN_PHASE_PREVIEW,
+    SCAN_PREVIEW_POSTCONDITION,
+    resolve_scan_capability_phase,
+)
 from agent.automation_plugins.ports import RuntimeGenerationLeasePort
 from agent.orchestration.models import OrchestrationError, PlanStep, RunStatus, ToolResult, sha256_json
 from agent.tool_registry import validate_schema_instance
@@ -79,6 +85,7 @@ class ResultVerifier:
                 if isinstance(verification, GenerationVerificationContext)
                 else None
             ),
+            generation_verification=verification,
         )
         outcome = self._finalize_generation_write(step, raw_result, outcome, verification)
         if outcome.accepted and isinstance(verification, GenerationVerificationContext):
@@ -93,6 +100,7 @@ class ResultVerifier:
         *,
         schema_result: Mapping[str, Any] | None = None,
         trusted_account_proof: str | None = None,
+        generation_verification: GenerationVerificationContext | None = None,
     ) -> VerificationOutcome:
         if not isinstance(raw_result, Mapping):
             return self._failure("INVALID_RESULT_CONTRACT", "Tool result must be a JSON object")
@@ -175,11 +183,25 @@ class ResultVerifier:
                 result=normalized,
             )
 
-        postconditions = capability.get("postconditions") or []
+        try:
+            scan_phase = resolve_scan_capability_phase(capability, step.arguments)
+        except ValueError:
+            return self._failure(
+                "SCAN_EXECUTION_PHASE_INVALID",
+                "Scan execution phase is incomplete or ambiguous",
+            )
+        postconditions = (
+            [{"name": SCAN_PREVIEW_POSTCONDITION}]
+            if scan_phase == SCAN_PHASE_PREVIEW
+            else capability.get("postconditions") or []
+        )
         postcondition_requirements = [postconditions] if isinstance(postconditions, Mapping) else postconditions
         if not isinstance(postcondition_requirements, list):
             return self._failure("INVALID_TOOL_POSTCONDITIONS", "Tool postconditions contract is invalid")
-        if step.operation_type.value not in {"read", "compute"} and postcondition_requirements:
+        if (
+            step.operation_type.value not in {"read", "compute"}
+            or scan_phase == SCAN_PHASE_PREVIEW
+        ) and postcondition_requirements:
             reported = normalized.meta.get("postconditions")
             proofs = normalized.meta.get("postcondition_evidence")
             evidence_refs = {str(value) for value in normalized.meta.get("evidence_refs") or []}
@@ -227,6 +249,34 @@ class ResultVerifier:
                             message="Executor success proof does not match the actual tool result",
                             result=normalized,
                         )
+                elif name == SCAN_PREVIEW_POSTCONDITION:
+                    message = self._scan_preview_proof_error(
+                        normalized=normalized,
+                        proof=proof,
+                        generation_verification=generation_verification,
+                    )
+                    if message:
+                        return VerificationOutcome(
+                            accepted=False,
+                            run_status=RunStatus.BLOCKED_DATA,
+                            code="POSTCONDITION_UNVERIFIED",
+                            message=message,
+                            result=normalized,
+                        )
+                elif name == SCAN_FORMAL_POSTCONDITION:
+                    message = self._scan_formal_proof_error(
+                        normalized=normalized,
+                        proof=proof,
+                        generation_verification=generation_verification,
+                    )
+                    if message:
+                        return VerificationOutcome(
+                            accepted=False,
+                            run_status=RunStatus.BLOCKED_DATA,
+                            code="POSTCONDITION_UNVERIFIED",
+                            message=message,
+                            result=normalized,
+                        )
 
         return VerificationOutcome(
             accepted=True,
@@ -235,6 +285,185 @@ class ResultVerifier:
             message="Tool result and evidence were verified",
             result=normalized,
         )
+
+    @staticmethod
+    def _scan_preview_proof_error(
+        *,
+        normalized: ToolResult,
+        proof: Mapping[str, Any],
+        generation_verification: GenerationVerificationContext | None,
+    ) -> str | None:
+        data = normalized.data
+        preview = data.get("preview_evidence")
+        details = proof.get("details")
+        evidence_refs = normalized.meta.get("evidence_refs")
+        expected_detail_fields = {
+            "phase",
+            "pagination_complete",
+            "source_page_count",
+            "normalized_record_count",
+            "source_snapshot_sha256",
+            "source_evidence_refs",
+            "selection_count",
+            "selection_sha256",
+            "batch_count",
+            "batch_plan_sha256",
+            "write_attempted",
+        }
+        if (
+            data.get("phase") != "preview"
+            or data.get("dry_run") is not True
+            or not isinstance(preview, Mapping)
+            or not isinstance(details, Mapping)
+            or set(details) != expected_detail_fields
+            or details.get("phase") != "preview"
+            or details.get("pagination_complete") is not True
+            or details.get("write_attempted") is not False
+            or generation_verification is None
+            or generation_verification.started_mutating_call_count != 0
+            or not isinstance(evidence_refs, list)
+        ):
+            return "Scan preview lacks authoritative zero-write evidence"
+        source_refs = preview.get("source_evidence_refs")
+        if (
+            not isinstance(source_refs, list)
+            or not source_refs
+            or source_refs != details.get("source_evidence_refs")
+            or any(ref not in evidence_refs for ref in source_refs)
+            or proof.get("evidence_ref") != source_refs[-1]
+        ):
+            return "Scan preview source evidence is incomplete or mismatched"
+        field_pairs = {
+            "source_page_count": "source_page_count",
+            "normalized_record_count": "normalized_record_count",
+            "source_snapshot_sha256": "source_snapshot_sha256",
+            "selection_count": "selection_count",
+            "selection_sha256": "selection_sha256",
+            "batch_count": "batch_count",
+            "batch_plan_sha256": "batch_plan_sha256",
+        }
+        if any(details.get(detail) != preview.get(source) for detail, source in field_pairs.items()):
+            return "Scan preview counts or digests do not match its authoritative result"
+        observed_at = normalized.meta.get("observed_at")
+        evidence = data.get("evidence")
+        if (
+            preview.get("observed_at") != observed_at
+            or not isinstance(evidence, Mapping)
+            or evidence.get("observed_at") != observed_at
+            or preview.get("pagination_complete") is not True
+        ):
+            return "Scan preview observation time or pagination proof is invalid"
+        return None
+
+    @staticmethod
+    def _scan_formal_proof_error(
+        *,
+        normalized: ToolResult,
+        proof: Mapping[str, Any],
+        generation_verification: GenerationVerificationContext | None,
+    ) -> str | None:
+        data = normalized.data
+        details = proof.get("details")
+        evidence_refs = normalized.meta.get("evidence_refs")
+        expected_detail_fields = {
+            "phase",
+            "preview_revalidation_matched",
+            "preview_context_sha256",
+            "projection_evidence_ref",
+            "projection_record_count",
+            "projection_snapshot_sha256",
+            "batch_count",
+            "scheduled_items",
+            "scanned",
+            "skipped_signed_count",
+            "submit_evidence_refs",
+            "verification_evidence_refs",
+            "external_write_attempted",
+        }
+        if (
+            data.get("phase") != "formal"
+            or data.get("dry_run") is not False
+            or not isinstance(details, Mapping)
+            or set(details) != expected_detail_fields
+            or details.get("phase") != "formal"
+            or details.get("preview_revalidation_matched") is not True
+            or not isinstance(evidence_refs, list)
+            or generation_verification is None
+            or generation_verification.requires_write_verification is not True
+        ):
+            return "Formal scan proof envelope is incomplete"
+        preview = data.get("preview_revalidation")
+        projection_ref = details.get("projection_evidence_ref")
+        submit_refs = details.get("submit_evidence_refs")
+        verification_refs = details.get("verification_evidence_refs")
+        numeric = {
+            "batch_count": details.get("batch_count"),
+            "scheduled_items": details.get("scheduled_items"),
+            "scanned": details.get("scanned"),
+            "skipped_signed_count": details.get("skipped_signed_count"),
+        }
+        if (
+            not isinstance(preview, Mapping)
+            or preview.get("verified") is not True
+            or details.get("preview_context_sha256") != preview.get("context_sha256")
+            or not isinstance(projection_ref, str)
+            or not projection_ref
+            or projection_ref not in evidence_refs
+            or details.get("projection_record_count") != data.get("normalized")
+            or details.get("projection_snapshot_sha256")
+            != preview.get("source_snapshot_sha256")
+            or not isinstance(submit_refs, list)
+            or not isinstance(verification_refs, list)
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in numeric.values())
+            or numeric["batch_count"] != data.get("batches")
+            or numeric["scheduled_items"] != data.get("scheduled_items")
+            or numeric["scanned"] != data.get("scanned")
+            or numeric["skipped_signed_count"] != data.get("skipped_signed_count")
+            or numeric["scheduled_items"]
+            != numeric["scanned"] + numeric["skipped_signed_count"]
+        ):
+            return "Formal scan counts, projection, or preview revalidation do not match"
+        batch_count = numeric["batch_count"]
+        if (
+            len(submit_refs) != batch_count
+            or len(verification_refs) != batch_count
+            or len(set(submit_refs + verification_refs)) != 2 * batch_count
+            or any(ref not in evidence_refs for ref in submit_refs + verification_refs)
+            or generation_verification.started_mutating_call_count != 1 + batch_count
+        ):
+            return "Formal scan batch receipts do not match the core write boundary"
+        projection_index = evidence_refs.index(projection_ref)
+        expected_batch_tail = [
+            ref
+            for pair in zip(submit_refs, verification_refs, strict=True)
+            for ref in pair
+        ]
+        if (
+            len(evidence_refs) != len(set(evidence_refs))
+            or projection_index < 1
+            or evidence_refs[projection_index + 1 :] != expected_batch_tail
+        ):
+            return "Formal scan submit and verification evidence order is invalid"
+        if batch_count:
+            if (
+                details.get("external_write_attempted") is not True
+                or proof.get("evidence_ref") != verification_refs[-1]
+            ):
+                return "Formal scan does not end at the last server-ledger verification"
+        elif (
+            details.get("external_write_attempted") is not False
+            or submit_refs
+            or verification_refs
+            or proof.get("evidence_ref") != projection_ref
+        ):
+            return "Zero-candidate scan proof contains a false external write"
+        evidence = data.get("evidence")
+        if (
+            not isinstance(evidence, Mapping)
+            or evidence.get("observed_at") != normalized.meta.get("observed_at")
+        ):
+            return "Formal scan observation time is inconsistent"
+        return None
 
     def _finalize_generation_write(
         self,

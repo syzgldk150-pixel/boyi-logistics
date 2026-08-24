@@ -2,11 +2,11 @@
 
 更新时间：2026-08-25
 
-状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 本地测试、CI 和独立只读审查证据，以及 TASK-010C8 / TASK-010C9 本地测试和独立只读审查证据
+状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 至 TASK-010C9 本地测试、CI 和独立只读审查证据、TASK-010C12 本地测试、CI 和独立只读审查证据，以及 TASK-010C13 本地实现、测试与独立只读审查证据
 
-基线：`main` at `ce3471f`
+基线：`main` at `887d17f`
 
-重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-010C11 均未连接 ECS、未查询生产数据库、未执行生产扫描，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
+重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-010C13 均未连接 ECS、未查询生产数据库、未执行生产扫描，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
 
 ## 当前阶段
 
@@ -14,7 +14,7 @@
 |---|---|---|
 | Phase 0：理解系统 | 已完成 | TASK-000 已完成本地源码、迁移、文档和测试资产审计 |
 | Phase 1：建立治理 | 已完成 | TASK-001 三份治理文档已经 PR #85 合并；TASK-001A 状态账本纠偏已经 PR #87 合并 |
-| Phase 2：保护现有自动化 | 进行中 | TASK-010A、TASK-010B、TASK-010C1 至 TASK-010C11 已完成；扫描治理实现和 TASK-011 至 TASK-013 尚未实施 |
+| Phase 2：保护现有自动化 | 进行中 | TASK-010A、TASK-010B、TASK-010C1 至 TASK-010C13 已完成；TASK-011 至 TASK-013 尚未实施 |
 | Phase 3：轻量插件管理 | 主要能力已存在，未验收 | 当前仓库已有插件生命周期；后续只做差距验收 |
 | Phase 4：自动化中心 | 主要能力已存在，未验收 | Catalog 驱动列表、项目配置和飞书路由已经存在 |
 | Phase 5：模块注册 | 未开始 | 通用菜单、权限和模块状态注册尚未建立 |
@@ -427,15 +427,16 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 | TASK-010C10 扫描正式治理升级审计 | 已完成 | 只读确认直接翻转四项治理字段会在阶段审批与顶层写后证明未闭合时提前开门；Sol Advisor 独立终审结论为 fix-first | 无 |
 | TASK-010C11 扫描分阶段治理与正式写后证明合同冻结 | 已完成 | 冻结 PREVIEW/FORMAL 唯一判定、有效审批与权限、两阶段 postcondition、零候选语义、治理开门条件和两步实现顺序 | 无 |
 | TASK-010C12 扫描分阶段计划、审批与执行边界支持 | 已完成 | 精确首方扫描共享阶段解析已接入 Planner、PlanValidator、Policy 和执行边界；PREVIEW 以 read/low 运行且不创建正式写审批，Broker token 只保留 `ronghui.scan.read_page`，核心侧记录并验证零写调用；system/stale full-auto 对 FORMAL 回落逐次审批；registry、签名包、版本、digest 与正式治理门未改 | 无 |
-| TASK-011 统计稳定性检查 | 未授权 | — | — |
-| TASK-012 分批稳定性检查 | 未授权 | — | — |
-| TASK-013 自提问题件稳定性检查 | 未授权 | — | — |
+| TASK-010C13 扫描两阶段签名治理与写后证明闭环 | 已完成 | `sync_scan_codes` 1.0.23 已将静态治理提升为 external-write/high/required-super-admin；PREVIEW 证明完整来源与核心零写调用，FORMAL 精确校验投影读回、逐批提交/账本核验、数量守恒和零候选分支；包版本、manifest、digest、当前 committed generation 与治理门一致绑定；本地定向回归 384 项和 63 个子测试、完整根测试 1603 项和 270 个子测试、完整 Agent 测试 902 项和 140 个子测试通过，30 项环境型用例跳过，四项仓库守卫与 Ruff 通过，Sol Advisor 独立终审 `SHIP` | 无 |
+| TASK-011 统计稳定性检查 | 待执行 | 已获用户顺序执行授权 | 无 |
+| TASK-012 分批稳定性检查 | 待执行 | 已获用户顺序执行授权 | 无 |
+| TASK-013 自提问题件稳定性检查 | 待执行 | 已获用户顺序执行授权 | 无 |
 
 ## 下一步
 
-TASK-010C12 已完成扫描分阶段计划、审批与执行边界支持；本地定向回归 98 项和 12 个子测试、完整根测试 1598 项和 261 个子测试、完整 Agent 测试 869 项和 140 个子测试通过，29 项环境型用例跳过，四项仓库守卫和 Ruff 检查通过。没有修改 Console、registry、签名 payload、包版本、digest、正式治理门、数据库或生产环境，正式外部写继续保持关闭。
+TASK-010C13 已完成扫描两阶段签名治理与写后证明闭环的本地实现。PREVIEW 现在把签名 payload 的完整来源证据与核心不可伪造的零 mutating-call 记录共同纳入 `authoritative_scan_preview_returned`；FORMAL 的 `scan_formal_execution_verified` 要求已验证投影、逐批 submit→verify 顺序、服务端账本引用、数量守恒及正确的终态主证据。正式治理门只接受 1.0.23 当前签名包、匹配 manifest/package/governance digest 与 committed generation。完整根测试 1603 项和 270 个子测试、完整 Agent 测试 902 项和 140 个子测试通过，30 项环境型用例跳过，四项仓库守卫与 Ruff 检查通过。
 
-下一 TASK 为 `TASK-010C13 扫描两阶段签名治理与写后证明闭环`。必须在一个原子变更中加入 `authoritative_scan_preview_returned`、`scan_formal_execution_verified` 和 ResultVerifier 精确校验，并同步 registry、签名 payload、下一包版本、迁移矩阵和 digest；生产安装、代际 reconcile、策略切换、ECS 发布、服务重启和真实扫描仍不在仓库 TASK 授权内。
+下一 TASK 为 `TASK-011 统计稳定性检查`。只做真实链路、证据、失败语义和既有回归保护审计；如发现必须修改代码，将先冻结最小文件边界后在 TASK-011 内处理。生产插件安装、generation reconcile、项目策略切换、ECS 发布、服务重启和真实自动化仍不在仓库 TASK 授权内。
 
 ## 状态更新规则
 

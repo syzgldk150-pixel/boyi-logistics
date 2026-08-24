@@ -595,6 +595,9 @@ def test_planner_keeps_dry_run_preview_free_of_formal_binding():
     assert "_scan_preview_binding" not in plan.steps[0].arguments
     assert plan.steps[0].operation_type is OperationType.READ
     assert plan.steps[0].risk_level is RiskLevel.LOW
+    assert plan.steps[0].postconditions == (
+        {"name": "authoritative_scan_preview_returned"},
+    )
     assert PlanValidator(catalog).validate(plan, snapshot) is plan
 
     forged = replace(
@@ -723,11 +726,32 @@ def test_formal_path_remains_disabled_until_signed_external_governance_is_ready(
     entry.governance_anchor = {
         "operation_type": "external_write",
         "risk_level": "high",
-        "approval": {"required_role": "super_admin"},
+        "approval": {"mode": "required", "required_role": "super_admin"},
         "permissions": {"required_roles": ["super_admin"]},
         "project_full_auto_allowed": True,
+        "postconditions": [{"name": "scan_formal_execution_verified"}],
     }
+    entry.installed_version = "1.0.23"
+    entry.package_sha256 = "a" * 64
+    entry.manifest_sha256 = "b" * 64
+    entry.committed_generation = 7
+    entry.target_generation = 7
+    entry.governance_anchor_sha256 = canonical_sha256(entry.governance_anchor)
+    entry.committed_snapshot = SimpleNamespace(
+        generation=7,
+        plugin_id="sync_scan_codes",
+        plugin_version="1.0.23",
+        package_sha256=entry.package_sha256,
+        manifest_sha256=entry.manifest_sha256,
+        governance_anchor_sha256=entry.governance_anchor_sha256,
+        trust_source=SimpleNamespace(value="ed25519_first_party"),
+    )
     require_scan_formal_governance(entry)
+
+    entry.committed_snapshot.manifest_sha256 = "c" * 64
+    with pytest.raises(OrchestrationError) as stale:
+        require_scan_formal_governance(entry)
+    assert stale.value.code == "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED"
 
 
 def test_preview_context_tampering_is_rejected_before_planning():
