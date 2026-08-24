@@ -78,6 +78,101 @@ def _snapshot_rows() -> list[dict[str, str]]:
     ]
 
 
+def _scan_source_context(tool_name: str = "sync_scan_codes") -> CoreBrokerInvocationContext:
+    return CoreBrokerInvocationContext(
+        automation_id="scan-instance",
+        plugin_version="1.0.0",
+        tool_name=tool_name,
+        operation="browser.invoke",
+        action="ronghui.scan.read_page",
+        role="account_id",
+        account_ids=("scan-account",),
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"items": [], "returned": 0},
+        {
+            "items": [
+                {
+                    "bill_code": "R12345678901",
+                    "destination": "总站",
+                    "scan_type": "到货",
+                    "scan_time": "2026-08-24 08:00:00",
+                    "scan_site": "测试网点",
+                }
+            ],
+            "returned": 1,
+            "total": 1,
+            "total_authoritative": False,
+        },
+    ],
+    ids=["empty-missing-total", "populated-non-authoritative-total"],
+)
+def test_scan_source_requires_authoritative_total_before_exposing_page(
+    raw: dict[str, Any],
+) -> None:
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            scan_read_page=lambda *_args: raw,
+        ),
+        cursor_secret=_SECRET,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        handlers[("browser.invoke", "ronghui.scan.read_page")](
+            _scan_source_context(),
+            {"target_date": "2026-08-24", "page_size": 200},
+        )
+
+    assert exc.value.code == "BROKER_SOURCE_TOTAL_REQUIRED"
+
+
+def test_scan_source_accepts_authoritative_zero_total() -> None:
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            scan_read_page=lambda *_args: {
+                "items": [],
+                "returned": 0,
+                "total": 0,
+                "total_authoritative": True,
+            },
+        ),
+        cursor_secret=_SECRET,
+    )
+
+    result = handlers[("browser.invoke", "ronghui.scan.read_page")](
+        _scan_source_context(),
+        {"target_date": "2026-08-24", "page_size": 200},
+    )
+
+    assert result["items"] == []
+    assert result["pagination_complete"] is True
+    assert result["next_cursor"] is None
+
+
+def test_arrival_stats_scan_read_keeps_existing_short_page_semantics() -> None:
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            scan_read_page=lambda *_args: {"items": [], "returned": 0},
+        ),
+        cursor_secret=_SECRET,
+    )
+
+    result = handlers[("browser.invoke", "ronghui.scan.read_page")](
+        _scan_source_context("sync_arrival_stats"),
+        {"target_date": "2026-08-24", "page_size": 200},
+    )
+
+    assert result["items"] == []
+    assert result["pagination_complete"] is True
+
+
 def test_scan_snapshot_production_port_requires_exact_fresh_readback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
