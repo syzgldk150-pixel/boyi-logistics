@@ -388,6 +388,96 @@ class AutomationProjectEntrypointTests(TestCase):
         self.assertEqual("SCAN_PREVIEW_ID_INVALID", raised.exception.code)
         self.assertEqual([], policy.calls)
 
+    def test_exact_scan_webhook_confirmation_forwards_reserved_preview(self):
+        policy = _PolicyService()
+        route = _route(
+            AutomationEntrypoint.WEBHOOK,
+            automation_id="scan_codes",
+            route_key="webhook/phase7/scan",
+            action_fields=frozenset(),
+            dynamic_fields=frozenset(),
+        )
+        service = AutomationProjectEntrypoints(
+            policy,
+            route_resolver=_RouteResolver(route),
+        )
+        preview_run_id = "11111111-1111-4111-8111-111111111111"
+
+        asyncio.run(
+            service.invoke_webhook(
+                route_key="webhook/phase7/scan",
+                source_event_id="event-confirm-scan",
+                webhook_path="webhook/phase7/scan",
+                envelope={"body": {}, "query": {}},
+                preview_run_id=preview_run_id,
+            )
+        )
+
+        automation_id, trusted = policy.calls[0]
+        self.assertEqual("scan_codes", automation_id)
+        self.assertEqual(preview_run_id, trusted["preview_run_id"])
+        self.assertEqual({}, trusted["trusted_context"]["dynamic_inputs"])
+        self.assertEqual(
+            "webhook:route-webhook:event-confirm-scan",
+            trusted["idempotency_key"],
+        )
+
+    def test_non_scan_webhook_route_rejects_reserved_preview_before_policy(self):
+        policy = _PolicyService()
+        route = _route(AutomationEntrypoint.WEBHOOK)
+        service = AutomationProjectEntrypoints(
+            policy,
+            route_resolver=_RouteResolver(route),
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            asyncio.run(
+                service.invoke_webhook(
+                    route_key="webhook-scan",
+                    source_event_id="event-confirm-other",
+                    webhook_path="phase7/scan",
+                    preview_run_id="11111111-1111-4111-8111-111111111111",
+                )
+            )
+
+        self.assertEqual("SCAN_PREVIEW_ID_INVALID", raised.exception.code)
+        self.assertEqual([], policy.calls)
+
+    def test_exact_scan_webhook_rejects_noncanonical_preview_id(self):
+        policy = _PolicyService()
+        route = _route(
+            AutomationEntrypoint.WEBHOOK,
+            automation_id="scan_codes",
+            route_key="webhook/phase7/scan",
+        )
+        service = AutomationProjectEntrypoints(
+            policy,
+            route_resolver=_RouteResolver(route),
+        )
+
+        for preview_run_id in (
+            "NOT-A-CANONICAL-UUID",
+            "11111111-1111-4111-8111-AAAAAAAAAAAA",
+            " 11111111-1111-4111-8111-111111111111 ",
+            111,
+        ):
+            with self.subTest(preview_run_id=preview_run_id):
+                with self.assertRaises(OrchestrationError) as raised:
+                    asyncio.run(
+                        service.invoke_webhook(
+                            route_key="webhook/phase7/scan",
+                            source_event_id="event-confirm-invalid",
+                            webhook_path="webhook/phase7/scan",
+                            preview_run_id=preview_run_id,
+                        )
+                    )
+
+                self.assertEqual(
+                    "SCAN_PREVIEW_ID_INVALID",
+                    raised.exception.code,
+                )
+        self.assertEqual([], policy.calls)
+
     def test_route_must_exist_for_the_exact_entrypoint_key(self):
         service = AutomationProjectEntrypoints(
             _PolicyService(),

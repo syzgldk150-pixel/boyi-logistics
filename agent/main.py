@@ -1616,6 +1616,30 @@ async def _webhook_envelope(request: Request) -> dict[str, dict]:
     return {"body": body, "query": dict(request.query_params)}
 
 
+def _extract_webhook_preview_run_id(
+    envelope: dict[str, dict],
+) -> tuple[dict[str, dict], Any | None]:
+    """Remove the reserved scan confirmation field from governed arguments."""
+
+    body = dict(envelope.get("body") or {})
+    query = dict(envelope.get("query") or {})
+    body_has = "preview_run_id" in body
+    query_has = "preview_run_id" in query
+    body_value = body.get("preview_run_id")
+    query_value = query.get("preview_run_id")
+    if body_has and query_has and body_value != query_value:
+        raise HTTPException(
+            status_code=422,
+            detail="Conflicting webhook scan preview identifier",
+        )
+    body.pop("preview_run_id", None)
+    query.pop("preview_run_id", None)
+    preview_run_id = body_value if body_has else query_value if query_has else None
+    if (body_has or query_has) and preview_run_id is None:
+        preview_run_id = ""
+    return {"body": body, "query": query}, preview_run_id
+
+
 def _feishu_verification_token() -> str:
     return str(
         os.getenv("FEISHU_EVENT_VERIFICATION_TOKEN", "") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
@@ -1692,12 +1716,14 @@ async def webhook_sign_status(request: Request):
     await _verify_webhook_token(request)
     envelope = await _webhook_envelope(request)
     source_event_id = _stable_webhook_event_id(envelope)
+    envelope, preview_run_id = _extract_webhook_preview_run_id(envelope)
     route_key = request.url.path.strip("/")
     return await _automation_project_entrypoint_service().invoke_webhook(
         route_key=route_key,
         source_event_id=source_event_id,
         webhook_path=route_key,
         envelope=envelope,
+        preview_run_id=preview_run_id,
     )
 
 
@@ -1706,6 +1732,7 @@ async def webhook_handler(path: str, request: Request):
     await _verify_webhook_token(request)
     envelope = await _webhook_envelope(request)
     source_event_id = _stable_webhook_event_id(envelope)
+    envelope, preview_run_id = _extract_webhook_preview_run_id(envelope)
     route_key = request.url.path.strip("/")
     logger.info("Verified automation project Webhook route hit: /%s", path)
     return await _automation_project_entrypoint_service().invoke_webhook(
@@ -1713,6 +1740,7 @@ async def webhook_handler(path: str, request: Request):
         source_event_id=source_event_id,
         webhook_path=route_key,
         envelope=envelope,
+        preview_run_id=preview_run_id,
     )
 
 
