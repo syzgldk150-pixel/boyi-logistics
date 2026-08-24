@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from agent.automation_plugins.code_owned_fields import (
+    SCAN_PHASE_PREVIEW,
+    resolve_scan_capability_phase,
+)
 from agent.orchestration.impact_preview import validate_write_impact
 from agent.orchestration.models import (
     ContextSnapshot,
@@ -34,9 +38,29 @@ class PlanValidator:
                 raise OrchestrationError("UNKNOWN_TOOL", f"Unknown tool: {step.tool_name}")
             if str(capability.get("version") or "") != step.tool_version:
                 raise OrchestrationError("TOOL_VERSION_CHANGED", f"Tool version changed: {step.tool_name}")
-            if str(capability.get("operation_type") or "") != step.operation_type.value:
+            try:
+                scan_phase = resolve_scan_capability_phase(
+                    capability,
+                    step.arguments,
+                )
+            except ValueError as exc:
+                raise OrchestrationError(
+                    "SCAN_EXECUTION_PHASE_INVALID",
+                    "Scan execution phase is incomplete or ambiguous",
+                ) from exc
+            expected_operation = (
+                OperationType.READ.value
+                if scan_phase == SCAN_PHASE_PREVIEW
+                else str(capability.get("operation_type") or "")
+            )
+            expected_risk = (
+                RiskLevel.LOW.value
+                if scan_phase == SCAN_PHASE_PREVIEW
+                else str(capability.get("risk_level") or "")
+            )
+            if expected_operation != step.operation_type.value:
                 raise OrchestrationError("TOOL_OPERATION_CHANGED", f"Tool operation changed: {step.tool_name}")
-            if str(capability.get("risk_level") or "") != step.risk_level.value:
+            if expected_risk != step.risk_level.value:
                 raise OrchestrationError("TOOL_RISK_CHANGED", f"Tool risk changed: {step.tool_name}")
             if llm_selected and (
                 not bool(capability.get("llm_exposed"))
