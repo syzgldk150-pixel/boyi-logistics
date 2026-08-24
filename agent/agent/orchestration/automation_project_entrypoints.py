@@ -39,6 +39,7 @@ from shared.automation_project_authorization import (
 _ACCOUNT_FIELDS = frozenset({"account_id", "account_ids"})
 _RESOURCE_FIELDS = frozenset({"resource_id", "resource_ids", "resource_binding", "resource_bindings"})
 _SCAN_FEISHU_ROUTE_KEY = "builtin.scan_codes"
+_SCAN_WEBHOOK_ROUTE_KEY = "webhook/phase7/scan"
 _SCAN_AUTOMATION_ID = "scan_codes"
 
 
@@ -462,6 +463,7 @@ class AutomationProjectEntrypoints:
         source_event_id: str,
         webhook_path: str,
         envelope: Mapping[str, Any] | None = None,
+        preview_run_id: Any | None = None,
     ) -> dict[str, Any]:
         route = self._require_route(AutomationEntrypoint.WEBHOOK, route_key)
         safe_event_id = _stable_identifier(source_event_id, "source_event_id")
@@ -472,6 +474,27 @@ class AutomationProjectEntrypoints:
                 "Verified Webhook path is invalid",
             )
         dynamic_inputs = _extract_dynamic_inputs(route, envelope or {})
+        safe_preview_run_id = None
+        if preview_run_id is not None:
+            if (
+                route.route_key != _SCAN_WEBHOOK_ROUTE_KEY
+                or route.automation_id != _SCAN_AUTOMATION_ID
+            ):
+                raise OrchestrationError(
+                    "SCAN_PREVIEW_ID_INVALID",
+                    "A scan preview cannot be used by this Webhook route",
+                )
+            if not isinstance(preview_run_id, str):
+                raise OrchestrationError(
+                    "SCAN_PREVIEW_ID_INVALID",
+                    "Scan preview run id must be a canonical UUID string",
+                )
+            safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+            if preview_run_id != safe_preview_run_id:
+                raise OrchestrationError(
+                    "SCAN_PREVIEW_ID_INVALID",
+                    "Scan preview run id must be canonical",
+                )
         return await self._policy.invoke_trusted_and_wait(
             route.automation_id,
             entrypoint=AutomationEntrypoint.WEBHOOK,
@@ -493,6 +516,7 @@ class AutomationProjectEntrypoints:
             expected_project_configuration_version=(
                 route.project_configuration_version
             ),
+            preview_run_id=safe_preview_run_id,
         )
 
     def _require_route(
