@@ -72,6 +72,7 @@ def _plugin_instance(automation_id: str, instance_name: str) -> dict:
         "enabled": True,
         "configured": True,
         "state": "ENABLED",
+        "reconcile_state": "STABLE",
         "record_version": 4,
         "project_configuration_version": 9,
         "config": {"region": "east"},
@@ -184,6 +185,46 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             "签名运行描述符",
             _automation_plugin_block_warning(instances[0]),
         )
+
+    def test_stable_project_state_uses_reconcile_state_for_operator_status(self):
+        expected = {
+            "PREPARING": ("PREPARING", "准备中"),
+            "WAITING_COEFFECTS": ("BLOCKED_DEPENDENCY", "依赖阻断"),
+            "READY_TO_COMMIT": ("SWITCHING", "切换中"),
+            "DRAINING": ("DRAINING", "排空中"),
+            "DISPOSING": ("DRAINING", "排空中"),
+            "BLOCKED_UNKNOWN_WRITE": ("ERROR", "异常"),
+            "ERROR": ("ERROR", "异常"),
+            "FUTURE_RECONCILE_STATE": ("UNKNOWN", "状态未知"),
+        }
+
+        for reconcile_state, (state, label) in expected.items():
+            with self.subTest(reconcile_state=reconcile_state):
+                payload = _catalog_payload()
+                payload["instances"][0]["reconcile_state"] = reconcile_state
+
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(
+                    payload
+                )
+
+                instance = instances[0]
+                self.assertEqual("ENABLED", instance["project_state"])
+                self.assertEqual(state, instance["state"])
+                self.assertEqual(label, instance["status_label"])
+                self.assertTrue(instance["blocked"])
+                self.assertFalse(instance["lifecycle_actions_allowed"])
+
+    def test_stable_generation_keeps_project_state_and_lifecycle_actions(self):
+        payload = _catalog_payload()
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        instance = instances[0]
+        self.assertEqual("ENABLED", instance["project_state"])
+        self.assertEqual("ENABLED", instance["state"])
+        self.assertEqual("已启用", instance["status_label"])
+        self.assertFalse(instance["blocked"])
+        self.assertTrue(instance["lifecycle_actions_allowed"])
 
     def test_code_owned_projection_must_not_overlap_browser_schema(self):
         payload = _catalog_payload()
