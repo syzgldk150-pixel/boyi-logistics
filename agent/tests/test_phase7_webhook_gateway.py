@@ -29,6 +29,14 @@ class _EntrypointsFacade:
                 "Automation project route is unavailable",
             )
         supplied = set(call["envelope"]["body"]) | set(call["envelope"]["query"])
+        if (
+            call.get("preview_run_id") is not None
+            and call["route_key"] != "webhook/phase7/scan"
+        ):
+            raise OrchestrationError(
+                "SCAN_PREVIEW_ID_INVALID",
+                "A scan preview cannot be used by this Webhook route",
+            )
         if "account_id" in supplied or "account_ids" in supplied:
             raise OrchestrationError(
                 "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN",
@@ -88,6 +96,72 @@ def test_delivery_scan_and_arrival_webhooks_use_only_typed_project_routes() -> N
     assert entrypoints.calls[1]["envelope"]["body"]["trigger_flow"] is False
     assert entrypoints.calls[2]["envelope"]["body"]["target_date"] == "2026-08-13"
     assert all(call["webhook_path"] == call["route_key"] for call in entrypoints.calls)
+    assert all(call["preview_run_id"] is None for call in entrypoints.calls)
+
+
+def test_scan_webhook_extracts_reserved_preview_for_new_confirmation_event() -> None:
+    entrypoints = _EntrypointsFacade()
+    client = TestClient(main.app)
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+
+    with (
+        patch.object(main, "automation_project_entrypoints", entrypoints),
+        patch.object(main, "_webhook_token", return_value="test-webhook-token"),
+    ):
+        response = client.post(
+            "/webhook/phase7/scan?source_event_id=scan-confirm-2",
+            headers={main.WEBHOOK_TOKEN_HEADER: "test-webhook-token"},
+            json={"preview_run_id": preview_run_id},
+        )
+
+    assert response.status_code == 200
+    assert entrypoints.calls[0]["source_event_id"] == "scan-confirm-2"
+    assert entrypoints.calls[0]["preview_run_id"] == preview_run_id
+    assert entrypoints.calls[0]["envelope"]["body"] == {}
+    assert entrypoints.calls[0]["envelope"]["query"] == {
+        "source_event_id": "scan-confirm-2"
+    }
+
+
+def test_webhook_preview_control_conflict_fails_before_project_invocation() -> None:
+    entrypoints = _EntrypointsFacade()
+    client = TestClient(main.app)
+
+    with (
+        patch.object(main, "automation_project_entrypoints", entrypoints),
+        patch.object(main, "_webhook_token", return_value="test-webhook-token"),
+    ):
+        response = client.post(
+            "/webhook/phase7/scan?source_event_id=scan-confirm-3"
+            "&preview_run_id=11111111-1111-4111-8111-111111111111",
+            headers={main.WEBHOOK_TOKEN_HEADER: "test-webhook-token"},
+            json={
+                "preview_run_id": "22222222-2222-4222-8222-222222222222"
+            },
+        )
+
+    assert response.status_code == 422
+    assert entrypoints.calls == []
+
+
+def test_non_scan_webhook_rejects_reserved_preview_control() -> None:
+    entrypoints = _EntrypointsFacade()
+    client = TestClient(main.app)
+
+    with (
+        patch.object(main, "automation_project_entrypoints", entrypoints),
+        patch.object(main, "_webhook_token", return_value="test-webhook-token"),
+    ):
+        response = client.post(
+            "/webhook/phase7/stats?source_event_id=stats-with-preview",
+            headers={main.WEBHOOK_TOKEN_HEADER: "test-webhook-token"},
+            json={
+                "preview_run_id": "11111111-1111-4111-8111-111111111111"
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SCAN_PREVIEW_ID_INVALID"
 
 
 def test_arrival_webhook_does_not_inject_a_default_account() -> None:
