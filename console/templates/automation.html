@@ -262,7 +262,8 @@
       data-sort-mode="{{ task.task_mode }}"
       data-automation-provider="{{ task.provider | default('ronghui', true) }}"
     >
-      <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form">
+      {% set is_scan_preview_workflow = task.task_id == 'scan_codes' and task.plugin and task.plugin.plugin_id == 'sync_scan_codes' %}
+      <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form" data-scan-preview-workflow="{{ 'true' if is_scan_preview_workflow else 'false' }}">
         <input type="hidden" name="task_id" value="{{ task.task_id }}">
         <input type="hidden" name="task_mode" value="{{ task.task_mode or 'scheduled' }}">
         <input type="hidden" name="name" value="{{ task.name_value }}">
@@ -336,7 +337,7 @@
             {% if can_run_now %}
             <button class="primary-btn auto-run-btn" type="submit" formaction="/automations/tasks/run-now" formmethod="post" data-run-now data-run-mode="start">
               <i data-feather="play" data-run-icon></i>
-              <span data-run-label>执行</span>
+              <span data-run-label>{{ '生成预览' if is_scan_preview_workflow else '执行' }}</span>
             </button>
             {% else %}
             <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}">
@@ -555,6 +556,31 @@
           </div>
           <pre class="mono-block auto-feedback-body" data-run-feedback-body hidden></pre>
         </div>
+
+        {% if is_scan_preview_workflow %}
+        <section class="scan-preview-panel" data-scan-preview-panel role="status" aria-live="polite" hidden>
+          <div class="scan-preview-heading">
+            <div>
+              <strong data-scan-preview-title>扫描预览</strong>
+              <p data-scan-preview-message>核对本次扫描影响范围后再确认执行。</p>
+            </div>
+            <span class="scan-preview-state" data-scan-preview-state>待核对</span>
+          </div>
+          <dl class="scan-preview-summary">
+            <div><dt>扫描日期</dt><dd data-scan-preview-target-date>—</dd></div>
+            <div><dt>来源页数</dt><dd data-scan-preview-source-pages>—</dd></div>
+            <div><dt>来源记录</dt><dd data-scan-preview-source-records>—</dd></div>
+            <div><dt>待扫描</dt><dd data-scan-preview-selection>—</dd></div>
+            <div><dt>提交批次</dt><dd data-scan-preview-batches>—</dd></div>
+            <div><dt>有效期至</dt><dd data-scan-preview-expires>—</dd></div>
+          </dl>
+          <div class="scan-preview-actions">
+            <button class="primary-btn" type="button" data-scan-preview-confirm>确认执行</button>
+            <button class="ghost-btn" type="button" data-scan-preview-regenerate hidden>重新生成预览</button>
+            <button class="ghost-btn" type="button" data-scan-preview-dismiss>放弃预览</button>
+          </div>
+        </section>
+        {% endif %}
 
         {# ── 图形化设置面板（chevron 控制） ── #}
         {% if has_expandable_settings %}
@@ -1274,6 +1300,127 @@
       cancelRequested: false,
       runId: "",
     };
+    const isScanPreviewWorkflow = form.dataset.scanPreviewWorkflow === "true";
+    const scanPreviewPanel = form.querySelector("[data-scan-preview-panel]");
+    const scanPreviewConfirm = form.querySelector("[data-scan-preview-confirm]");
+    const scanPreviewRegenerate = form.querySelector("[data-scan-preview-regenerate]");
+    const scanPreviewDismiss = form.querySelector("[data-scan-preview-dismiss]");
+    let activeScanPreviewId = "";
+    let activeScanConfirmationRequestId = "";
+    let scanConfirmationRetryOnly = false;
+    let scanPreviewTerminalBlocked = false;
+
+    function syncScanPreviewActionLocks() {
+      const locked = scanConfirmationRetryOnly || scanPreviewTerminalBlocked;
+      if (scanPreviewDismiss) scanPreviewDismiss.disabled = locked;
+      if (scanPreviewRegenerate) scanPreviewRegenerate.disabled = locked;
+      syncRunButtonVisual();
+    }
+
+    function setScanConfirmationRetryOnly(locked) {
+      scanConfirmationRetryOnly = locked === true;
+      syncScanPreviewActionLocks();
+    }
+
+    function setScanPreviewTerminalBlocked(blocked) {
+      scanPreviewTerminalBlocked = blocked === true;
+      syncScanPreviewActionLocks();
+    }
+
+    function formatScanPreviewTime(value) {
+      const parsed = new Date(String(value || ""));
+      if (Number.isNaN(parsed.getTime())) return String(value || "");
+      return new Intl.DateTimeFormat("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(parsed);
+    }
+
+    function clearScanPreview({ force = false } = {}) {
+      if ((scanConfirmationRetryOnly || scanPreviewTerminalBlocked) && !force) return false;
+      setScanConfirmationRetryOnly(false);
+      setScanPreviewTerminalBlocked(false);
+      activeScanPreviewId = "";
+      activeScanConfirmationRequestId = "";
+      if (!scanPreviewPanel) return true;
+      scanPreviewPanel.hidden = true;
+      scanPreviewPanel.classList.remove("is-expired", "is-error");
+      if (scanPreviewConfirm) {
+        scanPreviewConfirm.disabled = true;
+        scanPreviewConfirm.removeAttribute("aria-busy");
+      }
+      if (scanPreviewRegenerate) scanPreviewRegenerate.hidden = true;
+      return true;
+    }
+
+    function renderScanPreview(preview) {
+      if (!scanPreviewPanel || !preview) return;
+      if (scanPreviewTerminalBlocked) return;
+      const nextPreviewId = String(preview.preview_run_id || "");
+      if (activeScanPreviewId !== nextPreviewId) activeScanConfirmationRequestId = "";
+      activeScanPreviewId = nextPreviewId;
+      const canConfirm = preview.can_confirm === true;
+      const values = {
+        "[data-scan-preview-target-date]": preview.target_date,
+        "[data-scan-preview-source-pages]": preview.source_page_count,
+        "[data-scan-preview-source-records]": preview.normalized_record_count,
+        "[data-scan-preview-selection]": preview.selection_count,
+        "[data-scan-preview-batches]": preview.batch_count,
+        "[data-scan-preview-expires]": formatScanPreviewTime(preview.expires_at),
+      };
+      Object.entries(values).forEach(([selector, value]) => {
+        const target = scanPreviewPanel.querySelector(selector);
+        if (target) target.textContent = String(value);
+      });
+      const title = scanPreviewPanel.querySelector("[data-scan-preview-title]");
+      const message = scanPreviewPanel.querySelector("[data-scan-preview-message]");
+      const state = scanPreviewPanel.querySelector("[data-scan-preview-state]");
+      if (title) title.textContent = canConfirm ? "扫描预览待确认" : "扫描预览已过期";
+      if (message) {
+        message.textContent = canConfirm
+          ? "请核对日期、来源记录、待扫描数量和批次数。确认后才会申请正式执行。"
+          : "十五分钟确认窗口已结束，请重新读取扫描数据。";
+      }
+      if (state) state.textContent = canConfirm ? "可确认" : "已过期";
+      scanPreviewPanel.hidden = false;
+      scanPreviewPanel.classList.toggle("is-expired", !canConfirm);
+      scanPreviewPanel.classList.remove("is-error");
+      if (scanPreviewConfirm) scanPreviewConfirm.disabled = !canConfirm;
+      if (scanPreviewRegenerate) scanPreviewRegenerate.hidden = canConfirm;
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      scanPreviewPanel.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "nearest",
+      });
+    }
+
+    function renderScanPreviewError(message, errorCode = "") {
+      if (!scanPreviewPanel) return;
+      setScanConfirmationRetryOnly(false);
+      const terminalBlocked = [
+        "SCAN_PREVIEW_ALREADY_CONSUMED",
+        "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
+      ].includes(errorCode);
+      setScanPreviewTerminalBlocked(terminalBlocked);
+      activeScanPreviewId = "";
+      activeScanConfirmationRequestId = "";
+      scanPreviewPanel.hidden = false;
+      scanPreviewPanel.classList.add("is-error");
+      scanPreviewPanel.classList.remove("is-expired");
+      const title = scanPreviewPanel.querySelector("[data-scan-preview-title]");
+      const detail = scanPreviewPanel.querySelector("[data-scan-preview-message]");
+      const state = scanPreviewPanel.querySelector("[data-scan-preview-state]");
+      if (title) title.textContent = "扫描预览不可用";
+      if (detail) detail.textContent = message || "请重新生成扫描预览。";
+      if (state) state.textContent = "已阻断";
+      if (scanPreviewConfirm) scanPreviewConfirm.disabled = true;
+      if (scanPreviewRegenerate) {
+        scanPreviewRegenerate.hidden = terminalBlocked;
+      }
+    }
 
     function syncRunButtonVisual() {
       if (!(runBtn instanceof HTMLElement)) return;
@@ -1284,14 +1431,21 @@
       const isActive = isRunning || isAwaitingApproval || isPendingRun;
       const isCancelPending = isActive && !!runUiState.cancelRequested;
       const iconName = isBatchTracking ? "loader" : isActive ? "x-circle" : "play";
-      const labelText = isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : "执行";
+      const idleLabel = isScanPreviewWorkflow ? "生成预览" : "执行";
+      const labelText = isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : idleLabel;
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
 
       runBtn.dataset.runMode = isBatchTracking ? "tracking" : isActive ? "cancel" : "start";
       runBtn.classList.toggle("auto-run-btn--cancel", isActive && !isBatchTracking);
       runBtn.classList.toggle("is-pending", isCancelPending);
-      runBtn.disabled = runBtn.hasAttribute("aria-busy") || isCancelPending || isBatchTracking;
+      runBtn.disabled = (
+        runBtn.hasAttribute("aria-busy")
+        || isCancelPending
+        || isBatchTracking
+        || (isScanPreviewWorkflow && scanConfirmationRetryOnly)
+        || (isScanPreviewWorkflow && scanPreviewTerminalBlocked)
+      );
       if (runLabel) {
         runLabel.textContent = labelText;
       }
@@ -1667,6 +1821,8 @@
           offset: String(offset),
         });
         if (taskId) query.set("task_id", taskId);
+        const scanPhase = termDrawer.dataset.scanPhase || "";
+        if (isScanPreviewWorkflow && scanPhase) query.set("scan_phase", scanPhase);
         if (startedAt) query.set("started_at", startedAt);
         if (runId) query.set("run_id", runId);
         const controller = new AbortController();
@@ -1822,7 +1978,18 @@
           } else if (pendingRun) {
             renderPendingRun(data);
           }
-          if (data.runtime) {
+          if (data.scan_preview) {
+            renderScanPreview(data.scan_preview);
+            syncRuntimeFeedback(form, null);
+            hideRunFeedback(form);
+          } else if (data.scan_preview_error) {
+            renderScanPreviewError(
+              data.scan_preview_error.message,
+              data.scan_preview_error.error_code,
+            );
+            syncRuntimeFeedback(form, null);
+            hideRunFeedback(form);
+          } else if (data.runtime) {
             syncRuntimeFeedback(form, data.runtime);
             hideRunFeedback(form);
           }
@@ -1846,6 +2013,14 @@
             } else if (data.running) {
               termStatus.textContent = "运行中";
               termStatus.className = "auto-terminal-status auto-terminal-status--running";
+            } else if (data.scan_preview) {
+              termStatus.textContent = data.scan_preview.can_confirm ? "待确认" : "预览已过期";
+              termStatus.className = data.scan_preview.can_confirm
+                ? "auto-terminal-status auto-terminal-status--cancel"
+                : "auto-terminal-status auto-terminal-status--error";
+            } else if (data.scan_preview_error) {
+              termStatus.textContent = "预览不可用";
+              termStatus.className = "auto-terminal-status auto-terminal-status--error";
             } else if (data.runtime) {
               if (data.runtime.cancelled) {
                 termStatus.textContent = "已取消";
@@ -2439,10 +2614,135 @@
       }
     }
 
+    if (scanPreviewDismiss) {
+      scanPreviewDismiss.addEventListener("click", () => {
+        if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;
+        clearScanPreview();
+      });
+    }
+
+    if (scanPreviewRegenerate) {
+      scanPreviewRegenerate.addEventListener("click", () => {
+        if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;
+        clearScanPreview();
+        runBtn?.click();
+      });
+    }
+
+    if (scanPreviewConfirm) {
+      scanPreviewConfirm.addEventListener("click", async () => {
+        if (!activeScanPreviewId || scanPreviewConfirm.hasAttribute("aria-busy")) return;
+        if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
+          renderScanPreviewError("当前浏览器无法生成安全的请求标识，正式请求未提交。");
+          return;
+        }
+        setButtonLoading(scanPreviewConfirm, true);
+        const previewRunId = activeScanPreviewId;
+        const confirmationRequestId = activeScanConfirmationRequestId || window.crypto.randomUUID();
+        activeScanConfirmationRequestId = confirmationRequestId;
+        setScanConfirmationRetryOnly(true);
+        try {
+          const body = new URLSearchParams({
+            task_id: "scan_codes",
+            preview_run_id: previewRunId,
+          });
+          const res = await fetch("/automations/tasks/confirm-scan-preview", {
+            method: "POST",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              "Accept": "application/json",
+              "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+              "X-Browser-Request-UUID": confirmationRequestId,
+            },
+            body: body.toString(),
+          });
+          const result = await res.json();
+          if (!res.ok || !result.ok) {
+            const errorCode = String(result.error_code || "");
+            if (errorCode === "REQUEST_ID_REUSED") {
+              setScanConfirmationRetryOnly(false);
+              activeScanConfirmationRequestId = "";
+              renderFeedback(form, {
+                kind: "error",
+                title: "确认请求未提交",
+                message: result.message || "请求标识冲突，请再次点击确认。",
+                showTimer: false,
+              });
+              return;
+            }
+            if (res.status >= 500) {
+              renderFeedback(form, {
+                kind: "error",
+                title: "确认结果暂时未知",
+                message: "请再次点击确认查询同一请求；页面会复用原请求标识，不会创建第二次正式请求。",
+                showTimer: false,
+              });
+              return;
+            }
+            renderScanPreviewError(result.message, errorCode);
+            return;
+          }
+          const runId = String(result.run_id || "").trim();
+          if (!runId) throw new Error("Agent 未返回可追踪的正式扫描 Run。");
+          clearScanPreview({ force: true });
+          if (termDrawer) {
+            termDrawer.dataset.runStartedAt = "";
+            termDrawer.dataset.runId = runId;
+            termDrawer.dataset.scanPhase = "formal";
+          }
+          setRunUiState({
+            running: false,
+            awaitingApproval: false,
+            pendingRun: true,
+            startedAt: "",
+            cancelRequested: false,
+            runId,
+          });
+          renderFeedback(form, {
+            kind: "info",
+            title: result.title || "正式扫描请求已受理",
+            message: result.message || "正式请求已绑定本次预览。",
+            showTimer: false,
+            stampText: `Run：${runId}`,
+          });
+          startPolling();
+        } catch (error) {
+          renderFeedback(form, {
+            kind: "error",
+            title: "确认结果暂时未知",
+            message: "请保留当前页面并再次点击确认；页面会复用原请求标识，不会创建第二次正式请求。",
+            showTimer: false,
+            body: error instanceof Error ? error.message : String(error || ""),
+          });
+        } finally {
+          setButtonLoading(scanPreviewConfirm, false);
+          scanPreviewConfirm.disabled = !activeScanPreviewId;
+        }
+      });
+    }
+
     // 立即执行 / 单按钮取消
     if (runBtn) {
       runBtn.addEventListener("click", async e => {
         e.preventDefault();
+        if (isScanPreviewWorkflow && scanConfirmationRetryOnly) {
+          renderFeedback(form, {
+            kind: "error",
+            title: "请先确认原请求结果",
+            message: "当前确认结果暂时未知，只能再次点击“确认执行”并复用原请求标识。",
+            showTimer: false,
+          });
+          return;
+        }
+        if (isScanPreviewWorkflow && scanPreviewTerminalBlocked) {
+          renderFeedback(form, {
+            kind: "error",
+            title: "正式扫描仍处于阻断状态",
+            message: "请先查询原 Run 或前往事项中心处理，当前页面不会生成新的扫描预览。",
+            showTimer: false,
+          });
+          return;
+        }
         if (runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun) {
           if (runUiState.cancelRequested || runBtn.hasAttribute("aria-busy")) return;
           await requestTaskCancel();
@@ -2450,6 +2750,7 @@
         }
 
         stopRunProgress();
+        if (isScanPreviewWorkflow) clearScanPreview();
         serializeForm(form);
         hideLegacyFeedback(form);
         syncRuntimeFeedback(form, null);
@@ -2459,6 +2760,7 @@
         if (termDrawer) {
           termDrawer.dataset.clientStartedAt = stamp;
           termDrawer.dataset.runStartedAt = "";
+          if (isScanPreviewWorkflow) termDrawer.dataset.scanPhase = "preview";
         }
         setRunUiState({ running: false, awaitingApproval: false, pendingRun: true, startedAt: stamp, cancelRequested: false });
         stopRunProgress();

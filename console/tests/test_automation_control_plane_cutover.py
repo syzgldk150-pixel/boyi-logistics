@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import unittest
+from http import HTTPStatus
 from types import SimpleNamespace
 
 from console.services.agent_api import AgentApiServiceMixin
-from console.services.automation import AutomationServiceMixin
+from console.services.automation import (
+    AutomationServiceMixin,
+    normalize_scan_preview_projection,
+)
 
 
 class _Repository:
@@ -18,11 +22,11 @@ class _Repository:
 
 
 class _App(AutomationServiceMixin, AgentApiServiceMixin):
-    def __init__(self, result: dict) -> None:
+    def __init__(self, result: dict | list[dict]) -> None:
         self.settings = SimpleNamespace(agent_timeout_seconds=12)
         self.repository = _Repository()
         self.automation_virtual_task_state: dict[str, dict] = {}
-        self.result = result
+        self.results = list(result) if isinstance(result, list) else [result]
         self.calls: list[tuple[str, str, dict | None, int | None, dict | None]] = []
         self.sent = None
         self._control_plane_read_context = lambda _handler: {
@@ -44,13 +48,50 @@ class _App(AutomationServiceMixin, AgentApiServiceMixin):
         console_principal=None,
     ):
         self.calls.append((method, endpoint, payload, timeout, console_principal))
-        return self.result
+        if not self.results:
+            raise AssertionError("unexpected Agent request")
+        return self.results.pop(0)
 
     def _send_json(self, _handler, status, payload):
         self.sent = (status, payload)
 
 
 class AutomationControlPlaneCutoverTests(unittest.TestCase):
+    def test_scan_preview_projection_is_closed_and_bound_to_run(self):
+        run_id = "11111111-1111-4111-8111-111111111111"
+        projection = {
+            "contract_version": 1,
+            "preview_run_id": run_id,
+            "target_date": "2026-08-24",
+            "observed_at": "2026-08-24T03:58:00Z",
+            "expires_at": "2026-08-24T04:13:00Z",
+            "source_page_count": 1,
+            "normalized_record_count": 3,
+            "selection_count": 2,
+            "batch_count": 1,
+            "can_confirm": True,
+        }
+
+        self.assertEqual(
+            projection,
+            normalize_scan_preview_projection(
+                projection,
+                expected_run_id=run_id,
+            ),
+        )
+        self.assertIsNone(
+            normalize_scan_preview_projection(
+                {**projection, "selection_sha256": "1" * 64},
+                expected_run_id=run_id,
+            )
+        )
+        self.assertIsNone(
+            normalize_scan_preview_projection(
+                projection,
+                expected_run_id="22222222-2222-4222-8222-222222222222",
+            )
+        )
+
     def test_manual_run_invokes_saved_project_and_keeps_run_reference(self):
         app = _App(
             {
@@ -103,6 +144,27 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual(console_principal, signed_principal)
         self.assertEqual("run-1", app.automation_virtual_task_state["daily_sign"]["run_id"])
 
+    def test_preview_run_id_cannot_be_forwarded_to_another_project(self):
+        app = _App({"ok": True, "status": 202, "data": {}})
+
+        result = app._start_automation_task_run(
+            {
+                "task_id": "daily_sign",
+                "task_mode": "manual",
+                "tool_name": "sync_daily_should_sign",
+                "tool_params": {},
+                "tool_params_json": "{}",
+                "name": "每日应签",
+            },
+            trusted_context={"_console_principal": {"actor_id": "17"}},
+            browser_request_uuid="22222222-2222-4222-8222-222222222222",
+            preview_run_id="11111111-1111-4111-8111-111111111111",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("SCAN_PREVIEW_ID_INVALID", result["error_code"])
+        self.assertEqual([], app.calls)
+
     def test_cancel_targets_the_exact_run(self):
         app = _App({"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}})
         app._parse_urlencoded_form = lambda _handler: {"task_id": "daily_sign", "run_id": "run-1"}
@@ -125,6 +187,103 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertNotIn("_console_principal", app.calls[0][2])
         self.assertEqual(console_principal, app.calls[0][4])
         self.assertTrue(app.sent[1]["cancel_requested"])
+
+    def test_scan_confirmation_forwards_only_new_request_and_preview_ids(self):
+        preview_run_id = "11111111-1111-4111-8111-111111111111"
+        request_id = "22222222-2222-4222-8222-222222222222"
+        app = _App(
+            {
+                "ok": True,
+                "status": 202,
+                "data": {
+                    "command_id": "cmd-formal",
+                    "work_item_id": "wi-formal",
+                    "run_id": "33333333-3333-4333-8333-333333333333",
+                },
+            }
+        )
+        app._control_plane_write_context = lambda _handler: {
+            "_console_principal": {"actor_id": "17"}
+        }
+        app._parse_urlencoded_form = lambda _handler: {
+            "task_id": "scan_codes",
+            "preview_run_id": preview_run_id,
+        }
+
+        app._handle_scan_preview_confirmation(
+            SimpleNamespace(headers={"X-Browser-Request-UUID": request_id})
+        )
+
+        method, endpoint, payload, _timeout, _principal = app.calls[0]
+        self.assertEqual("POST", method)
+        self.assertEqual(
+            "/internal/v1/automation-projects/scan_codes/invoke",
+            endpoint,
+        )
+        self.assertEqual(
+            {"request_id": request_id, "preview_run_id": preview_run_id},
+            payload,
+        )
+        self.assertEqual(HTTPStatus.ACCEPTED, app.sent[0])
+        self.assertTrue(app.sent[1]["pending"])
+
+    def test_scan_confirmation_preserves_formal_governance_block(self):
+        app = _App(
+            {
+                "ok": False,
+                "status": 422,
+                "error_code": "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
+                "error": "must remain closed",
+            }
+        )
+        app._control_plane_write_context = lambda _handler: {
+            "_console_principal": {"actor_id": "17"}
+        }
+        app._parse_urlencoded_form = lambda _handler: {
+            "task_id": "scan_codes",
+            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+        }
+
+        app._handle_scan_preview_confirmation(
+            SimpleNamespace(
+                headers={
+                    "X-Browser-Request-UUID": (
+                        "22222222-2222-4222-8222-222222222222"
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(HTTPStatus.UNPROCESSABLE_ENTITY, app.sent[0])
+        self.assertEqual(
+            "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
+            app.sent[1]["error_code"],
+        )
+        self.assertIn("正式扫描尚未开放", app.sent[1]["message"])
+
+    def test_scan_confirmation_rejects_caller_owned_action_fields(self):
+        app = _App({"ok": True, "status": 202, "data": {}})
+        app._control_plane_write_context = lambda _handler: {
+            "_console_principal": {"actor_id": "17"}
+        }
+        app._parse_urlencoded_form = lambda _handler: {
+            "task_id": "scan_codes",
+            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+            "dry_run": "false",
+        }
+
+        app._handle_scan_preview_confirmation(
+            SimpleNamespace(
+                headers={
+                    "X-Browser-Request-UUID": (
+                        "22222222-2222-4222-8222-222222222222"
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent[0])
+        self.assertEqual([], app.calls)
 
     def test_output_poll_uses_run_state_not_tool_process_guessing(self):
         app = _App(
@@ -150,6 +309,88 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual("/internal/v1/runs/run-1", app.calls[0][1])
         self.assertFalse(app.sent[1]["running"])
         self.assertTrue(app.sent[1]["runtime"]["ok"])
+
+    def test_completed_scan_preview_returns_only_bounded_projection(self):
+        run_id = "11111111-1111-4111-8111-111111111111"
+        projection = {
+            "contract_version": 1,
+            "preview_run_id": run_id,
+            "target_date": "2026-08-24",
+            "observed_at": "2026-08-24T03:58:00Z",
+            "expires_at": "2026-08-24T04:13:00Z",
+            "source_page_count": 1,
+            "normalized_record_count": 3,
+            "selection_count": 2,
+            "batch_count": 1,
+            "can_confirm": True,
+        }
+        app = _App(
+            [
+                {
+                    "ok": True,
+                    "status": 200,
+                    "data": {
+                        "run": {
+                            "run_id": run_id,
+                            "status": "COMPLETED",
+                            "finished_at": "2026-08-24 12:00:00",
+                        },
+                        "next_poll_after_ms": 0,
+                    },
+                },
+                {"ok": True, "status": 200, "data": projection},
+            ]
+        )
+
+        app._handle_automation_task_output(
+            object(),
+            {
+                "run_id": [run_id],
+                "task_id": ["scan_codes"],
+                "scan_phase": ["preview"],
+                "offset": ["0"],
+            },
+        )
+
+        self.assertEqual(
+            (
+                "/internal/v1/automation-projects/scan_codes/scan-previews/"
+                + run_id
+            ),
+            app.calls[1][1],
+        )
+        self.assertEqual(projection, app.sent[1]["scan_preview"])
+        self.assertNotIn("selection_sha256", app.sent[1]["scan_preview"])
+
+    def test_completed_formal_scan_does_not_request_preview_projection(self):
+        run_id = "11111111-1111-4111-8111-111111111111"
+        app = _App(
+            {
+                "ok": True,
+                "status": 200,
+                "data": {
+                    "run": {
+                        "run_id": run_id,
+                        "status": "COMPLETED",
+                        "finished_at": "2026-08-24 12:00:00",
+                    },
+                    "next_poll_after_ms": 0,
+                },
+            }
+        )
+
+        app._handle_automation_task_output(
+            object(),
+            {
+                "run_id": [run_id],
+                "task_id": ["scan_codes"],
+                "scan_phase": ["formal"],
+                "offset": ["0"],
+            },
+        )
+
+        self.assertEqual(1, len(app.calls))
+        self.assertNotIn("scan_preview", app.sent[1])
 
     def test_output_poll_does_not_treat_waiting_approval_as_running(self):
         app = _App(

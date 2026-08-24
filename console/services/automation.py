@@ -1,9 +1,104 @@
 """Console application services grouped by business responsibility."""
 
+import uuid
 from typing import Any, Mapping
 
 from console.app_support import *  # noqa: F403
 from console.services.automation_projects import *  # noqa: F403
+
+
+SCAN_PREVIEW_PROJECT_ID = "scan_codes"
+SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
+    {
+        "contract_version",
+        "preview_run_id",
+        "target_date",
+        "observed_at",
+        "expires_at",
+        "source_page_count",
+        "normalized_record_count",
+        "selection_count",
+        "batch_count",
+        "can_confirm",
+    }
+)
+SCAN_PREVIEW_ERROR_MESSAGES = {
+    "SCAN_PREVIEW_ID_INVALID": "扫描预览标识无效，请重新生成预览。",
+    "SCAN_PREVIEW_NOT_FOUND": "扫描预览不存在，请重新生成预览。",
+    "SCAN_PREVIEW_INCOMPLETE": "扫描预览尚未完整生成，请重新生成预览。",
+    "SCAN_PREVIEW_INVALID": "扫描预览证据无效，请重新生成预览。",
+    "SCAN_PREVIEW_EXPIRED": "扫描预览已超过十五分钟，请重新生成预览。",
+    "SCAN_PREVIEW_STALE": "扫描数据已变化，请重新生成预览后再确认。",
+    "PROJECT_INVOCATION_STALE": "项目配置已变化，请重新生成预览后再确认。",
+    "SCAN_PREVIEW_ALREADY_CONSUMED": "该预览已提交过正式请求，请查询原 Run，不要重复执行。",
+    "REQUEST_ID_REUSED": "本次请求标识已被使用，请重新点击确认。",
+    "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED": "正式扫描尚未开放，本次没有写入第三方系统。",
+    "SCAN_PREVIEW_CONTEXT_REQUIRED": "服务端扫描合同缺少预览上下文，正式执行已阻断。",
+    "SCAN_PREVIEW_CONTEXT_INVALID": "服务端扫描合同与预览不一致，正式执行已阻断。",
+}
+
+
+def normalize_scan_preview_projection(
+    raw: Any,
+    *,
+    expected_run_id: str,
+) -> dict[str, Any] | None:
+    """Accept only the frozen public scan preview contract."""
+
+    if not isinstance(raw, Mapping) or set(raw) != SCAN_PREVIEW_PUBLIC_FIELDS:
+        return None
+    preview_run_id = str(raw.get("preview_run_id") or "").strip()
+    try:
+        normalized_preview_run_id = str(uuid.UUID(preview_run_id))
+    except (ValueError, AttributeError):
+        return None
+    if normalized_preview_run_id != preview_run_id or preview_run_id != expected_run_id:
+        return None
+    if raw.get("contract_version") != 1 or not isinstance(raw.get("can_confirm"), bool):
+        return None
+    target_date = str(raw.get("target_date") or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date):
+        return None
+    try:
+        datetime.strptime(target_date, "%Y-%m-%d")
+    except ValueError:
+        return None
+    timestamps: dict[str, str] = {}
+    for field in ("observed_at", "expires_at"):
+        value = str(raw.get(field) or "").strip()
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if not value or len(value) > 64 or parsed.tzinfo is None:
+            return None
+        timestamps[field] = value
+    counts: dict[str, int] = {}
+    for field in (
+        "source_page_count",
+        "normalized_record_count",
+        "selection_count",
+        "batch_count",
+    ):
+        value = raw.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        counts[field] = value
+    return {
+        "contract_version": 1,
+        "preview_run_id": preview_run_id,
+        "target_date": target_date,
+        **timestamps,
+        **counts,
+        "can_confirm": raw["can_confirm"],
+    }
+
+
+def scan_preview_error_message(error_code: Any, fallback: Any = "") -> str:
+    code = str(error_code or "").strip()
+    if code in SCAN_PREVIEW_ERROR_MESSAGES:
+        return SCAN_PREVIEW_ERROR_MESSAGES[code]
+    return normalize_feedback_text(fallback or "扫描预览当前不可用，请重新生成。")
 
 
 def group_scheduled_rows_by_automation_id(
@@ -361,6 +456,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         *,
         trusted_context: dict[str, Any],
         browser_request_uuid: str,
+        preview_run_id: str | None = None,
     ) -> dict[str, Any]:
         """Invoke one saved automation project; Agent resolves its trusted configuration."""
 
@@ -373,10 +469,23 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "error": "自动化项目或浏览器请求标识无效。",
                 "error_code": "INVALID_AUTOMATION_PROJECT_INVOKE",
             }
+        invoke_payload = {"request_id": request_id}
+        if preview_run_id is not None:
+            safe_preview_run_id = self._normalize_browser_request_uuid(preview_run_id)
+            if automation_id != SCAN_PREVIEW_PROJECT_ID or not safe_preview_run_id:
+                return {
+                    "ok": False,
+                    "status": HTTPStatus.BAD_REQUEST,
+                    "error": SCAN_PREVIEW_ERROR_MESSAGES[
+                        "SCAN_PREVIEW_ID_INVALID"
+                    ],
+                    "error_code": "SCAN_PREVIEW_ID_INVALID",
+                }
+            invoke_payload["preview_run_id"] = safe_preview_run_id
         run_result = self._agent_request(
             "POST",
             f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/invoke",
-            payload={"request_id": request_id},
+            payload=invoke_payload,
             timeout=self.settings.agent_timeout_seconds,
             console_principal=trusted_context["_console_principal"],
         )
@@ -1291,6 +1400,114 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             open_task_id=payload["task_id"],
         )
 
+    def _handle_scan_preview_confirmation(
+        self,
+        handler: BaseHTTPRequestHandler,
+    ) -> None:
+        """Submit one explicit formal scan request from a frozen public preview."""
+
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        request_id = self._normalize_browser_request_uuid(
+            handler.headers.get("X-Browser-Request-UUID")
+        )
+        values = self._parse_urlencoded_form(handler)
+        task_id = str(values.get("task_id") or "").strip()
+        preview_run_id = self._normalize_browser_request_uuid(
+            values.get("preview_run_id")
+        )
+        if (
+            not request_id
+            or set(values) != {"task_id", "preview_run_id"}
+            or task_id != SCAN_PREVIEW_PROJECT_ID
+            or not preview_run_id
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error_code": "SCAN_PREVIEW_ID_INVALID",
+                    "message": SCAN_PREVIEW_ERROR_MESSAGES[
+                        "SCAN_PREVIEW_ID_INVALID"
+                    ],
+                },
+            )
+            return
+
+        result = self._start_automation_task_run(
+            {
+                "task_id": SCAN_PREVIEW_PROJECT_ID,
+                "task_mode": "plugin",
+                "project_plugin_instance": True,
+                "name": "扫描",
+                "tool_name": f"automation.{SCAN_PREVIEW_PROJECT_ID}.run",
+                "tool_params": {},
+                "tool_params_json": "{}",
+            },
+            trusted_context=trusted_context,
+            browser_request_uuid=request_id,
+            preview_run_id=preview_run_id,
+        )
+        if not result.get("ok"):
+            error_code = str(result.get("error_code") or "").strip()
+            try:
+                upstream_status = HTTPStatus(int(result.get("status")))
+            except (TypeError, ValueError):
+                upstream_status = HTTPStatus.BAD_GATEWAY
+            if upstream_status not in {
+                HTTPStatus.BAD_REQUEST,
+                HTTPStatus.FORBIDDEN,
+                HTTPStatus.NOT_FOUND,
+                HTTPStatus.CONFLICT,
+                HTTPStatus.GONE,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            }:
+                upstream_status = HTTPStatus.BAD_GATEWAY
+            self._send_json(
+                handler,
+                upstream_status,
+                {
+                    "ok": False,
+                    "error_code": error_code or "SCAN_PREVIEW_CONFIRMATION_FAILED",
+                    "message": scan_preview_error_message(
+                        error_code,
+                        result.get("error"),
+                    ),
+                },
+            )
+            return
+
+        receipt = result.get("data")
+        run_id = str(receipt.get("run_id") or "").strip() if isinstance(receipt, dict) else ""
+        if not run_id:
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "ok": False,
+                    "error_code": "INVALID_AGENT_RUN_CONTRACT",
+                    "message": "Agent 未返回可追踪的正式扫描 Run。",
+                },
+            )
+            return
+        self._send_json(
+            handler,
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "pending": True,
+                "title": "正式扫描请求已受理",
+                "message": "正式请求已绑定本次预览，后续状态会在当前卡片更新。",
+                "command_id": receipt.get("command_id"),
+                "work_item_id": receipt.get("work_item_id"),
+                "run_id": run_id,
+                "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+            },
+        )
+
     def _handle_automation_task_cancel(self, handler: BaseHTTPRequestHandler) -> None:
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id", "") or "").strip()
@@ -1362,6 +1579,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             return
         tool_name = str(query.get("tool_name", [""])[0]).strip()
         task_id = str(query.get("task_id", [""])[0]).strip()
+        scan_phase = str(query.get("scan_phase", [""])[0]).strip().lower()
         started_at = str(query.get("started_at", [""])[0]).strip()
         run_id = str(query.get("run_id", [""])[0]).strip()
         try:
@@ -1457,6 +1675,49 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                             last_duration_ms=None,
                             last_message=error_message,
                         )
+                if (
+                    ok
+                    and task_id == SCAN_PREVIEW_PROJECT_ID
+                    and scan_phase == "preview"
+                ):
+                    preview_result = self._agent_request(
+                        "GET",
+                        (
+                            f"/internal/v1/automation-projects/{SCAN_PREVIEW_PROJECT_ID}"
+                            f"/scan-previews/{quote(run_id, safe='')}"
+                        ),
+                        timeout=5,
+                        console_principal=trusted_context["_console_principal"],
+                    )
+                    if preview_result.get("ok"):
+                        projection = normalize_scan_preview_projection(
+                            preview_result.get("data"),
+                            expected_run_id=run_id,
+                        )
+                        if projection is None:
+                            payload["scan_preview_error"] = {
+                                "error_code": "INVALID_SCAN_PREVIEW_CONTRACT",
+                                "message": (
+                                    "Agent 返回的扫描预览合同无效，确认执行已阻断。"
+                                ),
+                            }
+                        else:
+                            payload["scan_preview"] = projection
+                            payload["runtime"]["title"] = "扫描预览已生成"
+                            payload["runtime"]["message"] = (
+                                "请核对日期、来源记录、待扫描数量和批次数。"
+                            )
+                    else:
+                        error_code = str(
+                            preview_result.get("error_code") or ""
+                        ).strip()
+                        payload["scan_preview_error"] = {
+                            "error_code": error_code or "SCAN_PREVIEW_UNAVAILABLE",
+                            "message": scan_preview_error_message(
+                                error_code,
+                                preview_result.get("error"),
+                            ),
+                        }
             self._send_json(handler, HTTPStatus.OK, payload)
             return
         if not tool_name:
