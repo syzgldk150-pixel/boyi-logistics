@@ -18,6 +18,7 @@ _DEFAULT_STATE_FILE = os.path.join(
 
 _lock = threading.Lock()
 _pending: dict[str, tuple[float, dict[str, Any]]] = {}
+_volatile_pending: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _state_file() -> str:
@@ -72,13 +73,23 @@ def _persist_locked() -> None:
     os.replace(tmp_path, path)
 
 
-def set_pending(chat_id: str, action: dict[str, Any], ttl_sec: int = DEFAULT_TTL_SEC) -> None:
+def set_pending(
+    chat_id: str,
+    action: dict[str, Any],
+    ttl_sec: int = DEFAULT_TTL_SEC,
+    *,
+    persist: bool = True,
+) -> None:
     if not chat_id:
         return
     expires_at = time.time() + max(1, int(ttl_sec))
     with _lock:
         _load_locked()
-        _pending[chat_id] = (expires_at, dict(action))
+        if persist:
+            _volatile_pending.pop(chat_id, None)
+            _pending[chat_id] = (expires_at, dict(action))
+        else:
+            _volatile_pending[chat_id] = (expires_at, dict(action))
         _persist_locked()
 
 
@@ -88,7 +99,12 @@ def get_pending(chat_id: str) -> dict[str, Any] | None:
     now = time.time()
     with _lock:
         _load_locked()
-        entry = _pending.get(chat_id)
+        entry = _volatile_pending.get(chat_id)
+        if entry is not None and entry[0] < now:
+            _volatile_pending.pop(chat_id, None)
+            entry = None
+        if entry is None:
+            entry = _pending.get(chat_id)
         if entry is None:
             return None
         expires_at, action = entry
@@ -99,13 +115,21 @@ def get_pending(chat_id: str) -> dict[str, Any] | None:
         return dict(action)
 
 
-def clear_pending(chat_id: str) -> dict[str, Any] | None:
+def clear_pending(
+    chat_id: str,
+    *,
+    volatile_only: bool = False,
+) -> dict[str, Any] | None:
     if not chat_id:
         return None
     with _lock:
         _load_locked()
-        entry = _pending.pop(chat_id, None)
-        _persist_locked()
+        volatile_entry = _volatile_pending.pop(chat_id, None)
+        entry = None if volatile_only else _pending.pop(chat_id, None)
+        if not volatile_only:
+            _persist_locked()
+    if volatile_entry is not None:
+        entry = volatile_entry
     if entry is None:
         return None
     _, action = entry
