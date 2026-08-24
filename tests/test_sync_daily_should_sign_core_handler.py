@@ -23,6 +23,7 @@ from agent.automation_plugins.first_party_handlers import (
     FirstPartyCoreHandlerPorts,
     build_first_party_core_handler_map,
 )
+from agent.execution_boundary import authorize_tms_target, current_execution_capability
 from agent.tool_registry import ToolRegistry
 from plugin_core_adapters import daily_sign as daily_sign_adapters
 
@@ -89,6 +90,54 @@ def _context(*, r13_account_id: str = "r13-bound") -> CoreBrokerInvocationContex
         account_bindings={
             "r13_account_id": (r13_account_id,),
             "account_id": ("ronghui-bound",),
+        },
+        resource_bindings={
+            "daily_sign_bitable": "resource-bitable",
+            "daily_sign_sheet": "resource-sheet",
+        },
+    )
+
+
+def _grant() -> BrokerGrant:
+    return BrokerGrant(
+        automation_id="daily-sign-instance",
+        plugin_version="1.0.0",
+        tool_name="sync_daily_should_sign",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        runtime_permissions={
+            "broker_operations": [
+                {
+                    "operation": "ledger.invoke",
+                    "action": "daily_sign.authoritative_sync",
+                    "roles": [
+                        "r13_account_id",
+                        "account_id",
+                        "daily_sign_bitable",
+                        "daily_sign_sheet",
+                    ],
+                    "effect": "write",
+                }
+            ]
+        },
+        account_roles=(
+            {"role": "r13_account_id", "allowed_systems": ["r13"], "required": True},
+            {"role": "account_id", "allowed_systems": ["ronghui"], "required": True},
+        ),
+        resource_roles=(
+            {
+                "role": "daily_sign_bitable",
+                "allowed_kinds": ["feishu_bitable"],
+                "required": True,
+            },
+            {
+                "role": "daily_sign_sheet",
+                "allowed_kinds": ["feishu_sheet"],
+                "required": True,
+            },
+        ),
+        account_bindings={
+            "r13_account_id": "r13-bound",
+            "account_id": "ronghui-bound",
         },
         resource_bindings={
             "daily_sign_bitable": "resource-bitable",
@@ -244,6 +293,50 @@ def test_opaque_evidence_is_bound_to_both_exact_accounts() -> None:
     assert first["evidence_ref"] != second["evidence_ref"]
 
 
+def test_broker_handler_receives_exact_tool_scoped_tms_capability() -> None:
+    observed: dict[str, object] = {}
+
+    def authoritative(arguments, resources):
+        del arguments, resources
+        token = current_execution_capability()
+        observed["has_capability"] = bool(token)
+        observed["r13_allowed"] = authorize_tms_target(token, "get_qianshou")
+        observed["unrelated_denied"] = authorize_tms_target(token, "fetch_dispatch")
+        return _authoritative_result()
+
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers=build_first_party_core_handler_map(
+            FirstPartyCoreHandlerPorts(
+                describe_account=_descriptor,
+                daily_sign_sync=authoritative,
+            ),
+            cursor_secret=b"d" * 32,
+        ),
+        account_resolver=_RecordingAccountResolver(),
+        resource_resolver=_RecordingResourceResolver(),
+    )
+    grant = _grant()
+
+    result = asyncio.run(
+        adapter.invoke(
+            grant=grant,
+            operation="ledger.invoke",
+            action="daily_sign.authoritative_sync",
+            role="account_id",
+            binding=("ronghui-bound",),
+            arguments={"days": 7},
+        )
+    )
+
+    assert result["result"]["status"] == "SUCCESS"
+    assert observed == {
+        "has_capability": True,
+        "r13_allowed": True,
+        "unrelated_denied": False,
+    }
+    assert current_execution_capability() == ""
+
+
 def test_closed_handler_rejects_success_with_tampered_terminal_readback() -> None:
     tampered = _authoritative_result()
     tampered["meta"]["postcondition_evidence"]["0"]["details"][
@@ -320,59 +413,7 @@ def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
         account_resolver=resolver,
         resource_resolver=resource_resolver,
     )
-    grant = BrokerGrant(
-        automation_id="daily-sign-instance",
-        plugin_version="1.0.0",
-        tool_name="sync_daily_should_sign",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        runtime_permissions={
-            "broker_operations": [
-                {
-                    "operation": "ledger.invoke",
-                    "action": "daily_sign.authoritative_sync",
-                    "roles": [
-                        "r13_account_id",
-                        "account_id",
-                        "daily_sign_bitable",
-                        "daily_sign_sheet",
-                    ],
-                    "effect": "write",
-                }
-            ]
-        },
-        account_roles=(
-            {
-                "role": "r13_account_id",
-                "allowed_systems": ["r13"],
-                "required": True,
-            },
-            {
-                "role": "account_id",
-                "allowed_systems": ["ronghui"],
-                "required": True,
-            },
-        ),
-        resource_roles=(
-            {
-                "role": "daily_sign_bitable",
-                "allowed_kinds": ["feishu_bitable"],
-                "required": True,
-            },
-            {
-                "role": "daily_sign_sheet",
-                "allowed_kinds": ["feishu_sheet"],
-                "required": True,
-            },
-        ),
-        account_bindings={
-            "r13_account_id": "r13-bound",
-            "account_id": "ronghui-bound",
-        },
-        resource_bindings={
-            "daily_sign_bitable": "resource-bitable",
-            "daily_sign_sheet": "resource-sheet",
-        },
-    )
+    grant = _grant()
 
     result = asyncio.run(
         adapter.invoke(

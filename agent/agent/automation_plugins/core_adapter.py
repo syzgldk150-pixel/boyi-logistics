@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from agent.automation_plugins.broker import BrokerGrant
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.execution_boundary import execution_capability_scope
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
 
@@ -308,9 +310,22 @@ class RegisteredCoreAutomationBrokerAdapter:
             resource_bindings=resolved_resources,
             mark_write_started=mark_write_started,
         )
-        result = handler(context, dict(arguments))
-        if inspect.isawaitable(result):
-            result = await result
+        capability_ttl = max(
+            1.0,
+            (grant.expires_at - datetime.now(timezone.utc)).total_seconds(),
+        )
+        # Broker handlers execute in the broker server task, not in the
+        # orchestration task that launched the signed subprocess. Recreate the
+        # exact tool-scoped capability here so reviewed core adapters may make
+        # their own local TMS calls without granting the plugin process a
+        # reusable service credential.
+        with execution_capability_scope(
+            grant.tool_name,
+            ttl_seconds=capability_ttl,
+        ):
+            result = handler(context, dict(arguments))
+            if inspect.isawaitable(result):
+                result = await result
         if not isinstance(result, Mapping):
             raise PluginExecutionError("core broker handler returned a non-object result")
         return dict(result)
