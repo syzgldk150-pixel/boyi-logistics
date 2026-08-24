@@ -24,12 +24,12 @@ def test_code_owned_fields_require_exact_first_party_instance_identity() -> None
         automation_id="scan_codes",
         plugin_id="sync_scan_codes",
         trust_source=FIRST_PARTY_TRUST,
-    ) == ("_scan_preview_binding",)
+    ) == ("_scan_preview_binding", "dry_run")
     assert first_party_code_owned_plan_fields(
         automation_id="scan_codes",
         plugin_id="sync_scan_codes",
         trust_source=FIRST_PARTY_TRUST,
-    ) == ("_scan_preview_binding",)
+    ) == ("_scan_preview_binding", "dry_run")
     assert first_party_code_owned_config_fields(
         automation_id="customer_problems_shadow",
         plugin_id="sync_customer_service_problems",
@@ -81,6 +81,7 @@ def test_persisted_code_owned_config_normalization_is_detached_and_closed() -> N
         trust_source=FIRST_PARTY_TRUST,
         config={
             "target_date": "2026-08-24",
+            "dry_run": False,
             "_scan_preview_binding": {"forged": True},
         },
     ) == {"target_date": "2026-08-24"}

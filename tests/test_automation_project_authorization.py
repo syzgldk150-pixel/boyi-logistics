@@ -9,6 +9,8 @@ from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectContractError,
     AutomationProjectInvocation,
+    CompiledAutomationProjectContract,
+    InvocationArgumentContract,
     canonical_sha256,
     compile_automation_project_contract,
 )
@@ -724,6 +726,115 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
                 catalog=_Catalog(capability),
                 plugin_contract_provider=lambda _automation_id: fragment,
             )
+
+    def test_scan_code_owned_preview_and_formal_arguments_match_exact_context(self):
+        binding_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "preview_run_id": {"type": "string", "minLength": 1},
+            },
+            "required": ["preview_run_id"],
+        }
+        contract = CompiledAutomationProjectContract(
+            automation_id="scan_codes",
+            automation_generation=1,
+            manifest_sha256="1" * 64,
+            tool_name="automation.scan_codes.run",
+            tool_version="1.0.0",
+            operation_type="internal_projection_write",
+            risk_level="medium",
+            invocation_contracts={
+                "console": InvocationArgumentContract(
+                    contract_id="console",
+                    entrypoint="console",
+                    expected_arguments={"target_date": "2026-08-24"},
+                    dynamic_argument_resolvers={},
+                    input_schema={
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "target_date": {"type": "string"},
+                            "dry_run": {"type": "boolean"},
+                            "_scan_preview_binding": binding_schema,
+                        },
+                    },
+                )
+            },
+            account_bindings={"account_id": "ronghui"},
+            allowed_entrypoints=frozenset({"console"}),
+            contract_hash="2" * 64,
+            tool_contract_hash="3" * 64,
+            plugin_contract_hash="4" * 64,
+            project_configuration_version=1,
+            snapshot={"automation_id": "scan_codes"},
+            can_full_auto=True,
+            code_owned_plan_fields=frozenset(
+                {"dry_run", "_scan_preview_binding"}
+            ),
+        )
+        invocation = AutomationProjectInvocation(
+            automation_id="scan_codes",
+            automation_generation=1,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="console",
+            contract_hash="2" * 64,
+            policy_version=1,
+            project_configuration_version=1,
+            request_id="scan-request",
+        )
+
+        def plan(arguments):
+            return SimpleNamespace(
+                automation_id="scan_codes",
+                automation_generation=1,
+                automation_contract_hash="2" * 64,
+                steps=(
+                    _Step(
+                        tool_name="automation.scan_codes.run",
+                        tool_version="1.0.0",
+                        operation_type="internal_projection_write",
+                        arguments=arguments,
+                    ),
+                ),
+            )
+
+        preview = {"target_date": "2026-08-24", "dry_run": True}
+        self.assertTrue(
+            contract.matches_plan(plan(preview), invocation, source="console")
+        )
+        binding = {"preview_run_id": "preview-run"}
+        formal = {
+            "target_date": "2026-08-24",
+            "dry_run": False,
+            "_scan_preview_binding": binding,
+        }
+        self.assertTrue(
+            contract.matches_plan(
+                plan(formal),
+                invocation,
+                source="console",
+                execution_context={"scan_preview": binding},
+            )
+        )
+        self.assertFalse(
+            contract.matches_plan(
+                plan(formal),
+                invocation,
+                source="console",
+                execution_context={
+                    "scan_preview": {"preview_run_id": "another-run"}
+                },
+            )
+        )
+        self.assertFalse(
+            contract.matches_plan(
+                plan({**preview, "_scan_preview_binding": binding}),
+                invocation,
+                source="console",
+                execution_context={"scan_preview": binding},
+            )
+        )
 
 
 if __name__ == "__main__":

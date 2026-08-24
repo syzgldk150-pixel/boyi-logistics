@@ -998,16 +998,23 @@ def _validate_plugin_fragment(
         raise AutomationProjectContractError(
             "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID"
         )
-    expected_code_owned_plan_fields = (
-        ["recheck_items"]
-        if (
-            fragment.get("trust_source") == "ed25519_first_party"
-            and automation_id == "customer_problems_shadow"
-            and str(fragment.get("plugin_id") or "")
-            == "sync_customer_service_problems"
-        )
-        else []
+    exact_code_owned_identity = (
+        str(fragment.get("trust_source") or ""),
+        automation_id,
+        str(fragment.get("plugin_id") or ""),
     )
+    expected_code_owned_plan_fields = {
+        (
+            "ed25519_first_party",
+            "customer_problems_shadow",
+            "sync_customer_service_problems",
+        ): ["recheck_items"],
+        (
+            "ed25519_first_party",
+            "scan_codes",
+            "sync_scan_codes",
+        ): ["_scan_preview_binding", "dry_run"],
+    }.get(exact_code_owned_identity, [])
     if raw_code_owned_plan_fields != expected_code_owned_plan_fields:
         raise AutomationProjectContractError(
             "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID"
@@ -1113,6 +1120,7 @@ def _arguments_match(
         actual=right,
         fields=code_owned_plan_fields,
         input_schema=input_schema,
+        execution_context=execution_context,
     ):
         return False
     return _strict_json_equal(left, right)
@@ -1124,17 +1132,45 @@ def _code_owned_plan_arguments_match(
     actual: dict[str, Any],
     fields: frozenset[str],
     input_schema: Mapping[str, Any] | None,
+    execution_context: Mapping[str, Any],
 ) -> bool:
     if not fields:
         return True
-    if fields != frozenset({"recheck_items"}):
-        return False
-    if "recheck_items" in expected or "recheck_items" not in actual:
-        return False
     if not isinstance(input_schema, Mapping):
         return False
     properties = input_schema.get("properties")
     if not isinstance(properties, Mapping):
+        return False
+    if fields == frozenset({"dry_run", "_scan_preview_binding"}):
+        if any(field in expected for field in fields) or "dry_run" not in actual:
+            return False
+        dry_run = actual.pop("dry_run")
+        dry_run_schema = properties.get("dry_run")
+        if not isinstance(dry_run_schema, Mapping):
+            return False
+        try:
+            _validate_signed_schema_value(dry_run_schema, dry_run)
+        except (TypeError, ValueError):
+            return False
+        binding_present = "_scan_preview_binding" in actual
+        binding = actual.pop("_scan_preview_binding", None)
+        raw_context = execution_context.get("scan_preview")
+        if dry_run:
+            return not binding_present and raw_context is None
+        signed_schema = properties.get("_scan_preview_binding")
+        if not binding_present or not isinstance(signed_schema, Mapping):
+            return False
+        try:
+            _validate_signed_schema_value(signed_schema, binding)
+        except (TypeError, ValueError):
+            return False
+        return isinstance(raw_context, Mapping) and _strict_json_equal(
+            raw_context,
+            binding,
+        )
+    if fields != frozenset({"recheck_items"}):
+        return False
+    if "recheck_items" in expected or "recheck_items" not in actual:
         return False
     signed_schema = properties.get("recheck_items")
     if not isinstance(signed_schema, Mapping):

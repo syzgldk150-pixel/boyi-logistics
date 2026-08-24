@@ -56,6 +56,18 @@ class _Service:
         self.calls.append((automation_id, kwargs))
         return _Receipt()
 
+    def get_scan_preview_projection(
+        self,
+        automation_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append((automation_id, kwargs))
+        return {
+            "contract_version": 1,
+            "preview_run_id": kwargs["preview_run_id"],
+            "can_confirm": True,
+        }
+
 
 def _client() -> tuple[TestClient, _Service, Actor]:
     service = _Service()
@@ -157,4 +169,45 @@ def test_console_invoke_submits_only_server_resolved_project_identity() -> None:
     assert response.json()["data"] == {"run_id": "run-1", "command_id": "command-1"}
     automation_id, payload = service.calls[-1]
     assert automation_id == "project-a"
-    assert payload == {"request_id": "request-4", "actor": actor}
+    assert payload == {
+        "request_id": "request-4",
+        "actor": actor,
+        "preview_run_id": None,
+    }
+
+    formal = client.post(
+        "/internal/v1/automation-projects/project-a/invoke",
+        json={
+            "request_id": "request-5",
+            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+        },
+    )
+    assert formal.status_code == 200
+    assert service.calls[-1] == (
+        "project-a",
+        {
+            "request_id": "request-5",
+            "actor": actor,
+            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+        },
+    )
+
+
+def test_scan_preview_projection_route_uses_server_project_authority() -> None:
+    client, service, _actor = _client()
+
+    response = client.get(
+        "/internal/v1/automation-projects/scan_codes/scan-previews/"
+        "11111111-1111-4111-8111-111111111111"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "contract_version": 1,
+        "preview_run_id": "11111111-1111-4111-8111-111111111111",
+        "can_confirm": True,
+    }
+    assert service.calls[-1] == (
+        "scan_codes",
+        {"preview_run_id": "11111111-1111-4111-8111-111111111111"},
+    )
