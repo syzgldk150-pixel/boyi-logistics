@@ -646,6 +646,51 @@ class LockedVirtualEnvironmentBuilder:
         return venv_root / "bin" / "python"
 
     @staticmethod
+    def _normalize_copied_venv(venv_root: Path) -> None:
+        """Remove redundant CPython compatibility entries from a copied venv.
+
+        Linux CPython creates ``lib64 -> lib`` plus two full interpreter aliases
+        even when ``symlinks=False``.  Plugins execute only ``bin/python``; the
+        aliases waste two interpreter copies per immutable plugin version and a
+        half-created venv can otherwise leave a link that masks the real error
+        during staging cleanup.
+        """
+
+        if os.name == "nt":
+            return
+        lib64 = venv_root / "lib64"
+        if lib64.is_symlink():
+            if os.readlink(lib64) not in {"lib", "./lib"}:
+                raise PluginPackageError(
+                    "plugin virtual environment contains an unsafe lib64 link"
+                )
+            lib64.unlink()
+        bin_root = venv_root / "bin"
+        for name in {
+            f"python{sys.version_info.major}",
+            f"python{sys.version_info.major}.{sys.version_info.minor}",
+        }:
+            alias = bin_root / name
+            try:
+                metadata = alias.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise PluginPackageError(
+                    "plugin virtual environment alias cannot be inspected"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                if os.readlink(alias) not in {"python", "./python"}:
+                    raise PluginPackageError(
+                        "plugin virtual environment contains an unsafe Python alias"
+                    )
+            elif not stat.S_ISREG(metadata.st_mode):
+                raise PluginPackageError(
+                    "plugin virtual environment contains an unsafe Python alias"
+                )
+            alias.unlink()
+
+    @staticmethod
     def _validated_lock(lock_path: Path) -> None:
         try:
             text = lock_path.read_text(encoding="utf-8")
@@ -702,22 +747,19 @@ class LockedVirtualEnvironmentBuilder:
             raise PluginPackageError("verified plugin package directory is missing")
         venv_root = version_root / "venv"
         lock_name = manifest.runtime.get("requirements_lock")
-        venv.EnvBuilder(
-            with_pip=bool(lock_name),
-            clear=False,
-            # A symlinked venv interpreter resolves to /usr/bin/python and
-            # escapes both the immutable version root and the Bubblewrap bind.
-            symlinks=False,
-            system_site_packages=False,
-        ).create(venv_root)
-        # CPython creates a ``lib64 -> lib`` compatibility link even when the
-        # interpreter itself is copied. It is not needed by the isolated
-        # runtime and would make immutable-tree verification/removal ambiguous.
-        lib64 = venv_root / "lib64"
-        if lib64.is_symlink():
-            if os.readlink(lib64) not in {"lib", "./lib"}:
-                raise PluginPackageError("plugin virtual environment contains an unsafe lib64 link")
-            lib64.unlink()
+        try:
+            venv.EnvBuilder(
+                with_pip=bool(lock_name),
+                clear=False,
+                # A symlinked venv interpreter resolves to /usr/bin/python and
+                # escapes both the immutable version root and the Bubblewrap bind.
+                symlinks=False,
+                system_site_packages=False,
+            ).create(venv_root)
+        finally:
+            # Normalize partial environments too, so a creation failure remains
+            # the reported cause and the staging tree can be removed safely.
+            self._normalize_copied_venv(venv_root)
         python_path = self._python_path(venv_root)
         if not python_path.is_file():
             raise PluginPackageError("plugin virtual environment did not create Python")
