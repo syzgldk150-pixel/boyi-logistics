@@ -25,6 +25,7 @@ ACTION_ID = "sync_arrival_stats"
 _ROLE = "account_id"
 _MAX_PAGES = 500
 _MAX_RECORDS = 20_000
+_MAX_BROKER_CALLS = 1_000
 _MONEY = Decimal("0.01")
 _VOLUME = Decimal("0.001")
 _R_CHILD = re.compile(r"^(?:R\d{11}|RC\d{10})\d{4}$")
@@ -213,6 +214,8 @@ def _collect_waybills(
             if previous is not None and previous != record:
                 raise ValueError("arrive-list duplicate waybill is inconsistent")
             records[tracking] = record
+            if len(records) > _MAX_RECORDS:
+                raise ValueError("arrive-list source exceeds its signed record limit")
         pages += 1
         if pages > _MAX_PAGES:
             raise ValueError("arrive-list pagination exceeded its signed limit")
@@ -469,41 +472,6 @@ def run_action(
         if str(row["tracking_number"]) not in completed or str(row["tracking_number"]) in current_main
     ]
 
-    dry_run = arguments.get("dry_run") is True
-    if dry_run:
-        scan_write = None
-    else:
-        scan_write = _committed(
-            broker(
-                "projection.invoke",
-                action="scan.snapshot.replace",
-                role=_ROLE,
-                arguments={"records": current_scan, "target_date": target_date},
-            ),
-            "scan snapshot",
-        )
-        evidence_refs.append(broker_evidence_ref(scan_write, "scan snapshot"))
-
-    if not dry_run:
-        retention = _bounded_limit(
-            arguments.get("scan_codes_retention_days"),
-            label="scan_codes_retention_days",
-            default=30,
-            maximum=3650,
-        )
-        assert retention is not None
-        cleanup = _committed(
-            broker(
-                "projection.invoke",
-                action="scan.snapshot.cleanup",
-                role=_ROLE,
-                arguments={"retention_days": retention},
-            ),
-            "scan snapshot cleanup",
-            allow_skipped=True,
-        )
-        evidence_refs.append(broker_evidence_ref(cleanup, "scan snapshot cleanup"))
-
     accumulated_result, accumulated_ref = _projection_read(
         broker,
         action="scan.snapshot.read",
@@ -511,7 +479,9 @@ def run_action(
         label="accumulated scan snapshot",
     )
     evidence_refs.append(accumulated_ref)
-    accumulated_scan = _persisted_scan_rows(accumulated_result)
+    accumulated_scan = _normalized_scan_snapshot(
+        [*_persisted_scan_rows(accumulated_result), *current_scan]
+    )
 
     existing_trackings = {str(row["tracking_number"]) for row in arrive_records}
     missing = sorted(current_main - existing_trackings)
@@ -520,6 +490,17 @@ def run_action(
         missing = missing[:missing_limit]
     stale = [str(row["tracking_number"]) for row in arrive_records if _needs_detail(row)]
     detail_codes = list(dict.fromkeys([*missing, *stale]))
+    dry_run = arguments.get("dry_run") is True
+    planned_calls = arrive_pages + scan_pages + 2 + len(detail_codes)
+    if not dry_run:
+        planned_calls += 8
+        if arguments.get("pending_sheet_disabled") is not True:
+            planned_calls += 2
+        if arguments.get("archive_snapshot", True) is True:
+            planned_calls += 1
+    if planned_calls > _MAX_BROKER_CALLS:
+        raise ValueError("arrival statistics exceeds its signed broker call budget")
+
     fetched: list[dict[str, object]] = []
     for tracking in detail_codes:
         detail = _object(
@@ -545,6 +526,36 @@ def run_action(
     missing_scanned = sorted(current_main - merged_trackings)
     if missing_scanned:
         raise ValueError("target-day scan waybills are missing exact detail records")
+
+    if not dry_run:
+        scan_write = _committed(
+            broker(
+                "projection.invoke",
+                action="scan.snapshot.replace",
+                role=_ROLE,
+                arguments={"records": current_scan, "target_date": target_date},
+            ),
+            "scan snapshot",
+        )
+        evidence_refs.append(broker_evidence_ref(scan_write, "scan snapshot"))
+        retention = _bounded_limit(
+            arguments.get("scan_codes_retention_days"),
+            label="scan_codes_retention_days",
+            default=30,
+            maximum=3650,
+        )
+        assert retention is not None
+        cleanup = _committed(
+            broker(
+                "projection.invoke",
+                action="scan.snapshot.cleanup",
+                role=_ROLE,
+                arguments={"retention_days": retention},
+            ),
+            "scan snapshot cleanup",
+            allow_skipped=True,
+        )
+        evidence_refs.append(broker_evidence_ref(cleanup, "scan snapshot cleanup"))
 
     export_limit = _bounded_limit(arguments.get("export_limit"), label="export_limit", default=None)
     export_records = merged if export_limit is None else merged[:export_limit]
