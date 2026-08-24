@@ -13,7 +13,7 @@ import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agent.orchestration.approval_service import APPROVAL_TTL
@@ -40,6 +40,20 @@ SCAN_PREVIEW_CONTEXT_KEY = "scan_preview"
 SCAN_PREVIEW_PAYLOAD_BINDING_FIELD = "_scan_preview_binding"
 SCAN_PREVIEW_CONSUMED_EVENT = "automation.scan_preview.consumed"
 SCAN_PREVIEW_CONTRACT_VERSION = 1
+SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
+    {
+        "contract_version",
+        "preview_run_id",
+        "target_date",
+        "observed_at",
+        "expires_at",
+        "source_page_count",
+        "normalized_record_count",
+        "selection_count",
+        "batch_count",
+        "can_confirm",
+    }
+)
 _MAX_SOURCE_PAGES = 500
 _MAX_SOURCE_EVIDENCE_REFS = 500
 _MAX_ITEMS = 100_000
@@ -208,6 +222,66 @@ def scan_preview_public_projection(
         "selection_count": persisted.evidence["selection_count"],
         "batch_count": persisted.evidence["batch_count"],
         "can_confirm": checked_now < persisted.expires_at,
+    }
+
+
+def normalize_scan_preview_public_projection(
+    value: Any,
+    *,
+    expected_run_id: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Validate the closed public projection consumed by trusted entrypoints."""
+
+    if not isinstance(value, Mapping) or set(value) != SCAN_PREVIEW_PUBLIC_FIELDS:
+        return None
+    try:
+        raw_preview_run_id = str(value.get("preview_run_id") or "").strip()
+        preview_run_id = normalize_preview_run_id(raw_preview_run_id)
+        target_date = _date_text(value.get("target_date"))
+        observed_at = _parse_timestamp(value.get("observed_at"), "observed_at")
+        expires_at = _parse_timestamp(value.get("expires_at"), "expires_at")
+    except OrchestrationError:
+        return None
+    if raw_preview_run_id != preview_run_id:
+        return None
+    if expected_run_id is not None:
+        try:
+            if preview_run_id != normalize_preview_run_id(expected_run_id):
+                return None
+        except OrchestrationError:
+            return None
+    checked_now = datetime.now(timezone.utc) if now is None else now
+    try:
+        checked_now = _aware_utc(checked_now, "now")
+    except OrchestrationError:
+        return None
+    if (
+        value.get("contract_version") != SCAN_PREVIEW_CONTRACT_VERSION
+        or value.get("can_confirm") is not True
+        or expires_at - observed_at != timedelta(minutes=15)
+        or checked_now >= expires_at
+    ):
+        return None
+    counts: dict[str, int] = {}
+    for field in (
+        "source_page_count",
+        "normalized_record_count",
+        "selection_count",
+        "batch_count",
+    ):
+        count = value.get(field)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        counts[field] = count
+    return {
+        "contract_version": SCAN_PREVIEW_CONTRACT_VERSION,
+        "preview_run_id": preview_run_id,
+        "target_date": target_date,
+        "observed_at": _iso_utc(observed_at),
+        "expires_at": _iso_utc(expires_at),
+        **counts,
+        "can_confirm": True,
     }
 
 

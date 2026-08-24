@@ -217,12 +217,14 @@ def _route(
     *,
     action_fields=frozenset({"trigger_flow", "dry_run"}),
     dynamic_fields=frozenset({"trigger_flow"}),
+    automation_id="scan-instance",
+    route_key=None,
 ) -> AutomationProjectEntrypointRoute:
     return AutomationProjectEntrypointRoute(
         route_id=f"route-{entrypoint.value}",
-        route_key=f"{entrypoint.value}-scan",
+        route_key=route_key or f"{entrypoint.value}-scan",
         entrypoint=entrypoint,
-        automation_id="scan-instance",
+        automation_id=automation_id,
         automation_generation=4,
         project_configuration_version=3,
         route_revision=2,
@@ -331,6 +333,60 @@ class AutomationProjectEntrypointTests(TestCase):
                 )
             )
         self.assertEqual("STABLE_EVENT_ID_REQUIRED", raised.exception.code)
+
+    def test_exact_scan_feishu_confirmation_forwards_preview_outside_dynamic_inputs(self):
+        policy = _PolicyService()
+        route = _route(
+            AutomationEntrypoint.FEISHU,
+            automation_id="scan_codes",
+            route_key="builtin.scan_codes",
+            action_fields=frozenset(),
+            dynamic_fields=frozenset(),
+        )
+        service = AutomationProjectEntrypoints(
+            policy,
+            route_resolver=_RouteResolver(route),
+        )
+        preview_run_id = "11111111-1111-4111-8111-111111111111"
+
+        asyncio.run(
+            service.invoke_feishu(
+                route_key="builtin.scan_codes",
+                event_id="event-confirm-scan",
+                sender_id="user-one",
+                chat_id="chat-one",
+                envelope={"body": {}, "query": {}},
+                preview_run_id=preview_run_id,
+            )
+        )
+
+        automation_id, trusted = policy.calls[0]
+        self.assertEqual("scan_codes", automation_id)
+        self.assertEqual(preview_run_id, trusted["preview_run_id"])
+        self.assertEqual({}, trusted["trusted_context"]["dynamic_inputs"])
+        self.assertEqual("feishu:event-confirm-scan", trusted["idempotency_key"])
+
+    def test_non_scan_feishu_route_rejects_preview_before_policy(self):
+        policy = _PolicyService()
+        route = _route(AutomationEntrypoint.FEISHU)
+        service = AutomationProjectEntrypoints(
+            policy,
+            route_resolver=_RouteResolver(route),
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            asyncio.run(
+                service.invoke_feishu(
+                    route_key="feishu-scan",
+                    event_id="event-confirm-other",
+                    sender_id="user-one",
+                    chat_id="chat-one",
+                    preview_run_id="11111111-1111-4111-8111-111111111111",
+                )
+            )
+
+        self.assertEqual("SCAN_PREVIEW_ID_INVALID", raised.exception.code)
+        self.assertEqual([], policy.calls)
 
     def test_route_must_exist_for_the_exact_entrypoint_key(self):
         service = AutomationProjectEntrypoints(
