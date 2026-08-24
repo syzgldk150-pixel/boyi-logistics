@@ -192,7 +192,10 @@ def test_payload_delegates_once_and_preserves_authoritative_result() -> None:
     }
     result = action.run_action(arguments, broker)
 
-    assert result == _authoritative_result()
+    expected = _authoritative_result()
+    expected["meta"].pop("account_id")
+    assert result == expected
+    _assert_account_blind(result)
     assert calls == [
         (
             "ledger.invoke",
@@ -213,7 +216,10 @@ def test_payload_preserves_authoritative_failure_without_reclassification() -> N
         lambda *args, **kwargs: _broker_result(authoritative),
     )
 
-    assert result == authoritative
+    expected = copy.deepcopy(authoritative)
+    expected["meta"].pop("account_id")
+    assert result == expected
+    _assert_account_blind(result)
 
 
 def test_payload_rejects_account_or_credential_material_before_broker() -> None:
