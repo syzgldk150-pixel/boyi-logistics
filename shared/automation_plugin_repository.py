@@ -1947,6 +1947,25 @@ class AutomationPluginRepository(
                 and scheduling.get("supported") is not True
             ):
                 raise OrchestrationPersistenceError("plugin does not support schedules")
+            schedule_kind = str(normalized_schedule["kind"])
+            allowed_schedule_kinds = scheduling.get("allowed_kinds")
+            if schedule_kind != "none" and (
+                not isinstance(allowed_schedule_kinds, list)
+                or schedule_kind not in allowed_schedule_kinds
+            ):
+                raise OrchestrationPersistenceError(
+                    "project schedule exceeds the signed plugin kinds"
+                )
+            if schedule_kind == "daily_times":
+                max_daily_times = scheduling.get("max_daily_times")
+                if (
+                    type(max_daily_times) is not int
+                    or max_daily_times < 1
+                    or len(normalized_schedule["times"]) > max_daily_times
+                ):
+                    raise OrchestrationPersistenceError(
+                        "project schedule exceeds the signed plugin daily limit"
+                    )
             tool_name = _required_text(tool_contract.get("name"), "tool_contract.name")
             if runtime.get("kind") == "core_tool_ref" and runtime.get("tool_name") != tool_name:
                 raise OrchestrationPersistenceError("plugin runtime/tool identity mismatch")
@@ -1964,6 +1983,7 @@ class AutomationPluginRepository(
             )
             if current_config is None:
                 raise OrchestrationPersistenceError("automation project config is not initialized")
+            current_version = int(current_config.get("config_version") or 0)
 
             cursor.execute(
                 """
@@ -1982,9 +2002,17 @@ class AutomationPluginRepository(
                     prior_event.get("event_type") != "CONFIGURATION_UPDATED"
                     or not isinstance(metadata, Mapping)
                     or metadata.get("request_payload_sha256") != request_payload_sha256
+                    or metadata.get("to_project_configuration_version")
+                    != expected_version + 1
+                    or prior_event.get("actor_id") != normalized_actor
+                    or prior_event.get("actor_role") != normalized_role
                 ):
                     raise IdempotencyConflict(
                         "configuration request was reused with different input"
+                    )
+                if current_version != metadata["to_project_configuration_version"]:
+                    raise IdempotencyConflict(
+                        "configuration changed after the idempotent request"
                     )
                 persisted = self.get_project_config(project_id, for_update=True)
                 if persisted is None:
@@ -1993,7 +2021,6 @@ class AutomationPluginRepository(
                     )
                 return persisted
 
-            current_version = int(current_config.get("config_version") or 0)
             if current_version != expected_version:
                 raise ConcurrentUpdateError("automation project config version changed")
             next_version = current_version + 1

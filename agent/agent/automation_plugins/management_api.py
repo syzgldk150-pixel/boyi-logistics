@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from email import policy
 from email.parser import BytesParser
 from pathlib import PurePath
@@ -314,6 +314,7 @@ def create_automation_plugin_management_router(
     service_provider: Callable[[], AutomationPluginManagementService],
     actor_provider: Callable[[Request], Actor],
     include_worker_routes: bool = True,
+    scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None = None,
 ) -> APIRouter:
     """Build the plugin API without importing the Agent composition root."""
 
@@ -458,7 +459,7 @@ def create_automation_plugin_management_router(
         request: Request,
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
-        return await _service_response(
+        response = await _service_response(
             lambda: service_provider().save_configuration(
                 automation_id,
                 config=payload.config,
@@ -474,6 +475,53 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
+        if isinstance(response, JSONResponse):
+            return response
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("plugin configuration response is invalid")
+        schedule = data.get("schedule")
+        entrypoints = data.get("enabled_entrypoints")
+        schedule_enabled = bool(
+            isinstance(schedule, Mapping) and schedule.get("enabled") is True
+        )
+        scheduler_entrypoint_enabled = bool(
+            isinstance(entrypoints, list) and "scheduler" in entrypoints
+        )
+        refresh_completed = False
+        if data.get("generation_ready") is not True:
+            runtime_state = "BLOCKED_GENERATION"
+        else:
+            try:
+                refreshed = (
+                    scheduler_refresh_provider()
+                    if scheduler_refresh_provider is not None
+                    else {"initialized": False}
+                )
+                refresh_completed = bool(
+                    isinstance(refreshed, Mapping)
+                    and refreshed.get("initialized") is True
+                )
+            except Exception:  # noqa: BLE001 - config is durable; report refresh separately
+                refresh_completed = False
+            if not refresh_completed:
+                runtime_state = "REFRESH_FAILED"
+            elif not schedule_enabled:
+                runtime_state = "DISABLED"
+            elif not scheduler_entrypoint_enabled:
+                runtime_state = "ENTRYPOINT_DISABLED"
+            else:
+                runtime_state = "ACTIVE"
+        data.update(
+            {
+                "schedule_runtime_state": runtime_state,
+                "schedule_runtime_enabled": bool(
+                    runtime_state == "ACTIVE"
+                ),
+                "scheduler_refresh_completed": refresh_completed,
+            }
+        )
+        return response
 
     @router.post(
         "/internal/v1/automation/instances/{automation_id}/generation/recover-not-applied",

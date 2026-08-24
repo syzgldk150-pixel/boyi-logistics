@@ -151,6 +151,8 @@ class AutomationPluginManagementService:
             "automation_id": record.automation_id,
             "configured": record.configured,
             "project_configuration_version": record.config_version,
+            "schedule": dict(record.schedule),
+            "enabled_entrypoints": list(record.enabled_entrypoints),
         }
 
     def catalog_projection(self, *, actor: Actor) -> dict[str, Any]:
