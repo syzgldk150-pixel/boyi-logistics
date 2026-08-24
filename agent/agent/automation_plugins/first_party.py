@@ -67,6 +67,7 @@ FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
+    "sync_arrival_stats": "1.0.21",
     "sync_scan_codes": "1.0.23",
 }
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
