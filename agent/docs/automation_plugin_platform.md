@@ -186,6 +186,13 @@ python scripts/build_first_party_plugin_release.py \
 不得进入插件 stdin、env 或结果，结果只带服务端生成的 binding-set proof。缺绑定或登录失效返回
 `BLOCKED_CONFIG` / `BLOCKED_LOGIN`，不选择默认账号、不切换账号、不回落旧工具。
 
+Broker v2 请求使用有长度上限的压缩帧，并在解压后再次执行独立上限校验；因此完整快照不再受
+`StreamReader.readline` 默认行长限制，同时仍拒绝超限或无效压缩数据。Broker 在旧 generation
+lease 排空前继续接受原有换行 JSON 请求。同步核心 Handler 必须在线程中执行，不能占用 Agent
+事件循环；Run 状态查询、Scheduler 和其他 API 在长时间浏览器/数据库调用期间仍须保持响应。
+动作运行时只透传符合固定大写错误码格式的 Broker 错误，其他异常消息继续按安全诊断收口，禁止
+把业务数据或原始异常文本带出 subprocess。
+
 插件统一输出经过签名 output Schema 验证；写动作成功只进入 `VERIFYING`，必须由核心
 ResultVerifier 验证具名 postcondition 与 Evidence 后才可成为 `WRITE_VERIFIED`。越过 started-mutating-call
 boundary 后的超时、取消、无效 JSON 或异常一律视为 `WRITE_OUTCOME_UNKNOWN`；登录、资源、handler 或
