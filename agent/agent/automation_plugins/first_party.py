@@ -66,6 +66,9 @@ FIRST_PARTY_RUNTIME_PATH = FIRST_PARTY_ROOT / "_runtime" / "main.py"
 FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
+_FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
+    "sync_scan_codes": "1.0.21",
+}
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {
     "ronghui_": "ronghui",
@@ -87,6 +90,15 @@ _GOVERNANCE_ANCHOR_FIELDS = (
     "postconditions",
     "project_full_auto_allowed",
 )
+
+
+def _first_party_package_version(plugin_id: str) -> str:
+    return _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES.get(
+        plugin_id,
+        FIRST_PARTY_PACKAGE_VERSION,
+    )
+
+
 _CODE_OWNED_ACCOUNT_ROLES: Mapping[str, tuple[Mapping[str, Any], ...]] = {
     # The finance action fans out through the core finance source resolver.
     # These are logical roles, never account IDs; migration binds the reviewed
@@ -1040,7 +1052,7 @@ def first_party_instance_seeds() -> tuple[FirstPartyInstanceSeed, ...]:
         FirstPartyInstanceSeed(
             automation_id=automation_id,
             plugin_id=definition.tool_name,
-            version=FIRST_PARTY_PACKAGE_VERSION,
+            version=_first_party_package_version(definition.tool_name),
             display_name=automation_id,
             allowed_entrypoints=tuple(sorted(definition.allowed_entrypoints)),
         )
@@ -1250,7 +1262,7 @@ def resolve_first_party_manifests(
                 "schema_version": 1,
                 "plugin_id": plugin_id,
                 "name": plugin_id,
-                "version": FIRST_PARTY_PACKAGE_VERSION,
+                "version": _first_party_package_version(plugin_id),
                 "description": str(capability.get("description") or plugin_id),
                 "execution_platform": "server",
                 "runtime": {

@@ -149,6 +149,7 @@ def test_scan_action_owns_classification_batching_verification_and_commit_order(
         "skipped_signed_count": 1,
         "skipped_signed_codes": [child_two],
     } == result["data"]
+    assert "preview_evidence" not in result["data"]
     assert [call[1] for call in calls] == [
         "ronghui.scan.read_page",
         "scan.snapshot.replace",
@@ -181,6 +182,82 @@ def test_scan_dry_run_reads_and_plans_but_never_writes():
     assert result["status"] == "SUCCESS"
     assert result["data"]["dry_run"] is True
     assert calls == ["ronghui.scan.read_page"]
+
+
+def test_scan_dry_run_returns_exact_stable_preview_evidence():
+    module = _load_action()
+    child_one = "R123456789010001"
+    child_two = "R123456789010002"
+    rows = [
+        {
+            "bill_code": child_two,
+            "destination": "B站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-15 08:02:00",
+            "scan_site": "测试网点",
+        },
+        {
+            "bill_code": "R12345678901",
+            "destination": "总站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-15 08:00:00",
+            "scan_site": "测试网点",
+        },
+        {
+            "bill_code": child_one,
+            "destination": "A站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-15 08:01:00",
+            "scan_site": "测试网点",
+        },
+    ]
+
+    def run(source):
+        def broker(_operation, *, action, role, arguments):
+            del role, arguments
+            assert action == "ronghui.scan.read_page"
+            return {
+                "items": source,
+                "pagination_complete": True,
+                "next_cursor": None,
+                "evidence_ref": "evidence:stable-source",
+            }
+
+        return module.run_action(
+            {
+                "target_date": "2026-08-15",
+                "batch_size": 1,
+                "max_batches": 2,
+                "dry_run": True,
+            },
+            broker,
+        )["data"]["preview_evidence"]
+
+    first = run(rows)
+    second = run(list(reversed(rows)))
+    expected_items = [
+        {"bill_code": child_one, "station_name": "A站"},
+        {"bill_code": child_two, "station_name": "B站"},
+    ]
+    assert first["contract_version"] == 1
+    assert first["target_date"] == "2026-08-15"
+    assert first["pagination_complete"] is True
+    assert first["source_page_count"] == 1
+    assert first["normalized_record_count"] == 3
+    assert first["source_evidence_refs"] == ["evidence:stable-source"]
+    assert first["selection_count"] == 2
+    assert first["selection_sha256"] == module._canonical_sha256(expected_items)
+    assert first["batch_count"] == 2
+    assert first["batch_plan_sha256"] == module._canonical_sha256(
+        [[expected_items[0]], [expected_items[1]]]
+    )
+    assert first["items"] == expected_items
+    assert len(first["source_snapshot_sha256"]) == 64
+    assert {
+        key: value for key, value in first.items() if key != "observed_at"
+    } == {
+        key: value for key, value in second.items() if key != "observed_at"
+    }
 
 
 def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
