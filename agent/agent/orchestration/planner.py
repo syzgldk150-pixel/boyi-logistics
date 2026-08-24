@@ -12,7 +12,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from agent.automation_plugins.code_owned_fields import (
+    SCAN_PHASE_PREVIEW,
     first_party_code_owned_plan_fields,
+    resolve_scan_capability_phase,
 )
 from agent.orchestration.models import (
     Command,
@@ -100,7 +102,18 @@ class DeterministicPlanner:
                     )
                 arguments[SCAN_PREVIEW_PAYLOAD_BINDING_FIELD] = preview_binding
 
-        operation_type = _operation_type(capability)
+        try:
+            scan_phase = resolve_scan_capability_phase(capability, arguments)
+        except ValueError as exc:
+            raise OrchestrationError(
+                "SCAN_EXECUTION_PHASE_INVALID",
+                "Scan execution phase is incomplete or ambiguous",
+            ) from exc
+        operation_type = (
+            OperationType.READ
+            if scan_phase == SCAN_PHASE_PREVIEW
+            else _operation_type(capability)
+        )
         if llm_selected:
             if not bool(capability.get("llm_exposed")):
                 raise OrchestrationError("LLM_TOOL_NOT_EXPOSED", f"Tool is not exposed to the LLM: {tool_name}")
@@ -150,7 +163,11 @@ class DeterministicPlanner:
             idempotency_key=step_idempotency,
             expected_evidence=expected_evidence,
             postconditions=postconditions,
-            risk_level=_risk_level(capability),
+            risk_level=(
+                RiskLevel.LOW
+                if scan_phase == SCAN_PHASE_PREVIEW
+                else _risk_level(capability)
+            ),
             requires_approval=False,
         )
         invocation = command.automation_invocation

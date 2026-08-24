@@ -426,15 +426,16 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 | TASK-010C9 Webhook 扫描两步入口适配 | 已完成 | 精确验签扫描 Webhook 先返回公共预览，再以新的事件身份和专用预览参数明确确认；保留字段不进入动态参数，非扫描路由和非规范表示 fail closed；相关回归 66 项和 22 个子测试、三项仓库守卫及独立只读审查通过 | 无 |
 | TASK-010C10 扫描正式治理升级审计 | 已完成 | 只读确认直接翻转四项治理字段会在阶段审批与顶层写后证明未闭合时提前开门；Sol Advisor 独立终审结论为 fix-first | 无 |
 | TASK-010C11 扫描分阶段治理与正式写后证明合同冻结 | 已完成 | 冻结 PREVIEW/FORMAL 唯一判定、有效审批与权限、两阶段 postcondition、零候选语义、治理开门条件和两步实现顺序 | 无 |
+| TASK-010C12 扫描分阶段计划、审批与执行边界支持 | 已完成 | 精确首方扫描共享阶段解析已接入 Planner、PlanValidator、Policy 和执行边界；PREVIEW 以 read/low 运行且不创建正式写审批，Broker token 只保留 `ronghui.scan.read_page`，核心侧记录并验证零写调用；system/stale full-auto 对 FORMAL 回落逐次审批；registry、签名包、版本、digest 与正式治理门未改 | 无 |
 | TASK-011 统计稳定性检查 | 未授权 | — | — |
 | TASK-012 分批稳定性检查 | 未授权 | — | — |
 | TASK-013 自提问题件稳定性检查 | 未授权 | — | — |
 
 ## 下一步
 
-TASK-010C10 已完成治理升级审计，TASK-010C11 已冻结分阶段治理和正式写后证明合同；没有修改 Agent、Console、registry、签名包、数据库或生产环境。正式外部写继续保持关闭。
+TASK-010C12 已完成扫描分阶段计划、审批与执行边界支持；本地定向回归 98 项和 12 个子测试、完整根测试 1598 项和 261 个子测试、完整 Agent 测试 869 项和 140 个子测试通过，29 项环境型用例跳过，四项仓库守卫和 Ruff 检查通过。没有修改 Console、registry、签名 payload、包版本、digest、正式治理门、数据库或生产环境，正式外部写继续保持关闭。
 
-下一 TASK 为 `TASK-010C12 扫描分阶段计划、审批与执行边界支持`。实现精确首方扫描的共享阶段解析，PREVIEW 的 `read/low` 与免正式写审批，扫描 full-auto 的 super-admin/代际/配置来源校验，以及预览 Broker 写操作分发前拒绝和核心无写证据；禁止在 C12 修改 registry、签名 payload、包版本、digest、正式治理门、数据库或生产状态。
+下一 TASK 为 `TASK-010C13 扫描两阶段签名治理与写后证明闭环`。必须在一个原子变更中加入 `authoritative_scan_preview_returned`、`scan_formal_execution_verified` 和 ResultVerifier 精确校验，并同步 registry、签名 payload、下一包版本、迁移矩阵和 digest；生产安装、代际 reconcile、策略切换、ECS 发布、服务重启和真实扫描仍不在仓库 TASK 授权内。
 
 ## 状态更新规则
 
