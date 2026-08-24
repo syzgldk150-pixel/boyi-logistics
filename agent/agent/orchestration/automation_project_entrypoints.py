@@ -18,6 +18,7 @@ from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
+from agent.orchestration.scan_preview_binding import normalize_preview_run_id
 from agent.automation_plugins.catalog import (
     PluginCatalog,
     project_capability_from_snapshot,
@@ -37,6 +38,8 @@ from shared.automation_project_authorization import (
 
 _ACCOUNT_FIELDS = frozenset({"account_id", "account_ids"})
 _RESOURCE_FIELDS = frozenset({"resource_id", "resource_ids", "resource_binding", "resource_bindings"})
+_SCAN_FEISHU_ROUTE_KEY = "builtin.scan_codes"
+_SCAN_AUTOMATION_ID = "scan_codes"
 
 
 def _canonical_digest(value: Any) -> str:
@@ -369,12 +372,24 @@ class AutomationProjectEntrypoints:
         sender_id: str,
         chat_id: str,
         envelope: Mapping[str, Any] | None = None,
+        preview_run_id: str | None = None,
     ) -> dict[str, Any]:
         route = self._require_route(AutomationEntrypoint.FEISHU, route_key)
         safe_event_id = _stable_identifier(event_id, "event_id")
         safe_sender_id = _stable_identifier(sender_id, "sender_id")
         safe_chat_id = _stable_identifier(chat_id, "chat_id")
         dynamic_inputs = _extract_dynamic_inputs(route, envelope or {})
+        safe_preview_run_id = None
+        if preview_run_id is not None:
+            if (
+                route.route_key != _SCAN_FEISHU_ROUTE_KEY
+                or route.automation_id != _SCAN_AUTOMATION_ID
+            ):
+                raise OrchestrationError(
+                    "SCAN_PREVIEW_ID_INVALID",
+                    "A scan preview cannot be used by this Feishu route",
+                )
+            safe_preview_run_id = normalize_preview_run_id(preview_run_id)
         actor = (
             self._feishu_actor_resolver(safe_sender_id)
             if self._feishu_actor_resolver is not None
@@ -401,6 +416,7 @@ class AutomationProjectEntrypoints:
             expected_project_configuration_version=(
                 route.project_configuration_version
             ),
+            preview_run_id=safe_preview_run_id,
         )
 
     def describe_feishu_route(
