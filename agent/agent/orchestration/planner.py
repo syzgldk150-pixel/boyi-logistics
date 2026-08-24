@@ -27,6 +27,10 @@ from agent.orchestration.models import (
 from agent.orchestration.impact_preview import build_write_impact
 from agent.orchestration.ports import ToolCatalogPort
 from agent.orchestration.scan_preview_binding import build_scan_preview_impact
+from agent.orchestration.scan_preview_binding import (
+    SCAN_PREVIEW_PAYLOAD_BINDING_FIELD,
+    scan_preview_payload_binding,
+)
 
 
 CUSTOMER_PROBLEM_SYNC_TOOL = "sync_customer_service_problems"
@@ -77,6 +81,24 @@ class DeterministicPlanner:
             or "recheck_items" in code_owned_fields
         ):
             arguments["recheck_items"] = _customer_problem_recheck_context(context)
+        if SCAN_PREVIEW_PAYLOAD_BINDING_FIELD in code_owned_fields:
+            if SCAN_PREVIEW_PAYLOAD_BINDING_FIELD in raw_arguments:
+                raise OrchestrationError(
+                    "SCAN_PREVIEW_CONTEXT_INVALID",
+                    "Scan preview payload binding is controlled by the server",
+                )
+            if arguments.get("dry_run") is not True:
+                preview_binding = scan_preview_payload_binding(
+                    command=command,
+                    capability=capability,
+                    arguments=arguments,
+                )
+                if preview_binding is None:
+                    raise OrchestrationError(
+                        "SCAN_PREVIEW_CONTEXT_REQUIRED",
+                        "Formal scan execution requires a completed preview binding",
+                    )
+                arguments[SCAN_PREVIEW_PAYLOAD_BINDING_FIELD] = preview_binding
 
         operation_type = _operation_type(capability)
         if llm_selected:
