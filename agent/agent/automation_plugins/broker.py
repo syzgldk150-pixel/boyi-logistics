@@ -33,6 +33,7 @@ _OPERATIONS = frozenset(
     }
 )
 _SENSITIVE_KEYS = ("password", "cookie", "credential", "secret", "token", "session")
+_MAX_BROKER_REQUEST_BYTES = 10 * 1024 * 1024
 _RECOVERABLE_WRITE_ACTIONS = frozenset(
     {
         ("arrive_list", "projection.invoke", "waybill.snapshot.replace"),
@@ -700,7 +701,11 @@ class LocalCoreAutomationBroker:
             if path.is_symlink() or not path.is_socket():
                 raise PluginExecutionError("refusing to replace an unsafe broker endpoint")
             path.unlink()
-        self._server = await asyncio.start_unix_server(self._handle, path=str(path))
+        self._server = await asyncio.start_unix_server(
+            self._handle,
+            path=str(path),
+            limit=_MAX_BROKER_REQUEST_BYTES + 1,
+        )
         path.chmod(0o600)
 
     @staticmethod
@@ -748,7 +753,11 @@ class LocalCoreAutomationBroker:
         response: dict[str, Any]
         try:
             payload = await reader.readline()
-            if not payload or len(payload) > 1024 * 1024 or not payload.endswith(b"\n"):
+            if (
+                not payload
+                or len(payload) > _MAX_BROKER_REQUEST_BYTES
+                or not payload.endswith(b"\n")
+            ):
                 raise PluginExecutionError("core broker request is empty or too large")
             request = json.loads(payload.decode("utf-8"))
             if not isinstance(request, dict) or set(request) != {

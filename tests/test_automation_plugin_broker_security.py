@@ -43,6 +43,67 @@ def test_broker_allows_opaque_business_evidence_references() -> None:
     )
 
 
+def test_broker_accepts_signed_requests_larger_than_asyncio_default_limit(
+    tmp_path: Path,
+) -> None:
+    class LargeReadAdapter:
+        async def invoke(self, *, arguments, **_kwargs):
+            return {"observed_length": len(arguments["payload"])}
+
+    async def invoke() -> dict[str, object]:
+        socket_path = tmp_path / "broker.sock"
+        issuer = LocalBrokerCapabilityIssuer(socket_path)
+        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=LargeReadAdapter())
+        await broker.start()
+        try:
+            capability = issuer.issue(
+                automation_id="instance-a",
+                plugin_version="1.0.0",
+                tool_name="automation.instance-a.run",
+                ttl_seconds=60,
+                runtime_permissions={
+                    "browser": True,
+                    "network": False,
+                    "office": False,
+                    "max_broker_calls": 1,
+                    "broker_operations": [
+                        {
+                            "operation": "browser.invoke",
+                            "action": "source.read",
+                            "roles": ["source"],
+                            "effect": "read",
+                        }
+                    ],
+                },
+                account_roles=({"role": "source"},),
+                resource_roles=(),
+                account_bindings={"source": "opaque-binding"},
+                resource_bindings={},
+            )
+            reader, writer = await asyncio.open_unix_connection(str(socket_path))
+            request = {
+                "schema_version": 1,
+                "request_id": str(uuid.uuid4()),
+                "capability": capability,
+                "operation": "browser.invoke",
+                "action": "source.read",
+                "role": "source",
+                "arguments": {"payload": "x" * 70_000},
+            }
+            writer.write((json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8"))
+            await writer.drain()
+            response = json.loads((await reader.readline()).decode("utf-8"))
+            writer.close()
+            await writer.wait_closed()
+            return response
+        finally:
+            await broker.stop()
+
+    response = asyncio.run(invoke())
+
+    assert response == {"ok": True, "data": {"observed_length": 70_000}}
+
+
 def test_sdk_broker_timeout_is_core_owned_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     environment = PluginExecutionRouter._minimal_environment(
         capability="opaque-capability",
