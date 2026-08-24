@@ -62,8 +62,8 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def test_first_party_release_version_is_1_0_19() -> None:
-    assert FIRST_PARTY_PACKAGE_VERSION == "1.0.19"
+def test_first_party_release_version_is_1_0_20() -> None:
+    assert FIRST_PARTY_PACKAGE_VERSION == "1.0.20"
 
 
 class _CatalogRepository:
