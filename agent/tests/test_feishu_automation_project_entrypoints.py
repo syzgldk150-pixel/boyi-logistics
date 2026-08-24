@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from agent.orchestration.models import OrchestrationError
 from feishu import message_handler
 
 
 class _FakeProjectEntrypoints:
-    def __init__(self, *, status: str = "COMPLETED") -> None:
+    def __init__(
+        self,
+        *,
+        status: str = "COMPLETED",
+        results: list[dict | Exception] | None = None,
+    ) -> None:
         self.status = status
+        self.results = list(results or [])
         self.calls: list[dict] = []
         self.project_config = {
             "plate_numbers": ["ABC123", "XYZ789"],
@@ -25,6 +34,11 @@ class _FakeProjectEntrypoints:
 
     async def invoke_feishu(self, **kwargs):
         self.calls.append(dict(kwargs))
+        if self.results:
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return dict(result)
         return {
             "success": self.status == "COMPLETED",
             "status": self.status,
@@ -86,6 +100,22 @@ def _run_verified_text(text: str, *, event_id: str) -> None:
     )
 
 
+def _scan_preview(run_id: str) -> dict:
+    observed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    return {
+        "contract_version": 1,
+        "preview_run_id": run_id,
+        "target_date": observed_at.date().isoformat(),
+        "observed_at": observed_at.isoformat(),
+        "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
+        "source_page_count": 2,
+        "normalized_record_count": 18,
+        "selection_count": 7,
+        "batch_count": 1,
+        "can_confirm": True,
+    }
+
+
 def test_direct_feishu_project_reports_waiting_approval_without_generic_execution():
     service = _FakeProjectEntrypoints(status="WAITING_APPROVAL")
     agent = _FakeAgent()
@@ -111,6 +141,473 @@ def test_direct_feishu_project_reports_waiting_approval_without_generic_executio
     assert service.calls[0]["event_id"] == "event-waiting"
     assert service.calls[0]["route_key"] == "builtin.scan_codes"
     assert "等待审批" in replies[-1][0]
+
+
+def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    formal_run_id = "22222222-2222-4222-8222-222222222222"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            },
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": formal_run_id,
+                "error_code": None,
+            },
+        ]
+    )
+    agent = _FakeAgent()
+    pending = {}
+    pending_writes = []
+    replies = []
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        pending_writes.append((dict(value), ttl_sec, persist))
+        pending.clear()
+        pending.update(value)
+
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-scan-preview")
+        assert pending["type"] == "scan_preview_confirmation"
+        assert pending["preview_run_id"] == preview_run_id
+        assert pending["preview_event_id"] == "event-scan-preview"
+        assert pending_writes[-1][2] is False
+        assert "待扫描：7" in replies[-1][0]
+        assert "确认扫描" in replies[-1][0]
+        _run_verified_text("确认扫描", event_id="event-scan-confirm")
+
+    assert service.calls[0]["preview_run_id"] is None
+    assert service.calls[1]["preview_run_id"] == preview_run_id
+    assert service.calls[1]["event_id"] == "event-scan-confirm"
+    assert service.calls[1]["envelope"]["body"] == {}
+    assert pending == {}
+    assert f"Run：{formal_run_id}" in replies[-1][0]
+
+
+def test_scan_preview_requires_explicit_cancel_phrase():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            }
+        ]
+    )
+    pending = {}
+    replies = []
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-preview-cancel")
+        _run_verified_text("取消", event_id="event-generic-cancel")
+        assert pending["type"] == "scan_preview_confirmation"
+        assert "确认扫描”或“取消扫描" in replies[-1][0]
+        _run_verified_text("取消扫描", event_id="event-explicit-cancel")
+
+    assert pending == {}
+    assert "没有提交正式扫描" in replies[-1][0]
+    assert len(service.calls) == 1
+
+
+def test_unknown_scan_confirmation_locks_out_new_event_identity():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            },
+            RuntimeError("response lost"),
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": "22222222-2222-4222-8222-222222222222",
+                "error_code": None,
+            },
+        ]
+    )
+    pending = {}
+    replies = []
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-preview-unknown")
+        _run_verified_text("确认扫描", event_id="event-confirm-unknown")
+        assert pending["confirmation_state"] == "unknown"
+        assert pending["confirmation_event_id"] == "event-confirm-unknown"
+        asyncio.run(
+            message_handler._handle_menu_action(
+                event_key="scan",
+                receive_id="user-one",
+                receive_id_type="open_id",
+                event_id="event-menu-after-unknown",
+            )
+        )
+        assert len(service.calls) == 2
+        assert "结果暂时无法确定" in replies[-1][0]
+        _run_verified_text("登录", event_id="event-login-blocked")
+        assert pending["confirmation_state"] == "unknown"
+        assert "先查询原 Run" in replies[-1][0]
+        _run_verified_text("确认扫描", event_id="event-confirm-new")
+        assert len(service.calls) == 2
+        assert "本次没有创建新请求" in replies[-1][0]
+        _run_verified_text("确认扫描", event_id="event-confirm-unknown")
+
+    assert len(service.calls) == 3
+    assert service.calls[1]["event_id"] == service.calls[2]["event_id"]
+    assert pending == {}
+    assert "正式扫描已完成" in replies[-1][0]
+
+
+def test_consumed_scan_preview_blocks_new_preview_in_same_pending_state():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            },
+            OrchestrationError(
+                "SCAN_PREVIEW_ALREADY_CONSUMED",
+                "already consumed",
+            ),
+        ]
+    )
+    pending = {}
+    replies = []
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-preview-consumed")
+        _run_verified_text("确认扫描", event_id="event-confirm-consumed")
+        assert pending["confirmation_state"] == "terminal"
+        assert pending["terminal_error_code"] == "SCAN_PREVIEW_ALREADY_CONSUMED"
+        asyncio.run(
+            message_handler._handle_menu_action(
+                event_key="scan",
+                receive_id="user-one",
+                receive_id_type="open_id",
+                event_id="event-menu-after-terminal",
+            )
+        )
+        assert len(service.calls) == 2
+        assert "查询原 Run" in replies[-1][0]
+        _run_verified_text("扫描", event_id="event-new-preview-blocked")
+
+    assert len(service.calls) == 2
+    assert "查询原 Run" in replies[-1][0]
+
+
+def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    formal_run_id = "22222222-2222-4222-8222-222222222222"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            },
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": formal_run_id,
+                "error_code": None,
+            },
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": formal_run_id,
+                "error_code": None,
+            },
+        ]
+    )
+    pending = {}
+    replies = []
+    fail_formal_reply_once = True
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    async def reply_text(receive_id, text, **kwargs):
+        nonlocal fail_formal_reply_once
+        if "Run：" in text and fail_formal_reply_once:
+            fail_formal_reply_once = False
+            raise RuntimeError("reply lost")
+        replies.append((text, kwargs))
+        return {"ok": True}
+
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _key: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _key, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=reply_text),
+    ):
+        _run_verified_text("扫描", event_id="event-preview-reply-loss")
+        with pytest.raises(RuntimeError, match="reply lost"):
+            _run_verified_text("确认扫描", event_id="event-confirm-reply-loss")
+        assert pending["confirmation_state"] == "submitting"
+        assert pending["confirmation_event_id"] == "event-confirm-reply-loss"
+        _run_verified_text("确认扫描", event_id="event-confirm-different")
+        assert len(service.calls) == 2
+        _run_verified_text("确认扫描", event_id="event-confirm-reply-loss")
+
+    assert len(service.calls) == 3
+    assert service.calls[1]["event_id"] == service.calls[2]["event_id"]
+    assert pending == {}
+    assert f"Run：{formal_run_id}" in replies[-1][0]
+
+
+def test_scan_projection_with_private_field_is_rejected_without_pending():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": {
+                    **_scan_preview(preview_run_id),
+                    "selection_sha256": "a" * 64,
+                },
+            }
+        ]
+    )
+    pending_writes = []
+    replies = []
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "set_pending", side_effect=lambda *args, **kwargs: pending_writes.append((args, kwargs))),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-private-preview")
+
+    assert pending_writes == []
+    assert "预览返回无效" in replies[-1][0]
+
+
+def test_scan_menu_pending_is_confirmed_from_the_users_next_chat_message():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            },
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": "22222222-2222-4222-8222-222222222222",
+                "error_code": None,
+            },
+        ]
+    )
+    pending_store = {}
+    replies = []
+
+    def set_pending(key, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending_store[key] = dict(value)
+
+    def clear_pending(key, **_kwargs):
+        return pending_store.pop(key, None)
+
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "get_pending", side_effect=lambda key: pending_store.get(key)),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=clear_pending),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        asyncio.run(
+            message_handler._handle_menu_action(
+                event_key="scan",
+                receive_id="user-one",
+                receive_id_type="open_id",
+                event_id="event-menu-preview",
+            )
+        )
+        assert pending_store["user-one"]["preview_run_id"] == preview_run_id
+        asyncio.run(
+            message_handler._handle_menu_action(
+                event_key="scan",
+                receive_id="user-one",
+                receive_id_type="open_id",
+                event_id="event-menu-reentry-blocked",
+            )
+        )
+        assert len(service.calls) == 1
+        assert "没有创建新预览" in replies[-1][0]
+        _run_verified_text("确认扫描", event_id="event-menu-confirm")
+
+    assert service.calls[1]["event_id"] == "event-menu-confirm"
+    assert service.calls[1]["preview_run_id"] == preview_run_id
+    assert pending_store == {}
+
+
+def test_sender_scan_pending_takes_priority_over_existing_chat_pending():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            },
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": "22222222-2222-4222-8222-222222222222",
+                "error_code": None,
+            },
+        ]
+    )
+    existing_chat_pending = {"type": "active_run", "tool_name": "legacy-task"}
+    pending_store = {"chat-one": dict(existing_chat_pending)}
+    replies = []
+
+    def set_pending(key, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending_store[key] = dict(value)
+
+    def clear_pending(key, **_kwargs):
+        return pending_store.pop(key, None)
+
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "get_pending", side_effect=lambda key: pending_store.get(key)),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=clear_pending),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        asyncio.run(
+            message_handler._handle_menu_action(
+                event_key="scan",
+                receive_id="user-one",
+                receive_id_type="open_id",
+                event_id="event-menu-with-chat-pending",
+            )
+        )
+        assert pending_store["chat-one"] == existing_chat_pending
+        assert pending_store["user-one"]["preview_run_id"] == preview_run_id
+        _run_verified_text("确认扫描", event_id="event-confirm-with-chat-pending")
+
+    assert service.calls[1]["preview_run_id"] == preview_run_id
+    assert pending_store == {"chat-one": existing_chat_pending}
+    assert "正式扫描已完成" in replies[-1][0]
 
 
 def test_feishu_webhook_and_websocket_keep_the_same_event_identity():
@@ -204,7 +701,7 @@ def test_self_pickup_preview_uses_committed_accounts_and_confirmation_uses_route
         patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
         patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
         patch.object(message_handler, "set_pending", side_effect=set_pending),
-        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id: pending.clear()),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("preview-command", event_id="event-preview")
@@ -261,7 +758,7 @@ def test_split_preview_selection_and_confirmation_preserve_signed_dynamic_fields
         patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
         patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
         patch.object(message_handler, "set_pending", side_effect=set_pending),
-        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id: pending.clear()),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("split-command", event_id="event-split-preview")
@@ -300,7 +797,7 @@ def test_r7_plate_choice_rechecks_committed_config_before_typed_invocation():
         patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
         patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
         patch.object(message_handler, "set_pending", side_effect=set_pending),
-        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id: pending.clear()),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("departure-command", event_id="event-plate-choice")

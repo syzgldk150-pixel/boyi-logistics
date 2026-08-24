@@ -8,9 +8,11 @@ import json
 import logging
 import os
 import re
+import uuid
 from contextvars import ContextVar, Token
 from concurrent.futures import Future
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -29,6 +31,9 @@ from agent.direct_tool_router import (
 )
 from agent.orchestration.automation_project_entrypoints import (
     AutomationProjectEntrypoints,
+)
+from agent.orchestration.scan_preview_binding import (
+    normalize_scan_preview_public_projection,
 )
 from agent.pending_actions import clear_pending, get_pending, set_pending
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
@@ -61,6 +66,24 @@ SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
 SPLIT_SELECTION_TTL = 600
 SPLIT_TOOL_NAME = "split_pending_problem_upload"
 SPLIT_PREVIEW_TOOL_NAME = "preview_split_pending_problems"
+SCAN_FEISHU_ROUTE_KEY = "builtin.scan_codes"
+SCAN_PREVIEW_PENDING_TTL = 900
+SCAN_PREVIEW_ERROR_MESSAGES = {
+    "SCAN_PREVIEW_ID_INVALID": "扫描预览标识无效，请重新发送“扫描”。",
+    "SCAN_PREVIEW_NOT_FOUND": "扫描预览不存在，请重新发送“扫描”。",
+    "SCAN_PREVIEW_INCOMPLETE": "扫描预览尚未完整生成，请重新发送“扫描”。",
+    "SCAN_PREVIEW_INVALID": "扫描预览证据无效，请重新发送“扫描”。",
+    "SCAN_PREVIEW_EXPIRED": "扫描预览已超过十五分钟，请重新发送“扫描”。",
+    "SCAN_PREVIEW_STALE": "扫描数据已变化，请重新发送“扫描”后再确认。",
+    "PROJECT_INVOCATION_STALE": "扫描项目配置已变化，请重新发送“扫描”。",
+    "SCAN_PREVIEW_ALREADY_CONSUMED": "该预览已提交过正式请求，请查询原 Run 或前往事项中心处理。",
+    "REQUEST_ID_REUSED": "本次飞书事件标识已被使用，请重新发送“确认扫描”。",
+    "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED": "正式扫描尚未开放，本次没有写入第三方系统。",
+    "SCAN_PREVIEW_CONTEXT_REQUIRED": "服务端扫描合同缺少预览上下文，正式执行已阻断。",
+    "SCAN_PREVIEW_CONTEXT_INVALID": "服务端扫描合同与预览不一致，正式执行已阻断。",
+}
+SCAN_CONFIRM_RE = re.compile(r"^\s*确认\s*扫描\s*$")
+SCAN_CANCEL_RE = re.compile(r"^\s*取消\s*扫描\s*$")
 FEISHU_SAFE_TEXT_BYTES = 3500
 ACCOUNT_AUTH_SESSION_PREFIX = "account:"
 ADMIN_REQUEST_TIMEOUT = 90.0
@@ -257,6 +280,46 @@ def _contains_account_override(value: Any) -> bool:
     return False
 
 
+def _is_scan_confirm_text(value: Any) -> bool:
+    return bool(SCAN_CONFIRM_RE.fullmatch(str(value or "")))
+
+
+def _is_scan_cancel_text(value: Any) -> bool:
+    return bool(SCAN_CANCEL_RE.fullmatch(str(value or "")))
+
+
+def _scan_preview_error_message(error_code: Any) -> str:
+    code = str(error_code or "").strip()
+    return SCAN_PREVIEW_ERROR_MESSAGES.get(
+        code,
+        "扫描请求结果暂时无法确定，请查询原 Run 或前往事项中心处理。",
+    )
+
+
+def _scan_preview_ttl(projection: dict[str, Any]) -> int:
+    expires_at = datetime.fromisoformat(
+        str(projection["expires_at"]).replace("Z", "+00:00")
+    )
+    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+    return max(1, min(SCAN_PREVIEW_PENDING_TTL, remaining))
+
+
+def _scan_preview_reply(projection: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "扫描预览已生成：",
+            f"日期：{projection['target_date']}",
+            f"来源页数：{projection['source_page_count']}",
+            f"来源记录：{projection['normalized_record_count']}",
+            f"待扫描：{projection['selection_count']}",
+            f"提交批次：{projection['batch_count']}",
+            f"有效期至：{projection['expires_at']}",
+            "",
+            "请在十五分钟内回复“确认扫描”执行正式扫描，或回复“取消扫描”放弃。",
+        ]
+    )
+
+
 def _automation_entrypoints() -> AutomationProjectEntrypoints:
     service = _AUTOMATION_PROJECT_ENTRYPOINTS
     if service is None:
@@ -297,6 +360,37 @@ def _project_preview_params(route_key: str, tool_name: str) -> dict[str, Any]:
     return params
 
 
+async def _invoke_automation_project(
+    *,
+    route_key: str,
+    dynamic_inputs: dict[str, Any] | None,
+    preview_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Invoke one exact committed project from a verified Feishu event."""
+
+    context = _COMMAND_CONTEXT.get()
+    safe_route_key = _safe_feishu_route_key(route_key)
+    if context is None or not context.event_id:
+        raise OrchestrationError(
+            "STABLE_EVENT_ID_REQUIRED",
+            "A stable verified Feishu event id is required",
+        )
+    inputs = dict(dynamic_inputs or {})
+    if _contains_account_override(inputs):
+        raise OrchestrationError(
+            "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN",
+            "Feishu cannot override project account bindings",
+        )
+    return await _automation_entrypoints().invoke_feishu(
+        route_key=safe_route_key,
+        event_id=context.event_id,
+        sender_id=context.actor_id,
+        chat_id=context.chat_id,
+        envelope={"body": inputs, "query": {}},
+        preview_run_id=preview_run_id,
+    )
+
+
 async def _invoke_automation_project_and_reply(
     *,
     route_key: str,
@@ -304,28 +398,14 @@ async def _invoke_automation_project_and_reply(
     receive_id: str,
     receive_id_type: str = "chat_id",
 ) -> dict[str, Any] | None:
-    """Invoke one exact committed project from a verified Feishu event."""
+    """Invoke one exact committed project and render its bounded Feishu result."""
 
     context = _COMMAND_CONTEXT.get()
+    safe_route_key = str(route_key or "").strip()
     try:
-        safe_route_key = _safe_feishu_route_key(route_key)
-        if context is None or not context.event_id:
-            raise OrchestrationError(
-                "STABLE_EVENT_ID_REQUIRED",
-                "A stable verified Feishu event id is required",
-            )
-        inputs = dict(dynamic_inputs or {})
-        if _contains_account_override(inputs):
-            raise OrchestrationError(
-                "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN",
-                "Feishu cannot override project account bindings",
-            )
-        result = await _automation_entrypoints().invoke_feishu(
+        result = await _invoke_automation_project(
             route_key=safe_route_key,
-            event_id=context.event_id,
-            sender_id=context.actor_id,
-            chat_id=context.chat_id,
-            envelope={"body": inputs, "query": {}},
+            dynamic_inputs=dynamic_inputs,
         )
     except OrchestrationError as exc:
         logger.warning(
@@ -335,7 +415,12 @@ async def _invoke_automation_project_and_reply(
         )
         await _reply_text(
             receive_id,
-            f"自动化任务未提交（{exc.code}），请检查项目设置后重试。",
+            (
+                _scan_preview_error_message(exc.code)
+                if safe_route_key == SCAN_FEISHU_ROUTE_KEY
+                and exc.code in SCAN_PREVIEW_ERROR_MESSAGES
+                else f"自动化任务未提交（{exc.code}），请检查项目设置后重试。"
+            ),
             receive_id_type=receive_id_type,
             reply_type="automation_project_rejected",
         )
@@ -343,6 +428,42 @@ async def _invoke_automation_project_and_reply(
 
     status = str(result.get("status") or "").strip().upper()
     run_id = str(result.get("run_id") or "").strip()
+    if safe_route_key == SCAN_FEISHU_ROUTE_KEY and status == "COMPLETED":
+        projection = normalize_scan_preview_public_projection(
+            result.get("scan_preview"),
+            expected_run_id=run_id,
+        )
+        if projection is None:
+            await _reply_text(
+                receive_id,
+                "扫描预览返回无效，确认入口已阻断，请重新发送“扫描”。",
+                receive_id_type=receive_id_type,
+                reply_type="scan_preview_invalid",
+            )
+            return result
+        pending_key = context.actor_id if context is not None else receive_id
+        set_pending(
+            pending_key,
+            {
+                "type": "scan_preview_confirmation",
+                "automation_route_key": SCAN_FEISHU_ROUTE_KEY,
+                "preview_run_id": projection["preview_run_id"],
+                "expires_at": projection["expires_at"],
+                "originator_actor_id": context.actor_id if context is not None else "",
+                "preview_event_id": context.event_id if context is not None else "",
+                "confirmation_event_id": "",
+                "confirmation_state": "pending",
+            },
+            ttl_sec=_scan_preview_ttl(projection),
+            persist=False,
+        )
+        await _reply_text(
+            receive_id,
+            _scan_preview_reply(projection),
+            receive_id_type=receive_id_type,
+            reply_type="scan_preview_ready",
+        )
+        return result
     if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
         reply = "自动化任务已提交，正在等待审批。"
         reply_type = "automation_project_waiting_approval"
@@ -364,6 +485,231 @@ async def _invoke_automation_project_and_reply(
         reply_type=reply_type,
     )
     return result
+
+
+def _scan_confirmation_ttl(pending: dict[str, Any]) -> int:
+    try:
+        expires_at = datetime.fromisoformat(
+            str(pending.get("expires_at") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return 0
+    if expires_at.tzinfo is None:
+        return 0
+    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+    return max(0, min(SCAN_PREVIEW_PENDING_TTL, remaining))
+
+
+def _store_scan_confirmation_pending(
+    chat_id: str,
+    pending: dict[str, Any],
+) -> bool:
+    ttl = _scan_confirmation_ttl(pending)
+    if ttl <= 0:
+        clear_pending(chat_id, volatile_only=True)
+        return False
+    set_pending(chat_id, pending, ttl_sec=ttl, persist=False)
+    return True
+
+
+async def _confirm_scan_preview_and_reply(
+    *,
+    chat_id: str,
+    pending_key: str,
+    sender_id: str,
+    pending: dict[str, Any],
+) -> None:
+    context = _COMMAND_CONTEXT.get()
+    expected_fields = {
+        "type",
+        "automation_route_key",
+        "preview_run_id",
+        "expires_at",
+        "originator_actor_id",
+        "preview_event_id",
+        "confirmation_event_id",
+        "confirmation_state",
+        "terminal_error_code",
+    }
+    if (
+        not set(pending) <= expected_fields
+        or str(pending.get("type") or "") != "scan_preview_confirmation"
+        or str(pending.get("automation_route_key") or "")
+        != SCAN_FEISHU_ROUTE_KEY
+        or _contains_account_override(pending)
+    ):
+        clear_pending(pending_key, volatile_only=True)
+        await _reply_text(
+            chat_id,
+            "扫描确认状态无效，请重新发送“扫描”。",
+            reply_type="scan_preview_pending_invalid",
+        )
+        return
+    if context is None or not context.event_id:
+        await _reply_text(
+            chat_id,
+            "确认扫描需要稳定的飞书事件标识，本次未提交。",
+            reply_type="scan_preview_confirmation_rejected",
+        )
+        return
+    originator = str(pending.get("originator_actor_id") or "").strip()
+    if not originator or originator != str(sender_id or "").strip():
+        await _reply_text(
+            chat_id,
+            "只有生成本次扫描预览的用户可以确认执行。",
+            reply_type="scan_preview_actor_mismatch",
+        )
+        return
+    ttl = _scan_confirmation_ttl(pending)
+    if ttl <= 0:
+        clear_pending(pending_key, volatile_only=True)
+        await _reply_text(
+            chat_id,
+            SCAN_PREVIEW_ERROR_MESSAGES["SCAN_PREVIEW_EXPIRED"],
+            reply_type="scan_preview_expired",
+        )
+        return
+    try:
+        preview_run_id = str(uuid.UUID(str(pending.get("preview_run_id") or "")))
+    except (AttributeError, ValueError):
+        preview_run_id = ""
+    if not preview_run_id or preview_run_id != str(pending.get("preview_run_id") or ""):
+        clear_pending(pending_key, volatile_only=True)
+        await _reply_text(
+            chat_id,
+            SCAN_PREVIEW_ERROR_MESSAGES["SCAN_PREVIEW_ID_INVALID"],
+            reply_type="scan_preview_pending_invalid",
+        )
+        return
+    preview_event_id = str(pending.get("preview_event_id") or "").strip()
+    confirmation_event_id = str(pending.get("confirmation_event_id") or "").strip()
+    if context.event_id == preview_event_id:
+        await _reply_text(
+            chat_id,
+            "确认扫描必须使用一条新的飞书消息，请重新发送“确认扫描”。",
+            reply_type="scan_preview_new_event_required",
+        )
+        return
+    if str(pending.get("confirmation_state") or "") == "terminal":
+        await _reply_text(
+            chat_id,
+            _scan_preview_error_message(pending.get("terminal_error_code")),
+            reply_type="scan_preview_confirmation_terminal",
+        )
+        return
+    if confirmation_event_id and confirmation_event_id != context.event_id:
+        await _reply_text(
+            chat_id,
+            "原确认请求结果仍需核实，请查询原 Run 或前往事项中心处理；本次没有创建新请求。",
+            reply_type="scan_preview_confirmation_locked",
+        )
+        return
+
+    locked_pending = {
+        **pending,
+        "confirmation_event_id": context.event_id,
+        "confirmation_state": "submitting",
+    }
+    if not _store_scan_confirmation_pending(pending_key, locked_pending):
+        await _reply_text(
+            chat_id,
+            SCAN_PREVIEW_ERROR_MESSAGES["SCAN_PREVIEW_EXPIRED"],
+            reply_type="scan_preview_expired",
+        )
+        return
+    try:
+        result = await _invoke_automation_project(
+            route_key=SCAN_FEISHU_ROUTE_KEY,
+            dynamic_inputs={},
+            preview_run_id=preview_run_id,
+        )
+    except OrchestrationError as exc:
+        code = str(exc.code or "").strip()
+        if code == "REQUEST_ID_REUSED":
+            unlocked = {
+                **pending,
+                "confirmation_event_id": "",
+                "confirmation_state": "pending",
+            }
+            _store_scan_confirmation_pending(pending_key, unlocked)
+        elif code in {
+            "SCAN_PREVIEW_ID_INVALID",
+            "SCAN_PREVIEW_NOT_FOUND",
+            "SCAN_PREVIEW_INCOMPLETE",
+            "SCAN_PREVIEW_INVALID",
+            "SCAN_PREVIEW_EXPIRED",
+            "SCAN_PREVIEW_STALE",
+            "PROJECT_INVOCATION_STALE",
+            "SCAN_PREVIEW_CONTEXT_REQUIRED",
+            "SCAN_PREVIEW_CONTEXT_INVALID",
+        }:
+            clear_pending(pending_key, volatile_only=True)
+        elif code in {
+            "SCAN_PREVIEW_ALREADY_CONSUMED",
+            "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
+        }:
+            terminal = {
+                **locked_pending,
+                "confirmation_state": "terminal",
+                "terminal_error_code": code,
+            }
+            _store_scan_confirmation_pending(pending_key, terminal)
+        else:
+            unknown = {**locked_pending, "confirmation_state": "unknown"}
+            _store_scan_confirmation_pending(pending_key, unknown)
+        await _reply_text(
+            chat_id,
+            _scan_preview_error_message(code),
+            reply_type=f"scan_preview_confirmation_error:{code or 'unknown'}",
+        )
+        return
+    except Exception as exc:
+        logger.error(
+            "Feishu scan confirmation result unknown | error=%s",
+            redact_text(exc)[:200],
+        )
+        unknown = {**locked_pending, "confirmation_state": "unknown"}
+        _store_scan_confirmation_pending(pending_key, unknown)
+        await _reply_text(
+            chat_id,
+            _scan_preview_error_message(""),
+            reply_type="scan_preview_confirmation_unknown",
+        )
+        return
+
+    run_id = str(result.get("run_id") or "").strip()
+    status = str(result.get("status") or "").strip().upper()
+    error_code = str(result.get("error_code") or "").strip()
+    if not run_id:
+        unknown = {**locked_pending, "confirmation_state": "unknown"}
+        _store_scan_confirmation_pending(pending_key, unknown)
+        await _reply_text(
+            chat_id,
+            _scan_preview_error_message(""),
+            reply_type="scan_preview_confirmation_unknown",
+        )
+        return
+    if error_code:
+        reply = _scan_preview_error_message(error_code)
+        reply_type = f"scan_preview_formal_error:{error_code}"
+    elif status == "COMPLETED":
+        reply = "正式扫描已完成。"
+        reply_type = "scan_preview_formal_completed"
+    elif status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
+        reply = "正式扫描已提交，正在等待审批。"
+        reply_type = "scan_preview_formal_waiting_approval"
+    elif status == "BLOCKED_LOGIN":
+        reply = "正式扫描已阻塞：绑定的业务账号需要恢复登录。"
+        reply_type = "scan_preview_formal_blocked_login"
+    else:
+        reply = f"正式扫描当前状态：{status or 'UNKNOWN'}。"
+        reply_type = "scan_preview_formal_status"
+    await _reply_text(
+        chat_id,
+        f"{reply}\nRun：{run_id}",
+        reply_type=reply_type,
+    )
+    clear_pending(pending_key, volatile_only=True)
 
 
 async def _execute_split_formal(
@@ -1654,6 +2000,33 @@ async def _handle_menu_action_inner(
 
     route_key = str(menu_action.get("automation_route_key") or "").strip()
     if route_key:
+        if route_key == SCAN_FEISHU_ROUTE_KEY:
+            scan_pending = get_pending(receive_id)
+            if (
+                isinstance(scan_pending, dict)
+                and scan_pending.get("type") == "scan_preview_confirmation"
+            ):
+                state = str(
+                    scan_pending.get("confirmation_state") or "pending"
+                )
+                if state in {"submitting", "unknown", "terminal"}:
+                    reply = _scan_preview_error_message(
+                        scan_pending.get("terminal_error_code")
+                    )
+                    reply_type = "scan_preview_confirmation_locked"
+                else:
+                    reply = (
+                        "已有扫描预览正在等待确认，请在聊天中明确回复“确认扫描”"
+                        "或“取消扫描”；本次没有创建新预览。"
+                    )
+                    reply_type = "scan_preview_confirmation_required"
+                await _reply_text(
+                    receive_id,
+                    reply,
+                    receive_id_type=receive_id_type,
+                    reply_type=reply_type,
+                )
+                return
         await _invoke_automation_project_and_reply(
             route_key=route_key,
             dynamic_inputs=dict(menu_action.get("dynamic_inputs") or {}),
@@ -1695,7 +2068,16 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         await _reply_text(chat_id, "Agent 尚未初始化，请稍后再试")
         return
 
-    pending = get_pending(chat_id)
+    pending_key = chat_id
+    pending = get_pending(pending_key)
+    if sender_id:
+        sender_pending = pending if sender_id == chat_id else get_pending(sender_id)
+        if (
+            isinstance(sender_pending, dict)
+            and sender_pending.get("type") == "scan_preview_confirmation"
+        ):
+            pending_key = sender_id
+            pending = sender_pending
     logger.info(
         "feishu inbound | chat=%s | sender=%s | message_kind=%s | pending=%s",
         chat_id,
@@ -1705,13 +2087,78 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     )
     login_session = parse_login_send_code_session(text)
     if login_session:
+        if (
+            isinstance(pending, dict)
+            and pending.get("type") == "scan_preview_confirmation"
+            and str(pending.get("confirmation_state") or "pending")
+            in {"submitting", "unknown", "terminal"}
+        ):
+            await _reply_text(
+                chat_id,
+                "正式扫描请求状态仍需核实，请先查询原 Run 或前往事项中心处理。",
+                reply_type="scan_preview_confirmation_locked",
+            )
+            return
         logger.info("feishu route | chat=%s | route=login_command | session=%s", chat_id, login_session)
-        clear_pending(chat_id)
+        if (
+            isinstance(pending, dict)
+            and pending.get("type") == "scan_preview_confirmation"
+        ):
+            clear_pending(pending_key, volatile_only=True)
+        else:
+            clear_pending(pending_key)
         if login_session == "choice":
             await _begin_login_account_choice(chat_id)
             return
         resolved_session = await _resolve_login_command_session(login_session)
         await _send_code_and_wait(chat_id, auth_session=resolved_session)
+        return
+
+    if isinstance(pending, dict) and pending.get("type") == "scan_preview_confirmation":
+        state = str(pending.get("confirmation_state") or "pending")
+        originator = str(pending.get("originator_actor_id") or "").strip()
+        if _is_scan_cancel_text(text):
+            if originator != str(sender_id or "").strip():
+                await _reply_text(
+                    chat_id,
+                    "只有生成本次扫描预览的用户可以取消确认。",
+                    reply_type="scan_preview_actor_mismatch",
+                )
+                return
+            if state in {"submitting", "unknown", "terminal"}:
+                await _reply_text(
+                    chat_id,
+                    "正式请求状态仍需核实，请查询原 Run 或前往事项中心处理；当前确认状态不会被清除。",
+                    reply_type="scan_preview_confirmation_locked",
+                )
+                return
+            clear_pending(pending_key, volatile_only=True)
+            await _reply_text(
+                chat_id,
+                "已取消本次扫描预览；没有提交正式扫描。",
+                reply_type="scan_preview_cancelled",
+            )
+            return
+        if _is_scan_confirm_text(text):
+            await _confirm_scan_preview_and_reply(
+                chat_id=chat_id,
+                pending_key=pending_key,
+                sender_id=sender_id,
+                pending=pending,
+            )
+            return
+        if state in {"submitting", "unknown", "terminal"}:
+            await _reply_text(
+                chat_id,
+                _scan_preview_error_message(pending.get("terminal_error_code")),
+                reply_type="scan_preview_confirmation_locked",
+            )
+            return
+        await _reply_text(
+            chat_id,
+            "扫描预览仍在等待确认，请明确回复“确认扫描”或“取消扫描”。",
+            reply_type="scan_preview_confirmation_required",
+        )
         return
 
     cancel_tool_name = _cancel_tool_name_from_text(text)
@@ -1722,6 +2169,14 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 await _cancel_active_run_and_reply(agent, chat_id, sender_id, pending)
                 return
         await _reply_text(chat_id, "取消失败：当前消息没有绑定可取消的事项运行。")
+        return
+
+    if _is_scan_confirm_text(text):
+        await _reply_text(
+            chat_id,
+            "当前没有可确认的扫描预览，请先发送“扫描”。",
+            reply_type="scan_preview_missing",
+        )
         return
 
     if str(text or "").strip() == "分批" and pending is not None:

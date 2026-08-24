@@ -562,6 +562,52 @@ class ToolFeishuFlowTests(unittest.TestCase):
                 pending_actions._pending.clear()
                 self.assertIsNone(pending_actions.get_pending("chat-1"))
 
+    def test_volatile_pending_is_available_in_process_but_not_restored(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_file = os.path.join(tmp_dir, "pending_actions.json")
+            with patch.dict(os.environ, {"AGENT_PENDING_STATE_FILE": state_file}):
+                pending_actions._pending.clear()
+                pending_actions._volatile_pending.clear()
+                pending_actions.set_pending(
+                    "chat-scan",
+                    {"type": "existing_persistent_action"},
+                    ttl_sec=60,
+                )
+                pending_actions.set_pending(
+                    "chat-scan",
+                    {
+                        "type": "scan_preview_confirmation",
+                        "preview_run_id": "11111111-1111-4111-8111-111111111111",
+                    },
+                    ttl_sec=60,
+                    persist=False,
+                )
+
+                self.assertEqual(
+                    "scan_preview_confirmation",
+                    pending_actions.get_pending("chat-scan")["type"],
+                )
+                pending_actions.clear_pending("chat-scan", volatile_only=True)
+                self.assertEqual(
+                    "existing_persistent_action",
+                    pending_actions.get_pending("chat-scan")["type"],
+                )
+                pending_actions.set_pending(
+                    "chat-scan",
+                    {
+                        "type": "scan_preview_confirmation",
+                        "preview_run_id": "11111111-1111-4111-8111-111111111111",
+                    },
+                    ttl_sec=60,
+                    persist=False,
+                )
+                pending_actions._volatile_pending.clear()
+                self.assertEqual(
+                    "existing_persistent_action",
+                    pending_actions.get_pending("chat-scan")["type"],
+                )
+                self.assertIn("chat-scan", pending_actions._pending)
+
     def test_feishu_persisted_login_confirm_sends_code_without_llm(self):
         replies: list[str] = []
         admin_calls: list[tuple[str, dict[str, Any] | None]] = []
