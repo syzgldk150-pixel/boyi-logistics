@@ -2,11 +2,11 @@
 
 更新时间：2026-08-24
 
-状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 只读核验、TASK-010C2 CI 证据，以及 TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据
+状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 只读核验、TASK-010C2 CI 证据，以及 TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据
 
-基线：`main` at `a8ad6a9`
+基线：`main` at `d78d641`
 
-重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-010C4 均未连接 ECS、未查询生产数据库、未执行生产扫描，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
+重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-010C5 均未连接 ECS、未查询生产数据库、未执行生产扫描，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
 
 ## 当前阶段
 
@@ -14,7 +14,7 @@
 |---|---|---|
 | Phase 0：理解系统 | 已完成 | TASK-000 已完成本地源码、迁移、文档和测试资产审计 |
 | Phase 1：建立治理 | 已完成 | TASK-001 三份治理文档已经 PR #85 合并；TASK-001A 状态账本纠偏已经 PR #87 合并 |
-| Phase 2：保护现有自动化 | 进行中 | TASK-010A、TASK-010B、TASK-010C1、TASK-010C2、TASK-010C3、TASK-010C4 已完成；TASK-011 至 TASK-013 尚未实施 |
+| Phase 2：保护现有自动化 | 进行中 | TASK-010A、TASK-010B、TASK-010C1、TASK-010C2、TASK-010C3、TASK-010C4、TASK-010C5 已完成；TASK-011 至 TASK-013 尚未实施 |
 | Phase 3：轻量插件管理 | 主要能力已存在，未验收 | 当前仓库已有插件生命周期；后续只做差距验收 |
 | Phase 4：自动化中心 | 主要能力已存在，未验收 | Catalog 驱动列表、项目配置和飞书路由已经存在 |
 | Phase 5：模块注册 | 未开始 | 通用菜单、权限和模块状态注册尚未建立 |
@@ -149,8 +149,94 @@
 - 已实现绑定：TASK-010C3 让控制平面只接受十五分钟内、成功且写后条件已验证的 dry-run Run；正式 Command/Plan 仅引用预览 Run/Step、来源/选择/批次摘要和结果摘要，不复制完整运单清单
 - 已实现消费：新正式 Command 接收与 `automation.scan_preview.consumed` 事件处于同一事务；相同幂等请求复用原 Command，不同请求重复使用同一预览时显式失败
 - 已实现重读：TASK-010C4 将完整 compact 预览上下文作为仅服务端可注入的代码专属字段传入 `sync_scan_codes` 1.0.22；正式 payload 在任何投影或第三方写入前重新读取同一目标日期，并精确比对正式参数、十五分钟有效期以及来源/选择/批次计数和摘要，缺失、过期或变化均显式失败
+- 已冻结入口合同：TASK-010C5 规定 Console、飞书和 Webhook 对精确 `scan_codes` 项目统一采用“无 `preview_run_id` 只生成预览；携带服务端预览 Run ID 才请求正式执行”的两步语义；调用方不得提交 `dry_run`、预览摘要、摘要哈希或完整运单集合
 - 当前限制：扫描插件仍维持 `internal_projection_write`、medium，正式路径继续由签名治理关闭条件阻断；入口适配和治理升级尚未实施，因此没有开放第三方写入
 - 生产状态：未核验
+
+#### TASK-010C5 扫描入口适配合同
+
+##### 当前真实形态
+
+- Console 的项目 invoke body 当前只有 `request_id`，收到 Command 收据后按 `run_id` 轮询；页面只显示通用 Run 状态，不能取得可确认的扫描预览摘要。
+- 飞书固定路由 `builtin.scan_codes` 当前把“扫描”直接作为一次项目调用，使用飞书事件 ID 作为请求和幂等身份；回复只有通用状态与 Run ID，没有扫描预览 pending 状态。
+- Webhook `webhook/phase7/scan` 当前从已验签 envelope 取得稳定 `source_event_id`，一次调用后等待 Run 状态；没有第二步确认字段。
+- 控制平面 `invoke_console`、`invoke_trusted` 和 `invoke_trusted_and_wait` 已接受可选 `preview_run_id`；但三个入口都尚未传入。Run 的公共投影也不包含持久化 Step 的预览结果。
+- 当前 `scan_codes` 保存参数不含 `dry_run=true`，所以现有入口调用不是可确认预览；正式 payload 又会因缺少服务端绑定而以 `SCAN_PREVIEW_CONTEXT_REQUIRED` 关闭。该状态安全但不可用，不能误记为入口适配完成。
+
+##### 统一两步语义
+
+仅对精确身份 `automation_id=scan_codes`、`plugin_id=sync_scan_codes`、`trust_source=ed25519_first_party` 应用以下规则：
+
+1. invoke 未携带 `preview_run_id` 时，控制平面必须以代码专属方式注入 `dry_run=true`，只创建预览 Command/Run。
+2. 预览必须执行至 `COMPLETED`，且唯一 Step 为 `COMPLETED`、`postcondition_status=VERIFIED`，才可返回可确认摘要。
+3. invoke 携带规范 UUID `preview_run_id` 时，才表示请求正式执行。控制平面从该 Run 恢复并校验正式参数，调用方不得另传动作参数。
+4. 正式请求仍必须经过 C3/C4 的项目身份、代际、配置版本、十五分钟有效期、一次性消费、正式参数和写前权威重读校验。
+5. 首次调用绝不自动串联正式执行。任何入口都必须有一次新的、明确的确认动作。
+
+其他自动化项目收到 `preview_run_id` 必须显式拒绝；不得把该字段当作普通插件参数、动态输入或兼容字段。
+
+##### 公共预览返回
+
+预览 Run 完成后，由 Agent 从已经持久化且摘要校验通过的 Step result 派生以下只读公共投影；三个入口只消费这一份投影，不自行解析原始插件结果：
+
+| 字段 | 类型与语义 |
+|---|---|
+| `contract_version` | 整数；当前精确版本为 `1` |
+| `preview_run_id` | 规范 UUID；与预览 Run 的 `run_id` 相同 |
+| `target_date` | `YYYY-MM-DD` 扫描业务日期 |
+| `observed_at` | UTC ISO-8601 预览观测时间 |
+| `expires_at` | UTC ISO-8601 失效时间；必须精确等于观测时间加十五分钟 |
+| `source_page_count` | 已验证来源页数 |
+| `normalized_record_count` | 已验证规范化来源记录数 |
+| `selection_count` | 已验证待扫描选择数 |
+| `batch_count` | 已验证批次数 |
+| `can_confirm` | 布尔值；投影时是否仍满足可确认条件 |
+
+- 数量字段必须来自已验证预览证据，不能由入口估算。
+- `preview_run_id` 就是预览 Run 的 `run_id`；不得再生成第二种预览标识。
+- `can_confirm` 只表示投影时满足完成、身份和有效期条件，不是授权结论；正式接收时仍须重新校验。
+- 公共投影不返回完整运单集合、来源证据引用或任何摘要哈希。完整证据只保留在 Agent 持久化记录中。
+- 预览失败、未完成、证据无效或过期时不得返回看似可确认的空摘要。
+
+##### 三类入口传递规则
+
+| 入口 | 预览请求 | 明确确认 | 正式请求 |
+|---|---|---|---|
+| Console | `/internal/v1/automation-projects/scan_codes/invoke` 只提交新的 `request_id` | 页面显示日期、来源条数、待扫描条数、批次数和失效时间；管理员点击“确认执行” | 同一 endpoint 提交新的 `request_id` 与公共投影中的 `preview_run_id` |
+| 飞书 | 用户发送“扫描”或点击扫描菜单，当前已验签事件创建预览 | 回复预览摘要并保存仅服务端 pending；只接受明确的“确认扫描”或“取消扫描” | 确认消息使用新的飞书事件 ID，并从 pending 取 `preview_run_id`；用户文本不携带内部摘要 |
+| Webhook | 第一次已验签请求含新的 `source_event_id`，不含 `preview_run_id` | 调用方检查响应中的公共预览投影并自行作出显式确认 | 第二次已验签请求使用新的 `source_event_id`，在保留控制字段中提交 `preview_run_id` |
+
+Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 中删除；它不能进入动作参数。飞书 pending 丢失、服务重启或确认超时后必须要求重新预览，不得按 Run 历史猜测或自动恢复确认。
+
+##### 幂等合同
+
+- 同一个预览请求身份重试：复用原 Command/Run，不创建第二份预览。
+- 正式确认必须使用不同于预览的新请求身份；Console 使用新的浏览器 UUID，飞书使用确认消息事件 ID，Webhook 使用新的 `source_event_id`。
+- 同一个正式请求身份、同一个 `preview_run_id` 的精确重试：复用原正式 Command，即使重试发生时预览已经过期。
+- 同一个正式请求身份改用其他预览、其他入口上下文或其他项目参数：`REQUEST_ID_REUSED`。
+- 不同正式请求身份重复消费同一预览：`SCAN_PREVIEW_ALREADY_CONSUMED`。
+- 入口不得在网络超时后换一个请求身份自动重试正式执行；只能查询原 Run 或用原身份精确重放。
+
+##### 错误呈现合同
+
+入口必须保留 Agent `error_code` 并显示可行动文案，不能统一改写为“执行失败”：
+
+| 错误 | 入口动作 |
+|---|---|
+| `SCAN_PREVIEW_ID_INVALID`、`SCAN_PREVIEW_NOT_FOUND`、`SCAN_PREVIEW_INCOMPLETE`、`SCAN_PREVIEW_INVALID` | 不提交正式执行；提示预览不可用并重新生成 |
+| `SCAN_PREVIEW_EXPIRED` | 清除当前确认态；提示十五分钟已过并重新生成 |
+| `SCAN_PREVIEW_STALE`、`PROJECT_INVOCATION_STALE` | 清除当前确认态；提示项目配置或扫描数据条件已变化并重新生成 |
+| `SCAN_PREVIEW_ALREADY_CONSUMED` | 不自动重试；查询原正式 Run，无法确定时交由事项中心处理 |
+| `REQUEST_ID_REUSED` | 阻止提交；生成新的明确请求身份，不复用冲突身份 |
+| `SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED` | 明确显示“正式扫描尚未开放”，不得回退旧扫描链路 |
+| `SCAN_PREVIEW_CONTEXT_REQUIRED`、`SCAN_PREVIEW_CONTEXT_INVALID` | 视为服务端合同错误并阻断，不要求用户手工补字段 |
+
+##### 冻结边界与实施顺序
+
+- C5 只冻结合同，不修改 Console、飞书、Webhook、数据库、operation type、risk level、权限角色、签名包或生产状态。
+- 后续先在控制平面建立代码专属预览注入与公共预览投影，再逐个适配 Console、飞书和 Webhook；三类入口不得在一个 TASK 中同时改造。
+- 三个入口全部通过验收后，才能单独审查 `external_write`、high、`super_admin` 与项目全自动许可的签名治理升级。
+- 治理升级完成仍不等于生产启用；ECS 发布、服务重启和生产插件切换继续单独确认。
 
 ### TASK-011 候选：统计
 
@@ -253,15 +339,16 @@
 | TASK-010C2 扫描预览证据生成 | 已完成 | dry-run 精确预览证据、扫描单独包版本和签名摘要锁已建立；正式写入口保持不变 | 无 |
 | TASK-010C3 控制平面预览绑定与一次性消费 | 已完成 | 十五分钟证据校验、精确计划引用、事务内一次性消费、精确幂等重放和当前治理关闭条件已建立；PR #89 | 无 |
 | TASK-010C4 正式执行前权威重读与选择比对 | 已完成 | 服务端代码专属绑定、正式参数/过期校验、来源/选择/批次权威重算和写前失败关闭已建立；`sync_scan_codes` 升级为 1.0.22；PR #90 | 无 |
+| TASK-010C5 扫描入口适配合同冻结 | 已完成 | 已只读核验 Console、飞书、Webhook 与控制平面真实形态，并冻结公共预览返回、两步传递、幂等和错误呈现合同 | 无 |
 | TASK-011 统计稳定性检查 | 未授权 | — | — |
 | TASK-012 分批稳定性检查 | 未授权 | — | — |
 | TASK-013 自提问题件稳定性检查 | 未授权 | — | — |
 
 ## 下一步
 
-TASK-010C4 已通过全量 CI（Agent 主测试 1587 项、延后审计 857 项）和独立只读审查；正式外部写仍保持关闭。
+TASK-010C5 已完成只读入口审计和合同冻结；没有修改入口代码。TASK-010C4 仍保有全量 CI（Agent 主测试 1587 项、延后审计 857 项）和独立只读审查证据；正式外部写继续保持关闭。
 
-下一 TASK 建议为 `TASK-010C5 扫描入口适配合同冻结`。该 TASK 先只读梳理 Console、飞书和 Webhook 当前预览/正式调用形态，冻结 `preview_run_id` 的返回、传递、幂等和错误呈现合同；不同时修改入口代码、数据库、ECS、生产插件状态、operation type 或签名治理。实际入口改造、治理升级和生产启用继续保持独立阶段。
+下一 TASK 建议为 `TASK-010C6 扫描预览控制平面适配`。只允许修改 Agent 控制平面的精确扫描入口语义、公共预览投影及对应测试：无 `preview_run_id` 时由服务端注入只读预览，有该 ID 时沿用 C3/C4 正式绑定；不修改 Console、飞书、Webhook handler、数据库、ECS、生产插件状态、operation type、risk level、权限或签名治理。
 
 ## 状态更新规则
 
