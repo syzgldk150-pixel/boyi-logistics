@@ -400,7 +400,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             "allowed_entrypoints": ["scheduler", "console"],
             "scheduling": {
                 "supported": True,
-                "allowed_kinds": ["daily_times"],
+                "allowed_kinds": ["daily_times", "startup"],
                 "max_daily_times": 8,
             },
             "runtime": {
