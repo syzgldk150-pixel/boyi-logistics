@@ -84,6 +84,17 @@ class _Catalog:
 class _ApiService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.configuration_result: dict[str, Any] = {
+            "automation_id": "automation-1",
+            "project_configuration_version": 4,
+            "generation_ready": True,
+            "schedule": {
+                "kind": "daily_times",
+                "times": ["08:00"],
+                "enabled": True,
+            },
+            "enabled_entrypoints": ["scheduler"],
+        }
 
     def catalog_projection(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("catalog", kwargs))
@@ -117,18 +128,40 @@ class _ApiService:
 
     def save_configuration(self, automation_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("configuration", {"automation_id": automation_id, **kwargs}))
-        return {"automation_id": automation_id}
+        return dict(self.configuration_result)
 
 
-def _api_client(service: _ApiService) -> TestClient:
+def _api_client(
+    service: _ApiService,
+    *,
+    scheduler_refresh_provider: Any | None = None,
+) -> TestClient:
     app = FastAPI()
     app.include_router(
         create_automation_plugin_management_router(
             service_provider=lambda: service,  # type: ignore[arg-type]
             actor_provider=lambda _request: _console_actor(),
+            scheduler_refresh_provider=scheduler_refresh_provider,
         )
     )
     return TestClient(app)
+
+
+def _configuration_request_payload() -> dict[str, Any]:
+    return {
+        "config": {"mode": "daily"},
+        "account_bindings": {},
+        "resource_bindings": {},
+        "enabled_entrypoints": ["scheduler"],
+        "device_id": None,
+        "schedule": {
+            "kind": "daily_times",
+            "times": ["08:00"],
+            "enabled": True,
+        },
+        "request_id": str(uuid.uuid4()),
+        "expected_project_configuration_version": 3,
+    }
 
 
 def test_management_router_is_closed_and_install_identity_is_server_owned() -> None:
@@ -181,6 +214,92 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
     )
     assert state.status_code == 422
     assert not any(item[0] == "state" for item in service.calls)
+
+
+def test_configuration_route_refreshes_scheduler_after_ready_commit() -> None:
+    service = _ApiService()
+    refresh_calls: list[str] = []
+    client = _api_client(
+        service,
+        scheduler_refresh_provider=lambda: (
+            refresh_calls.append("refresh")
+            or {"initialized": True, "jobs": 1, "job_ids": ["server-only"]}
+        ),
+    )
+
+    response = client.put(
+        "/internal/v1/automation/instances/automation-1/configuration",
+        json=_configuration_request_payload(),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["schedule_runtime_state"] == "ACTIVE"
+    assert data["schedule_runtime_enabled"] is True
+    assert data["scheduler_refresh_completed"] is True
+    assert refresh_calls == ["refresh"]
+    assert "job_ids" not in data
+
+
+def test_configuration_route_reports_refresh_failure_and_blocked_generation() -> None:
+    service = _ApiService()
+    client = _api_client(
+        service,
+        scheduler_refresh_provider=lambda: (_ for _ in ()).throw(
+            RuntimeError("scheduler unavailable")
+        ),
+    )
+    failed = client.put(
+        "/internal/v1/automation/instances/automation-1/configuration",
+        json=_configuration_request_payload(),
+    )
+    assert failed.status_code == 200
+    assert failed.json()["data"]["schedule_runtime_state"] == "REFRESH_FAILED"
+    assert failed.json()["data"]["scheduler_refresh_completed"] is False
+
+    refresh_calls: list[str] = []
+    service.configuration_result["generation_ready"] = False
+    blocked = _api_client(
+        service,
+        scheduler_refresh_provider=lambda: refresh_calls.append("refresh"),
+    ).put(
+        "/internal/v1/automation/instances/automation-1/configuration",
+        json=_configuration_request_payload(),
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["data"]["schedule_runtime_state"] == "BLOCKED_GENERATION"
+    assert refresh_calls == []
+
+
+def test_configuration_response_loss_retry_can_repeat_runtime_refresh() -> None:
+    service = _ApiService()
+    outcomes: list[object] = [
+        RuntimeError("first refresh unavailable"),
+        {"initialized": True, "jobs": 1, "job_ids": ["server-only"]},
+    ]
+
+    def refresh() -> dict[str, Any]:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome  # type: ignore[return-value]
+
+    client = _api_client(service, scheduler_refresh_provider=refresh)
+    payload = _configuration_request_payload()
+    first = client.put(
+        "/internal/v1/automation/instances/automation-1/configuration",
+        json=payload,
+    )
+    retried = client.put(
+        "/internal/v1/automation/instances/automation-1/configuration",
+        json=payload,
+    )
+
+    assert first.json()["data"]["schedule_runtime_state"] == "REFRESH_FAILED"
+    assert retried.json()["data"]["schedule_runtime_state"] == "ACTIVE"
+    calls = [item for item in service.calls if item[0] == "configuration"]
+    assert len(calls) == 2
+    assert {item[1]["request_id"] for item in calls} == {payload["request_id"]}
 
 
 def test_worker_pair_dto_rejects_private_identity_material() -> None:
@@ -711,6 +830,12 @@ def test_configuration_persists_exact_payload_and_projects_reconcile_block() -> 
     }
     assert result["generation_ready"] is False
     assert result["transition_state"] == "BLOCKED_DEPENDENCY"
+    assert result["schedule"] == {
+        "kind": "daily_times",
+        "times": ["08:00"],
+        "enabled": True,
+    }
+    assert result["enabled_entrypoints"] == ["scheduler"]
 
 
 class _AccountManager:

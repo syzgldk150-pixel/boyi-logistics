@@ -2,11 +2,11 @@
 
 更新时间：2026-08-25
 
-状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 至 TASK-010C9 本地测试、CI 和独立只读审查证据、TASK-010C12 / TASK-010C13 本地测试、CI 和独立只读审查证据、TASK-011 至 TASK-013 本地审计、实现、测试与独立只读审查证据，以及 TASK-020、TASK-021 本地审计、实现与测试证据
+状态来源：TASK-000 本地仓库只读审计、已合并 Git 记录、TASK-010A / TASK-010C1 / TASK-010C5 / TASK-010C10 / TASK-010C11 只读核验与冻结合同、TASK-010C2 CI 证据、TASK-010C3 / TASK-010C4 本地、CI 和独立只读审查证据、TASK-010C6 本地测试证据、TASK-010C7 至 TASK-010C9 本地测试、CI 和独立只读审查证据、TASK-010C12 / TASK-010C13 本地测试、CI 和独立只读审查证据、TASK-011 至 TASK-013 本地审计、实现、测试与独立只读审查证据，以及 TASK-020 至 TASK-022 本地审计、实现与测试证据
 
-基线：`main` at `ec14a3c`
+基线：`main` at `e461d42`
 
-重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-021 均未连接 ECS、未查询生产数据库、未执行生产自动化，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
+重要：本文件只记录有代码、迁移、测试资产或实际验证证据支持的状态。TASK-000 至 TASK-022 均未连接 ECS、未查询生产数据库、未执行生产自动化，因此本文不声明生产插件当前启用状态、生产迁移执行状态或最近运行结果。
 
 ## 当前阶段
 
@@ -15,8 +15,8 @@
 | Phase 0：理解系统 | 已完成 | TASK-000 已完成本地源码、迁移、文档和测试资产审计 |
 | Phase 1：建立治理 | 已完成 | TASK-001 三份治理文档已经 PR #85 合并；TASK-001A 状态账本纠偏已经 PR #87 合并 |
 | Phase 2：保护现有自动化 | 已完成 | TASK-010A、TASK-010B、TASK-010C1 至 TASK-010C13、TASK-011、TASK-012、TASK-013 已完成本地保护与验收；生产状态均未核验 |
-| Phase 3：轻量插件管理 | 进行中 | TASK-020、TASK-021 已完成；TASK-022 待执行 |
-| Phase 4：自动化中心 | 主要能力已存在，未验收 | Catalog 驱动列表、项目配置和飞书路由已经存在 |
+| Phase 3：轻量插件管理 | 已完成 | TASK-020、TASK-021、TASK-022 已完成本地验收；生产状态未核验 |
+| Phase 4：自动化中心 | 进行中 | Catalog 驱动列表、项目配置和飞书路由已经存在；TASK-030 待执行 |
 | Phase 5：模块注册 | 未开始 | 通用菜单、权限和模块状态注册尚未建立 |
 | Phase 6：AI Assistant | 部分存在 | 已有受限 LLM 工具路由，经营分析查询能力尚未建立 |
 
@@ -379,6 +379,16 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 - 验证：定向回归 89 项和 48 个子测试、根测试 1622 项和 277 个子测试、Agent 完整测试 906 项和 140 个子测试、Console 完整测试 490 项和 187 个子测试通过；30 项环境型用例跳过；四项仓库守卫、Ruff 与 diff 检查通过。
 - 数据库：复用既有 `automation_project_events`，无迁移；生产状态未核验，未执行真实启停。
 
+### TASK-022 已完成：定时配置管理
+
+- 配置合同：继续复用闭合 `{kind,times,enabled}` DTO、项目配置版本 CAS、generation 物化和 `scheduled_tasks`；仓储层现在再次校验签名 `allowed_kinds/max_daily_times`，Console 与 Agent 统一支持最多九十六个规范时间点。
+- 精确重放：`CONFIGURATION_UPDATED` 响应丢失重放必须同时匹配请求摘要、操作者、角色和事件目标配置版本；当前配置已经后续推进时显式冲突，不再返回最新配置冒充旧请求结果。
+- 运行时刷新：稳定 generation 提交后，管理 API 在 Agent 事件循环内刷新 APScheduler。刷新先校验全部启用任务；任何无效行或注册异常都会恢复原 Job 的 trigger、参数、执行选项和下次时间，并投影 `REFRESH_FAILED`，同一请求 UUID 可安全重试。
+- 启动定时：通用项目 `startup` 现在使用一次性 DateTrigger，经既有项目 Scheduler 入口与 generation/config 版本校验提交；同一上海业务日、配置版本和 generation 生成稳定 Command 身份。财务 startup 保留既有身份合同和运行时门禁，门禁阻断时只省略该 Job，不阻止其他有效定时热刷新；release hold 启动不注册通用或财务 startup Job。
+- Console 反馈：明确区分 `ACTIVE/DISABLED/ENTRYPOINT_DISABLED/BLOCKED_GENERATION/REFRESH_FAILED`；定时开关开启但 `scheduler` 入口关闭时提示“时间保留、当前不运行”，配置已落库但代际/刷新未完成时保留原请求供精确重试。
+- 验证：定向回归 135 项和 86 个子测试、根测试 1627 项和 280 个子测试、Agent 完整测试 911 项和 140 个子测试、Console 完整测试 492 项和 190 个子测试通过；30 项环境型用例跳过；四项仓库守卫、Ruff 与 diff 检查通过。
+- 数据库：无迁移；生产定时、ECS、服务和插件状态均未修改。
+
 ## 目标能力差距
 
 ### 已实现或大部分实现
@@ -457,12 +467,13 @@ Webhook 的 `preview_run_id` 必须在入口边界提取并从 `dynamic_inputs` 
 | TASK-013 自提问题件稳定性检查 | 已完成 | `self_pickup_problem_upload` 1.0.21 仅保留飞书两步确认，预览、pending、Planner 和签名动作共同绑定完整候选集合与指纹；完整本地回归、四项守卫和 Sol Advisor 独立终审通过 | 无 |
 | TASK-020 插件状态管理 | 已完成 | 复用现有生命周期与 generation 状态，Console 合并投影并对非稳定组合阻断运行；完整本地回归和四项守卫通过 | 无 |
 | TASK-021 后台启停 | 已完成 | 启停状态 CAS 与审计事件同事务提交，响应丢失可精确幂等重放；稳定代际启用与协调期紧急停用边界已锁定 | 无 |
+| TASK-022 定时配置管理 | 已完成 | 闭合定时 DTO、签名上限、精确重放、generation 物化、原子 Scheduler 热刷新、通用 startup 与 Console 生效反馈已闭环 | 无 |
 
 ## 下一步
 
-TASK-021 已完成后台启停验收。启停复用现有管理 API、超级管理员身份、release hold、依赖就绪和版本 CAS；新增同事务幂等审计，响应丢失可按同一 UUID 精确读回。Console 只在稳定代际允许启用，同时保留协调期紧急停用的止损入口。完整根、Agent、Console、定向回归和四项仓库守卫均通过。
+TASK-022 已完成定时配置管理验收。定时继续复用现有项目配置、generation 和 `scheduled_tasks`，没有新表或第二套调度系统；保存后的运行中刷新、通用 startup、精确幂等重放与 Console 生效反馈已经闭环。完整根、Agent、Console、定向回归和四项仓库守卫均通过。
 
-下一 TASK 为 `TASK-022 定时配置管理`。只验收并补齐现有项目定时 DTO、入口开关、CAS、调度物化和 Console 反馈，不执行生产定时变更。生产插件安装、generation reconcile、项目策略切换、ECS 发布、服务重启和真实自动化仍不在仓库 TASK 授权内。
+下一 TASK 为 `TASK-030 自动化列表动态化验收与遗留清理`。只核验 Catalog 驱动列表是否覆盖所有当前实例、清理仍与真实项目重复或冲突的静态卡/兼容入口，并保持未迁移或被发行明确排除的项目 fail closed。生产插件安装、generation reconcile、项目策略切换、ECS 发布、服务重启和真实自动化仍不在仓库 TASK 授权内。
 
 ## 状态更新规则
 

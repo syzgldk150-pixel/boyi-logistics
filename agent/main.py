@@ -1337,6 +1337,10 @@ app.include_router(
         service_provider=lambda: _automation_plugins().management,
         actor_provider=lambda request: _require_console_admin_request(request),
         include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
+        scheduler_refresh_provider=lambda: reload_scheduler(
+            _runtime(),
+            automation_project_invoker=_automation_project_policies(),
+        ),
     )
 )
 if WINDOWS_WORKER_RELEASE_ENABLED:

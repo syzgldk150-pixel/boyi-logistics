@@ -829,6 +829,17 @@
       if (!response.ok || payload?.ok !== true) {
         throw new Error(responseMessage(payload, "项目设置保存失败，请重试。"));
       }
+      const scheduleRuntimeState = String(
+        payload?.data?.schedule_runtime_state || "REFRESH_FAILED",
+      ).toUpperCase();
+      if (["BLOCKED_GENERATION", "REFRESH_FAILED"].includes(scheduleRuntimeState)) {
+        setFeedback(
+          feedback,
+          payload.message || "设置已保存，但运行中定时尚未生效；请使用同一请求重试。",
+          "warning",
+        );
+        return;
+      }
       delete button.dataset.requestId;
       setFeedback(feedback, payload.message || "项目设置已保存。", "success");
       window.location.reload();
@@ -937,13 +948,29 @@
     const scheduleKind = form?.querySelector("[data-plugin-schedule-kind]");
     const scheduleStack = form?.querySelector("[data-schedule-stack]");
     const addSchedule = form?.querySelector("[data-add-schedule-time]");
+    const scheduleToggle = form?.querySelector("[data-automation-toggle]");
+    const scheduleEffect = form?.querySelector("[data-plugin-schedule-effect]");
     const syncScheduleVisibility = () => {
       const showTimes = scheduleKind instanceof HTMLSelectElement && scheduleKind.value === "daily_times";
       if (scheduleStack instanceof HTMLElement) scheduleStack.hidden = !showTimes;
       if (addSchedule instanceof HTMLElement) addSchedule.hidden = !showTimes;
+      const schedulerEntrypoint = [...(form?.querySelectorAll("[data-plugin-entrypoint]") || [])]
+        .find(control => control instanceof HTMLInputElement && control.value === "scheduler");
+      const scheduleRequested = scheduleKind instanceof HTMLSelectElement
+        && scheduleKind.value !== "none"
+        && scheduleToggle instanceof HTMLInputElement
+        && scheduleToggle.checked;
+      if (scheduleEffect instanceof HTMLElement) {
+        scheduleEffect.hidden = !(
+          scheduleRequested
+          && schedulerEntrypoint instanceof HTMLInputElement
+          && !schedulerEntrypoint.checked
+        );
+      }
     };
     syncScheduleVisibility();
     scheduleKind?.addEventListener("change", syncScheduleVisibility);
+    scheduleToggle?.addEventListener("change", syncScheduleVisibility);
 
     const syncEntrypointState = control => {
       if (!(control instanceof HTMLInputElement) || !control.matches("[data-plugin-entrypoint]")) return;
@@ -952,7 +979,10 @@
     };
     form?.querySelectorAll("[data-plugin-entrypoint]").forEach(control => {
       syncEntrypointState(control);
-      control.addEventListener("change", () => syncEntrypointState(control));
+      control.addEventListener("change", () => {
+        syncEntrypointState(control);
+        syncScheduleVisibility();
+      });
     });
 
     const markConfigurationDirty = () => {
