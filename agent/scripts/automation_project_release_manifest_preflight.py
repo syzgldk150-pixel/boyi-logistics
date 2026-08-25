@@ -84,6 +84,11 @@ def _bootstrap_generation_may_be_blocked(
             and (project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE" or is_staged_unknown_write_quarantine(project))
         )
         or (
+            generation.get("generation_state") == "BLOCKED" and project.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE" and project.get("generation_state") == "BLOCKED" and project.get("generation_error_code") == "WRITE_OUTCOME_UNKNOWN"
+            and project.get("unsafe_non_disposed_other_count") == 0 and project.get("active_current_lease_count") == 0 and isinstance(project.get("unknown_write_count"), int) and project.get("unknown_write_count") > 0
+            and isinstance(generation.get("generation"), int) and isinstance(project.get("generation"), int) and generation.get("generation") < project.get("generation")
+        )
+        or (
             generation.get("generation_state") == "BLOCKED"
             and project.get("reconcile_state") == "STABLE"
             and project.get("generation_state") == "COMMITTED"
@@ -149,7 +154,6 @@ def _safe_enum_diagnostic(
         return "INVALID"
     return value if value in allowed else "OTHER"
 
-
 def _generation_relation_diagnostic(value: Any, committed: Any) -> str:
     if value is None:
         return "ABSENT"
@@ -161,7 +165,6 @@ def _generation_relation_diagnostic(value: Any, committed: Any) -> str:
         return "MATCH"
     return "BEHIND"
 
-
 def _committed_error_diagnostic(value: Any) -> str:
     if value is None:
         return "NONE"
@@ -171,7 +174,6 @@ def _committed_error_diagnostic(value: Any) -> str:
         return "WRITE_OUTCOME_UNKNOWN"
     return "OTHER"
 
-
 def _unknown_write_lease_diagnostic(value: Any) -> str:
     if type(value) is not int or value < 0:
         return "INVALID"
@@ -180,7 +182,6 @@ def _unknown_write_lease_diagnostic(value: Any) -> str:
     if value == 1:
         return "ONE"
     return "MULTIPLE"
-
 
 def _next_generation_diagnostic(value: Any, maximum: Any) -> str:
     if value is None or maximum is None:
