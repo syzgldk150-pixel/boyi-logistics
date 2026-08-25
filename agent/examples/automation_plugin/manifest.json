@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "plugin_id": "example_compute_automation",
+  "name": "Example compute automation",
+  "version": "0.1.0",
+  "description": "Non-production template that normalizes a configured list without external effects",
+  "execution_platform": "server",
+  "runtime": {
+    "kind": "python_subprocess",
+    "entrypoint": "payload/main.py"
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "labels": {
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "required": [
+      "labels"
+    ]
+  },
+  "account_roles": [],
+  "resource_roles": [],
+  "scheduling": {
+    "supported": false,
+    "allowed_kinds": [],
+    "max_daily_times": 0
+  },
+  "allowed_entrypoints": [
+    "console"
+  ],
+  "invocation_contracts": {
+    "console": {
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        "required": [
+          "labels"
+        ]
+      },
+      "argument_template": {
+        "labels": {
+          "source": "project_config",
+          "key": "labels"
+        }
+      },
+      "dynamic_resolvers": {}
+    }
+  },
+  "governance_anchor": {
+    "name": "example_compute_automation",
+    "version": "0.1.0",
+    "operation_type": "compute",
+    "risk_level": "low",
+    "approval": {
+      "mode": "none"
+    },
+    "permissions": {
+      "required_roles": [
+        "admin"
+      ]
+    },
+    "idempotency": {
+      "mode": "parameters",
+      "key_fields": []
+    },
+    "retry": {
+      "safe": true,
+      "max_attempts": 1
+    },
+    "evidence": {
+      "required": false,
+      "required_fields": []
+    },
+    "postconditions": [
+      {
+        "name": "computed_result_returned"
+      }
+    ],
+    "project_full_auto_allowed": false
+  },
+  "tool_contract": {
+    "name": "example_compute_automation",
+    "version": "0.1.0",
+    "operation_type": "compute",
+    "risk_level": "low",
+    "llm_exposed": false,
+    "project_full_auto_allowed": false,
+    "approval": {
+      "mode": "none"
+    },
+    "permissions": {
+      "required_roles": [
+        "admin"
+      ]
+    },
+    "account_scope": {
+      "required": false,
+      "allow_implicit_default": false
+    },
+    "idempotency": {
+      "mode": "parameters",
+      "key_fields": []
+    },
+    "retry": {
+      "safe": true,
+      "max_attempts": 1
+    },
+    "evidence": {
+      "required": false,
+      "required_fields": []
+    },
+    "postconditions": [
+      {
+        "name": "computed_result_returned"
+      }
+    ],
+    "description": "Non-production template that normalizes a configured list without external effects",
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "required": [
+        "labels"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "SUCCESS",
+            "FAILED"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "data",
+        "meta",
+        "warnings",
+        "error"
+      ]
+    },
+    "executor": "payload/main.py",
+    "timeout": 60,
+    "heavy": false
+  },
+  "worker_requirement": {
+    "required": false,
+    "interactive_session": false,
+    "supported_os": [
+      "linux"
+    ],
+    "queue_deadline_seconds": 3600
+  },
+  "project_full_auto_allowed": false,
+  "runtime_permissions": {
+    "network": false,
+    "browser": false,
+    "office": false,
+    "file_roles": [],
+    "broker_operations": [],
+    "max_broker_calls": 0
+  }
+}

@@ -190,6 +190,13 @@ python scripts/build_first_party_plugin_release.py \
 迁移实例，既不夹带 `BLOCKED` 动作，也不接受缺包或额外包。任一入围包失败时不发布部分目录。
 它只读取调用方明确传入且权限受限的私钥，不搜索、不复制、不输出私钥内容。
 
+新增能力从 `agent/examples/automation_plugin/` 的无副作用示例开始。该目录不属于首方源码清单，也不由
+bootstrap、Catalog、Broker、ECS 发布或签名发布发现。`validate_automation_plugin_source.py` 只执行签名前
+源码预检：严格解析 manifest 与工具治理合同、确认 entrypoint 与字面量 `ACTION_ID`、编译 payload，并
+拒绝导入 Agent、shared、tools、feishu 等运行时模块；它不生成签名、不安装插件、不创建实例。真实能力
+若需要账号、资源、页面或外部写，必须在独立 TASK 中先冻结精确 Broker 合同、来源证据、写后条件和未知
+结果处理，再分别更新核心 handler、测试、迁移矩阵、release allowlist、digest lock 与签名发行。
+
 ## 运行隔离与核心 Broker
 
 动作由包内 `python_subprocess` 执行，payload 禁止导入 `agent`、`shared`、`tools` 或 whole-tool
