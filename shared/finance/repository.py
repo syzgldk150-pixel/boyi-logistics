@@ -37,6 +37,7 @@ from shared.finance.money import ZERO, format_money
 from shared.finance.schema import validate_finance_schema
 from shared.finance.sources import (
     enabled_finance_platforms,
+    enabled_finance_source_specs,
     is_finance_source_enabled,
 )
 from shared.finance.validation import ValidationReport
@@ -1388,7 +1389,15 @@ class FinanceRepository(FinanceEvolutionMixin):
                 result[str(key)] = value
         return result
 
-    def _failed_sources(self, query: FinanceQuery) -> list[dict[str, Any]]:
+    def _failed_sources(
+        self,
+        query: FinanceQuery,
+        *,
+        connection: Any | None = None,
+    ) -> list[dict[str, Any]]:
+        if connection is None:
+            with self._connection() as owned_connection:
+                return self._failed_sources(query, connection=owned_connection)
         enabled_clause, enabled_params = _enabled_source_clause(
             platform_column="r.platform", account_column="r.account_id"
         )
@@ -1420,11 +1429,19 @@ class FinanceRepository(FinanceEvolutionMixin):
             WHERE {' AND '.join(clauses)}
             ORDER BY r.target_date DESC, r.platform, r.account_id
         """
-        with self._connection() as connection, _managed_cursor(connection) as cursor:
+        with _managed_cursor(connection) as cursor:
             cursor.execute(sql, tuple(params))
             return [self._serialize_general_row(row) for row in _fetchall(cursor)]
 
-    def _freshness(self, query: FinanceQuery) -> dict[str, Any]:
+    def _freshness(
+        self,
+        query: FinanceQuery,
+        *,
+        connection: Any | None = None,
+    ) -> dict[str, Any]:
+        if connection is None:
+            with self._connection() as owned_connection:
+                return self._freshness(query, connection=owned_connection)
         enabled_clause, enabled_params = _enabled_source_clause(
             platform_column="r.platform", account_column="r.account_id"
         )
@@ -1449,7 +1466,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             ) latest ON latest.latest_run_id = r.id
             WHERE {' AND '.join(clauses)}
         """
-        with self._connection() as connection, _managed_cursor(connection) as cursor:
+        with _managed_cursor(connection) as cursor:
             cursor.execute(
                 sql,
                 (
@@ -1461,7 +1478,92 @@ class FinanceRepository(FinanceEvolutionMixin):
             )
             return _fetchone(cursor) or {}
 
-    def get_summary(self, query: FinanceQuery) -> dict[str, Any]:
+    def _coverage_status(
+        self,
+        query: FinanceQuery,
+        *,
+        connection: Any | None = None,
+    ) -> str:
+        """Verify every selected live source has one terminal run per requested day."""
+
+        if connection is None:
+            with self._connection() as owned_connection:
+                return self._coverage_status(query, connection=owned_connection)
+
+        expected_sources = {
+            (spec.platform, spec.account_id)
+            for spec in enabled_finance_source_specs()
+            if (query.platform is None or spec.platform == query.platform.value)
+            and (not query.account_id or spec.account_id == query.account_id)
+        }
+        if not expected_sources:
+            return "unavailable"
+        enabled_clause, enabled_params = _enabled_source_clause(
+            platform_column="r.platform", account_column="r.account_id"
+        )
+        clauses = ["r.target_date BETWEEN %s AND %s", enabled_clause]
+        params: list[Any] = [query.start_date, query.end_date, *enabled_params]
+        if query.platform:
+            clauses.append("r.platform = %s")
+            params.append(query.platform.value)
+        if query.account_id:
+            clauses.append("r.account_id = %s")
+            params.append(query.account_id)
+        sql = f"""
+            SELECT r.platform, r.account_id,
+                   COUNT(DISTINCT r.target_date) AS terminal_dates,
+                   COUNT(DISTINCT CASE
+                       WHEN r.validation_status = %s THEN r.target_date
+                       ELSE NULL END) AS verified_dates
+            FROM finance_sync_runs r
+            INNER JOIN (
+                SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
+                FROM finance_sync_runs
+                GROUP BY platform, account_id, target_date
+            ) latest ON latest.latest_run_id = r.id
+            WHERE {' AND '.join(clauses)}
+              AND r.status IN (%s, %s)
+            GROUP BY r.platform, r.account_id
+        """
+        with _managed_cursor(connection) as cursor:
+            cursor.execute(
+                sql,
+                (
+                    ValidationStatus.PASSED.value,
+                    *params,
+                    SyncStatus.SUCCESS.value,
+                    SyncStatus.NO_DATA.value,
+                ),
+            )
+            rows = _fetchall(cursor)
+        if not rows:
+            return "unavailable"
+        expected_days = (query.end_date - query.start_date).days + 1
+        covered = {
+            (str(row.get("platform") or ""), str(row.get("account_id") or "")): (
+                _integer_count(row.get("terminal_dates"), "terminal_dates"),
+                _integer_count(row.get("verified_dates"), "verified_dates"),
+            )
+            for row in rows
+        }
+        if set(covered) != expected_sources:
+            return "incomplete"
+        if any(
+            terminal_dates != expected_days or verified_dates != expected_days
+            for terminal_dates, verified_dates in covered.values()
+        ):
+            return "incomplete"
+        return "complete"
+
+    def _get_summary_core(
+        self,
+        query: FinanceQuery,
+        *,
+        connection: Any | None = None,
+    ) -> dict[str, Any]:
+        if connection is None:
+            with self._connection() as owned_connection:
+                return self._get_summary_core(query, connection=owned_connection)
         clauses, params = self._entry_filters(query)
         where = " AND ".join(clauses)
         aggregate_sql = f"""
@@ -1469,6 +1571,7 @@ class FinanceRepository(FinanceEvolutionMixin):
                 COALESCE(SUM(t.income), 0) AS total_income,
                 COALESCE(SUM(t.expense), 0) AS total_expense,
                 COALESCE(SUM(t.income - t.expense), 0) AS net_change,
+                COUNT(*) AS entry_count,
                 COALESCE(SUM(CASE
                     WHEN fm.fee_level = %s AND fm.include_in_cost = 1 THEN t.expense
                     ELSE 0 END), 0) AS waybill_cost,
@@ -1539,7 +1642,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             *params,
         ]
         account_params = [FeeLevel.WAYBILL.value, FeeLevel.OPERATING.value, *params]
-        with self._connection() as connection, _managed_cursor(connection) as cursor:
+        with _managed_cursor(connection) as cursor:
             cursor.execute(aggregate_sql, tuple(aggregate_params))
             row = _fetchone(cursor) or {}
             cursor.execute(account_sql, tuple(account_params))
@@ -1553,8 +1656,9 @@ class FinanceRepository(FinanceEvolutionMixin):
                 ),
             )
             account_presence_rows = _fetchall(cursor)
-        failed_sources = self._failed_sources(query)
-        freshness = self._freshness(query)
+        failed_sources = self._failed_sources(query, connection=connection)
+        freshness = self._freshness(query, connection=connection)
+        coverage_status = self._coverage_status(query, connection=connection)
         if failed_sources:
             validation_status = ValidationStatus.FAILED.value
         elif int(freshness.get("warning_runs") or 0):
@@ -1599,7 +1703,11 @@ class FinanceRepository(FinanceEvolutionMixin):
                     "operating_net": self._format_aggregate(account_row.get("operating_net")),
                 }
             )
+        raw_income = Decimal(str(row.get("total_income") or ZERO))
+        raw_expense = Decimal(str(row.get("total_expense") or ZERO))
+        raw_net_change = Decimal(str(row.get("net_change") or ZERO))
         result = {
+            "entry_count": int(row.get("entry_count") or 0),
             "total_income": self._format_aggregate(row.get("total_income")),
             "total_expense": self._format_aggregate(row.get("total_expense")),
             "net_change": self._format_aggregate(row.get("net_change")),
@@ -1613,9 +1721,32 @@ class FinanceRepository(FinanceEvolutionMixin):
                 {"value": freshness.get("data_through_date")}
             )["value"],
             "validation_status": validation_status,
+            "coverage_status": coverage_status,
+            "reconciliation_status": (
+                "passed" if raw_income - raw_expense == raw_net_change else "failed"
+            ),
             "failed_sources": failed_sources,
             "accounts": accounts,
         }
+        return result
+
+    def get_business_summary(self, query: FinanceQuery) -> dict[str, Any]:
+        """Read one business summary from a single read-only consistent snapshot."""
+
+        with self._connection() as connection:
+            with _managed_cursor(connection) as cursor:
+                cursor.execute(
+                    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+                )
+                cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+            result = self._get_summary_core(query, connection=connection)
+            commit = getattr(connection, "commit", None)
+            if callable(commit):
+                commit()
+            return result
+
+    def get_summary(self, query: FinanceQuery) -> dict[str, Any]:
+        result = self._get_summary_core(query)
         result.update(self.get_evolution_summary(query))
         return result
 

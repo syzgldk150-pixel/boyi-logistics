@@ -415,6 +415,31 @@ class ToolRegistryValidationTests(unittest.TestCase):
             [item["function"]["name"] for item in registry.get_llm_tools()],
         )
 
+    def test_business_finance_query_is_read_only_and_not_yet_llm_exposed(self):
+        registry = ToolRegistry()
+        capability = registry.get_capability("query_business_finance")
+
+        self.assertIsNotNone(capability)
+        self.assertEqual(capability["operation_type"], "read")
+        self.assertEqual(capability["risk_level"], "low")
+        self.assertFalse(capability["llm_exposed"])
+        self.assertEqual(capability["approval"], {"mode": "none"})
+        self.assertEqual(capability["permissions"]["required_roles"], ["admin"])
+        self.assertEqual(
+            capability["account_scope"],
+            {"mode": "none", "allow_implicit_default": False},
+        )
+        self.assertEqual(capability["input_schema"]["required"], ["start_date", "end_date"])
+        self.assertEqual(
+            capability["input_schema"]["properties"]["platform"]["enum"],
+            ["ronghui"],
+        )
+        self.assertNotIn("sql", capability["input_schema"]["properties"])
+        self.assertNotIn(
+            "query_business_finance",
+            [item["function"]["name"] for item in registry.get_llm_tools()],
+        )
+
     def test_production_catalog_uses_locked_operation_and_approval_classifications(self):
         registry = ToolRegistry()
         internal_syncs = {

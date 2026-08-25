@@ -28,6 +28,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
+from shared.finance import FinanceRepository
 from shared.finance.sources import (
     enabled_finance_account_ids,
     enabled_finance_platforms,
@@ -122,6 +123,7 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
+from agent.business_query import BusinessFinanceQueryService
 from agent.automation_plugins.production import (
     ProductionAutomationPluginRuntime,
     build_production_automation_plugin_runtime,
@@ -1073,12 +1075,17 @@ async def lifespan(app: FastAPI):
     initial_plugin_health = plugin_runtime.health()
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
+    business_finance_query = BusinessFinanceQueryService(
+        FinanceRepository(runtime.memory.connection_factory),
+        enabled_platforms=enabled_finance_platforms(),
+    )
     execution_port = RegisteredToolExecutionAdapter(
         catalog=catalog,
         executor=plugin_runtime.execution_router,
         direct_runners={
             "track_waybill": run_track_waybill,
             "get_price": run_price_tool,
+            "query_business_finance": business_finance_query.run,
         },
     )
     context_builder = ContextBuilder(

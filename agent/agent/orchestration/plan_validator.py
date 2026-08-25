@@ -119,7 +119,14 @@ class PlanValidator:
         else:
             raise OrchestrationError("INVALID_ACCOUNT_SCOPE", "Tool account_scope must be an object or string")
 
-        if mode in {"none", "optional"}:
+        if mode == "none":
+            if account_id:
+                raise OrchestrationError(
+                    "ACCOUNT_SCOPE_MISMATCH",
+                    "This tool does not accept an account binding",
+                )
+            return
+        if mode == "optional":
             if account_id and account_id not in context.account_ids:
                 raise OrchestrationError(
                     "UNKNOWN_ACCOUNT",
