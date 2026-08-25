@@ -625,6 +625,26 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual(frozenset(), failed[4])
         self.assertFalse(hasattr(app, "_automation_hidden_ids"))
 
+    def test_malformed_catalog_instance_blocks_the_entire_catalog(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app._mysql_console_principal = lambda _user: {
+            "actor_id": "17",
+            "roles": ["super_admin"],
+        }
+        catalog = _catalog_payload()
+        catalog["instances"][1]["automation_id"] = "invalid/id"
+        app._agent_request = lambda *_args, **_kwargs: {"ok": True, "data": catalog}
+
+        result = app._load_automation_plugin_catalog(self._handler())
+
+        self.assertEqual([], result[0])
+        self.assertEqual([], result[1])
+        self.assertEqual([], result[2])
+        self.assertEqual([], result[3])
+        self.assertEqual(frozenset(), result[4])
+        self.assertIn("实例投影不完整", result[5])
+        self.assertTrue(result[6])
+
     @staticmethod
     def _configuration_payload() -> dict:
         return {

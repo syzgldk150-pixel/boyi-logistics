@@ -576,8 +576,6 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         plugin_instances_by_id = {
             str(item["automation_id"]): item for item in automation_plugin_instances
         }
-        deferred_fallback_ids = set(AUTOMATION_DEFERRED_FALLBACK_IDS)
-
         scheduled_row_groups = group_scheduled_rows_by_automation_id(scheduled_rows)
         workflow_resources = {
             str(item.get("resource_key", "") or ""): item
@@ -589,8 +587,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             base_task_id = str(scheduled_group["task_id"])
             if (
                 base_task_id in hidden_automation_ids
-                or base_task_id in deferred_fallback_ids
-            ) and base_task_id not in plugin_instances_by_id:
+                and not bool(scheduled_group["missing_automation_id"])
+                and base_task_id not in plugin_instances_by_id
+            ):
                 # Historical rows stay in Agent for audit, but an explicitly
                 # deferred project must not render an unusable Console card.
                 continue
@@ -769,30 +768,6 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 ),
                 "feedback": task_feedbacks.get(base_task_id),
             }
-
-        # The static catalog is only an offline/migration display fallback. Installed
-        # instances returned by Agent are the runtime authority.
-        if automation_plugin_warning:
-            for workflow in AUTOMATION_WORKFLOW_CATALOG:
-                workflow_task_id = str(workflow.get("task_id", "") or "")
-                if not workflow_task_id or workflow_task_id in tasks_by_id:
-                    continue
-                if (
-                    workflow_task_id in deferred_fallback_ids
-                    or (
-                        workflow_task_id in hidden_automation_ids
-                        and workflow_task_id not in plugin_instances_by_id
-                    )
-                ):
-                    continue
-                tasks_by_id[workflow_task_id] = self._build_virtual_automation_task(
-                    workflow_task_id,
-                    override=task_overrides.get(workflow_task_id),
-                    feedback=task_feedbacks.get(workflow_task_id),
-                    open_task_id=open_task_id,
-                    workflow_resources=workflow_resources,
-                    resource_overrides=resource_overrides,
-                )
 
         for plugin in automation_plugin_instances:
             automation_id = str(plugin["automation_id"])
