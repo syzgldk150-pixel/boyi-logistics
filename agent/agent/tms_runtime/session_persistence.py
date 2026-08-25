@@ -207,6 +207,7 @@ class SessionPersistenceMixin:
                 if meta.get(key):
                     payload[key] = str(meta.get(key) or "")
         self._state_store.write_dict(self._meta_path, payload)
+        self._health_snapshot_meta = dict(payload)
         try:
             import traceback as _tb
             stack = _tb.extract_stack(limit=8)[:-1]

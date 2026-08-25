@@ -1833,7 +1833,7 @@ async def internal_health():
                     release_hold=scheduler_release_hold_requested()
                 ),
                 "scheduled_task_approval_bootstrap": dict(scheduled_task_approval_bootstrap),
-                "tms_session": get_session_broker().describe_status(validate=False),
+                "tms_session": get_session_broker().health_snapshot(),
             },
             "last_tool_run": runtime.last_tool_info(),
             "heavy_task_lock": runtime.heavy_lock_held(),

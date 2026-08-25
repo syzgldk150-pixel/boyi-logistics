@@ -39,6 +39,7 @@
 - 韵达/融辉活动原页不得在 Console 同源上下文执行。仅独立 origin 的 `yunda_waybill_proxy`、`ronghui_waybill_proxy` 可在已验证 Console principal、精确 `proxy_prefix=/original/{provider}` 和受审路径/写入 allowlist 同时满足时调用；旧 `/ocr/*` live、回单前缀及 `yunda_waybill_entry` 仍固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，不得回退到同源代理。
 - 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
 - `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。`fetch_dispatch` 必须从显式所选账号的已认证会话 `userInfo` 唯一解析站点身份；缺失、多候选或调用参数与会话不一致时显式失败，不得硬编码或回落到默认站点码。
+- 内部健康接口只读取 `SessionBroker.health_snapshot()` 的无凭据内存快照，不得调用 `describe_status()`、等待 provider/session 锁或触发外部登录态校验；登录态实时验证只属于账号接口和后台监控，不能阻塞发布身份探针。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
 
 ## 统一控制平面

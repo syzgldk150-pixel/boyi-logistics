@@ -82,9 +82,12 @@ class _HealthStatusProvider:
         return "ok"
 
     @staticmethod
-    def describe_status(*, validate: bool) -> dict[str, Any]:
-        assert validate is False
+    def health_snapshot() -> dict[str, Any]:
         return {"status": "ok"}
+
+    @staticmethod
+    def describe_status(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        raise AssertionError("internal health must not wait on the provider session lock")
 
 
 class _HealthRepository:

@@ -32,6 +32,30 @@ class SessionBrokerTests(unittest.TestCase):
         broker._login_profile_path = state_dir / "login_profile.json"
         return broker
 
+    def test_health_snapshot_never_waits_on_validation_or_reads_credentials(self):
+        self.broker._health_snapshot_meta = {
+            "status": "authenticated",
+            "label": "已登录",
+            "last_validation_at": "2026-08-25 15:42:47",
+            "last_error_summary": "",
+            "authenticated_at": "2026-08-25 13:54:31",
+            "pending_since": "",
+            "expires_at": "",
+        }
+        self.broker._load_meta = lambda: self.fail("must use the in-memory snapshot")
+        self.broker._credentials_status_locked = lambda: self.fail(
+            "health must not read credentials"
+        )
+        self.broker._validate_locked = lambda **_kwargs: self.fail(
+            "health must not validate the provider"
+        )
+
+        status = self.broker.health_snapshot()
+
+        self.assertTrue(status["authenticated"])
+        self.assertEqual("2026-08-25 15:42:47", status["last_validation_at"])
+        self.assertNotIn("has_saved_credentials", status)
+
     @staticmethod
     def _authenticated_meta():
         return {
