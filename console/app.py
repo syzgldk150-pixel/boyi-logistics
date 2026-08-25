@@ -13,10 +13,9 @@ from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
 from console.services.tms_proxy import TmsProxyServiceMixin
 from console.services.automation import AutomationServiceMixin
 from console.services.documents import DocumentServiceMixin
+from console.services.business_modules import BusinessModulesServiceMixin
 from console.navigation import (
     CONSOLE_NAVIGATION,
-    MOBILE_NAVIGATION_CANDIDATES,
-    mobile_bottom_nav_for_user,
 )
 from shared.service_identity import validate_service_identity_secrets
 
@@ -41,6 +40,7 @@ class LocalDocFlowApp(
     TmsProxyServiceMixin,
     AutomationServiceMixin,
     DocumentServiceMixin,
+    BusinessModulesServiceMixin,
 ):
     def __init__(self) -> None:
         self.settings = load_settings()
@@ -73,9 +73,12 @@ class LocalDocFlowApp(
         self.template_env.globals["ui_label"] = ui_label
         self.template_env.globals["current_admin_user"] = current_admin_user
         self.template_env.globals["console_navigation"] = CONSOLE_NAVIGATION
-        self.template_env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
-        self.template_env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
+        self.template_env.globals["navigation_for_user"] = self._business_module_navigation
+        self.template_env.globals["mobile_navigation_for_user"] = (
+            self._business_module_mobile_navigation_for_user
+        )
         self.project_modules = self._build_project_modules()
+        self._business_module_status_cache = None
         self.finance_service = FinanceService(
             self.repository,
             agent_request=self._agent_request,
@@ -149,11 +152,14 @@ class LocalDocFlowApp(
     def handle_proxy_write(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
+        path = parsed.path.rstrip("/") or "/"
         if self._handle_isolated_original_page_request(handler, parsed, method=method):
             return
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
+            return
+        if self._reject_unavailable_business_module_request(handler, path):
             return
         self._send_json(
             handler,
@@ -180,6 +186,8 @@ class LocalDocFlowApp(
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
+            return
+        if self._reject_unavailable_business_module_request(handler, path):
             return
         if path.startswith("/original-pages/") and path.endswith("/launch"):
             provider = path[len("/original-pages/") : -len("/launch")].strip("/")
@@ -342,6 +350,8 @@ class LocalDocFlowApp(
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
+            return
+        if self._reject_unavailable_business_module_request(handler, path):
             return
         query = parse_qs(parsed.query)
         if self.routes.handle_post(self, handler, path, parsed.path, query):

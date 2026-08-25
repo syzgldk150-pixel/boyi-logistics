@@ -29,9 +29,10 @@ WAITING_RUN_STATUSES = frozenset(
 
 
 class CommandGateway:
-    def __init__(self, repository: Any, *, wake_runner=None) -> None:
+    def __init__(self, repository: Any, *, wake_runner=None, business_module_gate=None) -> None:
         self._repository = repository
         self._wake_runner = wake_runner
+        self._business_module_gate = business_module_gate
 
     def submit(
         self,
@@ -137,6 +138,12 @@ class CommandGateway:
             with self._repository.unit_of_work() as uow:
                 if uow_guard is not None:
                     uow_guard(uow)
+                if self._business_module_gate is not None:
+                    existing = uow.commands.get_by_idempotency(
+                        command.source, command.idempotency_key, for_update=True
+                    )
+                    if existing is None:
+                        self._business_module_gate.check_new_command(command, uow)
                 receipt = uow.command_gateway_create(
                     command_row,
                     work_item_row,

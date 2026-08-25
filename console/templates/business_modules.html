@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}模块管理 · {{ app_title }}{% endblock %}
+{% block breadcrumb %}模块管理{% endblock %}
+{% block subtitle %}代码目录、安装状态与生命周期审计{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/business_modules.css?v=1">{% endblock %}
+{% block content %}
+{% set state_labels = {'ENABLED': '已启用', 'DISABLED': '已停用', 'NOT_INSTALLED': '未安装', 'BLOCKED': '已阻断'} %}
+{% set blocked_labels = {'LIFECYCLE_BASELINE_MISSING': '生命周期基线缺失', 'UNKNOWN_LIFECYCLE_ROWS': '存在未知模块记录', 'INVALID_LIFECYCLE_STATE': '生命周期状态无效', 'CODE_CATALOG_MISMATCH': '代码目录不一致', 'MODULE_UPGRADE_REQUIRED': '需要升级后才能使用', 'INVALID_INSTALLED_VERSION': '已安装版本无效'} %}
+<section class="module-manager" data-module-manager data-can-write="{{ 'true' if is_super_admin else 'false' }}">
+  <div class="module-manager__intro">
+    <div><h2>已注册模块</h2><p>Agent 发布版本：{{ release_sha or '不可用' }}。这里显示目录与生命周期一致性，不代表工具或调度运行健康。</p></div>
+    {% if unavailable %}<p class="notice notice--warning">模块状态暂不可用。可管理模块已按安全策略隐藏。</p>{% endif %}
+  </div>
+  <div class="module-table-wrap">
+    <table class="module-table"><thead><tr><th>模块</th><th>代码版本</th><th>已安装版本</th><th>状态</th><th>记录版本</th><th>操作</th></tr></thead><tbody>
+    {% for item in items %}<tr data-module-row data-module-code="{{ item.module_code }}" data-record-version="{{ item.record_version or '' }}">
+      <td><strong>{{ item.name }}</strong><span>{{ item.module_code }}</span><small>代码已登记：{{ '是' if item.code_registered else '否' }}</small></td><td>{{ item.version }}<small>目录版本</small></td><td>{{ item.installed_version or '未安装' }}<small>当前代码：{{ item.code_version or '—' }}</small></td>
+      <td><span class="module-state module-state--{{ item.lifecycle_state|lower }}">{{ state_labels.get(item.lifecycle_state, '状态未知') }}</span><small>{{ blocked_labels.get(item.blocked_reason, item.blocked_reason) if item.blocked_reason else ('存在可用升级' if item.upgrade_available else '目录与生命周期一致') }}</small></td><td>{{ item.record_version or '—' }}</td>
+      <td>{% if is_super_admin and item.record_version %}<div class="module-actions"><button type="button" class="ghost-btn" data-module-audit-trigger>审计</button>{% if item.lifecycle_state == 'NOT_INSTALLED' %}<button type="button" class="ghost-btn" data-module-action="install">安装</button>{% endif %}{% if item.lifecycle_state != 'NOT_INSTALLED' and item.upgrade_available %}<button type="button" class="ghost-btn" data-module-action="upgrade">升级</button>{% endif %}{% if item.lifecycle_state == 'ENABLED' and item.disable_allowed %}<button type="button" class="ghost-btn" data-module-action="disable">停用</button>{% endif %}{% if item.lifecycle_state == 'DISABLED' %}<button type="button" class="ghost-btn" data-module-action="enable">启用</button>{% if item.disable_allowed %}<button type="button" class="ghost-btn" data-module-action="uninstall">卸载</button>{% endif %}{% endif %}</div>{% else %}<span>只读</span>{% endif %}</td>
+    </tr>{% endfor %}
+    </tbody></table>
+  </div>
+  <p class="module-manager__status" aria-live="polite" data-module-status></p>
+  <details class="module-details"><summary>查看代码拥有的页面、接口、权限与扩展</summary>{% for item in items %}<article><h3>{{ item.name }}</h3><p>菜单：{{ item.menu_contributions|join(', ') }}；页面：{{ item.page_contributions|join(', ') }}；API：{{ item.api_contributions|join(', ') }}</p><p>权限：{{ item.permission_contributions|join(', ') }}；内部扩展：{{ item.internal_extensions|join(', ') or '无' }}</p></article>{% endfor %}</details>
+  <details class="module-details"><summary>查看最近审计记录</summary><div data-module-audit-list>选择模块后可加载其最近审计记录。</div></details>
+</section>
+<dialog class="module-lifecycle-dialog" data-module-dialog aria-labelledby="module-dialog-title"><form method="dialog" data-module-form><h2 id="module-dialog-title">确认模块变更</h2><p data-module-dialog-copy></p><label>变更原因<textarea required maxlength="500" data-module-reason></textarea></label><p data-module-dialog-status aria-live="polite"></p><div><button type="button" class="ghost-btn" data-module-cancel>取消</button><button type="submit" class="primary-btn" data-module-confirm>提交变更</button></div></form></dialog>
+{% endblock %}
+{% block scripts %}<script src="/static/business_modules.js?v=1"></script>{% endblock %}

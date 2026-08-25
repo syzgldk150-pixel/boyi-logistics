@@ -16,8 +16,8 @@
   {% set page_subtitle %}{% block subtitle %}首页 / 分析报表{% endblock %}{% endset %}
   {% set page_actions_content %}{% block page_actions %}{% endblock %}{% endset %}
   {% set admin_user = current_admin_user() if current_admin_user is defined else none %}
-  {% set navigation_items = console_navigation if console_navigation is defined else () %}
-  {% set mobile_navigation_items = mobile_navigation_candidates if mobile_navigation_candidates is defined else () %}
+  {% set navigation_items = navigation_for_user() if navigation_for_user is defined else (console_navigation if console_navigation is defined else ()) %}
+  {% set mobile_navigation_items = navigation_items | rejectattr('route', 'equalto', '/') | list %}
   {% set mobile_nav = mobile_navigation_for_user(admin_user) if mobile_navigation_for_user is defined else () %}
   {% set mobile_nav_sync_supported = admin_user and not admin_user.is_legacy_basic_auth %}
 

@@ -18,7 +18,9 @@ from typing import Any, Optional
 
 from agent.direct_tool_router import (
     business_finance_request_from_text,
+    business_operations_request_from_text,
     direct_tool_request_from_text,
+    format_business_operations_summary_reply,
     format_tool_reply,
     parse_login_send_code_session,
 )
@@ -243,6 +245,55 @@ class AgentCore:
                 "reply": final_content,
                 "conversation_id": conv_id,
                 "duration_s": round(time.monotonic() - started, 2),
+            }
+
+        operations_request = business_operations_request_from_text(
+            message,
+            today=self._today_provider(),
+        )
+        if operations_request is not None:
+            fixed_reply = operations_request.get("reply")
+            if fixed_reply:
+                final_content = str(fixed_reply)
+                executed_tools: list[dict[str, Any]] = []
+            elif not self._can_query_business_finance(trusted_actor, source=source):
+                final_content = "你没有财务查询权限，请联系管理员完成飞书账号绑定。"
+                executed_tools = []
+            else:
+                finance_params = dict(operations_request["params"])
+                operations_params = {
+                    name: finance_params[name]
+                    for name in ("start_date", "end_date")
+                }
+                finance_result = await self.execute_tool(
+                    "query_business_finance",
+                    finance_params,
+                    actor=trusted_actor,
+                    source=source,
+                    idempotency_key=self._entry_idempotency_key(
+                        trusted_actor, source, "business-summary-finance", browser_request_id
+                    ),
+                )
+                operations_result = await self.execute_tool(
+                    "query_automation_operations",
+                    operations_params,
+                    actor=trusted_actor,
+                    source=source,
+                    idempotency_key=self._entry_idempotency_key(
+                        trusted_actor, source, "business-summary-operations", browser_request_id
+                    ),
+                )
+                final_content = format_business_operations_summary_reply(finance_result, operations_result)
+                executed_tools = [
+                    {"tool_name": "query_business_finance", "params": finance_params, "result": finance_result},
+                    {"tool_name": "query_automation_operations", "params": operations_params, "result": operations_result},
+                ]
+            self._save_assistant_message(conv_id, final_content)
+            return {
+                "reply": final_content,
+                "conversation_id": conv_id,
+                "duration_s": round(time.monotonic() - started, 2),
+                "executed_tools": executed_tools,
             }
 
         finance_request = business_finance_request_from_text(
@@ -622,7 +673,7 @@ class AgentCore:
         if source == "console":
             return f"console:{actor.actor_id}:{command_type}:{request_id}"
         if source == "feishu":
-            return f"feishu:{request_id}"
+            return f"feishu:{command_type}:{request_id}"
         return f"{source}:{actor.actor_id}:{command_type}:{request_id}"
 
     def _save_assistant_message(self, conversation_id: str, content: str) -> None:
