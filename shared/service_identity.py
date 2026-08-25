@@ -29,7 +29,7 @@ CONSOLE_SIGNATURE_TTL_SECONDS = 30
 CONSOLE_SIGNATURE_FUTURE_SKEW_SECONDS = 5
 
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
-_ALLOWED_ROLES = frozenset({"admin", "super_admin"})
+CONSOLE_ADMIN_ROLES = frozenset({"admin", "super_admin"})
 
 
 class ConsoleIdentityError(ValueError):
@@ -83,7 +83,7 @@ def normalize_console_principal(value: Mapping[str, Any]) -> dict[str, Any]:
             "INVALID_CONSOLE_PRINCIPAL",
             "authenticated_by must be mysql_admin_session",
         )
-    if not roles or any(role not in _ALLOWED_ROLES for role in roles):
+    if not roles or any(role not in CONSOLE_ADMIN_ROLES for role in roles):
         raise ConsoleIdentityError("INVALID_CONSOLE_PRINCIPAL", "principal roles are invalid")
     return {
         "actor_type": actor_type,
