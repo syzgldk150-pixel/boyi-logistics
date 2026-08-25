@@ -135,7 +135,7 @@ class _Steps:
         } else []
 
     def transition(self, _step_id, *, status, **_kwargs):
-        self.transitions.append(status)
+        self.transitions.append({"status": status, **_kwargs})
         self.row["status"] = status
         self.row["version"] += 1
         return dict(self.row)
@@ -353,7 +353,7 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
         self.assertTrue(repeated["idempotent"])
         self.assertFalse(repeated["transitioned"])
         self.assertEqual(1, runs.releases)
-        self.assertEqual(["COMPLETED"], steps.transitions)
+        self.assertEqual(["COMPLETED"], [row["status"] for row in steps.transitions])
 
     def test_live_runner_claim_remains_unknown_without_mutation(self):
         receipt = {
@@ -391,7 +391,7 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "evidence"):
             self._recover(uow)
         self.assertEqual(1, runs.releases)
-        self.assertEqual(["COMPLETED"], steps.transitions)
+        self.assertEqual(["COMPLETED"], [row["status"] for row in steps.transitions])
 
     def test_mixed_or_malformed_receipts_remain_unknown_without_mutation(self):
         receipts = [
@@ -430,6 +430,63 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
         self.assertEqual("BLOCKED_DATA", runs.row["status"])
         self.assertEqual("BLOCKED_DATA", steps.row["status"])
         self.assertEqual([], plugins.settled)
+
+    def test_authoritative_not_applied_receipt_terminates_non_replay_safe_run(self):
+        receipt = {
+            "receipt_id": "receipt-not-applied",
+            "orchestration_run_id": "run-1",
+            "step_id": "step-1",
+            "operation": "ledger.invoke",
+            "action": "daily_sign.authoritative_sync",
+            "argument_sha256": "a" * 64,
+            "target_ref_sha256": "b" * 64,
+            "outcome": "NOT_APPLIED",
+            "evidence_sha256": "c" * 64,
+        }
+        uow, plugins, runs, steps = _uow(
+            outcome="WRITE_OUTCOME_UNKNOWN",
+            receipts=[receipt],
+            retry_safe=False,
+        )
+
+        result = self._recover(uow)
+
+        self.assertEqual("NOT_APPLIED", result["recovery_status"])
+        self.assertEqual(
+            "ALL_RECEIPTS_AUTHORITATIVELY_NOT_APPLIED",
+            result["reason"],
+        )
+        self.assertEqual("FAILED_TERMINAL", runs.row["status"])
+        self.assertEqual("FAILED_TERMINAL", steps.row["status"])
+        self.assertEqual("NOT_APPLIED", steps.transitions[0]["postcondition_status"])
+        self.assertEqual("FAILED_BEFORE_WRITE", plugins.lease["outcome"])
+
+    def test_cancelled_run_and_work_item_stay_cancelled_after_recovery(self):
+        receipt = {
+            "receipt_id": "receipt-cancelled",
+            "orchestration_run_id": "run-1",
+            "step_id": "step-1",
+            "operation": "write",
+            "action": "sync",
+            "argument_sha256": "a" * 64,
+            "target_ref_sha256": "b" * 64,
+            "outcome": "WRITE_VERIFIED",
+            "evidence_sha256": "c" * 64,
+        }
+        uow, plugins, runs, steps = _uow(
+            outcome="WRITE_OUTCOME_UNKNOWN",
+            receipts=[receipt],
+        )
+        runs.row["status"] = "CANCELLED"
+        uow.work_items.row["status"] = "CANCELLED"
+
+        result = self._recover(uow)
+
+        self.assertEqual("APPLIED", result["recovery_status"])
+        self.assertEqual("CANCELLED", runs.row["status"])
+        self.assertEqual("CANCELLED", uow.work_items.row["status"])
+        self.assertEqual("COMPLETED", steps.row["status"])
+        self.assertEqual("WRITE_VERIFIED", plugins.lease["outcome"])
 
     def test_non_replay_safe_and_illegal_run_make_no_mutation(self):
         uow, plugins, runs, steps = _uow(
