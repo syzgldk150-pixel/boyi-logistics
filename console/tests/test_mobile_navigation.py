@@ -84,6 +84,11 @@ class MobileNavigationTests(unittest.TestCase):
             instance.sent_payload = payload
 
         app._send_json = types.MethodType(send_json, app)
+        # This focused fixture does not compose Agent status. Preserve its
+        # existing success-path semantics with a fully available projection.
+        app._business_module_navigation = types.MethodType(
+            lambda _instance: list(CONSOLE_NAVIGATION), app
+        )
         return app
 
     def _with_user(self, user):

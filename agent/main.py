@@ -123,7 +123,12 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
-from agent.business_query import BusinessFinanceQueryService
+from agent.business_query import (
+    AutomationOperationsQueryService,
+    BusinessFinanceQueryService,
+    MySQLAutomationOperationsRepository,
+)
+from agent.business_modules_api import create_business_module_router
 from agent.automation_plugins.production import (
     ProductionAutomationPluginRuntime,
     build_production_automation_plugin_runtime,
@@ -150,6 +155,7 @@ from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
 from agent.orchestration.command_gateway import CommandGateway
+from agent.orchestration.business_module_command_gate import BusinessModuleCommandGate
 from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.control_plane_service import ControlPlaneService
 from agent.orchestration.feishu_approval_service import FeishuApprovalService
@@ -234,6 +240,7 @@ from shared.orchestration_repository import (
     OrchestrationPersistenceError,
     OrchestrationRepository,
 )
+from shared.business_module_repository import BusinessModuleLifecycleService, BusinessModuleRepository
 
 
 register_tms_session_alert(send_tms_session_disconnected_alert)
@@ -1081,6 +1088,9 @@ async def lifespan(app: FastAPI):
         FinanceRepository(runtime.memory.connection_factory),
         enabled_platforms=enabled_finance_platforms(),
     )
+    automation_operations_query = AutomationOperationsQueryService(
+        MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
+    )
     execution_port = RegisteredToolExecutionAdapter(
         catalog=catalog,
         executor=plugin_runtime.execution_router,
@@ -1088,6 +1098,7 @@ async def lifespan(app: FastAPI):
             "track_waybill": run_track_waybill,
             "get_price": run_price_tool,
             "query_business_finance": business_finance_query.run,
+            "query_automation_operations": automation_operations_query.run,
         },
     )
     context_builder = ContextBuilder(
@@ -1125,9 +1136,26 @@ async def lifespan(app: FastAPI):
         scheduled_task_approval_bootstrap.get("completed", 0),
     )
     runner_holder: dict[str, WorkflowRunner] = {}
+
+    def _project_governance_tool_name(command) -> str | None:
+        invocation = command.automation_invocation
+        automation_id = str(getattr(invocation, "automation_id", "") or "").strip()
+        if not automation_id:
+            raise ValueError("trusted automation invocation is missing its identity")
+        capability = catalog.get_project_capability(automation_id)
+        runtime = capability.get("_plugin_runtime") if isinstance(capability, dict) else None
+        anchor = runtime.get("governance_anchor") if isinstance(runtime, dict) else None
+        tool_name = str(anchor.get("name") or "").strip() if isinstance(anchor, dict) else ""
+        if not tool_name or tool_name != str(runtime.get("core_tool_name") or "").strip():
+            raise ValueError("committed automation governance anchor is invalid")
+        return tool_name
+
     gateway = CommandGateway(
         repository,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
+        business_module_gate=BusinessModuleCommandGate(
+            project_governance_tool_resolver=_project_governance_tool_name,
+        ),
     )
     project_policy_service = AutomationProjectPolicyService(
         repository,
@@ -1339,6 +1367,16 @@ app.include_router(
     create_automation_project_router(
         service_provider=_automation_project_policies,
         actor_provider=lambda request: _require_console_admin_request(request),
+    )
+)
+app.include_router(
+    create_business_module_router(
+        service_provider=lambda: BusinessModuleLifecycleService(
+            BusinessModuleRepository(_runtime().memory.connection_factory),
+            release_sha=_release_sha(),
+        ),
+        admin_actor_provider=lambda request: _require_console_admin_request(request),
+        super_admin_actor_provider=lambda request: _require_console_super_admin_request(request),
     )
 )
 app.include_router(
