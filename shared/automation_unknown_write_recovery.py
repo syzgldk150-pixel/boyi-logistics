@@ -109,12 +109,21 @@ def recover_unknown_automation_write(
         and re.fullmatch(r"[0-9a-f]{64}", str(item.get("evidence_sha256") or ""))
         for item in receipts
     )
-    not_applied = not receipts and str(lease.get("outcome") or "") == "FAILED_BEFORE_WRITE"
+    receipt_not_applied = (
+        bool(receipts)
+        and all(
+            str(item.get("outcome") or "") == "NOT_APPLIED"
+            and re.fullmatch(r"[0-9a-f]{64}", str(item.get("evidence_sha256") or ""))
+            for item in receipts
+        )
+    )
+    not_applied = receipt_not_applied or (
+        not receipts and str(lease.get("outcome") or "") == "FAILED_BEFORE_WRITE"
+    )
     if not applied and not not_applied:
         return _unknown("RECEIPTS_NOT_AUTHORITATIVELY_RESOLVED", run_id, step_id, evidence)
-    if not_applied and step.get("retry_safe") is not True:
+    if not_applied and not receipt_not_applied and step.get("retry_safe") is not True:
         return _unknown("UNSAFE_WRITE_RETRY_BLOCKED", run_id, step_id, evidence)
-
     recovery_status = "APPLIED" if applied else "NOT_APPLIED"
     if str(run.get("status") or "") in {"RUNNING", "VERIFYING"}:
         # Management recovery never steals a live Runner claim.  Runner first
@@ -125,21 +134,34 @@ def recover_unknown_automation_write(
     event_id = str(uuid.uuid5(
         uuid.NAMESPACE_URL, f"boyi:automation-write-recovery:{safe_request_id}",
     ))
-    if _is_persisted_recovery(run, step, recovery_status, terminal):
+    retry_safe = step.get("retry_safe") is True
+    if _is_persisted_recovery(
+        run,
+        step,
+        recovery_status,
+        terminal,
+        retry_safe=retry_safe,
+    ):
         _require_same_recovery_event(
             uow.events, event_id, run_id, step_id, recovery_status, receipt_digest,
         )
     step_transitioned, run_transitioned, run = _transition_recovery(
         uow, run, step, run_id, recovery_status, terminal, receipt_digest,
+        retry_safe=retry_safe,
     )
     settled = uow.automation_plugins.settle_unknown_write_recovery_row(
         automation_id=automation_id, generation=generation, lease_id=lease_id,
         recovery_status=recovery_status, evidence_sha256=receipt_digest,
         locked_context=context,
     )
-    desired_item_status = "IN_PROGRESS" if (
-        str(run.get("status") or "") == "CONTEXT_READY" or recovery_status == "APPLIED"
-    ) else "OPEN"
+    current_item_status = str(item.get("status") or "")
+    desired_item_status = (
+        "CANCELLED"
+        if current_item_status == "CANCELLED"
+        else "IN_PROGRESS"
+        if str(run.get("status") or "") == "CONTEXT_READY" or recovery_status == "APPLIED"
+        else "OPEN"
+    )
     if str(item.get("status") or "") != desired_item_status:
         uow.work_items.transition(
             str(item["work_item_id"]), expected_version=int(item["version"]),
@@ -159,7 +181,13 @@ def recover_unknown_automation_write(
     transitioned = bool(step_transitioned or run_transitioned or settled["transitioned"])
     return {
         "recovery_status": recovery_status,
-        "reason": "ALL_RECEIPTS_WRITE_VERIFIED" if applied else "ZERO_STARTED_WRITES_FAILED_BEFORE_WRITE",
+        "reason": (
+            "ALL_RECEIPTS_WRITE_VERIFIED"
+            if applied
+            else "ALL_RECEIPTS_AUTHORITATIVELY_NOT_APPLIED"
+            if receipt_not_applied
+            else "ZERO_STARTED_WRITES_FAILED_BEFORE_WRITE"
+        ),
         "run_id": run_id, "step_id": step_id, "transitioned": transitioned,
         "idempotent": not transitioned and not bool(event_receipt["event"].get("_created")),
         "evidence": evidence,
@@ -175,29 +203,65 @@ def _unknown(reason: str, run_id: str, step_id: str | None, evidence: dict[str, 
 
 
 def _transition_recovery(uow: Any, run: dict[str, Any], step: dict[str, Any], run_id: str,
-                         recovery_status: str, terminal: bool, receipt_digest: str) -> tuple[bool, bool, dict[str, Any]]:
+                         recovery_status: str, terminal: bool, receipt_digest: str,
+                         *, retry_safe: bool) -> tuple[bool, bool, dict[str, Any]]:
     run_status, step_status = str(run.get("status") or ""), str(step.get("status") or "")
     applied = recovery_status == "APPLIED"
-    complete_status = "COMPLETED" if applied else "FAILED_RETRYABLE"
+    complete_status = (
+        "COMPLETED" if applied else "FAILED_RETRYABLE" if retry_safe else "FAILED_TERMINAL"
+    )
     if run_status == "BLOCKED_DATA" and step_status == "BLOCKED_DATA":
         kwargs: dict[str, Any] = {
             "expected_version": int(step["version"]),
             "expected_statuses": ("BLOCKED_DATA",),
             "status": complete_status,
             "result_summary": {"reconciliation": recovery_status, "receipt_digest": receipt_digest},
-            "postcondition_status": "VERIFIED_AFTER_RECEIPT_RECOVERY" if applied else "RETRY_ALLOWED",
+            "postcondition_status": (
+                "VERIFIED_RECEIPT"
+                if applied
+                else "RETRY_ALLOWED"
+                if retry_safe
+                else "NOT_APPLIED"
+            ),
             "finished_at": datetime.now(),
         }
         if applied:
             kwargs["postcondition"] = {"receipt_digest": receipt_digest}
         else:
-            kwargs.update(error_code="RECONCILED_NOT_APPLIED", error_summary="Server evidence proved no broker write started")
+            kwargs.update(
+                error_code="RECONCILED_NOT_APPLIED",
+                error_summary="Server evidence proved no broker write started",
+            )
         uow.steps.transition(str(step["step_id"]), **kwargs)
+        recovered_run_status = (
+            "CONTEXT_READY" if applied or retry_safe else "FAILED_TERMINAL"
+        )
         run = uow.runs.release_recovered(
             run_id, expected_version=int(run["version"]), expected_statuses=("BLOCKED_DATA",),
-            status="CONTEXT_READY", error_code=None, error_summary=None, retryable=False,
+            status=recovered_run_status,
+            error_code=None if applied else "RECONCILED_NOT_APPLIED",
+            error_summary=None if applied else "Server evidence proved no intended write applied",
+            retryable=bool(not applied and retry_safe),
         )
         return True, True, run
+    if run_status == "CANCELLED" and step_status == "BLOCKED_DATA":
+        kwargs = {
+            "expected_version": int(step["version"]),
+            "expected_statuses": ("BLOCKED_DATA",),
+            "status": complete_status,
+            "result_summary": {"reconciliation": recovery_status, "receipt_digest": receipt_digest},
+            "postcondition_status": "VERIFIED_RECEIPT" if applied else "NOT_APPLIED",
+            "finished_at": datetime.now(),
+        }
+        if applied:
+            kwargs["postcondition"] = {"receipt_digest": receipt_digest}
+        else:
+            kwargs.update(
+                error_code="RECONCILED_NOT_APPLIED",
+                error_summary="Server evidence proved no intended write applied",
+            )
+        uow.steps.transition(str(step["step_id"]), **kwargs)
+        return True, False, run
     if terminal and step_status == complete_status and run_status != "BLOCKED_DATA":
         return False, False, run
     if step_status != "BLOCKED_DATA":
@@ -205,9 +269,26 @@ def _transition_recovery(uow: Any, run: dict[str, Any], step: dict[str, Any], ru
     raise ConcurrentUpdateError("recovery Run is not runnable" if applied else "recovery Run is not retryable")
 
 
-def _is_persisted_recovery(run: dict[str, Any], step: dict[str, Any], recovery_status: str, terminal: bool) -> bool:
-    expected_step = "COMPLETED" if recovery_status == "APPLIED" else "FAILED_RETRYABLE"
-    return terminal and str(step.get("status") or "") == expected_step and str(run.get("status") or "") != "BLOCKED_DATA"
+def _is_persisted_recovery(
+    run: dict[str, Any],
+    step: dict[str, Any],
+    recovery_status: str,
+    terminal: bool,
+    *,
+    retry_safe: bool,
+) -> bool:
+    expected_step = (
+        "COMPLETED"
+        if recovery_status == "APPLIED"
+        else "FAILED_RETRYABLE"
+        if retry_safe
+        else "FAILED_TERMINAL"
+    )
+    return (
+        terminal
+        and str(step.get("status") or "") == expected_step
+        and str(run.get("status") or "") != "BLOCKED_DATA"
+    )
 
 
 def _require_same_recovery_event(events: Any, event_id: str, run_id: str, step_id: str,

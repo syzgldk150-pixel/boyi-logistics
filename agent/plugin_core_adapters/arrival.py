@@ -108,7 +108,9 @@ _ARRIVE_NUMERIC_SHEET_COLUMNS = frozenset(
     index for index, field in enumerate(_ARRIVE_FIELDS) if field in _NUMERIC_RECORD_FIELDS
 )
 _ARRIVE_COMPATIBILITY_TEXT_COLUMNS = frozenset(
-    index for index, field in enumerate(_ARRIVE_FIELDS) if field == "remarks"
+    index
+    for index, field in enumerate(_ARRIVE_FIELDS)
+    if field in {"remarks", "recipient_address"}
 )
 _SHEET_RANGE_RE = re.compile(
     r"(?P<sheet>[^!]+)!(?P<start>[A-Z]+)(?P<start_row>[1-9][0-9]*):"
