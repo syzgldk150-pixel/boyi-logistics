@@ -1470,6 +1470,26 @@ class AutomationProjectsServiceMixin:
                 "插件目录返回无效，所有项目已阻断运行。",
                 can_manage,
             )
+        raw_instance_ids = [
+            str(item.get("automation_id") or "").strip()
+            if isinstance(item, dict)
+            else ""
+            for item in raw_instances
+        ]
+        normalized_instance_ids = [
+            str(item.get("automation_id") or "").strip()
+            for item in instances
+        ]
+        if raw_instance_ids != normalized_instance_ids:
+            return (
+                [],
+                [],
+                [],
+                [],
+                frozenset(),
+                "插件目录实例投影不完整，所有项目已阻断运行。",
+                can_manage,
+            )
 
         requires_workers = any(
             str(item.get("execution_platform") or "").strip().lower() == "windows"
