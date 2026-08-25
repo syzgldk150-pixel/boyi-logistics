@@ -2299,6 +2299,38 @@ class AutomationPluginGenerationRepositoryMixin:
             ),
         }
 
+    def unique_unknown_write_recovery_lease_row(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+    ) -> dict[str, Any]:
+        """Return one exact unresolved lease or fail closed on ambiguity."""
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lease_id
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s AND generation=%s
+                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                ORDER BY lease_id
+                LIMIT 2
+                """,
+                (safe_automation_id, safe_generation),
+            )
+            rows = _rows(cursor)
+        if not rows:
+            return {"state": "MISSING", "lease_id": ""}
+        if len(rows) != 1:
+            return {"state": "AMBIGUOUS", "lease_id": ""}
+        return {
+            "state": "FOUND",
+            "lease_id": _required_text(rows[0].get("lease_id"), "lease_id"),
+        }
+
     def lock_unknown_write_recovery_context_row(
         self,
         *,

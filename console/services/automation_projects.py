@@ -2404,6 +2404,98 @@ class AutomationProjectsServiceMixin:
             },
         )
 
+    def _handle_automation_plugin_unknown_write_recovery(
+        self,
+        handler: BaseHTTPRequestHandler,
+        automation_id: str,
+    ) -> None:
+        automation_id = self._automation_project_id(automation_id)
+        if not automation_id:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                "AUTOMATION_PLUGIN_INSTANCE_NOT_FOUND",
+                "插件实例不存在。",
+            )
+            return
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                "SUPER_ADMIN_REQUIRED",
+                "只有超级管理员可以恢复未知写入项目。",
+            )
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
+        if set(values) != {"request_id"} or not request_id:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "PLUGIN_RECOVERY_REQUEST_INVALID",
+                "未知写入恢复请求无效。",
+            )
+            return
+        result = self._agent_request(
+            "POST",
+            (
+                f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
+                "/generation/recover-current-unknown-write"
+            ),
+            payload={"request_id": request_id},
+            timeout=30,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not result.get("ok"):
+            self._automation_project_agent_error(
+                handler,
+                result,
+                automation_id=automation_id,
+                fallback_code="PLUGIN_UNKNOWN_WRITE_RECOVERY_FAILED",
+                fallback_message="未知写入恢复失败。",
+            )
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        recovery_status = str(data.get("recovery_status") or "").strip().upper()
+        if recovery_status == "UNKNOWN":
+            self._control_plane_error(
+                handler,
+                HTTPStatus.CONFLICT,
+                "PLUGIN_RECOVERY_EVIDENCE_UNRESOLVED",
+                "服务器证据仍不足，项目保持隔离且没有重放。",
+            )
+            return
+        if recovery_status not in {"APPLIED", "NOT_APPLIED"}:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                "PLUGIN_RECOVERY_RESPONSE_INVALID",
+                "Agent 返回了无法识别的恢复结果。",
+            )
+            return
+        self._send_json(
+            handler,
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "data": {
+                    "automation_id": automation_id,
+                    "recovery_status": recovery_status,
+                    "transitioned": bool(data.get("transitioned")),
+                },
+                "message": (
+                    "服务器证据确认写入已完成，项目已解除隔离。"
+                    if recovery_status == "APPLIED"
+                    else "服务器证据确认写入未开始，项目已进入安全重试状态。"
+                ),
+            },
+        )
+
     def _handle_automation_plugin_configuration_save(
         self,
         handler: BaseHTTPRequestHandler,

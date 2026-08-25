@@ -942,6 +942,18 @@
       });
     });
 
+    const recoverButton = instance.querySelector("[data-plugin-recover-unknown-write]");
+    recoverButton?.addEventListener("click", () => {
+      if (!(recoverButton instanceof HTMLButtonElement)) return;
+      void pluginJsonAction(
+        instance,
+        recoverButton,
+        "recover",
+        {},
+        "服务器证据仍不足，项目保持隔离且不会重放。",
+      );
+    });
+
     const form = instance.closest("form");
     const configurationSave = form?.querySelector("[data-plugin-configuration-save]");
     const runButton = form?.querySelector("[data-run-now]");
