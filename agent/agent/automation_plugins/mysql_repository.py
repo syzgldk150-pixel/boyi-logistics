@@ -20,6 +20,7 @@ from agent.automation_plugins.errors import (
 )
 from agent.automation_plugins.code_owned_fields import (
     normalize_first_party_code_owned_config,
+    normalize_first_party_code_owned_entrypoints,
 )
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.configuration import (
@@ -714,14 +715,25 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     schedule,
                     manifest.scheduling,
                 )
-                sources = tuple(
+                persisted_sources = tuple(
                     str(item or "").strip() for item in enabled_entrypoints
                 )
                 if (
-                    any(not source for source in sources)
-                    or len(sources) != len(set(sources))
-                    or not set(sources) <= set(manifest.allowed_entrypoints)
+                    any(not source for source in persisted_sources)
+                    or len(persisted_sources) != len(set(persisted_sources))
                 ):
+                    raise PluginConflictError(
+                        "enabled entrypoints differ from the release contract"
+                    )
+                migrated_sources = normalize_first_party_code_owned_entrypoints(
+                    automation_id=seed.automation_id,
+                    plugin_id=seed.plugin_id,
+                    current_version=expected_current_version,
+                    target_version=version.version,
+                    enabled_entrypoints=persisted_sources,
+                )
+                sources = migrated_sources or persisted_sources
+                if not set(sources) <= set(manifest.allowed_entrypoints):
                     raise PluginConflictError(
                         "enabled entrypoints differ from the release contract"
                     )
@@ -760,6 +772,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 canonical_json_bytes(left) != canonical_json_bytes(right)
                 for left, right in (
                     (normalized_config, raw_config),
+                    (list(sources), enabled_entrypoints),
                     (normalized_schedule, schedule),
                     (compiled_after, compiled_before),
                 )
