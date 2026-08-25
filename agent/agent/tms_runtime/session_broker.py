@@ -57,6 +57,7 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         self._pending_login_state_path = self._state_dir / "pending_login_state.json"
         self._login_profile_path = self._state_dir / "login_profile.json"
         self._lock = threading.RLock()
+        self._health_snapshot_meta = self._load_meta()
         self._pending: PendingBrowser | None = None
         self._provider_adapter: SessionProviderAdapter = (
             YundaSessionAdapter(self) if self._login_mode.startswith("yunda") else RonghuiSessionAdapter(self)
@@ -131,6 +132,25 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
                 "captcha_image_mime": meta.get("captcha_image_mime", "") if meta["status"] == "pending_code" else "",
                 "captcha_captured_at": meta.get("captcha_captured_at", "") if meta["status"] == "pending_code" else "",
             }
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Return the last persisted status without waiting on provider I/O."""
+
+        meta = dict(getattr(self, "_health_snapshot_meta", None) or self._load_meta())
+        status = str(meta.get("status") or "error")
+        return {
+            "profile": self.profile_name,
+            "status": status,
+            "label": str(meta.get("label") or _status_label(status)),
+            "status_tone": _status_tone(status),
+            "authenticated": status == "authenticated",
+            "pending_code": status == "pending_code",
+            "last_validation_at": str(meta.get("last_validation_at") or ""),
+            "last_error_summary": str(meta.get("last_error_summary") or ""),
+            "authenticated_at": str(meta.get("authenticated_at") or ""),
+            "pending_since": str(meta.get("pending_since") or ""),
+            "expires_at": str(meta.get("expires_at") or ""),
+        }
 
     def ensure_authenticated(self, *, validate: bool = True) -> dict[str, Any]:
         status = self.describe_status(validate=validate)
