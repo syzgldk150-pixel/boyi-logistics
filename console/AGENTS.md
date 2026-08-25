@@ -195,3 +195,8 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - 自动化目录“分批/未到问题件上传”只显示项目状态，不提供 Console 执行入口，也不开放定时执行；预览、人工选择、确认以及正式上传所需的预览指纹只由飞书固定命令注入。工具 `split_pending_problem_upload` 的来源/目标资源均为必填，账号角色默认 `ronghui_default`。
 - 自动化目录“自提到货问题件”只显示项目状态，不提供 Console 执行入口，也不开放定时执行；正式上传所需的完整候选集合与预览指纹只由飞书固定命令的预览/确认状态注入。
+
+## 业务模块管理
+
+- `/settings/modules` 及数据/审计入口只代理签名 Agent API，真实 MySQL `super_admin` 才可读取或变更；生命周期写还要求同源、理由、浏览器 UUID 和 CAS。
+- 导航、移动偏好修复和直接页面/API 门禁通过 `services/business_modules.py` 的 Agent 状态投影实现：可管理模块在未知、非 ENABLED、阻塞或未安装时关闭失败，核心模块保持可用。不要在模板复制状态或将可选模块默认启用。

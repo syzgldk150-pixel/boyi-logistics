@@ -243,6 +243,7 @@ NEGATED_EXECUTION_REPLY_RE = re.compile(
 
 VERIFY_CODE_RE = re.compile(r"^\s*([A-Za-z0-9]{4,8})\s*$")
 BUSINESS_FINANCE_INTENT_RE = re.compile(r"(?:财务|收入|支出|收支|净变动|账本|流水|对账)")
+BUSINESS_OPERATIONS_INTENT_RE = re.compile(r"(?:经营摘要|经营情况)")
 BUSINESS_FINANCE_WRITE_RE = re.compile(r"(?:同步|导入|写入|新增|修改|删除|更新|调整)")
 BUSINESS_FINANCE_DAY_RE = re.compile(
     r"(?<!\d)(?P<year>20\d{2})\s*(?:年|-|/|\.)\s*"
@@ -401,6 +402,21 @@ def business_finance_request_from_text(
     if "融辉" in normalized:
         params["platform"] = "ronghui"
     return {"params": params}
+
+
+def business_operations_request_from_text(
+    text: str,
+    *,
+    today: dt.date,
+) -> dict[str, Any] | None:
+    """Recognize the fixed operating-summary intent and reuse finance's closed dates."""
+
+    normalized = str(text or "").strip()
+    if not BUSINESS_OPERATIONS_INTENT_RE.search(normalized):
+        return None
+    # The finance parser owns all date, write-intent, source, and period rules.
+    # Appending its intent token only selects that existing closed parser.
+    return business_finance_request_from_text(f"{normalized} 财务", today=today)
 
 
 def _extract_date_params(text: str) -> dict[str, str]:
@@ -730,6 +746,8 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 def format_tool_reply(tool_name: str, result: dict[str, Any]) -> str:
     if tool_name == "query_business_finance":
         return format_business_finance_reply(result)
+    if tool_name == "query_automation_operations":
+        return format_automation_operations_reply(result)
     if tool_name == "track_waybill":
         return format_track_waybill_reply(result)
     if tool_name == "get_price":
@@ -1971,6 +1989,110 @@ def format_business_finance_reply(result: dict[str, Any]) -> str:
             lines.append("提示：存在待分类费用，净变动不能解释为利润。")
     lines.append(f"数据覆盖至：{payload['source']['data_through_date']}")
     return "\n".join(lines)
+
+
+def _validated_automation_operations_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    payload = result.get("data")
+    if not isinstance(payload, dict) or payload.get("query_type") != "automation_operations":
+        return None
+    period = payload.get("period")
+    commands = payload.get("commands")
+    runs = payload.get("runs")
+    freshness = payload.get("freshness")
+    if (
+        payload.get("availability") not in {"DATA", "NO_DATA"}
+        or not isinstance(period, dict)
+        or not isinstance(commands, dict)
+        or not isinstance(runs, dict)
+        or not isinstance(freshness, dict)
+    ):
+        return None
+    try:
+        start = dt.date.fromisoformat(period.get("start_date"))
+        end = dt.date.fromisoformat(period.get("end_date"))
+    except (TypeError, ValueError):
+        return None
+    if start > end:
+        return None
+    for section in (commands, runs):
+        counts = section.get("status_counts")
+        total = section.get("total")
+        if (
+            not isinstance(counts, dict)
+            or isinstance(total, bool)
+            or not isinstance(total, int)
+            or total < 0
+            or any(
+                not isinstance(name, str)
+                or not re.fullmatch(r"[A-Z_]+", name)
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+                for name, count in counts.items()
+            )
+        ):
+            return None
+        if sum(counts.values()) != total:
+            return None
+    success_rate = runs.get("success_rate")
+    if success_rate is not None:
+        if (
+            not isinstance(success_rate, dict)
+            or set(success_rate) != {"completed_runs", "terminal_runs", "value"}
+            or not isinstance(success_rate["completed_runs"], int)
+            or not isinstance(success_rate["terminal_runs"], int)
+            or not isinstance(success_rate["value"], str)
+            or not re.fullmatch(r"0\.\d{4}|1\.0000", success_rate["value"])
+            or success_rate["terminal_runs"] <= 0
+            or not 0 <= success_rate["completed_runs"] <= success_rate["terminal_runs"]
+        ):
+            return None
+    for value in freshness.values():
+        if value is not None and (not isinstance(value, str) or len(value) > 40):
+            return None
+    return payload
+
+
+def format_automation_operations_reply(result: dict[str, Any]) -> str:
+    if not isinstance(result, dict) or not result.get("success", False):
+        return "经营运行数据查询失败，暂不提供状态统计。"
+    payload = _validated_automation_operations_payload(result)
+    if payload is None:
+        return "经营运行数据结果校验失败，暂不提供状态统计。"
+    period = payload["period"]
+    title = period["start_date"] if period["start_date"] == period["end_date"] else f"{period['start_date']} 至 {period['end_date']}"
+    lines = [f"自动化运行情况（{title}）"]
+    if payload["availability"] == "NO_DATA":
+        return "\n".join(lines + ["该期间没有已持久化的命令或运行记录。"])
+    for label, section in (("命令", payload["commands"]), ("运行", payload["runs"])):
+        counts = section["status_counts"]
+        detail = "、".join(f"{status} {count}" for status, count in sorted(counts.items())) or "无"
+        lines.append(f"{label}：{section['total']} 条（{detail}）")
+    rate = payload["runs"]["success_rate"]
+    if rate is None:
+        lines.append("终态成功率：暂无终态运行，无法计算。")
+    else:
+        lines.append(f"终态成功率：{rate['value']}（完成 {rate['completed_runs']} / 终态 {rate['terminal_runs']}）")
+    freshness = payload["freshness"]
+    if freshness.get("latest_command_requested_at"):
+        lines.append(f"最新命令请求：{freshness['latest_command_requested_at']}")
+    if freshness.get("latest_run_updated_at"):
+        lines.append(f"最新运行更新：{freshness['latest_run_updated_at']}")
+    return "\n".join(lines)
+
+
+def format_business_operations_summary_reply(finance_result: dict[str, Any], operations_result: dict[str, Any]) -> str:
+    """Compose two verified read results without inventing customer or anomaly metrics."""
+
+    return "\n".join(
+        (
+            "经营摘要",
+            format_business_finance_reply(finance_result),
+            format_automation_operations_reply(operations_result),
+            "客户收入维度：当前没有可信口径，无法提供。",
+            "异常历史：当前没有可信历史数据，无法提供。",
+        )
+    )
 
 
 def _pickup_price_order() -> tuple[str, ...]:

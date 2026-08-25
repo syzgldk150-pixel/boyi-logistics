@@ -301,6 +301,26 @@ class AuthServiceMixin:
                 },
             )
             return
+        navigation_provider = getattr(self, "_business_module_navigation", None)
+        available_routes = (
+            {item["route"] for item in navigation_provider()}
+            if callable(navigation_provider)
+            else set(routes)
+        )
+        if any(route not in available_routes for route in routes):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "data": None,
+                    "error": {
+                        "code": "MOBILE_NAVIGATION_MODULE_UNAVAILABLE",
+                        "message": "移动底栏包含当前不可用的模块。",
+                    },
+                },
+            )
+            return
 
         user_id = int(user["id"])
         stored_user = self.repository.get_admin_user(user_id)

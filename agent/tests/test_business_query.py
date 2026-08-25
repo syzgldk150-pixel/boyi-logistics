@@ -10,10 +10,19 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from agent.business_query import BusinessFinanceQueryService, BusinessQueryError
+from agent.business_query import (
+    AutomationOperationsQueryService,
+    BusinessFinanceQueryService,
+    BusinessQueryError,
+    MySQLAutomationOperationsRepository,
+    _china_day_bounds,
+)
 from agent.core import AgentCore
 from agent.direct_tool_router import (
     business_finance_request_from_text,
+    business_operations_request_from_text,
+    format_automation_operations_reply,
+    format_business_operations_summary_reply,
     format_business_finance_reply,
 )
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
@@ -41,6 +50,26 @@ class _FinanceRepository:
 
     def get_business_summary(self, query):
         self.queries.append(query)
+        if self.error is not None:
+            raise self.error
+        return deepcopy(self.result)
+
+
+class _OperationsRepository:
+    def __init__(self, result=None, error: Exception | None = None) -> None:
+        self.result = result if result is not None else {
+            "command_status_counts": {"ACCEPTED": 3, "REJECTED": 1},
+            "run_status_counts": {"COMPLETED": 2, "FAILED_TERMINAL": 1, "RUNNING": 1},
+            "freshness": {
+                "latest_command_requested_at": "2026-08-25 10:00:00",
+                "latest_run_updated_at": "2026-08-25 10:01:00",
+            },
+        }
+        self.error = error
+        self.queries = []
+
+    def get_operations_summary(self, *, start_date, end_date):
+        self.queries.append((start_date, end_date))
         if self.error is not None:
             raise self.error
         return deepcopy(self.result)
@@ -88,6 +117,100 @@ def _finance_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+class AutomationOperationsQueryTests(unittest.TestCase):
+    def test_china_business_day_uses_utc_naive_mysql_bounds(self):
+        start, end = _china_day_bounds(dt.date(2026, 8, 25), dt.date(2026, 8, 25))
+        self.assertEqual(start, dt.datetime(2026, 8, 24, 16, 0))
+        self.assertEqual(end, dt.datetime(2026, 8, 25, 16, 0))
+
+    def test_mysql_operations_aggregates_share_one_read_only_snapshot(self):
+        class Cursor:
+            description = (("status",), ("count",))
+
+            def __init__(self, connection): self.connection = connection
+            def execute(self, statement, params=()): self.connection.calls.append((statement, params))
+            def fetchall(self):
+                statement = self.connection.calls[-1][0]
+                if "agent_commands" in statement and "GROUP BY" in statement: return [{"status": "ACCEPTED", "count": 1}]
+                if "agent_runs" in statement and "GROUP BY" in statement: return [{"status": "COMPLETED", "count": 1}]
+                return [{"latest_command_requested_at": dt.datetime(2026, 8, 25, 9), "latest_run_updated_at": dt.datetime(2026, 8, 25, 10)}]
+            def close(self): pass
+
+        class Connection:
+            def __init__(self): self.calls = []
+            def cursor(self): return Cursor(self)
+            def close(self): pass
+
+        connection = Connection()
+        raw = MySQLAutomationOperationsRepository(lambda: connection).get_operations_summary(
+            start_date=dt.date(2026, 8, 25), end_date=dt.date(2026, 8, 25)
+        )
+        self.assertEqual(connection.calls[0][0], "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        self.assertEqual(connection.calls[1][1], (dt.datetime(2026, 8, 24, 16), dt.datetime(2026, 8, 25, 16)))
+        self.assertEqual(raw["command_status_counts"], {"ACCEPTED": 1})
+
+    def test_closed_date_range_returns_actual_status_counts_success_rate_and_freshness(self):
+        repository = _OperationsRepository()
+        result = AutomationOperationsQueryService(repository).run(
+            {"start_date": "2026-08-01", "end_date": "2026-08-25"}
+        )
+
+        self.assertEqual(result["commands"]["status_counts"], {"ACCEPTED": 3, "REJECTED": 1})
+        self.assertEqual(result["runs"]["success_rate"], {"completed_runs": 2, "terminal_runs": 3, "value": "0.6667"})
+        self.assertEqual(result["freshness"]["latest_run_updated_at"], "2026-08-25 10:01:00Z")
+        self.assertEqual(repository.queries, [(dt.date(2026, 8, 1), dt.date(2026, 8, 25))])
+
+    def test_operations_query_rejects_extra_fields_and_fails_explicitly_when_unavailable(self):
+        with self.assertRaises(BusinessQueryError) as invalid:
+            AutomationOperationsQueryService(_OperationsRepository()).run(
+                {"start_date": "2026-08-01", "end_date": "2026-08-25", "sql": "SELECT 1"}
+            )
+        self.assertEqual(invalid.exception.code, "AUTOMATION_OPERATIONS_INVALID")
+        with self.assertRaises(BusinessQueryError) as unavailable:
+            AutomationOperationsQueryService(_OperationsRepository(error=RuntimeError("database unavailable"))).run(
+                {"start_date": "2026-08-01", "end_date": "2026-08-25"}
+            )
+        self.assertEqual(unavailable.exception.code, "AUTOMATION_OPERATIONS_UNAVAILABLE")
+
+    def test_operations_formatter_does_not_invent_terminal_success_or_freshness(self):
+        reply = format_automation_operations_reply(
+            {
+                "success": True,
+                "data": AutomationOperationsQueryService(_OperationsRepository()).run(
+                    {"start_date": "2026-08-01", "end_date": "2026-08-25"}
+                ),
+            }
+        )
+        self.assertIn("终态成功率：0.6667", reply)
+        self.assertIn("最新命令请求：2026-08-25 10:00:00Z", reply)
+
+    def test_operations_direct_runner_is_registered_tool_contract_compatible(self):
+        catalog = ToolRegistry()
+        service = AutomationOperationsQueryService(_OperationsRepository())
+        step = PlanStep(
+            step_key="automation-operations-query",
+            tool_name="query_automation_operations",
+            tool_version="1.0.0",
+            operation_type=OperationType.READ,
+            arguments={"start_date": "2026-08-01", "end_date": "2026-08-25"},
+            account_id=None,
+            depends_on=(),
+            idempotency_key="automation-operations-query-1",
+            expected_evidence=(),
+            postconditions=({"name": "authoritative_result_returned"},),
+            risk_level=RiskLevel.LOW,
+            requires_approval=False,
+        )
+        result = asyncio.run(
+            RegisteredToolExecutionAdapter(
+                catalog=catalog, executor=object(), direct_runners={"query_automation_operations": service.run}
+            ).execute_step(step, run_id="run-operations", step_id="step-operations", execution_context={"source": "console"})
+        )
+        outcome = ResultVerifier().verify(step, result, catalog.get_capability("query_automation_operations"))
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertTrue(outcome.accepted)
 
 
 class BusinessFinanceQueryTests(unittest.TestCase):
@@ -554,6 +677,40 @@ class BusinessFinanceQueryTests(unittest.TestCase):
                 self.assertIn("没有财务查询权限", result["reply"])
                 self.assertEqual(result["executed_tools"], [])
         core.execute_tool.assert_not_awaited()
+
+    def test_operating_summary_is_fixed_route_with_finance_dates_and_bound_feishu_admin(self):
+        request = business_operations_request_from_text("查融辉本月经营情况", today=dt.date(2026, 8, 25))
+        self.assertEqual(request, {"params": {"start_date": "2026-08-01", "end_date": "2026-08-25", "platform": "ronghui"}})
+
+        class _Memory:
+            def get_or_create_conversation(self, _user_id, conversation_id): return conversation_id or "conv-operations"
+            def get_recent_messages(self, *_args, **_kwargs): return []
+            def search_knowledge(self, *_args, **_kwargs): return []
+            def save_message(self, *_args, **_kwargs): return 1
+
+        core = AgentCore(today_provider=lambda: dt.date(2026, 8, 25))
+        core.memory = _Memory()
+        core.execute_tool = AsyncMock(side_effect=[
+            {"success": True, "data": _finance_payload()},
+            {"success": True, "data": AutomationOperationsQueryService(_OperationsRepository()).run({"start_date": "2026-08-01", "end_date": "2026-08-25"})},
+        ])
+        actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",), authenticated_by="feishu_admin_binding")
+        result = asyncio.run(core.handle_message("查融辉本月经营摘要", user_id="bound-admin", actor=actor, source="feishu", request_id="event-operations-1"))
+
+        self.assertEqual([item["tool_name"] for item in result["executed_tools"]], ["query_business_finance", "query_automation_operations"])
+        self.assertEqual(result["executed_tools"][0]["params"]["platform"], "ronghui")
+        self.assertEqual(result["executed_tools"][1]["params"], {"start_date": "2026-08-01", "end_date": "2026-08-25"})
+        self.assertIn("客户收入维度：当前没有可信口径，无法提供。", result["reply"])
+        self.assertIn("异常历史：当前没有可信历史数据，无法提供。", result["reply"])
+        self.assertIn("净变动不能解释为利润", result["reply"])
+
+    def test_operating_summary_keeps_finance_amounts_closed_when_finance_is_incomplete(self):
+        reply = format_business_operations_summary_reply(
+            {"success": False, "error_code": "BUSINESS_QUERY_DATA_INCOMPLETE"},
+            {"success": True, "data": AutomationOperationsQueryService(_OperationsRepository()).run({"start_date": "2026-08-01", "end_date": "2026-08-25"})},
+        )
+        self.assertIn("暂不提供金额", reply)
+        self.assertNotIn("¥", reply)
 
     def test_finance_capability_remains_hidden_from_llm_catalog(self):
         catalog = ToolRegistry()

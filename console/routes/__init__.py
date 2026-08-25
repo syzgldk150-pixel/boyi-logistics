@@ -12,6 +12,7 @@ from typing import Any
 from . import (
     auth,
     automation,
+    business_modules,
     control_plane,
     customer_service,
     finance,
@@ -28,6 +29,7 @@ class ConsoleRouteDispatcher:
 
     _ROUTERS = (
         auth,
+        business_modules,
         control_plane,
         llm_settings,
         automation,

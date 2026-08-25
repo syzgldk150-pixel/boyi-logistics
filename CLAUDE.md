@@ -84,3 +84,9 @@
 - `/health` 只返回存活状态和 `release_sha`；组件、实例和工具状态只在鉴权后的 `/internal/v1/health` 返回。
 - `/internal/v1/*` 使用唯一的 `ok/data/error` 响应契约；Console 调用 Agent 必须使用该接口族。旧内部接口只为兼容保留、继续鉴权并标记 deprecated，不得新增调用方。
 - 日志、工具执行输出、MySQL 工具日志、回单审计和异常文本统一使用 `shared/redaction.py`，新增记录入口不得自建较弱的局部脱敏规则。
+
+## 业务模块与经营只读入口
+
+- `shared/business_modules.py` 是 14 个 Console 菜单身份的唯一不可变目录；`027_business_module_lifecycle.sql` 只保存生命周期与不可变审计。可管理模块的菜单、页面/API 由已签名 Agent 状态投影关闭失败，核心模块不可停用。
+- `CommandGateway` 在同一 UoW 生命周期锁中拒绝不可用可管理模块的新普通/项目化命令；项目化命令只从已提交签名治理锚点解析核心工具，已受理 Run 可继续。
+- `query_automation_operations` 只读聚合 `agent_commands` / `agent_runs` 固定日期区间的状态与新鲜度；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，金额不完整不输出金额，也不推断客户收入或异常历史。

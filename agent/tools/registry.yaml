@@ -409,6 +409,104 @@ tools:
     timeout: 30
     heavy: false
 
+  - name: query_automation_operations
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: true
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      mode: none
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: true
+      max_attempts: 3
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_result_returned
+    description: "查询主库中已持久化命令和运行的状态计数、终态成功率与新鲜度；不接受 SQL 或任意筛选条件"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        start_date:
+          type: string
+          minLength: 10
+          maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        end_date:
+          type: string
+          minLength: 10
+          maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+      required: [start_date, end_date]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: false
+          properties:
+            query_type:
+              type: string
+              enum: [automation_operations]
+            availability:
+              type: string
+              enum: [DATA, NO_DATA]
+            period:
+              type: object
+              additionalProperties: false
+              properties:
+                start_date: {type: string}
+                end_date: {type: string}
+              required: [start_date, end_date]
+            commands:
+              type: object
+              additionalProperties: true
+            runs:
+              type: object
+              additionalProperties: true
+            freshness:
+              type: object
+              additionalProperties: false
+              properties:
+                latest_command_requested_at:
+                  oneOf: [{type: string}, {type: "null"}]
+                latest_run_updated_at:
+                  oneOf: [{type: string}, {type: "null"}]
+              required: [latest_command_requested_at, latest_run_updated_at]
+          required: [query_type, availability, period, commands, runs, freshness]
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items: {type: string}
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/automation_operations_query_tool.py
+    timeout: 30
+    heavy: false
+
   - name: ocr_recognize
     version: "1.0.0"
     operation_type: compute
