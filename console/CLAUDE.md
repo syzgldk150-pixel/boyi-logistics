@@ -178,7 +178,7 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 
 ## 移动端导航与视觉壳层
 
-- 唯一导航目录：`navigation.py`。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用其中路由，不得维护模板内副本。
+- 唯一菜单注册目录：`navigation.py`。现有入口以不可变 `ConsoleMenuRegistration` 声明稳定 `menu_id`、路由、文案、图标和分区，再投影为兼容的 `CONSOLE_NAVIGATION`；`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用该投影，不得维护模板内副本。菜单注册不承载权限或运行状态，二者由独立治理合同处理。
 - 系统区固定顺序为“智能模型 → 事项中心 → 系统管理”，移动端用户偏好顺序不变。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
