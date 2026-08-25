@@ -165,6 +165,23 @@ async def start_feishu_ws(agent_core):
         agent_core.set_feishu_connected(False)
         return
 
+    # Importing lark-oapi cold loads a large generated model tree while holding
+    # the interpreter lock.  Complete that work before FastAPI reports startup
+    # readiness so the release identity probe cannot be starved by the
+    # background WebSocket thread.
+    try:
+        await asyncio.to_thread(_load_ws_dependencies)
+    except ImportError:
+        logger.error("lark-oapi 未安装，无法启动飞书连接")
+        agent_core.set_feishu_connected(False)
+        _release_ws_lease()
+        return
+    except Exception as exc:
+        logger.error("飞书 WebSocket 依赖加载失败: %s", type(exc).__name__)
+        agent_core.set_feishu_connected(False)
+        _release_ws_lease()
+        return
+
     _running = True
     _ws_thread = threading.Thread(
         target=_run_ws_client,
@@ -206,6 +223,17 @@ def _set_feishu_connected_threadsafe(connected: bool):
         _set_feishu_connected(connected)
 
 
+def _load_ws_dependencies():
+    """Load the SDK and handlers before service startup is declared ready."""
+
+    import lark_oapi as lark
+    import lark_oapi.ws.client as ws_client_module
+
+    from feishu.message_handler import handle_bot_menu, handle_im_message
+
+    return lark, ws_client_module, handle_bot_menu, handle_im_message
+
+
 def _run_ws_client(app_id: str, app_secret: str):
     """在独立线程里启动 lark-oapi，避免复用 uvicorn 主事件循环。"""
     global _ws_client, _running
@@ -214,10 +242,9 @@ def _run_ws_client(app_id: str, app_secret: str):
     asyncio.set_event_loop(loop)
 
     try:
-        import lark_oapi as lark
-        import lark_oapi.ws.client as ws_client_module
-
-        from feishu.message_handler import handle_bot_menu, handle_im_message
+        lark, ws_client_module, handle_bot_menu, handle_im_message = (
+            _load_ws_dependencies()
+        )
 
         # lark_oapi.ws.client 在 import 时会缓存模块级事件循环；
         # 这里强制切到当前线程的新 loop，避免命中 uvicorn 主循环。
