@@ -9,7 +9,7 @@ updated: 2026-08-25
 
 # 业务模块生命周期 Lite
 
-`shared/business_modules.py` 是 14 个当前 Console 菜单身份的唯一代码目录。它不从数据库、插件、ZIP 或动态导入创建模块；数据库只保存该固定目录的安装生命周期。目录还声明页面/API 前缀和已存在的内部扩展身份，Console 以它作为导航与路由门禁合同。
+`shared/business_modules.py` 是 14 个可生命周期管理的 Console 菜单身份的唯一代码目录。它不从数据库、插件、ZIP 或动态导入创建模块；数据库只保存该固定目录的安装生命周期。`/settings/modules` 是不进入此目录的 super_admin 控制平面导航入口。目录还声明页面/API 前缀和已存在的内部扩展身份，Console 以它作为导航与路由门禁合同。
 
 迁移 `027_business_module_lifecycle.sql` 明确把 14 个模块基线写为 `ENABLED`，版本均为 `1.0.0`。MySQL DDL 可能在失败部署中单独提交，因此两个表使用 `CREATE TABLE IF NOT EXISTS`；`scripts/run_migrations.py` 显式加载同目录的 `scripts/business_module_migration_contract.py`，在 seed 前精确校验表、列、索引、约束和外键，发现已存在表的结构漂移即显式失败。seed 仅补齐缺少的模块行，绝不覆盖已有生命周期状态。目录版本是当前代码目标版本，`installed_version` 是已安装生命周期版本；二者不同表示可升级，不是代码目录损坏。升级同一事务写入两个版本并追加审计事件。
 

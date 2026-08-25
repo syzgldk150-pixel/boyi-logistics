@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from console.navigation import CONSOLE_MENU_REGISTRATIONS
+from console.navigation import CONSOLE_MENU_REGISTRATIONS, CONSOLE_NAVIGATION_REGISTRATIONS
 from shared.service_identity import CONSOLE_ADMIN_ROLES
 
 
@@ -79,8 +79,9 @@ CONSOLE_PERMISSION_REGISTRATIONS = register_console_permissions(
         ConsolePermissionRegistration("console.menu.llm_settings.view", "llm_settings", "查看智能模型", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.work_items.view", "work_items", "查看事项中心", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.system_settings.view", "system_settings", "查看系统管理", _ALL_ADMIN_ROLES),
+        ConsolePermissionRegistration("console.menu.module_manager.view", "module_manager", "查看模块管理", ("super_admin",)),
     ),
-    known_menu_ids=tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS),
+    known_menu_ids=tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS),
 )
 
 CONSOLE_PERMISSION_BY_ID = MappingProxyType(

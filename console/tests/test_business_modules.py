@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from console.services.business_modules import BusinessModulesServiceMixin
+from shared.business_modules import BUSINESS_MODULE_CATALOG
 
 
 class _Console(BusinessModulesServiceMixin):
@@ -32,9 +33,17 @@ class _Console(BusinessModulesServiceMixin):
 
 
 class _Handler:
-    def __init__(self, body: dict[str, Any] | None = None, *, role: str = "super_admin", origin: str = "http://console") -> None:
+    def __init__(
+        self,
+        body: dict[str, Any] | None = None,
+        *,
+        role: str = "super_admin",
+        user_id: int = 1,
+        legacy: bool = False,
+        origin: str = "http://console",
+    ) -> None:
         self.body = body or {}
-        self.current_admin_user = {"id": 1, "role": role, "username": "owner", "is_legacy_basic_auth": False}
+        self.current_admin_user = {"id": user_id, "role": role, "username": "owner", "is_legacy_basic_auth": legacy}
         self.headers = {"Host": "console", "Origin": origin}
 
 
@@ -58,6 +67,54 @@ def test_navigation_fails_closed_for_optional_status_outage_and_keeps_core() -> 
     routes = {item["route"] for item in app._business_module_navigation()}
     assert "/" in routes and "/automations" in routes
     assert "/receipts" not in routes
+
+
+def test_module_manager_navigation_is_super_admin_only_and_status_independent(
+    monkeypatch,
+) -> None:
+    super_admin = {"id": 1, "role": "super_admin", "is_legacy_basic_auth": False}
+    ordinary_admin = {"id": 2, "role": "admin", "is_legacy_basic_auth": False}
+    legacy_super_admin = {"id": 3, "role": "super_admin", "is_legacy_basic_auth": True}
+    app = _Console(_rows())
+
+    monkeypatch.setattr(
+        "console.services.business_modules.current_admin_user",
+        lambda: super_admin,
+    )
+    assert "/settings/modules" in {
+        item["route"] for item in app._business_module_navigation()
+    }
+    assert "/settings/modules" in {item["route"] for item in app._business_module_navigation(super_admin)}
+    for user in (ordinary_admin, legacy_super_admin, None, {"id": 0, "role": "super_admin"}):
+        assert "/settings/modules" not in {
+            item["route"] for item in app._business_module_navigation(user)
+        }
+
+    outage_app = _Console({"ok": False})
+    assert "/settings/modules" in {
+        item["route"] for item in outage_app._business_module_navigation(super_admin)
+    }
+    assert "/settings/modules" not in {
+        item["route"] for item in outage_app._business_module_navigation(ordinary_admin)
+    }
+    assert "/settings/modules" not in app._business_module_mobile_navigation_for_user(
+        ordinary_admin
+    )
+    assert len(BUSINESS_MODULE_CATALOG) == 14
+
+
+def test_super_admin_mobile_navigation_uses_the_common_navigation_projection() -> None:
+    app = _Console(_rows())
+    user = {
+        "id": 1,
+        "role": "super_admin",
+        "is_legacy_basic_auth": False,
+        "ui_preferences_json": json.dumps(
+            {"mobile_bottom_nav": ["/settings/modules", "/tracking", "/automations"]}
+        ),
+    }
+
+    assert "/settings/modules" in app._business_module_mobile_navigation_for_user(user)
 
 
 def test_mobile_navigation_repairs_disabled_saved_routes() -> None:

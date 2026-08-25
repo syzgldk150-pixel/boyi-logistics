@@ -96,12 +96,34 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
     )
 )
 
+# This is a Console control-plane entry, not a fifteenth lifecycle module.
+CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS = register_console_menus(
+    (
+        ConsoleMenuRegistration("module_manager", "/settings/modules", "模块管理", "模块", "package", "system"),
+    )
+)
+CONSOLE_NAVIGATION_REGISTRATIONS = register_console_menus(
+    (*CONSOLE_MENU_REGISTRATIONS, *CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS)
+)
+
+# The existing static projection remains the fourteen lifecycle identities.
+# Request-scoped navigation adds control-plane entries after authorization.
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
     registration.to_navigation_item() for registration in CONSOLE_MENU_REGISTRATIONS
 )
+CONSOLE_CONTROL_PLANE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
+    registration.to_navigation_item() for registration in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS
+)
 
-NAVIGATION_BY_ROUTE = {item["route"]: item for item in CONSOLE_NAVIGATION}
-MOBILE_NAVIGATION_CANDIDATES = tuple(item for item in CONSOLE_NAVIGATION if item["route"] != "/")
+NAVIGATION_BY_ROUTE = {
+    registration.route: registration.to_navigation_item()
+    for registration in CONSOLE_NAVIGATION_REGISTRATIONS
+}
+MOBILE_NAVIGATION_CANDIDATES = tuple(
+    registration.to_navigation_item()
+    for registration in CONSOLE_NAVIGATION_REGISTRATIONS
+    if registration.route != "/"
+)
 MOBILE_NAVIGATION_ROUTES = frozenset(item["route"] for item in MOBILE_NAVIGATION_CANDIDATES)
 
 

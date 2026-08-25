@@ -5,13 +5,18 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from console.navigation import (
+    CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS,
     CONSOLE_MENU_REGISTRATIONS,
     CONSOLE_NAVIGATION,
+    CONSOLE_NAVIGATION_REGISTRATIONS,
     DEFAULT_MOBILE_BOTTOM_NAV,
+    MOBILE_NAVIGATION_CANDIDATES,
+    NAVIGATION_BY_ROUTE,
     ConsoleMenuRegistration,
     register_console_menus,
     validate_mobile_bottom_nav,
 )
+from shared.business_modules import BUSINESS_MODULE_CATALOG
 
 
 def _menu(menu_id: str = "example", route: str = "/example", **changes: str):
@@ -51,6 +56,26 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         set(item) == {"route", "label", "mobile_label", "icon", "section"}
         for item in CONSOLE_NAVIGATION
     )
+
+
+def test_module_manager_is_a_control_plane_registration_after_lifecycle_menus() -> None:
+    assert len(BUSINESS_MODULE_CATALOG) == 14
+    assert tuple(item.menu_id for item in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS) == (
+        "module_manager",
+    )
+    assert tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)[-2:] == (
+        "system_settings",
+        "module_manager",
+    )
+    manager = CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS[0]
+    assert manager.route == "/settings/modules"
+    assert manager.icon == "package"
+    assert manager.section == "system"
+    assert NAVIGATION_BY_ROUTE[manager.route] == manager.to_navigation_item()
+    assert "/settings/modules" in {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES}
+    assert validate_mobile_bottom_nav(
+        ("/settings/modules", "/tracking", "/automations")
+    ) == ("/settings/modules", "/tracking", "/automations")
 
 
 def test_menu_registration_is_immutable_and_freezes_input_order() -> None:
