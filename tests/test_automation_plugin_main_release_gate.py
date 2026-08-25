@@ -57,6 +57,15 @@ class _PluginRuntime:
             "generations": {"healthy": self.runnable},
         }
 
+    def health_snapshot(self) -> dict[str, Any]:
+        self.events.append("plugins-health-snapshot")
+        return {
+            "ok": self.service_ok,
+            "runnable": self.runnable,
+            "runtime_status": "READY" if self.runnable else "UNAVAILABLE",
+            "generations": {"healthy": self.runnable},
+        }
+
 
 class _HealthExecutor:
     def last_tool_info(self) -> dict[str, Any]:
@@ -254,6 +263,34 @@ def test_internal_health_accepts_plugin_execution_router_observability(
     assert response["ok"] is True
     assert response["data"]["last_tool_run"]["tool"] == "legacy-completed"
     assert response["data"]["heavy_task_lock"] is False
+
+
+def test_release_hold_plugin_health_uses_startup_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    runtime = _PluginRuntime(events)
+    monkeypatch.setattr(main, "automation_plugin_runtime", runtime)
+    monkeypatch.setattr(main, "scheduler_release_hold_requested", lambda: True)
+
+    health = main._automation_plugin_health()
+
+    assert health["ok"] is True
+    assert events == ["plugins-health-snapshot"]
+
+
+def test_running_plugin_health_remains_a_live_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    runtime = _PluginRuntime(events)
+    monkeypatch.setattr(main, "automation_plugin_runtime", runtime)
+    monkeypatch.setattr(main, "scheduler_release_hold_requested", lambda: False)
+
+    health = main._automation_plugin_health()
+
+    assert health["ok"] is True
+    assert events == ["plugins-health-checked"]
 
 
 def test_windows_worker_is_not_mounted_or_queried_in_the_current_release_scope(

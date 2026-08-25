@@ -861,6 +861,58 @@ def test_runtime_health_fails_closed_when_real_sandbox_canary_failed(monkeypatch
     assert health["sandbox"]["code"] == "PLUGIN_SANDBOX_CANARY_FAILED"
 
 
+def test_runtime_health_snapshot_never_requeries_persistence(monkeypatch) -> None:
+    class _HealthCatalog:
+        @staticmethod
+        def production_health(_expected):
+            return {"ok": True, "runnable": True, "runtime_status": "READY"}
+
+        @staticmethod
+        def excluded_persisted_automation_ids():
+            return set()
+
+    monkeypatch.setattr(
+        production_module,
+        "runtime_generation_health",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            healthy=True,
+            project_count=1,
+            committed_count=1,
+            active_lease_count=0,
+            blocked_projects={},
+        ),
+    )
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.catalog = _HealthCatalog()
+    runtime.required_first_party_ids = frozenset({"project-a"})
+    runtime.runtime_repository = object()
+    runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
+    runtime._started = True
+    runtime._sandbox_canary = SandboxCanaryResult(
+        healthy=True,
+        code="OK",
+        checked_at=datetime.now(timezone.utc),
+    )
+
+    live_health = runtime.health()
+    monkeypatch.setattr(
+        runtime.catalog,
+        "production_health",
+        lambda _expected: pytest.fail("snapshot must not query the catalog"),
+    )
+    monkeypatch.setattr(
+        production_module,
+        "runtime_generation_health",
+        lambda *_args, **_kwargs: pytest.fail("snapshot must not query generations"),
+    )
+
+    snapshot = runtime.health_snapshot()
+    snapshot["catalog"]["ok"] = False
+
+    assert live_health["ok"] is True
+    assert runtime.health_snapshot()["catalog"]["ok"] is True
+
+
 def test_runtime_reconcile_finishes_inflight_generation_then_stages_release() -> None:
     events: list[str] = []
     state = {"generation": "old-preparing"}
