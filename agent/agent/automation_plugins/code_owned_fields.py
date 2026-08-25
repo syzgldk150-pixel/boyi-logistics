@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 _FIRST_PARTY_TRUST_SOURCE = "ed25519_first_party"
@@ -68,6 +68,29 @@ _CODE_OWNED_PLAN_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
         "customer_problems_shadow",
         "sync_customer_service_problems",
     ): ("recheck_items",),
+}
+
+# These two signed releases deliberately removed execution routes that cannot
+# carry their mandatory human preview-and-confirmation contract.  Production
+# 1.0.20 projects predate that contract, so the exact source set is migrated
+# as release-owned state.  Every other source or version shape remains a hard
+# conflict in the repository upgrade gate.
+_CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
+    tuple[str, str, str, str],
+    tuple[frozenset[str], tuple[str, ...]],
+] = {
+    (
+        "self_pickup_problem_upload",
+        "self_pickup_problem_upload",
+        "1.0.20",
+        "1.0.21",
+    ): (frozenset({"console", "feishu"}), ("feishu",)),
+    (
+        "split_pending_problem_upload",
+        "split_pending_problem_upload",
+        "1.0.20",
+        "1.0.21",
+    ): (frozenset({"console", "feishu", "scheduler"}), ("feishu",)),
 }
 
 
@@ -139,6 +162,41 @@ def normalize_first_party_code_owned_config(
     ):
         normalized["_startup_catchup"] = True
     return normalized
+
+
+def normalize_first_party_code_owned_entrypoints(
+    *,
+    automation_id: str,
+    plugin_id: str,
+    current_version: str,
+    target_version: str,
+    enabled_entrypoints: Sequence[str],
+) -> tuple[str, ...] | None:
+    """Return one exact release-owned entrypoint transition, if declared.
+
+    A declared transition is accepted only from its complete historical source
+    set.  ``None`` means the generic upgrade gate remains authoritative.
+    """
+
+    transition = _CODE_OWNED_ENTRYPOINT_TRANSITIONS.get(
+        (
+            str(automation_id or "").strip(),
+            str(plugin_id or "").strip(),
+            str(current_version or "").strip(),
+            str(target_version or "").strip(),
+        )
+    )
+    if transition is None:
+        return None
+    expected_sources, target_sources = transition
+    normalized_sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
+    if (
+        any(not source for source in normalized_sources)
+        or len(normalized_sources) != len(set(normalized_sources))
+        or set(normalized_sources) != set(expected_sources)
+    ):
+        return None
+    return target_sources
 
 
 def resolve_scan_execution_phase(
