@@ -365,17 +365,46 @@ def test_canonical_rows_treats_sheet_line_endings_and_unicode_nfc_as_equivalent(
     assert expected == observed
 
 
-def test_arrive_readback_normalizes_compatibility_text_only_for_remarks() -> None:
+def test_arrive_readback_normalizes_feishu_compatibility_text_fields() -> None:
     expected = arrival._canonical_arrive_readback(
-        [["Ｘ１２３", "", "", "", "", "", "", "", "备注\u00a0ＡＢＣ"]],
-        width=9,
+        [[
+            "Ｘ１２３",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "备注\u00a0ＡＢＣ",
+            "",
+            "",
+            "",
+            "地址\u00a0ＡＢＣ",
+        ]],
+        width=13,
     )
     observed = arrival._canonical_arrive_readback(
-        [["X123", "", "", "", "", "", "", "", "备注 ABC"]],
-        width=9,
+        [[
+            "X123",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "备注 ABC",
+            "",
+            "",
+            "",
+            "地址 ABC",
+        ]],
+        width=13,
     )
 
     assert expected[0][8] == observed[0][8]
+    assert expected[0][12] == observed[0][12]
     assert expected[0][0] == "Ｘ１２３"
     assert observed[0][0] == "X123"
     assert expected != observed
