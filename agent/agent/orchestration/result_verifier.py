@@ -104,6 +104,17 @@ class ResultVerifier:
     ) -> VerificationOutcome:
         if not isinstance(raw_result, Mapping):
             return self._failure("INVALID_RESULT_CONTRACT", "Tool result must be a JSON object")
+        account_scope = capability.get("account_scope") or {}
+        account_scope_mode = (
+            str(account_scope.get("mode") or "none")
+            if isinstance(account_scope, Mapping) and "mode" in account_scope
+            else "single" if isinstance(account_scope, Mapping) and account_scope.get("required") else "optional"
+        )
+        if account_scope_mode == "none" and step.account_id:
+            return self._failure(
+                "ACCOUNT_SCOPE_MISMATCH",
+                "This tool does not accept an account binding",
+            )
         if raw_result.get("ok") is False:
             return self._classified_failure(raw_result)
         if raw_result.get("success") is False:
