@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from console.navigation import CONSOLE_MENU_REGISTRATIONS
+from console.navigation import CONSOLE_NAVIGATION_REGISTRATIONS
 from console.permission_registry import (
     CONSOLE_PERMISSION_BY_ID,
     CONSOLE_PERMISSION_BY_MENU_ID,
@@ -35,22 +35,24 @@ def _permission(
 
 
 def test_permission_registry_covers_every_registered_menu_exactly_once() -> None:
-    menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
+    navigation_menu_ids = tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)
 
-    assert tuple(item.menu_id for item in CONSOLE_PERMISSION_REGISTRATIONS) == menu_ids
-    assert set(CONSOLE_PERMISSION_BY_MENU_ID) == set(menu_ids)
+    assert tuple(item.menu_id for item in CONSOLE_PERMISSION_REGISTRATIONS) == navigation_menu_ids
+    assert set(CONSOLE_PERMISSION_BY_MENU_ID) == set(navigation_menu_ids)
     assert set(CONSOLE_PERMISSION_BY_ID) == {
-        f"console.menu.{menu_id}.view" for menu_id in menu_ids
+        f"console.menu.{menu_id}.view" for menu_id in navigation_menu_ids
     }
 
 
 def test_existing_administrator_roles_retain_all_registered_menu_views() -> None:
     assert CONSOLE_ADMIN_ROLES == frozenset({"admin", "super_admin"})
-    for role in CONSOLE_ADMIN_ROLES:
-        assert all(
-            has_console_permission(role, item.permission_id)
-            for item in CONSOLE_PERMISSION_REGISTRATIONS
-        )
+    manager_permission = "console.menu.module_manager.view"
+    assert has_console_permission("super_admin", manager_permission)
+    assert not has_console_permission("admin", manager_permission)
+    for item in CONSOLE_PERMISSION_REGISTRATIONS:
+        if item.permission_id != manager_permission:
+            assert has_console_permission("admin", item.permission_id)
+            assert has_console_permission("super_admin", item.permission_id)
 
 
 def test_unknown_or_legacy_roles_and_unknown_permissions_fail_closed() -> None:

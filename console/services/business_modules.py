@@ -9,8 +9,12 @@ from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 
 from console.app_support import *  # noqa: F403
-from console.navigation import CONSOLE_NAVIGATION
+from console.navigation import CONSOLE_CONTROL_PLANE_NAVIGATION, CONSOLE_NAVIGATION
 from shared.business_modules import BUSINESS_MODULE_BY_CODE, CORE_MODULE_CODES
+
+
+_MODULE_MANAGER_ROUTE = "/settings/modules"
+_CURRENT_REQUEST_USER = object()
 
 
 class BusinessModulesServiceMixin:
@@ -36,13 +40,52 @@ class BusinessModulesServiceMixin:
     def _invalidate_business_module_status_cache(self) -> None:
         self._business_module_status_cache = None
 
-    def _business_module_navigation(self) -> tuple[dict[str, str], ...]:
+    @staticmethod
+    def _can_see_module_manager_navigation(user: Mapping[str, Any] | None) -> bool:
+        if not isinstance(user, Mapping):
+            return False
+        try:
+            user_id = int(user.get("id") or 0)
+        except (TypeError, ValueError):
+            return False
+        return (
+            not bool(user.get("is_legacy_basic_auth"))
+            and str(user.get("role") or "") == "super_admin"
+            and user_id > 0
+        )
+
+    def _business_module_navigation(
+        self,
+        user: Mapping[str, Any] | None | object = _CURRENT_REQUEST_USER,
+    ) -> tuple[dict[str, str], ...]:
+        if user is _CURRENT_REQUEST_USER:
+            user = current_admin_user()
+        module_manager_visible = self._can_see_module_manager_navigation(user)
+        navigation = (*CONSOLE_NAVIGATION, *CONSOLE_CONTROL_PLANE_NAVIGATION)
         rows = self._business_module_rows()
         if rows is None:
-            return tuple(item for item in CONSOLE_NAVIGATION if item["route"] == "/" or self._module_code_for_route(item["route"]) in CORE_MODULE_CODES)
+            return tuple(
+                item
+                for item in navigation
+                if (
+                    item["route"] == _MODULE_MANAGER_ROUTE
+                    and module_manager_visible
+                )
+                or item["route"] == "/"
+                or self._module_code_for_route(item["route"]) in CORE_MODULE_CODES
+            )
         return tuple(
-            item for item in CONSOLE_NAVIGATION
-            if str((rows.get(self._module_code_for_route(item["route"])) or {}).get("lifecycle_state")) == "ENABLED"
+            item for item in navigation
+            if (
+                item["route"] == _MODULE_MANAGER_ROUTE
+                and module_manager_visible
+            )
+            or str(
+                (rows.get(self._module_code_for_route(item["route"])) or {}).get(
+                    "lifecycle_state"
+                )
+            )
+            == "ENABLED"
         )
 
     def _business_module_mobile_nav(self, user: Mapping[str, Any] | None, navigation: list[dict[str, str]]) -> tuple[str, ...]:
@@ -70,7 +113,7 @@ class BusinessModulesServiceMixin:
 
         return self._business_module_mobile_nav(
             user,
-            list(self._business_module_navigation()),
+            list(self._business_module_navigation(user)),
         )
 
     @staticmethod
@@ -132,7 +175,7 @@ class BusinessModulesServiceMixin:
         return BusinessModulesServiceMixin._module_code_for_normalized_request_path(normalized)
 
     def _reject_unavailable_business_module_request(self, handler: BaseHTTPRequestHandler, path: str) -> bool:
-        if path == "/settings/modules" or path.startswith("/settings/modules/"):
+        if path == _MODULE_MANAGER_ROUTE or path.startswith(_MODULE_MANAGER_ROUTE + "/"):
             return False
         normalized = self._normalized_module_request_path(path)
         if normalized is None:

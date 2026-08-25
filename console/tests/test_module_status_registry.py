@@ -12,7 +12,7 @@ from console.module_status_registry import (
     register_console_module_statuses,
 )
 from console.navigation import CONSOLE_MENU_REGISTRATIONS
-from console.permission_registry import CONSOLE_PERMISSION_BY_MENU_ID
+from console.permission_registry import CONSOLE_PERMISSION_BY_ID, CONSOLE_PERMISSION_BY_MENU_ID
 from console.services.documents import DocumentServiceMixin
 
 
@@ -23,12 +23,15 @@ def _status(
     return ConsoleModuleStatusRegistration(module_id, code_status)
 
 
-def test_status_registry_preserves_exact_menu_and_permission_identity_order() -> None:
-    menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
+def test_status_registry_preserves_lifecycle_coverage_and_excludes_control_plane_menu() -> None:
+    lifecycle_menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
 
-    assert tuple(item.module_id for item in CONSOLE_MODULE_STATUS_REGISTRATIONS) == menu_ids
-    assert tuple(CONSOLE_MODULE_STATUS_BY_ID) == menu_ids
-    assert set(CONSOLE_PERMISSION_BY_MENU_ID) == set(menu_ids)
+    assert tuple(item.module_id for item in CONSOLE_MODULE_STATUS_REGISTRATIONS) == lifecycle_menu_ids
+    assert tuple(CONSOLE_MODULE_STATUS_BY_ID) == lifecycle_menu_ids
+    assert set(lifecycle_menu_ids).issubset(CONSOLE_PERMISSION_BY_MENU_ID)
+    assert "module_manager" in CONSOLE_PERMISSION_BY_MENU_ID
+    assert "console.menu.module_manager.view" in CONSOLE_PERMISSION_BY_ID
+    assert "module_manager" not in CONSOLE_MODULE_STATUS_BY_ID
     assert all(
         item.code_status == CODE_REGISTERED
         for item in CONSOLE_MODULE_STATUS_REGISTRATIONS
