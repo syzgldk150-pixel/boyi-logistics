@@ -7,6 +7,7 @@ caller of the governed execution port.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Optional
 
 from agent.direct_tool_router import (
+    business_finance_request_from_text,
     direct_tool_request_from_text,
     format_tool_reply,
     parse_login_send_code_session,
@@ -56,6 +58,7 @@ class AgentCore:
         self,
         *,
         direct_tool_runners: Mapping[str, Callable[[dict], dict]] | None = None,
+        today_provider: Callable[[], dt.date] | None = None,
     ) -> None:
         self.llm = LLMClient()
         self.registry = ToolRegistry()
@@ -68,6 +71,9 @@ class AgentCore:
         # Kept only for composition-root compatibility.  Runners are injected
         # into RegisteredToolExecutionAdapter, never invoked from this facade.
         self._direct_tool_runners = dict(direct_tool_runners or {})
+        self._today_provider = today_provider or (
+            lambda: dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()
+        )
         self._command_gateway: Any | None = None
         self._orchestration_repository: Any | None = None
         self._workflow_runner: Any | None = None
@@ -237,6 +243,51 @@ class AgentCore:
                 "reply": final_content,
                 "conversation_id": conv_id,
                 "duration_s": round(time.monotonic() - started, 2),
+            }
+
+        finance_request = business_finance_request_from_text(
+            message,
+            today=self._today_provider(),
+        )
+        if finance_request is not None:
+            fixed_reply = finance_request.get("reply")
+            if fixed_reply:
+                final_content = str(fixed_reply)
+                executed_tools: list[dict[str, Any]] = []
+            elif not self._can_query_business_finance(
+                trusted_actor,
+                source=source,
+            ):
+                final_content = "你没有财务查询权限，请联系管理员完成飞书账号绑定。"
+                executed_tools = []
+            else:
+                params = dict(finance_request["params"])
+                tool_result = await self.execute_tool(
+                    "query_business_finance",
+                    params,
+                    actor=trusted_actor,
+                    source=source,
+                    idempotency_key=self._entry_idempotency_key(
+                        trusted_actor,
+                        source,
+                        "chat",
+                        browser_request_id,
+                    ),
+                )
+                final_content = format_tool_reply("query_business_finance", tool_result)
+                executed_tools = [
+                    {
+                        "tool_name": "query_business_finance",
+                        "params": params,
+                        "result": tool_result,
+                    }
+                ]
+            self._save_assistant_message(conv_id, final_content)
+            return {
+                "reply": final_content,
+                "conversation_id": conv_id,
+                "duration_s": round(time.monotonic() - started, 2),
+                "executed_tools": executed_tools,
             }
 
         tools = self.registry.get_openai_tools() or None
@@ -579,6 +630,16 @@ class AgentCore:
             self.memory.save_message(conversation_id, "assistant", content)
         except Exception:
             pass
+
+    @staticmethod
+    def _can_query_business_finance(actor: Actor, *, source: str) -> bool:
+        has_admin_role = bool({"admin", "super_admin"}.intersection(actor.roles))
+        return (
+            source == "feishu"
+            and actor.actor_type is ActorType.FEISHU_USER
+            and actor.authenticated_by == "feishu_admin_binding"
+            and has_admin_role
+        )
 
 
 def _waiting_message(status: str) -> str:

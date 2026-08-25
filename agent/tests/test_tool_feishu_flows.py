@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from _tms_runtime_test_support import *  # noqa: F403
+from agent.orchestration.models import Actor, ActorType
 
 
 class _FakeAutomationProjectEntrypoints:
@@ -81,6 +82,59 @@ class ToolFeishuFlowTests(unittest.TestCase):
         request = direct_tool_router.direct_tool_request_from_text("查扫描记录")
 
         self.assertIsNone(request)
+
+    def test_feishu_finance_text_resolves_bound_admin_before_agent_core(self):
+        calls: dict[str, Any] = {}
+        replies: list[str] = []
+
+        class _ApprovalRuntime:
+            def handle_text(self, *_args):
+                return None
+
+            def resolve_actor(self, open_id):
+                calls["resolved_open_id"] = open_id
+                return Actor(
+                    ActorType.FEISHU_USER,
+                    open_id,
+                    roles=("admin", "super_admin"),
+                    authenticated_by="feishu_admin_binding",
+                )
+
+        class _FakeAgent:
+            async def handle_message(self, **kwargs):
+                calls["handle_message"] = kwargs
+                return {"reply": "财务查询已由 AgentCore 处理"}
+
+        async def _fake_reply_text(
+            _chat_id,
+            text,
+            receive_id_type="chat_id",
+            *,
+            reply_type="text",
+        ):
+            del receive_id_type, reply_type
+            replies.append(text)
+
+        with (
+            patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+            patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", _ApprovalRuntime()),
+            patch("feishu.message_handler.get_pending", return_value=None),
+            patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
+        ):
+            asyncio.run(
+                message_handler._process_and_reply(
+                    "今天财务收入",
+                    "bound-open-id",
+                    "chat-1",
+                )
+            )
+
+        self.assertEqual(calls["resolved_open_id"], "bound-open-id")
+        submitted = calls["handle_message"]
+        self.assertEqual(submitted["source"], "feishu")
+        self.assertEqual(submitted["request_id"], "legacy-flow-event")
+        self.assertEqual(submitted["actor"].authenticated_by, "feishu_admin_binding")
+        self.assertIn("财务查询已由 AgentCore 处理", replies[-1])
 
     def test_feishu_menu_scan_action_runs_scan_sync_tool(self):
         for event_key in ("扫描", "scan", "sync_scan_codes"):
