@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from types import MappingProxyType
 from typing import Any
 
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
@@ -38,24 +40,92 @@ SPLIT_PENDING_PROBLEM_UPLOAD_RE = re.compile(
 )
 SPLIT_PENDING_PROBLEM_LABEL = "分批差错及问题件"
 
-# These aliases identify one explicit migration instance route. They are not
-# plugin or tool selectors: the Feishu adapter resolves the alias through the
-# committed ``feishu_route`` resource and rejects missing or duplicate owners.
-# A repeated installation receives a different administrator-configured alias.
-FIRST_PARTY_FEISHU_ROUTE_KEYS = {
-    "r7_arrival_checkin": "builtin.r7_arrival_checkin",
-    "r7_departure_checkin": "builtin.r7_departure_checkin",
-    "sync_scan_codes": "builtin.scan_codes",
-    "sync_arrive_list": "builtin.arrive_list",
-    "sync_daily_send_orders": "builtin.send_order",
-    "sync_yunda_send_waybills": "builtin.yunda_send_waybills",
-    "sync_yunda_dispatch_forecast": "builtin.yunda_dispatch_forecast",
-    "sync_arrival_stats": "builtin.arrival_stats",
-    "preview_self_pickup_problems": "builtin.self_pickup_problem_upload",
-    "self_pickup_problem_upload": "builtin.self_pickup_problem_upload",
-    "preview_split_pending_problems": "builtin.split_pending_problem_upload",
-    "split_pending_problem_upload": "builtin.split_pending_problem_upload",
-}
+@dataclass(frozen=True)
+class FeishuCommandRegistration:
+    """One code-owned fixed-command family bound to one signed project route."""
+
+    command_id: str
+    route_key: str
+    trigger_tool_names: tuple[str, ...]
+
+
+# Fixed phrases remain code-owned. Installed projects only own the signed route
+# resource resolved by the Feishu adapter; installing a plugin must never make
+# arbitrary text executable. Preview/formal tools intentionally share one route.
+FEISHU_COMMAND_REGISTRATIONS = (
+    FeishuCommandRegistration(
+        "r7_arrival_checkin",
+        "builtin.r7_arrival_checkin",
+        ("r7_arrival_checkin",),
+    ),
+    FeishuCommandRegistration(
+        "r7_departure_checkin",
+        "builtin.r7_departure_checkin",
+        ("r7_departure_checkin",),
+    ),
+    FeishuCommandRegistration("scan_codes", "builtin.scan_codes", ("sync_scan_codes",)),
+    FeishuCommandRegistration("arrive_list", "builtin.arrive_list", ("sync_arrive_list",)),
+    FeishuCommandRegistration(
+        "send_order",
+        "builtin.send_order",
+        ("sync_daily_send_orders",),
+    ),
+    FeishuCommandRegistration(
+        "yunda_send_waybills",
+        "builtin.yunda_send_waybills",
+        ("sync_yunda_send_waybills",),
+    ),
+    FeishuCommandRegistration(
+        "yunda_dispatch_forecast",
+        "builtin.yunda_dispatch_forecast",
+        ("sync_yunda_dispatch_forecast",),
+    ),
+    FeishuCommandRegistration(
+        "arrival_stats",
+        "builtin.arrival_stats",
+        ("sync_arrival_stats",),
+    ),
+    FeishuCommandRegistration(
+        "self_pickup_problem_upload",
+        "builtin.self_pickup_problem_upload",
+        ("preview_self_pickup_problems", "self_pickup_problem_upload"),
+    ),
+    FeishuCommandRegistration(
+        "split_pending_problem_upload",
+        "builtin.split_pending_problem_upload",
+        ("preview_split_pending_problems", "split_pending_problem_upload"),
+    ),
+)
+
+
+def _validate_feishu_command_registrations(
+    registrations: tuple[FeishuCommandRegistration, ...],
+) -> dict[str, str]:
+    command_ids: set[str] = set()
+    route_keys: set[str] = set()
+    tool_routes: dict[str, str] = {}
+    for registration in registrations:
+        command_id = str(registration.command_id or "").strip()
+        route_key = str(registration.route_key or "").strip()
+        tools = tuple(str(item or "").strip() for item in registration.trigger_tool_names)
+        if not command_id or command_id in command_ids:
+            raise RuntimeError("Feishu fixed-command ids must be non-empty and unique")
+        if not route_key or route_key in route_keys:
+            raise RuntimeError("Feishu fixed-command routes must be non-empty and unique")
+        if not tools or not all(tools) or len(tools) != len(set(tools)):
+            raise RuntimeError("Feishu fixed-command tool names must be non-empty and unique")
+        command_ids.add(command_id)
+        route_keys.add(route_key)
+        for tool_name in tools:
+            if tool_name in tool_routes:
+                raise RuntimeError("Feishu fixed-command tool names must be globally unique")
+            tool_routes[tool_name] = route_key
+    return tool_routes
+
+
+FIRST_PARTY_FEISHU_ROUTE_KEYS = MappingProxyType(
+    _validate_feishu_command_registrations(FEISHU_COMMAND_REGISTRATIONS)
+)
 
 
 def _automation_project_request(
