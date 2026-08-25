@@ -130,6 +130,18 @@ class _ApiService:
         self.calls.append(("configuration", {"automation_id": automation_id, **kwargs}))
         return dict(self.configuration_result)
 
+    def recover_current_unknown_write(
+        self,
+        automation_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append(("recover-current", {"automation_id": automation_id, **kwargs}))
+        return {
+            "automation_id": automation_id,
+            "recovery_status": "APPLIED",
+            "transitioned": True,
+        }
+
 
 def _api_client(
     service: _ApiService,
@@ -214,6 +226,33 @@ def test_management_router_is_closed_and_install_identity_is_server_owned() -> N
     )
     assert state.status_code == 422
     assert not any(item[0] == "state" for item in service.calls)
+
+
+def test_current_unknown_write_recovery_accepts_only_request_identity() -> None:
+    service = _ApiService()
+    client = _api_client(service)
+    request_id = str(uuid.uuid4())
+
+    response = client.post(
+        "/internal/v1/automation/instances/automation-1/generation/"
+        "recover-current-unknown-write",
+        json={"request_id": request_id},
+    )
+
+    assert response.status_code == 200
+    name, call = service.calls[-1]
+    assert name == "recover-current"
+    assert call["automation_id"] == "automation-1"
+    assert call["request_id"] == request_id
+    assert "generation" not in call
+    assert "lease_id" not in call
+
+    rejected = client.post(
+        "/internal/v1/automation/instances/automation-1/generation/"
+        "recover-current-unknown-write",
+        json={"request_id": str(uuid.uuid4()), "lease_id": "browser-lease"},
+    )
+    assert rejected.status_code == 422
 
 
 def test_configuration_route_refreshes_scheduler_after_ready_commit() -> None:

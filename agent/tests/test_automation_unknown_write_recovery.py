@@ -35,6 +35,10 @@ class _Target:
         self.calls.append(kwargs)
         return self.result
 
+    def recover_current_unknown_write(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
 
 def _actor():
     return Actor(
@@ -82,6 +86,28 @@ class UnknownWriteRecoveryTests(unittest.TestCase):
                 self.assertEqual("admin", target.calls[0]["actor_id"])
                 self.assertEqual("super_admin", target.calls[0]["actor_role"])
                 self.assertEqual("run-1", result["run_id"])
+
+    def test_current_recovery_resolves_generation_and_lease_on_server(self):
+        service, target = self._service({
+            "recovery_status": "APPLIED",
+            "reason": "ALL_RECEIPTS_WRITE_VERIFIED",
+            "run_id": "run-1",
+            "step_id": "step-1",
+            "transitioned": True,
+            "idempotent": False,
+            "evidence": {"receipt_count": 1, "receipt_digest": "a" * 64},
+        })
+
+        result = service.recover_current_unknown_write(
+            "arrive_list",
+            request_id="server-current-recovery",
+            actor=_actor(),
+        )
+
+        self.assertEqual("APPLIED", result["recovery_status"])
+        self.assertEqual(2, target.calls[0]["generation"])
+        self.assertNotIn("lease_id", target.calls[0])
+        self.assertEqual("admin", target.calls[0]["actor_id"])
 
     def test_old_arrival_stats_claim_is_rejected(self):
         service, _target = self._service({})
