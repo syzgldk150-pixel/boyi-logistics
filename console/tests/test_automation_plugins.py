@@ -790,6 +790,67 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
                 self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
 
+    def test_unknown_write_recovery_forwards_only_request_identity(self):
+        app, captured = self._app()
+        forwarded = {}
+
+        def agent_request(method, endpoint, **kwargs):
+            forwarded.update(method=method, endpoint=endpoint, **kwargs)
+            return {
+                "ok": True,
+                "data": {
+                    "recovery_status": "APPLIED",
+                    "transitioned": True,
+                },
+            }
+
+        app._agent_request = agent_request
+        app._handle_automation_plugin_unknown_write_recovery(
+            self._handler({"request_id": REQUEST_ID}),
+            "arrive_list",
+        )
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual("POST", forwarded["method"])
+        self.assertEqual(
+            "/internal/v1/automation/instances/arrive_list/generation/"
+            "recover-current-unknown-write",
+            forwarded["endpoint"],
+        )
+        self.assertEqual({"request_id": REQUEST_ID}, forwarded["payload"])
+        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
+
+    def test_unknown_write_recovery_keeps_isolation_when_evidence_is_unresolved(self):
+        app, captured = self._app()
+        app._agent_request = lambda *_args, **_kwargs: {
+            "ok": True,
+            "data": {"recovery_status": "UNKNOWN", "transitioned": False},
+        }
+
+        app._handle_automation_plugin_unknown_write_recovery(
+            self._handler({"request_id": REQUEST_ID}),
+            "arrive_list",
+        )
+
+        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
+        self.assertEqual(
+            "PLUGIN_RECOVERY_EVIDENCE_UNRESOLVED",
+            captured["payload"]["error"]["code"],
+        )
+
+    def test_unknown_write_recovery_rejects_browser_lease_or_generation(self):
+        for field in ("lease_id", "generation", "evidence"):
+            with self.subTest(field=field):
+                app, captured = self._app()
+                app._agent_request = lambda *_args, **_kwargs: self.fail(
+                    "must not call Agent"
+                )
+                app._handle_automation_plugin_unknown_write_recovery(
+                    self._handler({"request_id": REQUEST_ID, field: "browser-value"}),
+                    "arrive_list",
+                )
+                self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+
     def test_enable_and_disable_forward_only_cas_state_dto(self):
         for action, enabled in (("enable", True), ("disable", False)):
             with self.subTest(action=action):
@@ -958,6 +1019,22 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             automation_routes.handle_post(app, handler, path, path, {})
         )
         self.assertEqual([handler], called)
+
+    def test_unknown_write_recovery_has_one_explicit_console_route(self):
+        called = []
+        app = SimpleNamespace(
+            _handle_automation_account_post=lambda *_args: False,
+            _handle_automation_plugin_unknown_write_recovery=(
+                lambda handler, automation_id: called.append(
+                    (handler, automation_id)
+                )
+            ),
+        )
+        handler = object()
+        path = "/automations/plugins/arrive_list/recover"
+
+        self.assertTrue(automation_routes.handle_post(app, handler, path, path, {}))
+        self.assertEqual([(handler, "arrive_list")], called)
 
 
 class AutomationPluginTemplateTests(unittest.TestCase):
@@ -1136,6 +1213,19 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn("files.length !== 1", script_source)
         self.assertIn("void submitInstall(files[0])", script_source)
         self.assertIn("filename.replace(/\\.zip$/i", script_source)
+
+    def test_unknown_write_recovery_control_is_server_owned_and_visible_only_when_blocked(self):
+        template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+        script_source = (
+            CONSOLE_DIR / "static" / "automation_approval_policy.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE'", template_source)
+        self.assertIn("data-plugin-recover-unknown-write", template_source)
+        self.assertIn('"recover",\n        {},', script_source)
+        self.assertNotIn("lease_id", script_source)
 
     def test_unstable_plugin_state_disables_conflicting_card_operations(self):
         source = (CONSOLE_DIR / "templates" / "automation.html").read_text(

@@ -273,6 +273,64 @@ class AutomationPluginManagementService:
             "evidence": dict(result.get("evidence") or {}),
         }
 
+    def recover_current_unknown_write(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        """Recover the exact current generation without actor-supplied identity."""
+
+        self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        entry = self._catalog.require(automation_id)
+        if entry.plugin_id not in frozenset(RECOVERABLE_WRITE_PROJECT_PLUGINS.values()):
+            raise PluginConflictError(
+                "recovery is not available for this automation project",
+                code="PLUGIN_RECOVERY_SCOPE_INVALID",
+            )
+        if (
+            entry.reconcile_state is not RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
+            or entry.committed_generation is None
+            or entry.target_generation != entry.committed_generation
+        ):
+            raise PluginConflictError(
+                "automation project is not blocked on one current unknown write",
+                code="PLUGIN_RECOVERY_STATE_INVALID",
+            )
+        reader = getattr(self._targets, "recover_current_unknown_write", None)
+        if not callable(reader):
+            raise PluginConflictError(
+                "server recovery reader is unavailable",
+                code="PLUGIN_RECOVERY_UNAVAILABLE",
+            )
+        result = reader(
+            automation_id=automation_id,
+            generation=int(entry.committed_generation),
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role="super_admin",
+        )
+        if not isinstance(result, Mapping) or result.get("recovery_status") not in {
+            "APPLIED", "NOT_APPLIED", "UNKNOWN",
+        }:
+            raise PluginConflictError(
+                "server recovery reader returned invalid evidence",
+                code="PLUGIN_RECOVERY_UNAVAILABLE",
+            )
+        refreshed = self._catalog.require(automation_id)
+        return {
+            **self._catalog_instance_projection(refreshed),
+            "recovery_status": str(result["recovery_status"]),
+            "reason": str(result.get("reason") or ""),
+            "run_id": str(result.get("run_id") or ""),
+            "step_id": str(result.get("step_id") or ""),
+            "transitioned": bool(result.get("transitioned")),
+            "idempotent": bool(result.get("idempotent")),
+            "evidence": dict(result.get("evidence") or {}),
+        }
+
     def worker_projection(self, *, actor: Actor) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)
         workers: list[dict[str, Any]] = []
