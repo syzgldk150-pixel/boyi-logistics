@@ -350,6 +350,25 @@ def _verify_history(cursor, migrations: list[tuple[str, Path]]) -> list[tuple[st
     return pending
 
 
+def _load_business_module_migration_contract() -> Any:
+    """Load the adjacent 027 contract without adding scripts to ``sys.path``."""
+
+    contract_path = Path(__file__).with_name("business_module_migration_contract.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boyi_business_module_migration_contract", contract_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Business module lifecycle migration contract is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if (
+        str(getattr(module, "BUSINESS_MODULE_LIFECYCLE_VERSION", "")) != "027"
+        or not callable(getattr(module, "apply_business_module_lifecycle_migration", None))
+    ):
+        raise RuntimeError("Business module lifecycle migration contract is invalid")
+    return module
+
+
 def run(*, check_only: bool) -> int:
     migrations = discover_migrations()
     connection = _connect()
@@ -362,9 +381,22 @@ def run(*, check_only: bool) -> int:
                 return 0
             cursor.execute(SCHEMA_MIGRATIONS_SQL)
             pending = _verify_history(cursor, migrations)
+            business_module_contract = (
+                _load_business_module_migration_contract()
+                if any(version == "027" for version, _path in pending)
+                else None
+            )
             for version, path in pending:
-                for statement in split_sql_statements(path.read_text(encoding="utf-8")):
-                    cursor.execute(statement)
+                if version == "027":
+                    assert business_module_contract is not None
+                    business_module_contract.apply_business_module_lifecycle_migration(
+                        cursor,
+                        path,
+                        split_sql_statements,
+                    )
+                else:
+                    for statement in split_sql_statements(path.read_text(encoding="utf-8")):
+                        cursor.execute(statement)
                 cursor.execute(
                     "INSERT INTO schema_migrations (version, filename, checksum) VALUES (%s, %s, %s)",
                     (version, path.name, migration_checksum(path)),

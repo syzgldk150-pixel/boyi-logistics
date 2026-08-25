@@ -1,6 +1,9 @@
 -- Lifecycle state for the fixed, code-owned Console module catalog. Runtime
 -- code only reads/writes rows; this migration is the sole schema authority.
-CREATE TABLE business_modules (
+-- These tables can exist after a deployment interruption because MySQL DDL
+-- commits independently.  The migration runner validates their complete
+-- contract before it seeds any rows below.
+CREATE TABLE IF NOT EXISTS business_modules (
     module_code VARCHAR(64) NOT NULL,
     code_version VARCHAR(32) NOT NULL,
     installed_version VARCHAR(32) NULL,
@@ -17,7 +20,7 @@ CREATE TABLE business_modules (
     CONSTRAINT chk_business_modules_record_version CHECK (record_version >= 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE business_module_events (
+CREATE TABLE IF NOT EXISTS business_module_events (
     event_id CHAR(36) NOT NULL,
     module_code VARCHAR(64) NOT NULL,
     request_id CHAR(36) NOT NULL,
@@ -39,14 +42,6 @@ CREATE TABLE business_module_events (
         REFERENCES business_modules (module_code) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TRIGGER business_module_events_no_update
-BEFORE UPDATE ON business_module_events FOR EACH ROW
-SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'business_module_events are immutable';
-
-CREATE TRIGGER business_module_events_no_delete
-BEFORE DELETE ON business_module_events FOR EACH ROW
-SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'business_module_events are immutable';
-
 INSERT INTO business_modules (module_code, code_version, installed_version, lifecycle_state, record_version, created_at, updated_at)
 VALUES
     ('overview', '1.0.0', '1.0.0', 'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)),
@@ -62,4 +57,5 @@ VALUES
     ('automation_accounts', '1.0.0', '1.0.0', 'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)),
     ('llm_settings', '1.0.0', '1.0.0', 'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)),
     ('work_items', '1.0.0', '1.0.0', 'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)),
-    ('system_settings', '1.0.0', '1.0.0', 'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6));
+    ('system_settings', '1.0.0', '1.0.0', 'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
+ON DUPLICATE KEY UPDATE module_code = module_code;

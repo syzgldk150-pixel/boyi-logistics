@@ -87,6 +87,6 @@
 
 ## 业务模块与经营只读入口
 
-- `shared/business_modules.py` 是 14 个 Console 菜单身份的唯一不可变目录；`027_business_module_lifecycle.sql` 只保存生命周期与不可变审计。可管理模块的菜单、页面/API 由已签名 Agent 状态投影关闭失败，核心模块不可停用。
+- `shared/business_modules.py` 是 14 个 Console 菜单身份的唯一不可变目录；`027_business_module_lifecycle.sql` 保存生命周期与 Lite 审计。027 可从部分 DDL 状态前向重跑，`scripts/run_migrations.py` 加载 `scripts/business_module_migration_contract.py` 在 seed 前精确校验结构且只补齐缺行；审计仅由唯一仓储/API 生命周期写路径追加，不依赖 trigger。可管理模块的菜单、页面/API 由已签名 Agent 状态投影关闭失败，核心模块不可停用。
 - `CommandGateway` 在同一 UoW 生命周期锁中拒绝不可用可管理模块的新普通/项目化命令；项目化命令只从已提交签名治理锚点解析核心工具，已受理 Run 可继续。
 - `query_automation_operations` 只读聚合 `agent_commands` / `agent_runs` 固定日期区间的状态与新鲜度；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，金额不完整不输出金额，也不推断客户收入或异常历史。

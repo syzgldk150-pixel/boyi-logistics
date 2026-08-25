@@ -11,7 +11,9 @@ updated: 2026-08-25
 
 `shared/business_modules.py` 是 14 个当前 Console 菜单身份的唯一代码目录。它不从数据库、插件、ZIP 或动态导入创建模块；数据库只保存该固定目录的安装生命周期。目录还声明页面/API 前缀和已存在的内部扩展身份，Console 以它作为导航与路由门禁合同。
 
-迁移 `027_business_module_lifecycle.sql` 明确把 14 个模块基线写为 `ENABLED`，版本均为 `1.0.0`。目录版本是当前代码目标版本，`installed_version` 是已安装生命周期版本；二者不同表示可升级，不是代码目录损坏。升级同一事务写入两个版本并追加审计事件。`business_module_events` 只由同一事务内的成功生命周期变更追加，运行时代码没有更新或删除事件的路径。
+迁移 `027_business_module_lifecycle.sql` 明确把 14 个模块基线写为 `ENABLED`，版本均为 `1.0.0`。MySQL DDL 可能在失败部署中单独提交，因此两个表使用 `CREATE TABLE IF NOT EXISTS`；`scripts/run_migrations.py` 显式加载同目录的 `scripts/business_module_migration_contract.py`，在 seed 前精确校验表、列、索引、约束和外键，发现已存在表的结构漂移即显式失败。seed 仅补齐缺少的模块行，绝不覆盖已有生命周期状态。目录版本是当前代码目标版本，`installed_version` 是已安装生命周期版本；二者不同表示可升级，不是代码目录损坏。升级同一事务写入两个版本并追加审计事件。
+
+Lite 审计不可变性由唯一仓储/API 写路径收敛：成功生命周期变更只会 `INSERT` `business_module_events`，运行时代码没有事件 `UPDATE` 或 `DELETE` 路径。027 不创建 MySQL trigger，因此不要求 binlog 环境下迁移账号的 `SUPER` 权限；这不是面向任意 SQL 写入者的额外数据库防护层。
 
 Agent 的已签名管理接口位于 `/internal/v1/admin/modules`：管理员可以读取列表、目录、详情和审计；只有真实 Console `super_admin` 可以执行 `POST /{module_code}/lifecycle`。写请求要求 UUID `request_id`、非空 `reason` 和 `expected_record_version`，并以精确重放实现幂等。
 

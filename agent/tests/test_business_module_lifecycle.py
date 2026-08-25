@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import uuid
 from pathlib import Path
@@ -22,6 +23,117 @@ from shared.business_module_repository import (
 )
 from shared.business_modules import BUSINESS_MODULE_BY_CODE, BUSINESS_MODULE_CATALOG, CORE_MODULE_CODES, BusinessModuleCode
 import shared.business_module_repository as business_module_repository
+
+
+def _business_module_migration_contract_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "business_module_migration_contract.py"
+    spec = importlib.util.spec_from_file_location("_business_module_migration_contract", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_split_sql_statements():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_migrations.py"
+    spec = importlib.util.spec_from_file_location("_business_module_migration_runner", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.split_sql_statements
+
+
+class _LifecycleMigrationCursor:
+    """Narrow information-schema fake for the 027 retry contract."""
+
+    def __init__(self, contract: Any, *, existing_tables: set[str], rows: dict[str, dict[str, Any]] | None = None, invalid_table: str = "") -> None:
+        self.contract = contract
+        self.tables = set(existing_tables)
+        self.rows = dict(rows or {})
+        self.invalid_table = invalid_table
+        self.created_tables: list[str] = []
+        self.statements: list[str] = []
+        self._one: dict[str, Any] | None = None
+        self._many: list[dict[str, Any]] = []
+
+    def execute(self, statement: str, params: tuple[Any, ...] = ()) -> None:
+        sql = " ".join(statement.split())
+        self.statements.append(sql)
+        self._one = None
+        self._many = []
+        if sql.startswith("CREATE TABLE IF NOT EXISTS "):
+            table = sql.split()[5]
+            if table not in self.tables:
+                self.tables.add(table)
+                self.created_tables.append(table)
+            return
+        if sql.startswith("SELECT ENGINE, TABLE_COLLATION"):
+            table = str(params[0])
+            self._one = (
+                {"ENGINE": "InnoDB", "TABLE_COLLATION": "utf8mb4_unicode_ci"}
+                if table in self.tables
+                else None
+            )
+            return
+        if sql.startswith("SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE"):
+            table = str(params[0])
+            columns = dict(self.contract.BUSINESS_MODULE_LIFECYCLE_TABLES[table]["columns"])
+            if table == self.invalid_table:
+                columns.pop(next(iter(columns)))
+            self._many = [
+                {
+                    "COLUMN_NAME": name,
+                    "DATA_TYPE": data_type,
+                    "COLUMN_TYPE": column_type,
+                    "IS_NULLABLE": nullable,
+                }
+                for name, (data_type, column_type, nullable) in columns.items()
+            ]
+            return
+        if sql.startswith("SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME"):
+            table = str(params[0])
+            self._many = [
+                {
+                    "INDEX_NAME": name,
+                    "NON_UNIQUE": non_unique,
+                    "SEQ_IN_INDEX": position,
+                    "COLUMN_NAME": column,
+                }
+                for name, (non_unique, columns) in self.contract.BUSINESS_MODULE_LIFECYCLE_TABLES[table]["indexes"].items()
+                for position, column in enumerate(columns, start=1)
+            ]
+            return
+        if sql.startswith("SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE"):
+            table = str(params[0])
+            self._many = [
+                {"CONSTRAINT_NAME": name, "CONSTRAINT_TYPE": constraint_type}
+                for name, constraint_type in self.contract.BUSINESS_MODULE_LIFECYCLE_TABLES[table]["constraints"].items()
+            ]
+            return
+        if sql.startswith("SELECT CONSTRAINT_NAME, UPDATE_RULE, DELETE_RULE, REFERENCED_TABLE_NAME"):
+            self._many = [
+                {
+                    "CONSTRAINT_NAME": "fk_business_module_events_module",
+                    "UPDATE_RULE": "RESTRICT",
+                    "DELETE_RULE": "RESTRICT",
+                    "REFERENCED_TABLE_NAME": "business_modules",
+                }
+            ]
+            return
+        if sql.startswith("INSERT INTO business_modules"):
+            for item in BUSINESS_MODULE_CATALOG:
+                self.rows.setdefault(
+                    item.module_code,
+                    {"lifecycle_state": "ENABLED", "installed_version": item.version},
+                )
+            return
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._one
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._many
 
 
 class _GateCursor:
@@ -284,14 +396,58 @@ def test_migration_seeds_the_exact_enabled_baseline() -> None:
         encoding="utf-8"
     )
 
-    assert "CREATE TABLE business_modules" in sql
-    assert "CREATE TABLE business_module_events" in sql
-    assert "CREATE TRIGGER business_module_events_no_update" in sql
-    assert "CREATE TRIGGER business_module_events_no_delete" in sql
+    assert "CREATE TABLE IF NOT EXISTS business_modules" in sql
+    assert "CREATE TABLE IF NOT EXISTS business_module_events" in sql
+    assert "CREATE TRIGGER" not in sql
     for item in BUSINESS_MODULE_CATALOG:
         assert f"('{item.module_code}', '1.0.0', '1.0.0', 'ENABLED', 1" in sql
     assert sql.count("'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)") == 14
     assert "idx_business_module_events_module_created (module_code, created_at, event_id)" in sql
+    assert "ON DUPLICATE KEY UPDATE module_code = module_code" in sql
+
+
+def test_027_retry_handles_fresh_and_partial_ddl_without_overwriting_state() -> None:
+    contract = _business_module_migration_contract_module()
+    path = Path(__file__).resolve().parents[1] / "migrations" / "027_business_module_lifecycle.sql"
+    split_statements = _load_split_sql_statements()
+
+    fresh = _LifecycleMigrationCursor(contract, existing_tables=set())
+    contract.apply_business_module_lifecycle_migration(fresh, path, split_statements)
+    assert fresh.created_tables == ["business_modules", "business_module_events"]
+    assert set(fresh.rows) == {item.module_code for item in BUSINESS_MODULE_CATALOG}
+    assert all(row["lifecycle_state"] == "ENABLED" for row in fresh.rows.values())
+
+    partial = _LifecycleMigrationCursor(
+        contract,
+        existing_tables={"business_modules", "business_module_events"},
+        rows={"finance": {"lifecycle_state": "DISABLED", "installed_version": "1.0.0"}},
+    )
+    contract.apply_business_module_lifecycle_migration(partial, path, split_statements)
+    assert partial.created_tables == []
+    assert partial.rows["finance"]["lifecycle_state"] == "DISABLED"
+    assert set(partial.rows) == {item.module_code for item in BUSINESS_MODULE_CATALOG}
+
+
+def test_027_retry_rejects_incompatible_partial_ddl_before_seed() -> None:
+    contract = _business_module_migration_contract_module()
+    path = Path(__file__).resolve().parents[1] / "migrations" / "027_business_module_lifecycle.sql"
+    split_statements = _load_split_sql_statements()
+    cursor = _LifecycleMigrationCursor(
+        contract,
+        existing_tables={"business_modules", "business_module_events"},
+        invalid_table="business_module_events",
+    )
+
+    with pytest.raises(RuntimeError, match="Business module lifecycle schema mismatch"):
+        contract.apply_business_module_lifecycle_migration(cursor, path, split_statements)
+    assert not any(statement.startswith("INSERT INTO business_modules") for statement in cursor.statements)
+
+
+def test_event_immutability_is_enforced_by_the_only_lifecycle_write_path() -> None:
+    source = (Path(__file__).resolve().parents[2] / "shared" / "business_module_repository.py").read_text(encoding="utf-8")
+    assert "INSERT INTO business_module_events" in source
+    assert "UPDATE business_module_events" not in source
+    assert "DELETE FROM business_module_events" not in source
 
 
 def test_audit_uses_timestamp_then_stable_event_tiebreaker() -> None:
