@@ -282,6 +282,133 @@ tools:
     timeout: 60
     heavy: true
 
+  - name: query_business_finance
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      mode: none
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: true
+      max_attempts: 3
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+    postconditions:
+      - authoritative_result_returned
+    description: "查询已验证共享财务账本的期间收入、支出和净变动；不接受 SQL 或任意数据源"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        start_date:
+          type: string
+          minLength: 10
+          maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: "查询起始日期，格式 YYYY-MM-DD"
+        end_date:
+          type: string
+          minLength: 10
+          maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: "查询结束日期，格式 YYYY-MM-DD"
+        platform:
+          type: string
+          enum: [ronghui]
+          description: "可选，仅查询已启用的财务来源"
+      required: [start_date, end_date]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: false
+          properties:
+            query_type:
+              type: string
+              enum: [finance_summary]
+            availability:
+              type: string
+              enum: [DATA, NO_DATA]
+            period:
+              type: object
+              additionalProperties: false
+              properties:
+                start_date:
+                  type: string
+                end_date:
+                  type: string
+              required: [start_date, end_date]
+            summary:
+              type: object
+              additionalProperties: false
+              properties:
+                total_income:
+                  type: string
+                total_expense:
+                  type: string
+                net_change:
+                  type: string
+                pending_fee_items:
+                  type: integer
+                  minimum: 0
+            source:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                platform:
+                  type: string
+                validation_status:
+                  type: string
+                data_through_date:
+                  type: string
+                latest_success_at:
+                  type: string
+              required: [name, platform, validation_status, data_through_date, latest_success_at]
+            record_count:
+              type: integer
+              minimum: 0
+            warnings:
+              type: array
+              items:
+                type: string
+          required: [query_type, availability, period, summary, source, record_count, warnings]
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/business_finance_query_tool.py
+    timeout: 30
+    heavy: false
+
   - name: ocr_recognize
     version: "1.0.0"
     operation_type: compute

@@ -397,6 +397,7 @@ class FinanceRepositoryTests(unittest.TestCase):
                     "total_income": Decimal("10.005"),
                     "total_expense": Decimal("3.004"),
                     "net_change": Decimal("7.001"),
+                    "entry_count": 2,
                     "waybill_cost": Decimal("2.005"),
                     "operating_cost": Decimal("0.999"),
                     "pending_fee_items": 1,
@@ -435,6 +436,16 @@ class FinanceRepositoryTests(unittest.TestCase):
                     "data_through_date": dt.date(2026, 1, 2),
                     "warning_runs": 0,
                 }
+            if "AS terminal_dates" in sql:
+                return [
+                    {
+                        "platform": spec.platform,
+                        "account_id": spec.account_id,
+                        "terminal_dates": 31,
+                        "verified_dates": 31,
+                    }
+                    for spec in enabled_finance_source_specs()
+                ]
             if "FROM finance_sync_runs r" in sql:
                 return []
             return []
@@ -444,8 +455,11 @@ class FinanceRepositoryTests(unittest.TestCase):
         self.assertEqual(result["total_income"], "10.01")
         self.assertEqual(result["total_expense"], "3.00")
         self.assertEqual(result["net_change"], "7.00")
+        self.assertEqual(result["entry_count"], 2)
         self.assertEqual(result["data_through_date"], "2026-01-02")
         self.assertEqual(result["validation_status"], "passed")
+        self.assertEqual(result["coverage_status"], "complete")
+        self.assertEqual(result["reconciliation_status"], "passed")
         self.assertEqual(2, len(result["accounts"]))
         no_data_account = next(
             row
@@ -472,6 +486,122 @@ class FinanceRepositoryTests(unittest.TestCase):
             ),
             presence_params,
         )
+        coverage_params = next(
+            params for sql, params in records if "AS terminal_dates" in sql
+        )
+        self.assertEqual(
+            (
+                "passed",
+                dt.date(2026, 1, 1),
+                dt.date(2026, 1, 31),
+                *self._enabled_source_params(),
+                "success",
+                "no_data",
+            ),
+            coverage_params,
+        )
+
+    def test_summary_coverage_requires_every_live_account_and_every_requested_day(self) -> None:
+        specs = enabled_finance_source_specs()
+
+        def coverage_status(rows):
+            records: list[tuple[str, tuple[Any, ...]]] = []
+
+            def router(sql: str, _params: tuple[Any, ...]):
+                return rows if "AS terminal_dates" in sql else []
+
+            status = FinanceRepository(
+                lambda: RouterConnection(records, router)
+            )._coverage_status(FinanceQuery("2026-01-01", "2026-01-31"))
+            return status, records
+
+        complete_rows = [
+            {
+                "platform": spec.platform,
+                "account_id": spec.account_id,
+                "terminal_dates": 31,
+                "verified_dates": 31,
+            }
+            for spec in specs
+        ]
+        status, records = coverage_status(complete_rows)
+        self.assertEqual(status, "complete")
+        coverage_sql = records[0][0]
+        self.assertIn("MAX(id) AS latest_run_id", coverage_sql)
+        self.assertIn("r.status IN (%s, %s)", coverage_sql)
+        self.assertIn("r.validation_status = %s", coverage_sql)
+
+        status, _ = coverage_status(complete_rows[:-1])
+        self.assertEqual(status, "incomplete")
+
+        one_day_missing = [dict(row) for row in complete_rows]
+        one_day_missing[0]["terminal_dates"] = 30
+        one_day_missing[0]["verified_dates"] = 30
+        status, _ = coverage_status(one_day_missing)
+        self.assertEqual(status, "incomplete")
+
+        failed_validation = [dict(row) for row in complete_rows]
+        failed_validation[0]["verified_dates"] = 30
+        status, _ = coverage_status(failed_validation)
+        self.assertEqual(status, "incomplete")
+
+        null_validation = [dict(row) for row in complete_rows]
+        null_validation[0]["verified_dates"] = 0
+        status, _ = coverage_status(null_validation)
+        self.assertEqual(status, "incomplete")
+
+        status, _ = coverage_status([])
+        self.assertEqual(status, "unavailable")
+
+    def test_business_summary_uses_one_read_only_consistent_transaction(self) -> None:
+        records: list[tuple[str, tuple[Any, ...]]] = []
+        connections: list[RouterConnection] = []
+
+        def router(sql: str, _params: tuple[Any, ...]):
+            if "AS pending_fee_items" in sql:
+                return {
+                    "total_income": Decimal("2.0000"),
+                    "total_expense": Decimal("1.0000"),
+                    "net_change": Decimal("1.0000"),
+                    "entry_count": 1,
+                    "pending_fee_items": 0,
+                }
+            if "AS warning_runs" in sql:
+                return {
+                    "latest_success_at": dt.datetime(2026, 1, 1, 0, 10),
+                    "data_through_date": dt.date(2026, 1, 1),
+                    "warning_runs": 0,
+                }
+            if "AS terminal_dates" in sql:
+                return [
+                    {
+                        "platform": spec.platform,
+                        "account_id": spec.account_id,
+                        "terminal_dates": 1,
+                        "verified_dates": 1,
+                    }
+                    for spec in enabled_finance_source_specs()
+                ]
+            return []
+
+        def factory():
+            connection = RouterConnection(records, router)
+            connections.append(connection)
+            return connection
+
+        result = FinanceRepository(factory).get_business_summary(
+            FinanceQuery("2026-01-01", "2026-01-01")
+        )
+
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(
+            records[0],
+            ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY", ()),
+        )
+        self.assertEqual(records[1], ("START TRANSACTION WITH CONSISTENT SNAPSHOT", ()))
+        self.assertTrue(connections[0].committed)
+        self.assertEqual(result["coverage_status"], "complete")
+        self.assertEqual(result["reconciliation_status"], "passed")
 
     def test_expense_ranking_contract_matches_accessible_table(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []

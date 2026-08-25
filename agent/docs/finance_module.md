@@ -4,7 +4,7 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-08-13
+updated: 2026-08-25
 ---
 
 # 融辉财务工作台
@@ -178,9 +178,22 @@ Console 只查询共享 MySQL 账本或调用 Agent 的 `/run-tool` 执行 `sync
 
 `GET /finance/sync-batches` 在批次汇总之外返回最新失败的 `platform/account_id/target_date/error_code/error_message`，同步记录页可直接定位失败来源。显式无数据日期会以零值进入趋势和账号对比；没有成功或无数据运行的日期不会被静默补零。
 
+## Agent 只读经营查询
+
+`query_business_finance` 是 TASK-050 建立的最小只读经营查询合同。真实执行只由 `main.py` 在组合根中把 `agent/business_query.py` 注入控制平面；独立工具文件固定失败，不能绕过组合根自行连接数据库。
+
+- 输入仅允许起止日期和当前已启用的融辉平台，闭区间最多 366 个日历日；控制平面账号作用域固定为 `none`，不接受 SQL、账号绑定、表名、字段名或任意数据源。
+- 输出仅包含期间总收入、总支出、净变动、待分类费用数、账本记录数和脱敏来源新鲜度；不返回账号明细或原始流水。
+- 汇总、来源失败、新鲜度和覆盖证明必须在同一个 `REPEATABLE READ` 只读一致性事务中读取，不能把同步前金额与同步后覆盖状态拼接。
+- 结果必须同时满足：全部启用账号逐日最新运行均为成功/明确无数据且 `validation_status=passed`、没有失败或 warning 来源、原始 Decimal 聚合通过收入减支出等于净变动的对账、数据覆盖请求结束日。
+- 全日均已验证且账本为空时返回明确 `NO_DATA` 和空汇总，不用零金额伪装业务结论；覆盖不完整、来源未验证、对账失败或仓储不可达均固定失败。
+- 待分类费用存在时只报告账本净变动并明确不得解释为利润。
+- TASK-050 的注册项保持 `llm_exposed=false`，未接入飞书或自然语言；TASK-051 验收前不能开放该入口。
+
 ## 代码入口
 
 - 公共领域与仓储：`../shared/finance/`。
+- Agent 经营汇总合同：`agent/business_query.py`；组合根注入：`main.py`；固定失败占位：`tools/business_finance_query_tool.py`。
 - 融辉生产响应适配：`agent/tms_runtime/scripts/ronghui_finance_adapter.py`；韵达预留适配器：`agent/tms_runtime/scripts/yunda_finance_adapter.py`（未启用）。
 - 真实页面发现与只读查询：`agent/tms_runtime/scripts/finance_live_capture.py`。
 - 多账号编排：`tools/finance_sync_service.py`。
