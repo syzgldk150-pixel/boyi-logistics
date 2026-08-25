@@ -54,6 +54,7 @@
   - 财务大脑只接收未知类目的脱敏聚合证据并返回建议，不得修改正式映射、原始流水、源码或运单事实；所有确认都在 Console 后台由管理员完成。
   - 任意用户请求如果未命中直达工具且 LLM 未产生真实工具调用，`core.py` 必须回复“没有匹配到可执行脚本，我不知道该执行哪个任务。”，不能放行 LLM 自由回答或描述执行结果
   - LLM 产生工具调用后，最终回复必须来自工具结果 formatter，不能采用 LLM 对工具结果的自由总结
+  - 飞书自然语言财务查询是独立的代码拥有只读路由：`query_business_finance` 必须保持 `llm_exposed=false`；日期由中国标准时间的受信任当天确定性解析，混合或模糊期间、写意图、利润口径、未启用来源均在提交前拒绝；只有 `feishu_admin_binding` 的管理员可经 Command Gateway 查询，金额只由专用 formatter 输出
 - 改飞书文本指令直达路由（不走 LLM 的确定性命令）：
   - `direct_tool_router.py`
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）

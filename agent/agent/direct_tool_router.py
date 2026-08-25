@@ -242,6 +242,28 @@ NEGATED_EXECUTION_REPLY_RE = re.compile(
 
 
 VERIFY_CODE_RE = re.compile(r"^\s*([A-Za-z0-9]{4,8})\s*$")
+BUSINESS_FINANCE_INTENT_RE = re.compile(r"(?:财务|收入|支出|收支|净变动|账本|流水|对账)")
+BUSINESS_FINANCE_WRITE_RE = re.compile(r"(?:同步|导入|写入|新增|修改|删除|更新|调整)")
+BUSINESS_FINANCE_DAY_RE = re.compile(
+    r"(?<!\d)(?P<year>20\d{2})\s*(?:年|-|/|\.)\s*"
+    r"(?P<month>\d{1,2})\s*(?:月|-|/|\.)\s*"
+    r"(?P<day>\d{1,2})\s*(?:日|号)?(?!\d)"
+)
+BUSINESS_FINANCE_MONTH_RE = re.compile(
+    r"(?<!\d)(?P<year>20\d{2})\s*(?:年|-|/)\s*(?P<month>\d{1,2})\s*(?:月)?(?!\d)"
+)
+BUSINESS_FINANCE_RECENT_DAYS_RE = re.compile(r"(?:最近|近)\s*(?P<days>\d{1,3})\s*天")
+BUSINESS_FINANCE_RANGE_CONNECTOR_RE = re.compile(r"^\s*(?:到|至|[-~～—–－])\s*$")
+BUSINESS_FINANCE_UNSUPPORTED_PERIOD_RE = re.compile(
+    r"(?:近期|近几天|这段时间|本周|这周|上周|下周|本季度|这季度|上季度|"
+    r"今年|本年|去年|明天|后天|前天|下个月|下月|年初|月初|月底|"
+    r"截至|截止|以来|之后|以后|之前|以前|开始|往后|往前|最近(?!\s*\d))"
+)
+BUSINESS_FINANCE_UNSUPPORTED_SOURCE_RE = re.compile(
+    r"(?:中通|顺丰|圆通|申通|极兔|邮政|EMS|德邦|京东|安能|跨越|"
+    r"百世|优速|壹米滴答|天地华宇|货拉拉|菜鸟|DHL|UPS|FedEx)",
+    re.IGNORECASE,
+)
 WRAPPING_QUOTES = (
     ("“", "”"),
     ("‘", "’"),
@@ -263,6 +285,122 @@ def _normalize_command_text(text: str) -> str:
                 changed = True
                 break
     return normalized
+
+
+def _finance_period_reply() -> dict[str, Any]:
+    return {
+        "reply": "请提供明确的财务查询期间，例如“今天财务”“昨天收入”或“2026-08-01 到 2026-08-31 财务”。"
+    }
+
+
+def _month_period(year: int, month: int, *, today: dt.date) -> tuple[dt.date, dt.date] | None:
+    try:
+        start = dt.date(year, month, 1)
+    except ValueError:
+        return None
+    if month == 12:
+        next_month = dt.date(year + 1, 1, 1)
+    else:
+        next_month = dt.date(year, month + 1, 1)
+    end = next_month - dt.timedelta(days=1)
+    if start <= today <= end:
+        end = today
+    return start, end
+
+
+def business_finance_request_from_text(
+    text: str,
+    *,
+    today: dt.date,
+) -> dict[str, Any] | None:
+    """Resolve a closed finance read request without allowing LLM date generation."""
+
+    normalized = str(text or "").strip()
+    if not BUSINESS_FINANCE_INTENT_RE.search(normalized):
+        return None
+    if not isinstance(today, dt.date):
+        raise RuntimeError("today must be a date")
+    if BUSINESS_FINANCE_WRITE_RE.search(normalized):
+        return {"reply": "自然语言入口只支持只读财务查询，不能同步、导入或修改财务数据。"}
+    if "利润" in normalized:
+        return {"reply": "当前只读财务账本只能查询收入、支出和净变动，不能把净变动解释为利润。"}
+    if "韵达" in normalized and "融辉" in normalized:
+        return {"reply": "一次只能查询一个已启用的财务来源；当前仅支持融辉。"}
+    if "韵达" in normalized:
+        return {"reply": "韵达财务来源尚未启用，当前不能查询。"}
+    if BUSINESS_FINANCE_UNSUPPORTED_SOURCE_RE.search(normalized):
+        return {"reply": "该财务来源尚未启用，当前不能查询。"}
+    if BUSINESS_FINANCE_UNSUPPORTED_PERIOD_RE.search(normalized):
+        return _finance_period_reply()
+
+    periods: list[tuple[dt.date, dt.date]] = []
+    day_matches = list(BUSINESS_FINANCE_DAY_RE.finditer(normalized))
+    if day_matches:
+        if len(day_matches) > 2:
+            return _finance_period_reply()
+        if len(day_matches) == 2 and not BUSINESS_FINANCE_RANGE_CONNECTOR_RE.fullmatch(
+            normalized[day_matches[0].end() : day_matches[1].start()]
+        ):
+            return _finance_period_reply()
+        parsed_days: list[dt.date] = []
+        for match in day_matches:
+            try:
+                parsed_days.append(
+                    dt.date(
+                        int(match.group("year")),
+                        int(match.group("month")),
+                        int(match.group("day")),
+                    )
+                )
+            except ValueError:
+                return _finance_period_reply()
+        periods.append((parsed_days[0], parsed_days[-1]))
+    month_matches = [
+        match
+        for match in BUSINESS_FINANCE_MONTH_RE.finditer(normalized)
+        if not any(
+            match.start() < day_match.end() and day_match.start() < match.end()
+            for day_match in day_matches
+        )
+    ]
+    for month_match in month_matches:
+        month_period = _month_period(
+            int(month_match.group("year")),
+            int(month_match.group("month")),
+            today=today,
+        )
+        if month_period is None:
+            return _finance_period_reply()
+        periods.append(month_period)
+
+    for recent_match in BUSINESS_FINANCE_RECENT_DAYS_RE.finditer(normalized):
+        days = int(recent_match.group("days"))
+        if not 1 <= days <= 366:
+            return _finance_period_reply()
+        periods.append((today - dt.timedelta(days=days - 1), today))
+    for _match in re.finditer(r"(?:本月|这个月|当月)", normalized):
+        periods.append((today.replace(day=1), today))
+    for _match in re.finditer(r"(?:上个月|上月)", normalized):
+        previous_month_end = today.replace(day=1) - dt.timedelta(days=1)
+        periods.append((previous_month_end.replace(day=1), previous_month_end))
+    for _match in re.finditer(r"昨天", normalized):
+        yesterday = today - dt.timedelta(days=1)
+        periods.append((yesterday, yesterday))
+    for _match in re.finditer(r"(?:今天|今日)", normalized):
+        periods.append((today, today))
+
+    if len(periods) != 1:
+        return _finance_period_reply()
+    start_date, end_date = periods[0]
+    if start_date > end_date or (end_date - start_date).days + 1 > 366:
+        return _finance_period_reply()
+    params = {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+    }
+    if "融辉" in normalized:
+        params["platform"] = "ronghui"
+    return {"params": params}
 
 
 def _extract_date_params(text: str) -> dict[str, str]:
@@ -590,6 +728,8 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 
 
 def format_tool_reply(tool_name: str, result: dict[str, Any]) -> str:
+    if tool_name == "query_business_finance":
+        return format_business_finance_reply(result)
     if tool_name == "track_waybill":
         return format_track_waybill_reply(result)
     if tool_name == "get_price":
@@ -1706,6 +1846,131 @@ def _format_generic_reply(result: dict[str, Any]) -> str:
     if not result.get("success", False):
         return str(result.get("error") or "执行失败").strip()
     return "执行完成"
+
+
+_BUSINESS_FINANCE_AMOUNT_RE = re.compile(r"^-?\d+\.\d{2}$")
+_BUSINESS_FINANCE_FAILURE_REPLIES = MappingProxyType(
+    {
+        "BUSINESS_QUERY_INVALID": "财务查询日期或来源不合法，请提供明确的日期或日期范围。",
+        "INVALID_TOOL_ARGUMENTS": "财务查询日期或来源不合法，请提供明确的日期或日期范围。",
+        "BUSINESS_QUERY_SOURCE_DISABLED": "该财务来源尚未启用，当前不能查询。",
+        "BUSINESS_QUERY_DATA_INCOMPLETE": "财务数据尚未完整同步到所选结束日期，暂不提供金额。",
+        "BUSINESS_QUERY_DATA_UNVERIFIED": "财务数据校验未通过，暂不提供金额。",
+        "BUSINESS_QUERY_RECONCILIATION_FAILED": "财务数据对账未通过，暂不提供金额。",
+        "BUSINESS_QUERY_CONTRACT_INVALID": "财务查询结果校验失败，暂不提供金额。",
+        "BUSINESS_QUERY_UNAVAILABLE": "财务查询服务当前不可用，请稍后重试。",
+        "CONTROL_PLANE_UNAVAILABLE": "财务查询服务当前不可用，请稍后重试。",
+    }
+)
+
+
+def _business_finance_error_code(result: dict[str, Any]) -> str:
+    code = str(result.get("error_code") or "").strip()
+    if code:
+        return code
+    tool_result = result.get("tool_result")
+    if isinstance(tool_result, dict):
+        error = tool_result.get("error")
+        if isinstance(error, dict):
+            return str(error.get("code") or "").strip()
+    return ""
+
+
+def _validated_business_finance_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    payload = result.get("data")
+    if not isinstance(payload, dict) or payload.get("query_type") != "finance_summary":
+        return None
+    availability = payload.get("availability")
+    period = payload.get("period")
+    source = payload.get("source")
+    record_count = payload.get("record_count")
+    summary = payload.get("summary")
+    warnings = payload.get("warnings")
+    if (
+        availability not in {"DATA", "NO_DATA"}
+        or not isinstance(period, dict)
+        or not isinstance(source, dict)
+        or isinstance(record_count, bool)
+        or not isinstance(record_count, int)
+        or record_count < 0
+        or not isinstance(summary, dict)
+        or not isinstance(warnings, list)
+        or any(not isinstance(item, str) for item in warnings)
+        or source.get("validation_status") != "passed"
+    ):
+        return None
+    start_date = period.get("start_date")
+    end_date = period.get("end_date")
+    data_through_date = source.get("data_through_date")
+    try:
+        parsed_start = dt.date.fromisoformat(start_date)
+        parsed_end = dt.date.fromisoformat(end_date)
+        parsed_through = dt.date.fromisoformat(data_through_date)
+    except (TypeError, ValueError):
+        return None
+    if (
+        start_date != parsed_start.isoformat()
+        or end_date != parsed_end.isoformat()
+        or parsed_start > parsed_end
+        or parsed_through < parsed_end
+    ):
+        return None
+    if availability == "NO_DATA":
+        if summary or record_count != 0:
+            return None
+        return payload
+    required_summary = {"total_income", "total_expense", "net_change", "pending_fee_items"}
+    pending_fee_items = summary.get("pending_fee_items")
+    if (
+        set(summary) != required_summary
+        or record_count == 0
+        or isinstance(pending_fee_items, bool)
+        or not isinstance(pending_fee_items, int)
+        or pending_fee_items < 0
+        or any(
+            not isinstance(summary.get(field), str)
+            or not _BUSINESS_FINANCE_AMOUNT_RE.fullmatch(summary[field])
+            for field in ("total_income", "total_expense", "net_change")
+        )
+    ):
+        return None
+    return payload
+
+
+def format_business_finance_reply(result: dict[str, Any]) -> str:
+    """Render only validated tool-owned amounts; never echo model or exception text."""
+
+    if not isinstance(result, dict) or not result.get("success", False):
+        code = _business_finance_error_code(result if isinstance(result, dict) else {})
+        return _BUSINESS_FINANCE_FAILURE_REPLIES.get(
+            code,
+            "财务查询失败，暂不提供金额，请稍后重试。",
+        )
+    payload = _validated_business_finance_payload(result)
+    if payload is None:
+        return "财务查询结果校验失败，暂不提供金额。"
+    period = payload["period"]
+    title_period = period["start_date"]
+    if period["end_date"] != period["start_date"]:
+        title_period = f"{period['start_date']} 至 {period['end_date']}"
+    lines = [f"财务汇总（{title_period}）"]
+    if payload["availability"] == "NO_DATA":
+        lines.append("已验证财务账本在该期间没有交易记录。")
+    else:
+        summary = payload["summary"]
+        lines.extend(
+            (
+                f"总收入：¥{summary['total_income']}",
+                f"总支出：¥{summary['total_expense']}",
+                f"净变动：¥{summary['net_change']}",
+                f"账本记录：{payload['record_count']} 条",
+                f"待分类费用：{summary['pending_fee_items']} 项",
+            )
+        )
+        if summary["pending_fee_items"]:
+            lines.append("提示：存在待分类费用，净变动不能解释为利润。")
+    lines.append(f"数据覆盖至：{payload['source']['data_through_date']}")
+    return "\n".join(lines)
 
 
 def _pickup_price_order() -> tuple[str, ...]:
