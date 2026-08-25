@@ -1243,6 +1243,51 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertIn("sql_only", registry_text)
         self.assertIn("sync_sql", registry_text)
 
+    def test_feishu_fixed_command_registry_is_complete_and_read_only(self):
+        registrations = direct_tool_router.FEISHU_COMMAND_REGISTRATIONS
+        self.assertEqual(
+            {
+                "r7_arrival_checkin": "builtin.r7_arrival_checkin",
+                "r7_departure_checkin": "builtin.r7_departure_checkin",
+                "sync_scan_codes": "builtin.scan_codes",
+                "sync_arrive_list": "builtin.arrive_list",
+                "sync_daily_send_orders": "builtin.send_order",
+                "sync_yunda_send_waybills": "builtin.yunda_send_waybills",
+                "sync_yunda_dispatch_forecast": "builtin.yunda_dispatch_forecast",
+                "sync_arrival_stats": "builtin.arrival_stats",
+                "preview_self_pickup_problems": "builtin.self_pickup_problem_upload",
+                "self_pickup_problem_upload": "builtin.self_pickup_problem_upload",
+                "preview_split_pending_problems": "builtin.split_pending_problem_upload",
+                "split_pending_problem_upload": "builtin.split_pending_problem_upload",
+            },
+            dict(direct_tool_router.FIRST_PARTY_FEISHU_ROUTE_KEYS),
+        )
+        self.assertEqual(10, len(registrations))
+        with self.assertRaises(TypeError):
+            direct_tool_router.FIRST_PARTY_FEISHU_ROUTE_KEYS["unexpected"] = "route"
+
+    def test_feishu_fixed_command_registry_rejects_duplicate_identity(self):
+        registration = direct_tool_router.FEISHU_COMMAND_REGISTRATIONS[0]
+        duplicate_id = direct_tool_router.FeishuCommandRegistration(
+            registration.command_id,
+            "builtin.other",
+            ("other_tool",),
+        )
+        duplicate_route = direct_tool_router.FeishuCommandRegistration(
+            "other_command",
+            registration.route_key,
+            ("other_tool",),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "ids.*unique"):
+            direct_tool_router._validate_feishu_command_registrations(
+                (registration, duplicate_id)
+            )
+        with self.assertRaisesRegex(RuntimeError, "routes.*unique"):
+            direct_tool_router._validate_feishu_command_registrations(
+                (registration, duplicate_route)
+            )
+
     def test_direct_router_maps_arrival_checkin_command_to_r7_tool(self):
         request = direct_tool_router.direct_tool_request_from_text("到达打卡")
 
