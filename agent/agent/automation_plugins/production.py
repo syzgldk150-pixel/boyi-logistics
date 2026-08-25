@@ -1065,6 +1065,29 @@ class MySQLRuntimeTargetService:
             self._wake_runner(run_id)
         return result
 
+    def recover_current_unknown_write(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Resolve the sole current unknown lease from server-owned evidence."""
+
+        result = self._runtime.resolve_current_unknown_write_recovery(
+            automation_id=automation_id,
+            generation=generation,
+            request_id=request_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+        run_id = str(result.get("run_id") or "")
+        if result.get("transitioned") is True and run_id and self._wake_runner:
+            self._wake_runner(run_id)
+        return result
+
     def reconcile_all(self) -> tuple[object, ...]:
         results: list[object] = []
         for entry in sorted(self._catalog.list(), key=lambda item: item.automation_id):

@@ -103,6 +103,14 @@ class UnknownWriteRecoveryRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=64)
 
 
+class CurrentUnknownWriteRecoveryRequest(BaseModel):
+    """The server resolves generation and lease identity from current state."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request_id: str = Field(min_length=1, max_length=64)
+
+
 class WorkerIdentityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -565,6 +573,24 @@ def create_automation_plugin_management_router(
             )
         )
 
+    @router.post(
+        "/internal/v1/automation/instances/{automation_id}/generation/recover-current-unknown-write",
+        response_model=None,
+    )
+    async def recover_current_unknown_write(
+        automation_id: str,
+        payload: CurrentUnknownWriteRecoveryRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().recover_current_unknown_write(
+                automation_id,
+                request_id=payload.request_id,
+                actor=actor,
+            )
+        )
+
     return router
 
 
@@ -572,6 +598,7 @@ __all__ = [
     "PluginConfigurationRequest",
     "ArrivalStatsRecoveryReadbackRequest",
     "ArrivalStatsRecoveryRequest",
+    "CurrentUnknownWriteRecoveryRequest",
     "UnknownWriteRecoveryRequest",
     "PluginScheduleRequest",
     "PluginStateRequest",

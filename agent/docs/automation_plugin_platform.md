@@ -255,6 +255,11 @@ route；前代保持 `BLOCKED`，全部 lease 和历史 Run/Evidence 保持不�
 不能把新 committed 路由重新标成 `BLOCKED_UNKNOWN_WRITE`。普通 `BLOCKED`、错误码不符、零条未知写
 lease、当前代仍有活动写租约或配置/effect 未闭合均继续 fail closed。
 
+操作员恢复入口同样保持服务端权威：Console 只提交浏览器生成的请求 UUID，Agent 在当前 committed
+generation 内查询 unresolved `WRITE_OUTCOME_UNKNOWN` lease。只有候选恰好一条时才进入已有的持久
+receipt 恢复事务；候选缺失或多条、receipt 不完整、目标 Run/Step 状态不闭合均返回 `UNKNOWN`，
+保持项目隔离且不执行重放。浏览器不得提交 generation、lease_id 或 evidence。
+
 ### Broker write receipts and recovery
 
 Broker `read` calls never constitute a started write. For the five reviewed

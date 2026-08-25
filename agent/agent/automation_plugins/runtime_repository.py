@@ -904,6 +904,60 @@ class MySQLAutomationPluginRuntimeAdapter:
             raise ValueError("transactional unknown-write recovery returned invalid data")
         return dict(result)
 
+    def resolve_current_unknown_write_recovery(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Recover only when the current generation has one unresolved lease."""
+
+        with self._orchestration.unit_of_work() as uow:
+            reader = getattr(
+                uow.automation_plugins,
+                "unique_unknown_write_recovery_lease_row",
+                None,
+            )
+            resolver = getattr(uow, "recover_unknown_automation_write", None)
+            if not callable(reader) or not callable(resolver):
+                raise ValueError("transactional unknown-write recovery is unavailable")
+            candidate = reader(
+                automation_id=automation_id,
+                generation=generation,
+            )
+            if not isinstance(candidate, Mapping):
+                raise ValueError("unknown-write recovery candidate is invalid")
+            state = str(candidate.get("state") or "")
+            if state != "FOUND":
+                return {
+                    "recovery_status": "UNKNOWN",
+                    "reason": (
+                        "RECOVERY_LEASE_AMBIGUOUS"
+                        if state == "AMBIGUOUS"
+                        else "RECOVERY_LEASE_MISSING"
+                    ),
+                    "run_id": "",
+                    "step_id": "",
+                    "transitioned": False,
+                    "idempotent": False,
+                    "evidence": {},
+                }
+            result = resolver(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=str(candidate.get("lease_id") or ""),
+                request_id=request_id,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            )
+            uow.commit()
+        if not isinstance(result, Mapping):
+            raise ValueError("transactional unknown-write recovery returned invalid data")
+        return dict(result)
+
     def finalize_generation_write(
         self,
         *,

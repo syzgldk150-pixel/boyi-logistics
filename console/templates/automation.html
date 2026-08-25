@@ -423,6 +423,11 @@
           <div class="automation-plugin-block" role="status">
             <i data-feather="alert-triangle"></i>
             <span>{{ task.plugin_warning or '项目配置尚未完整；运行、启用和完全自动均已阻断。' }}</span>
+            {% if can_manage_plugins and plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE' %}
+            <button class="ghost-btn" type="button" data-plugin-recover-unknown-write>
+              核验并恢复
+            </button>
+            {% endif %}
           </div>
           {% endif %}
           <p class="automation-plugin-feedback" data-plugin-instance-feedback role="status" aria-live="polite" hidden></p>
@@ -2957,5 +2962,5 @@
 
   feather.replace();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260822-plugin-manager3" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260825-unknown-write-recovery" defer></script>
 {% endblock %}

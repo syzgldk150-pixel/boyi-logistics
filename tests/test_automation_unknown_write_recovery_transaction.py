@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.orchestration_repository import OrchestrationUnitOfWork
 from shared.orchestration_repository_support import _json_hash
+from agent.automation_plugins.runtime_repository import (
+    MySQLAutomationPluginRuntimeAdapter,
+)
 
 
 class _Plugins:
@@ -45,6 +48,47 @@ class _Plugins:
         self.lease["verification_evidence_sha256"] = evidence_sha256
         self.settled.append((outcome, evidence_sha256))
         return {"transitioned": changed, "outcome": outcome}
+
+
+class _CurrentRecoveryUow:
+    def __init__(self, candidate):
+        self.candidate = candidate
+        self.calls = []
+        self.committed = False
+        self.automation_plugins = self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def unique_unknown_write_recovery_lease_row(self, **kwargs):
+        self.calls.append(("candidate", kwargs))
+        return dict(self.candidate)
+
+    def recover_unknown_automation_write(self, **kwargs):
+        self.calls.append(("recover", kwargs))
+        return {
+            "recovery_status": "APPLIED",
+            "reason": "ALL_RECEIPTS_WRITE_VERIFIED",
+            "run_id": "run-1",
+            "step_id": "step-1",
+            "transitioned": True,
+            "idempotent": False,
+            "evidence": {"receipt_count": 1},
+        }
+
+    def commit(self):
+        self.committed = True
+
+
+class _CurrentRecoveryRepository:
+    def __init__(self, candidate):
+        self.uow = _CurrentRecoveryUow(candidate)
+
+    def unit_of_work(self):
+        return self.uow
 
 
 class _Runs:
@@ -146,6 +190,54 @@ def _uow(*, outcome: str, receipts: list[dict], retry_safe: bool = True):
         events=_Events(),
     )
     return uow, plugins, runs, steps
+
+
+class CurrentUnknownWriteResolutionTests(unittest.TestCase):
+    def test_unique_server_candidate_is_recovered_without_actor_lease(self):
+        repository = _CurrentRecoveryRepository(
+            {"state": "FOUND", "lease_id": "lease-1"}
+        )
+        adapter = MySQLAutomationPluginRuntimeAdapter(repository)
+
+        result = adapter.resolve_current_unknown_write_recovery(
+            automation_id="arrival_stats",
+            generation=2,
+            request_id="request-1",
+            actor_id="admin-1",
+            actor_role="super_admin",
+        )
+
+        self.assertEqual("APPLIED", result["recovery_status"])
+        self.assertEqual(
+            ("candidate", {"automation_id": "arrival_stats", "generation": 2}),
+            repository.uow.calls[0],
+        )
+        self.assertEqual("lease-1", repository.uow.calls[1][1]["lease_id"])
+        self.assertTrue(repository.uow.committed)
+
+    def test_missing_or_ambiguous_candidate_remains_unknown_without_recovery(self):
+        for state, reason in (
+            ("MISSING", "RECOVERY_LEASE_MISSING"),
+            ("AMBIGUOUS", "RECOVERY_LEASE_AMBIGUOUS"),
+        ):
+            with self.subTest(state=state):
+                repository = _CurrentRecoveryRepository(
+                    {"state": state, "lease_id": ""}
+                )
+                adapter = MySQLAutomationPluginRuntimeAdapter(repository)
+
+                result = adapter.resolve_current_unknown_write_recovery(
+                    automation_id="arrival_stats",
+                    generation=2,
+                    request_id="request-1",
+                    actor_id="admin-1",
+                    actor_role="super_admin",
+                )
+
+                self.assertEqual("UNKNOWN", result["recovery_status"])
+                self.assertEqual(reason, result["reason"])
+                self.assertEqual(["candidate"], [call[0] for call in repository.uow.calls])
+                self.assertFalse(repository.uow.committed)
 
 
 class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
@@ -708,6 +800,33 @@ class GenerationWriteLockOrderSqlTests(unittest.TestCase):
             fake, automation_id="arrival_stats", generation=2, lease_id="lease-1",
         )
         self._assert_parent_order(cursor.executed)
+
+    def test_current_recovery_candidate_requires_exactly_one_unknown_lease(self):
+        for rows, state, lease_id in (
+            ([], "MISSING", ""),
+            ([{"lease_id": "lease-1"}], "FOUND", "lease-1"),
+            ([{"lease_id": "lease-1"}, {"lease_id": "lease-2"}], "AMBIGUOUS", ""),
+        ):
+            with self.subTest(state=state):
+                cursor = _WriteLockOrderCursor()
+
+                def execute(statement, params=()):
+                    cursor.executed.append(" ".join(statement.split()))
+                    cursor._rows = list(rows)
+                    cursor._row = rows[0] if rows else None
+
+                cursor.execute = execute
+                fake = SimpleNamespace(cursor=lambda: cursor)
+
+                result = AutomationPluginRepository.unique_unknown_write_recovery_lease_row(
+                    fake,
+                    automation_id="arrival_stats",
+                    generation=2,
+                )
+
+                self.assertEqual(state, result["state"])
+                self.assertEqual(lease_id, result["lease_id"])
+                self.assertIn("LIMIT 2", cursor.executed[0])
 
 
 if __name__ == "__main__":
