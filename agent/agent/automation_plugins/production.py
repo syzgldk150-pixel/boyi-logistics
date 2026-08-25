@@ -1128,6 +1128,7 @@ class ProductionAutomationPluginRuntime:
     required_first_party_ids: frozenset[str]
     _bootstrap_first_party: Callable[[], BootstrapResult]
     _sandbox_canary: SandboxCanaryResult | None = None
+    _health_snapshot: dict[str, Any] | None = None
     _started: bool = False
 
     @property
@@ -1183,7 +1184,7 @@ class ProductionAutomationPluginRuntime:
             and self._started
             and sandbox_ready
         )
-        return {
+        payload = {
             "ok": bool(catalog.get("ok") is True and self._started and sandbox_ready),
             "runnable": runnable,
             "runtime_status": "READY" if runnable else "UNAVAILABLE",
@@ -1211,6 +1212,31 @@ class ProductionAutomationPluginRuntime:
                 },
             },
         }
+        self._health_snapshot = copy.deepcopy(payload)
+        return payload
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Return the last complete live health projection without database I/O."""
+
+        snapshot = copy.deepcopy(self._health_snapshot)
+        if not isinstance(snapshot, dict):
+            return {
+                "ok": False,
+                "runnable": False,
+                "runtime_status": "UNAVAILABLE",
+                "release_sha": self.release.verified_release_sha,
+                "broker": {"state": "running" if self._started else "stopped"},
+                "sandbox": {"state": "unavailable", "code": "NOT_CHECKED", "checked_at": None},
+                "catalog": {"ok": False, "runnable": False, "runtime_status": "UNAVAILABLE"},
+                "generations": {"healthy": False, "blocked_projects": {}},
+                "error_code": "AUTOMATION_PLUGIN_HEALTH_NOT_CHECKED",
+            }
+        if not self._started:
+            snapshot["ok"] = False
+            snapshot["runnable"] = False
+            snapshot["runtime_status"] = "UNAVAILABLE"
+            snapshot["broker"] = {"state": "stopped"}
+        return snapshot
 
     def assert_release_ready(self) -> dict[str, Any]:
         health = self.health()

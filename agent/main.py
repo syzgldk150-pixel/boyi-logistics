@@ -349,6 +349,8 @@ def _automation_plugin_health() -> dict[str, Any]:
             "error_code": "AUTOMATION_PLUGIN_RUNTIME_UNAVAILABLE",
         }
     try:
+        if scheduler_release_hold_requested():
+            return runtime.health_snapshot()
         return runtime.health()
     except Exception as exc:
         logger.error(
