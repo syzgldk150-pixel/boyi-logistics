@@ -14,12 +14,56 @@ from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_config_fields,
     first_party_code_owned_plan_fields,
     normalize_first_party_code_owned_config,
+    normalize_first_party_code_owned_entrypoints,
     resolve_scan_execution_phase,
 )
 from agent.automation_plugins.errors import PluginConflictError
 
 
 FIRST_PARTY_TRUST = "ed25519_first_party"
+
+
+@pytest.mark.parametrize(
+    ("automation_id", "plugin_id", "enabled_entrypoints"),
+    (
+        (
+            "self_pickup_problem_upload",
+            "self_pickup_problem_upload",
+            ("console", "feishu"),
+        ),
+        (
+            "split_pending_problem_upload",
+            "split_pending_problem_upload",
+            ("console", "feishu", "scheduler"),
+        ),
+    ),
+)
+def test_problem_plugin_1021_entrypoint_transition_is_exact_and_closed(
+    automation_id: str,
+    plugin_id: str,
+    enabled_entrypoints: tuple[str, ...],
+) -> None:
+    assert normalize_first_party_code_owned_entrypoints(
+        automation_id=automation_id,
+        plugin_id=plugin_id,
+        current_version="1.0.20",
+        target_version="1.0.21",
+        enabled_entrypoints=enabled_entrypoints,
+    ) == ("feishu",)
+    assert normalize_first_party_code_owned_entrypoints(
+        automation_id=automation_id,
+        plugin_id=plugin_id,
+        current_version="1.0.20",
+        target_version="1.0.21",
+        enabled_entrypoints=(*enabled_entrypoints, "unexpected"),
+    ) is None
+    assert normalize_first_party_code_owned_entrypoints(
+        automation_id=automation_id,
+        plugin_id=plugin_id,
+        current_version="1.0.19",
+        target_version="1.0.21",
+        enabled_entrypoints=enabled_entrypoints,
+    ) is None
 
 
 def test_scan_phase_requires_binding_absence_or_a_nonempty_formal_binding() -> None:
