@@ -167,13 +167,13 @@ def _automation_plugin_block_warning(plugin: Mapping[str, Any]) -> str:
     if state not in AUTOMATION_PLUGIN_STABLE_STATES:
         reconcile_state = str(plugin.get("reconcile_state") or "UNKNOWN").upper()
         if reconcile_state == "BLOCKED_UNKNOWN_WRITE":
-            return "运行环境因未知写入结果被隔离；必须先完成回读核验，禁止重放。"
+            return (
+                "上次运行的保存结果无法确认。为防止重复写入，任务已暂停。"
+                "请先核对业务表格，再检查结果并恢复。"
+            )
         if reconcile_state == "ERROR":
-            return "运行环境协调失败：签名运行描述符未闭合；请执行受控修复，禁止手工篡改生成记录。"
-        return (
-            f"运行环境正在协调：项目状态 {state}，协调阶段 {reconcile_state}；"
-            "正在核验并重建旧版签名运行描述符，配置与完全自动意图保持不变。"
-        )
+            return "运行环境准备失败，任务已暂停。请联系管理员检查后再恢复。"
+        return "运行环境正在更新，任务暂时不可运行。已有设置和自动执行状态会保留。"
     return AUTOMATION_RUNTIME_REASON_LABELS["PROJECT_RUNTIME_UNAVAILABLE"]
 
 
@@ -819,7 +819,15 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 )
                 continue
 
-            task["name_value"] = str(plugin.get("instance_name") or task.get("name_value") or automation_id)
+            instance_name = str(plugin.get("instance_name") or "").strip()
+            workflow_name = str(
+                automation_workflow_definition(automation_id).get("display_name") or ""
+            ).strip()
+            task["name_value"] = (
+                workflow_name
+                if not instance_name or instance_name == automation_id
+                else instance_name
+            ) or str(task.get("name_value") or automation_id)
             task["display_task_id"] = automation_id
             task["plugin_blocked"] = bool(plugin.get("blocked"))
             task["control_plane_only"] = False

@@ -1,6 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 import math
+from collections.abc import Mapping
 
 from console.app_support import *  # noqa: F403
 from shared.service_identity import (
@@ -33,7 +34,7 @@ AUTOMATION_RUNTIME_REASON_LABELS = {
     "PROJECT_RUNTIME_UNAVAILABLE": "运行环境不可用/待修复",
 }
 AUTOMATION_RUNTIME_CONTRACT_ERROR_LABEL = (
-    "项目签名合同错误；运行、启用和完全自动均已阻断。"
+    "任务安装信息有误，当前无法运行。请联系管理员修复后再试。"
 )
 AUTOMATION_RUNTIME_RECONCILING_LABEL = "运行环境同步中"
 AUTOMATION_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
@@ -154,6 +155,120 @@ AUTOMATION_PLUGIN_CONFIG_COPY = {
     "sync_sheet": ("同步到表格", "开启后把结果同步到项目绑定的表格。"),
 }
 AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS = frozenset(AUTOMATION_PLUGIN_CONFIG_COPY)
+
+AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY = {
+    "account_id": ("运行账号", "任务执行时使用这个业务账号。"),
+    "account_ids": ("运行账号", "任务会依次使用所选业务账号。"),
+    "finance_quote_source": ("报价账单账号", "读取报价业务的账单数据。"),
+    "finance_daxiang_s_source": ("大祥 S 站账单账号", "读取大祥 S 站的账单数据。"),
+    "finance_self_pickup_source": ("自提部账单账号", "读取自提部的账单数据。"),
+    "customer_service_source": ("客服问题件账号", "读取所选账号下的客服问题件。"),
+}
+
+AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY = {
+    "webhook_route": ("外部调用入口", "只有需要由外部系统触发时才使用。"),
+    "feishu_route": ("飞书消息入口", "接收飞书中的固定指令。"),
+    "arrive_primary_sheet": ("到货清单主表", "保存主要到货清单。"),
+    "arrive_secondary_sheet": ("到货清单备用表", "保存备用到货清单。"),
+    "self_pickup_source_sheet": ("自提问题件来源表", "读取需要处理的自提问题件。"),
+    "split_pending_source_sheet": ("分批未到来源表", "读取分批及有发未到记录。"),
+    "split_pending_target_sheet": ("分批未到结果表", "保存当前分批及有发未到结果。"),
+    "send_order_bitable": ("当日寄件表", "保存当日寄件数据。"),
+    "daily_sign_bitable": ("每日应签明细表", "保存每日应签明细和处理状态。"),
+    "daily_sign_sheet": ("每日应签结果表", "保存每日应签结果快照。"),
+    "delivery_status_bitable": ("签收状态表", "读取并更新运单签收状态。"),
+    "arrival_stats_primary_sheet": ("到货统计主表", "保存主要到货统计结果。"),
+    "arrival_stats_secondary_sheet": ("到货统计备用表", "保存备用到货统计结果。"),
+    "arrival_stats_pending_sheet": (
+        "未齐货物表",
+        "可选。需要单独保存未齐货物时选择；暂停写入时可以留空。",
+    ),
+    "arrival_stats_archive_sheet": ("到货统计归档", "按日期保存每次到货统计结果。"),
+    "arrival_stats_split_pending_sheet": ("分批未到结果表", "保存分批及有发未到快照。"),
+    "site_send_bitable": ("网点出港明细表", "保存网点出港明细。"),
+    "site_send_sheet": ("网点出港结果表", "保存网点出港结果快照。"),
+    "dispatch_forecast_bitable": ("韵达派件预测表", "保存韵达网点派件量预测。"),
+    "send_waybills_bitable": ("韵达寄件明细表", "保存韵达寄件运单明细。"),
+    "send_waybills_sheet": ("韵达寄件结果表", "保存韵达寄件运单结果快照。"),
+}
+
+AUTOMATION_RESOURCE_DISPLAY_NAMES = {
+    "phase7.send_order_bitable": "当日寄件表",
+    "phase7.delivery_status_bitable": "签收状态表",
+    "phase7.delivery_status_webhook": "签收状态外部入口",
+    "phase7.price_query_webhook": "价格查询外部入口",
+    "phase7.daily_sign_bitable": "每日应签明细表",
+    "phase7.daily_sign_sheet": "每日应签结果表",
+    "phase7.site_send_bitable": "网点出港明细表",
+    "phase7.site_send_sheet": "网点出港结果表",
+    "phase7.arrive_primary_sheet": "到货清单主表",
+    "phase7.arrive_secondary_sheet": "到货清单备用表",
+    "phase7.pending_arrivals_sheet": "未齐货物表",
+    "phase7.yunda_dispatch_forecast_bitable": "韵达派件预测表",
+    "phase7.yunda_send_waybills_bitable": "韵达寄件明细表",
+    "phase7.yunda_send_waybills_sheet": "韵达寄件结果表",
+    "phase7.scan_webhook": "扫描外部入口",
+    "phase7.scan_flow_webhook": "扫描后续流程入口",
+    "phase7.stats_webhook": "到货统计外部入口",
+    "phase7.stats_archive_sheet": "到货统计归档",
+    "phase7.split_pending_source_sheet": "分批未到来源表",
+    "phase7.split_pending_target_sheet": "分批未到结果表",
+    "phase7.stats_flow_webhook": "到货统计后续流程入口",
+}
+
+AUTOMATION_RESOURCE_KIND_LABELS = {
+    "feishu_sheet": "飞书电子表格",
+    "feishu_bitable": "飞书多维表格",
+    "feishu_route": "飞书消息入口",
+    "webhook_route": "外部调用入口",
+}
+
+
+def _plain_role_copy(
+    role: str,
+    raw_label: object,
+    copy: Mapping[str, tuple[str, str]],
+    *,
+    fallback_label: str,
+    fallback_hint: str,
+) -> tuple[str, str]:
+    friendly = copy.get(role)
+    if friendly:
+        return friendly
+    projected = normalize_feedback_text(redact_text(str(raw_label or "")))[:80]
+    if projected and projected != role:
+        return projected, fallback_hint
+    return fallback_label, fallback_hint
+
+
+def _resource_display_name(resource_id: str, raw_name: object) -> str:
+    known = AUTOMATION_RESOURCE_DISPLAY_NAMES.get(resource_id)
+    if known:
+        return known
+    projected = normalize_feedback_text(redact_text(str(raw_name or "")))[:160]
+    if projected and projected != resource_id:
+        return projected
+    return "业务资源"
+
+
+def _configuration_summary(
+    account_roles: list[dict[str, Any]],
+    resource_roles: list[dict[str, Any]],
+) -> str:
+    labels = list(
+        dict.fromkeys(
+            str(item.get("label") or "").strip()
+            for item in [*account_roles, *resource_roles]
+            if str(item.get("label") or "").strip()
+        )
+    )
+    if not labels:
+        return "无需额外选择账号或表格"
+    visible = labels[:4]
+    summary = "、".join(visible)
+    if len(labels) > len(visible):
+        summary += f"等 {len(labels)} 项"
+    return summary
 
 
 def _normalize_browser_plugin_config_value(
@@ -359,7 +474,11 @@ def build_automation_project_policy_view(
         **item,
         "available": True,
         "label": label,
-        "summary": summary or default_summary,
+        "summary": (
+            default_summary
+            if runtime_status != "READY"
+            else summary or default_summary
+        ),
         "configured_mode": configured_mode,
         "effective_mode": effective_mode,
         "effective_status": effective_status,
@@ -560,13 +679,20 @@ def _normalize_plugin_account_roles(value: Any) -> list[dict[str, Any]]:
         ):
             continue
         seen.add(role)
+        label, hint = _plain_role_copy(
+            role,
+            raw_role.get("label"),
+            AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY,
+            fallback_label="业务账号",
+            fallback_hint="选择任务实际使用的业务账号。",
+        )
         roles.append(
             {
                 "role": role,
                 "field": role,
-                "label": normalize_feedback_text(
-                    redact_text(str(raw_role.get("label") or role))
-                )[:80],
+                "label": label,
+                "hint": hint,
+                "technical_name": role,
                 "allowed_systems": systems,
                 "required": bool(raw_role.get("required", True)),
                 "binding_cardinality": (
@@ -600,13 +726,24 @@ def _normalize_plugin_resource_roles(value: Any) -> list[dict[str, Any]]:
         if role in seen or not AUTOMATION_PLUGIN_CONFIG_KEY_RE.fullmatch(role) or not kinds:
             continue
         seen.add(role)
+        label, hint = _plain_role_copy(
+            role,
+            raw_role.get("label"),
+            AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY,
+            fallback_label="业务数据",
+            fallback_hint="选择这个任务读取或写入的数据位置。",
+        )
         roles.append(
             {
                 "role": role,
-                "label": normalize_feedback_text(
-                    redact_text(str(raw_role.get("label") or role))
-                )[:80],
+                "label": label,
+                "hint": hint,
+                "technical_name": role,
                 "allowed_kinds": kinds,
+                "kind_labels": [
+                    AUTOMATION_RESOURCE_KIND_LABELS.get(kind, "业务资源")
+                    for kind in kinds
+                ],
                 "required": bool(raw_role.get("required", True)),
             }
         )
@@ -641,7 +778,9 @@ def _normalize_plugin_resources(value: Any) -> tuple[list[dict[str, str]], bool]
             {
                 "resource_id": resource_id,
                 "name": name,
+                "display_name": _resource_display_name(resource_id, name),
                 "kind": kind,
+                "kind_label": AUTOMATION_RESOURCE_KIND_LABELS.get(kind, "业务资源"),
                 "status": status,
             }
         )
@@ -1030,6 +1169,9 @@ def normalize_automation_plugin_catalog(
             )[:200],
             "account_roles": account_roles,
             "resource_roles": resource_roles,
+            "configuration_summary": _configuration_summary(
+                account_roles, resource_roles
+            ),
             "scheduling": scheduling,
             "entrypoints": entrypoints,
             "contract_supported": contract_supported,
@@ -1150,6 +1292,13 @@ def normalize_automation_plugin_catalog(
                 for resource in resources
                 if resource["kind"] in allowed_kinds
             ] if resource_pool_available else []
+            options.sort(
+                key=lambda item: (
+                    item["resource_id"] != selected_resource_id,
+                    str(item.get("display_name") or ""),
+                    item["resource_id"],
+                )
+            )
             selected_available = bool(
                 selected_resource_id
                 and any(
@@ -1160,11 +1309,11 @@ def normalize_automation_plugin_catalog(
             blocked_reason = ""
             if not resource_pool_available:
                 if bool(role_definition.get("required")) or selected_resource_id:
-                    blocked_reason = "受管资源池当前不可用"
+                    blocked_reason = "表格列表暂时无法读取，请稍后刷新"
             elif selected_resource_id and not selected_available:
-                blocked_reason = "已保存资源不存在、不可用或类型不匹配"
+                blocked_reason = "之前选择的数据位置已停用或无法使用，请重新选择"
             elif bool(role_definition.get("required")) and not selected_resource_id:
-                blocked_reason = "未选择必需资源"
+                blocked_reason = f"请选择{role_definition['label']}"
             if blocked_reason:
                 resource_bindings_ready = False
             resource_role_bindings.append(
@@ -1326,6 +1475,9 @@ def normalize_automation_plugin_catalog(
                 "resource_roles": resource_roles,
                 "resource_bindings": resource_bindings,
                 "resource_role_bindings": resource_role_bindings,
+                "configuration_summary": _configuration_summary(
+                    account_roles, resource_roles
+                ),
                 "resource_pool_available": resource_pool_available,
                 "config_fields": config_fields,
                 "code_owned_config_fields": sorted(code_owned_config_fields),
@@ -2467,7 +2619,10 @@ class AutomationProjectsServiceMixin:
                 handler,
                 HTTPStatus.CONFLICT,
                 "PLUGIN_RECOVERY_EVIDENCE_UNRESOLVED",
-                "服务器证据仍不足，项目保持隔离且没有重放。",
+                (
+                    "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。"
+                    "请先到对应业务表格核对实际结果。"
+                ),
             )
             return
         if recovery_status not in {"APPLIED", "NOT_APPLIED"}:
@@ -2489,9 +2644,9 @@ class AutomationProjectsServiceMixin:
                     "transitioned": bool(data.get("transitioned")),
                 },
                 "message": (
-                    "服务器证据确认写入已完成，项目已解除隔离。"
+                    "已确认上次保存成功，任务已恢复。"
                     if recovery_status == "APPLIED"
-                    else "服务器证据确认写入未开始，项目已进入安全重试状态。"
+                    else "已确认上次没有保存，任务已进入安全重试状态。"
                 ),
             },
         )

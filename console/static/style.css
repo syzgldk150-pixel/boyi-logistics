@@ -802,9 +802,20 @@ body.dispatch-page .notice { display: none; }
 .auto-account-select-row { display: flex; align-items: center; gap: 10px; }
 .auto-account-select { max-width: 360px; min-height: 38px; }
 .auto-account-role-stack { display: flex; flex-direction: column; gap: 10px; }
-.auto-account-role-row { display: grid; grid-template-columns: minmax(120px, 180px) minmax(220px, 360px); align-items: center; gap: 10px; margin: 0; }
+.auto-account-role-row { display: grid; grid-template-columns: minmax(180px, 260px) minmax(260px, 420px); align-items: center; gap: 6px 14px; margin: 0; }
 .auto-account-role-label { color: var(--text-strong); font-size: 0.86rem; font-weight: 700; }
 .auto-account-role-label small { color: var(--muted); display: block; font-size: 0.75rem; font-weight: 600; margin-top: 2px; }
+.auto-setting-title-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.auto-setting-title-line strong { font-size: 0.86rem; }
+.auto-requirement-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 6px; border: 1px solid #d1d5db; border-radius: var(--radius-pill); background: var(--surface); color: #4b5563; font-size: 0.68rem; font-weight: 700; }
+.auto-requirement-badge--optional { border-color: #dbeafe; background: #eff6ff; color: #1d4ed8; }
+.auto-setting-help,
+.auto-account-role-row > .auto-account-blocked,
+.auto-technical-details { grid-column: 2; }
+.auto-setting-help { color: var(--muted); font-size: 0.74rem; }
+.auto-technical-details { width: fit-content; max-width: 100%; color: var(--muted); font-size: 0.72rem; }
+.auto-technical-details summary { cursor: pointer; font-weight: 650; }
+.auto-technical-details span { display: block; margin-top: 4px; overflow-wrap: anywhere; line-height: 1.5; }
 /* ── Webhook URL display ── */
 .auto-webhook-url-wrap { display: flex; align-items: center; gap: 8px; background: #f8fafc; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 12px; }
 .auto-webhook-url, .auto-webhook-body { flex: 1; font-family: var(--font-mono, 'SFMono-Regular', 'Consolas', monospace); font-size: 0.82rem; color: var(--text-strong); word-break: break-all; white-space: pre-wrap; margin: 0; background: none; line-height: 1.5; }
@@ -929,6 +940,9 @@ body.dispatch-page .notice { display: none; }
   .auto-schedule-stack { flex-direction: column; }
   .auto-account-select-row { align-items: stretch; flex-direction: column; }
   .auto-account-role-row { grid-template-columns: 1fr; }
+  .auto-setting-help,
+  .auto-account-role-row > .auto-account-blocked,
+  .auto-technical-details { grid-column: 1; }
   .auto-account-select { max-width: none; width: 100%; }
   .automation-plugin-instance-main { align-items: center; }
   .automation-plugin-menu-toggle { min-height: 44px; width: 44px; }

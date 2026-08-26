@@ -231,7 +231,7 @@ class AutomationProjectExecutionGateTests(unittest.TestCase):
             ),
             "ENTRYPOINTS_DISABLED": "所有运行入口均已关闭",
             "PROJECT_CONTRACT_UNAVAILABLE": (
-                "项目签名合同错误；运行、启用和完全自动均已阻断。"
+                "任务安装信息有误，当前无法运行。请联系管理员修复后再试。"
             ),
             "RECONCILE_PREPARING": "运行环境同步中",
             "PROJECT_RUNTIME_UNAVAILABLE": "运行环境不可用/待修复",
