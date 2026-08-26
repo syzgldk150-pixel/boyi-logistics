@@ -242,6 +242,7 @@ _SCAN_READ_FIELDS = (
     "code_type",
 )
 _ARRIVAL_STATS_FIELDS = (*_ARRIVE_FIELDS, "arrived_quantity")
+_ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS = frozenset({"receipt_number", "remarks"})
 _ARRIVAL_SNAPSHOT_FIELDS = (
     "tracking_number",
     "destination_station",
@@ -1900,9 +1901,34 @@ class _FirstPartyCoreHandlers:
         context: CoreBrokerInvocationContext,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        normalized_arguments = arguments
+        if context.tool_name == _ARRIVAL_STATS_TOOL:
+            values = _strict_arguments(arguments, {"records", "target_date"})
+            raw_records = values.get("records")
+            if not isinstance(raw_records, list) or len(raw_records) > _MAX_RECORDS:
+                raise _error("projection records are invalid", "BROKER_ARGUMENT_INVALID")
+            required = set(_ARRIVE_FIELDS)
+            normalized_records: list[dict[str, Any]] = []
+            for raw in raw_records:
+                if not isinstance(raw, Mapping):
+                    raise _error("projection record schema is invalid", "BROKER_ARGUMENT_INVALID")
+                keys = set(raw)
+                missing = required - keys
+                if keys - required or not missing.issubset(_ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS):
+                    raise _error("projection record schema is invalid", "BROKER_ARGUMENT_INVALID")
+                normalized_records.append(
+                    {
+                        **dict(raw),
+                        **{field: "" for field in missing},
+                    }
+                )
+            normalized_arguments = {
+                "records": normalized_records,
+                "target_date": values.get("target_date"),
+            }
         return self._projection_replace(
             context,
-            arguments,
+            normalized_arguments,
             port=self._ports.replace_waybill_snapshot,
             label="waybill-snapshot-replace",
             tool_names={_ARRIVE_TOOL, _ARRIVAL_STATS_TOOL},

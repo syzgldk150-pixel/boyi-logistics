@@ -764,6 +764,43 @@ def test_projection_rejects_schema_drift_before_any_write() -> None:
     assert writes == []
 
 
+def test_arrival_stats_waybill_projection_closes_known_optional_empty_fields() -> None:
+    manager = _Manager()
+    writes: list[object] = []
+
+    def replace(records, target):
+        writes.append((records, target))
+        return {"ok": True, "verified": True, "record_count": len(records)}
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=manager.require_authenticated_binding,
+            replace_waybill_snapshot=replace,
+        ),
+        cursor_secret=_SECRET,
+    )
+    context = _context(
+        tool_name="sync_arrival_stats",
+        role="account_id",
+        account_ids=("arrive-rh",),
+        action="waybill.snapshot.replace",
+        operation="projection.invoke",
+    )
+    record = _arrive_record("A-1")
+    del record["receipt_number"]
+    del record["remarks"]
+
+    result = handlers[("projection.invoke", "waybill.snapshot.replace")](
+        context,
+        {"records": [record], "target_date": "2026-08-15"},
+    )
+
+    assert result["committed"] is True
+    assert writes[0][0][0]["receipt_number"] == ""
+    assert writes[0][0][0]["remarks"] == ""
+    assert set(writes[0][0][0]) == set(_arrive_record("A-1"))
+
+
 def test_arrive_projection_without_exact_readback_is_unknown_after_port_call() -> None:
     manager = _Manager()
     writes: list[object] = []
