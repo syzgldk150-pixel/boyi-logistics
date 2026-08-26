@@ -235,6 +235,27 @@ def test_completed_preview_binds_exact_evidence_without_copying_bill_list():
     assert resolved.context["expires_at"] == "2026-08-24T04:13:00Z"
 
 
+def test_completed_preview_preserves_an_omitted_default_target_date():
+    fixture = _fixture()
+    fixture["commands"]["preview-command"]["parameters_json"]["arguments"].pop(
+        "target_date"
+    )
+    formal_arguments = dict(FORMAL_ARGUMENTS)
+    formal_arguments.pop("target_date")
+
+    resolved = resolve_scan_preview(
+        _Uow(fixture),
+        preview_run_id=RUN_ID,
+        expectation=_expectation(),
+        formal_arguments=formal_arguments,
+        now=NOW,
+        for_update=False,
+    )
+
+    assert resolved.formal_arguments == {**formal_arguments, "dry_run": False}
+    assert resolved.context["target_date"] == "2026-08-24"
+
+
 def test_public_preview_projection_is_bounded_and_marks_expiry() -> None:
     active = scan_preview_public_projection(
         _Uow(_fixture()),
