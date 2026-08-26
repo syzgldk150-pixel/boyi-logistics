@@ -1261,7 +1261,12 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             clean_text(value) for value in (fresh_values[0] if fresh_values else [])
         ]
     if actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] != SHEET_HEADERS:
-        return {"error": "应签明细表头不一致，停止写入", "expected_headers": SHEET_HEADERS, "actual_headers": actual_headers}
+        actual_summary = "、".join(actual_headers[:DAILY_SIGN_SHEET_COL_COUNT]) or "未读取到表头"
+        return {
+            "error": f"应签明细表头不一致，停止写入；当前表头：{actual_summary}",
+            "expected_headers": SHEET_HEADERS,
+            "actual_headers": actual_headers,
+        }
     sheet_values = _build_ledger_sheet_values(rows)
     write_range = build_range_from_template(
         f"{info['sheet']}!A2:I2", max(len(sheet_values), 1), DAILY_SIGN_SHEET_COL_COUNT
