@@ -148,6 +148,38 @@ class DailySignLedgerRulesTest(unittest.TestCase):
         message,
     )
 
+ def test_authoritative_ledger_snapshot_prunes_rows_outside_current_candidates(self):
+    class Cursor:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, params=None):
+            self.executed.append((" ".join(sql.split()), params))
+
+        def executemany(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+
+    row = {field: None for field in daily_sign_store.LEDGER_FIELDS}
+    row.update(
+        {
+            "tracking_number": "A",
+            "r13_current": False,
+            "tms_signed": False,
+            "data_quality_flags": [],
+            "calculation_trace": {},
+        }
+    )
+    cursor = Cursor()
+
+    daily_sign_store._upsert_ledger_rows(cursor, [row], prune_missing=True)
+
+    delete_sql, delete_params = cursor.executed[-1]
+    self.assertEqual(
+        "DELETE FROM daily_sign_ledger WHERE tracking_number NOT IN (%s)",
+        delete_sql,
+    )
+    self.assertEqual(("A",), delete_params)
+
  def test_exact_tracking_workers_inherit_execution_capability(self):
     observed_capabilities = []
 
