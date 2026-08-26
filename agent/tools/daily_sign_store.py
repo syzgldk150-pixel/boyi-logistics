@@ -119,7 +119,9 @@ def _temporal_value(value: Any) -> str | None:
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
-        return value.isoformat(sep=" ")
+        # Daily-sign migrations use MySQL DATETIME without fractional seconds.
+        # Fingerprints must bind the value that MySQL can actually persist.
+        return value.replace(microsecond=0).isoformat(sep=" ")
     if isinstance(value, date):
         return value.isoformat()
     return str(value).strip()
