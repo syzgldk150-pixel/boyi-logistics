@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import json
+import zlib
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -199,6 +200,8 @@ def _account_descriptor(
 
 
 class _OpaqueCodec:
+    _COMPRESSED_PREFIX = b"Z1\0"
+
     def __init__(self, secret: bytes) -> None:
         if not isinstance(secret, bytes) or len(secret) < 32:
             raise ValueError("first-party broker cursor secret must contain at least 32 bytes")
@@ -225,6 +228,9 @@ class _OpaqueCodec:
         payload: Mapping[str, Any],
     ) -> str:
         body = canonical_json_bytes(dict(payload))
+        compressed = self._COMPRESSED_PREFIX + zlib.compress(body, level=9)
+        if len(compressed) < len(body):
+            body = compressed
         signature = hmac.new(
             self._secret,
             self._context_material(context, purpose) + b"\0" + body,
@@ -252,8 +258,16 @@ class _OpaqueCodec:
             ).digest()
             if not hmac.compare_digest(supplied, expected):
                 raise ValueError("bad signature")
+            if body.startswith(self._COMPRESSED_PREFIX):
+                body = zlib.decompress(body[len(self._COMPRESSED_PREFIX) :])
             payload = json.loads(body.decode("utf-8"))
-        except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (
+            ValueError,
+            TypeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            zlib.error,
+        ) as exc:
             raise _error("broker cursor is invalid", "BROKER_CURSOR_INVALID") from exc
         if not isinstance(payload, dict):
             raise _error("broker cursor is invalid", "BROKER_CURSOR_INVALID")
