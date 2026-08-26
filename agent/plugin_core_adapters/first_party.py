@@ -636,7 +636,7 @@ def _scan_next_verify(
     page_size = 500
     rows: list[Mapping[str, Any]] = []
     declared_total: int | None = None
-    for page_index in range(1, 21):
+    for page_index in range(20):
         payload = get_scan.build_payload(
             json.dumps(date_range, ensure_ascii=False),
             site_code,
@@ -644,9 +644,11 @@ def _scan_next_verify(
             page_index,
             page_size,
         )
-        joined = ",".join(bill_codes)
+        # Ronghui's scan-record page explicitly accepts multiple waybills only
+        # when they are separated by line breaks.  MiniUI pageIndex is also
+        # zero-based, matching get_scan.collect_scan_rows().
+        joined = "\n".join(bill_codes)
         payload["searchOrderInput"] = joined
-        payload["BILL_CODE"] = joined
         try:
             response = session.post(
                 get_scan.SCAN_URL,

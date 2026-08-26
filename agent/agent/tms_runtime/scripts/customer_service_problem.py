@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
+from agent.tms_runtime.scripts.receipts_sync import _resolve_login_site_code_from_user_info
 
 try:
     from agent.tms_runtime.errors import TMSAuthStateError
@@ -30,6 +31,7 @@ RONGHUI_FIND_ALL_URL = f"{RONGHUI_ORIGIN}/dataQuery/findAllByCallId"
 RONGHUI_SAVE_TABLES_URL = f"{RONGHUI_ORIGIN}/dataOperation/saveTables"
 RONGHUI_UPLOAD_URL = f"{RONGHUI_ORIGIN}/file/upload?sysFileUploadId=ALL"
 RONGHUI_PROBLEM_PIC_SCAN_CALL_ID = "FIND_PIC_SCAN_BY_BILL_CODE"
+RONGHUI_QUERY_TIMEOUT_SECONDS = 120
 
 YUNDA_ORIGIN = "https://kyproblem.yunda56.com"
 YUNDA_PUBLIC_ROOT = f"{YUNDA_ORIGIN}/ky_problem/public/index.php"
@@ -632,7 +634,7 @@ def _resolve_ronghui_login_site_code(session: Any, filters: dict[str, Any]) -> s
     if explicit:
         return explicit
     user_info = _read_user_info_cookie(session)
-    return _first_text(user_info, "loginSiteCode", "siteCode", "loginOwnerSiteCode")
+    return _resolve_login_site_code_from_user_info(user_info)
 
 
 def build_ronghui_query_payload(filters: dict[str, Any], *, direction: str, login_site_code: str = "") -> dict[str, Any]:
@@ -658,7 +660,10 @@ def build_ronghui_query_payload(filters: dict[str, Any], *, direction: str, logi
         "SEND_SITE_CODE": send_site_code,
         "SEND_SITE": _clean_text(filters.get("SEND_SITE") or filters.get("send_site")),
         "LOGIN_SITE_CODE": _clean_text(
-            filters.get("LOGIN_SITE_CODE") or filters.get("login_site_code") or filters.get("loginSiteCode")
+            filters.get("LOGIN_SITE_CODE")
+            or filters.get("login_site_code")
+            or filters.get("loginSiteCode")
+            or login_site_code
         ),
         "pageIndex": page_index,
         "pageSize": page_size,
@@ -703,16 +708,22 @@ def _ronghui_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
         raise CustomerServiceProblemError("INVALID_DIRECTION", f"融辉不支持的问题件方向：{direction}")
     page_context = _resolve_ronghui_page_context(session, menu_text)
     grid_url = _clean_text(filters.get("grid_url")) or _select_ronghui_grid_url(page_context)
+    login_site_code = _resolve_ronghui_login_site_code(session, filters)
+    if not login_site_code:
+        raise CustomerServiceProblemError(
+            "LOGIN_SITE_CODE_MISSING",
+            "融辉登录态缺少当前网点编号，已停止问题件查询以避免扩大查询范围。",
+        )
     query_payload = build_ronghui_query_payload(
         filters,
         direction=RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction),
-        login_site_code=_resolve_ronghui_login_site_code(session, filters),
+        login_site_code=login_site_code,
     )
     response = session.post(
         grid_url,
         data=query_payload,
         headers=_ronghui_headers(page_context, content_type="application/x-www-form-urlencoded; charset=UTF-8"),
-        timeout=30,
+        timeout=RONGHUI_QUERY_TIMEOUT_SECONDS,
     )
     payload = _response_json(response, label="融辉问题件查询")
     _raise_if_source_failed(payload, label="融辉问题件查询")
