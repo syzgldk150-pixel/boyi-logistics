@@ -263,6 +263,27 @@ _PENDING_FIELDS = (
     "last_arrival_at",
     "arrival_status",
 )
+
+
+def _arrival_stats_v1_records(
+    value: object,
+    *,
+    fields: Sequence[str],
+    label: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > _MAX_RECORDS:
+        raise _error(f"{label} records are invalid", "BROKER_ARGUMENT_INVALID")
+    required = set(fields)
+    output: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise _error(f"{label} record schema is invalid", "BROKER_ARGUMENT_INVALID")
+        keys = set(raw)
+        missing = required - keys
+        if keys - required or not missing.issubset(_ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS):
+            raise _error(f"{label} record schema is invalid", "BROKER_ARGUMENT_INVALID")
+        output.append({**dict(raw), **{field: "" for field in missing}})
+    return output
 _YUNDA_DISPATCH_FIELDS = (
     "主单号",
     "开单件数",
@@ -1904,26 +1925,12 @@ class _FirstPartyCoreHandlers:
         normalized_arguments = arguments
         if context.tool_name == _ARRIVAL_STATS_TOOL:
             values = _strict_arguments(arguments, {"records", "target_date"})
-            raw_records = values.get("records")
-            if not isinstance(raw_records, list) or len(raw_records) > _MAX_RECORDS:
-                raise _error("projection records are invalid", "BROKER_ARGUMENT_INVALID")
-            required = set(_ARRIVE_FIELDS)
-            normalized_records: list[dict[str, Any]] = []
-            for raw in raw_records:
-                if not isinstance(raw, Mapping):
-                    raise _error("projection record schema is invalid", "BROKER_ARGUMENT_INVALID")
-                keys = set(raw)
-                missing = required - keys
-                if keys - required or not missing.issubset(_ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS):
-                    raise _error("projection record schema is invalid", "BROKER_ARGUMENT_INVALID")
-                normalized_records.append(
-                    {
-                        **dict(raw),
-                        **{field: "" for field in missing},
-                    }
-                )
             normalized_arguments = {
-                "records": normalized_records,
+                "records": _arrival_stats_v1_records(
+                    values.get("records"),
+                    fields=_ARRIVE_FIELDS,
+                    label="projection",
+                ),
                 "target_date": values.get("target_date"),
             }
         return self._projection_replace(
@@ -2545,9 +2552,18 @@ class _FirstPartyCoreHandlers:
         context: CoreBrokerInvocationContext,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        values = _strict_arguments(arguments, {"records", "target_date"})
+        normalized_arguments = {
+            "records": _arrival_stats_v1_records(
+                values.get("records"),
+                fields=_ARRIVAL_STATS_FIELDS,
+                label="projection",
+            ),
+            "target_date": values.get("target_date"),
+        }
         return self._projection_replace(
             context,
-            arguments,
+            normalized_arguments,
             port=self._ports.refresh_split_pending_snapshot,
             label="split-pending-snapshot-refresh",
             tool_names={_ARRIVAL_STATS_TOOL},
@@ -2595,10 +2611,18 @@ class _FirstPartyCoreHandlers:
                 )
             target_date = _business_date(values.get("target_date"))
             fields = _PENDING_FIELDS if slot == "arrival_stats_pending" else _ARRIVAL_STATS_FIELDS
-            records = _strict_record_list(
-                values.get("records"),
-                fields=fields,
-                label="arrival statistics sheet",
+            records = (
+                _strict_record_list(
+                    values.get("records"),
+                    fields=fields,
+                    label="arrival statistics sheet",
+                )
+                if fields == _PENDING_FIELDS
+                else _arrival_stats_v1_records(
+                    values.get("records"),
+                    fields=fields,
+                    label="arrival statistics sheet",
+                )
             )
             self._mark_write_started(context)
             raw = self._ports.replace_arrival_stats_sheet(
@@ -2737,7 +2761,7 @@ class _FirstPartyCoreHandlers:
             raise _error("arrival archive primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
         values = _strict_arguments(arguments, {"records", "target_date"})
         target_date = _business_date(values.get("target_date"))
-        records = _strict_record_list(
+        records = _arrival_stats_v1_records(
             values.get("records"),
             fields=_ARRIVAL_STATS_FIELDS,
             label="arrival archive",
