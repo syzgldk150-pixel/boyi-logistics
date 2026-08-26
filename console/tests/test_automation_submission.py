@@ -639,7 +639,7 @@ class AutomationSubmissionTests(unittest.TestCase):
 
         self.assertEqual(False, captured["payload"]["ok"])
         self.assertEqual("执行未开始", captured["payload"]["title"])
-        self.assertIn("到货清单主表写入配置", captured["payload"]["message"])
+        self.assertIn("每日到货表写入配置", captured["payload"]["message"])
         self.assertIn("到货统计归档表配置", captured["payload"]["message"])
 
     def test_run_now_preserves_safe_agent_admission_status_and_error_code(self):
