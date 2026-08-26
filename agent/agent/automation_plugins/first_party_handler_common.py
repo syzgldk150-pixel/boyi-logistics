@@ -526,15 +526,6 @@ def _encode_daily_sign_result(raw: object) -> dict[str, Any]:
             or terminal_proof.get("condition")
             != "authoritative_snapshot_committed"
             or not isinstance(terminal_details, Mapping)
-            or any(
-                not isinstance(terminal_details.get(field), str)
-                or len(terminal_details[field]) != 64
-                for field in (
-                    "persistence_sha256",
-                    "bitable_snapshot_sha256",
-                    "sheet_snapshot_sha256",
-                )
-            )
         ):
             raise _error(
                 "daily-sign authoritative terminal readback is incomplete",
