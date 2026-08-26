@@ -509,8 +509,9 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
 
 
 class _FinalizationCursor:
-    def __init__(self, outcome):
+    def __init__(self, outcome, *, committed_generation=3):
         self.outcome = outcome
+        self.committed_generation = committed_generation
         self.executed = []
         self.rowcount = 1
         self._row = None
@@ -528,7 +529,10 @@ class _FinalizationCursor:
         if compact.startswith("SELECT automation_id, generation FROM automation_project_generation_leases"):
             self._row = {"automation_id": "arrival_stats", "generation": 2}
         elif "FROM automation_projects" in compact:
-            self._row = {"automation_id": "arrival_stats"}
+            self._row = {
+                "automation_id": "arrival_stats",
+                "committed_generation": self.committed_generation,
+            }
         elif "FROM automation_project_generations" in compact:
             self._row = {"automation_id": "arrival_stats", "generation": 2}
         elif compact.startswith("SELECT * FROM automation_project_generation_leases"):
@@ -547,16 +551,22 @@ class _FinalizationCursor:
 
 
 class _FinalizationSqlFake:
-    def __init__(self, outcome):
-        self.recording_cursor = _FinalizationCursor(outcome)
+    def __init__(self, outcome, *, committed_generation=3):
+        self.recording_cursor = _FinalizationCursor(
+            outcome,
+            committed_generation=committed_generation,
+        )
 
     def cursor(self):
         return self.recording_cursor
 
 
 class GenerationWriteFinalizationSqlTests(unittest.TestCase):
-    def _finalize(self, outcome):
-        fake = _FinalizationSqlFake(outcome)
+    def _finalize(self, outcome, *, committed_generation=3):
+        fake = _FinalizationSqlFake(
+            outcome,
+            committed_generation=committed_generation,
+        )
         AutomationPluginRepository.finalize_generation_write_row(
             fake,
             automation_id="arrival_stats",
@@ -580,14 +590,30 @@ class GenerationWriteFinalizationSqlTests(unittest.TestCase):
             for statement in statements
         ))
 
-    def test_unknown_finalization_blocks_generation_and_project(self):
+    def test_unknown_finalization_blocks_historical_generation_only(self):
         statements = self._finalize("WRITE_OUTCOME_UNKNOWN")
         self.assertTrue(any(
             "UPDATE automation_project_generations" in statement
             and "BLOCKED" in statement
             for statement in statements
         ))
-        self.assertTrue(any(
+        self.assertFalse(any(
+            "UPDATE automation_projects" in statement
+            and "BLOCKED_UNKNOWN_WRITE" in statement
+            for statement in statements
+        ))
+
+    def test_unknown_finalization_keeps_current_generation_runnable(self):
+        statements = self._finalize(
+            "WRITE_OUTCOME_UNKNOWN",
+            committed_generation=2,
+        )
+        self.assertFalse(any(
+            "UPDATE automation_project_generations" in statement
+            and "BLOCKED" in statement
+            for statement in statements
+        ))
+        self.assertFalse(any(
             "UPDATE automation_projects" in statement
             and "BLOCKED_UNKNOWN_WRITE" in statement
             for statement in statements

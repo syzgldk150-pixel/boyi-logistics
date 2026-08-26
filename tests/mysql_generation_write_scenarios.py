@@ -347,12 +347,12 @@ def run_test_generation_write_lock_order_races(case):
                 "WHERE automation_id=%s AND generation=1",
                 (automation_id,),
             )
-            case.assertEqual("BLOCKED", cursor.fetchone()["state"])
+            case.assertEqual("COMMITTED", cursor.fetchone()["state"])
             cursor.execute(
                 "SELECT reconcile_state FROM automation_projects WHERE automation_id=%s",
                 (automation_id,),
             )
-            case.assertEqual("BLOCKED_UNKNOWN_WRITE", cursor.fetchone()["reconcile_state"])
+            case.assertEqual("STABLE", cursor.fetchone()["reconcile_state"])
 
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
@@ -721,7 +721,7 @@ def run_test_generation_write_lock_order_races(case):
             committed_generation=2,
         )
         case.assertEqual(
-            [(1, "BLOCKED", True), (2, "BLOCKED", True)],
+            [(1, "BLOCKED", True), (2, "COMMITTED", True)],
             [
                 (
                     row["generation"],

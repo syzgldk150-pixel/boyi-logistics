@@ -26,7 +26,12 @@ def block_generation_unknown_write_row(
     required_text: Callable[[Any, str], str],
     positive_int: Callable[[Any, str], int],
 ) -> None:
-    """Block one generation after durable unknown-write evidence is found."""
+    """Retain unknown-write evidence without freezing the current route.
+
+    A non-current generation is still blocked from disposal so its immutable
+    code and receipts remain available for audit. The current committed
+    generation stays runnable; a later command always receives a new lease.
+    """
 
     safe_automation_id = required_text(automation_id, "automation_id")
     safe_generation = positive_int(generation, "generation")
@@ -40,7 +45,8 @@ def block_generation_unknown_write_row(
             """,
             (safe_automation_id,),
         )
-        if _row_dict(cursor, cursor.fetchone()) is None:
+        project = _row_dict(cursor, cursor.fetchone())
+        if project is None:
             raise OrchestrationPersistenceError(
                 "automation project disappeared during unknown-write block"
             )
@@ -71,6 +77,8 @@ def block_generation_unknown_write_row(
             raise ConcurrentUpdateError(
                 "runtime generation has no unknown write evidence"
             )
+        if int(project.get("committed_generation") or 0) == safe_generation:
+            return
         cursor.execute(
             """
             UPDATE automation_project_generations
@@ -85,14 +93,6 @@ def block_generation_unknown_write_row(
             raise ConcurrentUpdateError(
                 "runtime generation unknown-write state changed"
             )
-        cursor.execute(
-            """
-            UPDATE automation_projects
-            SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-            WHERE automation_id=%s AND committed_generation=%s
-            """,
-            (safe_automation_id, safe_generation),
-        )
 
 
 def lock_archival_unknown_predecessor(

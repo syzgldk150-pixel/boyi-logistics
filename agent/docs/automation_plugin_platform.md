@@ -7,7 +7,7 @@ related:
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-23
+updated: 2026-08-26
 ---
 
 # 自动化插件平台
@@ -244,21 +244,16 @@ started writes 的失败保存为 `FAILED_BEFORE_WRITE`，任何已开始但未�
 外部网页、Office、飞书或财务写入不可逆，不能伪造 inverse。活跃、`VERIFYING`、过期但未定论的
 lease 或未知写结果都会阻断 dispose，直到权威读后核验或人工处置。
 
-未知写不会被清除、伪造为成功或自动重放。当前 committed generation 已精确落为 `BLOCKED` 时，
-项目保持冻结且不可运行；若策略仍绑定当前代，启动 reconcile 只隔离该项目，不会自行创建下一代或
-阻断其他项目启动。只有签名首方发布 bootstrap 能在同一事务内证明 generation 的
-`error_code=WRITE_OUTCOME_UNKNOWN`、至少一条同代未知写 lease 且当前代没有 `RUNNING/VERIFYING`
-lease 后，显式把配置、插件和策略绑定到精确下一代；普通 Console 保存和通用插件升级不能使用该
-能力。独立、完整的后继代在提交事务中再次锁定项目、前代与未知写 lease 后原子成为新的 committed
-route；前代保持 `BLOCKED`，全部 lease 和历史 Run/Evidence 保持不可变，并作为不可删除的审计归档
-退出运行健康阻断。已经退出路由的历史隔离代允许切换前取得的迟到 finalizer 完成，但它只能更新旧代，
-不能把新 committed 路由重新标成 `BLOCKED_UNKNOWN_WRITE`。普通 `BLOCKED`、错误码不符、零条未知写
-lease、当前代仍有活动写租约或配置/effect 未闭合均继续 fail closed。
+未知写不会被清除、伪造为成功或自动重放。失败 Run 与同代未知 lease/receipt/Evidence 保持不可变，
+但当前 committed generation 继续作为稳定路由：再次手工执行或定时触发必须创建新的 Command、Run
+与 generation lease，不复用历史 Run 或 lease。未知 lease 仍阻断该 generation 的 dispose/uninstall；
+generation 退出当前路由后，历史代落为 `BLOCKED` 审计归档，迟到 finalizer 只能更新旧代，不能把新
+committed 路由改成不可运行。
 
-操作员恢复入口同样保持服务端权威：Console 只提交浏览器生成的请求 UUID，Agent 在当前 committed
-generation 内查询 unresolved `WRITE_OUTCOME_UNKNOWN` lease。只有候选恰好一条时才进入已有的持久
-receipt 恢复事务；候选缺失或多条、receipt 不完整、目标 Run/Step 状态不闭合均返回 `UNKNOWN`，
-保持项目隔离且不执行重放。浏览器不得提交 generation、lease_id 或 evidence。
+操作员恢复入口只负责闭合历史未知 receipt，不是重新执行的前置步骤。Console 只提交浏览器生成的
+请求 UUID，Agent 只依据持久 receipt 与权威回读判定 `WRITE_VERIFIED`、`NOT_APPLIED` 或 `UNKNOWN`；
+浏览器不得提交 generation、lease_id 或 evidence，恢复过程也不得重放原 Run。普通重新执行直接走
+新的 Command，并重新校验当前签名、配置、账号、资源、入口和写后证据。
 
 ### Broker write receipts and recovery
 

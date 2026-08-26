@@ -230,6 +230,8 @@ class RegisteredCoreAutomationBrokerAdapter:
                 )
             if account_role is not None:
                 if signed_role not in grant.account_bindings:
+                    if account_role.get("required") is not True:
+                        continue
                     raise PluginExecutionError(
                         "account role is unbound",
                         code="BROKER_ROLE_UNBOUND",
@@ -261,6 +263,8 @@ class RegisteredCoreAutomationBrokerAdapter:
             if resource_role is not None:
                 resource_id = str(grant.resource_bindings.get(signed_role) or "").strip()
                 allowed_kinds = resource_role.get("allowed_kinds")
+                if not resource_id and resource_role.get("required") is not True:
+                    continue
                 if not resource_id or not isinstance(allowed_kinds, list):
                     raise PluginExecutionError(
                         "resource role contract is invalid",

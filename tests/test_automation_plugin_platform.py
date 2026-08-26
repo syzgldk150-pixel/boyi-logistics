@@ -765,6 +765,89 @@ def test_registered_core_adapter_revalidates_exact_bound_account(
     assert calls[0][0].account_ids == ("acct-1",)
 
 
+def test_registered_core_adapter_skips_unbound_optional_action_resource(
+    tmp_path: Path,
+) -> None:
+    primary_role = "primary_sheet"
+    optional_role = "optional_sheet"
+    calls = []
+
+    class Resources:
+        @staticmethod
+        def require_active(*, resource_id: str, allowed_kinds) -> dict[str, str]:
+            assert resource_id == "primary-resource"
+            assert allowed_kinds == ["feishu_sheet"]
+            return {"resource_id": resource_id, "kind": "feishu_sheet"}
+
+    async def handler(context, arguments):
+        calls.append((context, arguments))
+        return {"count": 1}
+
+    permissions = {
+        "network": True,
+        "max_broker_calls": 1,
+        "broker_operations": [
+            {
+                "operation": "network.request",
+                "action": "feishu.sheet.replace",
+                "effect": "write",
+                "roles": [primary_role, optional_role],
+            }
+        ],
+    }
+    roles = [
+        {
+            "role": primary_role,
+            "allowed_kinds": ["feishu_sheet"],
+            "required": True,
+        },
+        {
+            "role": optional_role,
+            "allowed_kinds": ["feishu_sheet"],
+            "required": False,
+        },
+    ]
+    issuer = LocalBrokerCapabilityIssuer(tmp_path / "optional-resource.sock")
+    token = issuer.issue(
+        automation_id="optional-resource-instance",
+        plugin_version="1.0.0",
+        tool_name="sync_arrival_stats",
+        ttl_seconds=60,
+        runtime_permissions=permissions,
+        account_roles=[],
+        resource_roles=roles,
+        account_bindings={},
+        resource_bindings={primary_role: "primary-resource"},
+    )
+    request_id = str(uuid.uuid4())
+    grant, binding = issuer.consume(
+        token,
+        request_id=request_id,
+        operation="network.request",
+        action="feishu.sheet.replace",
+        role=primary_role,
+    )
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers={("network.request", "feishu.sheet.replace"): handler},
+        resource_resolver=Resources(),
+    )
+
+    result = asyncio.run(
+        adapter.invoke(
+            grant=grant,
+            operation="network.request",
+            action="feishu.sheet.replace",
+            role=primary_role,
+            binding=binding,
+            arguments={"records": []},
+        )
+    )
+
+    assert result == {"count": 1}
+    assert calls[0][0].resource_id == "primary-resource"
+    assert calls[0][0].resource_bindings == {primary_role: "primary-resource"}
+
+
 def test_registered_core_adapter_keeps_event_loop_responsive_for_sync_handler(
     core_catalog: ToolRegistry,
 ) -> None:
