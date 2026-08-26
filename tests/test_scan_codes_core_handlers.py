@@ -507,6 +507,70 @@ def test_scan_next_verify_requires_a_fresh_context_bound_server_read():
     assert verify_calls == 1
 
 
+def test_scan_next_operation_token_stays_within_signed_payload_limit_for_full_batch():
+    items = [
+        {
+            "bill_code": f"R12345678901{index:04d}",
+            "station_name": "邵阳大祥S站",
+        }
+        for index in range(50)
+    ]
+
+    def submit(_descriptor, requested):
+        return {
+            "ok": True,
+            "stage": "done",
+            "write_started_at": "2026-08-26T14:00:00+00:00",
+            "write_finished_at": "2026-08-26T14:03:00+00:00",
+            "detail": {
+                "items": requested,
+                "stations": [
+                    {
+                        "station_name": "邵阳大祥S站",
+                        "count": len(requested),
+                        "bill_codes": [item["bill_code"] for item in requested],
+                    }
+                ],
+                "total_scanned": len(requested),
+                "skipped_signed_codes": [],
+            },
+        }
+
+    def verify(_descriptor, requested, _started_at, _finished_at):
+        return {
+            "ok": True,
+            "verified": True,
+            "record_count": len(requested),
+            "identities_sha256": _scan_next_identities_sha256(requested),
+        }
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            scan_next_submit=submit,
+            scan_next_verify=verify,
+        ),
+        cursor_secret=_SECRET,
+    )
+    submitted = handlers[("browser.invoke", "ronghui.scan_next.submit")](
+        _context("ronghui.scan_next.submit"),
+        {"items": items},
+    )
+
+    assert len(submitted["operation_id"]) <= 2048
+    verified = handlers[("browser.invoke", "ronghui.scan_next.verify")](
+        _context("ronghui.scan_next.verify"),
+        {
+            "operation_id": submitted["operation_id"],
+            "items_sha256": submitted["items_sha256"],
+            "submitted": submitted["submitted"],
+            "scanned": submitted["scanned"],
+            "skipped_signed_codes": submitted["skipped_signed_codes"],
+        },
+    )
+    assert verified["verified"] is True
+
+
 @pytest.mark.parametrize(
     "raw",
     [
