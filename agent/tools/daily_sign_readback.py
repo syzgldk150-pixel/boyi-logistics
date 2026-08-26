@@ -139,10 +139,20 @@ def verify_bitable_snapshot(
         raise DailySignReadbackError("daily-sign Bitable readback identity set changed")
     for identity, expected_fields in expected_by_identity.items():
         observed_fields = observed_by_identity[identity]
-        if any(
-            field not in observed_fields or observed_fields[field] != expected_value
-            for field, expected_value in expected_fields.items()
-        ):
+        mismatched = False
+        for field, expected_value in expected_fields.items():
+            if expected_value in (None, ""):
+                # Feishu omits empty cells from a record's ``fields`` object.
+                # An omitted field, JSON null, and an empty string therefore
+                # describe the same stored blank cell.
+                if observed_fields.get(field) not in (None, ""):
+                    mismatched = True
+                    break
+                continue
+            if field not in observed_fields or observed_fields[field] != expected_value:
+                mismatched = True
+                break
+        if mismatched:
             raise DailySignReadbackError("daily-sign Bitable readback field changed")
     canonical = [
         expected_by_identity[identity]
