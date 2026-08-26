@@ -20,6 +20,7 @@ from shared.automation_project_manifest import (
 )
 import hashlib
 import json
+import re
 
 
 _CORE_GOVERNANCE_FIELDS = (
@@ -814,6 +815,7 @@ def _validate_signed_schema_value(schema: Any, value: Any) -> None:
         "uniqueItems",
         "minLength",
         "maxLength",
+        "pattern",
         "description",
         "title",
         "default",
@@ -829,6 +831,8 @@ def _validate_signed_schema_value(schema: Any, value: Any) -> None:
     if "const" in schema and not _strict_json_equal(value, schema["const"]):
         raise ValueError("value differs from const")
     expected_type = schema.get("type")
+    if "pattern" in schema and expected_type != "string":
+        raise ValueError("pattern is only valid for strings")
     if expected_type == "object":
         if not isinstance(value, Mapping):
             raise TypeError("value must be an object")
@@ -876,6 +880,16 @@ def _validate_signed_schema_value(schema: Any, value: Any) -> None:
             raise ValueError("string is too short")
         if type(maximum) is int and len(value) > maximum:
             raise ValueError("string is too long")
+        pattern = schema.get("pattern")
+        if pattern is not None:
+            if not isinstance(pattern, str):
+                raise TypeError("string pattern must be text")
+            try:
+                matched = re.search(pattern, value)
+            except re.error as exc:
+                raise ValueError("string pattern is invalid") from exc
+            if matched is None:
+                raise ValueError("string does not match pattern")
         return
     if expected_type == "integer":
         if type(value) is not int:

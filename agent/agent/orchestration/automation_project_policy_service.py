@@ -7,7 +7,6 @@ committed plugin generation and locked orchestration rows.
 
 from __future__ import annotations
 
-import logging
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -85,9 +84,6 @@ from shared.automation_project_policy_repository import (
 from shared.orchestration_repository import ConcurrentUpdateError, InvalidStateError
 from shared.orchestration_repository_support import IdempotencyConflict
 from shared.redaction import redact_text
-
-
-logger = logging.getLogger(__name__)
 
 
 _USER_POLICY_MODES = frozenset(
@@ -1442,64 +1438,13 @@ class AutomationProjectPolicyService:
                 plan,
                 steps=(replace(preview_step, operation_type=signed_operation),),
             )
-        plan_matches_contract = contract.matches_plan(
+        if not contract.matches_plan(
             contract_plan,
             invocation,
             source=source,
             execution_context=execution_context,
             dynamic_resolver=self._dynamic_resolver,
-        )
-        if not plan_matches_contract:
-            if is_scan_preview_project(entry):
-                diagnostic_step = contract_plan.steps[0] if len(contract_plan.steps) == 1 else None
-                diagnostic_arguments = (
-                    diagnostic_step.arguments
-                    if diagnostic_step is not None
-                    and isinstance(diagnostic_step.arguments, Mapping)
-                    else {}
-                )
-                diagnostic_contract = contract.invocation_contracts.get(
-                    invocation.contract_id
-                )
-                diagnostic_expected = (
-                    diagnostic_contract.expected_arguments
-                    if diagnostic_contract is not None
-                    else {}
-                )
-                diagnostic_context = execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
-                diagnostic_binding = diagnostic_arguments.get(
-                    "_scan_preview_binding"
-                )
-                logger.warning(
-                    "scan plan contract mismatch: phase=%s expected_keys=%s "
-                    "actual_keys=%s code_owned_fields=%s dry_run=%r "
-                    "binding_present=%s context_present=%s binding_context_match=%s "
-                    "tool_match=%s version_match=%s operation_match=%s",
-                    scan_phase,
-                    sorted(str(key) for key in diagnostic_expected),
-                    sorted(str(key) for key in diagnostic_arguments),
-                    sorted(contract.code_owned_plan_fields),
-                    diagnostic_arguments.get("dry_run"),
-                    "_scan_preview_binding" in diagnostic_arguments,
-                    isinstance(diagnostic_context, Mapping),
-                    isinstance(diagnostic_binding, Mapping)
-                    and isinstance(diagnostic_context, Mapping)
-                    and canonical_sha256(diagnostic_binding)
-                    == canonical_sha256(diagnostic_context),
-                    diagnostic_step is not None
-                    and str(diagnostic_step.tool_name) == contract.tool_name,
-                    diagnostic_step is not None
-                    and str(diagnostic_step.tool_version) == contract.tool_version,
-                    diagnostic_step is not None
-                    and str(
-                        getattr(
-                            diagnostic_step.operation_type,
-                            "value",
-                            diagnostic_step.operation_type,
-                        )
-                    )
-                    == contract.operation_type,
-                )
+        ):
             return _project_denied(
                 "PROJECT_INVOCATION_STALE",
                 "Automation plan does not match the committed project contract",
