@@ -1033,7 +1033,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 self.assertTrue(decision.requires_approval)
                 self.assertEqual("PROJECT_APPROVAL_REQUIRED", decision.code)
 
-    def test_scan_formal_full_auto_requires_current_explicit_super_admin_policy(self):
+    def test_scan_formal_honors_current_full_auto_mode_for_all_entrypoints(self):
         plan, invocation = self._scan_policy_subject(dry_run=False)
         execution_context = {
             "scan_preview": plan.steps[0].arguments["_scan_preview_binding"]
@@ -1046,38 +1046,6 @@ class AutomationProjectPolicyServiceTests(TestCase):
             }
         )
 
-        migrated = self.service.evaluate_invocation(
-            plan,
-            _admin(),
-            "console",
-            execution_context,
-            invocation,
-        )
-        self.assertTrue(migrated.allowed)
-        self.assertTrue(migrated.requires_approval)
-        self.assertEqual("SCAN_FORMAL_APPROVAL_REQUIRED", migrated.code)
-
-        self.repository.state.policy.update(
-            {
-                "approved_by_actor_id": "admin-one",
-                "approved_by_actor_role": "super_admin",
-                "project_generation": 1,
-                "project_configuration_version": 1,
-            }
-        )
-        self.repository.state.policy_events.append(
-            {
-                "automation_id": "scan_codes",
-                "request_id": "scan-full-auto-current",
-                "from_mode": "REQUIRE_EACH_RUN",
-                "to_mode": "PROJECT_FULL_AUTO",
-                "project_generation": 1,
-                "project_configuration_version": 1,
-                "actor_id": "admin-one",
-                "actor_role": "super_admin",
-                "reason": "SUPER_ADMIN_PROJECT_POLICY_CHANGED",
-            }
-        )
         for source in ("console", "feishu", "webhook"):
             with self.subTest(source=source):
                 current = self.service.evaluate_invocation(
@@ -1094,41 +1062,6 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 self.assertTrue(current.allowed)
                 self.assertFalse(current.requires_approval)
                 self.assertEqual("PROJECT_FULL_AUTO", current.code)
-
-        self.repository.state.policy["project_generation"] = 2
-        stale = self.service.evaluate_invocation(
-            plan,
-            _admin(),
-            "console",
-            execution_context,
-            invocation,
-        )
-        self.assertTrue(stale.allowed)
-        self.assertTrue(stale.requires_approval)
-
-        self.repository.state.policy["project_generation"] = 1
-        self.repository.state.policy_events.append(
-            {
-                "automation_id": "scan_codes",
-                "request_id": "scan-config-advanced",
-                "from_mode": "PROJECT_FULL_AUTO",
-                "to_mode": "PROJECT_FULL_AUTO",
-                "project_generation": 1,
-                "project_configuration_version": 1,
-                "actor_id": "admin-one",
-                "actor_role": "super_admin",
-                "reason": "PROJECT_CONFIGURATION_CHANGED",
-            }
-        )
-        lineage_advanced = self.service.evaluate_invocation(
-            plan,
-            _admin(),
-            "console",
-            execution_context,
-            invocation,
-        )
-        self.assertTrue(lineage_advanced.allowed)
-        self.assertTrue(lineage_advanced.requires_approval)
 
     def test_policy_version_drift_rechecks_current_durable_mode(self):
         invocation = _invocation()

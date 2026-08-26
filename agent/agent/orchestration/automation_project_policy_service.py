@@ -1482,38 +1482,6 @@ class AutomationProjectPolicyService:
                     contract.restriction_code or "PROJECT_CONTRACT_NOT_RUNNABLE",
                     "The current signed project contract is not runnable",
                 )
-            latest_policy_event = policy_events[-1] if policy_events else None
-            if scan_phase == SCAN_PHASE_FORMAL and not (
-                isinstance(latest_policy_event, Mapping)
-                and latest_policy_event.get("reason")
-                == SUPER_ADMIN_PROJECT_POLICY_REASON
-                and latest_policy_event.get("to_mode")
-                == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
-                and latest_policy_event.get("actor_role") == "super_admin"
-                and bool(
-                    str(latest_policy_event.get("actor_id") or "").strip()
-                )
-                and latest_policy_event.get("actor_id")
-                == policy.get("approved_by_actor_id")
-                and policy.get("approved_by_actor_role") == "super_admin"
-                and latest_policy_event.get("project_generation")
-                == contract.automation_generation
-                and latest_policy_event.get("project_configuration_version")
-                == contract.project_configuration_version
-                and policy.get("project_generation")
-                == contract.automation_generation
-                and policy.get("project_configuration_version")
-                == contract.project_configuration_version
-            ):
-                return ProjectPolicyEvaluation(
-                    allowed=True,
-                    requires_approval=True,
-                    code="SCAN_FORMAL_APPROVAL_REQUIRED",
-                    reason=(
-                        "Scan full-auto requires an explicit current super-admin "
-                        "policy bound to this generation and configuration"
-                    ),
-                )
             return ProjectPolicyEvaluation(
                 allowed=True,
                 requires_approval=False,
