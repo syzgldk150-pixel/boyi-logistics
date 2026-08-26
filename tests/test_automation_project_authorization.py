@@ -11,6 +11,7 @@ from shared.automation_project_authorization import (
     AutomationProjectInvocation,
     CompiledAutomationProjectContract,
     InvocationArgumentContract,
+    _validate_signed_schema_value,
     canonical_sha256,
     compile_automation_project_contract,
 )
@@ -385,6 +386,7 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
                 source="console",
             )
         )
+
         plan.steps[0].arguments["override"] = True
         self.assertFalse(contract.matches_plan(plan, invocation, source="console"))
 
@@ -415,6 +417,21 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
             "INVALID_PROJECT_INVOCATION",
         ):
             AutomationProjectInvocation.from_mapping(values)
+
+    def test_signed_string_schema_accepts_and_enforces_pattern(self):
+        schema = {"type": "string", "pattern": r"^[0-9a-f]{64}$"}
+
+        _validate_signed_schema_value(schema, "a" * 64)
+
+        with self.assertRaisesRegex(ValueError, "does not match pattern"):
+            _validate_signed_schema_value(schema, "not-a-digest")
+
+    def test_signed_string_schema_rejects_invalid_pattern(self):
+        with self.assertRaisesRegex(ValueError, "pattern is invalid"):
+            _validate_signed_schema_value(
+                {"type": "string", "pattern": "["},
+                "value",
+            )
 
     def test_uses_exact_persisted_configuration_version_and_rejects_builtin_trust(self):
         capability = _capability("clock_in_dual")
