@@ -851,7 +851,10 @@ def test_arrival_stats_sheet_and_archive_use_exact_instance_resource_roles() -> 
         ),
         cursor_secret=_SECRET,
     )
-    records = [_arrival_stats_record("A-1")]
+    record = _arrival_stats_record("A-1")
+    del record["receipt_number"]
+    del record["remarks"]
+    records = [record]
 
     for slot, role, resource_id, expected_layout in (
         (
@@ -899,7 +902,12 @@ def test_arrival_stats_sheet_and_archive_use_exact_instance_resource_roles() -> 
     assert archived["committed"] is True
     assert sheet_calls[0][0:2] == ("resource-stats-primary", "stats")
     assert sheet_calls[1][0:2] == ("resource-split-pending", "split_pending")
-    assert archive_calls == [("resource-stats-archive", records, "2026-08-15")]
+    assert sheet_calls[0][2][0]["receipt_number"] == ""
+    assert sheet_calls[0][2][0]["remarks"] == ""
+    assert archive_calls[0][0] == "resource-stats-archive"
+    assert archive_calls[0][1][0]["receipt_number"] == ""
+    assert archive_calls[0][1][0]["remarks"] == ""
+    assert archive_calls[0][2] == "2026-08-15"
 
 
 def test_arrival_stats_sheet_unverified_or_role_mismatch_fails_closed() -> None:
