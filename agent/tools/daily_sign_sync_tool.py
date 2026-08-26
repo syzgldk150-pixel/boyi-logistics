@@ -23,6 +23,7 @@ from tools.daily_sign_rules import (
     parse_datetime,
 )
 from tools.daily_sign_store import (
+    DailySignPersistenceReadbackError,
     build_daily_sign_persistence_marker,
     finish_sync_run,
     latest_successful_sync_at,
@@ -832,6 +833,12 @@ def _tracking_payload(response: Any) -> dict[str, Any] | None:
     if response.get("type") or isinstance(response.get("route_rows"), list):
         return response
     return None
+
+
+def _persistence_readback_failure_message(exc: Exception) -> str:
+    if isinstance(exc, DailySignPersistenceReadbackError):
+        return f"每日应签权威持久化回读不匹配：{clean_text(exc)}"
+    return "每日应签权威事件、账本或发布集合的新鲜回读不匹配。"
 
 
 def _query_exact_main_sign(code: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -1710,7 +1717,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             raise DailySignSyncError(
                 "WRITE_OUTCOME_UNKNOWN",
-                "每日应签权威事件、账本或发布集合的新鲜回读不匹配。",
+                _persistence_readback_failure_message(exc),
                 retryable=False,
             ) from exc
         if (

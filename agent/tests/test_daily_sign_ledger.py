@@ -136,6 +136,18 @@ class DailySignLedgerRulesTest(unittest.TestCase):
 
     self.assertEqual("2026-08-27 00:01:47", canonical["last_seen_r13_at"])
 
+ def test_persistence_readback_message_exposes_only_safe_row_set(self):
+    exc = daily_sign_store.DailySignPersistenceReadbackError(
+        "daily-sign ledger rows fresh readback changed"
+    )
+
+    message = daily_sign_sync_tool._persistence_readback_failure_message(exc)
+
+    self.assertEqual(
+        "每日应签权威持久化回读不匹配：daily-sign ledger rows fresh readback changed",
+        message,
+    )
+
  def test_exact_tracking_workers_inherit_execution_capability(self):
     observed_capabilities = []
 
