@@ -168,8 +168,8 @@ AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY = {
 AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY = {
     "webhook_route": ("外部调用入口", "只有需要由外部系统触发时才使用。"),
     "feishu_route": ("飞书消息入口", "接收飞书中的固定指令。"),
-    "arrive_primary_sheet": ("到货清单主表", "保存主要到货清单。"),
-    "arrive_secondary_sheet": ("到货清单备用表", "保存备用到货清单。"),
+    "arrive_primary_sheet": ("每日到货表", "保存每日到货基础清单。"),
+    "arrive_secondary_sheet": ("每日到货备用表", "保存每日到货基础清单的备用副本。"),
     "self_pickup_source_sheet": ("自提问题件来源表", "读取需要处理的自提问题件。"),
     "split_pending_source_sheet": ("分批未到来源表", "读取分批及有发未到记录。"),
     "split_pending_target_sheet": ("分批未到结果表", "保存当前分批及有发未到结果。"),
@@ -177,8 +177,11 @@ AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY = {
     "daily_sign_bitable": ("每日应签明细表", "保存每日应签明细和处理状态。"),
     "daily_sign_sheet": ("每日应签结果表", "保存每日应签结果快照。"),
     "delivery_status_bitable": ("签收状态表", "读取并更新运单签收状态。"),
-    "arrival_stats_primary_sheet": ("到货统计主表", "保存主要到货统计结果。"),
-    "arrival_stats_secondary_sheet": ("到货统计备用表", "保存备用到货统计结果。"),
+    "arrival_stats_primary_sheet": (
+        "每日到货表",
+        "保存每单实际到货件数，S 列为实际到达数量。",
+    ),
+    "arrival_stats_secondary_sheet": ("每日到货备用表", "保存每日到货统计的备用副本。"),
     "arrival_stats_pending_sheet": (
         "未齐货物表",
         "可选。需要单独保存未齐货物时选择；暂停写入时可以留空。",
@@ -201,8 +204,8 @@ AUTOMATION_RESOURCE_DISPLAY_NAMES = {
     "phase7.daily_sign_sheet": "每日应签结果表",
     "phase7.site_send_bitable": "网点出港明细表",
     "phase7.site_send_sheet": "网点出港结果表",
-    "phase7.arrive_primary_sheet": "到货清单主表",
-    "phase7.arrive_secondary_sheet": "到货清单备用表",
+    "phase7.arrive_primary_sheet": "每日到货表",
+    "phase7.arrive_secondary_sheet": "每日到货备用表",
     "phase7.pending_arrivals_sheet": "未齐货物表",
     "phase7.yunda_dispatch_forecast_bitable": "韵达派件预测表",
     "phase7.yunda_send_waybills_bitable": "韵达寄件明细表",
@@ -214,6 +217,16 @@ AUTOMATION_RESOURCE_DISPLAY_NAMES = {
     "phase7.split_pending_source_sheet": "分批未到来源表",
     "phase7.split_pending_target_sheet": "分批未到结果表",
     "phase7.stats_flow_webhook": "到货统计后续流程入口",
+    "automation.feishu_route.arrival_stats": "到货统计飞书入口",
+    "automation.feishu_route.arrive_list": "每日到货飞书入口",
+    "automation.feishu_route.r7_arrival_checkin": "R7 到达打卡飞书入口",
+    "automation.feishu_route.r7_departure_checkin": "R7 发车打卡飞书入口",
+    "automation.feishu_route.scan_codes": "扫描飞书入口",
+    "automation.feishu_route.self_pickup_problem_upload": "自提问题件飞书入口",
+    "automation.feishu_route.send_order": "当日寄件飞书入口",
+    "automation.feishu_route.split_pending_problem_upload": "分批未到飞书入口",
+    "automation.feishu_route.yunda_dispatch_forecast": "韵达派件预测飞书入口",
+    "automation.feishu_route.yunda_send_waybills": "韵达寄件飞书入口",
 }
 
 AUTOMATION_RESOURCE_KIND_LABELS = {
