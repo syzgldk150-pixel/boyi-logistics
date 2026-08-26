@@ -489,6 +489,17 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
         self.assertEqual("2026/06/18 00:00:00", date_value["start"])
         self.assertEqual("2026/06/18 23:59:59", date_value["end"])
         self.assertEqual(payload["REGISTER_DATE"], payload["SEARCH_DATE_RANGE"])
+        self.assertEqual("7390004", payload["LOGIN_SITE_CODE"])
+
+    def test_resolve_ronghui_login_site_code_reads_nested_user_info(self):
+        with patch.object(
+            customer_service_problem,
+            "_read_user_info_cookie",
+            return_value={"result": {"data": {"loginSiteCode": "7390004"}}},
+        ):
+            site_code = customer_service_problem._resolve_ronghui_login_site_code(object(), {})
+
+        self.assertEqual("7390004", site_code)
 
     def test_build_ronghui_query_payload_converts_console_page_to_miniui_page_index(self):
         first_page = customer_service_problem.build_ronghui_query_payload(
@@ -745,6 +756,32 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
 
         self.assertEqual("SOURCE_QUERY_FAILED", ctx.exception.code)
         self.assertIn("json", str(ctx.exception))
+        self.assertEqual(customer_service_problem.RONGHUI_QUERY_TIMEOUT_SECONDS, session.post_calls[0][1]["timeout"])
+        self.assertEqual("7390004", session.post_calls[0][1]["data"]["LOGIN_SITE_CODE"])
+
+    def test_ronghui_query_stops_when_login_site_code_is_missing(self):
+        page_context = {
+            "menu_text": "登记问题件查询",
+            "url": "https://tms.ronghuiwl.com/widget/home?authenticationKey=auth&pageId=page",
+            "html": '<div id="datagrid" class="mini-datagrid" url="/dataQuery/findPageByCallId?id=PROBLEM"></div>',
+            "authentication_key": "auth",
+            "page_id": "page",
+        }
+
+        with patch.object(customer_service_problem, "_resolve_ronghui_page_context", return_value=page_context), patch.object(
+            customer_service_problem, "_resolve_ronghui_login_site_code", return_value=""
+        ):
+            with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+                customer_service_problem._ronghui_query(
+                    object(),
+                    {
+                        "account_id": "ronghui-a",
+                        "account_label": "ronghui-a",
+                        "filters": {"direction": "registered"},
+                    },
+                )
+
+        self.assertEqual("LOGIN_SITE_CODE_MISSING", ctx.exception.code)
 
     def test_run_once_yunda_query_detects_auth_required(self):
         class Response:

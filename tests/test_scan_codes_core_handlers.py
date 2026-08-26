@@ -729,9 +729,57 @@ def test_scan_next_adapter_reads_the_fresh_authoritative_send_scan_ledger():
         "SCAN_TYPE": "发件",
         "SCAN_SITE_CODE": "site-1",
         "LOGIN_SITE_CODE": "site-1",
-        "BILL_CODE": "R123456789010001",
         "searchOrderInput": "R123456789010001",
+        "pageIndex": "0",
     } == session.calls[0]["data"]
+
+
+def test_scan_next_adapter_uses_ronghui_line_breaks_for_multiple_waybills():
+    class Session:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def post(self, _url, **kwargs):
+            self.calls.append(kwargs)
+            return _ScanReadbackResponse(
+                [
+                    _authoritative_scan_row(row_id="row-1"),
+                    {
+                        **_authoritative_scan_row(row_id="row-2"),
+                        "BILL_CODE": "R123456789010002",
+                    },
+                ]
+            )
+
+    session = Session()
+    items = [
+        {"bill_code": "R123456789010001", "station_name": "A站"},
+        {"bill_code": "R123456789010002", "station_name": "A站"},
+    ]
+    with (
+        patch("agent.tms_runtime.scripts.login_manager.TMSAuth") as auth_factory,
+        patch(
+            "agent.tms_runtime.scripts.receipts_sync._read_user_info_cookie",
+            return_value={"siteCode": "site-1"},
+        ),
+        patch(
+            "agent.tms_runtime.scripts.receipts_sync._resolve_login_site_code_from_user_info",
+            return_value="site-1",
+        ),
+    ):
+        auth_factory.return_value.login_and_get_session.return_value = session
+        result = _scan_next_verify(
+            _descriptor("scan-account"),
+            items,
+            "2026-08-15T00:00:00+00:00",
+            "2026-08-15T00:00:05+00:00",
+        )
+
+    assert result["record_count"] == 2
+    assert session.calls[0]["data"]["searchOrderInput"] == (
+        "R123456789010001\nR123456789010002"
+    )
+    assert "BILL_CODE" not in session.calls[0]["data"]
 
 
 @pytest.mark.parametrize("case", ["zero", "multiple", "incomplete"])
