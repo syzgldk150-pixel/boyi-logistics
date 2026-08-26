@@ -765,9 +765,16 @@ def _upsert_sign_verification_states(
     )
 
 
-def _upsert_ledger_rows(cursor: Any, rows: list[dict[str, Any]]) -> None:
+def _upsert_ledger_rows(
+    cursor: Any,
+    rows: list[dict[str, Any]],
+    *,
+    prune_missing: bool = False,
+) -> None:
     cursor.execute("UPDATE daily_sign_ledger SET r13_current = FALSE")
     if not rows:
+        if prune_missing:
+            cursor.execute("DELETE FROM daily_sign_ledger")
         return
     cursor.executemany(
         """
@@ -813,6 +820,12 @@ def _upsert_ledger_rows(cursor: Any, rows: list[dict[str, Any]]) -> None:
             for row in rows
         ],
     )
+    if prune_missing:
+        placeholders = ", ".join(["%s"] * len(rows))
+        cursor.execute(
+            f"DELETE FROM daily_sign_ledger WHERE tracking_number NOT IN ({placeholders})",
+            tuple(clean_text(row.get("tracking_number")) for row in rows),
+        )
 
 
 def upsert_problem_events(
@@ -1094,7 +1107,10 @@ def persist_daily_sign_snapshot(
             _upsert_problem_events(cursor, normalized_problems)
             _upsert_sign_events(cursor, normalized_signs)
             _upsert_sign_verification_states(cursor, normalized_verifications)
-            _upsert_ledger_rows(cursor, normalized_ledger)
+            # This transaction represents a complete authoritative snapshot.
+            # Remove rows left behind by older candidate rules so the database
+            # open set and the Feishu publication set remain identical.
+            _upsert_ledger_rows(cursor, normalized_ledger, prune_missing=True)
             if marker is not None:
                 cursor.execute(
                     """
