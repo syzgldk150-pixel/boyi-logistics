@@ -639,6 +639,12 @@ def _normalize_sign_verification_states(
             raise ValueError("未签收核验状态的连续未签次数必须至少为 1")
         if last_result == "error" and not last_error:
             raise ValueError("错误核验状态必须提供可审计的错误摘要")
+        # Migration 013 uses MySQL DATETIME (second precision).  Canonicalize
+        # before building the persistence marker so the intended snapshot and
+        # the fresh database readback describe the same stored values.
+        last_checked_at = last_checked_at.replace(microsecond=0)
+        if next_check_at is not None:
+            next_check_at = next_check_at.replace(microsecond=0)
         output.append(
             {
                 "tracking_number": tracking_number,

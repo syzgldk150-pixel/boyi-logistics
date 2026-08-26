@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from tools.daily_sign_rules import build_ledger_row, calculate_system_sign_due
 from tools.daily_sign_pipeline import DailySignSyncError
-from tools import daily_sign_backfill_tool, daily_sign_sync_tool
+from tools import daily_sign_backfill_tool, daily_sign_store, daily_sign_sync_tool
 from agent.execution_boundary import current_execution_capability, execution_capability_scope
 from agent.tms_runtime.scripts import get_qianshou, get_scan, get_sign_records
 
@@ -99,6 +99,23 @@ def failed_run_values(_run_id, diagnostics, *, message: str) -> dict:
 
 
 class DailySignLedgerRulesTest(unittest.TestCase):
+ def test_verification_state_uses_database_second_precision(self):
+    rows = daily_sign_store._normalize_sign_verification_states(
+        [
+            {
+                "tracking_number": "A",
+                "last_checked_at": datetime(2026, 8, 26, 23, 49, 9, 586445),
+                "last_result": "not_signed",
+                "next_check_at": datetime(2026, 8, 27, 23, 49, 9, 586445),
+                "consecutive_not_signed": 1,
+                "last_error": None,
+            }
+        ]
+    )
+
+    self.assertEqual(datetime(2026, 8, 26, 23, 49, 9), rows[0]["last_checked_at"])
+    self.assertEqual(datetime(2026, 8, 27, 23, 49, 9), rows[0]["next_check_at"])
+
  def test_exact_tracking_workers_inherit_execution_capability(self):
     observed_capabilities = []
 
