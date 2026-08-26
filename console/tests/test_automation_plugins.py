@@ -167,7 +167,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
 
         self.assertIn("缺少必填配置：区域", instances[0]["missing_requirements"])
-        self.assertIn("缺少必需账号：报价来源账号", instances[0]["missing_requirements"])
+        self.assertIn("缺少必需账号：报价账单账号", instances[0]["missing_requirements"])
 
     def test_reconciling_generation_is_distinct_from_configuration_missing(self):
         payload = _catalog_payload()
@@ -182,7 +182,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("PREPARING", instances[0]["reconcile_state"])
         self.assertEqual([], instances[0]["missing_requirements"])
         self.assertIn(
-            "签名运行描述符",
+            "运行环境正在更新",
             _automation_plugin_block_warning(instances[0]),
         )
 
@@ -326,7 +326,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         instance = instances[0]
         self.assertTrue(instance["blocked"])
         self.assertFalse(instance["config_schema_supported"])
-        self.assertIn("受管资源池当前不可用", "；".join(instance["missing_requirements"]))
+        self.assertIn("表格列表暂时无法读取", "；".join(instance["missing_requirements"]))
 
     def test_resource_pool_filters_exact_kind_and_never_selects_first(self):
         payload = _catalog_payload()
@@ -366,7 +366,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
 
         binding = instances[0]["resource_role_bindings"][0]
         self.assertEqual("", binding["selected_resource_id"])
-        self.assertEqual("未选择必需资源", binding["blocked_reason"])
+        self.assertEqual("请选择输入表格", binding["blocked_reason"])
         self.assertEqual(
             ["phase7.bound_sheet", "phase7.first_sheet"],
             [item["resource_id"] for item in binding["options"]],
@@ -383,6 +383,37 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("phase7.bound_sheet", binding["selected_resource_id"])
         self.assertTrue(binding["selected_available"])
         self.assertFalse(instances[0]["blocked"])
+
+    def test_arrival_stats_resource_copy_uses_business_names(self):
+        payload = _catalog_payload()
+        role = {
+            "role": "arrival_stats_pending_sheet",
+            "label": "arrival_stats_pending_sheet",
+            "allowed_kinds": ["feishu_sheet"],
+            "required": False,
+        }
+        payload["plugins"][0]["resource_roles"] = [role]
+        payload["instances"][0]["resource_roles"] = [role]
+        payload["instances"][0]["resource_bindings"] = {
+            "arrival_stats_pending_sheet": "phase7.pending_arrivals_sheet"
+        }
+        payload["resources"] = [
+            {
+                "resource_id": "phase7.pending_arrivals_sheet",
+                "name": "phase7.pending_arrivals_sheet",
+                "kind": "feishu_sheet",
+                "status": "available",
+            }
+        ]
+
+        packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        binding = instances[0]["resource_role_bindings"][0]
+        self.assertEqual("未齐货物表", binding["label"])
+        self.assertIn("可选", binding["hint"])
+        self.assertEqual("未齐货物表", binding["options"][0]["display_name"])
+        self.assertEqual("飞书电子表格", binding["options"][0]["kind_label"])
+        self.assertEqual("报价账单账号、未齐货物表", packages[0]["configuration_summary"])
 
     def test_resource_projection_with_extra_fields_fails_closed_without_leaking(self):
         payload = _catalog_payload()
@@ -1166,7 +1197,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         resource_select = card.split('data-plugin-resource-role="input_sheet"', 1)[1]
         resource_select = resource_select.split("</select>", 1)[0]
 
-        self.assertIn("已验签的自动化动作", html)
+        self.assertIn("可安装的自动化", html)
         self.assertIn('aria-controls="automation-plugin-manager-dialog"', html)
         self.assertIn('<dialog class="automation-plugin-manager-dialog"', html)
         self.assertIn("data-plugin-drop-zone", install_form)
@@ -1182,7 +1213,9 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn('value="acct-first" selected', account_select)
         self.assertIn('value="phase7.bound_sheet" selected', resource_select)
         self.assertNotIn('value="phase7.first_sheet" selected', resource_select)
-        self.assertIn("Token、表格 ID、文件路径和完整配置不会发送到浏览器", card)
+        self.assertIn("页面不会显示表格密钥等敏感信息", card)
+        self.assertIn("数据从哪里读取、保存到哪里", card)
+        self.assertIn("项目已绑定表格（飞书电子表格）", card)
         self.assertNotIn("data-cron-editor", card)
         self.assertNotIn("policy_hash", card)
         self.assertIn('name="project-policy-finance_action_east"', card)

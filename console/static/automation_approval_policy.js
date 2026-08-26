@@ -696,7 +696,7 @@
     const config = {};
     form.querySelectorAll("[data-plugin-config-path]").forEach(control => {
       if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement)) return;
-      if (!control.checkValidity()) throw new Error("请检查项目运行配置的格式与范围。");
+      if (!control.checkValidity()) throw new Error("请检查“任务怎么运行”中的填写内容。");
       const normalized = pluginConfigControlValue(control);
       if (!normalized.omitted) setNestedConfig(config, control.dataset.pluginConfigPath, normalized.value);
     });
@@ -950,7 +950,7 @@
         recoverButton,
         "recover",
         {},
-        "服务器证据仍不足，项目保持隔离且不会重放。",
+        "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。请先到对应业务表格核对实际结果。",
       );
     });
 
