@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
@@ -18,6 +19,9 @@ from agent.automation_plugins.errors import PluginExecutionError
 from agent.execution_boundary import execution_capability_scope
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -337,6 +341,19 @@ class RegisteredCoreAutomationBrokerAdapter:
                 result = await result
         if not isinstance(result, Mapping):
             raise PluginExecutionError("core broker handler returned a non-object result")
+        if grant.tool_name == "sync_scan_codes":
+            logger.warning(
+                "scan broker result shape action=%s fields=%s",
+                action,
+                {
+                    str(key): (
+                        f"list[{','.join(sorted({type(item).__name__ for item in value}))}]"
+                        if isinstance(value, list)
+                        else type(value).__name__
+                    )
+                    for key, value in result.items()
+                },
+            )
         return dict(result)
 
 
