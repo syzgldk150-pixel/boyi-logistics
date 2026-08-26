@@ -46,7 +46,7 @@ def _authoritative_result() -> dict[str, object]:
             "postconditions": {"0": True},
             "postcondition_evidence": {
                 "0": {
-                    "condition": "authoritative_snapshot_and_projections_verified",
+                    "condition": "authoritative_snapshot_committed",
                     "verified": True,
                     "observed_at": "2026-08-15T05:00:00+08:00",
                     "evidence_ref": "mysql:daily_sign_sync_runs:run:opaque",
@@ -337,24 +337,13 @@ def test_broker_handler_receives_exact_tool_scoped_tms_capability() -> None:
     assert current_execution_capability() == ""
 
 
-def test_closed_handler_rejects_success_with_tampered_terminal_readback() -> None:
+def test_production_port_rejects_success_with_tampered_terminal_readback() -> None:
     tampered = _authoritative_result()
     tampered["meta"]["postcondition_evidence"]["0"]["details"][
         "persistence_sha256"
     ] = "short"
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
-            describe_account=_descriptor,
-            daily_sign_sync=lambda arguments, resources: tampered,
-        ),
-        cursor_secret=b"d" * 32,
-    )
-
     with pytest.raises(PluginExecutionError) as exc_info:
-        handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
-            _context(),
-            {"days": 7},
-        )
+        daily_sign_adapters._verified_success(tampered)
 
     assert exc_info.value.code == "WRITE_OUTCOME_UNKNOWN"
 

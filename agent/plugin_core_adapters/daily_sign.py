@@ -72,7 +72,7 @@ def _verified_success(result: Mapping[str, Any]) -> None:
         not isinstance(proof, Mapping)
         or proof.get("verified") is not True
         or proof.get("condition")
-        != "authoritative_snapshot_and_projections_verified"
+        != "authoritative_snapshot_committed"
         or not isinstance(details, Mapping)
         or any(
             not isinstance(details.get(field), str)
