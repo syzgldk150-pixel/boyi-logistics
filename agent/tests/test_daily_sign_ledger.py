@@ -7,6 +7,7 @@ from unittest.mock import patch
 from tools.daily_sign_rules import build_ledger_row, calculate_system_sign_due
 from tools.daily_sign_pipeline import DailySignSyncError
 from tools import daily_sign_backfill_tool, daily_sign_sync_tool
+from agent.execution_boundary import current_execution_capability, execution_capability_scope
 from agent.tms_runtime.scripts import get_qianshou, get_scan, get_sign_records
 
 
@@ -98,6 +99,24 @@ def failed_run_values(_run_id, diagnostics, *, message: str) -> dict:
 
 
 class DailySignLedgerRulesTest(unittest.TestCase):
+ def test_exact_tracking_workers_inherit_execution_capability(self):
+    observed_capabilities = []
+
+    def fake_query(code, _params):
+        observed_capabilities.append(current_execution_capability())
+        return {"tracking_number": code, "sign_event": None}
+
+    with (
+        execution_capability_scope("sync_daily_should_sign", ttl_seconds=30),
+        patch("tools.daily_sign_sync_tool._query_exact_main_sign", side_effect=fake_query),
+    ):
+        expected = current_execution_capability()
+        results = daily_sign_sync_tool._query_exact_sign_results(["A", "B"], {})
+
+    self.assertEqual({"A", "B"}, {row["tracking_number"] for row in results})
+    self.assertTrue(expected)
+    self.assertEqual([expected, expected], sorted(observed_capabilities))
+
  def test_normal_complete_is_due_next_day_end_of_day(self):
     due, state = calculate_system_sign_due([arrival("2026-08-12", 10, 10)], [])
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)

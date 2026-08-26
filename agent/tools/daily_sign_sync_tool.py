@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
@@ -892,7 +893,14 @@ def _query_exact_sign_results(codes: list[str], params: dict[str, Any]) -> list[
     workers = min(max(int(params.get("exact_sign_workers") or 4), 1), 8, len(codes))
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_query_exact_main_sign, code, params): code for code in codes}
+        # ``ContextVar`` values do not cross ``ThreadPoolExecutor`` boundaries
+        # automatically.  Preserve the execution capability issued by the
+        # governed tool runner so every nested read-only tracking query remains
+        # authorized without broadening the target allowlist.
+        futures = {
+            executor.submit(copy_context().run, _query_exact_main_sign, code, params): code
+            for code in codes
+        }
         for future in as_completed(futures):
             code = futures[future]
             try:
