@@ -116,6 +116,26 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertEqual(datetime(2026, 8, 26, 23, 49, 9), rows[0]["last_checked_at"])
     self.assertEqual(datetime(2026, 8, 27, 23, 49, 9), rows[0]["next_check_at"])
 
+ def test_ledger_fingerprint_uses_database_second_precision(self):
+    row = {
+        field: None
+        for field in daily_sign_store.LEDGER_FIELDS
+    }
+    row.update(
+        {
+            "tracking_number": "A",
+            "last_seen_r13_at": datetime(2026, 8, 27, 0, 1, 47, 549921),
+            "r13_current": True,
+            "tms_signed": False,
+            "data_quality_flags": [],
+            "calculation_trace": {},
+        }
+    )
+
+    canonical = daily_sign_store._canonical_ledger_row(row)
+
+    self.assertEqual("2026-08-27 00:01:47", canonical["last_seen_r13_at"])
+
  def test_exact_tracking_workers_inherit_execution_capability(self):
     observed_capabilities = []
 
