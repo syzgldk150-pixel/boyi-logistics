@@ -259,17 +259,18 @@ class AutomationProjectExecutionGateTests(unittest.TestCase):
     def test_console_only_disabled_keeps_entrypoint_specific_reason(self):
         task = self._task()
         task["can_run_now"] = False
-        task["run_disabled_reason"] = "后台入口已关闭"
-        apply_automation_project_execution_gate(
-            task,
-            {
-                "available": True,
-                "runnable": True,
-                "runtime_status": "READY",
-                "runtime_reason": "",
-            },
-        )
-        self.assertEqual("后台入口已关闭", task["run_disabled_reason"])
+        for reason in ("后台入口已关闭", "请到飞书预览并选择运单"):
+            task["run_disabled_reason"] = reason
+            apply_automation_project_execution_gate(
+                task,
+                {
+                    "available": True,
+                    "runnable": True,
+                    "runtime_status": "READY",
+                    "runtime_reason": "",
+                },
+            )
+            self.assertEqual(reason, task["run_disabled_reason"])
 
     def test_hidden_catalog_ids_accept_only_closed_identity_list(self):
         self.assertEqual(

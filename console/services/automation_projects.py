@@ -537,6 +537,7 @@ def apply_automation_project_execution_gate(
         ]
     elif str(task.get("run_disabled_reason") or "") not in {
         "后台入口已关闭",
+        "请到飞书预览并选择运单",
         "当前不可执行",
     }:
         task["run_disabled_reason"] = "项目当前不可运行"
