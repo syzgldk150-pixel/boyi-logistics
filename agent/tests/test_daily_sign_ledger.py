@@ -135,6 +135,32 @@ class DailySignLedgerRulesTest(unittest.TestCase):
 
     self.assertEqual("multi_account", result["meta"]["account_scope"])
 
+ def test_broker_relies_on_verified_daily_sign_proof_instead_of_digest_shape(self):
+    result = _encode_daily_sign_result(
+        {
+            "status": "SUCCESS",
+            "data": {},
+            "meta": {
+                "account_id": "multi_account",
+                "pagination_complete": True,
+                "evidence_refs": ["proof"],
+                "postconditions": {"0": True},
+                "postcondition_evidence": {
+                    "0": {
+                        "verified": True,
+                        "condition": "authoritative_snapshot_committed",
+                        "evidence_ref": "proof",
+                        "details": {"source_run_id": "run"},
+                    }
+                },
+            },
+            "warnings": [],
+            "error": None,
+        }
+    )
+
+    self.assertTrue(result["meta"]["postconditions"]["0"])
+
  def test_bitable_readback_treats_omitted_empty_cells_as_blank(self):
     expected = [
         {
