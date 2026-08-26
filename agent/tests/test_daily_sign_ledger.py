@@ -13,6 +13,7 @@ from tools import (
     daily_sign_sync_tool,
 )
 from agent.execution_boundary import current_execution_capability, execution_capability_scope
+from agent.automation_plugins.first_party_handler_common import _encode_daily_sign_result
 from agent.tms_runtime.scripts import get_qianshou, get_scan, get_sign_records
 
 
@@ -104,6 +105,36 @@ def failed_run_values(_run_id, diagnostics, *, message: str) -> dict:
 
 
 class DailySignLedgerRulesTest(unittest.TestCase):
+ def test_broker_accepts_catalog_daily_sign_postcondition_name(self):
+    digest = "a" * 64
+    result = _encode_daily_sign_result(
+        {
+            "status": "SUCCESS",
+            "data": {},
+            "meta": {
+                "account_id": "multi_account",
+                "pagination_complete": True,
+                "evidence_refs": ["proof"],
+                "postconditions": {"0": True},
+                "postcondition_evidence": {
+                    "0": {
+                        "verified": True,
+                        "condition": "authoritative_snapshot_committed",
+                        "details": {
+                            "persistence_sha256": digest,
+                            "bitable_snapshot_sha256": digest,
+                            "sheet_snapshot_sha256": digest,
+                        },
+                    }
+                },
+            },
+            "warnings": [],
+            "error": None,
+        }
+    )
+
+    self.assertEqual("multi_account", result["meta"]["account_scope"])
+
  def test_bitable_readback_treats_omitted_empty_cells_as_blank(self):
     expected = [
         {

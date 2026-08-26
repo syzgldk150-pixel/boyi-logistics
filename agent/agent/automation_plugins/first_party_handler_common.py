@@ -524,7 +524,7 @@ def _encode_daily_sign_result(raw: object) -> dict[str, Any]:
             not isinstance(terminal_proof, Mapping)
             or terminal_proof.get("verified") is not True
             or terminal_proof.get("condition")
-            != "authoritative_snapshot_and_projections_verified"
+            != "authoritative_snapshot_committed"
             or not isinstance(terminal_details, Mapping)
             or any(
                 not isinstance(terminal_details.get(field), str)
