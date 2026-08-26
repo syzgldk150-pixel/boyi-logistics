@@ -1967,7 +1967,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         )
         result["meta"]["postcondition_evidence"]["0"].update(
             {
-                "condition": "authoritative_snapshot_and_projections_verified",
+                "condition": "authoritative_snapshot_committed",
                 "details": {
                     "source_run_id": run_id,
                     "persistence_sha256": persistence_marker["marker_sha256"],

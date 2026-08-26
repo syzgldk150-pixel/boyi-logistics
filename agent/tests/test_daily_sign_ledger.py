@@ -485,6 +485,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertIsNone(result["error"])
         self.assertEqual("run", result["data"]["source_run_id"])
         self.assertTrue(result["meta"]["pagination_complete"])
+        self.assertEqual(
+            "authoritative_snapshot_committed",
+            result["meta"]["postcondition_evidence"]["0"]["condition"],
+        )
         self.assertEqual(["R1", "R2", "R3"], sorted(row["tracking_number"] for row in captured))
         r2 = next(row for row in captured if row["tracking_number"] == "R2")
         r3 = next(row for row in captured if row["tracking_number"] == "R3")
