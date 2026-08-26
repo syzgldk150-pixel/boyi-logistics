@@ -869,9 +869,13 @@ def _bind_formal_arguments(
     formal = dict(formal_arguments)
     preview.pop("dry_run", None)
     formal.pop("dry_run", None)
-    preview["target_date"] = str(preview.get("target_date") or target_date)
-    formal["target_date"] = str(formal.get("target_date") or target_date)
-    if preview["target_date"] != target_date or canonical_sha256(preview) != canonical_sha256(formal):
+    preview_target_date = str(preview.get("target_date") or target_date)
+    formal_target_date = str(formal.get("target_date") or target_date)
+    if (
+        preview_target_date != target_date
+        or formal_target_date != target_date
+        or canonical_sha256(preview) != canonical_sha256(formal)
+    ):
         raise _error("SCAN_PREVIEW_STALE", "The formal scan arguments differ from the preview")
     formal["dry_run"] = False
     return formal
