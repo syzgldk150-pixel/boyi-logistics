@@ -1036,6 +1036,43 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertIn("表头不一致", result["error"])
         self.assertEqual(1, operation.call_count)
 
+    def test_sheet_migrates_exact_legacy_eight_column_header(self):
+        actions = []
+        header_reads = 0
+
+        def fake_operation(action, params):
+            nonlocal header_reads
+            actions.append(action)
+            if action == "read_sheet" and params["range"] == "Sheet1!A1:I1":
+                header_reads += 1
+                headers = (
+                    daily_sign_sync_tool.SHEET_HEADERS[:8]
+                    if header_reads == 1
+                    else daily_sign_sync_tool.SHEET_HEADERS
+                )
+                return {"ok": True, "data": {"valueRange": {"values": [headers]}}}
+            if action == "read_sheet":
+                return {"ok": True, "data": {"valueRange": {"values": []}}}
+            return {"ok": True}
+
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.resolve_sheet_target",
+                return_value=("token", "Sheet1!A2:I200"),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.feishu_operation",
+                side_effect=fake_operation,
+            ),
+        ):
+            result = daily_sign_sync_tool._sync_sheet([], {})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            ["read_sheet", "write_sheet", "read_sheet", "clear_sheet", "read_sheet"],
+            actions,
+        )
+
     def test_bitable_uses_delta_write_then_delete(self):
         actions = []
         rows = [{"tracking_number": "A"}, {"tracking_number": "B"}]

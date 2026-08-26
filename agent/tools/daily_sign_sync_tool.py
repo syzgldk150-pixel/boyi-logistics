@@ -1225,6 +1225,41 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         return {"error": f"读取应签表头失败: {read_result.get('error')}"}
     values = _sheet_values(read_result)
     actual_headers = [clean_text(value) for value in (values[0] if values else [])]
+    legacy_headers_match = (
+        actual_headers[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
+        == SHEET_HEADERS[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
+        and (
+            len(actual_headers) < DAILY_SIGN_SHEET_COL_COUNT
+            or not actual_headers[DAILY_SIGN_SHEET_COL_COUNT - 1]
+        )
+    )
+    if legacy_headers_match:
+        header_write = feishu_operation(
+            "write_sheet",
+            {
+                "spreadsheet_token": spreadsheet_token,
+                "range": f"{info['sheet']}!I1:I1",
+                "values": [[SHEET_HEADERS[-1]]],
+                "as": params.get("as", "bot"),
+                "dry_run": bool(params.get("dry_run", False)),
+            },
+        )
+        if header_write.get("error"):
+            return _write_outcome_unknown("每日应签电子表格补充到货件数表头后的终态未知。")
+        fresh_header = feishu_operation(
+            "read_sheet",
+            {
+                "spreadsheet_token": spreadsheet_token,
+                "range": header_range,
+                "as": params.get("as", "bot"),
+            },
+        )
+        if fresh_header.get("error"):
+            return _write_outcome_unknown("每日应签电子表格表头新鲜回读不可用。")
+        fresh_values = _sheet_values(fresh_header)
+        actual_headers = [
+            clean_text(value) for value in (fresh_values[0] if fresh_values else [])
+        ]
     if actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] != SHEET_HEADERS:
         return {"error": "应签明细表头不一致，停止写入", "expected_headers": SHEET_HEADERS, "actual_headers": actual_headers}
     sheet_values = _build_ledger_sheet_values(rows)
