@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
@@ -19,9 +18,6 @@ from agent.automation_plugins.errors import PluginExecutionError
 from agent.execution_boundary import execution_capability_scope
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -332,46 +328,6 @@ class RegisteredCoreAutomationBrokerAdapter:
             grant.tool_name,
             ttl_seconds=capability_ttl,
         ):
-            if (
-                grant.tool_name == "sync_arrival_stats"
-                and action == "waybill.snapshot.replace"
-            ):
-                raw_records = arguments.get("records")
-                records = raw_records if isinstance(raw_records, list) else []
-                schemas = {
-                    tuple(sorted(str(key) for key in item))
-                    for item in records
-                    if isinstance(item, Mapping)
-                }
-                tracking_types = sorted(
-                    {
-                        type(item.get("tracking_number")).__name__
-                        for item in records
-                        if isinstance(item, Mapping)
-                    }
-                )
-                tracking_values = [
-                    item.get("tracking_number")
-                    for item in records
-                    if isinstance(item, Mapping)
-                    and isinstance(item.get("tracking_number"), str)
-                ]
-                logger.warning(
-                    "arrival broker argument shape action=%s records_type=%s "
-                    "record_count=%s mapping_count=%s schema_count=%s schemas=%s "
-                    "tracking_types=%s tracking_max_length=%s duplicate_count=%s "
-                    "target_date_type=%s",
-                    action,
-                    type(raw_records).__name__,
-                    len(records),
-                    sum(isinstance(item, Mapping) for item in records),
-                    len(schemas),
-                    [list(schema) for schema in sorted(schemas)[:8]],
-                    tracking_types,
-                    max((len(value) for value in tracking_values), default=0),
-                    len(tracking_values) - len(set(tracking_values)),
-                    type(arguments.get("target_date")).__name__,
-                )
             # Most production handlers are synchronous because they drive
             # browser, database and HTTP adapters. Running them on the broker
             # event loop blocks Run polling, Scheduler and every other API
@@ -381,19 +337,6 @@ class RegisteredCoreAutomationBrokerAdapter:
                 result = await result
         if not isinstance(result, Mapping):
             raise PluginExecutionError("core broker handler returned a non-object result")
-        if grant.tool_name == "sync_scan_codes":
-            logger.warning(
-                "scan broker result shape action=%s fields=%s",
-                action,
-                {
-                    str(key): (
-                        f"list[{','.join(sorted({type(item).__name__ for item in value}))}]"
-                        if isinstance(value, list)
-                        else type(value).__name__
-                    )
-                    for key, value in result.items()
-                },
-            )
         return dict(result)
 
 
