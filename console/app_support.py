@@ -686,6 +686,7 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "task_mode": "manual",
         "trigger_label": "飞书自提到货问题件预览 / 确认",
         "schedule_summary": "飞书自提到货问题件预览 / 确认",
+        "console_disabled_reason": "请到飞书预览并选择运单",
         "default_tool_params": {
             "dry_run": True,
             "account_id": "ronghui_self_pickup_problem",
@@ -705,6 +706,7 @@ AUTOMATION_WORKFLOW_CATALOG = [
         "task_mode": "manual",
         "trigger_label": "飞书分批预览 / 选择 / 确认",
         "schedule_summary": "飞书分批预览 / 选择 / 确认",
+        "console_disabled_reason": "请到飞书预览并选择运单",
         "default_tool_params": {
             "dry_run": True,
             "account_id": "ronghui_default",

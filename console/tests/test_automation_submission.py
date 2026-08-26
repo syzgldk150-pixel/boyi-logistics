@@ -304,6 +304,7 @@ class AutomationSubmissionTests(unittest.TestCase):
             "飞书自提到货问题件预览 / 确认",
             workflow["trigger_label"],
         )
+        self.assertEqual("请到飞书预览并选择运单", workflow["console_disabled_reason"])
         self.assertEqual("ronghui", automation_task_provider("self_pickup_problem_upload", workflow))
         self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["self_pickup_problem_upload"])
 
@@ -316,6 +317,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual(False, defaults["enabled"])
         self.assertEqual(True, defaults["tool_params"]["dry_run"])
         self.assertEqual("飞书分批预览 / 选择 / 确认", workflow["trigger_label"])
+        self.assertEqual("请到飞书预览并选择运单", workflow["console_disabled_reason"])
         self.assertEqual("ronghui", automation_task_provider("split_pending_problem_upload", workflow))
         self.assertEqual(7200, AUTOMATION_RUN_TIMEOUTS["split_pending_problem_upload"])
 

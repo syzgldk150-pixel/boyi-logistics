@@ -927,7 +927,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             console_enabled = "console" in set(plugin.get("enabled_entrypoints") or [])
             task["can_run_now"] = bool(base_runnable and console_enabled)
             task["run_disabled_reason"] = (
-                "后台入口已关闭" if base_runnable and not console_enabled else "当前不可执行"
+                str(task.get("console_disabled_reason") or "后台入口已关闭")
+                if base_runnable and not console_enabled
+                else "当前不可执行"
             )
             task["plugin_worker_options"] = (
                 automation_workers if plugin.get("execution_platform") == "windows" else []

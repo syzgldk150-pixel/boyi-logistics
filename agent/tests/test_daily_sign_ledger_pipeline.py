@@ -295,6 +295,53 @@ class DailySignPipelineTests(unittest.TestCase):
 
 
 class DailySignSourceTests(unittest.TestCase):
+    def test_get_qianshou_refreshes_one_invalid_cached_token(self):
+        invalid = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"code": -2, "data": "", "message": "Token无效"},
+        )
+        valid = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"data": {"records": [], "total": 0}},
+        )
+        cached_session = SimpleNamespace(post=lambda *_args, **_kwargs: invalid)
+        fresh_session = SimpleNamespace(post=lambda *_args, **_kwargs: valid)
+
+        class Auth:
+            def __init__(self, **_kwargs):
+                self.last_token = "cached-token"
+                self.calls = []
+
+            def login_and_get_session(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if kwargs.get("allow_cached") is False:
+                    self.last_token = "fresh-token"
+                    return fresh_session
+                return cached_session
+
+        auth = Auth()
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            return_value=auth,
+        ):
+            rows = get_qianshou.fetch_qianshou(
+                config_path=None,
+                username="managed-user",
+                password="managed-password",
+                disp_site_code="site-code",
+                start="2026-08-13 00:00:00",
+                end="2026-08-13 23:59:59",
+                days=1,
+                page_size=100,
+                page=1,
+                fetch_all=True,
+                max_pages=10,
+            )
+
+        self.assertEqual([], rows)
+        self.assertEqual(2, len(auth.calls))
+        self.assertIs(False, auth.calls[1]["allow_cached"])
+
     def test_get_qianshou_keeps_rows_with_r13_dispatch_or_sign_signals(self):
         response = SimpleNamespace(
             raise_for_status=lambda: None,

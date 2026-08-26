@@ -10,7 +10,7 @@
   - `orchestration/`；完整边界见 `../docs/control_plane_v1.md`
   - 只有 `orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`；`core.py`、HTTP/飞书/调度入口、TMS 路由和兼容 API 只能提交 Command。
   - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
-  - 第三方/财务写步骤崩溃恢复时，没有精确 reconciliation 就进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得盲目重试。
+  - 第三方/财务写步骤崩溃恢复时，没有精确 reconciliation 就让该 Run 进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得重放原 Run；新的 Command 仍可建立全新的 Run 与 lease 重新执行项目。
   - 澄清事件只允许闭合 v1 字段 `note/account_id/argument_updates` 并绑定原 `command_id`；纯文本只作审计 note。Planner 合并显式覆盖后仍要通过 input_schema、权威账号、策略和 plan hash 校验。
 - 改 HTTP API、健康检查、Webhook 入口：
   - `../main.py`

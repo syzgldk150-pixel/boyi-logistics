@@ -109,6 +109,15 @@ def _has_rows_container(payload: Any) -> bool:
     )
 
 
+def _is_invalid_token_response(payload: Any) -> bool:
+    if not isinstance(payload, dict) or str(payload.get("code")) != "-2":
+        return False
+    message = str(payload.get("message") or payload.get("msg") or "").strip().lower()
+    return "token" in message and any(
+        marker in message for marker in ("无效", "失效", "invalid", "expired")
+    )
+
+
 def _extract_total(payload: Any) -> Optional[int]:
     if not isinstance(payload, dict):
         return None
@@ -199,6 +208,7 @@ def fetch_qianshou(
     fetched_source_rows = 0
     current_page = max(1, page)
     fetched_pages = 0
+    token_refreshed = False
 
     while True:
         payload = _build_payload(
@@ -212,6 +222,27 @@ def fetch_qianshou(
         response = session.post(API_URL, json=payload, headers=headers, timeout=20)
         response.raise_for_status()
         data = response.json()
+        if _is_invalid_token_response(data):
+            if token_refreshed:
+                raise RuntimeError("R13 token is still invalid after one fresh login")
+            session = auth.login_and_get_session(
+                username=username,
+                password=password,
+                account_key=account_key,
+                exchange=False,
+                verify=False,
+                allow_cached=False,
+            )
+            token = auth.last_token
+            if not token:
+                raise RuntimeError("Missing aurora token after fresh R13 login.")
+            headers["aurora-token"] = token
+            token_refreshed = True
+            response = session.post(API_URL, json=payload, headers=headers, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+            if _is_invalid_token_response(data):
+                raise RuntimeError("R13 token is still invalid after one fresh login")
         if not _has_rows_container(data):
             raise RuntimeError(f"R13 page {current_page} response is missing a records list")
         rows = _extract_rows(data)

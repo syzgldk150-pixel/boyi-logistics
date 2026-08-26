@@ -1606,7 +1606,8 @@ class AutomationPluginGenerationRepositoryMixin:
                 "SELECT automation_id, committed_generation FROM automation_projects WHERE automation_id=%s FOR UPDATE",
                 (automation_id,),
             )
-            if _row_dict(cursor, cursor.fetchone()) is None:
+            project = _row_dict(cursor, cursor.fetchone())
+            if project is None:
                 raise OrchestrationPersistenceError("automation project disappeared during lease release")
             cursor.execute(
                 """
@@ -1659,24 +1660,22 @@ class AutomationPluginGenerationRepositoryMixin:
                     """,
                     (safe_lease_id,),
                 )
-                cursor.execute(
-                    """
-                    UPDATE automation_project_generations
-                    SET state='BLOCKED', error_code='WRITE_OUTCOME_UNKNOWN',
-                        error_summary='Unknown external write outcome requires reconciliation',
-                        record_version=record_version+1, updated_at=NOW(6)
-                    WHERE automation_id=%s AND generation=%s
-                    """,
-                    (lease["automation_id"], lease["generation"]),
-                )
-                cursor.execute(
-                    """
-                    UPDATE automation_projects
-                    SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-                    WHERE automation_id=%s AND committed_generation=%s
-                    """,
-                    (lease["automation_id"], lease["generation"]),
-                )
+                # Keep the failed run and its receipt as unknown-write audit,
+                # but do not freeze the currently routed automation. A new
+                # command is a new run; it never replays this lease. Historical
+                # generations still become archival blockers so their bytes
+                # cannot be disposed while an unknown receipt exists.
+                if int(project.get("committed_generation") or 0) != generation:
+                    cursor.execute(
+                        """
+                        UPDATE automation_project_generations
+                        SET state='BLOCKED', error_code='WRITE_OUTCOME_UNKNOWN',
+                            error_summary='Unknown external write outcome requires reconciliation',
+                            record_version=record_version+1, updated_at=NOW(6)
+                        WHERE automation_id=%s AND generation=%s
+                        """,
+                        (lease["automation_id"], lease["generation"]),
+                    )
             cursor.execute(
                 "SELECT * FROM automation_project_generation_leases WHERE lease_id=%s",
                 (safe_lease_id,),
@@ -1902,7 +1901,8 @@ class AutomationPluginGenerationRepositoryMixin:
                 "SELECT automation_id, committed_generation FROM automation_projects WHERE automation_id=%s FOR UPDATE",
                 (safe_automation_id,),
             )
-            if _row_dict(cursor, cursor.fetchone()) is None:
+            project = _row_dict(cursor, cursor.fetchone())
+            if project is None:
                 raise OrchestrationPersistenceError("automation project disappeared during write finalization")
             cursor.execute(
                 """
@@ -1961,24 +1961,17 @@ class AutomationPluginGenerationRepositoryMixin:
                     """,
                     (safe_evidence, safe_lease_id),
                 )
-                cursor.execute(
-                    """
-                    UPDATE automation_project_generations
-                    SET state='BLOCKED', error_code='WRITE_OUTCOME_UNKNOWN',
-                        error_summary='Unknown external write outcome requires reconciliation',
-                        record_version=record_version+1, updated_at=NOW(6)
-                    WHERE automation_id=%s AND generation=%s
-                    """,
-                    (safe_automation_id, safe_generation),
-                )
-                cursor.execute(
-                    """
-                    UPDATE automation_projects
-                    SET reconcile_state='BLOCKED_UNKNOWN_WRITE', updated_at=NOW(6)
-                    WHERE automation_id=%s AND committed_generation=%s
-                    """,
-                    (safe_automation_id, safe_generation),
-                )
+                if int(project.get("committed_generation") or 0) != safe_generation:
+                    cursor.execute(
+                        """
+                        UPDATE automation_project_generations
+                        SET state='BLOCKED', error_code='WRITE_OUTCOME_UNKNOWN',
+                            error_summary='Unknown external write outcome requires reconciliation',
+                            record_version=record_version+1, updated_at=NOW(6)
+                        WHERE automation_id=%s AND generation=%s
+                        """,
+                        (safe_automation_id, safe_generation),
+                    )
             else:
                 cursor.execute(
                     """
