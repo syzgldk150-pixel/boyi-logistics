@@ -405,4 +405,3 @@ __all__ = [
     "RegisteredCoreAutomationBrokerAdapter",
     "ResourceBindingResolverPort",
 ]
-
