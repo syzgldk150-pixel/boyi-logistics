@@ -71,6 +71,17 @@ SHEET_HEADERS = [
     "送货方式",
     "到货件数",
 ]
+LEGACY_VERBOSE_SHEET_HEADERS = [
+    "运单编号",
+    "融辉R13系统显示应签收时间",
+    "实际到货问题件后计算应签时间",
+    "货物品名",
+    "包装类型",
+    "货物件数",
+    "收件人地址",
+    "送货方式",
+    "到货件数",
+]
 ARRIVED_QUANTITY_KEYS = (
     "arrived_quantity",
     "arrivedQuantity",
@@ -1225,7 +1236,7 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         return {"error": f"读取应签表头失败: {read_result.get('error')}"}
     values = _sheet_values(read_result)
     actual_headers = [clean_text(value) for value in (values[0] if values else [])]
-    legacy_headers_match = (
+    legacy_eight_headers_match = (
         actual_headers[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
         == SHEET_HEADERS[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
         and (
@@ -1233,13 +1244,16 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             or not actual_headers[DAILY_SIGN_SHEET_COL_COUNT - 1]
         )
     )
-    if legacy_headers_match:
+    legacy_verbose_headers_match = (
+        actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] == LEGACY_VERBOSE_SHEET_HEADERS
+    )
+    if legacy_eight_headers_match or legacy_verbose_headers_match:
         header_write = feishu_operation(
             "write_sheet",
             {
                 "spreadsheet_token": spreadsheet_token,
-                "range": f"{info['sheet']}!I1:I1",
-                "values": [[SHEET_HEADERS[-1]]],
+                "range": header_range,
+                "values": [SHEET_HEADERS],
                 "as": params.get("as", "bot"),
                 "dry_run": bool(params.get("dry_run", False)),
             },
