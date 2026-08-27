@@ -20,7 +20,7 @@ from tools.daily_sign_rules import (
     business_now,
     clean_text,
     is_before_problem_cutoff,
-    ledger_row_is_due,
+    ledger_row_should_publish,
     parse_datetime,
 )
 from tools.daily_sign_store import (
@@ -1747,7 +1747,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             [
                 row
                 for row in ledger_rows
-                if ledger_row_is_due(row, observed_at.date())
+                if ledger_row_should_publish(row, observed_at.date())
             ]
         )
         open_rows, address_result = _enrich_missing_addresses(open_rows, params)

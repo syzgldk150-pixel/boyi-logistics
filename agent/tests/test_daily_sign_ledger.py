@@ -4,7 +4,11 @@ from datetime import datetime, timedelta
 import unittest
 from unittest.mock import patch
 
-from tools.daily_sign_rules import build_ledger_row, calculate_system_sign_due
+from tools.daily_sign_rules import (
+    build_ledger_row,
+    calculate_system_sign_due,
+    ledger_row_should_publish,
+)
 from tools.daily_sign_pipeline import DailySignSyncError
 from tools import (
     daily_sign_backfill_tool,
@@ -454,6 +458,32 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertTrue(closed_row["tms_signed"])
 
 
+ def test_stale_same_code_sign_before_current_dispatch_does_not_close(self):
+    row = build_ledger_row(
+        "R1",
+        r13_row={
+            "billNumberMain": "R1",
+            "isSigns": "未签",
+            "dispTime": "2026-08-27 08:00:00",
+            "planSignTime": "2026-08-27 23:59:59",
+        },
+        previous_row=None,
+        arrival_history=[arrival("2026-08-27", 1, 1)],
+        problem_events=[],
+        sign_event={
+            "scanned_at": "2026-01-01 10:00:00",
+            "scan_type": "签收",
+            "external_id": "old-cycle-sign",
+        },
+        observed_at=datetime(2026, 8, 27, 12, 0, 0),
+    )
+
+    self.assertFalse(row["tms_signed"])
+    self.assertIsNone(row["tms_signed_at"])
+    self.assertIn("stale_sign_before_current_lifecycle", row["data_quality_flags"])
+    self.assertTrue(ledger_row_should_publish(row, datetime(2026, 8, 27).date()))
+
+
 class DailySignSyncPipelineTest(unittest.TestCase):
     @staticmethod
     def _params(**overrides):
@@ -492,7 +522,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             },
         }
 
-    def test_candidate_union_keeps_full_ledger_but_publishes_only_rows_due_today(self):
+    def test_candidate_union_publishes_current_r13_rows_and_only_due_history(self):
         state = self._state()
         captured = []
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
@@ -501,8 +531,21 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 "billNumberMain": "R2",
                 "planSignTime": "2026-08-13 23:59:59",
                 "signTime": "2026-08-12 09:00:00",
+                "goodsName": "测试货物",
+                "packTypeDesc": "纸箱",
+                "pcs": 1,
+                "dispatchMode": "派送",
+                "dispAddress": "测试地址",
             },
-            {"billNumberMain": "R3", "planSignTime": "2026-08-13 23:59:59"},
+            {
+                "billNumberMain": "R3",
+                "planSignTime": "2026-08-13 23:59:59",
+                "goodsName": "测试货物",
+                "packTypeDesc": "纸箱",
+                "pcs": 1,
+                "dispatchMode": "派送",
+                "dispAddress": "测试地址",
+            },
         ]
         old_sign = {
             "source": "ronghui_sign:test",
@@ -599,7 +642,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             "authoritative_snapshot_committed",
             result["meta"]["postcondition_evidence"]["0"]["condition"],
         )
-        self.assertEqual([], captured)
+        self.assertEqual(
+            ["R2", "R3"],
+            sorted(row["tracking_number"] for row in captured),
+        )
         persisted_rows = persist.call_args.kwargs["ledger_rows"]
         old = next(row for row in persisted_rows if row["tracking_number"] == "OLD")
         r2 = next(row for row in persisted_rows if row["tracking_number"] == "R2")
@@ -614,7 +660,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertEqual(1, marker["sign_events"]["count"])
         self.assertEqual(0, marker["sign_verification_states"]["count"])
         self.assertEqual(4, marker["ledger_rows"]["count"])
-        self.assertEqual(0, marker["publication_rows"]["count"])
+        self.assertEqual(2, marker["publication_rows"]["count"])
         self.assertEqual(64, len(marker["marker_sha256"]))
         verify_persistence.assert_called_once()
         verify_completed.assert_called_once()

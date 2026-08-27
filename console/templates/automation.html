@@ -2006,7 +2006,9 @@
       fetchOutputState = async function(options = {}) {
         if (!toolName) return null;
         const startedAt = options.startedAt ?? termDrawer.dataset.runStartedAt ?? "";
-        const runId = options.runId ?? runUiState.runId ?? termDrawer.dataset.runId ?? "";
+        const runId = String(
+          options.runId || runUiState.runId || termDrawer.dataset.runId || ""
+        ).trim();
         const offset = options.offset ?? termOffset;
         const query = new URLSearchParams({
           tool_name: toolName,

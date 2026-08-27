@@ -545,6 +545,11 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
             "if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt))",
             source,
         )
+        self.assertIn(
+            'options.runId || runUiState.runId || termDrawer.dataset.runId || ""',
+            source,
+        )
+        self.assertNotIn("options.runId ?? runUiState.runId", source)
 
 
 if __name__ == "__main__":

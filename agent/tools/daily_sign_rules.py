@@ -221,7 +221,7 @@ def build_ledger_row(
     due, state = calculate_system_sign_due(arrival_history, problem_rows)
     latest_arrival = state.get("latest_row") or {}
     r13_current = bool(r13_row)
-    sign_at = parse_datetime(sign_event.get("scanned_at")) if sign_event else None
+    raw_sign_at = parse_datetime(sign_event.get("scanned_at")) if sign_event else None
 
     def prefer(*values: Any) -> Any:
         for value in values:
@@ -238,6 +238,29 @@ def build_ledger_row(
         flags.append("invalid_r13_plan_sign_at")
     if raw_r13_sign not in (None, "") and r13_sign is None:
         flags.append("invalid_r13_sign_at")
+    raw_r13_dispatch = prefer(
+        r13_row.get("dispTime"),
+        r13_row.get("dispatchTime"),
+    )
+    r13_dispatch = parse_datetime(raw_r13_dispatch)
+    if raw_r13_dispatch not in (None, "") and r13_dispatch is None:
+        flags.append("invalid_r13_dispatch_at")
+
+    lifecycle_starts: list[datetime] = []
+    if r13_current and r13_dispatch is not None:
+        lifecycle_starts.append(r13_dispatch)
+    if state["first_arrival_date"] is not None:
+        lifecycle_starts.append(datetime.combine(state["first_arrival_date"], time.min))
+    lifecycle_start = max(lifecycle_starts) if lifecycle_starts else None
+    sign_at = raw_sign_at
+    sign_ignored_before_lifecycle = bool(
+        sign_at is not None
+        and lifecycle_start is not None
+        and sign_at < lifecycle_start
+    )
+    if sign_ignored_before_lifecycle:
+        sign_at = None
+        flags.append("stale_sign_before_current_lifecycle")
     if r13_current and state["first_arrival_date"] is None:
         flags.append("r13_without_arrival_history")
     if clean_text(r13_row.get("signTime") or r13_row.get("signSiteName")) and sign_at is None:
@@ -259,6 +282,10 @@ def build_ledger_row(
             if clean_text(row.get("external_id"))
         ),
         "sign_event_id": clean_text(sign_event.get("external_id")) if sign_event else "",
+        "sign_lifecycle_start": (
+            lifecycle_start.isoformat(sep=" ") if lifecycle_start is not None else ""
+        ),
+        "sign_event_ignored_before_lifecycle": sign_ignored_before_lifecycle,
     }
     return {
         "tracking_number": clean_text(tracking_number),
@@ -316,3 +343,13 @@ def ledger_row_is_due(row: dict[str, Any], target_date: date) -> bool:
         return system_due.date() <= target_date
     r13_due = parse_datetime(row.get("r13_plan_sign_at"))
     return r13_due is not None and r13_due.date() <= target_date
+
+
+def ledger_row_should_publish(row: dict[str, Any], target_date: date) -> bool:
+    """Publish the current R13 open list plus due historical ledger rows."""
+
+    if bool(row.get("tms_signed")):
+        return False
+    if bool(row.get("r13_current")):
+        return True
+    return ledger_row_is_due(row, target_date)
