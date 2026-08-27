@@ -390,6 +390,76 @@ class DailySignPipelineTests(unittest.TestCase):
 
 
 class DailySignSourceTests(unittest.TestCase):
+    def test_get_qianshou_default_range_matches_the_live_r13_page_horizon(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 8, 27, 12, 0, 0, tzinfo=tz)
+
+        with patch.object(get_qianshou, "datetime", FixedDateTime):
+            start, end = get_qianshou._default_range(1)
+
+        self.assertEqual("2026-08-25 00:00:00", start)
+        self.assertEqual("2026-08-30 23:59:59", end)
+
+    def test_get_qianshou_uses_the_live_r13_plan_sign_query_contract(self):
+        payload = get_qianshou._build_payload(
+            start="2026-08-25 00:00:00",
+            end="2026-08-30 23:59:59",
+            disp_site_code="site-code",
+            page_size=100,
+            page=1,
+        )
+
+        self.assertEqual(2, payload["queryType"])
+        self.assertEqual("2026-08-25 00:00:00", payload["planSignTime_CondStart"])
+        self.assertEqual("2026-08-30 23:59:59", payload["planSignTime_CondEnd"])
+        self.assertNotIn("scanTime_CondStart", payload)
+        self.assertNotIn("scanTime_CondEnd", payload)
+
+    def test_get_qianshou_accepts_current_waybill_identity_field(self):
+        response = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "data": {
+                    "records": [
+                        {
+                            "waybillNo": "R001",
+                            "planSignTime": "2026-08-13 23:59:59",
+                            "goodsName": "货物",
+                            "pcs": 1,
+                            "dispatchMode": "送货",
+                        }
+                    ],
+                    "total": 1,
+                }
+            },
+        )
+        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        auth = SimpleNamespace(
+            last_token="token-placeholder",
+            login_and_get_session=lambda **_kwargs: session,
+        )
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            return_value=auth,
+        ):
+            rows = get_qianshou.fetch_qianshou(
+                config_path=None,
+                username=None,
+                password=None,
+                disp_site_code="site-code",
+                start="2026-08-13 00:00:00",
+                end="2026-08-13 23:59:59",
+                days=1,
+                page_size=100,
+                page=1,
+                fetch_all=True,
+                max_pages=10,
+            )
+
+        self.assertEqual("R001", rows[0]["billNumberMain"])
+
     def test_get_qianshou_refreshes_one_invalid_cached_token(self):
         invalid = SimpleNamespace(
             raise_for_status=lambda: None,
