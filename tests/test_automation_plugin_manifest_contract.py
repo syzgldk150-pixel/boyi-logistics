@@ -305,7 +305,7 @@ def test_split_contract_is_human_triggered_with_verified_selection_fields() -> N
         "split_pending_problem_upload"
     ]
 
-    assert source["version"] == "1.0.22"
+    assert source["version"] == "1.0.23"
     assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,
@@ -336,7 +336,7 @@ def test_self_pickup_contract_has_verified_human_selection_fields() -> None:
         "self_pickup_problem_upload"
     ]
 
-    assert source["version"] == "1.0.22"
+    assert source["version"] == "1.0.23"
     assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,
