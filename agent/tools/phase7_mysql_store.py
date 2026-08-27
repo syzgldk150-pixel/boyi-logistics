@@ -1110,7 +1110,7 @@ def render_stats_sheet_values(
     target_date: Any = None,
 ) -> list[list[Any]]:
     count_map = count_map or {}
-    values: list[list[Any]] = [[f"{_current_mmdd(target_date)}运单编号", *WAYBILL_EXPORT_HEADERS]]
+    values: list[list[Any]] = [["运单编号", *WAYBILL_EXPORT_HEADERS]]
     for record in records:
         values.append(
             [
@@ -1136,17 +1136,6 @@ def render_stats_sheet_values(
             ]
         )
     return values
-
-
-def _current_mmdd(target_date: Any = None) -> str:
-    if isinstance(target_date, datetime):
-        return target_date.strftime("%m.%d")
-    if isinstance(target_date, date):
-        return target_date.strftime("%m.%d")
-    text = str(target_date or "").strip()
-    if text:
-        return date.fromisoformat(text).strftime("%m.%d")
-    return datetime.now().strftime("%m.%d")
 
 
 def list_pending_waybills(include_receipt_like: bool = False) -> list[dict[str, Any]]:
