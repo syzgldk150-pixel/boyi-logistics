@@ -439,7 +439,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             },
         }
 
-    def test_candidate_union_keeps_r13_only_reroute_and_historical_until_tms_sign(self):
+    def test_candidate_union_keeps_full_ledger_but_publishes_only_rows_due_today(self):
         state = self._state()
         captured = []
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
@@ -546,9 +546,12 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             "authoritative_snapshot_committed",
             result["meta"]["postcondition_evidence"]["0"]["condition"],
         )
-        self.assertEqual(["R1", "R2", "R3"], sorted(row["tracking_number"] for row in captured))
-        r2 = next(row for row in captured if row["tracking_number"] == "R2")
-        r3 = next(row for row in captured if row["tracking_number"] == "R3")
+        self.assertEqual([], captured)
+        persisted_rows = persist.call_args.kwargs["ledger_rows"]
+        old = next(row for row in persisted_rows if row["tracking_number"] == "OLD")
+        r2 = next(row for row in persisted_rows if row["tracking_number"] == "R2")
+        r3 = next(row for row in persisted_rows if row["tracking_number"] == "R3")
+        self.assertTrue(old["tms_signed"])
         self.assertFalse(r2["tms_signed"])
         self.assertIn("r13_signed_without_tms_scan", r2["data_quality_flags"])
         self.assertIsNone(r3["system_sign_due_at"])
@@ -558,7 +561,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertEqual(1, marker["sign_events"]["count"])
         self.assertEqual(0, marker["sign_verification_states"]["count"])
         self.assertEqual(4, marker["ledger_rows"]["count"])
-        self.assertEqual(3, marker["publication_rows"]["count"])
+        self.assertEqual(0, marker["publication_rows"]["count"])
         self.assertEqual(64, len(marker["marker_sha256"]))
         verify_persistence.assert_called_once()
         verify_completed.assert_called_once()

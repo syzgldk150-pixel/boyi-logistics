@@ -20,6 +20,7 @@ from tools.daily_sign_rules import (
     business_now,
     clean_text,
     is_before_problem_cutoff,
+    ledger_row_is_due,
     parse_datetime,
 )
 from tools.daily_sign_store import (
@@ -1716,7 +1717,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             )
             for code in sorted(candidate_codes)
         ]
-        open_rows = _sort_rows([row for row in ledger_rows if not row.get("tms_signed")])
+        open_rows = _sort_rows(
+            [
+                row
+                for row in ledger_rows
+                if ledger_row_is_due(row, observed_at.date())
+            ]
+        )
         open_rows, address_result = _enrich_missing_addresses(open_rows, params)
         if address_result.get("error"):
             raise DailySignSyncError(

@@ -11,6 +11,8 @@ from agent.tms_runtime.sso_session_persistence import default_sso_state_path
 
 API_URL = "https://r13.ronghuiwl.com/gateway/site/waybillSignWarn/pageGet"
 REFERER_URL = "https://r13.ronghuiwl.com/outlets/cargoReceiptWarn"
+R13_PAGE_MIN_LOOKBACK_DAYS = 2
+R13_PAGE_FORWARD_DAYS = 3
 
 
 def _format_dt(value: datetime) -> str:
@@ -21,8 +23,15 @@ def _default_range(days: int) -> Tuple[str, str]:
     if days <= 0:
         days = 7
     today = datetime.now()
-    end_dt = today.replace(hour=23, minute=59, second=59, microsecond=0)
-    start_dt = (end_dt - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_dt = (
+        today - timedelta(days=max(days - 1, R13_PAGE_MIN_LOOKBACK_DAYS))
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_dt = (today + timedelta(days=R13_PAGE_FORWARD_DAYS)).replace(
+        hour=23,
+        minute=59,
+        second=59,
+        microsecond=0,
+    )
     return _format_dt(start_dt), _format_dt(end_dt)
 
 
@@ -149,15 +158,15 @@ def _build_payload(
     page: int,
 ) -> Dict[str, Any]:
     return {
-        "queryType": 1,
+        "queryType": 2,
         "showSub": "10",
         "dispSiteCode_CondList": [disp_site_code],
         "queryDate": [start, end],
         "pageSize": page_size,
         "currentPage": page,
         "queryCount": True,
-        "scanTime_CondStart": start,
-        "scanTime_CondEnd": end,
+        "planSignTime_CondStart": start,
+        "planSignTime_CondEnd": end,
     }
 
 
@@ -262,9 +271,17 @@ def fetch_qianshou(
         for row in rows:
             if not isinstance(row, dict):
                 raise RuntimeError(f"R13 page {current_page} contains a non-object row")
-            bill_code = str(row.get("billNumberMain") or "").strip()
+            legacy_bill_code = str(row.get("billNumberMain") or "").strip()
+            current_bill_code = str(row.get("waybillNo") or "").strip()
+            if legacy_bill_code and current_bill_code and legacy_bill_code != current_bill_code:
+                raise RuntimeError(
+                    f"R13 page {current_page} contains conflicting waybill identities"
+                )
+            bill_code = current_bill_code or legacy_bill_code
             if not bill_code:
-                raise RuntimeError(f"R13 page {current_page} contains a row without billNumberMain")
+                raise RuntimeError(
+                    f"R13 page {current_page} contains a row without a waybill identity"
+                )
             normalized = {
                 "billNumberMain": bill_code,
                 "planSignTime": row.get("planSignTime"),
