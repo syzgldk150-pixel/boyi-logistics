@@ -1238,6 +1238,22 @@ class AutomationProjectPolicyService:
             "occurred_at": occurred_at.isoformat(),
             **context,
         }
+        selection_dynamic_inputs: Mapping[str, Any] | None = None
+        if selection_preview_project and "dynamic_inputs" in context:
+            raw_selection_inputs = context["dynamic_inputs"]
+            if not isinstance(raw_selection_inputs, Mapping) or set(
+                raw_selection_inputs
+            ) != {
+                "dry_run",
+                "selected_bill_codes",
+                "preview_fingerprint",
+            }:
+                raise OrchestrationError(
+                    "SELECTION_INPUT_INVALID",
+                    "Selection workflow inputs must come from the server preview flow",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            selection_dynamic_inputs = raw_selection_inputs
         arguments = dict(invocation_contract.expected_arguments)
         for field_name, resolver_id in sorted(
             invocation_contract.dynamic_argument_resolvers.items()
@@ -1263,19 +1279,8 @@ class AutomationProjectPolicyService:
                 ) from exc
         if scan_preview_project and safe_preview_run_id is None:
             arguments["dry_run"] = True
-        if selection_preview_project and "dynamic_inputs" in context:
-            dynamic_inputs = context["dynamic_inputs"]
-            if not isinstance(dynamic_inputs, Mapping) or set(dynamic_inputs) != {
-                "dry_run",
-                "selected_bill_codes",
-                "preview_fingerprint",
-            }:
-                raise OrchestrationError(
-                    "SELECTION_INPUT_INVALID",
-                    "Selection workflow inputs must come from the server preview flow",
-                    details={"status": "BLOCKED_DATA"},
-                )
-            arguments.update(dict(dynamic_inputs))
+        if selection_dynamic_inputs is not None:
+            arguments.update(dict(selection_dynamic_inputs))
         preview_expectation = ScanPreviewExpectation(
             project_instance_id=safe_id,
             generation=contract.automation_generation,
@@ -1594,25 +1599,7 @@ class AutomationProjectPolicyService:
                     "SELECTION_EXECUTION_PHASE_INVALID",
                     "Selection preview plan does not use read-only governance",
                 )
-            invocation_contract = contract.invocation_contracts.get(
-                invocation.contract_id
-            )
-            if invocation_contract is None:
-                return _project_denied(
-                    "PROJECT_INVOCATION_STALE",
-                    "Automation project contract is no longer current",
-                )
-            contract_arguments = dict(selection_step.arguments)
-            expected_arguments = dict(invocation_contract.expected_arguments)
-            for field_name in (
-                "dry_run",
-                "selected_bill_codes",
-                "preview_fingerprint",
-            ):
-                contract_arguments.pop(field_name, None)
-                if field_name in expected_arguments:
-                    contract_arguments[field_name] = expected_arguments[field_name]
-            contract_step = replace(selection_step, arguments=contract_arguments)
+            contract_step = selection_step
             if selection_phase == SELECTION_PHASE_PREVIEW:
                 try:
                     signed_operation = OperationType(contract.operation_type)

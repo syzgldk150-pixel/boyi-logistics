@@ -497,6 +497,9 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.entry.automation_id = automation_id
         self.entry.plugin_id = automation_id
         self.entry.trust_source = "ed25519_first_party"
+        self.service._dynamic_resolver = (  # type: ignore[method-assign]
+            lambda _resolver_id, field, context: context["dynamic_inputs"][field]
+        )
         self.contract = replace(
             _contract(),
             automation_id=automation_id,
@@ -505,12 +508,12 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 "console": InvocationArgumentContract(
                     contract_id="console",
                     entrypoint="console",
-                    expected_arguments={
-                        "dry_run": False,
-                        "selected_bill_codes": [],
-                        "preview_fingerprint": "",
+                    expected_arguments={},
+                    dynamic_argument_resolvers={
+                        "dry_run": "verified_console_dry_run",
+                        "selected_bill_codes": "verified_console_selected_bill_codes",
+                        "preview_fingerprint": "verified_console_preview_fingerprint",
                     },
-                    dynamic_argument_resolvers={},
                 )
             },
         )
@@ -1121,7 +1124,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
             plan,
             _admin(),
             "console",
-            {},
+            {"dynamic_inputs": dict(plan.steps[0].arguments)},
             invocation,
         )
 
@@ -1137,7 +1140,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
             plan,
             _admin(),
             "console",
-            {},
+            {"dynamic_inputs": dict(plan.steps[0].arguments)},
             invocation,
         )
 
