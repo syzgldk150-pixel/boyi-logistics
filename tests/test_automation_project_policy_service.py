@@ -490,6 +490,31 @@ class AutomationProjectPolicyServiceTests(TestCase):
             "project_full_auto_allowed": True,
         }
 
+    def _set_selection_project(
+        self,
+        automation_id: str = "split_pending_problem_upload",
+    ) -> None:
+        self.entry.automation_id = automation_id
+        self.entry.plugin_id = automation_id
+        self.entry.trust_source = "ed25519_first_party"
+        self.contract = replace(
+            _contract(),
+            automation_id=automation_id,
+            tool_name=f"automation.{automation_id}.run",
+            invocation_contracts={
+                "console": InvocationArgumentContract(
+                    contract_id="console",
+                    entrypoint="console",
+                    expected_arguments={
+                        "dry_run": False,
+                        "selected_bill_codes": [],
+                        "preview_fingerprint": "",
+                    },
+                    dynamic_argument_resolvers={},
+                )
+            },
+        )
+
     def _scan_policy_subject(self, *, dry_run: bool):
         self._set_scan_project()
         console_contract = _contract().invocation_contracts["console"]
@@ -623,6 +648,40 @@ class AutomationProjectPolicyServiceTests(TestCase):
             "scan_preview",
             self.gateway.command.parameters["execution_context"],
         )
+
+    def test_selection_preview_injects_server_owned_read_only_arguments(self):
+        self._set_selection_project()
+
+        receipt = self.service.invoke_selection_preview(
+            "split_pending_problem_upload",
+            request_id="request-selection-preview",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            {
+                "dry_run": True,
+                "selected_bill_codes": [],
+                "preview_fingerprint": "",
+            },
+            self.gateway.command.parameters["arguments"],
+        )
+
+    def test_selection_workflow_rejects_incomplete_server_inputs(self):
+        self._set_selection_project()
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_trusted(
+                "split_pending_problem_upload",
+                entrypoint=AutomationEntrypoint.CONSOLE,
+                request_id="request-selection-incomplete",
+                actor=_admin(),
+                trusted_context={"dynamic_inputs": {"dry_run": True}},
+            )
+
+        self.assertEqual("SELECTION_INPUT_INVALID", raised.exception.code)
+        self.assertIsNone(self.gateway.command)
 
     def test_trusted_wait_returns_only_bounded_scan_preview_projection(self):
         self._set_scan_project()
