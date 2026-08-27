@@ -12,6 +12,7 @@ from agent.orchestration.models import (
     OrchestrationError,
 )
 from agent.orchestration.planner import DeterministicPlanner
+from agent.orchestration.plan_validator import PlanValidator
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectInvocation,
@@ -314,6 +315,10 @@ class WriteImpactPreviewTests(unittest.TestCase):
         self.assertEqual("read", plan.impact["operation_type"])
         self.assertEqual([], plan.impact["entities"])
         self.assertFalse(plan.steps[0].requires_approval)
+        self.assertIs(
+            plan,
+            PlanValidator(_Catalog()).validate(plan, ContextSnapshot(values={})),
+        )
 
     def test_self_pickup_project_formal_plan_uses_exact_selected_waybill_impact(self):
         tool_name = "automation.self_pickup_problem_upload.run"
