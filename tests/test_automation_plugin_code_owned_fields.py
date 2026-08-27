@@ -147,15 +147,6 @@ def test_code_owned_fields_require_exact_first_party_instance_identity() -> None
         plugin_id="sync_customer_service_problems",
         trust_source=FIRST_PARTY_TRUST,
     ) == ("recheck_items",)
-    for automation_id, plugin_id in (
-        ("self_pickup_problem_upload", "self_pickup_problem_upload"),
-        ("split_pending_problem_upload", "split_pending_problem_upload"),
-    ):
-        assert first_party_code_owned_plan_fields(
-            automation_id=automation_id,
-            plugin_id=plugin_id,
-            trust_source=FIRST_PARTY_TRUST,
-        ) == ("dry_run", "preview_fingerprint", "selected_bill_codes")
     assert first_party_code_owned_plan_fields(
         automation_id="customer_problems_shadow",
         plugin_id="sync_customer_service_problems",

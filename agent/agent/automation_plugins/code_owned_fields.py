@@ -82,14 +82,6 @@ _CODE_OWNED_PLAN_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
         "customer_problems_shadow",
         "sync_customer_service_problems",
     ): ("recheck_items",),
-    (
-        "self_pickup_problem_upload",
-        "self_pickup_problem_upload",
-    ): _SELECTION_FIELDS,
-    (
-        "split_pending_problem_upload",
-        "split_pending_problem_upload",
-    ): _SELECTION_FIELDS,
 }
 
 # These signed releases own the exact entrypoint transitions for the two
