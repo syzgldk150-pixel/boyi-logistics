@@ -125,6 +125,101 @@ class DailySignPipelineTests(unittest.TestCase):
 
         self.assertEqual("PAGINATION_INCOMPLETE", caught.exception.code)
 
+    def test_problem_pagination_deduplicates_identical_source_rows(self):
+        row = {
+            "external_id": "problem-1",
+            "waybill_no": "R001",
+            "problem_type": "少货",
+            "registered_at": "2026-08-12 10:00:00",
+            "registered_site": "测试网点",
+            "source_direction": "registered",
+        }
+        responses = [
+            {
+                "data": {
+                    "ok": True,
+                    "rows": [row],
+                    "stats": {
+                        "total": 2,
+                        "returned": 1,
+                        "total_authoritative": True,
+                    },
+                }
+            },
+            {
+                "data": {
+                    "ok": True,
+                    "rows": [dict(row)],
+                    "stats": {
+                        "total": 2,
+                        "returned": 1,
+                        "total_authoritative": True,
+                    },
+                }
+            },
+        ]
+
+        with patch("tools.daily_sign_pipeline.call_http_service", side_effect=responses):
+            events, proof = daily_sign_pipeline._collect_problem_events(
+                {"problem_page_size": 1},
+                account_id="ronghui_daxiang_s",
+                start=datetime(2026, 8, 12, 0, 0, 0),
+                end=datetime(2026, 8, 13, 9, 0, 0),
+            )
+
+        self.assertEqual(1, len(events))
+        self.assertEqual(1, proof["rows"])
+        self.assertEqual(2, proof["declared_total"])
+        self.assertTrue(proof["complete"])
+
+    def test_problem_pagination_rejects_conflicting_duplicate_source_rows(self):
+        first = {
+            "external_id": "problem-1",
+            "waybill_no": "R001",
+            "problem_type": "少货",
+            "registered_at": "2026-08-12 10:00:00",
+            "registered_site": "测试网点",
+            "source_direction": "registered",
+        }
+        second = {**first, "problem_type": "破损"}
+        responses = [
+            {
+                "data": {
+                    "ok": True,
+                    "rows": [first],
+                    "stats": {
+                        "total": 2,
+                        "returned": 1,
+                        "total_authoritative": True,
+                    },
+                }
+            },
+            {
+                "data": {
+                    "ok": True,
+                    "rows": [second],
+                    "stats": {
+                        "total": 2,
+                        "returned": 1,
+                        "total_authoritative": True,
+                    },
+                }
+            },
+        ]
+
+        with (
+            patch("tools.daily_sign_pipeline.call_http_service", side_effect=responses),
+            self.assertRaises(daily_sign_pipeline.DailySignSyncError) as caught,
+        ):
+            daily_sign_pipeline._collect_problem_events(
+                {"problem_page_size": 1},
+                account_id="ronghui_daxiang_s",
+                start=datetime(2026, 8, 12, 0, 0, 0),
+                end=datetime(2026, 8, 13, 9, 0, 0),
+            )
+
+        self.assertEqual("SOURCE_DUPLICATE_CONFLICT", caught.exception.code)
+
     def test_success_persists_complete_sources_and_returns_unified_result(self):
         observed_at = datetime(2026, 8, 13, 9, 0, 0)
         state = _empty_state()
