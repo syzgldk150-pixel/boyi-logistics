@@ -836,7 +836,7 @@ tools:
           type: integer
           minimum: 1
           maximum: 366
-          description: "R13 规划应签时间的回看天数；未显式提供 start/end 时必须提供，并固定包含原页未来 3 天范围"
+          description: "R13 查询天数；当 request_body 没有显式 start/end 时必须提供"
         source_start:
           type: string
           description: "可选，问题件和签收的权威回溯起点；不填则从已观测账本/到货/R13 最早日期计算"
