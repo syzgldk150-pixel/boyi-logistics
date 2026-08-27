@@ -558,17 +558,30 @@ def _needs_address_detail(value: Any) -> bool:
     return not text or "*" in text or "＊" in text
 
 
+def _needs_waybill_detail(row: dict[str, Any], *, enrich_address: bool) -> bool:
+    if enrich_address and _needs_address_detail(row.get("recipient_address")):
+        return True
+    return any(
+        row.get(field) in (None, "")
+        for field in (
+            "goods_name",
+            "package_type",
+            "expected_quantity",
+            "delivery_method",
+        )
+    )
+
+
 def _enrich_missing_addresses(
     rows: list[dict[str, Any]],
     params: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if params.get("enrich_addresses") is False:
-        return rows, {"ok": True, "skipped": True, "requested": 0, "updated": 0}
+    enrich_address = params.get("enrich_addresses") is not False
     requested = [
         clean_text(row.get("tracking_number"))
         for row in rows
         if clean_text(row.get("tracking_number"))
-        and _needs_address_detail(row.get("recipient_address"))
+        and _needs_waybill_detail(row, enrich_address=enrich_address)
     ]
     if not requested:
         return rows, {"ok": True, "requested": 0, "updated": 0}
@@ -592,20 +605,33 @@ def _enrich_missing_addresses(
     details = _extract_rows(detail_result)
     if details is None:
         return rows, {"error": "query_waybill_detail 返回格式异常", "raw": detail_result}
-    by_code = {
-        _detail_code(row): _detail_address(row)
-        for row in details
-        if _detail_code(row)
-    }
+    by_code = {_detail_code(row): row for row in details if _detail_code(row)}
     updated = 0
     output: list[dict[str, Any]] = []
     for row in rows:
         next_row = dict(row)
-        detail = by_code.get(clean_text(row.get("tracking_number")), "")
-        if _address_quality_score(detail) > _address_quality_score(
+        detail = by_code.get(clean_text(row.get("tracking_number")), {})
+        row_updated = False
+        for target, source in (
+            ("goods_name", "goods_name"),
+            ("package_type", "package_type"),
+            ("delivery_method", "delivery_method"),
+        ):
+            if next_row.get(target) in (None, "") and detail.get(source) not in (None, ""):
+                next_row[target] = detail[source]
+                row_updated = True
+        if next_row.get("expected_quantity") in (None, ""):
+            quantity = _to_int(detail.get("quantity"))
+            if quantity is not None:
+                next_row["expected_quantity"] = quantity
+                row_updated = True
+        detail_address = _detail_address(detail)
+        if enrich_address and _address_quality_score(detail_address) > _address_quality_score(
             next_row.get("recipient_address")
         ):
-            next_row["recipient_address"] = detail
+            next_row["recipient_address"] = detail_address
+            row_updated = True
+        if row_updated:
             updated += 1
         output.append(next_row)
     return output, {
@@ -1731,10 +1757,40 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 clean_text(address_result.get("error")) or "运单地址补全失败。",
                 retryable=True,
             )
+        required_publication_fields = {
+            "goods_name": "货物品名",
+            "package_type": "包装类型",
+            "expected_quantity": "货物件数",
+            "delivery_method": "送货方式",
+        }
+        missing_publication_fields = Counter(
+            label
+            for row in open_rows
+            for field, label in required_publication_fields.items()
+            if row.get(field) in (None, "")
+        )
+        if missing_publication_fields:
+            summary = "、".join(
+                f"{label}{count}条"
+                for label, count in sorted(missing_publication_fields.items())
+            )
+            raise DailySignSyncError(
+                "INCOMPLETE_SOURCE_EVIDENCE",
+                f"主单详情缺少应签表必填信息（{summary}），停止写入。",
+                retryable=True,
+            )
         by_code = {row["tracking_number"]: row for row in open_rows}
         for row in ledger_rows:
             if row["tracking_number"] in by_code:
-                row["recipient_address"] = by_code[row["tracking_number"]].get("recipient_address")
+                enriched = by_code[row["tracking_number"]]
+                for field in (
+                    "goods_name",
+                    "package_type",
+                    "expected_quantity",
+                    "delivery_method",
+                    "recipient_address",
+                ):
+                    row[field] = enriched.get(field)
         all_sign_events = bulk_sign_events + exact_sign_events + historical_sign_events
         persistence_marker = build_daily_sign_persistence_marker(
             problem_events=problem_events,

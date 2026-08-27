@@ -105,6 +105,48 @@ def failed_run_values(_run_id, diagnostics, *, message: str) -> dict:
 
 
 class DailySignLedgerRulesTest(unittest.TestCase):
+ def test_missing_publication_fields_are_enriched_from_real_waybill_detail(self):
+    rows = [
+        {
+            "tracking_number": "R001",
+            "goods_name": None,
+            "package_type": None,
+            "expected_quantity": None,
+            "delivery_method": None,
+            "recipient_address": "湖南省******",
+        }
+    ]
+    detail = {
+        "data": [
+            {
+                "tracking_number": "R001",
+                "goods_name": "医疗器械",
+                "package_type": "木箱",
+                "quantity": 3,
+                "delivery_method": "派送",
+                "recipient_address": "湖南省邵阳市大祥区测试路1号",
+            }
+        ]
+    }
+
+    with patch(
+        "tools.daily_sign_sync_tool.call_http_service",
+        return_value=detail,
+    ) as call_detail:
+        enriched, result = daily_sign_sync_tool._enrich_missing_addresses(
+            rows,
+            {"account_id": "ronghui_daxiang_s"},
+        )
+
+    self.assertTrue(result["ok"])
+    self.assertEqual(1, result["updated"])
+    self.assertEqual("医疗器械", enriched[0]["goods_name"])
+    self.assertEqual("木箱", enriched[0]["package_type"])
+    self.assertEqual(3, enriched[0]["expected_quantity"])
+    self.assertEqual("派送", enriched[0]["delivery_method"])
+    self.assertEqual("湖南省邵阳市大祥区测试路1号", enriched[0]["recipient_address"])
+    self.assertEqual("/query_waybill_detail", call_detail.call_args.args[0])
+
  def test_broker_accepts_catalog_daily_sign_postcondition_name(self):
     digest = "a" * 64
     result = _encode_daily_sign_result(
