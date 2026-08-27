@@ -69,6 +69,12 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/automations/tasks/confirm-scan-preview":
         app._handle_scan_preview_confirmation(handler)
         return True
+    if path == "/automations/tasks/selection-preview":
+        app._handle_selection_preview_start(handler)
+        return True
+    if path == "/automations/tasks/confirm-selection-preview":
+        app._handle_selection_preview_confirmation(handler)
+        return True
     if path == "/automations/tasks/cancel":
         app._handle_automation_task_cancel(handler)
         return True

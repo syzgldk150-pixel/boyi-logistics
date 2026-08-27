@@ -67,8 +67,8 @@ FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
-    "self_pickup_problem_upload": "1.0.21",
-    "split_pending_problem_upload": "1.0.21",
+    "self_pickup_problem_upload": "1.0.22",
+    "split_pending_problem_upload": "1.0.22",
     "sync_arrival_stats": "1.0.21",
     "sync_scan_codes": "1.0.23",
 }
@@ -137,9 +137,19 @@ _CODE_OWNED_ENTRYPOINT_DYNAMIC_FIELDS: Mapping[
             "selected_bill_codes",
             "preview_fingerprint",
         ),
+        "console": (
+            "dry_run",
+            "selected_bill_codes",
+            "preview_fingerprint",
+        ),
     },
     "split_pending_problem_upload": {
         "feishu": (
+            "dry_run",
+            "selected_bill_codes",
+            "preview_fingerprint",
+        ),
+        "console": (
             "dry_run",
             "selected_bill_codes",
             "preview_fingerprint",

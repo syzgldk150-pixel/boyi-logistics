@@ -68,6 +68,22 @@ class _Service:
             "can_confirm": True,
         }
 
+    def invoke_selection_preview(self, automation_id: str, **kwargs: Any) -> _Receipt:
+        self.calls.append((automation_id, kwargs))
+        return _Receipt()
+
+    def get_selection_preview_projection(
+        self,
+        automation_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append((automation_id, kwargs))
+        return {"automation_id": automation_id, "preview_run_id": kwargs["preview_run_id"]}
+
+    def confirm_selection_preview(self, automation_id: str, **kwargs: Any) -> _Receipt:
+        self.calls.append((automation_id, kwargs))
+        return _Receipt()
+
 
 def _client() -> tuple[TestClient, _Service, Actor]:
     service = _Service()
@@ -211,3 +227,48 @@ def test_scan_preview_projection_route_uses_server_project_authority() -> None:
         "scan_codes",
         {"preview_run_id": "11111111-1111-4111-8111-111111111111"},
     )
+
+
+def test_selection_preview_routes_keep_fingerprint_server_side() -> None:
+    client, service, actor = _client()
+    run_id = "11111111-1111-4111-8111-111111111111"
+
+    created = client.post(
+        "/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews",
+        json={"request_id": "request-selection-preview"},
+    )
+    assert created.status_code == 200
+    assert service.calls[-1] == (
+        "self_pickup_problem_upload",
+        {"request_id": "request-selection-preview", "actor": actor},
+    )
+
+    projection = client.get(
+        "/internal/v1/automation-projects/self_pickup_problem_upload/"
+        f"selection-previews/{run_id}"
+    )
+    assert projection.status_code == 200
+    assert service.calls[-1] == (
+        "self_pickup_problem_upload",
+        {"preview_run_id": run_id},
+    )
+
+    confirmed = client.post(
+        "/internal/v1/automation-projects/self_pickup_problem_upload/"
+        f"selection-previews/{run_id}/confirm",
+        json={
+            "request_id": "request-selection-confirm",
+            "selected_bill_codes": ["R0002"],
+        },
+    )
+    assert confirmed.status_code == 200
+    assert service.calls[-1] == (
+        "self_pickup_problem_upload",
+        {
+            "preview_run_id": run_id,
+            "selected_bill_codes": ["R0002"],
+            "request_id": "request-selection-confirm",
+            "actor": actor,
+        },
+    )
+    assert "preview_fingerprint" not in confirmed.request.content.decode("utf-8")

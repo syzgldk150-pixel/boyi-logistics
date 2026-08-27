@@ -263,7 +263,8 @@
       data-automation-provider="{{ task.provider | default('ronghui', true) }}"
     >
       {% set is_scan_preview_workflow = task.task_id == 'scan_codes' and task.plugin and task.plugin.plugin_id == 'sync_scan_codes' %}
-      <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form" data-scan-preview-workflow="{{ 'true' if is_scan_preview_workflow else 'false' }}">
+      {% set is_selection_preview_workflow = task.task_id in ['self_pickup_problem_upload', 'split_pending_problem_upload'] and task.plugin %}
+      <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form" data-scan-preview-workflow="{{ 'true' if is_scan_preview_workflow else 'false' }}" data-selection-preview-workflow="{{ 'true' if is_selection_preview_workflow else 'false' }}">
         <input type="hidden" name="task_id" value="{{ task.task_id }}">
         <input type="hidden" name="task_mode" value="{{ task.task_mode or 'scheduled' }}">
         <input type="hidden" name="name" value="{{ task.name_value }}">
@@ -335,9 +336,9 @@
             {% endif %}
 
             {% if can_run_now %}
-            <button class="primary-btn auto-run-btn" type="submit" formaction="/automations/tasks/run-now" formmethod="post" data-run-now data-run-mode="start">
+            <button class="primary-btn auto-run-btn" type="submit" formaction="{{ '/automations/tasks/selection-preview' if is_selection_preview_workflow else '/automations/tasks/run-now' }}" formmethod="post" data-run-now data-run-mode="start">
               <i data-feather="play" data-run-icon></i>
-              <span data-run-label>{{ '生成预览' if is_scan_preview_workflow else '执行' }}</span>
+              <span data-run-label>{{ '读取候选' if is_selection_preview_workflow else '生成预览' if is_scan_preview_workflow else '执行' }}</span>
             </button>
             {% else %}
             <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}">
@@ -583,6 +584,30 @@
             <button class="primary-btn" type="button" data-scan-preview-confirm>确认执行</button>
             <button class="ghost-btn" type="button" data-scan-preview-regenerate hidden>重新生成预览</button>
             <button class="ghost-btn" type="button" data-scan-preview-dismiss>放弃预览</button>
+          </div>
+        </section>
+        {% endif %}
+
+        {% if is_selection_preview_workflow %}
+        <section class="selection-preview-panel" data-selection-preview-panel role="status" aria-live="polite" hidden>
+          <div class="selection-preview-heading">
+            <div>
+              <strong data-selection-preview-title>候选运单</strong>
+              <p data-selection-preview-message>读取来源表后，勾选本次需要处理的运单。</p>
+            </div>
+            <span class="selection-preview-state" data-selection-preview-state>待选择</span>
+          </div>
+          <div class="selection-preview-toolbar">
+            <span><b data-selection-preview-selected>0</b> / <span data-selection-preview-count>0</span> 票已选</span>
+            <span>有效期至 <b data-selection-preview-expires>—</b></span>
+            <button class="ghost-btn" type="button" data-selection-preview-toggle-all>全选</button>
+          </div>
+          <div class="selection-preview-list" data-selection-preview-list></div>
+          <p class="selection-preview-empty" data-selection-preview-empty hidden>当前没有需要处理的运单。</p>
+          <div class="selection-preview-actions">
+            <button class="primary-btn" type="button" data-selection-preview-confirm disabled>确认处理所选运单</button>
+            <button class="ghost-btn" type="button" data-selection-preview-regenerate hidden>重新读取</button>
+            <button class="ghost-btn" type="button" data-selection-preview-dismiss>放弃</button>
           </div>
         </section>
         {% endif %}
@@ -1322,6 +1347,7 @@
       runId: "",
     };
     const isScanPreviewWorkflow = form.dataset.scanPreviewWorkflow === "true";
+    const isSelectionPreviewWorkflow = form.dataset.selectionPreviewWorkflow === "true";
     const scanPreviewPanel = form.querySelector("[data-scan-preview-panel]");
     const scanPreviewConfirm = form.querySelector("[data-scan-preview-confirm]");
     const scanPreviewRegenerate = form.querySelector("[data-scan-preview-regenerate]");
@@ -1330,6 +1356,15 @@
     let activeScanConfirmationRequestId = "";
     let scanConfirmationRetryOnly = false;
     let scanPreviewTerminalBlocked = false;
+    const selectionPreviewPanel = form.querySelector("[data-selection-preview-panel]");
+    const selectionPreviewConfirm = form.querySelector("[data-selection-preview-confirm]");
+    const selectionPreviewRegenerate = form.querySelector("[data-selection-preview-regenerate]");
+    const selectionPreviewDismiss = form.querySelector("[data-selection-preview-dismiss]");
+    const selectionPreviewToggleAll = form.querySelector("[data-selection-preview-toggle-all]");
+    const selectionPreviewList = form.querySelector("[data-selection-preview-list]");
+    let activeSelectionPreviewId = "";
+    let activeSelectionConfirmationRequestId = "";
+    let selectionConfirmationRetryOnly = false;
 
     function syncScanPreviewActionLocks() {
       const locked = scanConfirmationRetryOnly || scanPreviewTerminalBlocked;
@@ -1443,6 +1478,141 @@
       }
     }
 
+    function selectedBillCodes() {
+      if (!selectionPreviewList) return [];
+      return Array.from(selectionPreviewList.querySelectorAll("input[type='checkbox']:checked"))
+        .map(input => String(input.value || "").trim())
+        .filter(Boolean);
+    }
+
+    function syncSelectionPreviewCount() {
+      const selected = selectedBillCodes();
+      const checkboxes = selectionPreviewList
+        ? Array.from(selectionPreviewList.querySelectorAll("input[type='checkbox']"))
+        : [];
+      const selectedTarget = selectionPreviewPanel?.querySelector("[data-selection-preview-selected]");
+      if (selectedTarget) selectedTarget.textContent = String(selected.length);
+      if (selectionPreviewConfirm) {
+        selectionPreviewConfirm.disabled = !activeSelectionPreviewId || selected.length === 0;
+      }
+      if (selectionPreviewToggleAll) {
+        const allSelected = checkboxes.length > 0 && selected.length === checkboxes.length;
+        selectionPreviewToggleAll.textContent = allSelected ? "取消全选" : "全选";
+      }
+    }
+
+    function clearSelectionPreview({ force = false } = {}) {
+      if (selectionConfirmationRetryOnly && !force) return false;
+      activeSelectionPreviewId = "";
+      activeSelectionConfirmationRequestId = "";
+      selectionConfirmationRetryOnly = false;
+      if (!selectionPreviewPanel) return true;
+      selectionPreviewPanel.hidden = true;
+      selectionPreviewPanel.classList.remove("is-expired", "is-error");
+      if (selectionPreviewList) selectionPreviewList.replaceChildren();
+      if (selectionPreviewConfirm) selectionPreviewConfirm.disabled = true;
+      if (selectionPreviewRegenerate) selectionPreviewRegenerate.hidden = true;
+      syncRunButtonVisual();
+      return true;
+    }
+
+    function selectionMeta(candidate, automationId) {
+      if (automationId === "self_pickup_problem_upload") {
+        return [
+          candidate.source_name,
+          candidate.destination_site,
+          candidate.delivery_method,
+          `到货 ${candidate.arrival_count} / 应到 ${candidate.goods_count}`,
+        ];
+      }
+      return [
+        candidate.problem_type,
+        `应到 ${candidate.expected_quantity} / 已到 ${candidate.arrived_quantity} / 未到 ${candidate.pending_quantity}`,
+        candidate.problem_item_status,
+        candidate.complaint_status,
+      ];
+    }
+
+    function renderSelectionPreview(preview) {
+      if (!selectionPreviewPanel || !selectionPreviewList || !preview) return;
+      const nextPreviewId = String(preview.preview_run_id || "");
+      if (activeSelectionPreviewId !== nextPreviewId) {
+        activeSelectionConfirmationRequestId = "";
+      }
+      activeSelectionPreviewId = nextPreviewId;
+      selectionConfirmationRetryOnly = false;
+      const canConfirm = preview.can_confirm === true;
+      const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
+      const title = selectionPreviewPanel.querySelector("[data-selection-preview-title]");
+      const message = selectionPreviewPanel.querySelector("[data-selection-preview-message]");
+      const state = selectionPreviewPanel.querySelector("[data-selection-preview-state]");
+      const count = selectionPreviewPanel.querySelector("[data-selection-preview-count]");
+      const expires = selectionPreviewPanel.querySelector("[data-selection-preview-expires]");
+      const empty = selectionPreviewPanel.querySelector("[data-selection-preview-empty]");
+      if (title) title.textContent = preview.title || "候选运单";
+      if (message) {
+        message.textContent = canConfirm
+          ? "只处理您勾选的运单；提交前会重新核对来源数据。"
+          : "候选清单已过期，请重新读取。";
+      }
+      if (state) state.textContent = canConfirm ? "可选择" : "已过期";
+      if (count) count.textContent = String(preview.candidate_count ?? candidates.length);
+      if (expires) expires.textContent = formatScanPreviewTime(preview.expires_at);
+      selectionPreviewList.replaceChildren();
+      candidates.forEach(candidate => {
+        const label = document.createElement("label");
+        label.className = "selection-preview-item";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = String(candidate.bill_code || "");
+        checkbox.disabled = !canConfirm;
+        checkbox.addEventListener("change", syncSelectionPreviewCount);
+        const copy = document.createElement("span");
+        copy.className = "selection-preview-item-copy";
+        const bill = document.createElement("strong");
+        bill.textContent = checkbox.value;
+        const meta = document.createElement("small");
+        meta.textContent = selectionMeta(candidate, preview.automation_id)
+          .map(value => String(value ?? "").trim())
+          .filter(Boolean)
+          .join(" · ");
+        copy.append(bill, meta);
+        label.append(checkbox, copy);
+        selectionPreviewList.append(label);
+      });
+      if (empty) empty.hidden = candidates.length > 0;
+      selectionPreviewPanel.hidden = false;
+      selectionPreviewPanel.classList.toggle("is-expired", !canConfirm);
+      selectionPreviewPanel.classList.remove("is-error");
+      if (selectionPreviewRegenerate) selectionPreviewRegenerate.hidden = canConfirm;
+      syncSelectionPreviewCount();
+      syncRunButtonVisual();
+      selectionPreviewPanel.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "nearest",
+      });
+    }
+
+    function renderSelectionPreviewError(message) {
+      if (!selectionPreviewPanel) return;
+      activeSelectionPreviewId = "";
+      activeSelectionConfirmationRequestId = "";
+      selectionConfirmationRetryOnly = false;
+      selectionPreviewPanel.hidden = false;
+      selectionPreviewPanel.classList.add("is-error");
+      selectionPreviewPanel.classList.remove("is-expired");
+      const title = selectionPreviewPanel.querySelector("[data-selection-preview-title]");
+      const detail = selectionPreviewPanel.querySelector("[data-selection-preview-message]");
+      const state = selectionPreviewPanel.querySelector("[data-selection-preview-state]");
+      if (title) title.textContent = "候选清单不可用";
+      if (detail) detail.textContent = message || "请重新读取候选运单。";
+      if (state) state.textContent = "已阻断";
+      if (selectionPreviewList) selectionPreviewList.replaceChildren();
+      if (selectionPreviewConfirm) selectionPreviewConfirm.disabled = true;
+      if (selectionPreviewRegenerate) selectionPreviewRegenerate.hidden = false;
+      syncRunButtonVisual();
+    }
+
     function syncRunButtonVisual() {
       if (!(runBtn instanceof HTMLElement)) return;
       const isRunning = !!runUiState.running;
@@ -1452,7 +1622,7 @@
       const isActive = isRunning || isAwaitingApproval || isPendingRun;
       const isCancelPending = isActive && !!runUiState.cancelRequested;
       const iconName = isBatchTracking ? "loader" : isActive ? "x-circle" : "play";
-      const idleLabel = isScanPreviewWorkflow ? "生成预览" : "执行";
+      const idleLabel = isSelectionPreviewWorkflow ? "读取候选" : isScanPreviewWorkflow ? "生成预览" : "执行";
       const labelText = isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : idleLabel;
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
@@ -1466,6 +1636,7 @@
         || isBatchTracking
         || (isScanPreviewWorkflow && scanConfirmationRetryOnly)
         || (isScanPreviewWorkflow && scanPreviewTerminalBlocked)
+        || (isSelectionPreviewWorkflow && selectionConfirmationRetryOnly)
       );
       if (runLabel) {
         runLabel.textContent = labelText;
@@ -1844,6 +2015,10 @@
         if (taskId) query.set("task_id", taskId);
         const scanPhase = termDrawer.dataset.scanPhase || "";
         if (isScanPreviewWorkflow && scanPhase) query.set("scan_phase", scanPhase);
+        const selectionPhase = termDrawer.dataset.selectionPhase || "";
+        if (isSelectionPreviewWorkflow && selectionPhase) {
+          query.set("selection_phase", selectionPhase);
+        }
         if (startedAt) query.set("started_at", startedAt);
         if (runId) query.set("run_id", runId);
         const controller = new AbortController();
@@ -2010,6 +2185,14 @@
             );
             syncRuntimeFeedback(form, null);
             hideRunFeedback(form);
+          } else if (data.selection_preview) {
+            renderSelectionPreview(data.selection_preview);
+            syncRuntimeFeedback(form, null);
+            hideRunFeedback(form);
+          } else if (data.selection_preview_error) {
+            renderSelectionPreviewError(data.selection_preview_error.message);
+            syncRuntimeFeedback(form, null);
+            hideRunFeedback(form);
           } else if (data.runtime) {
             syncRuntimeFeedback(form, data.runtime);
             hideRunFeedback(form);
@@ -2041,6 +2224,14 @@
                 : "auto-terminal-status auto-terminal-status--error";
             } else if (data.scan_preview_error) {
               termStatus.textContent = "预览不可用";
+              termStatus.className = "auto-terminal-status auto-terminal-status--error";
+            } else if (data.selection_preview) {
+              termStatus.textContent = data.selection_preview.can_confirm ? "待选择" : "候选已过期";
+              termStatus.className = data.selection_preview.can_confirm
+                ? "auto-terminal-status auto-terminal-status--cancel"
+                : "auto-terminal-status auto-terminal-status--error";
+            } else if (data.selection_preview_error) {
+              termStatus.textContent = "候选不可用";
               termStatus.className = "auto-terminal-status auto-terminal-status--error";
             } else if (data.runtime) {
               if (data.runtime.cancelled) {
@@ -2742,6 +2933,128 @@
       });
     }
 
+    if (selectionPreviewDismiss) {
+      selectionPreviewDismiss.addEventListener("click", () => {
+        if (!selectionConfirmationRetryOnly) clearSelectionPreview();
+      });
+    }
+
+    if (selectionPreviewRegenerate) {
+      selectionPreviewRegenerate.addEventListener("click", () => {
+        if (selectionConfirmationRetryOnly) return;
+        clearSelectionPreview();
+        runBtn?.click();
+      });
+    }
+
+    if (selectionPreviewToggleAll) {
+      selectionPreviewToggleAll.addEventListener("click", () => {
+        if (!selectionPreviewList || selectionConfirmationRetryOnly) return;
+        const checkboxes = Array.from(
+          selectionPreviewList.querySelectorAll("input[type='checkbox']:not(:disabled)")
+        );
+        const shouldSelect = checkboxes.some(input => !input.checked);
+        checkboxes.forEach(input => { input.checked = shouldSelect; });
+        syncSelectionPreviewCount();
+      });
+    }
+
+    if (selectionPreviewConfirm) {
+      selectionPreviewConfirm.addEventListener("click", async () => {
+        const selected = selectedBillCodes();
+        if (!activeSelectionPreviewId || !selected.length || selectionPreviewConfirm.hasAttribute("aria-busy")) return;
+        if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
+          renderSelectionPreviewError("当前浏览器无法生成安全的请求标识，所选运单未提交。");
+          return;
+        }
+        const confirmationRequestId = activeSelectionConfirmationRequestId || window.crypto.randomUUID();
+        activeSelectionConfirmationRequestId = confirmationRequestId;
+        selectionConfirmationRetryOnly = true;
+        setButtonLoading(selectionPreviewConfirm, true);
+        syncRunButtonVisual();
+        try {
+          const taskId = String(form.querySelector("input[name='task_id']")?.value || "");
+          const body = new URLSearchParams({
+            task_id: taskId,
+            preview_run_id: activeSelectionPreviewId,
+            selected_bill_codes_json: JSON.stringify(selected),
+          });
+          const res = await fetch("/automations/tasks/confirm-selection-preview", {
+            method: "POST",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              "Accept": "application/json",
+              "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+              "X-Browser-Request-UUID": confirmationRequestId,
+            },
+            body: body.toString(),
+          });
+          const result = await res.json();
+          if (!res.ok || !result.ok) {
+            const errorCode = String(result.error_code || "");
+            if (errorCode === "REQUEST_ID_REUSED") {
+              selectionConfirmationRetryOnly = false;
+              activeSelectionConfirmationRequestId = "";
+              renderFeedback(form, {
+                kind: "error",
+                title: "确认请求未提交",
+                message: result.message || "请求标识冲突，请再次点击确认。",
+                showTimer: false,
+              });
+              return;
+            }
+            if (res.status >= 500) {
+              renderFeedback(form, {
+                kind: "error",
+                title: "确认结果暂时未知",
+                message: "请再次点击确认；页面会复用原请求标识，不会重复创建任务。",
+                showTimer: false,
+              });
+              return;
+            }
+            renderSelectionPreviewError(result.message);
+            return;
+          }
+          const runId = String(result.run_id || "").trim();
+          if (!runId) throw new Error("Agent 未返回可追踪的正式处理记录。");
+          clearSelectionPreview({ force: true });
+          if (termDrawer) {
+            termDrawer.dataset.runStartedAt = "";
+            termDrawer.dataset.runId = runId;
+            termDrawer.dataset.selectionPhase = "formal";
+          }
+          setRunUiState({
+            running: false,
+            awaitingApproval: false,
+            pendingRun: true,
+            startedAt: "",
+            cancelRequested: false,
+            runId,
+          });
+          renderFeedback(form, {
+            kind: "info",
+            title: result.title || "所选运单已提交",
+            message: result.message || "执行结果会在当前卡片更新。",
+            showTimer: false,
+            stampText: `Run：${runId}`,
+          });
+          startPolling();
+        } catch (error) {
+          renderFeedback(form, {
+            kind: "error",
+            title: "确认结果暂时未知",
+            message: "请保留当前页面并再次点击确认；页面会复用原请求标识。",
+            showTimer: false,
+            body: error instanceof Error ? error.message : String(error || ""),
+          });
+        } finally {
+          setButtonLoading(selectionPreviewConfirm, false);
+          syncSelectionPreviewCount();
+          syncRunButtonVisual();
+        }
+      });
+    }
+
     // 立即执行 / 单按钮取消
     if (runBtn) {
       runBtn.addEventListener("click", async e => {
@@ -2772,6 +3085,7 @@
 
         stopRunProgress();
         if (isScanPreviewWorkflow) clearScanPreview();
+        if (isSelectionPreviewWorkflow) clearSelectionPreview();
         serializeForm(form);
         hideLegacyFeedback(form);
         syncRuntimeFeedback(form, null);
@@ -2782,6 +3096,7 @@
           termDrawer.dataset.clientStartedAt = stamp;
           termDrawer.dataset.runStartedAt = "";
           if (isScanPreviewWorkflow) termDrawer.dataset.scanPhase = "preview";
+          if (isSelectionPreviewWorkflow) termDrawer.dataset.selectionPhase = "preview";
         }
         setRunUiState({ running: false, awaitingApproval: false, pendingRun: true, startedAt: stamp, cancelRequested: false });
         stopRunProgress();
@@ -2795,9 +3110,13 @@
         });
 
         try {
-          const fd = new FormData(form);
           const body = new URLSearchParams();
-          fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
+          if (isSelectionPreviewWorkflow) {
+            body.set("task_id", String(form.querySelector("input[name='task_id']")?.value || ""));
+          } else {
+            const fd = new FormData(form);
+            fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
+          }
           if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
             throw new Error("当前浏览器无法生成安全的请求标识，命令未提交。");
           }

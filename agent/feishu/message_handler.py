@@ -517,6 +517,10 @@ async def _invoke_automation_project_and_reply(
     elif status == "BLOCKED_LOGIN":
         reply = "自动化任务已阻塞：绑定的业务账号需要恢复登录。"
         reply_type = "automation_project_blocked_login"
+    elif status == "BLOCKED_DATA":
+        reason = str(result.get("error_summary") or "来源数据或写入校验未通过").strip()
+        reply = f"自动化任务未完成：{reason[:300]}"
+        reply_type = "automation_project_blocked_data"
     else:
         reply = f"自动化任务当前状态：{status or 'UNKNOWN'}。"
         reply_type = "automation_project_status"

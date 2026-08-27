@@ -143,6 +143,48 @@ def test_direct_feishu_project_reports_waiting_approval_without_generic_executio
     assert "等待审批" in replies[-1][0]
 
 
+def test_direct_feishu_project_explains_blocked_data_reason():
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": False,
+                "status": "BLOCKED_DATA",
+                "run_id": "run-blocked-data",
+                "error_summary": "每日到货表写后读回不一致",
+            }
+        ]
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-blocked-data",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+        ):
+            asyncio.run(
+                message_handler._invoke_automation_project_and_reply(
+                    route_key="builtin.arrival_stats",
+                    dynamic_inputs={},
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert "每日到货表写后读回不一致" in replies[-1][0]
+    assert "run-blocked-data" in replies[-1][0]
+
+
 def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
     preview_run_id = "11111111-1111-4111-8111-111111111111"
     formal_run_id = "22222222-2222-4222-8222-222222222222"
