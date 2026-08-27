@@ -7,7 +7,9 @@ from typing import Any
 
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_PREVIEW,
+    SELECTION_PHASE_PREVIEW,
     resolve_scan_capability_phase,
+    resolve_selection_capability_phase,
 )
 from agent.orchestration.impact_preview import validate_write_impact
 from agent.orchestration.models import (
@@ -48,14 +50,28 @@ class PlanValidator:
                     "SCAN_EXECUTION_PHASE_INVALID",
                     "Scan execution phase is incomplete or ambiguous",
                 ) from exc
+            try:
+                selection_phase = resolve_selection_capability_phase(
+                    capability,
+                    step.arguments,
+                )
+            except ValueError as exc:
+                raise OrchestrationError(
+                    "SELECTION_EXECUTION_PHASE_INVALID",
+                    "Selection execution phase is incomplete or ambiguous",
+                ) from exc
+            read_preview = (
+                scan_phase == SCAN_PHASE_PREVIEW
+                or selection_phase == SELECTION_PHASE_PREVIEW
+            )
             expected_operation = (
                 OperationType.READ.value
-                if scan_phase == SCAN_PHASE_PREVIEW
+                if read_preview
                 else str(capability.get("operation_type") or "")
             )
             expected_risk = (
                 RiskLevel.LOW.value
-                if scan_phase == SCAN_PHASE_PREVIEW
+                if read_preview
                 else str(capability.get("risk_level") or "")
             )
             if expected_operation != step.operation_type.value:
