@@ -597,6 +597,51 @@ class AutomationProjectPolicyServiceTests(TestCase):
         )
         return plan, invocation
 
+    def _selection_policy_subject(self, *, dry_run: bool):
+        self._set_selection_project()
+        invocation = AutomationProjectInvocation(
+            automation_id="split_pending_problem_upload",
+            automation_generation=1,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="console",
+            contract_hash=CONTRACT_HASH,
+            policy_version=1,
+            project_configuration_version=1,
+            request_id="selection-policy",
+        )
+        arguments = {
+            "dry_run": dry_run,
+            "selected_bill_codes": [] if dry_run else ["R1"],
+            "preview_fingerprint": "" if dry_run else "a" * 64,
+        }
+        plan = Plan(
+            command_type="automation.project.invoke",
+            context_fingerprint="context-one",
+            tool_catalog_hash="catalog-one",
+            steps=(
+                PlanStep(
+                    step_key="execute",
+                    tool_name="automation.split_pending_problem_upload.run",
+                    tool_version="1.0.0",
+                    operation_type=(
+                        OperationType.READ if dry_run else OperationType.EXTERNAL_WRITE
+                    ),
+                    arguments=arguments,
+                    account_id=None,
+                    depends_on=(),
+                    idempotency_key="selection-step",
+                    expected_evidence=(),
+                    postconditions=(),
+                    risk_level=RiskLevel.LOW if dry_run else RiskLevel.HIGH,
+                    requires_approval=not dry_run,
+                ),
+            ),
+            automation_id="split_pending_problem_upload",
+            automation_generation=1,
+            automation_contract_hash=CONTRACT_HASH,
+        )
+        return plan, invocation
+
     def test_console_invoke_builds_only_server_owned_project_identity(self):
         receipt = self.service.invoke_console(
             AUTOMATION_ID,
@@ -1067,6 +1112,37 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 self.assertTrue(decision.allowed)
                 self.assertFalse(decision.requires_approval)
                 self.assertEqual("SCAN_PREVIEW_ALLOWED", decision.code)
+
+    def test_selection_preview_matches_saved_contract_without_approval(self):
+        plan, invocation = self._selection_policy_subject(dry_run=True)
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+
+        decision = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.requires_approval)
+        self.assertEqual("SELECTION_PREVIEW_ALLOWED", decision.code)
+
+    def test_selection_formal_matches_saved_contract_and_honors_policy(self):
+        plan, invocation = self._selection_policy_subject(dry_run=False)
+        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
+
+        decision = self.service.evaluate_invocation(
+            plan,
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.requires_approval)
 
     def test_scan_formal_require_each_run_requires_approval_for_all_entrypoints(self):
         plan, invocation = self._scan_policy_subject(dry_run=False)

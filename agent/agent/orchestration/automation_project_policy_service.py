@@ -22,7 +22,10 @@ from agent.automation_plugins.catalog import (
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_FORMAL,
     SCAN_PHASE_PREVIEW,
+    SELECTION_PHASE_FORMAL,
+    SELECTION_PHASE_PREVIEW,
     resolve_scan_execution_phase,
+    resolve_selection_execution_phase,
 )
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import (
@@ -1518,6 +1521,7 @@ class AutomationProjectPolicyService:
         # to fail it as stale before the current policy can take effect.
         # Contract/generation/configuration matching below remains strict.
         scan_phase: str | None = None
+        selection_phase: str | None = None
         if is_scan_preview_project(entry):
             if len(plan.steps) != 1:
                 return _project_denied(
@@ -1535,6 +1539,24 @@ class AutomationProjectPolicyService:
                 return _project_denied(
                     "SCAN_EXECUTION_PHASE_INVALID",
                     "Scan execution phase is incomplete or ambiguous",
+                )
+        if is_selection_preview_project(entry):
+            if len(plan.steps) != 1:
+                return _project_denied(
+                    "SELECTION_EXECUTION_PHASE_INVALID",
+                    "Selection execution requires one exact governed step",
+                )
+            try:
+                selection_phase = resolve_selection_execution_phase(
+                    automation_id=str(getattr(entry, "automation_id", "") or ""),
+                    plugin_id=str(getattr(entry, "plugin_id", "") or ""),
+                    trust_source=str(getattr(entry, "trust_source", "") or ""),
+                    arguments=plan.steps[0].arguments,
+                )
+            except ValueError:
+                return _project_denied(
+                    "SELECTION_EXECUTION_PHASE_INVALID",
+                    "Selection execution phase is incomplete or ambiguous",
                 )
         contract_plan = plan
         if scan_phase == SCAN_PHASE_PREVIEW:
@@ -1558,6 +1580,48 @@ class AutomationProjectPolicyService:
                 plan,
                 steps=(replace(preview_step, operation_type=signed_operation),),
             )
+        if selection_phase in {SELECTION_PHASE_PREVIEW, SELECTION_PHASE_FORMAL}:
+            selection_step = plan.steps[0]
+            if selection_phase == SELECTION_PHASE_PREVIEW and (
+                selection_step.operation_type is not OperationType.READ
+                or selection_step.risk_level is not RiskLevel.LOW
+            ):
+                return _project_denied(
+                    "SELECTION_EXECUTION_PHASE_INVALID",
+                    "Selection preview plan does not use read-only governance",
+                )
+            invocation_contract = contract.invocation_contracts.get(
+                invocation.contract_id
+            )
+            if invocation_contract is None:
+                return _project_denied(
+                    "PROJECT_INVOCATION_STALE",
+                    "Automation project contract is no longer current",
+                )
+            contract_arguments = dict(selection_step.arguments)
+            expected_arguments = dict(invocation_contract.expected_arguments)
+            for field_name in (
+                "dry_run",
+                "selected_bill_codes",
+                "preview_fingerprint",
+            ):
+                contract_arguments.pop(field_name, None)
+                if field_name in expected_arguments:
+                    contract_arguments[field_name] = expected_arguments[field_name]
+            contract_step = replace(selection_step, arguments=contract_arguments)
+            if selection_phase == SELECTION_PHASE_PREVIEW:
+                try:
+                    signed_operation = OperationType(contract.operation_type)
+                except ValueError:
+                    return _project_denied(
+                        "PROJECT_INVOCATION_STALE",
+                        "Automation project contract is no longer current",
+                    )
+                contract_step = replace(
+                    contract_step,
+                    operation_type=signed_operation,
+                )
+            contract_plan = replace(plan, steps=(contract_step,))
         if not contract.matches_plan(
             contract_plan,
             invocation,
@@ -1577,6 +1641,13 @@ class AutomationProjectPolicyService:
                     code="SCAN_PREVIEW_ALLOWED",
                     reason="The governed scan preview is read-only",
                 )
+        if selection_phase == SELECTION_PHASE_PREVIEW:
+            return ProjectPolicyEvaluation(
+                allowed=True,
+                requires_approval=False,
+                code="SELECTION_PREVIEW_ALLOWED",
+                reason="The governed selection preview is read-only",
+            )
         mode = str(policy.get("mode") or "")
         if mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
             legacy_active = self._legacy_schedule_active(policy, contract)
