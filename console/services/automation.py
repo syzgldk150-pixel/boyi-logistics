@@ -8,6 +8,61 @@ from console.services.automation_projects import *  # noqa: F403
 
 
 SCAN_PREVIEW_PROJECT_ID = "scan_codes"
+SELECTION_PREVIEW_PROJECT_IDS = frozenset(
+    {"self_pickup_problem_upload", "split_pending_problem_upload"}
+)
+SELECTION_PREVIEW_PUBLIC_FIELDS = frozenset(
+    {
+        "contract_version",
+        "automation_id",
+        "title",
+        "preview_run_id",
+        "observed_at",
+        "expires_at",
+        "candidate_count",
+        "candidates",
+        "summary",
+        "can_confirm",
+    }
+)
+SELECTION_PREVIEW_CANDIDATE_FIELDS = {
+    "self_pickup_problem_upload": frozenset(
+        {
+            "arrival_count",
+            "bill_code",
+            "delivery_method",
+            "destination_site",
+            "goods_count",
+            "row_number",
+            "source_id",
+            "source_name",
+        }
+    ),
+    "split_pending_problem_upload": frozenset(
+        {
+            "arrived_quantity",
+            "bill_code",
+            "complaint_status",
+            "expected_quantity",
+            "pending_quantity",
+            "problem_item_status",
+            "problem_type",
+            "source_row_no",
+        }
+    ),
+}
+SELECTION_PREVIEW_ERROR_MESSAGES = {
+    "SELECTION_PREVIEW_PROJECT_INVALID": "该自动化不支持后台候选选择。",
+    "SELECTION_PREVIEW_NOT_FOUND": "候选清单不存在，请重新读取。",
+    "SELECTION_PREVIEW_INCOMPLETE": "候选清单尚未生成完成，请稍后重试。",
+    "SELECTION_PREVIEW_INVALID": "候选清单校验失败，请重新读取。",
+    "SELECTION_PREVIEW_EXPIRED": "候选清单已超过十五分钟，请重新读取。",
+    "SELECTION_PREVIEW_STALE": "项目配置已变化，请重新读取候选清单。",
+    "SELECTION_CHANGED": "来源数据已变化，请重新读取后再选择。",
+    "SELECTION_REQUIRED": "请至少选择一票运单。",
+    "SELECTION_INVALID": "所选运单无效，请重新选择。",
+    "REQUEST_ID_REUSED": "本次请求标识已被使用，请重新点击确认。",
+}
 SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
     {
         "contract_version",
@@ -99,6 +154,88 @@ def scan_preview_error_message(error_code: Any, fallback: Any = "") -> str:
     if code in SCAN_PREVIEW_ERROR_MESSAGES:
         return SCAN_PREVIEW_ERROR_MESSAGES[code]
     return normalize_feedback_text(fallback or "扫描预览当前不可用，请重新生成。")
+
+
+def normalize_selection_preview_projection(
+    raw: Any,
+    *,
+    expected_automation_id: str,
+    expected_run_id: str,
+) -> dict[str, Any] | None:
+    """Accept only the simple, signed public selection contract."""
+
+    if not isinstance(raw, Mapping) or set(raw) != SELECTION_PREVIEW_PUBLIC_FIELDS:
+        return None
+    automation_id = str(raw.get("automation_id") or "").strip()
+    if (
+        automation_id != expected_automation_id
+        or automation_id not in SELECTION_PREVIEW_PROJECT_IDS
+    ):
+        return None
+    preview_run_id = str(raw.get("preview_run_id") or "").strip()
+    try:
+        normalized_preview_run_id = str(uuid.UUID(preview_run_id))
+    except (ValueError, AttributeError):
+        return None
+    if normalized_preview_run_id != preview_run_id or preview_run_id != expected_run_id:
+        return None
+    if raw.get("contract_version") != 1 or not isinstance(raw.get("can_confirm"), bool):
+        return None
+    title = str(raw.get("title") or "").strip()
+    if not title or len(title) > 80:
+        return None
+    timestamps: dict[str, str] = {}
+    for field in ("observed_at", "expires_at"):
+        value = str(raw.get(field) or "").strip()
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if not value or len(value) > 64 or parsed.tzinfo is None:
+            return None
+        timestamps[field] = value
+    candidate_count = raw.get("candidate_count")
+    candidates = raw.get("candidates")
+    allowed_fields = SELECTION_PREVIEW_CANDIDATE_FIELDS[automation_id]
+    if (
+        isinstance(candidate_count, bool)
+        or not isinstance(candidate_count, int)
+        or not 0 <= candidate_count <= 10_000
+        or not isinstance(candidates, list)
+        or len(candidates) != candidate_count
+    ):
+        return None
+    normalized_candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping) or set(candidate) != allowed_fields:
+            return None
+        bill_code = str(candidate.get("bill_code") or "").strip()
+        if not bill_code or len(bill_code) > 64 or bill_code in seen:
+            return None
+        seen.add(bill_code)
+        normalized_candidates.append(dict(candidate))
+    summary = raw.get("summary")
+    if not isinstance(summary, Mapping):
+        return None
+    return {
+        "contract_version": 1,
+        "automation_id": automation_id,
+        "title": title,
+        "preview_run_id": preview_run_id,
+        **timestamps,
+        "candidate_count": candidate_count,
+        "candidates": normalized_candidates,
+        "summary": dict(summary),
+        "can_confirm": raw["can_confirm"],
+    }
+
+
+def selection_preview_error_message(error_code: Any, fallback: Any = "") -> str:
+    code = str(error_code or "").strip()
+    if code in SELECTION_PREVIEW_ERROR_MESSAGES:
+        return SELECTION_PREVIEW_ERROR_MESSAGES[code]
+    return normalize_feedback_text(fallback or "候选清单当前不可用，请重新读取。")
 
 
 def group_scheduled_rows_by_automation_id(
@@ -1493,6 +1630,213 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             },
         )
 
+    def _handle_selection_preview_start(
+        self,
+        handler: BaseHTTPRequestHandler,
+    ) -> None:
+        """Read one live candidate list without writing to the business system."""
+
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        request_id = self._normalize_browser_request_uuid(
+            handler.headers.get("X-Browser-Request-UUID")
+        )
+        values = self._parse_urlencoded_form(handler)
+        task_id = str(values.get("task_id") or "").strip()
+        if (
+            not request_id
+            or set(values) != {"task_id"}
+            or task_id not in SELECTION_PREVIEW_PROJECT_IDS
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error_code": "SELECTION_PREVIEW_PROJECT_INVALID",
+                    "message": "候选读取请求无效，请刷新页面后重试。",
+                },
+            )
+            return
+        result = self._agent_request(
+            "POST",
+            (
+                f"/internal/v1/automation-projects/{quote(task_id, safe='')}"
+                "/selection-previews"
+            ),
+            payload={"request_id": request_id},
+            timeout=self.settings.agent_timeout_seconds,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not result.get("ok"):
+            error_code = str(result.get("error_code") or "").strip()
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "ok": False,
+                    "error_code": error_code or "SELECTION_PREVIEW_UNAVAILABLE",
+                    "message": selection_preview_error_message(
+                        error_code, result.get("error")
+                    ),
+                },
+            )
+            return
+        receipt = result.get("data")
+        run_id = (
+            str(receipt.get("run_id") or "").strip()
+            if isinstance(receipt, Mapping)
+            else ""
+        )
+        if not self._normalize_browser_request_uuid(run_id):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "ok": False,
+                    "error_code": "INVALID_AGENT_RUN_CONTRACT",
+                    "message": "Agent 未返回可追踪的候选读取记录。",
+                },
+            )
+            return
+        self._send_json(
+            handler,
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "pending": True,
+                "title": "正在读取候选运单",
+                "message": "正在读取飞书来源表，完成后可直接勾选要处理的运单。",
+                "command_id": receipt.get("command_id"),
+                "work_item_id": receipt.get("work_item_id"),
+                "run_id": run_id,
+                "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+            },
+        )
+
+    def _handle_selection_preview_confirmation(
+        self,
+        handler: BaseHTTPRequestHandler,
+    ) -> None:
+        """Submit selected bills from one server-verified candidate list."""
+
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        request_id = self._normalize_browser_request_uuid(
+            handler.headers.get("X-Browser-Request-UUID")
+        )
+        values = self._parse_urlencoded_form(handler)
+        task_id = str(values.get("task_id") or "").strip()
+        preview_run_id = self._normalize_browser_request_uuid(
+            values.get("preview_run_id")
+        )
+        selected_raw = str(values.get("selected_bill_codes_json") or "")
+        try:
+            selected = json.loads(selected_raw)
+        except (TypeError, ValueError):
+            selected = None
+        if (
+            not request_id
+            or set(values)
+            != {"task_id", "preview_run_id", "selected_bill_codes_json"}
+            or task_id not in SELECTION_PREVIEW_PROJECT_IDS
+            or not preview_run_id
+            or not isinstance(selected, list)
+            or not selected
+            or len(selected) > 10_000
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                or len(item.strip()) > 64
+                for item in selected
+            )
+            or len(selected) != len(set(selected))
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error_code": "SELECTION_INVALID",
+                    "message": SELECTION_PREVIEW_ERROR_MESSAGES["SELECTION_INVALID"],
+                },
+            )
+            return
+        result = self._agent_request(
+            "POST",
+            (
+                f"/internal/v1/automation-projects/{quote(task_id, safe='')}"
+                f"/selection-previews/{quote(preview_run_id, safe='')}/confirm"
+            ),
+            payload={
+                "request_id": request_id,
+                "selected_bill_codes": [item.strip() for item in selected],
+            },
+            timeout=self.settings.agent_timeout_seconds,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not result.get("ok"):
+            error_code = str(result.get("error_code") or "").strip()
+            try:
+                upstream_status = HTTPStatus(int(result.get("status")))
+            except (TypeError, ValueError):
+                upstream_status = HTTPStatus.BAD_GATEWAY
+            if upstream_status not in {
+                HTTPStatus.BAD_REQUEST,
+                HTTPStatus.FORBIDDEN,
+                HTTPStatus.NOT_FOUND,
+                HTTPStatus.CONFLICT,
+                HTTPStatus.GONE,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            }:
+                upstream_status = HTTPStatus.BAD_GATEWAY
+            self._send_json(
+                handler,
+                upstream_status,
+                {
+                    "ok": False,
+                    "error_code": error_code or "SELECTION_CONFIRMATION_FAILED",
+                    "message": selection_preview_error_message(
+                        error_code, result.get("error")
+                    ),
+                },
+            )
+            return
+        receipt = result.get("data")
+        run_id = (
+            str(receipt.get("run_id") or "").strip()
+            if isinstance(receipt, Mapping)
+            else ""
+        )
+        if not self._normalize_browser_request_uuid(run_id):
+            self._send_json(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "ok": False,
+                    "error_code": "INVALID_AGENT_RUN_CONTRACT",
+                    "message": "Agent 未返回可追踪的正式处理记录。",
+                },
+            )
+            return
+        self._send_json(
+            handler,
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "pending": True,
+                "title": "所选运单已提交",
+                "message": f"已提交 {len(selected)} 票运单，执行结果会在当前卡片更新。",
+                "command_id": receipt.get("command_id"),
+                "work_item_id": receipt.get("work_item_id"),
+                "run_id": run_id,
+                "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+            },
+        )
+
     def _handle_automation_task_cancel(self, handler: BaseHTTPRequestHandler) -> None:
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id", "") or "").strip()
@@ -1565,6 +1909,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         tool_name = str(query.get("tool_name", [""])[0]).strip()
         task_id = str(query.get("task_id", [""])[0]).strip()
         scan_phase = str(query.get("scan_phase", [""])[0]).strip().lower()
+        selection_phase = str(query.get("selection_phase", [""])[0]).strip().lower()
         started_at = str(query.get("started_at", [""])[0]).strip()
         run_id = str(query.get("run_id", [""])[0]).strip()
         try:
@@ -1701,6 +2046,47 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                             "message": scan_preview_error_message(
                                 error_code,
                                 preview_result.get("error"),
+                            ),
+                        }
+                if (
+                    ok
+                    and task_id in SELECTION_PREVIEW_PROJECT_IDS
+                    and selection_phase == "preview"
+                ):
+                    preview_result = self._agent_request(
+                        "GET",
+                        (
+                            f"/internal/v1/automation-projects/{quote(task_id, safe='')}"
+                            f"/selection-previews/{quote(run_id, safe='')}"
+                        ),
+                        timeout=5,
+                        console_principal=trusted_context["_console_principal"],
+                    )
+                    if preview_result.get("ok"):
+                        projection = normalize_selection_preview_projection(
+                            preview_result.get("data"),
+                            expected_automation_id=task_id,
+                            expected_run_id=run_id,
+                        )
+                        if projection is None:
+                            payload["selection_preview_error"] = {
+                                "error_code": "INVALID_SELECTION_PREVIEW_CONTRACT",
+                                "message": "候选清单格式无效，确认处理已阻断。",
+                            }
+                        else:
+                            payload["selection_preview"] = projection
+                            payload["runtime"]["title"] = "候选运单已读取"
+                            payload["runtime"]["message"] = (
+                                "请勾选本次要处理的运单，再确认提交。"
+                            )
+                    else:
+                        error_code = str(
+                            preview_result.get("error_code") or ""
+                        ).strip()
+                        payload["selection_preview_error"] = {
+                            "error_code": error_code or "SELECTION_PREVIEW_UNAVAILABLE",
+                            "message": selection_preview_error_message(
+                                error_code, preview_result.get("error")
                             ),
                         }
             self._send_json(handler, HTTPStatus.OK, payload)

@@ -45,6 +45,19 @@ class ProjectInvokeRequest(BaseModel):
     preview_run_id: str | None = None
 
 
+class ProjectSelectionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+
+
+class ProjectSelectionConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    selected_bill_codes: list[str] = Field(min_length=1, max_length=10_000)
+
+
 def create_automation_project_router(
     *,
     service_provider: Callable[[], AutomationProjectPolicyService],
@@ -157,6 +170,65 @@ def create_automation_project_router(
             )
         )
 
+    @router.post(
+        "/internal/v1/automation-projects/{automation_id}/selection-previews"
+    )
+    async def create_selection_preview(
+        automation_id: str,
+        payload: ProjectSelectionPreviewRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        receipt = service_provider().invoke_selection_preview(
+            automation_id,
+            request_id=payload.request_id,
+            actor=actor_provider(request),
+        )
+        serialized = (
+            receipt.to_dict()
+            if callable(getattr(receipt, "to_dict", None))
+            else receipt
+        )
+        return api_success(serialized)
+
+    @router.get(
+        "/internal/v1/automation-projects/{automation_id}/selection-previews/{preview_run_id}"
+    )
+    async def get_selection_preview(
+        automation_id: str,
+        preview_run_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor_provider(request)
+        return api_success(
+            service_provider().get_selection_preview_projection(
+                automation_id,
+                preview_run_id=preview_run_id,
+            )
+        )
+
+    @router.post(
+        "/internal/v1/automation-projects/{automation_id}/selection-previews/{preview_run_id}/confirm"
+    )
+    async def confirm_selection_preview(
+        automation_id: str,
+        preview_run_id: str,
+        payload: ProjectSelectionConfirmationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        receipt = service_provider().confirm_selection_preview(
+            automation_id,
+            preview_run_id=preview_run_id,
+            selected_bill_codes=payload.selected_bill_codes,
+            request_id=payload.request_id,
+            actor=actor_provider(request),
+        )
+        serialized = (
+            receipt.to_dict()
+            if callable(getattr(receipt, "to_dict", None))
+            else receipt
+        )
+        return api_success(serialized)
+
     @router.post("/internal/v1/automation-projects/{automation_id}/invoke")
     async def invoke_project(
         automation_id: str,
@@ -179,5 +251,7 @@ __all__ = [
     "ProjectInvokeRequest",
     "ProjectPendingDecisionRequest",
     "ProjectPolicyUpdateRequest",
+    "ProjectSelectionConfirmationRequest",
+    "ProjectSelectionPreviewRequest",
     "create_automation_project_router",
 ]

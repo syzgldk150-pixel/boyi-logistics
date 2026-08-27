@@ -50,6 +50,12 @@ from agent.orchestration.scan_preview_binding import (
     restore_scan_preview_replay,
     scan_preview_public_projection,
 )
+from agent.orchestration.selection_preview_binding import (
+    SelectionPreviewExpectation,
+    is_selection_preview_project,
+    selection_confirmation_arguments,
+    selection_preview_public_projection,
+)
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectContractError,
@@ -101,7 +107,7 @@ _SOURCE_LABELS = {
 }
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3}
 _TRUSTED_CONTEXT_FIELDS = {
-    AutomationEntrypoint.CONSOLE: frozenset(),
+    AutomationEntrypoint.CONSOLE: frozenset({"dynamic_inputs"}),
     AutomationEntrypoint.SCHEDULER: frozenset(
         {
             "task_id",
@@ -985,6 +991,106 @@ class AutomationProjectPolicyService:
                 expectation=expectation,
                 now=datetime.now(timezone.utc),
             )
+
+    def get_selection_preview_projection(
+        self,
+        automation_id: str,
+        *,
+        preview_run_id: str,
+    ) -> dict[str, Any]:
+        safe_id = _automation_id(automation_id)
+        entry, contract = self._load_contract(safe_id)
+        if not is_selection_preview_project(entry):
+            raise OrchestrationError(
+                "SELECTION_PREVIEW_PROJECT_INVALID",
+                "该自动化不支持后台候选选择。",
+                details={"status": "BLOCKED_DATA"},
+            )
+        expectation = SelectionPreviewExpectation(
+            project_instance_id=safe_id,
+            plugin_id=entry.plugin_id,
+            generation=contract.automation_generation,
+            contract_digest=contract.contract_hash,
+            configuration_version=contract.project_configuration_version,
+        )
+        with self._repository.unit_of_work() as uow:
+            return selection_preview_public_projection(
+                uow,
+                preview_run_id=preview_run_id,
+                expectation=expectation,
+                now=datetime.now(timezone.utc),
+            )
+
+    def invoke_selection_preview(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+        actor: Actor,
+    ) -> Any:
+        safe_id = _automation_id(automation_id)
+        entry, _contract = self._load_contract(safe_id)
+        if not is_selection_preview_project(entry):
+            raise OrchestrationError(
+                "SELECTION_PREVIEW_PROJECT_INVALID",
+                "该自动化不支持后台候选选择。",
+            )
+        return self.invoke_trusted(
+            safe_id,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            request_id=request_id,
+            actor=actor,
+            trusted_context={
+                "dynamic_inputs": {
+                    "dry_run": True,
+                    "selected_bill_codes": [],
+                    "preview_fingerprint": "",
+                }
+            },
+        )
+
+    def confirm_selection_preview(
+        self,
+        automation_id: str,
+        *,
+        preview_run_id: str,
+        selected_bill_codes: Sequence[str],
+        request_id: str,
+        actor: Actor,
+    ) -> Any:
+        safe_id = _automation_id(automation_id)
+        entry, contract = self._load_contract(safe_id)
+        if not is_selection_preview_project(entry):
+            raise OrchestrationError(
+                "SELECTION_PREVIEW_PROJECT_INVALID",
+                "该自动化不支持后台候选选择。",
+            )
+        expectation = SelectionPreviewExpectation(
+            project_instance_id=safe_id,
+            plugin_id=entry.plugin_id,
+            generation=contract.automation_generation,
+            contract_digest=contract.contract_hash,
+            configuration_version=contract.project_configuration_version,
+        )
+        with self._repository.unit_of_work() as uow:
+            arguments = selection_confirmation_arguments(
+                uow,
+                preview_run_id=preview_run_id,
+                expectation=expectation,
+                selected_bill_codes=selected_bill_codes,
+                now=datetime.now(timezone.utc),
+            )
+        return self.invoke_trusted(
+            safe_id,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            request_id=request_id,
+            actor=actor,
+            trusted_context={"dynamic_inputs": arguments},
+            idempotency_key=(
+                f"automation:{safe_id}:console:{actor.actor_id}:"
+                f"selection:{normalize_preview_run_id(preview_run_id)}:{request_id}"
+            ),
+        )
 
     def invoke_console(
         self,

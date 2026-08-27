@@ -70,11 +70,10 @@ _CODE_OWNED_PLAN_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
     ): ("recheck_items",),
 }
 
-# These two signed releases deliberately removed execution routes that cannot
-# carry their mandatory human preview-and-confirmation contract.  Production
-# 1.0.20 projects predate that contract, so the exact source set is migrated
-# as release-owned state.  Every other source or version shape remains a hard
-# conflict in the repository upgrade gate.
+# These signed releases own the exact entrypoint transitions for the two
+# selection-based problem-item actions.  Version 1.0.21 removed Console until
+# it could carry the same preview, explicit selection and fingerprint contract
+# as Feishu.  Version 1.0.22 restores Console only with that closed flow.
 _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
     tuple[str, str, str, str],
     tuple[frozenset[str], tuple[str, ...]],
@@ -91,6 +90,18 @@ _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
         "1.0.20",
         "1.0.21",
     ): (frozenset({"console", "feishu", "scheduler"}), ("feishu",)),
+    (
+        "self_pickup_problem_upload",
+        "self_pickup_problem_upload",
+        "1.0.21",
+        "1.0.22",
+    ): (frozenset({"feishu"}), ("console", "feishu")),
+    (
+        "split_pending_problem_upload",
+        "split_pending_problem_upload",
+        "1.0.21",
+        "1.0.22",
+    ): (frozenset({"feishu"}), ("console", "feishu")),
 }
 
 

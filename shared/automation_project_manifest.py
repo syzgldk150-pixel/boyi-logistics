@@ -240,7 +240,7 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
             "account_id": "ronghui_self_pickup_problem",
             "daxiang_s_account_id": "ronghui_daxiang_s",
         },
-        allowed_entrypoints=_FEISHU,
+        allowed_entrypoints=_CONSOLE_FEISHU,
         legacy_account_bindings={
             "account_id": "ronghui_self_pickup_problem",
             "daxiang_s_account_id": "ronghui_daxiang_s",
@@ -254,7 +254,7 @@ FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES: Mapping[str, FirstPartyMigrationInstan
         automation_id="split_pending_problem_upload",
         tool_name="split_pending_problem_upload",
         legacy_arguments={"dry_run": True, "account_id": "ronghui_default"},
-        allowed_entrypoints=_FEISHU,
+        allowed_entrypoints=_CONSOLE_FEISHU,
         legacy_account_bindings={"account_id": "ronghui_default"},
         resource_bindings={
             "feishu_route": "automation.feishu_route.split_pending_problem_upload",

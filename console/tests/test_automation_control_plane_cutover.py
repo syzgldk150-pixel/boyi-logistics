@@ -10,6 +10,7 @@ from console.services.agent_api import AgentApiServiceMixin
 from console.services.automation import (
     AutomationServiceMixin,
     normalize_scan_preview_projection,
+    normalize_selection_preview_projection,
 )
 
 
@@ -57,6 +58,32 @@ class _App(AutomationServiceMixin, AgentApiServiceMixin):
 
 
 class AutomationControlPlaneCutoverTests(unittest.TestCase):
+    @staticmethod
+    def _selection_projection(run_id):
+        return {
+            "contract_version": 1,
+            "automation_id": "self_pickup_problem_upload",
+            "title": "自提到货问题件",
+            "preview_run_id": run_id,
+            "observed_at": "2026-08-27T07:00:00Z",
+            "expires_at": "2026-08-27T07:15:00Z",
+            "candidate_count": 1,
+            "candidates": [
+                {
+                    "arrival_count": 2,
+                    "bill_code": "R0001",
+                    "delivery_method": "自提",
+                    "destination_site": "邵阳大祥S站",
+                    "goods_count": 2,
+                    "row_number": 12,
+                    "source_id": "source-one",
+                    "source_name": "每日到货表",
+                }
+            ],
+            "summary": {"duplicate_source_rows": 0},
+            "can_confirm": True,
+        }
+
     def test_scan_preview_projection_is_closed_and_bound_to_run(self):
         run_id = "11111111-1111-4111-8111-111111111111"
         projection = {
@@ -91,6 +118,109 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 expected_run_id="22222222-2222-4222-8222-222222222222",
             )
         )
+
+    def test_selection_preview_projection_is_closed_and_bound_to_project(self):
+        run_id = "11111111-1111-4111-8111-111111111111"
+        projection = self._selection_projection(run_id)
+
+        self.assertEqual(
+            projection,
+            normalize_selection_preview_projection(
+                projection,
+                expected_automation_id="self_pickup_problem_upload",
+                expected_run_id=run_id,
+            ),
+        )
+        self.assertIsNone(
+            normalize_selection_preview_projection(
+                {**projection, "preview_fingerprint": "f" * 64},
+                expected_automation_id="self_pickup_problem_upload",
+                expected_run_id=run_id,
+            )
+        )
+        self.assertIsNone(
+            normalize_selection_preview_projection(
+                projection,
+                expected_automation_id="split_pending_problem_upload",
+                expected_run_id=run_id,
+            )
+        )
+
+    def test_selection_preview_start_submits_only_project_and_request_id(self):
+        request_id = "22222222-2222-4222-8222-222222222222"
+        app = _App(
+            {
+                "ok": True,
+                "status": 202,
+                "data": {
+                    "command_id": "command-selection",
+                    "run_id": "11111111-1111-4111-8111-111111111111",
+                },
+            }
+        )
+        app._control_plane_write_context = lambda _handler: {
+            "_console_principal": {"actor_id": "17"}
+        }
+        app._parse_urlencoded_form = lambda _handler: {
+            "task_id": "self_pickup_problem_upload"
+        }
+
+        app._handle_selection_preview_start(
+            SimpleNamespace(headers={"X-Browser-Request-UUID": request_id})
+        )
+
+        self.assertEqual(
+            (
+                "POST",
+                "/internal/v1/automation-projects/self_pickup_problem_upload/"
+                "selection-previews",
+                {"request_id": request_id},
+            ),
+            app.calls[0][:3],
+        )
+        self.assertEqual(HTTPStatus.ACCEPTED, app.sent[0])
+
+    def test_selection_confirmation_forwards_only_selected_bills(self):
+        preview_run_id = "11111111-1111-4111-8111-111111111111"
+        request_id = "22222222-2222-4222-8222-222222222222"
+        app = _App(
+            {
+                "ok": True,
+                "status": 202,
+                "data": {
+                    "command_id": "command-formal",
+                    "run_id": "33333333-3333-4333-8333-333333333333",
+                },
+            }
+        )
+        app._control_plane_write_context = lambda _handler: {
+            "_console_principal": {"actor_id": "17"}
+        }
+        app._parse_urlencoded_form = lambda _handler: {
+            "task_id": "self_pickup_problem_upload",
+            "preview_run_id": preview_run_id,
+            "selected_bill_codes_json": '["R0002"]',
+        }
+
+        app._handle_selection_preview_confirmation(
+            SimpleNamespace(headers={"X-Browser-Request-UUID": request_id})
+        )
+
+        _method, endpoint, payload, _timeout, _principal = app.calls[0]
+        self.assertEqual(
+            "/internal/v1/automation-projects/self_pickup_problem_upload/"
+            f"selection-previews/{preview_run_id}/confirm",
+            endpoint,
+        )
+        self.assertEqual(
+            {
+                "request_id": request_id,
+                "selected_bill_codes": ["R0002"],
+            },
+            payload,
+        )
+        self.assertNotIn("preview_fingerprint", payload)
+        self.assertEqual(HTTPStatus.ACCEPTED, app.sent[0])
 
     def test_manual_run_invokes_saved_project_and_keeps_run_reference(self):
         app = _App(

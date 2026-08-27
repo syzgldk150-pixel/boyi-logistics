@@ -305,30 +305,29 @@ def test_split_contract_is_human_triggered_with_verified_selection_fields() -> N
         "split_pending_problem_upload"
     ]
 
-    assert source["version"] == "1.0.21"
-    assert source["allowed_entrypoints"] == ["feishu"]
+    assert source["version"] == "1.0.22"
+    assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,
         "allowed_kinds": [],
         "max_daily_times": 0,
     }
-    assert "console" not in source["invocation_contracts"]
     expected_dynamic = {
         "dry_run": "verified_{entrypoint}_dry_run",
         "preview_fingerprint": "verified_{entrypoint}_preview_fingerprint",
         "selected_bill_codes": "verified_{entrypoint}_selected_bill_codes",
     }
-    entrypoint = "feishu"
-    assert source["invocation_contracts"][entrypoint]["dynamic_resolvers"] == {
-        field: resolver.format(entrypoint=entrypoint)
-        for field, resolver in expected_dynamic.items()
-    }
-    assert source["invocation_contracts"][entrypoint]["argument_template"] == {}
-    assert set(template.allowed_entrypoints) == {"feishu"}
+    for entrypoint in ("console", "feishu"):
+        assert source["invocation_contracts"][entrypoint]["dynamic_resolvers"] == {
+            field: resolver.format(entrypoint=entrypoint)
+            for field, resolver in expected_dynamic.items()
+        }
+        assert source["invocation_contracts"][entrypoint]["argument_template"] == {}
+    assert set(template.allowed_entrypoints) == {"console", "feishu"}
     assert template.legacy_arguments["dry_run"] is True
 
 
-def test_self_pickup_contract_is_feishu_only_with_verified_selection_fields() -> None:
+def test_self_pickup_contract_has_verified_human_selection_fields() -> None:
     manifest = resolve_first_party_manifests(ToolRegistry())[
         "self_pickup_problem_upload"
     ]
@@ -337,20 +336,20 @@ def test_self_pickup_contract_is_feishu_only_with_verified_selection_fields() ->
         "self_pickup_problem_upload"
     ]
 
-    assert source["version"] == "1.0.21"
-    assert source["allowed_entrypoints"] == ["feishu"]
+    assert source["version"] == "1.0.22"
+    assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,
         "allowed_kinds": [],
         "max_daily_times": 0,
     }
-    assert "console" not in source["invocation_contracts"]
-    assert source["invocation_contracts"]["feishu"]["dynamic_resolvers"] == {
-        "dry_run": "verified_feishu_dry_run",
-        "preview_fingerprint": "verified_feishu_preview_fingerprint",
-        "selected_bill_codes": "verified_feishu_selected_bill_codes",
-    }
-    assert set(template.allowed_entrypoints) == {"feishu"}
+    for entrypoint in ("console", "feishu"):
+        assert source["invocation_contracts"][entrypoint]["dynamic_resolvers"] == {
+            "dry_run": f"verified_{entrypoint}_dry_run",
+            "preview_fingerprint": f"verified_{entrypoint}_preview_fingerprint",
+            "selected_bill_codes": f"verified_{entrypoint}_selected_bill_codes",
+        }
+    assert set(template.allowed_entrypoints) == {"console", "feishu"}
     assert template.legacy_arguments["dry_run"] is True
 
 
