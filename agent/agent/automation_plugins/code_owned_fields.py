@@ -105,6 +105,18 @@ _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
         "1.0.21",
         "1.0.22",
     ): (frozenset({"feishu"}), ("feishu",)),
+    (
+        "self_pickup_problem_upload",
+        "self_pickup_problem_upload",
+        "1.0.22",
+        "1.0.23",
+    ): (frozenset({"feishu"}), ("console", "feishu")),
+    (
+        "split_pending_problem_upload",
+        "split_pending_problem_upload",
+        "1.0.22",
+        "1.0.23",
+    ): (frozenset({"feishu"}), ("console", "feishu")),
 }
 
 

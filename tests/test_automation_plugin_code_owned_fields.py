@@ -86,6 +86,26 @@ def test_problem_plugin_1022_bridge_keeps_old_manifest_compatible(
     ) == ("feishu",)
 
 
+@pytest.mark.parametrize(
+    ("automation_id", "plugin_id"),
+    (
+        ("self_pickup_problem_upload", "self_pickup_problem_upload"),
+        ("split_pending_problem_upload", "split_pending_problem_upload"),
+    ),
+)
+def test_problem_plugin_1023_enables_verified_console_after_bridge(
+    automation_id: str,
+    plugin_id: str,
+) -> None:
+    assert normalize_first_party_code_owned_entrypoints(
+        automation_id=automation_id,
+        plugin_id=plugin_id,
+        current_version="1.0.22",
+        target_version="1.0.23",
+        enabled_entrypoints=("feishu",),
+    ) == ("console", "feishu")
+
+
 def test_scan_phase_requires_binding_absence_or_a_nonempty_formal_binding() -> None:
     identity = {
         "automation_id": "scan_codes",
