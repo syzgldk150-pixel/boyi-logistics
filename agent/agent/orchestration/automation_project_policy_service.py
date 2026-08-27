@@ -8,6 +8,7 @@ committed plugin generation and locked orchestration rows.
 from __future__ import annotations
 
 import uuid
+import logging
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -93,6 +94,9 @@ from shared.automation_project_policy_repository import (
 from shared.orchestration_repository import ConcurrentUpdateError, InvalidStateError
 from shared.orchestration_repository_support import IdempotencyConflict
 from shared.redaction import redact_text
+
+
+logger = logging.getLogger(__name__)
 
 
 _USER_POLICY_MODES = frozenset(
@@ -1629,6 +1633,39 @@ class AutomationProjectPolicyService:
             execution_context=execution_context,
             dynamic_resolver=self._dynamic_resolver,
         ):
+            if selection_phase is not None:
+                diagnostic_step = contract_plan.steps[0]
+                diagnostic_contract = contract.invocation_contracts.get(
+                    invocation.contract_id
+                )
+                logger.error(
+                    "Selection contract mismatch automation_id=%s "
+                    "tool_name_match=%s tool_version_match=%s operation_match=%s "
+                    "plan_binding_match=%s expected_argument_keys=%s "
+                    "actual_argument_keys=%s dynamic_argument_keys=%s",
+                    invocation.automation_id,
+                    diagnostic_step.tool_name == contract.tool_name,
+                    diagnostic_step.tool_version == contract.tool_version,
+                    diagnostic_step.operation_type.value == contract.operation_type,
+                    (
+                        contract_plan.automation_id == contract.automation_id
+                        and contract_plan.automation_generation
+                        == contract.automation_generation
+                        and contract_plan.automation_contract_hash
+                        == contract.contract_hash
+                    ),
+                    sorted(
+                        (diagnostic_contract.expected_arguments or {}).keys()
+                        if diagnostic_contract is not None
+                        else []
+                    ),
+                    sorted(diagnostic_step.arguments.keys()),
+                    sorted(
+                        (diagnostic_contract.dynamic_argument_resolvers or {}).keys()
+                        if diagnostic_contract is not None
+                        else []
+                    ),
+                )
             return _project_denied(
                 "PROJECT_INVOCATION_STALE",
                 "Automation plan does not match the committed project contract",
