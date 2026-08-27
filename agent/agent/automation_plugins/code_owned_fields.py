@@ -73,7 +73,10 @@ _CODE_OWNED_PLAN_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
 # These signed releases own the exact entrypoint transitions for the two
 # selection-based problem-item actions.  Version 1.0.21 removed Console until
 # it could carry the same preview, explicit selection and fingerprint contract
-# as Feishu.  Version 1.0.22 restores Console only with that closed flow.
+# as Feishu.  Version 1.0.22 is the compatibility bridge: its signed manifest
+# declares Console, while the persisted 1.0.21 projects remain Feishu-only so
+# the old manifest can validate the pre-upgrade configuration.  Version 1.0.23
+# enables Console after the installed manifest already permits that entrypoint.
 _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
     tuple[str, str, str, str],
     tuple[frozenset[str], tuple[str, ...]],
@@ -95,13 +98,13 @@ _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
         "self_pickup_problem_upload",
         "1.0.21",
         "1.0.22",
-    ): (frozenset({"feishu"}), ("console", "feishu")),
+    ): (frozenset({"feishu"}), ("feishu",)),
     (
         "split_pending_problem_upload",
         "split_pending_problem_upload",
         "1.0.21",
         "1.0.22",
-    ): (frozenset({"feishu"}), ("console", "feishu")),
+    ): (frozenset({"feishu"}), ("feishu",)),
 }
 
 
