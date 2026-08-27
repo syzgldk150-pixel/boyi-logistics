@@ -254,6 +254,67 @@ class WriteImpactPreviewTests(unittest.TestCase):
         )
         self.assertEqual(OperationType.EXTERNAL_WRITE, plan.steps[0].operation_type)
 
+    def test_split_project_preview_plan_is_read_only(self):
+        tool_name = "automation.split_pending_problem_upload.run"
+
+        class _Catalog:
+            catalog_hash = "catalog-digest"
+
+            @staticmethod
+            def get_capability(requested_tool_name):
+                if requested_tool_name != tool_name:
+                    return None
+                return {
+                    "version": "1.0.23",
+                    "operation_type": "external_write",
+                    "risk_level": "high",
+                    "llm_exposed": False,
+                    "evidence": [],
+                    "postconditions": [
+                        {"name": "third_party_split_problem_confirmed"}
+                    ],
+                    "_plugin_runtime": {
+                        "automation_id": "split_pending_problem_upload",
+                        "plugin_id": "split_pending_problem_upload",
+                        "trust_source": "ed25519_first_party",
+                    },
+                }
+
+        command = Command(
+            command_type="automation.project.invoke",
+            source="console",
+            actor=Actor(ActorType.CONSOLE_ADMIN, "user-1", roles=("super_admin",)),
+            parameters={
+                "tool_name": tool_name,
+                "arguments": {
+                    "dry_run": True,
+                    "selected_bill_codes": [],
+                    "preview_fingerprint": "",
+                },
+            },
+            idempotency_key="split-preview-1",
+            automation_invocation=AutomationProjectInvocation(
+                automation_id="split_pending_problem_upload",
+                automation_generation=1,
+                entrypoint=AutomationEntrypoint.CONSOLE,
+                contract_id="console",
+                contract_hash="b" * 64,
+                policy_version=1,
+                project_configuration_version=1,
+                request_id="split-preview-1",
+            ),
+        )
+
+        plan = DeterministicPlanner(_Catalog()).plan(
+            command,
+            ContextSnapshot(values={}),
+        )
+
+        self.assertEqual(OperationType.READ, plan.steps[0].operation_type)
+        self.assertEqual("read", plan.impact["operation_type"])
+        self.assertEqual([], plan.impact["entities"])
+        self.assertFalse(plan.steps[0].requires_approval)
+
     def test_self_pickup_project_formal_plan_uses_exact_selected_waybill_impact(self):
         tool_name = "automation.self_pickup_problem_upload.run"
 

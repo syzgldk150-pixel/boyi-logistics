@@ -18,6 +18,20 @@ SCAN_PHASE_FORMAL = "FORMAL"
 SCAN_PREVIEW_POSTCONDITION = "authoritative_scan_preview_returned"
 SCAN_FORMAL_POSTCONDITION = "scan_formal_execution_verified"
 
+SELECTION_PHASE_PREVIEW = "PREVIEW"
+SELECTION_PHASE_FORMAL = "FORMAL"
+_SELECTION_PROJECTS = frozenset(
+    {
+        ("self_pickup_problem_upload", "self_pickup_problem_upload"),
+        ("split_pending_problem_upload", "split_pending_problem_upload"),
+    }
+)
+_SELECTION_FIELDS = (
+    "dry_run",
+    "preview_fingerprint",
+    "selected_bill_codes",
+)
+
 _CODE_OWNED_CONFIG_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
     (
         "scan_codes",
@@ -68,6 +82,14 @@ _CODE_OWNED_PLAN_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
         "customer_problems_shadow",
         "sync_customer_service_problems",
     ): ("recheck_items",),
+    (
+        "self_pickup_problem_upload",
+        "self_pickup_problem_upload",
+    ): _SELECTION_FIELDS,
+    (
+        "split_pending_problem_upload",
+        "split_pending_problem_upload",
+    ): _SELECTION_FIELDS,
 }
 
 # These signed releases own the exact entrypoint transitions for the two
@@ -268,6 +290,58 @@ def resolve_scan_capability_phase(
     if not isinstance(runtime, Mapping):
         return None
     return resolve_scan_execution_phase(
+        automation_id=str(runtime.get("automation_id") or ""),
+        plugin_id=str(runtime.get("plugin_id") or ""),
+        trust_source=str(runtime.get("trust_source") or ""),
+        arguments=arguments,
+    )
+
+
+def resolve_selection_execution_phase(
+    *,
+    automation_id: str,
+    plugin_id: str,
+    trust_source: str,
+    arguments: Mapping[str, Any],
+) -> str | None:
+    """Resolve one exact server-owned selection preview or formal execution."""
+
+    identity = (
+        str(automation_id or "").strip(),
+        str(plugin_id or "").strip(),
+    )
+    if (
+        identity not in _SELECTION_PROJECTS
+        or str(trust_source or "").strip() != _FIRST_PARTY_TRUST_SOURCE
+    ):
+        return None
+    if any(field_name not in arguments for field_name in _SELECTION_FIELDS):
+        raise ValueError("selection execution phase is ambiguous or incomplete")
+
+    dry_run = arguments.get("dry_run")
+    selected = arguments.get("selected_bill_codes")
+    fingerprint = arguments.get("preview_fingerprint")
+    if dry_run is True and selected == [] and fingerprint == "":
+        return SELECTION_PHASE_PREVIEW
+    if (
+        dry_run is False
+        and isinstance(selected, list)
+        and bool(selected)
+        and isinstance(fingerprint, str)
+        and bool(fingerprint.strip())
+    ):
+        return SELECTION_PHASE_FORMAL
+    raise ValueError("selection execution phase is ambiguous or incomplete")
+
+
+def resolve_selection_capability_phase(
+    capability: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> str | None:
+    runtime = capability.get("_plugin_runtime")
+    if not isinstance(runtime, Mapping):
+        return None
+    return resolve_selection_execution_phase(
         automation_id=str(runtime.get("automation_id") or ""),
         plugin_id=str(runtime.get("plugin_id") or ""),
         trust_source=str(runtime.get("trust_source") or ""),

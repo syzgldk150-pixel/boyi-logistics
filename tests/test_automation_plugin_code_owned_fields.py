@@ -16,6 +16,7 @@ from agent.automation_plugins.code_owned_fields import (
     normalize_first_party_code_owned_config,
     normalize_first_party_code_owned_entrypoints,
     resolve_scan_execution_phase,
+    resolve_selection_execution_phase,
 )
 from agent.automation_plugins.errors import PluginConflictError
 
@@ -146,6 +147,15 @@ def test_code_owned_fields_require_exact_first_party_instance_identity() -> None
         plugin_id="sync_customer_service_problems",
         trust_source=FIRST_PARTY_TRUST,
     ) == ("recheck_items",)
+    for automation_id, plugin_id in (
+        ("self_pickup_problem_upload", "self_pickup_problem_upload"),
+        ("split_pending_problem_upload", "split_pending_problem_upload"),
+    ):
+        assert first_party_code_owned_plan_fields(
+            automation_id=automation_id,
+            plugin_id=plugin_id,
+            trust_source=FIRST_PARTY_TRUST,
+        ) == ("dry_run", "preview_fingerprint", "selected_bill_codes")
     assert first_party_code_owned_plan_fields(
         automation_id="customer_problems_shadow",
         plugin_id="sync_customer_service_problems",
@@ -183,6 +193,37 @@ def test_code_owned_fields_require_exact_first_party_instance_identity() -> None
             plugin_id=plugin_id,
             trust_source=trust_source,
         ) == ()
+
+
+def test_selection_phase_is_exact_and_fails_closed() -> None:
+    identity = {
+        "automation_id": "split_pending_problem_upload",
+        "plugin_id": "split_pending_problem_upload",
+        "trust_source": FIRST_PARTY_TRUST,
+    }
+    assert resolve_selection_execution_phase(
+        **identity,
+        arguments={
+            "dry_run": True,
+            "selected_bill_codes": [],
+            "preview_fingerprint": "",
+        },
+    ) == "PREVIEW"
+    assert resolve_selection_execution_phase(
+        **identity,
+        arguments={
+            "dry_run": False,
+            "selected_bill_codes": ["R1"],
+            "preview_fingerprint": "a" * 64,
+        },
+    ) == "FORMAL"
+    for arguments in (
+        {"dry_run": True},
+        {"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": "x"},
+        {"dry_run": False, "selected_bill_codes": [], "preview_fingerprint": "a" * 64},
+    ):
+        with pytest.raises(ValueError, match="ambiguous or incomplete"):
+            resolve_selection_execution_phase(**identity, arguments=arguments)
 
 
 def test_persisted_code_owned_config_normalization_is_detached_and_closed() -> None:
