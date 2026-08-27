@@ -400,13 +400,7 @@ def _collect_problem_events(
                     "SOURCE_FIELD_MISSING",
                     "融辉问题件缺少唯一 ID、运单号、准确类型或登记时间。",
                 )
-            if external_id in seen:
-                raise DailySignSyncError(
-                    "SOURCE_DUPLICATE_CONFLICT",
-                    f"融辉问题件分页出现重复唯一 ID：{external_id}。",
-                    retryable=True,
-                )
-            seen[external_id] = {
+            normalized = {
                 "source": _scope_name("ronghui_problem", account_id),
                 "external_id": external_id,
                 "tracking_number": tracking_number,
@@ -421,6 +415,13 @@ def _collect_problem_events(
                     "external_id": external_id,
                 },
             }
+            if external_id in seen and seen[external_id] != normalized:
+                raise DailySignSyncError(
+                    "SOURCE_DUPLICATE_CONFLICT",
+                    f"融辉问题件分页出现内容冲突的重复唯一 ID：{external_id}。",
+                    retryable=True,
+                )
+            seen[external_id] = normalized
         if returned_count == declared_total:
             return list(seen.values()), {
                 "rows": len(seen),
