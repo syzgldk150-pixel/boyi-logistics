@@ -239,6 +239,17 @@ class DailySignLedgerRulesTest(unittest.TestCase):
         message,
     )
 
+ def test_publication_readback_uses_due_subset_of_full_ledger(self):
+    due = {"tracking_number": "DUE", "tms_signed": False}
+    future = {"tracking_number": "FUTURE", "tms_signed": False}
+
+    observed = daily_sign_store._select_publication_readback_rows(
+        [due],
+        [due, future],
+    )
+
+    self.assertEqual([due], observed)
+
  def test_authoritative_ledger_snapshot_prunes_rows_outside_current_candidates(self):
     class Cursor:
         def __init__(self):

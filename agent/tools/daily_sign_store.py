@@ -1108,8 +1108,8 @@ def persist_daily_sign_snapshot(
             _upsert_sign_events(cursor, normalized_signs)
             _upsert_sign_verification_states(cursor, normalized_verifications)
             # This transaction represents a complete authoritative snapshot.
-            # Remove rows left behind by older candidate rules so the database
-            # open set and the Feishu publication set remain identical.
+            # Remove rows left behind by older candidate rules.  The Feishu
+            # publication is a due-date-filtered subset of this full ledger.
             _upsert_ledger_rows(cursor, normalized_ledger, prune_missing=True)
             if marker is not None:
                 cursor.execute(
@@ -1202,6 +1202,20 @@ def _verify_row_set(
             [dict(zip(identity_fields, identity)) for identity in observed_identities]
         ),
     }
+
+
+def _select_publication_readback_rows(
+    expected_publication: list[dict[str, Any]],
+    observed_ledger: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    publication_identities = {
+        clean_text(row.get("tracking_number")) for row in expected_publication
+    }
+    return [
+        row
+        for row in observed_ledger
+        if clean_text(row.get("tracking_number")) in publication_identities
+    ]
 
 
 def verify_daily_sign_persistence(
@@ -1361,7 +1375,10 @@ def verify_daily_sign_persistence(
     publication_proof = _verify_row_set(
         label="publication rows",
         expected=expected_publication,
-        observed=[row for row in observed_ledger if not row["tms_signed"]],
+        observed=_select_publication_readback_rows(
+            expected_publication,
+            observed_ledger,
+        ),
         marker=expected_marker.get("publication_rows"),
         identity_fields=("tracking_number",),
     )
