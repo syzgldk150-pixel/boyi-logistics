@@ -679,13 +679,13 @@ class ArrivalStatsToolTests(unittest.TestCase):
         # Inclusive 30-day span -> 29 days between start and end
         self.assertEqual(29, (end_dt.date() - start_dt.date()).days)
 
-    def test_render_stats_sheet_values_uses_target_date_header(self):
+    def test_render_stats_sheet_values_uses_stable_waybill_header(self):
         values = phase7_mysql_store.render_stats_sheet_values(
             [{"tracking_number": "R0001"}],
             {},
             target_date="2026-05-04",
         )
-        self.assertTrue(str(values[0][0]).startswith("05.04"))
+        self.assertEqual("运单编号", values[0][0])
 
     def test_apply_scan_window_respects_user_override(self):
         params = arrival_stats_sync_tool._apply_scan_window(
