@@ -14,8 +14,10 @@ from typing import Any
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_PREVIEW,
     SCAN_PREVIEW_POSTCONDITION,
+    SELECTION_PHASE_PREVIEW,
     first_party_code_owned_plan_fields,
     resolve_scan_capability_phase,
+    resolve_selection_capability_phase,
 )
 from agent.orchestration.models import (
     Command,
@@ -110,9 +112,20 @@ class DeterministicPlanner:
                 "SCAN_EXECUTION_PHASE_INVALID",
                 "Scan execution phase is incomplete or ambiguous",
             ) from exc
+        try:
+            selection_phase = resolve_selection_capability_phase(capability, arguments)
+        except ValueError as exc:
+            raise OrchestrationError(
+                "SELECTION_EXECUTION_PHASE_INVALID",
+                "Selection execution phase is incomplete or ambiguous",
+            ) from exc
+        read_preview = (
+            scan_phase == SCAN_PHASE_PREVIEW
+            or selection_phase == SELECTION_PHASE_PREVIEW
+        )
         operation_type = (
             OperationType.READ
-            if scan_phase == SCAN_PHASE_PREVIEW
+            if read_preview
             else _operation_type(capability)
         )
         if llm_selected:
@@ -170,7 +183,7 @@ class DeterministicPlanner:
             postconditions=postconditions,
             risk_level=(
                 RiskLevel.LOW
-                if scan_phase == SCAN_PHASE_PREVIEW
+                if read_preview
                 else _risk_level(capability)
             ),
             requires_approval=False,
