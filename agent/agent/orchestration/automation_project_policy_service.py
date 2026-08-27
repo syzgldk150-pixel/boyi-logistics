@@ -1170,6 +1170,7 @@ class AutomationProjectPolicyService:
             )
         entry, contract = self._load_contract(safe_id)
         scan_preview_project = is_scan_preview_project(entry)
+        selection_preview_project = is_selection_preview_project(entry)
         safe_preview_run_id = None
         if preview_run_id is not None:
             safe_preview_run_id = normalize_preview_run_id(preview_run_id)
@@ -1255,6 +1256,19 @@ class AutomationProjectPolicyService:
                 ) from exc
         if scan_preview_project and safe_preview_run_id is None:
             arguments["dry_run"] = True
+        if selection_preview_project and "dynamic_inputs" in context:
+            dynamic_inputs = context["dynamic_inputs"]
+            if not isinstance(dynamic_inputs, Mapping) or set(dynamic_inputs) != {
+                "dry_run",
+                "selected_bill_codes",
+                "preview_fingerprint",
+            }:
+                raise OrchestrationError(
+                    "SELECTION_INPUT_INVALID",
+                    "Selection workflow inputs must come from the server preview flow",
+                    details={"status": "BLOCKED_DATA"},
+                )
+            arguments.update(dict(dynamic_inputs))
         preview_expectation = ScanPreviewExpectation(
             project_instance_id=safe_id,
             generation=contract.automation_generation,
