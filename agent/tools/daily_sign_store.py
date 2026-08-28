@@ -25,7 +25,7 @@ from tools.daily_sign_rules import (
 from tools.phase7_mysql_store import _connect
 
 
-logger = logging.getLogger("daily_sign_store")
+logger = logging.getLogger("agent")
 
 
 REQUIRED_TABLES = frozenset(
@@ -1196,6 +1196,25 @@ def _verify_row_set(
             for field in expected_row.keys() | observed_row.keys():
                 if expected_row.get(field) != observed_row.get(field):
                     changed_fields[field] = changed_fields.get(field, 0) + 1
+        missing_count = len(
+            expected_by_identity.keys() - observed_by_identity.keys()
+        )
+        unexpected_count = len(
+            observed_by_identity.keys() - expected_by_identity.keys()
+        )
+        invalid_identity_count = sum(
+            not all(identity) for identity in observed_identities
+        )
+        duplicate_identity_count = len(observed_identities) - len(
+            set(observed_identities)
+        )
+        changed_row_count = sum(
+            expected_by_identity[identity] != observed_by_identity[identity]
+            for identity in expected_by_identity.keys() & observed_by_identity.keys()
+        )
+        changed_field_summary = ",".join(
+            f"{field}:{count}" for field, count in sorted(changed_fields.items())
+        ) or "none"
         logger.error(
             "daily_sign_readback_mismatch label=%s expected_count=%s "
             "observed_count=%s missing_count=%s unexpected_count=%s "
@@ -1204,22 +1223,21 @@ def _verify_row_set(
             label,
             len(expected_rows),
             len(observed_rows),
-            len(expected_by_identity.keys() - observed_by_identity.keys()),
-            len(observed_by_identity.keys() - expected_by_identity.keys()),
-            sum(not all(identity) for identity in observed_identities),
-            len(observed_identities) - len(set(observed_identities)),
-            sum(
-                expected_by_identity[identity] != observed_by_identity[identity]
-                for identity in expected_by_identity.keys() & observed_by_identity.keys()
-            ),
-            ",".join(
-                f"{field}:{count}"
-                for field, count in sorted(changed_fields.items())
-            )
-            or "none",
+            missing_count,
+            unexpected_count,
+            invalid_identity_count,
+            duplicate_identity_count,
+            changed_row_count,
+            changed_field_summary,
         )
         raise DailySignPersistenceReadbackError(
-            f"daily-sign {label} fresh readback changed"
+            f"daily-sign {label} fresh readback changed "
+            f"(expected={len(expected_rows)}, observed={len(observed_rows)}, "
+            f"missing={missing_count}, unexpected={unexpected_count}, "
+            f"invalid_identity={invalid_identity_count}, "
+            f"duplicate_identity={duplicate_identity_count}, "
+            f"changed_rows={changed_row_count}, "
+            f"changed_fields={changed_field_summary})"
         )
     observed_sha256 = snapshot_fingerprint(observed_rows)
     if (
