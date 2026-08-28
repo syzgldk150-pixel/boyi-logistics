@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -320,6 +321,41 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertIn("changed_fields=payload:1", str(raised.exception))
     self.assertNotIn("secret-source", str(raised.exception))
     self.assertNotIn("secret-event", str(raised.exception))
+
+ def test_problem_event_external_id_database_identity_is_case_sensitive(self):
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "029_daily_sign_problem_event_binary_identity.sql"
+    ).read_text(encoding="utf-8")
+
+    self.assertIn("ALTER TABLE waybill_problem_events", migration)
+    self.assertIn("MODIFY external_id VARCHAR(128)", migration)
+    self.assertIn("COLLATE utf8mb4_bin NOT NULL", migration)
+
+ def test_problem_event_normalization_preserves_case_distinct_external_ids(self):
+    rows = daily_sign_store._normalize_problem_events(
+        [
+            {
+                "source": "ronghui_problem:scope",
+                "external_id": "AbC123",
+                "tracking_number": "R001",
+                "problem_type": "少货",
+                "registered_at": "2026-08-28 10:00:00",
+                "upload_complete": True,
+            },
+            {
+                "source": "ronghui_problem:scope",
+                "external_id": "abc123",
+                "tracking_number": "R002",
+                "problem_type": "少货",
+                "registered_at": "2026-08-28 11:00:00",
+                "upload_complete": True,
+            },
+        ]
+    )
+
+    self.assertEqual(["AbC123", "abc123"], [row["external_id"] for row in rows])
 
  def test_publication_readback_uses_due_subset_of_full_ledger(self):
     due = {"tracking_number": "DUE", "tms_signed": False}
