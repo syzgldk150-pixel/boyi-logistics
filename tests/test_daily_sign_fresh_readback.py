@@ -227,11 +227,27 @@ def test_persistence_fresh_readback_rejects_event_field_tamper() -> None:
 
 def test_persistence_fresh_readback_rejects_publication_set_tamper() -> None:
     row_sets = _row_sets()
+    marker = build_daily_sign_persistence_marker(**row_sets)
+    row_sets["publication_rows"] = []
+
+    with pytest.raises(DailySignPersistenceReadbackError, match="marker"):
+        _verify(row_sets, _database_rows(row_sets, marker), marker)
+
+
+def test_persistence_fresh_readback_accepts_empty_publication_when_all_signed() -> None:
+    row_sets = _row_sets()
+    ledger = row_sets["ledger_rows"][0]
+    ledger["tms_signed"] = True
+    ledger["tms_signed_at"] = datetime(2026, 8, 15, 18, 0, 0)
     row_sets["publication_rows"] = []
     marker = build_daily_sign_persistence_marker(**row_sets)
+    database_rows = _database_rows(row_sets, marker)
+    database_rows["ledger"][0]["tms_signed"] = 1
 
-    with pytest.raises(DailySignPersistenceReadbackError, match="publication rows"):
-        _verify(row_sets, _database_rows(row_sets, marker), marker)
+    result = _verify(row_sets, database_rows, marker)
+
+    assert result["verified"] is True
+    assert result["publication_rows"]["record_count"] == 0
 
 
 def test_sheet_readback_rejects_target_or_cleared_tail_drift() -> None:
