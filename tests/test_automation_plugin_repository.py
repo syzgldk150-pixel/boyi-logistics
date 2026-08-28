@@ -504,6 +504,48 @@ class AutomationPluginRepositoryTests(TestCase):
             " ".join(cursor.executions[1][0].split()),
         )
 
+    def test_archival_unknown_predecessor_closes_completed_drain(self):
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects",
+                    {"committed_generation": 2},
+                    0,
+                ),
+                (
+                    "FROM automation_project_generations",
+                    {"state": "DRAINING"},
+                    0,
+                ),
+                (
+                    "FROM automation_project_generation_leases",
+                    [{"lease_id": "unknown"}],
+                    0,
+                ),
+                ("UPDATE automation_project_generations", None, 1),
+                ("UPDATE automation_projects AS project", None, 1),
+            ]
+        )
+
+        AutomationPluginRepository(connection).block_generation_unknown_write_row(
+            "instance-one",
+            1,
+        )
+
+        stable_sql = " ".join(
+            connection.cursor_instance.executions[-1][0].split()
+        )
+        self.assertIn("project.reconcile_state='STABLE'", stable_sql)
+        self.assertIn(
+            "project.target_generation=project.committed_generation",
+            stable_sql,
+        )
+        self.assertIn("archival_lease.outcome='WRITE_OUTCOME_UNKNOWN'", stable_sql)
+        self.assertIn(
+            "active_lease.outcome IN ('RUNNING', 'VERIFYING')",
+            stable_sql,
+        )
+
     def test_generic_upgrade_replays_event_from_before_prepared_target_support(self):
         request_id = str(uuid.uuid4())
         payload = {

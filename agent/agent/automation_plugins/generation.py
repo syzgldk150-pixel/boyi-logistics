@@ -513,6 +513,7 @@ class AutomationRuntimeReconciler:
 
         draining: list[int] = []
         disposed: list[int] = []
+        archival_unknown: list[int] = []
         for generation in sorted(
             self._repository.list_project_generations(automation_id),
             key=lambda item: item.snapshot.generation,
@@ -522,6 +523,7 @@ class AutomationRuntimeReconciler:
                 continue
             if generation.state is RuntimeGenerationState.BLOCKED:
                 if self._is_archival_unknown_generation(generation):
+                    archival_unknown.append(number)
                     continue
                 raise PluginConflictError(
                     "non-current blocked runtime generation has no archival unknown write",
@@ -538,6 +540,11 @@ class AutomationRuntimeReconciler:
                     generation = self._repository.get_generation(automation_id, number) or generation
                 if self.dispose_generation(generation):
                     disposed.append(number)
+        if archival_unknown and not draining:
+            self._repository.stabilize_project_after_archival_unknown(
+                automation_id,
+                archival_unknown[0],
+            )
         return RuntimeReconcileResult(
             automation_id=automation_id,
             target_generation=project.target_generation,

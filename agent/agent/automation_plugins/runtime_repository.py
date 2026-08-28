@@ -704,6 +704,17 @@ class MySQLAutomationPluginRuntimeAdapter:
     def block_generation_unknown_write(self, automation_id: str, generation: int) -> None:
         self._write("block_generation_unknown_write_row", automation_id, generation)
 
+    def stabilize_project_after_archival_unknown(
+        self,
+        automation_id: str,
+        generation: int,
+    ) -> None:
+        self._write(
+            "stabilize_project_after_archival_unknown_row",
+            automation_id,
+            generation,
+        )
+
     def acquire_committed_generation(
         self,
         automation_id: str,
