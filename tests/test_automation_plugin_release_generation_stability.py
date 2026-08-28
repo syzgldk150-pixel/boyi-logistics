@@ -483,6 +483,31 @@ class _RuntimeRepository:
             reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
         )
 
+    def stabilize_project_after_archival_unknown(
+        self,
+        automation_id: str,
+        generation: int,
+    ) -> None:
+        runtime = self.runtimes[automation_id]
+        if (
+            runtime.target_generation == runtime.committed_generation
+            and runtime.committed_generation != generation
+            and all(
+                item.snapshot.generation == runtime.committed_generation
+                or item.state is RuntimeGenerationState.DISPOSED
+                or (
+                    item.state is RuntimeGenerationState.BLOCKED
+                    and (automation_id, item.snapshot.generation)
+                    in self.unknown_writes
+                )
+                for item in self.list_project_generations(automation_id)
+            )
+        ):
+            self.runtimes[automation_id] = replace(
+                runtime,
+                reconcile_state=RuntimeReconcileState.STABLE,
+            )
+
 
 class _EffectDriver:
     @staticmethod
