@@ -173,7 +173,10 @@ class TMSBrowserAuth:
     def login(self, page: Any, *, username: str, password: str) -> None:
         if self.use_shared_session:
             _ = (username, password)
-            get_session_broker(self.profile).ensure_authenticated(validate=True)
+            # The browser's real target page is the authentication check.  A
+            # full provider matrix here duplicated the request-side gate and
+            # coupled this action to unrelated subsystems.
+            get_session_broker(self.profile).get_storage_state_path(validate=False)
             page.goto(self.home_url, wait_until="domcontentloaded", timeout=60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=15_000)
@@ -294,7 +297,7 @@ def launch_browser(
     browser = p.chromium.launch(**chromium_launch_kwargs(headless=headless, slow_mo_ms=slow_mo_ms, channel=channel))
     context_kwargs: dict[str, Any] = {"viewport": {"width": 1440, "height": 900}}
     if use_tms_storage_state:
-        context_kwargs["storage_state"] = get_session_broker(profile).get_storage_state_path(validate=True)
+        context_kwargs["storage_state"] = get_session_broker(profile).get_storage_state_path(validate=False)
     context = browser.new_context(**context_kwargs)
     page = context.new_page()
     return p, browser, context, page

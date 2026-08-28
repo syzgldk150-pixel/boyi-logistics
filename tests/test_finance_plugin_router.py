@@ -11,6 +11,21 @@ from tests.test_first_party_action_payloads import (
 )
 
 
+class _LocalBindingManager(_AccountManager):
+    def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
+        assert account_id in set(ACCOUNTS.values())
+        return {
+            "account_id": account_id,
+            "system": "ronghui",
+            "account_purpose": "finance",
+            "session_profile": f"profile-{account_id}",
+        }
+
+    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+        del account_id
+        raise AssertionError("plugin routing must not perform online pre-authentication")
+
+
 def test_signed_finance_package_runs_through_router_and_write_verifier(tmp_path) -> None:
     manifest = resolve_first_party_manifests(ToolRegistry())["sync_finance_bills"]
     manifest_mapping = manifest.to_mapping()
@@ -24,7 +39,7 @@ def test_signed_finance_package_runs_through_router_and_write_verifier(tmp_path)
         broker_operations=list(manifest_mapping["runtime_permissions"]["broker_operations"]),
     )
     repository = _Repository()
-    manager = _AccountManager()
+    manager = _LocalBindingManager()
     raw, verified, leases = _execute_yunda_write_generation(
         tmp_path=tmp_path,
         capability=capability,
@@ -33,6 +48,7 @@ def test_signed_finance_package_runs_through_router_and_write_verifier(tmp_path)
             account_manager=manager,
             repository_factory=lambda: repository,
             capture_port=_capture,
+            capability_authorizer=lambda _descriptor, _capability: None,
         ),
         manager=manager,
         resource_resolver=_ExactResourceResolver({}),

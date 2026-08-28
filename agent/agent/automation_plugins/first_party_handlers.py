@@ -106,6 +106,7 @@ ScanNextSubmitPort = Callable[
 ScanNextVerifyPort = Callable[
     [Mapping[str, Any], list[dict[str, str]], str, str], Mapping[str, Any]
 ]
+CapabilityAuthorizationPort = Callable[[Mapping[str, Any], str], None]
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,7 @@ class FirstPartyCoreHandlerPorts:
     delivery_status_read: DeliveryStatusReadPort | None = None
     delivery_write_records: DeliveryRecordWritePort | None = None
     delivery_projection_update: DeliveryProjectionPort | None = None
+    authorize_capability: CapabilityAuthorizationPort | None = None
 
 
 _CUSTOMER_TOOL = "sync_customer_service_problems"
@@ -372,6 +374,15 @@ class _FirstPartyCoreHandlers:
         if context.mark_write_started is not None:
             context.mark_write_started()
 
+    def _authorize_capability(
+        self,
+        descriptor: Mapping[str, Any],
+        capability: str,
+    ) -> None:
+        authorizer = self._ports.authorize_capability
+        if authorizer is not None:
+            authorizer(descriptor, capability)
+
     def _clock_context(
         self,
         context: CoreBrokerInvocationContext,
@@ -440,6 +451,7 @@ class _FirstPartyCoreHandlers:
         clock_type = _text(values.get("clock_type"), "clock_type", maximum=32)
         site = _clock_site(values.get("site"))
         assert self._ports.clock_action is not None
+        self._authorize_capability(descriptor, "ronghui_clock")
         self._mark_write_started(context)
         raw = self._ports.clock_action(
             {
@@ -2110,6 +2122,7 @@ class _FirstPartyCoreHandlers:
             normalized.append({"bill_code": bill_code, "station_name": station_name})
         account_id = _one_account(context)
         descriptor = _account_descriptor(self._ports, account_id, systems={"ronghui"})
+        self._authorize_capability(descriptor, "ronghui_scan")
         self._mark_write_started(context)
         try:
             raw = port(descriptor, normalized)

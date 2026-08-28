@@ -552,6 +552,9 @@ def test_clock_signed_payload_runs_through_router_and_fresh_read_verifier(
     )
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id: str):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id: str):
             assert account_id == "ronghui-clock"
             return {
@@ -642,6 +645,9 @@ def test_delivery_status_signed_payload_runs_through_router_and_verifier(
     )
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id: str):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id: str):
             assert account_id == "ronghui-east"
             return {
@@ -1070,6 +1076,9 @@ def test_site_send_signed_payload_runs_through_router_and_write_verifier(
     call_order: list[str] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id: str):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id: str):
             assert account_id == "ronghui-site-east"
             return {
@@ -1392,6 +1401,9 @@ def test_customer_problem_payload_calls_real_local_broker_without_account_ids(
     core_calls: list[tuple[str, tuple[str, ...], dict]] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             resolved_accounts.append(account_id)
             assert account_id in {"account-a", "account-b"}
@@ -1549,6 +1561,9 @@ def test_customer_payload_runs_through_router_and_result_verifier(
     resolved_accounts: list[str] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             resolved_accounts.append(account_id)
             return {
@@ -1758,6 +1773,9 @@ def test_arrive_payload_runs_closed_production_primitives_through_write_verifier
     authenticated: list[str] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             authenticated.append(account_id)
             assert account_id == "arrive-account"
@@ -2059,6 +2077,9 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
     detail_record = {**source_record, "recipient_address": "complete recipient address"}
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             authenticated.append(account_id)
             assert account_id == "stats-account"
@@ -2408,6 +2429,9 @@ def test_scan_codes_runs_router_to_fresh_server_verifier(
     primitive_calls: list[tuple[object, ...]] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             assert account_id == "ronghui-scan"
             return {
@@ -2615,6 +2639,9 @@ def test_yunda_dispatch_runs_router_to_write_verifier_with_exact_bindings(
     writes: list[tuple[object, ...]] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             account_calls.append(str(account_id))
             assert account_id == "yunda-account"
@@ -2811,6 +2838,9 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
     primitive_calls: list[tuple[object, ...]] = []
 
     class Manager:
+        def require_active_binding_descriptor(self, account_id):
+            return self.require_authenticated_binding(account_id)
+
         def require_authenticated_binding(self, account_id):
             account_calls.append(str(account_id))
             assert account_id == "yunda-account"

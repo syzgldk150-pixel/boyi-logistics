@@ -1,8 +1,8 @@
 """Production broker primitives for the signed finance action.
 
-The subprocess receives logical roles and account-blind rows only.  Exact
-business-account bindings, authenticated sessions, source-site identity and
-database run identifiers remain in this core-owned adapter.
+The subprocess receives logical roles and account-blind rows only. Exact local
+business-account bindings, target capability sessions, source-site identity
+and database run identifiers remain in this core-owned adapter.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
+from plugin_core_adapters.capability_session import (
+    CapabilityAuthorizer,
+    authorize_target_capability,
+)
 from agent.tms_runtime.scripts.finance_capture_common import CaptureResult
 from agent.tms_runtime.scripts.finance_live_capture import build_live_finance_adapter
 from shared.finance import FinanceRepository, SummarySemantics, SyncStatus
@@ -486,12 +490,14 @@ class _FinanceBrokerHandlers:
         repository_factory: RepositoryFactory,
         capture_port: CapturePort,
         cursor_secret: bytes,
+        capability_authorizer: CapabilityAuthorizer,
     ) -> None:
         if not isinstance(cursor_secret, bytes) or len(cursor_secret) < 32:
             raise ValueError("finance cursor secret must contain at least 32 bytes")
         self._manager = account_manager
         self._repository_factory = repository_factory
         self._capture_port = capture_port
+        self._capability_authorizer = capability_authorizer
         self._secret = bytes(cursor_secret)
         self._lock = threading.RLock()
         self._captures: dict[str, _CaptureState] = {}
@@ -538,11 +544,11 @@ class _FinanceBrokerHandlers:
 
     def _descriptor(self, account_id: str) -> Mapping[str, Any]:
         try:
-            descriptor = self._manager.require_authenticated_binding(account_id)
+            descriptor = self._manager.require_active_binding_descriptor(account_id)
         except TMSAuthStateError as exc:
             raise _error(
-                "the exact finance account is not authenticated",
-                "BLOCKED_LOGIN",
+                "the exact finance account is unavailable",
+                "BROKER_ACCOUNT_UNAVAILABLE",
             ) from exc
         if not isinstance(descriptor, Mapping):
             raise _error("finance account descriptor is invalid", "BROKER_ACCOUNT_INVALID")
@@ -554,10 +560,16 @@ class _FinanceBrokerHandlers:
         credentials = self._manager.public_credentials(account_id)
         login_account = str((credentials or {}).get("username") or "").strip()
         if not login_account:
-            raise _error("finance account has no public login identity", "BLOCKED_LOGIN")
+            raise _error(
+                "finance account has no public login identity",
+                "BROKER_ACCOUNT_UNAVAILABLE",
+            )
         result["login_account"] = login_account
         if not str(result.get("session_profile") or "").strip():
-            raise _error("finance account has no authenticated profile", "BLOCKED_LOGIN")
+            raise _error(
+                "finance account has no session profile binding",
+                "BROKER_ACCOUNT_UNAVAILABLE",
+            )
         return result
 
     @staticmethod
@@ -912,6 +924,10 @@ class _FinanceBrokerHandlers:
         if page_number == 1:
             if capture_ref is not None:
                 raise _error("first finance page must not carry a cursor", "BROKER_ARGUMENT_INVALID")
+            self._capability_authorizer(
+                descriptors[context.role],
+                "ronghui_finance",
+            )
             captured = self._capture_source(descriptors[context.role], target_date)
             token = self._opaque(context, "capture")
             source_context_ref = self._opaque(context, "source-context")
@@ -1041,6 +1057,10 @@ class _FinanceBrokerHandlers:
         } != expected_metrics:
             raise _error("finance computed metrics changed", "BROKER_SOURCE_MISMATCH")
 
+        self._capability_authorizer(
+            descriptors[context.role],
+            "ronghui_finance",
+        )
         fresh = self._capture_source(descriptors[context.role], target_date)
         if (
             fresh.public_transactions != state.captured.public_transactions
@@ -1613,12 +1633,14 @@ def build_production_finance_handler_map(
     account_manager: AutomationAccountManager | None = None,
     repository_factory: RepositoryFactory | None = None,
     capture_port: CapturePort | None = None,
+    capability_authorizer: CapabilityAuthorizer | None = None,
 ) -> dict[tuple[str, str], CoreBrokerHandler]:
     handlers = _FinanceBrokerHandlers(
         account_manager=account_manager or get_account_manager(),
         repository_factory=repository_factory or _default_repository_factory,
         capture_port=capture_port or _default_capture_port,
         cursor_secret=cursor_secret,
+        capability_authorizer=capability_authorizer or authorize_target_capability,
     )
     return handlers.handler_map()
 

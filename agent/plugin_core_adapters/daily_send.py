@@ -93,16 +93,16 @@ def _required_profile(descriptor: Mapping[str, Any]) -> str:
     return profile
 
 
-def _authenticated_account(
+def _active_account(
     manager: AutomationAccountManager,
     account_id: str,
 ) -> Mapping[str, Any]:
     try:
-        descriptor = manager.require_authenticated_binding(account_id)
+        descriptor = manager.require_active_binding_descriptor(account_id)
     except TMSAuthStateError as exc:
         raise _error(
-            "the exact daily-send account is no longer authenticated",
-            "BLOCKED_LOGIN",
+            "the exact daily-send account is unavailable",
+            "BROKER_ACCOUNT_UNAVAILABLE",
         ) from exc
     if str(descriptor.get("account_id") or "").strip() != account_id:
         raise _error("the daily-send account binding changed", "BROKER_ACCOUNT_INVALID")
@@ -579,7 +579,7 @@ def build_production_daily_send_ports(
         }
 
     return DailySendHandlerPorts(
-        describe_account=lambda account_id: _authenticated_account(manager, account_id),
+        describe_account=lambda account_id: _active_account(manager, account_id),
         source_page=read_source,
         bitable_list=list_records,
         bitable_delete=delete_records,

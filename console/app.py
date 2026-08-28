@@ -77,6 +77,9 @@ class LocalDocFlowApp(
         self.template_env.globals["mobile_navigation_for_user"] = (
             self._business_module_mobile_navigation_for_user
         )
+        self.template_env.globals["business_module_status_unavailable"] = (
+            self._business_module_status_unavailable_for_request
+        )
         self.project_modules = self._build_project_modules()
         self._business_module_status_cache = None
         self.finance_service = FinanceService(
@@ -150,6 +153,7 @@ class LocalDocFlowApp(
         return RequestHandler
 
     def handle_proxy_write(self, handler: BaseHTTPRequestHandler, method: str) -> None:
+        self._reset_business_module_request_state()
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
@@ -159,7 +163,7 @@ class LocalDocFlowApp(
             return
         if not self._ensure_authorized(handler):
             return
-        if self._reject_unavailable_business_module_request(handler, path):
+        if self._reject_unavailable_business_module_request(handler, path, method=method):
             return
         self._send_json(
             handler,
@@ -168,6 +172,7 @@ class LocalDocFlowApp(
         )
 
     def handle_get(self, handler: BaseHTTPRequestHandler) -> None:
+        self._reset_business_module_request_state()
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
@@ -187,7 +192,7 @@ class LocalDocFlowApp(
             return
         if not self._ensure_authorized(handler):
             return
-        if self._reject_unavailable_business_module_request(handler, path):
+        if self._reject_unavailable_business_module_request(handler, path, method="GET"):
             return
         if path.startswith("/original-pages/") and path.endswith("/launch"):
             provider = path[len("/original-pages/") : -len("/launch")].strip("/")
@@ -338,6 +343,7 @@ class LocalDocFlowApp(
         self._send_text(handler, HTTPStatus.NOT_FOUND, "Not found")
 
     def handle_post(self, handler: BaseHTTPRequestHandler) -> None:
+        self._reset_business_module_request_state()
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
@@ -351,7 +357,7 @@ class LocalDocFlowApp(
             return
         if not self._ensure_authorized(handler):
             return
-        if self._reject_unavailable_business_module_request(handler, path):
+        if self._reject_unavailable_business_module_request(handler, path, method="POST"):
             return
         query = parse_qs(parsed.query)
         if self.routes.handle_post(self, handler, path, parsed.path, query):

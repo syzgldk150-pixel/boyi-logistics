@@ -209,6 +209,59 @@ def test_self_pickup_precondition_is_short_opaque_one_time_and_plan_bound() -> N
     assert replay.value.code == "BROKER_CURSOR_INVALID"
 
 
+def test_problem_write_authorizes_once_before_receipt_and_query_does_not() -> None:
+    events: list[str] = []
+
+    def problem_action(_descriptor, action, plan):
+        events.append(f"action:{action}")
+        if action == "query":
+            return {"ready": True, "existing": None}
+        return _problem_result(plan)
+
+    handlers = build_problem_handler_map(
+        _ports(
+            problem_action=problem_action,
+            authorize_capability=lambda _descriptor, capability: events.append(
+                f"authorize:{capability}"
+            ),
+        ),
+        cursor_secret=_SECRET,
+    )
+    query_context = _context(
+        "self_pickup_problem_upload",
+        "browser.invoke",
+        "ronghui.problem.query",
+        "account_id",
+    )
+    query = handlers[(query_context.operation, query_context.action)](
+        query_context,
+        {"bill_code": "R001"},
+    )
+    create_context = replace(
+        query_context,
+        action="ronghui.problem.create",
+        mark_write_started=lambda: events.append("receipt"),
+    )
+    handlers[(create_context.operation, create_context.action)](
+        create_context,
+        {
+            "bill_code": "R001",
+            "precondition_ref": query["precondition_ref"],
+            "problem_cause": _SELF_PRIMARY_CAUSE,
+            "problem_owner_type": "特殊时效",
+            "problem_type": "开单为自提件",
+            "update_postpone_days": True,
+        },
+    )
+
+    assert events == [
+        "action:query",
+        "authorize:ronghui_problem",
+        "receipt",
+        "action:create",
+    ]
+
+
 def test_problem_write_requires_authoritative_readback_and_verify_is_fresh() -> None:
     def problem_action(_descriptor, action, plan):
         if action == "query":

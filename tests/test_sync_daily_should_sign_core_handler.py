@@ -352,7 +352,7 @@ class _RecordingAccountResolver:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
-    def require_authenticated(self, *, account_id: str, allowed_systems):
+    def require_active_binding_descriptor(self, *, account_id: str, allowed_systems):
         self.calls.append((account_id, tuple(allowed_systems)))
         descriptor = _descriptor(account_id)
         assert descriptor["system"] in allowed_systems

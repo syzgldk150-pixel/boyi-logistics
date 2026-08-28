@@ -467,7 +467,7 @@ class RonghuiLiveFinanceAdapter:
 
     def discover(self) -> Mapping[str, Any]:
         try:
-            self._session = get_session_broker(self.binding.session_profile).build_requests_session(validate=True)
+            self._session = get_session_broker(self.binding.session_profile).build_requests_session(validate=False)
             from agent.tms_runtime.scripts.customer_service_problem import (
                 RONGHUI_INDEX_URL,
                 _read_user_info_cookie,
@@ -982,7 +982,6 @@ class YundaLiveFinanceAdapter:
 
     def discover(self) -> Mapping[str, Any]:
         try:
-            get_session_broker(self.binding.session_profile).ensure_authenticated(validate=True)
             self._playwright, self._browser, self._context, self._client_page = launch_browser(
                 headless=True,
                 profile=self.binding.session_profile,

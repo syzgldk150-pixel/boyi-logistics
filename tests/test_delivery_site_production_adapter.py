@@ -115,12 +115,21 @@ def test_site_send_detail_rejects_any_mismatched_bill_identity(
 
 
 class _Manager:
-    def require_authenticated_binding(self, account_id: str) -> Mapping[str, Any]:
+    def __init__(self) -> None:
+        self.active_binding_calls: list[str] = []
+        self.authenticated_binding_calls: list[str] = []
+
+    def require_active_binding_descriptor(self, account_id: str) -> Mapping[str, Any]:
+        self.active_binding_calls.append(account_id)
         return {
             "account_id": account_id,
             "system": "ronghui",
             "session_profile": "profile-test",
         }
+
+    def require_authenticated_binding(self, account_id: str) -> Mapping[str, Any]:
+        self.authenticated_binding_calls.append(account_id)
+        raise AssertionError("describe_account must not authenticate online")
 
 
 def _resource_context(*, mark_write_started=None) -> CoreBrokerInvocationContext:
@@ -245,6 +254,7 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
     reads: list[tuple[str, str, str]] = []
     bitable_marks: list[str] = []
     projection_marks: list[str] = []
+    manager = _Manager()
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
         assert params["base_token"] == "base-test"
@@ -278,7 +288,7 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
         return {"ok": True, "updated": len(codes)}
 
     ports = build_production_delivery_site_ports(
-        account_manager=_Manager(),
+        account_manager=manager,
         resource_loader=lambda resource_id: {
             "resource_kind": "feishu_bitable",
             "base_token": "base-test",
@@ -322,6 +332,8 @@ def test_delivery_writes_require_exact_fresh_bitable_and_projection_snapshots() 
     assert "base-test" not in bitable["evidence_ref"]
     assert _RESOURCE_ID not in bitable["evidence_ref"]
     assert "ronghui-test" not in projection["evidence_ref"]
+    assert manager.active_binding_calls == ["ronghui-test"]
+    assert manager.authenticated_binding_calls == []
 
 
 @pytest.mark.parametrize("response_count", [0, 1, 3])

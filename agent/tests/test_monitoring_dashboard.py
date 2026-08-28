@@ -220,6 +220,10 @@ class MonitoringParsingTests(unittest.TestCase):
         with (
             patch("agent.tms_runtime.monitoring._collect_yunda_snapshot", return_value=yunda_payload) as collect_yunda,
             patch("agent.tms_runtime.monitoring._collect_ronghui_snapshot", return_value=ronghui_payload) as collect_ronghui,
+            patch(
+                "agent.tms_runtime.monitoring.get_session_broker",
+                return_value=type("Broker", (), {"validate_health_matrix": lambda self: {"status": "ok"}})(),
+            ),
             patch("agent.tms_runtime.monitoring._schedule_snapshot_refresh") as schedule_refresh,
         ):
             first = monitoring.build_monitoring_snapshot(systems=["yunda", "ronghui"], force=True)
@@ -271,6 +275,10 @@ class MonitoringParsingTests(unittest.TestCase):
         with (
             patch("agent.tms_runtime.monitoring._collect_yunda_snapshot", side_effect=slow_yunda),
             patch("agent.tms_runtime.monitoring._collect_ronghui_snapshot", side_effect=slow_ronghui),
+            patch(
+                "agent.tms_runtime.monitoring.get_session_broker",
+                return_value=type("Broker", (), {"validate_health_matrix": lambda self: {"status": "ok"}})(),
+            ),
         ):
             started = time.perf_counter()
             result = monitoring.build_monitoring_snapshot(systems=["yunda", "ronghui"], force=True)
@@ -278,6 +286,70 @@ class MonitoringParsingTests(unittest.TestCase):
 
         self.assertEqual(3, result["totals"]["total_pending"])
         self.assertLess(elapsed, 0.35)
+
+    def test_forced_monitoring_attaches_non_blocking_capability_health(self):
+        target_payload = {
+            "system": "yunda",
+            "status": "ok",
+            "total_count": 1,
+            "exception_count": 0,
+            "categories": [],
+        }
+        matrix = {
+            "profile": "yunda",
+            "status": "degraded",
+            "capabilities": {"yunda_problem": {"status": "CAPABILITY_UNAVAILABLE"}},
+        }
+        broker = type("Broker", (), {"validate_health_matrix": lambda self: matrix})()
+
+        with (
+            patch("agent.tms_runtime.monitoring._collect_yunda_snapshot", return_value=target_payload),
+            patch("agent.tms_runtime.monitoring.get_session_broker", return_value=broker),
+        ):
+            result = monitoring._collect_system_snapshot(
+                "yunda",
+                force=True,
+                updated_at="2026-05-28 13:30:00",
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(matrix, result["capability_health"])
+
+    def test_yunda_snapshot_uses_target_calls_without_session_prevalidation(self):
+        class Response:
+            status_code = 200
+            headers = {}
+            text = ""
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                return Response({"data": {"identity": "test-user"}})
+
+            def post(self, *_args, **_kwargs):
+                return Response({"errorCode": 0, "num": 0, "data": []})
+
+        calls = []
+
+        class Broker:
+            @staticmethod
+            def build_requests_session(*, validate):
+                calls.append(validate)
+                return Session()
+
+        with patch("agent.tms_runtime.monitoring.get_session_broker", return_value=Broker()):
+            result = monitoring._collect_yunda_snapshot(
+                force=True,
+                updated_at="2026-05-28 13:30:00",
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual([False], calls)
 
     def test_daily_sign_prefer_cached_returns_cached_payload_without_requerying(self):
         with (

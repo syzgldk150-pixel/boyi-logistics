@@ -34,6 +34,10 @@ ACCOUNTS = {
 }
 
 
+def _allow_capability(_descriptor: Mapping[str, Any], _capability: str) -> None:
+    return None
+
+
 def _load_action():
     result_path = ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
     action_path = ROOT / "agent" / "first_party_automation_plugins" / "sync_finance_bills" / "payload" / "action.py"
@@ -60,13 +64,18 @@ def _load_action():
 
 
 class _AccountManager:
-    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+    def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
         assert account_id in set(ACCOUNTS.values())
         return {
             "account_id": account_id,
             "system": "ronghui",
+            "account_purpose": "finance",
             "session_profile": f"profile-{account_id}",
         }
+
+    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+        del account_id
+        raise AssertionError("finance broker admission must not authenticate online")
 
     def public_credentials(self, account_id: str) -> dict[str, str]:
         assert account_id in set(ACCOUNTS.values())
@@ -286,6 +295,7 @@ def _walk_keys(value: object):
 def test_finance_payload_runs_through_closed_core_and_independent_capture() -> None:
     repository = _Repository()
     captures: list[tuple[str, str]] = []
+    authorizations: list[tuple[str, str]] = []
     broker_responses: list[object] = []
 
     def capture(descriptor: Mapping[str, Any], target_date: date) -> CaptureResult:
@@ -297,6 +307,9 @@ def test_finance_payload_runs_through_closed_core_and_independent_capture() -> N
         account_manager=_AccountManager(),
         repository_factory=lambda: repository,
         capture_port=capture,
+        capability_authorizer=lambda descriptor, capability: authorizations.append(
+            (str(descriptor["account_id"]), capability)
+        ),
     )
 
     def broker(operation, *, action, role, arguments):
@@ -321,6 +334,10 @@ def test_finance_payload_runs_through_closed_core_and_independent_capture() -> N
     assert result["data"]["successful_runs"] == 3
     assert result["data"]["written_transactions"] == 3
     assert len(captures) == 6
+    assert authorizations == [
+        (account_id, "ronghui_finance")
+        for account_id, _target_date in captures
+    ]
     assert {account_id for account_id, _target_date in captures} == set(ACCOUNTS.values())
     forbidden = {
         key.lower() for key in _walk_keys(result) if key.lower() in {"account_id", "login_account", "session_profile"}
@@ -351,6 +368,7 @@ def test_finance_fresh_capture_drift_fails_before_any_snapshot_write() -> None:
         account_manager=_AccountManager(),
         repository_factory=lambda: repository,
         capture_port=capture,
+        capability_authorizer=_allow_capability,
     )
 
     def broker(operation, *, action, role, arguments):
@@ -383,6 +401,7 @@ def test_finance_snapshot_ack_with_drifted_fresh_commit_readback_is_unknown() ->
         account_manager=_AccountManager(),
         repository_factory=lambda: repository,
         capture_port=_capture,
+        capability_authorizer=_allow_capability,
     )
     observed_codes: list[str] = []
 
@@ -425,6 +444,7 @@ def test_finance_no_data_and_retry_keep_exact_role_bindings() -> None:
         account_manager=_AccountManager(),
         repository_factory=lambda: repository,
         capture_port=empty_capture,
+        capability_authorizer=_allow_capability,
     )
 
     def broker(operation, *, action, role, arguments):
@@ -463,6 +483,7 @@ def test_finance_contract_rejects_a_cross_month_chunk_even_with_matching_digest(
         account_manager=_AccountManager(),
         repository_factory=lambda: repository,
         capture_port=_capture,
+        capability_authorizer=_allow_capability,
     )
     action = _load_action()
     contract, _contract_sha256 = action._plan_request(
