@@ -2335,6 +2335,132 @@ class Phase7SyncToolTests(unittest.TestCase):
         bitable_mock.assert_not_called()
         sheet_mock.assert_not_called()
 
+    def test_daily_sign_sync_rejects_historical_due_row_without_valid_r13_plan(self):
+        from datetime import datetime
+
+        observed_at = datetime(2026, 8, 13, 9, 0, 0)
+        for plan_sign_at in (None, "not-a-time"):
+            with self.subTest(plan_sign_at=plan_sign_at):
+                state = {
+                    "ledger": {
+                        "R-HIST": {
+                            "tracking_number": "R-HIST",
+                            "r13_plan_sign_at": plan_sign_at,
+                            "first_seen_r13_at": "2026-08-11 09:00:00",
+                            "r13_current": False,
+                            "tms_signed": False,
+                            "goods_name": "货物",
+                            "package_type": "纸箱",
+                            "expected_quantity": 1,
+                            "delivery_method": "送货",
+                            "recipient_address": "地址",
+                        }
+                    },
+                    "arrivals": {
+                        "R-HIST": [
+                            {
+                                "business_date": "2026-08-12",
+                                "expected_quantity": 1,
+                                "arrived_quantity": 1,
+                                "goods_name": "货物",
+                                "package_type": "纸箱",
+                                "delivery_method": "送货",
+                                "recipient_address": "地址",
+                            }
+                        ]
+                    },
+                    "target_station_codes": {"R-HIST"},
+                    "problems": {},
+                    "signs": {},
+                    "sign_verifications": {},
+                    "source_refs": ["arrival_stat:arrival-run:arrival-hash"],
+                    "arrival_source_proof": {
+                        "complete": True,
+                        "active_stat_runs": 1,
+                        "latest_forecast_runs": 0,
+                        "run_ids": ["arrival-run"],
+                    },
+                }
+                with (
+                    patch(
+                        "tools.daily_sign_sync_tool.start_sync_run",
+                        return_value=("source-run", observed_at),
+                    ),
+                    patch(
+                        "tools.daily_sign_sync_tool.load_daily_sign_state",
+                        return_value=state,
+                    ),
+                    patch(
+                        "tools.daily_sign_pipeline._resolve_r13_request",
+                        return_value={"days": 1, "fetch_all": True, "page": 1},
+                    ),
+                    patch(
+                        "tools.daily_sign_sync_tool.call_http_service",
+                        return_value={"data": []},
+                    ),
+                    patch(
+                        "tools.daily_sign_pipeline._source_query_window",
+                        return_value=(observed_at, observed_at),
+                    ),
+                    patch(
+                        "tools.daily_sign_pipeline._collect_problem_events",
+                        return_value=(
+                            [],
+                            {"rows": 0, "declared_total": 0, "complete": True},
+                        ),
+                    ),
+                    patch(
+                        "tools.daily_sign_pipeline._collect_sign_events",
+                        return_value=([], {"source_rows": 0, "complete": True}),
+                    ),
+                    patch(
+                        "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                        return_value=([], {"complete": True, "queried": 0}),
+                    ),
+                    patch(
+                        "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                        return_value=(
+                            [],
+                            {
+                                "complete": True,
+                                "queried": 1,
+                                "verification_rows": [],
+                            },
+                        ),
+                    ),
+                    patch(
+                        "tools.daily_sign_pipeline._finish_failed_run",
+                        side_effect=_daily_failed_run_values,
+                    ) as failed_run_mock,
+                    patch(
+                        "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                        side_effect=_daily_completed_run_readback_proof,
+                    ) as verify_completed,
+                    patch(
+                        "tools.daily_sign_sync_tool.persist_daily_sign_snapshot"
+                    ) as persist_mock,
+                    patch("tools.daily_sign_sync_tool._sync_bitable") as bitable_mock,
+                    patch("tools.daily_sign_sync_tool._sync_sheet") as sheet_mock,
+                ):
+                    result = daily_sign_sync_tool.run_daily_sign_sync(
+                        {
+                            "r13_account_id": "r13_default",
+                            "account_id": "ronghui_daxiang_s",
+                            "days": 1,
+                        }
+                    )
+
+                self.assertEqual("FAILED", result["status"])
+                self.assertEqual(
+                    "INCOMPLETE_SOURCE_EVIDENCE", result["error"]["code"]
+                )
+                self.assertTrue(result["error"]["retryable"])
+                failed_run_mock.assert_called_once()
+                verify_completed.assert_called_once()
+                persist_mock.assert_not_called()
+                bitable_mock.assert_not_called()
+                sheet_mock.assert_not_called()
+
     def test_site_send_list_sync_zero_rows_clears_targets(self):
         bitable_result = {"ok": True, "deleted": 3, "written": 0}
         sheet_result = {
