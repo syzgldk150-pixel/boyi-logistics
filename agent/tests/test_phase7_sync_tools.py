@@ -2114,6 +2114,11 @@ class Phase7SyncToolTests(unittest.TestCase):
             {
                 "billNumberMain": "R1",
                 "planSignTime": "2026-08-13 23:59:59",
+                "goodsName": "货物",
+                "packTypeDesc": "纸箱",
+                "pcs": 1,
+                "dispatchMode": "送货",
+                "dispAddress": "地址",
             }
         ]
         with (

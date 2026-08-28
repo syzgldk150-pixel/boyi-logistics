@@ -1406,7 +1406,17 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
                 return None
 
             def json(self):
-                return {"data": {"records": [{"billNumberMain": "R1"}], "total": 2}}
+                return {
+                    "data": {
+                        "records": [
+                            {
+                                "billNumberMain": "R1",
+                                "planSignTime": "2026-08-12 23:59:59",
+                            }
+                        ],
+                        "total": 2,
+                    }
+                }
 
         class Session:
             def post(self, *_args, **_kwargs):

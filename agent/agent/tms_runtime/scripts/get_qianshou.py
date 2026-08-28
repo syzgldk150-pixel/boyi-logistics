@@ -282,9 +282,14 @@ def fetch_qianshou(
                 raise RuntimeError(
                     f"R13 page {current_page} contains a row without a waybill identity"
                 )
+            plan_sign_time = str(row.get("planSignTime") or "").strip()
+            if not plan_sign_time:
+                raise RuntimeError(
+                    f"R13 page {current_page} contains a row without planSignTime"
+                )
             normalized = {
                 "billNumberMain": bill_code,
-                "planSignTime": row.get("planSignTime"),
+                "planSignTime": plan_sign_time,
                 "goodsName": row.get("goodsName"),
                 "pcs": _optional_nonnegative_int(row.get("pcs"), field="pcs"),
                 "dispAddress": row.get("dispAddress"),

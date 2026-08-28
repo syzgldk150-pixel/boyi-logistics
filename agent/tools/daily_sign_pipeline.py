@@ -207,6 +207,17 @@ def _r13_rows_by_code(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
                 "SOURCE_FIELD_MISSING",
                 f"R13 第 {index} 行缺少 billNumberMain。",
             )
+        raw_plan_sign_time = row.get("planSignTime")
+        if not clean_text(raw_plan_sign_time):
+            raise DailySignSyncError(
+                "SOURCE_FIELD_MISSING",
+                f"R13 第 {index} 行缺少 planSignTime（规划应签收时间）。",
+            )
+        if parse_datetime(raw_plan_sign_time) is None:
+            raise DailySignSyncError(
+                "SOURCE_FIELD_INVALID",
+                f"R13 第 {index} 行的 planSignTime（规划应签收时间）格式无效。",
+            )
         previous = output.get(code)
         if previous is not None and previous != row:
             raise DailySignSyncError(
