@@ -78,7 +78,7 @@ SCAN_PREVIEW_ERROR_MESSAGES = {
     "SCAN_PREVIEW_EXPIRED": "扫描预览已超过十五分钟，请重新发送“扫描”。",
     "SCAN_PREVIEW_STALE": "扫描数据已变化，请重新发送“扫描”后再确认。",
     "PROJECT_INVOCATION_STALE": "扫描项目配置已变化，请重新发送“扫描”。",
-    "SCAN_PREVIEW_ALREADY_CONSUMED": "该预览已提交过正式请求，请查询原 Run 或前往事项中心处理。",
+    "SCAN_PREVIEW_ALREADY_CONSUMED": "该预览已提交过正式请求，请前往事项中心查看原任务。",
     "REQUEST_ID_REUSED": "本次飞书事件标识已被使用，请重新发送“确认扫描”。",
     "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED": "正式扫描尚未开放，本次没有写入第三方系统。",
     "SCAN_PREVIEW_CONTEXT_REQUIRED": "服务端扫描合同缺少预览上下文，正式执行已阻断。",
@@ -149,6 +149,51 @@ TOOL_DISPLAY_NAMES = {
     "r7_arrival_checkin": "R7 到达打卡任务",
     "r7_departure_checkin": "R7 发车打卡任务",
 }
+
+
+def _automation_task_name(route_key: str) -> str:
+    """Return the business-facing name for one fixed Feishu project route."""
+
+    safe_route_key = str(route_key or "").strip()
+    matching_names = [
+        TOOL_DISPLAY_NAMES[tool_name]
+        for tool_name, candidate_route in FIRST_PARTY_FEISHU_ROUTE_KEYS.items()
+        if candidate_route == safe_route_key and tool_name in TOOL_DISPLAY_NAMES
+    ]
+    return matching_names[0] if matching_names else "自动化任务"
+
+
+def _automation_result_reply(
+    *,
+    task_name: str,
+    result: dict[str, Any],
+) -> tuple[str, str]:
+    """Render one terminal project result without exposing control-plane jargon."""
+
+    status = str(result.get("status") or "").strip().upper()
+    reason = str(result.get("error_summary") or "").strip()
+    if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
+        return (
+            f"{task_name}已提交，正在等待审批。",
+            "automation_project_waiting_approval",
+        )
+    if status == "COMPLETED":
+        return f"{task_name}已完成。", "automation_project_completed"
+    if status == "BLOCKED_LOGIN":
+        return (
+            f"{task_name}未完成：绑定的业务账号需要重新登录。",
+            "automation_project_blocked_login",
+        )
+    if status == "CANCELLED":
+        return f"{task_name}已取消。", "automation_project_cancelled"
+    if status == "PARTIAL":
+        detail = reason or "只完成了部分数据，请查看任务详情后重试未完成部分。"
+        return f"{task_name}部分完成：{detail[:300]}", "automation_project_partial"
+    if status in {"BLOCKED_DATA", "FAILED_RETRYABLE", "FAILED_TERMINAL"}:
+        detail = reason or "数据读取或写入校验未通过，请查看任务详情。"
+        return f"{task_name}执行失败：{detail[:300]}", "automation_project_failed"
+    detail = reason or "结果暂时无法确认，请前往事项中心查看任务详情。"
+    return f"{task_name}未完成：{detail[:300]}", "automation_project_status"
 TOOL_CANCEL_COMMANDS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("sync_scan_codes", re.compile(r"^\s*取消\s*(?:扫描|扫描数据|扫描任务|sync_scan_codes)\s*$", re.IGNORECASE)),
     ("sync_arrival_stats", re.compile(r"^\s*取消\s*(?:统计|到货统计|统计到货数据|sync_arrival_stats)\s*$", re.IGNORECASE)),
@@ -294,7 +339,7 @@ def _scan_preview_error_message(error_code: Any) -> str:
     code = str(error_code or "").strip()
     return SCAN_PREVIEW_ERROR_MESSAGES.get(
         code,
-        "扫描请求结果暂时无法确定，请查询原 Run 或前往事项中心处理。",
+        "扫描请求结果暂时无法确定，请前往事项中心查看原任务。",
     )
 
 
@@ -446,6 +491,17 @@ async def _invoke_automation_project_and_reply(
 
     context = _COMMAND_CONTEXT.get()
     safe_route_key = str(route_key or "").strip()
+    task_name = _automation_task_name(safe_route_key)
+    if safe_route_key == SCAN_FEISHU_ROUTE_KEY:
+        start_reply = "已开始生成扫描预览，完成后我会发回待扫描清单。"
+    else:
+        start_reply = f"已开始执行：{task_name}。完成后我会反馈结果。"
+    await _reply_text(
+        receive_id,
+        start_reply,
+        receive_id_type=receive_id_type,
+        reply_type="automation_project_started",
+    )
     try:
         result = await _invoke_automation_project(
             route_key=safe_route_key,
@@ -508,24 +564,10 @@ async def _invoke_automation_project_and_reply(
             reply_type="scan_preview_ready",
         )
         return result
-    if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
-        reply = "自动化任务已提交，正在等待审批。"
-        reply_type = "automation_project_waiting_approval"
-    elif status == "COMPLETED":
-        reply = "自动化任务已完成。"
-        reply_type = "automation_project_completed"
-    elif status == "BLOCKED_LOGIN":
-        reply = "自动化任务已阻塞：绑定的业务账号需要恢复登录。"
-        reply_type = "automation_project_blocked_login"
-    elif status == "BLOCKED_DATA":
-        reason = str(result.get("error_summary") or "来源数据或写入校验未通过").strip()
-        reply = f"自动化任务未完成：{reason[:300]}"
-        reply_type = "automation_project_blocked_data"
-    else:
-        reply = f"自动化任务当前状态：{status or 'UNKNOWN'}。"
-        reply_type = "automation_project_status"
-    if run_id:
-        reply = f"{reply}\nRun：{run_id}"
+    reply, reply_type = _automation_result_reply(
+        task_name=task_name,
+        result=result,
+    )
     await _reply_text(
         receive_id,
         reply,
@@ -648,7 +690,7 @@ async def _confirm_scan_preview_and_reply(
     if confirmation_event_id and confirmation_event_id != context.event_id:
         await _reply_text(
             chat_id,
-            "原确认请求结果仍需核实，请查询原 Run 或前往事项中心处理；本次没有创建新请求。",
+            "原确认请求结果仍需核实，请前往事项中心查看原任务；本次没有创建新请求。",
             reply_type="scan_preview_confirmation_locked",
         )
         return
@@ -665,6 +707,11 @@ async def _confirm_scan_preview_and_reply(
             reply_type="scan_preview_expired",
         )
         return
+    await _reply_text(
+        chat_id,
+        "已开始执行：正式扫描。完成后我会反馈结果。",
+        reply_type="scan_preview_formal_started",
+    )
     try:
         result = await _invoke_automation_project(
             route_key=SCAN_FEISHU_ROUTE_KEY,
@@ -726,7 +773,6 @@ async def _confirm_scan_preview_and_reply(
         return
 
     run_id = str(result.get("run_id") or "").strip()
-    status = str(result.get("status") or "").strip().upper()
     error_code = str(result.get("error_code") or "").strip()
     if not run_id:
         unknown = {**locked_pending, "confirmation_state": "unknown"}
@@ -740,21 +786,14 @@ async def _confirm_scan_preview_and_reply(
     if error_code:
         reply = _scan_preview_error_message(error_code)
         reply_type = f"scan_preview_formal_error:{error_code}"
-    elif status == "COMPLETED":
-        reply = "正式扫描已完成。"
-        reply_type = "scan_preview_formal_completed"
-    elif status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
-        reply = "正式扫描已提交，正在等待审批。"
-        reply_type = "scan_preview_formal_waiting_approval"
-    elif status == "BLOCKED_LOGIN":
-        reply = "正式扫描已阻塞：绑定的业务账号需要恢复登录。"
-        reply_type = "scan_preview_formal_blocked_login"
     else:
-        reply = f"正式扫描当前状态：{status or 'UNKNOWN'}。"
-        reply_type = "scan_preview_formal_status"
+        reply, reply_type = _automation_result_reply(
+            task_name="正式扫描",
+            result=result,
+        )
     await _reply_text(
         chat_id,
-        f"{reply}\nRun：{run_id}",
+        reply,
         reply_type=reply_type,
     )
     clear_pending(pending_key, volatile_only=True)
@@ -2143,7 +2182,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         ):
             await _reply_text(
                 chat_id,
-                "正式扫描请求状态仍需核实，请先查询原 Run 或前往事项中心处理。",
+                "正式扫描请求状态仍需核实，请先前往事项中心查看原任务。",
                 reply_type="scan_preview_confirmation_locked",
             )
             return
@@ -2176,7 +2215,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             if state in {"submitting", "unknown", "terminal"}:
                 await _reply_text(
                     chat_id,
-                    "正式请求状态仍需核实，请查询原 Run 或前往事项中心处理；当前确认状态不会被清除。",
+                    "正式请求状态仍需核实，请前往事项中心查看原任务；当前确认状态不会被清除。",
                     reply_type="scan_preview_confirmation_locked",
                 )
                 return
@@ -2356,7 +2395,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     return
                 if await _reply_if_tool_running(agent, chat_id, legacy_tool_name):
                     return
-                await _reply_text(chat_id, "程序正在执行")
+                await _reply_text(
+                    chat_id,
+                    f"已开始执行：{TOOL_DISPLAY_NAMES.get(legacy_tool_name, legacy_tool_name or '自动化任务')}。完成后我会反馈结果。",
+                    reply_type=f"tool_start:{legacy_tool_name or 'unknown'}",
+                )
                 await _execute_and_reply(
                     agent,
                     chat_id,
@@ -2584,7 +2627,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if mode == "deferred":
             if await _reply_if_tool_running(agent, chat_id, tool_name):
                 return
-            await _reply_text(chat_id, "程序正在执行")
+            await _reply_text(
+                chat_id,
+                f"已开始执行：{TOOL_DISPLAY_NAMES.get(tool_name, tool_name)}。完成后我会反馈结果。",
+                reply_type=f"tool_start:{tool_name}",
+            )
             await _execute_and_reply(agent, chat_id, tool_name, params)
             return
 
@@ -2599,7 +2646,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 reply_type="tool_start:track_waybill",
             )
         elif tool_name == "get_price":
-            await _reply_text(chat_id, "程序正在执行", reply_type="tool_start:get_price")
+            await _reply_text(
+                chat_id,
+                "正在查询融辉和韵达价格，完成后我会反馈结果。",
+                reply_type="tool_start:get_price",
+            )
 
         try:
             result = await _execute_tool_with_stale_auth_retry(agent, tool_name, params)
@@ -2737,7 +2788,12 @@ async def _run_deferred_tool(
         return
 
     if receive_id:
-        await _reply_text(receive_id, "程序正在执行", receive_id_type=receive_id_type)
+        await _reply_text(
+            receive_id,
+            f"已开始执行：{TOOL_DISPLAY_NAMES.get(tool_name, tool_name)}。完成后我会反馈结果。",
+            receive_id_type=receive_id_type,
+            reply_type=f"tool_start:{tool_name}",
+        )
 
     try:
         result = await _execute_tool_with_stale_auth_retry(agent, tool_name, params)

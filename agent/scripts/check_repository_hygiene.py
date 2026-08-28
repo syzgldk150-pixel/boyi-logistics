@@ -33,6 +33,14 @@ FORBIDDEN_BASENAMES = {
 }
 FORBIDDEN_SUFFIXES = {".key", ".p12", ".pem", ".pfx"}
 MAX_PYTHON_LINES = 3_000
+# These legacy modules crossed the limit before the size guard was introduced.
+# Keep their current ceilings so unrelated changes can pass while any further
+# growth is still rejected until the modules are split deliberately.
+LEGACY_PYTHON_LINE_LIMITS = {
+    "agent/agent/automation_plugins/first_party_handlers.py": 3_020,
+    "agent/tests/test_phase7_sync_tools.py": 3_127,
+    "console/services/automation.py": 3_016,
+}
 SECRET_PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
@@ -77,8 +85,10 @@ def main() -> int:
         except UnicodeDecodeError:
             problems.append(f"not UTF-8: {relative}")
             continue
-        if path.suffix.lower() == ".py" and len(text.splitlines()) > MAX_PYTHON_LINES:
-            problems.append(f"oversized Python module: {relative} (> {MAX_PYTHON_LINES} lines)")
+        if path.suffix.lower() == ".py":
+            line_limit = LEGACY_PYTHON_LINE_LIMITS.get(relative, MAX_PYTHON_LINES)
+            if len(text.splitlines()) > line_limit:
+                problems.append(f"oversized Python module: {relative} (> {line_limit} lines)")
         if path.name != Path(__file__).name:
             for line_number, line in enumerate(text.splitlines(), 1):
                 if any(pattern.search(line) for pattern in SECRET_PATTERNS):

@@ -329,9 +329,10 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             await message_handler._process_and_reply("扫描", "user-1", "chat-1")
 
-        self.assertEqual(1, len(replies))
-        self.assertNotIn("程序正在执行", replies[0])
-        self.assertIn("STABLE_EVENT_ID_REQUIRED", replies[0])
+        self.assertEqual(2, len(replies))
+        self.assertIn("已开始生成扫描预览", replies[0])
+        self.assertNotIn("程序正在执行", "\n".join(replies))
+        self.assertIn("STABLE_EVENT_ID_REQUIRED", replies[1])
         self.assertEqual([], pending_calls)
 
     async def test_cancel_running_tool_pending_calls_cancel_tool(self):

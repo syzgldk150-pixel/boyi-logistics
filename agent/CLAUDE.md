@@ -59,6 +59,7 @@
 - 插件包只安装动作并声明支持的调度能力，不携带 cron 或实际执行时刻。定时由安装后的项目实例在系统自动化设置中配置，并与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源、定时和权限。配置响应丢失重放必须绑定同一请求、操作者和精确目标配置版本；稳定 generation 提交后必须原子刷新进程内 Scheduler，刷新失败保留旧 Job 集并显式报告。通用项目 `startup` 只在未处于 release hold 的进程注册一次性 DateTrigger，并用上海业务日、任务配置版本和项目 generation 构造稳定 Command 身份。
 - 飞书插件直达入口由 `agent/orchestration/automation_project_entrypoints.py` 提供，并在 `feishu/message_handler.py` 通过组合根注入：文本、菜单与 pending 只能按 committed generation 中唯一的 `feishu_route.route_key` 构造 typed invocation，重复别名、多候选、账号覆盖或缺少稳定事件 ID 均 fail closed。账号只来自项目实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入，通用 Command/LLM 不得伪造项目上下文。
 - 首方飞书固定短语只在 `agent/direct_tool_router.py` 的只读 `FEISHU_COMMAND_REGISTRATIONS` 注册；命令 ID、route key 和触发工具名必须分别唯一，预览与正式工具只能在同一命令族内共享 route。安装插件不会自动激活文本短语；新短语必须经代码审查注册，运行时仍须由签名且稳定的项目 generation 唯一认领 route。
+- 飞书触发任何脚本时必须先回复可理解的业务名称和开始状态，终态再明确说明完成内容或真实失败原因；不得向用户展示 Run UUID 或 `FAILED_TERMINAL`、`BLOCKED_DATA` 等内部状态。
 - 精确 `builtin.scan_codes` 飞书入口固定为两步：首次“扫描”或菜单点击只显示 Agent 的闭合公共预览，并建立不落盘、最长十五分钟的用户确认态；服务重启、确认态丢失或超时后必须重新预览。只有同一发起人发送精确“确认扫描”才把公共 `preview_run_id` 作为专用参数提交，正式请求使用该确认消息的新事件 ID；“取消扫描”只清除尚未提交的确认态。结果未知时只允许同一事件 ID 精确重放，其他消息、新预览和取消均阻断；已消费或正式治理关闭保持终态阻断，不得回退旧扫描链路。
 - 精确 `webhook/phase7/scan` 验签入口固定为无状态两步：首次请求使用新的 `source_event_id` 且不携带 `preview_run_id`，只返回闭合公共预览；调用方明确确认后，第二次请求必须使用新的 `source_event_id`，并只把公共 `preview_run_id` 作为保留控制字段提交。HTTP 边界必须在动态参数解析前提取并删除该字段；其他 Webhook 路由、冲突 body/query 值、非规范 UUID 均显式拒绝。网络结果未知只能用同一正式 `source_event_id` 与同一预览精确重放，不得换身份自动重试或回退旧扫描链路。
 - Run/Work Item 状态转换必须走模型允许表和版本 CAS。登录恢复、补充信息恢复原 Run；`PARTIAL` 或终态失败创建关联新 Run。第三方/财务写的未知结果必须 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，除非存在精确读后 reconciliation。同一 Scheduler task 与项目后续成功时，只能在完成事务内取消最新 Run 为 `FAILED_TERMINAL` 的旧 `OPEN` 事项并保留完整审计；候选必须按 Run→Command→Work Item 锁序重验，未知写、阻塞、非终态和已产生后续 retry 的事项均不得收口。
@@ -186,6 +187,7 @@ docs/
 
 - R13、实际到货、问题件与 TMS 主单签收完整分页后写入权威台账；R13 只作候选诊断，只有真实主单“签收”事件关闭事项。
 - R13 按原页“规划应签收时间”查询；未显式传入起止时间时至少覆盖前 2 天至后 3 天。飞书始终保留当前 R13 未签清单；已离开当前 R13 的历史候选只有在有效应签时间不晚于当前业务日时继续发布，历史口径 C 有值时以 C 为准，否则以 B 为准。早于当前派件或首次到货生命周期的同号签收事件不得关闭当前运单；包装类型从实际到货或 TMS 运单详情取得，不从 R13 猜测。
+- 发布前核对当前 R13、真实 TMS 主单签收和飞书待发布集合；只有当前 R13 行全部已有真实主单签收证据时，零行才是正常结果，存在任何未签行时不得清空应签明细。
 - 必须显式解析独立的 R13 来源账号和唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
 - 长历史签收按 31 天窗口分片并校验总量；离开当前 R13 的候选由迁移 `013` 的状态按 1/3/7 天退避精确复核。来源不完整或冲突无法核验必须显式阻塞。
 
