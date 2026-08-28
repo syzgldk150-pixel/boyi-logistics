@@ -1142,6 +1142,11 @@ class AutomationAccountManager:
                     }
                 return self._with_session_transition(row, status, result)
             except Exception as exc:
+                if isinstance(exc, TMSAuthStateError) and exc.code == "LOGIN_PAGE_UNAVAILABLE":
+                    current = self._login_error_status(row, exc, status)
+                    current["auto_login_retryable"] = True
+                    self._publish_account_session_transition(row, status, current)
+                    return current
                 row = self._record_auto_login_failure(safe_id)
                 current = self._login_error_status(row, exc, status)
                 self._publish_account_session_transition(row, status, current)

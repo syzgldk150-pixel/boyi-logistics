@@ -238,6 +238,31 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(page.filled[session_broker_module.CODE_INPUT], "ab12")
         self.assertEqual(page.clicked, [session_broker_module.LOGIN_BUTTON])
 
+    def test_ronghui_browser_login_reloads_once_when_form_is_not_visible(self):
+        page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
+        page.visible_selectors = set(page.visible_selectors)
+        page.visible_selectors.remove(session_broker_module.USERNAME_INPUT)
+        original_goto = page.goto
+        goto_calls: list[str] = []
+
+        def reload_login(url, wait_until=None, timeout=None):
+            goto_calls.append(url)
+            original_goto(url, wait_until=wait_until, timeout=timeout)
+            page.visible_selectors.add(session_broker_module.USERNAME_INPUT)
+
+        page.goto = reload_login
+
+        success, error_text, incomplete_context = self.broker._submit_ronghui_browser_login_attempt(
+            page,
+            self.login_config,
+            captcha_code="ab12",
+        )
+
+        self.assertTrue(success)
+        self.assertEqual("", error_text)
+        self.assertFalse(incomplete_context)
+        self.assertEqual([self.login_config.login_url], goto_calls)
+
     def test_auto_login_ronghui_falls_back_to_manual_after_three_failed_attempts(self):
         page = _FakeImageCaptchaPage(self.login_config.login_url, self.login_config.home_url)
         context = _FakeContext(page)
