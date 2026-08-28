@@ -76,6 +76,18 @@ class DailySignRuleTests(unittest.TestCase):
 
 
 class DailySignPipelineTests(unittest.TestCase):
+    def test_r13_rows_require_a_valid_plan_sign_time(self):
+        for value, expected_code in (
+            ("", "SOURCE_FIELD_MISSING"),
+            ("not-a-time", "SOURCE_FIELD_INVALID"),
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(daily_sign_pipeline.DailySignSyncError) as caught:
+                    daily_sign_pipeline._r13_rows_by_code(
+                        [{"billNumberMain": "R001", "planSignTime": value}]
+                    )
+                self.assertEqual(expected_code, caught.exception.code)
+
     def test_r13_request_rejects_inline_credentials(self):
         with self.assertRaises(daily_sign_pipeline.DailySignSyncError) as caught:
             daily_sign_pipeline._resolve_r13_request(
@@ -459,6 +471,41 @@ class DailySignSourceTests(unittest.TestCase):
             )
 
         self.assertEqual("R001", rows[0]["billNumberMain"])
+        self.assertEqual("2026-08-13 23:59:59", rows[0]["planSignTime"])
+
+    def test_get_qianshou_rejects_row_without_plan_sign_time(self):
+        response = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "data": {
+                    "records": [{"waybillNo": "R001", "planSignTime": ""}],
+                    "total": 1,
+                }
+            },
+        )
+        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        auth = SimpleNamespace(
+            last_token="token-placeholder",
+            login_and_get_session=lambda **_kwargs: session,
+        )
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            return_value=auth,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "without planSignTime"):
+                get_qianshou.fetch_qianshou(
+                    config_path=None,
+                    username=None,
+                    password=None,
+                    disp_site_code="site-code",
+                    start="2026-08-13 00:00:00",
+                    end="2026-08-13 23:59:59",
+                    days=1,
+                    page_size=100,
+                    page=1,
+                    fetch_all=True,
+                    max_pages=10,
+                )
 
     def test_get_qianshou_refreshes_one_invalid_cached_token(self):
         invalid = SimpleNamespace(
@@ -515,6 +562,7 @@ class DailySignSourceTests(unittest.TestCase):
                     "records": [
                         {
                             "billNumberMain": "R001",
+                            "planSignTime": "2026-08-13 23:59:59",
                             "dispTime": "2026-08-13 08:00:00",
                             "signTime": "2026-08-13 08:30:00",
                             "signSiteName": "R13 展示网点",
