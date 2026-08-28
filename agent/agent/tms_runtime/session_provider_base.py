@@ -97,7 +97,17 @@ class ProviderSessionAdapterBase:
         *,
         captcha_code: str,
     ) -> tuple[bool, str, bool]:
-        page.locator(USERNAME_INPUT).wait_for(state="visible", timeout=15_000)
+        try:
+            page.locator(USERNAME_INPUT).wait_for(state="visible", timeout=15_000)
+        except Exception:
+            try:
+                page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
+                page.locator(USERNAME_INPUT).wait_for(state="visible", timeout=15_000)
+            except Exception as exc:
+                raise TMSAuthStateError(
+                    "LOGIN_PAGE_UNAVAILABLE",
+                    "融辉登录页暂时没有加载完成，系统稍后会自动重试。",
+                ) from exc
         page.locator(USERNAME_INPUT).fill(config.username)
         page.locator(PASSWORD_INPUT).fill(config.password)
         page.locator(CODE_INPUT).fill(captcha_code)
