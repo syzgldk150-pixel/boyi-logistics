@@ -140,6 +140,7 @@ def test_direct_feishu_project_reports_waiting_approval_without_generic_executio
     assert agent.chat_calls == []
     assert service.calls[0]["event_id"] == "event-waiting"
     assert service.calls[0]["route_key"] == "builtin.scan_codes"
+    assert "已开始生成扫描预览" in replies[0][0]
     assert "等待审批" in replies[-1][0]
 
 
@@ -182,7 +183,54 @@ def test_direct_feishu_project_explains_blocked_data_reason():
         message_handler._COMMAND_CONTEXT.reset(token)
 
     assert "每日到货表写后读回不一致" in replies[-1][0]
-    assert "run-blocked-data" in replies[-1][0]
+    assert "统计到货数据任务执行失败" in replies[-1][0]
+    assert "run-blocked-data" not in replies[-1][0]
+    assert "Run" not in replies[-1][0]
+
+
+def test_direct_feishu_project_explains_terminal_failure_without_internal_status():
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": False,
+                "status": "FAILED_TERMINAL",
+                "run_id": "run-terminal-failure",
+                "error_summary": "分批结果表写后核验未通过",
+            }
+        ]
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-terminal-failure",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+        ):
+            asyncio.run(
+                message_handler._invoke_automation_project_and_reply(
+                    route_key="builtin.split_pending_problem_upload",
+                    dynamic_inputs={},
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert "已开始执行：分批差错及问题件任务" in replies[0][0]
+    assert "分批差错及问题件任务执行失败" in replies[-1][0]
+    assert "分批结果表写后核验未通过" in replies[-1][0]
+    assert "FAILED_TERMINAL" not in replies[-1][0]
+    assert "run-terminal-failure" not in replies[-1][0]
 
 
 def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
@@ -244,7 +292,9 @@ def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
     assert service.calls[1]["event_id"] == "event-scan-confirm"
     assert service.calls[1]["envelope"]["body"] == {}
     assert pending == {}
-    assert f"Run：{formal_run_id}" in replies[-1][0]
+    assert "正式扫描已完成" in replies[-1][0]
+    assert formal_run_id not in replies[-1][0]
+    assert "Run" not in replies[-1][0]
 
 
 def test_scan_preview_requires_explicit_cancel_phrase():
@@ -353,7 +403,7 @@ def test_unknown_scan_confirmation_locks_out_new_event_identity():
         assert "结果暂时无法确定" in replies[-1][0]
         _run_verified_text("登录", event_id="event-login-blocked")
         assert pending["confirmation_state"] == "unknown"
-        assert "先查询原 Run" in replies[-1][0]
+        assert "事项中心查看原任务" in replies[-1][0]
         _run_verified_text("确认扫描", event_id="event-confirm-new")
         assert len(service.calls) == 2
         assert "本次没有创建新请求" in replies[-1][0]
@@ -418,11 +468,11 @@ def test_consumed_scan_preview_blocks_new_preview_in_same_pending_state():
             )
         )
         assert len(service.calls) == 2
-        assert "查询原 Run" in replies[-1][0]
+        assert "事项中心查看原任务" in replies[-1][0]
         _run_verified_text("扫描", event_id="event-new-preview-blocked")
 
     assert len(service.calls) == 2
-    assert "查询原 Run" in replies[-1][0]
+    assert "事项中心查看原任务" in replies[-1][0]
 
 
 def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
@@ -461,7 +511,7 @@ def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
 
     async def reply_text(receive_id, text, **kwargs):
         nonlocal fail_formal_reply_once
-        if "Run：" in text and fail_formal_reply_once:
+        if text == "正式扫描已完成。" and fail_formal_reply_once:
             fail_formal_reply_once = False
             raise RuntimeError("reply lost")
         replies.append((text, kwargs))
@@ -495,7 +545,8 @@ def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
     assert len(service.calls) == 3
     assert service.calls[1]["event_id"] == service.calls[2]["event_id"]
     assert pending == {}
-    assert f"Run：{formal_run_id}" in replies[-1][0]
+    assert "正式扫描已完成" in replies[-1][0]
+    assert formal_run_id not in replies[-1][0]
 
 
 def test_scan_projection_with_private_field_is_rejected_without_pending():

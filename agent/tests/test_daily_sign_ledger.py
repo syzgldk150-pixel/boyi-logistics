@@ -513,6 +513,36 @@ class DailySignLedgerRulesTest(unittest.TestCase):
 
 
 class DailySignSyncPipelineTest(unittest.TestCase):
+    def test_current_r13_projection_allows_zero_only_when_current_rows_are_signed(self):
+        signed_row = {
+            "tracking_number": "R-SIGNED",
+            "r13_current": True,
+            "tms_signed": True,
+        }
+        summary = daily_sign_sync_tool._current_r13_projection_summary(
+            [signed_row],
+            [],
+        )
+
+        self.assertEqual(set(), summary["current_open_codes"])
+        self.assertEqual(set(), summary["published_current_codes"])
+        self.assertEqual(1, summary["current_signed_rows"])
+
+    def test_current_r13_projection_exposes_missing_unsigned_publication(self):
+        unsigned_row = {
+            "tracking_number": "R-OPEN",
+            "r13_current": True,
+            "tms_signed": False,
+        }
+        summary = daily_sign_sync_tool._current_r13_projection_summary(
+            [unsigned_row],
+            [],
+        )
+
+        self.assertEqual({"R-OPEN"}, summary["current_open_codes"])
+        self.assertEqual(set(), summary["published_current_codes"])
+        self.assertEqual(0, summary["current_signed_rows"])
+
     @staticmethod
     def _params(**overrides):
         return {
