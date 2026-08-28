@@ -51,6 +51,8 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `event_consumptions`。事件与业务聚合必须通过同一 Unit of Work 提交。
 - `013_daily_sign_verification_state.sql`：保存离开当前 R13 的历史候选精确核验结果、
   下一次复核时间和失败退避。该迁移已在线上应用，不得修改文件内容或校验和。
+- `029_daily_sign_problem_event_binary_identity.sql`：将问题件外部 ID 改为二进制排序规则，
+  使来源中仅大小写不同的两个真实 ID 在 MySQL 唯一键中保持独立，避免后写事件覆盖前一条。
 - `014_control_plane_task_cutover.sql`：这是生产已经执行的历史迁移，生产
   `schema_migrations` 记录的原始字节 SHA-256
   `4b447a7c139980369c61eb9c2c5e250a974452b8c80036a1bce0f04a95a4fcdf`
