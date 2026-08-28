@@ -1,8 +1,8 @@
 """Pure control-plane models and state-machine invariants.
 
 This module deliberately has no database, HTTP, tool, or environment imports.
-All persisted values are represented in the same form used by the v1 plan
-schema so plan hashes remain stable across processes and service restarts.
+Persisted v1 and v2 plans retain their schema-specific hash semantics so plan
+hashes remain stable across processes, upgrades, and service restarts.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ from typing import Any, Iterable, Mapping
 from shared.automation_project_authorization import AutomationProjectInvocation
 
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
+SUPPORTED_PLAN_SCHEMA_VERSIONS = frozenset({1, PLAN_SCHEMA_VERSION})
 RESERVED_AUTOMATION_CONTEXT_FIELDS = frozenset(
     {
         "automation_id",
@@ -558,7 +559,10 @@ class Plan:
     schema_version: int = PLAN_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != PLAN_SCHEMA_VERSION:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version not in SUPPORTED_PLAN_SCHEMA_VERSIONS
+        ):
             raise OrchestrationError("UNSUPPORTED_PLAN_SCHEMA", f"Unsupported plan schema: {self.schema_version}")
         keys = [step.step_key for step in self.steps]
         if len(keys) != len(set(keys)):

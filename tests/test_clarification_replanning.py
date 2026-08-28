@@ -208,6 +208,7 @@ def test_broker_bound_project_skips_legacy_account_schema_validation() -> None:
         risk_level=RiskLevel.MEDIUM,
     )
     plan = Plan(
+        schema_version=1,
         command_type="automation.project.invoke",
         context_fingerprint=context.fingerprint,
         tool_catalog_hash=catalog.catalog_hash,

@@ -532,6 +532,8 @@ class _PilotProjection:
 
 def _plan(
     operation_type: OperationType = OperationType.EXTERNAL_WRITE,
+    *,
+    schema_version: int = 2,
 ) -> Plan:
     tool_name = (
         "projection_tool"
@@ -557,6 +559,7 @@ def _plan(
                 risk_level=RiskLevel.HIGH,
             ),
         ),
+        schema_version=schema_version,
     )
 
 
@@ -857,6 +860,41 @@ def test_waiting_run_resumes_when_policy_becomes_fully_automatic() -> None:
     assert repository.run["status"] == RunStatus.COMPLETED.value
     assert repository.work_item["status"] == "RESOLVED"
     assert ("run_transition", "WAITING_APPROVAL", "RUNNING") in repository.trace
+
+
+def test_waiting_v1_run_replans_with_its_persisted_hash_schema() -> None:
+    class _RecordingPlanner(_Planner):
+        def __init__(self, persisted_plan):
+            super().__init__(persisted_plan)
+            self.schema_versions: list[int | None] = []
+
+        def plan(self, *_args, **kwargs):
+            self.schema_versions.append(kwargs.get("schema_version"))
+            return self._persisted_plan
+
+    plan = _plan(schema_version=1)
+    repository = _Repository(plan)
+    repository.run["status"] = RunStatus.WAITING_APPROVAL.value
+    repository.approval = {
+        "approval_id": "approval-v1",
+        "run_id": repository.run["run_id"],
+        "plan_hash": plan.plan_hash,
+        "status": "APPROVED",
+        "expires_at": (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            + timedelta(minutes=15)
+        ),
+    }
+    execution = _Execution()
+    runner = _runner(repository, plan, execution)
+    planner = _RecordingPlanner(plan)
+    runner._planner = planner
+
+    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
+
+    assert planner.schema_versions == [1]
+    assert execution.execute_calls == 1
+    assert repository.run["status"] == RunStatus.COMPLETED.value
 
 
 def test_recovered_inflight_external_write_reconciles_unknown_without_replay():
