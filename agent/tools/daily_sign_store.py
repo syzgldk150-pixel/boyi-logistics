@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
@@ -22,6 +23,9 @@ from tools.daily_sign_rules import (
     to_int,
 )
 from tools.phase7_mysql_store import _connect
+
+
+logger = logging.getLogger("daily_sign_store")
 
 
 REQUIRED_TABLES = frozenset(
@@ -1177,12 +1181,43 @@ def _verify_row_set(
     key = lambda row: tuple(clean_text(row.get(field)) for field in identity_fields)
     expected_rows = sorted(expected, key=key)
     observed_rows = sorted(observed, key=key)
+    expected_by_identity = {key(row): row for row in expected_rows}
+    observed_by_identity = {key(row): row for row in observed_rows}
     observed_identities = [key(row) for row in observed_rows]
     if (
         any(not all(identity) for identity in observed_identities)
         or len(set(observed_identities)) != len(observed_identities)
         or observed_rows != expected_rows
     ):
+        changed_fields: dict[str, int] = {}
+        for identity in expected_by_identity.keys() & observed_by_identity.keys():
+            expected_row = expected_by_identity[identity]
+            observed_row = observed_by_identity[identity]
+            for field in expected_row.keys() | observed_row.keys():
+                if expected_row.get(field) != observed_row.get(field):
+                    changed_fields[field] = changed_fields.get(field, 0) + 1
+        logger.error(
+            "daily_sign_readback_mismatch label=%s expected_count=%s "
+            "observed_count=%s missing_count=%s unexpected_count=%s "
+            "invalid_identity_count=%s duplicate_identity_count=%s "
+            "changed_row_count=%s changed_fields=%s",
+            label,
+            len(expected_rows),
+            len(observed_rows),
+            len(expected_by_identity.keys() - observed_by_identity.keys()),
+            len(observed_by_identity.keys() - expected_by_identity.keys()),
+            sum(not all(identity) for identity in observed_identities),
+            len(observed_identities) - len(set(observed_identities)),
+            sum(
+                expected_by_identity[identity] != observed_by_identity[identity]
+                for identity in expected_by_identity.keys() & observed_by_identity.keys()
+            ),
+            ",".join(
+                f"{field}:{count}"
+                for field, count in sorted(changed_fields.items())
+            )
+            or "none",
+        )
         raise DailySignPersistenceReadbackError(
             f"daily-sign {label} fresh readback changed"
         )

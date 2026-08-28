@@ -285,6 +285,36 @@ class DailySignLedgerRulesTest(unittest.TestCase):
         message,
     )
 
+ def test_row_set_mismatch_logs_only_counts_and_changed_field_names(self):
+    expected = [
+        {"source": "secret-source", "external_id": "secret-event", "payload": {}}
+    ]
+    observed = [
+        {
+            "source": "secret-source",
+            "external_id": "secret-event",
+            "payload": {"changed": True},
+        }
+    ]
+
+    with self.assertLogs("daily_sign_store", level="ERROR") as captured:
+        with self.assertRaises(daily_sign_store.DailySignPersistenceReadbackError):
+            daily_sign_store._verify_row_set(
+                label="problem events",
+                expected=expected,
+                observed=observed,
+                marker={},
+                identity_fields=("source", "external_id"),
+            )
+
+    message = "\n".join(captured.output)
+    self.assertIn("expected_count=1", message)
+    self.assertIn("observed_count=1", message)
+    self.assertIn("changed_fields=payload:1", message)
+    self.assertNotIn("secret-source", message)
+    self.assertNotIn("secret-event", message)
+    self.assertNotIn('{"changed"', message)
+
  def test_publication_readback_uses_due_subset_of_full_ledger(self):
     due = {"tracking_number": "DUE", "tms_signed": False}
     future = {"tracking_number": "FUTURE", "tms_signed": False}
