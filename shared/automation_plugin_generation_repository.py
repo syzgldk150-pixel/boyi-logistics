@@ -2994,15 +2994,3 @@ class AutomationPluginGenerationRepositoryMixin:
             required_text=_required_text,
             positive_int=_positive_int,
         )
-
-    def stabilize_project_after_archival_unknown_row(
-        self,
-        automation_id: str,
-        generation: int,
-    ) -> None:
-        with self.cursor() as cursor:
-            _stabilize_project_after_archival_unknown(
-                cursor,
-                automation_id=_required_text(automation_id, "automation_id"),
-                generation=_positive_int(generation, "generation"),
-            )
