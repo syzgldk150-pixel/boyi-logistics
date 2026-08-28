@@ -1750,6 +1750,17 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 if ledger_row_should_publish(row, observed_at.date())
             ]
         )
+        missing_publication_r13_plan = sum(
+            1
+            for row in open_rows
+            if parse_datetime(row.get("r13_plan_sign_at")) is None
+        )
+        if missing_publication_r13_plan:
+            raise DailySignSyncError(
+                "INCOMPLETE_SOURCE_EVIDENCE",
+                "待发布应签记录缺少 R13 规划应签收时间，停止写入。",
+                retryable=True,
+            )
         open_rows, address_result = _enrich_missing_addresses(open_rows, params)
         if address_result.get("error"):
             raise DailySignSyncError(
