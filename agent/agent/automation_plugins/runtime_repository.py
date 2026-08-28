@@ -42,6 +42,9 @@ from agent.automation_plugins.models import (
     RuntimeReconcileState,
 )
 from agent.automation_plugins.ports import RuntimeEffectPlan
+from shared.automation_plugin_generation_unknown_write_repository import (
+    stabilize_project_after_archival_unknown,
+)
 from shared.redaction import redact_sensitive
 
 
@@ -709,11 +712,14 @@ class MySQLAutomationPluginRuntimeAdapter:
         automation_id: str,
         generation: int,
     ) -> None:
-        self._write(
-            "stabilize_project_after_archival_unknown_row",
-            automation_id,
-            generation,
-        )
+        with self._orchestration.unit_of_work() as uow:
+            with uow.automation_plugins.cursor() as cursor:
+                stabilize_project_after_archival_unknown(
+                    cursor,
+                    automation_id=automation_id,
+                    generation=generation,
+                )
+            uow.commit()
 
     def acquire_committed_generation(
         self,
