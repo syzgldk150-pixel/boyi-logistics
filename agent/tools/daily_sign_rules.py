@@ -352,4 +352,6 @@ def ledger_row_should_publish(row: dict[str, Any], target_date: date) -> bool:
         return False
     if bool(row.get("r13_current")):
         return True
+    if parse_datetime(row.get("r13_plan_sign_at")) is None:
+        return False
     return ledger_row_is_due(row, target_date)

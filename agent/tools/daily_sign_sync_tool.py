@@ -20,6 +20,7 @@ from tools.daily_sign_rules import (
     business_now,
     clean_text,
     is_before_problem_cutoff,
+    ledger_row_is_due,
     ledger_row_should_publish,
     parse_datetime,
 )
@@ -1743,6 +1744,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             )
             for code in sorted(candidate_codes)
         ]
+        excluded_missing_r13_plan_rows = sum(
+            1
+            for row in ledger_rows
+            if row.get("r13_current") is not True
+            and ledger_row_is_due(row, observed_at.date())
+            and parse_datetime(row.get("r13_plan_sign_at")) is None
+        )
         open_rows = _sort_rows(
             [
                 row
@@ -1946,6 +1954,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "candidate_rows": len(candidate_codes),
                 "excluded_child_candidate_rows": len(excluded_child_codes),
                 "excluded_child_candidate_codes": sorted(excluded_child_codes),
+                "excluded_missing_r13_plan_rows": excluded_missing_r13_plan_rows,
                 "published_rows": len(open_rows),
                 "unmatched_rows": sum(1 for row in open_rows if "r13_without_arrival_history" in row.get("data_quality_flags", [])),
                 "closed_by_tms_rows": sum(1 for row in ledger_rows if row.get("tms_signed")),

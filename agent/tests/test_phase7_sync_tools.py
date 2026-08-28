@@ -2335,7 +2335,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         bitable_mock.assert_not_called()
         sheet_mock.assert_not_called()
 
-    def test_daily_sign_sync_rejects_historical_due_row_without_valid_r13_plan(self):
+    def test_daily_sign_sync_omits_historical_due_row_without_valid_r13_plan(self):
         from datetime import datetime
 
         observed_at = datetime(2026, 8, 13, 9, 0, 0)
@@ -2428,19 +2428,39 @@ class Phase7SyncToolTests(unittest.TestCase):
                             },
                         ),
                     ),
-                    patch(
-                        "tools.daily_sign_pipeline._finish_failed_run",
-                        side_effect=_daily_failed_run_values,
-                    ) as failed_run_mock,
+                    patch("tools.daily_sign_sync_tool.finish_sync_run"),
                     patch(
                         "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
                         side_effect=_daily_completed_run_readback_proof,
                     ) as verify_completed,
                     patch(
-                        "tools.daily_sign_sync_tool.persist_daily_sign_snapshot"
+                        "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                        side_effect=_daily_persisted_snapshot_proof,
                     ) as persist_mock,
-                    patch("tools.daily_sign_sync_tool._sync_bitable") as bitable_mock,
-                    patch("tools.daily_sign_sync_tool._sync_sheet") as sheet_mock,
+                    patch(
+                        "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                        side_effect=_daily_persistence_readback_proof,
+                    ),
+                    patch(
+                        "tools.daily_sign_sync_tool._sync_bitable",
+                        side_effect=lambda rows, _params: {
+                            "ok": True,
+                            "written": len(rows),
+                            "readback": _daily_projection_readback_proof(
+                                rows, digest_char="b"
+                            ),
+                        },
+                    ) as bitable_mock,
+                    patch(
+                        "tools.daily_sign_sync_tool._sync_sheet",
+                        side_effect=lambda rows, _params: {
+                            "ok": True,
+                            "rows": len(rows),
+                            "readback": _daily_projection_readback_proof(
+                                rows, digest_char="s"
+                            ),
+                        },
+                    ) as sheet_mock,
                 ):
                     result = daily_sign_sync_tool.run_daily_sign_sync(
                         {
@@ -2450,16 +2470,19 @@ class Phase7SyncToolTests(unittest.TestCase):
                         }
                     )
 
-                self.assertEqual("FAILED", result["status"])
+                self.assertEqual("SUCCESS", result["status"])
+                self.assertIsNone(result["error"])
                 self.assertEqual(
-                    "INCOMPLETE_SOURCE_EVIDENCE", result["error"]["code"]
+                    1,
+                    result["data"]["diagnostics"][
+                        "excluded_missing_r13_plan_rows"
+                    ],
                 )
-                self.assertTrue(result["error"]["retryable"])
-                failed_run_mock.assert_called_once()
                 verify_completed.assert_called_once()
-                persist_mock.assert_not_called()
-                bitable_mock.assert_not_called()
-                sheet_mock.assert_not_called()
+                persist_mock.assert_called_once()
+                self.assertEqual([], persist_mock.call_args.kwargs["publication_rows"])
+                bitable_mock.assert_called_once_with([], ANY)
+                sheet_mock.assert_called_once_with([], ANY)
 
     def test_site_send_list_sync_zero_rows_clears_targets(self):
         bitable_result = {"ok": True, "deleted": 3, "written": 0}

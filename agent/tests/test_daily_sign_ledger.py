@@ -484,6 +484,34 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertTrue(ledger_row_should_publish(row, datetime(2026, 8, 27).date()))
 
 
+ def test_historical_due_row_requires_authoritative_r13_plan_before_publication(self):
+    observed_at = datetime(2026, 8, 13, 9, 0, 0)
+    missing_plan = build_ledger_row(
+        "R-MISSING",
+        r13_row=None,
+        previous_row={"first_seen_r13_at": "2026-08-11 09:00:00"},
+        arrival_history=[arrival("2026-08-12", 1, 1)],
+        problem_events=[],
+        sign_event=None,
+        observed_at=observed_at,
+    )
+    valid_plan = build_ledger_row(
+        "R-VALID",
+        r13_row=None,
+        previous_row={
+            "first_seen_r13_at": "2026-08-11 09:00:00",
+            "r13_plan_sign_at": "2026-08-13 23:59:59",
+        },
+        arrival_history=[arrival("2026-08-12", 1, 1)],
+        problem_events=[],
+        sign_event=None,
+        observed_at=observed_at,
+    )
+
+    self.assertFalse(ledger_row_should_publish(missing_plan, observed_at.date()))
+    self.assertTrue(ledger_row_should_publish(valid_plan, observed_at.date()))
+
+
 class DailySignSyncPipelineTest(unittest.TestCase):
     @staticmethod
     def _params(**overrides):
