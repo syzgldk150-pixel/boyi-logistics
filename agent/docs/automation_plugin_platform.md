@@ -7,7 +7,7 @@ related:
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # 自动化插件平台
@@ -248,7 +248,9 @@ lease 或未知写结果都会阻断 dispose，直到权威读后核验或人工
 但当前 committed generation 继续作为稳定路由：再次手工执行或定时触发必须创建新的 Command、Run
 与 generation lease，不复用历史 Run 或 lease。未知 lease 仍阻断该 generation 的 dispose/uninstall；
 generation 退出当前路由后，历史代落为 `BLOCKED` 审计归档，迟到 finalizer 只能更新旧代，不能把新
-committed 路由改成不可运行。
+committed 路由改成不可运行。旧代完成 `BLOCKED` 归档时，如果当前目标已经稳定提交且没有其他待排空
+代际，项目必须在同一事务中退出 `DRAINING` 并恢复 `STABLE`；历史未知写继续保留，但不得让新路由
+长期显示“排空中”。
 
 操作员恢复入口只负责闭合历史未知 receipt，不是重新执行的前置步骤。Console 只提交浏览器生成的
 请求 UUID，Agent 只依据持久 receipt 与权威回读判定 `WRITE_VERIFIED`、`NOT_APPLIED` 或 `UNKNOWN`；

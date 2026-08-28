@@ -312,6 +312,32 @@ class _MemoryGenerationRepository:
                 self.runtime,
                 reconcile_state=RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,
             )
+            self.stabilize_project_after_archival_unknown(automation_id, generation)
+
+    def stabilize_project_after_archival_unknown(
+        self,
+        automation_id: str,
+        generation: int,
+    ) -> None:
+        if (
+            self.runtime is not None
+            and self.runtime.target_generation == self.runtime.committed_generation
+            and self.runtime.committed_generation != generation
+            and all(
+                number == self.runtime.committed_generation
+                or record.state is RuntimeGenerationState.DISPOSED
+                or (
+                    record.state is RuntimeGenerationState.BLOCKED
+                    and number in self.unknown
+                    and not self.leases.get(number)
+                )
+                for number, record in self.generations.items()
+            )
+        ):
+            self.runtime = replace(
+                self.runtime,
+                reconcile_state=RuntimeReconcileState.STABLE,
+            )
 
 
 class _Coeffects:
@@ -874,6 +900,36 @@ def test_startup_resume_preserves_archival_unknown_generation() -> None:
     assert repository.runtime and repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
     assert repository.generations[1].state is RuntimeGenerationState.BLOCKED
     assert repository.generations[2].state is RuntimeGenerationState.COMMITTED
+    assert reconciler.reconcile_incomplete() == ()
+
+
+def test_startup_resume_closes_legacy_archival_drain_state() -> None:
+    repository = _MemoryGenerationRepository()
+    reconciler, _ = _reconciler(repository)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    repository.unknown.add(1)
+    target = repository.allocate_target_generation(
+        _snapshot(2, "2.0.0"),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+    assert reconciler.prepare_target(target) == ()
+    repository.commit_generation_cas("project-a", 2, expected_committed_generation=1)
+    repository._state(1, RuntimeGenerationState.BLOCKED)
+    assert repository.runtime
+    repository.runtime = replace(
+        repository.runtime,
+        reconcile_state=RuntimeReconcileState.DRAINING,
+    )
+
+    recovered = reconciler.reconcile_incomplete()
+
+    assert len(recovered) == 1
+    assert repository.runtime.reconcile_state is RuntimeReconcileState.STABLE
     assert reconciler.reconcile_incomplete() == ()
 
 

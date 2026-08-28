@@ -10,6 +10,7 @@ from shared import automation_plugin_repository as _repository
 from shared.automation_plugin_generation_unknown_write_repository import (
     block_generation_unknown_write_row as _block_generation_unknown_write_row,
     lock_archival_unknown_predecessor as _lock_archival_unknown_predecessor,
+    stabilize_project_after_archival_unknown as _stabilize_project_after_archival_unknown,
 )
 from shared.automation_unknown_write_repository import lock_remaining_unknown_generation_leases
 from shared.automation_write_attempt_repository import record_generation_write_attempt_row as _record_generation_write_attempt_row
@@ -1676,6 +1677,11 @@ class AutomationPluginGenerationRepositoryMixin:
                         """,
                         (lease["automation_id"], lease["generation"]),
                     )
+                    _stabilize_project_after_archival_unknown(
+                        cursor,
+                        automation_id=automation_id,
+                        generation=generation,
+                    )
             cursor.execute(
                 "SELECT * FROM automation_project_generation_leases WHERE lease_id=%s",
                 (safe_lease_id,),
@@ -1971,6 +1977,11 @@ class AutomationPluginGenerationRepositoryMixin:
                         WHERE automation_id=%s AND generation=%s
                         """,
                         (safe_automation_id, safe_generation),
+                    )
+                    _stabilize_project_after_archival_unknown(
+                        cursor,
+                        automation_id=safe_automation_id,
+                        generation=safe_generation,
                     )
             else:
                 cursor.execute(
