@@ -297,8 +297,10 @@ class DailySignLedgerRulesTest(unittest.TestCase):
         }
     ]
 
-    with self.assertLogs("daily_sign_store", level="ERROR") as captured:
-        with self.assertRaises(daily_sign_store.DailySignPersistenceReadbackError):
+    with self.assertLogs("agent", level="ERROR") as captured:
+        with self.assertRaises(
+            daily_sign_store.DailySignPersistenceReadbackError
+        ) as raised:
             daily_sign_store._verify_row_set(
                 label="problem events",
                 expected=expected,
@@ -314,6 +316,10 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertNotIn("secret-source", message)
     self.assertNotIn("secret-event", message)
     self.assertNotIn('{"changed"', message)
+    self.assertIn("expected=1, observed=1", str(raised.exception))
+    self.assertIn("changed_fields=payload:1", str(raised.exception))
+    self.assertNotIn("secret-source", str(raised.exception))
+    self.assertNotIn("secret-event", str(raised.exception))
 
  def test_publication_readback_uses_due_subset_of_full_ledger(self):
     due = {"tracking_number": "DUE", "tms_signed": False}
