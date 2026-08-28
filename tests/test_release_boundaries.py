@@ -193,6 +193,7 @@ def _run_rollback_fault_harness(
     daily_sign_pending: bool = False,
     contract_upgrade_pending: bool = False,
     automation_project_pending: bool = False,
+    feishu_lease_pending: bool = False,
     bootstrap_absent: bool = False,
     migrations_attempted: bool = False,
     runtime_start_attempted: bool = False,
@@ -246,9 +247,10 @@ def _run_rollback_fault_harness(
             fail_version_compatibility="${13}"
             fail_rollback_health="${14}"
             fail_final_rollback_health="${15}"
+            feishu_lease_pending="${16}"
             stage_root="${temp_root}/release-aaaaaaaaaaaa-20260815192447"
             events_path="${temp_root}/events.log"
-            source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0
+            source "${release_script}" "${stage_root}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" shared 0 0
 
             ROOTS[agent]="${temp_root}/agent"
             ROOTS[console]="${temp_root}/console"
@@ -273,6 +275,7 @@ def _run_rollback_fault_harness(
             DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY="${daily_sign_pending}"
             SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY="${contract_upgrade_pending}"
             AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY="${automation_project_pending}"
+            FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY="${feishu_lease_pending}"
             CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE="${bootstrap_absent}"
             MIGRATIONS_ATTEMPTED="${migrations_attempted}"
             NEW_RUNTIME_START_ATTEMPTED="${runtime_start_attempted}"
@@ -369,6 +372,11 @@ def _run_rollback_fault_harness(
               esac
             }
 
+            restore_feishu_notification_leases() {
+              printf 'restore-030-leases\n' >>"${events_path}"
+              return 0
+            }
+
             restore_control_plane_policy_bootstrap_data() {
               printf 'restore-bootstrap\n' >>"${events_path}"
               return 0
@@ -422,6 +430,7 @@ def _run_rollback_fault_harness(
             "1" if fail_version_compatibility else "0",
             "1" if fail_rollback_health else "0",
             "1" if fail_final_rollback_health else "0",
+            "1" if feishu_lease_pending else "0",
         ]
         if os.name == "nt":
             harness_args = ["wsl.exe", "-d", "Ubuntu", "--", *harness_args]
@@ -458,6 +467,7 @@ def _run_sourced_release_harness(
     body: str,
     *,
     emergency_override: bool = False,
+    target_csv: str = "shared",
 ) -> subprocess.CompletedProcess[str]:
     release_script = REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh"
     task_tmp_root = REPOSITORY_ROOT / ".task_tmp"
@@ -480,7 +490,7 @@ def _run_sourced_release_harness(
                 f"""
                 release_script="$1"
                 stage_root="$2"
-                source "${{release_script}}" "${{stage_root}}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0{emergency_argument}
+                source "${{release_script}}" "${{stage_root}}" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {target_csv} 0 0{emergency_argument}
                 {body}
                 """
             ),
@@ -529,7 +539,7 @@ def _run_remote_release_argument_harness(
             (
                 'release_script="$1"; stage_root="$2"; shift 2; '
                 'source "${release_script}" "${stage_root}" '
-                '"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" agent,console 0 0 "$@"; '
+                '"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" shared 0 0 "$@"; '
                 'printf "override=%s\\n" "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}"'
             ),
             "bash",
@@ -583,6 +593,244 @@ def _locked_versions(path: Path) -> dict[str, str]:
 
 
 class ReleaseBoundaryTests(unittest.TestCase):
+    def test_console_only_release_has_no_agent_or_shared_runtime_scope(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            printf 'targets=%s\n' "${RUNTIME_TARGETS[*]}"
+            printf 'scopes=%s\n' "${SCOPES[*]}"
+            printf 'agent=%s coordinated=%s\n' "${AGENT_RELEASE}" "${COORDINATED_RELEASE}"
+            """,
+            target_csv="console",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("targets=console", completed.stdout)
+        self.assertIn("scopes=console", completed.stdout)
+        self.assertIn("agent=0 coordinated=0", completed.stdout)
+
+    def test_agent_only_release_has_no_console_or_shared_runtime_scope(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            printf 'targets=%s\n' "${RUNTIME_TARGETS[*]}"
+            printf 'scopes=%s\n' "${SCOPES[*]}"
+            printf 'agent=%s coordinated=%s\n' "${AGENT_RELEASE}" "${COORDINATED_RELEASE}"
+            """,
+            target_csv="agent",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("targets=agent", completed.stdout)
+        self.assertIn("scopes=agent", completed.stdout)
+        self.assertIn("agent=1 coordinated=0", completed.stdout)
+
+    def test_shared_release_coordinates_both_services_and_all_source_scopes(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            printf 'targets=%s\n' "${RUNTIME_TARGETS[*]}"
+            printf 'scopes=%s\n' "${SCOPES[*]}"
+            printf 'agent=%s coordinated=%s\n' "${AGENT_RELEASE}" "${COORDINATED_RELEASE}"
+            """,
+            target_csv="shared",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("targets=agent console", completed.stdout)
+        self.assertIn("scopes=shared agent console", completed.stdout)
+        self.assertIn("agent=1 coordinated=1", completed.stdout)
+
+    def test_console_only_execution_skips_agent_gates_and_shared_mutations(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            ROOTS[agent]="${stage_root}/production-agent"
+            mkdir -p "${ROOTS[agent]}/runtime"
+            for name in \
+              acquire_release_lock validate_environment backup_managed_sources \
+              run_static_preflight quiesce_runtime_services install_service_units \
+              restart_services check_health cleanup_successful_release; do
+              eval "${name}() { printf '%s\\n' '${name}'; }"
+            done
+            sync_scope() { printf 'sync_scope:%s\n' "$1"; }
+            run_release
+            """,
+            target_csv="console",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("sync_scope:console", completed.stdout)
+        for forbidden in (
+            "preflight_running_protected_writes",
+            "preflight_signed_first_party_plugins",
+            "build_release_virtualenvs",
+            "apply_migrations",
+            "activate_release_virtualenvs",
+            "activate_scheduler_after_release",
+        ):
+            self.assertNotIn(forbidden, completed.stdout)
+
+    def test_agent_only_execution_keeps_agent_gates_but_skips_shared_mutations(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            ROOTS[agent]="${stage_root}/production-agent"
+            mkdir -p "${ROOTS[agent]}/runtime"
+            for name in \
+              acquire_release_lock validate_environment \
+              preflight_service_identity_configuration \
+              preflight_control_plane_task_cutover \
+              preflight_automation_project_scheduled_task_identities \
+              preflight_automation_project_required_resources \
+              preflight_scheduled_write_window backup_managed_sources \
+              run_static_preflight preflight_signed_first_party_plugins \
+              capture_preexisting_automation_plugin_db_ownership \
+              preflight_running_protected_writes capture_control_plane_release_state \
+              quiesce_runtime_services confirm_preexisting_automation_plugin_db_ownership \
+              capture_automation_plugin_installation_state \
+              install_verified_first_party_plugin_artifacts retire_legacy_finance_etl \
+              install_service_units write_automation_plugin_runtime_environment \
+              ensure_scheduler_release_hold restart_services check_health \
+              check_control_plane_release_manifest activate_scheduler_after_release \
+              cleanup_successful_release; do
+              eval "${name}() { printf '%s\\n' '${name}'; }"
+            done
+            sync_scope() { printf 'sync_scope:%s\n' "$1"; }
+            run_release
+            """,
+            target_csv="agent",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("sync_scope:agent", completed.stdout)
+        self.assertIn("preflight_running_protected_writes", completed.stdout)
+        self.assertIn("preflight_signed_first_party_plugins", completed.stdout)
+        for forbidden in (
+            "build_release_virtualenvs",
+            "apply_migrations",
+            "activate_release_virtualenvs",
+            "check_service_identity_smoke",
+            "sync_scope:console",
+        ):
+            self.assertNotIn(forbidden, completed.stdout)
+
+    def test_single_service_restart_targets_only_the_selected_unit(self):
+        for target, expected, forbidden in (
+            ("agent", "agent.service", "console.service"),
+            ("console", "console.service", "agent.service"),
+        ):
+            with self.subTest(target=target):
+                completed = _run_sourced_release_harness(
+                    r"""
+                    sudo() { printf 'sudo:%s\n' "$*"; }
+                    systemctl() {
+                      printf 'systemctl:%s\n' "$*"
+                      [[ "$1" == "is-active" ]]
+                    }
+                    restart_services
+                    """,
+                    target_csv=target,
+                )
+
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertIn(expected, completed.stdout)
+                self.assertNotIn(forbidden, completed.stdout)
+
+    def test_publish_scope_auto_prioritizes_shared_and_explicit_narrow_targets_fail_closed(self):
+        source = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1"
+        ).read_text(encoding="utf-8")
+        resolver = source.split("function Resolve-Targets", 1)[1].split(
+            "\n}\n\nAssert-Command", 1
+        )[0]
+
+        self.assertIn('if ($sharedChanged) {\n                return @("shared")', resolver)
+        self.assertEqual(
+            2,
+            resolver.count(
+                'conflicts with changed shared/dependency/migration scope'
+            ),
+        )
+        self.assertIn('"all" { return @("shared") }', resolver)
+        self.assertIn('"shared" { return @("shared") }', resolver)
+
+    def test_agent_and_console_are_uploaded_released_and_recorded_independently(self):
+        publisher = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1"
+        ).read_text(encoding="utf-8")
+        publish_loop = publisher.split(
+            "foreach ($publishTarget in $targetsToPublish) {",
+            1,
+        )[1]
+
+        self.assertNotIn("$targetCsv", publisher)
+        self.assertIn("$remoteStageBaseTime = Get-Date", publisher)
+        self.assertIn("$remoteStageSequence = 0", publisher)
+        self.assertIn(
+            '$remoteStageTimestamp = $remoteStageBaseTime.AddSeconds($remoteStageSequence).ToString("yyyyMMddHHmmss")',
+            publish_loop,
+        )
+        self.assertIn("$remoteStageSequence += 1", publish_loop)
+        self.assertIn(
+            '$remoteStageReleaseId = "release-$($releaseSha.Substring(0, 12))-$remoteStageTimestamp"',
+            publish_loop,
+        )
+        self.assertIn(
+            '$remoteStage = "${RemoteDeployRoot}/${remoteStageReleaseId}"',
+            publish_loop,
+        )
+        self.assertNotIn(
+            '$remoteStage = "${RemoteDeployRoot}/${releaseId}"',
+            publish_loop,
+        )
+        self.assertIn('& scp @scpArgs -r $PayloadRoot "${remoteSpec}:${remoteStage}"', publish_loop)
+        self.assertIn("'$publishTarget' '$skipRestartValue' '$skipHealthValue'", publish_loop)
+        self.assertLess(
+            publish_loop.index("Invoke-Remote $remoteReleaseCommand"),
+            publish_loop.index("Save-State $state"),
+        )
+        self.assertIn('$state["lastPublishedTarget"] = $publishTarget', publish_loop)
+
+    def test_remote_release_rejects_joint_agent_console_target(self):
+        completed = _run_sourced_release_harness("", target_csv="agent,console")
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "Agent and Console releases require separate remote invocations",
+            completed.stderr,
+        )
+
+    def test_publish_shared_scope_contains_every_migration_runner_helper(self):
+        publisher = (
+            REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1"
+        ).read_text(encoding="utf-8")
+        shared_paths_source = publisher.split("$sharedAgentPaths = @(", 1)[1].split(
+            "\n    )",
+            1,
+        )[0]
+        shared_paths = set(re.findall(r'"([^"]+)"', shared_paths_source))
+        migration_runner = (
+            REPOSITORY_ROOT / "agent" / "scripts" / "run_migrations.py"
+        ).read_text(encoding="utf-8")
+        helper_filenames = set(
+            re.findall(
+                r'(?:with_name|_load_script_helper)\(\s*"([^"]+\.py)"',
+                migration_runner,
+            )
+        )
+        expected_helpers = {
+            "business_module_migration_contract.py",
+            "migration_018_authorization.py",
+            "automation_project_release_manifest_preflight.py",
+            "automation_project_resource_preflight.py",
+            "automation_project_schedule_identity_preflight.py",
+            "automation_plugin_install_ownership_preflight.py",
+            "automation_project_version_preflight.py",
+        }
+
+        self.assertEqual(expected_helpers, helper_filenames)
+        self.assertTrue(
+            {f"agent/scripts/{filename}" for filename in helper_filenames}
+            <= shared_paths
+        )
+        self.assertNotIn("agent/scripts/", shared_paths)
+
     def test_nginx_allows_the_signed_plugin_limit_plus_multipart_overhead(self):
         nginx = (
             REPOSITORY_ROOT / "agent" / "deploy" / "nginx" / "boyi.homes.conf"
@@ -861,10 +1109,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             'if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then', 1
         )[1]
         emergency_branch, normal_and_later = emergency_and_later.split(
-            "\n  else", 1
+            "\n    else", 1
         )
         normal_branch, after_preflight_branch = normal_and_later.split(
-            "\n  fi", 1
+            "\n    fi", 1
         )
         self.assertLess(
             emergency_branch.index('RELEASE_STAGE="capture_control_plane_release_state"'),
@@ -888,14 +1136,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
             normal_branch.index('RELEASE_STAGE="capture_control_plane_release_state"'),
         )
         self.assertTrue(normal_branch.rstrip().endswith("capture_control_plane_release_state"))
-        self.assertTrue(
-            after_preflight_branch.lstrip().startswith(
-                "MUTATION_STARTED=1\n  "
-                'RELEASE_STAGE="quiesce_runtime_services"\n  '
-                "quiesce_runtime_services\n  "
-                'RELEASE_STAGE="verify_protected_writes_quiesced"\n  '
-                "preflight_running_protected_writes"
-            )
+        self.assertIn("MUTATION_STARTED=1", after_preflight_branch)
+        self.assertLess(
+            after_preflight_branch.index("MUTATION_STARTED=1"),
+            after_preflight_branch.index('RELEASE_STAGE="quiesce_runtime_services"'),
         )
         self.assertLess(execution.index("build_release_virtualenvs"), execution.index("MUTATION_STARTED=1"))
         self.assertLess(
@@ -990,6 +1234,10 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("verify_runtime_virtualenvs", rollback_function)
         self.assertLess(
             rollback_function.index("stop_runtime_services_for_rollback"),
+            rollback_function.index("restore_feishu_notification_leases"),
+        )
+        self.assertLess(
+            rollback_function.index("restore_feishu_notification_leases"),
             rollback_function.index("restore_automation_project_authorization_data"),
         )
         self.assertLess(
@@ -1011,6 +1259,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" == "1', rollback_function)
+        self.assertIn('FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" == "1', rollback_function)
         self.assertIn('CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1', rollback_function)
         self.assertIn('MIGRATIONS_ATTEMPTED}" == "1', rollback_function)
@@ -1025,11 +1274,14 @@ class ReleaseBoundaryTests(unittest.TestCase):
             rollback_function,
         )
         self.assertIn("check_rollback_health", rollback_function)
+        compatibility_index = rollback_function.index(
+            "verify_rollback_first_party_version_compatibility"
+        )
         self.assertLess(
+            compatibility_index,
             rollback_function.index(
-                "verify_rollback_first_party_version_compatibility"
+                "restart_runtime_services_for_rollback", compatibility_index
             ),
-            rollback_function.index("restart_runtime_services_for_rollback"),
         )
         compatible_restart = rollback_function.index(
             'elif ! restart_runtime_services_for_rollback'
@@ -1563,6 +1815,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 daily_sign_pending=True,
                 contract_upgrade_pending=True,
                 automation_project_pending=True,
+                feishu_lease_pending=True,
                 bootstrap_absent=True,
                 migrations_attempted=True,
                 runtime_start_attempted=True,
@@ -1575,6 +1828,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         restore_events = [event for event in events if event.startswith("restore-")]
         self.assertEqual(
             [
+                "restore-030-leases",
                 "restore-018",
                 "restore-bootstrap",
                 "restore-017",
@@ -1825,6 +2079,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 --automation-project-authorization-status)
                   echo 'automation_project_authorization_status=pending_clean'
                   ;;
+                --feishu-notification-lease-status)
+                  echo 'feishu_notification_lease_status=pending'
+                  ;;
                 --control-plane-policy-bootstrap-marker-status)
                   echo 'control_plane_policy_bootstrap_marker_status=absent'
                   ;;
@@ -1832,17 +2089,18 @@ class ReleaseBoundaryTests(unittest.TestCase):
               esac
             }
             capture_control_plane_release_state
-            printf 'states=%s,%s,%s,%s,%s\n' \
+            printf 'states=%s,%s,%s,%s,%s,%s\n' \
               "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" \
               "${DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" \
               "${SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" \
               "${AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" \
+              "${FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY}" \
               "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}"
             """
         )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("states=0,1,1,1,1", completed.stdout)
+        self.assertIn("states=0,1,1,1,1,1", completed.stdout)
 
     def test_schedule_identity_preflight_accepts_only_exact_success_states(self):
         for state in ("pending", "applied"):

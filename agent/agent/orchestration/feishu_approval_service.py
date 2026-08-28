@@ -10,10 +10,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
+from agent.orchestration.outbox_dispatcher import OutboxRetryAfter
 
 
 _BIND_RE = re.compile(r"^绑定审批\s+([0-9A-HJKMNP-TV-Z]{10})$", re.IGNORECASE)
 _CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+DEFAULT_NOTIFICATION_LEASE_SECONDS = 120
 
 
 class FeishuApprovalService:
@@ -23,10 +25,18 @@ class FeishuApprovalService:
         approval_service: Any,
         *,
         send_text: Callable[[str, str, str], bool],
+        notification_lease_seconds: int = DEFAULT_NOTIFICATION_LEASE_SECONDS,
     ) -> None:
         self._repository = repository
         self._approvals = approval_service
         self._send_text = send_text
+        if (
+            isinstance(notification_lease_seconds, bool)
+            or not isinstance(notification_lease_seconds, int)
+            or notification_lease_seconds <= 0
+        ):
+            raise ValueError("notification_lease_seconds must be a positive integer")
+        self._notification_lease_seconds = notification_lease_seconds
 
     @staticmethod
     def _digest(code: str) -> str:
@@ -121,6 +131,7 @@ class FeishuApprovalService:
         actor = self.resolve_actor(open_id)
         if "super_admin" not in actor.roles:
             return None
+        stale_binding_ids: list[str] | None = None
         with self._repository.unit_of_work() as uow:
             active = uow.feishu_approvals.active_for_open_id(open_id, for_update=True)
             if active is None:
@@ -134,15 +145,25 @@ class FeishuApprovalService:
                 isinstance(expires_at, datetime)
                 and expires_at <= datetime.now(timezone.utc).replace(tzinfo=None)
             ):
-                binding_ids = uow.feishu_approvals.finish_active_for_binding(
+                stale_binding_ids = uow.feishu_approvals.finish_active_for_binding(
                     str(active["binding_id"]),
                     approval_id,
                     status="EXPIRED" if approval_status == "PENDING" else "SKIPPED",
                 )
-                self._notify_active_bindings(binding_ids, uow)
+                self._append_notification_retry(
+                    uow,
+                    approval_id=approval_id,
+                    binding_ids=stale_binding_ids,
+                )
                 uow.commit()
-                return "当前审批已过期或已由其他管理员处理，已切换到下一条。"
-            uow.commit()
+            else:
+                uow.commit()
+        if stale_binding_ids is not None:
+            self._notify_active_bindings(
+                stale_binding_ids,
+                retry_leased=False,
+            )
+            return "当前审批已过期或已由其他管理员处理，已切换到下一条。"
         decision = "APPROVED" if normalized == "1" else "REJECTED"
         try:
             self._approvals.decide(
@@ -165,8 +186,13 @@ class FeishuApprovalService:
                     approval_id,
                     status="EXPIRED" if exc.code == "APPROVAL_EXPIRED" else "SKIPPED",
                 )
-                self._notify_active_bindings(binding_ids, uow)
+                self._append_notification_retry(
+                    uow,
+                    approval_id=approval_id,
+                    binding_ids=binding_ids,
+                )
                 uow.commit()
+            self._notify_active_bindings(binding_ids, retry_leased=False)
             return "当前审批已过期或已由其他管理员处理，已切换到下一条。"
         return "已批准，原事项已恢复执行。" if decision == "APPROVED" else "已驳回该审批。"
 
@@ -206,47 +232,131 @@ class FeishuApprovalService:
             return "该飞书身份已绑定其他后台管理员，请先由原账号解绑。"
         return "审批身份绑定成功；账号权限变更或解绑会立即生效。"
 
-    def handle_outbox(self, delivery: Mapping[str, Any], uow: Any) -> Mapping[str, Any]:
+    def handle_outbox(
+        self,
+        delivery: Mapping[str, Any],
+        _uow: Any,
+    ) -> Mapping[str, Any]:
         topic = str(delivery.get("topic") or "")
         approval_id = str(delivery.get("entity_id") or "")
         payload = delivery.get("payload_json")
         plan_hash = str((payload or {}).get("plan_hash") or "") if isinstance(payload, Mapping) else ""
-        if topic == "agent.approval.requested":
-            binding_ids = uow.feishu_approvals.enqueue_for_enabled_admins(
-                approval_id,
-                plan_hash,
-            )
-        elif topic == "agent.approval.expiry_check":
-            uow.feishu_approvals.expire_approval_if_due(approval_id)
-            binding_ids = uow.feishu_approvals.finish_approval(
-                approval_id,
-                status="EXPIRED",
-            )
-        else:
-            finished_status = (
-                "DECIDED"
-                if topic == "agent.approval.decided"
-                else (
-                    "SKIPPED"
-                    if topic == "agent.approval.invalidated"
-                    else "EXPIRED"
+        with self._repository.unit_of_work() as uow:
+            if topic == "agent.feishu.notification.retry":
+                binding_ids = self._retry_binding_ids(payload)
+            elif topic == "agent.approval.requested":
+                binding_ids = uow.feishu_approvals.enqueue_for_enabled_admins(
+                    approval_id,
+                    plan_hash,
                 )
-            )
-            binding_ids = uow.feishu_approvals.finish_approval(
-                approval_id,
-                status=finished_status,
-            )
-        sent = self._notify_active_bindings(binding_ids, uow)
+            elif topic == "agent.approval.expiry_check":
+                uow.feishu_approvals.expire_approval_if_due(approval_id)
+                binding_ids = uow.feishu_approvals.finish_approval(
+                    approval_id,
+                    status="EXPIRED",
+                )
+            elif topic in {
+                "agent.approval.decided",
+                "agent.approval.invalidated",
+                "agent.approval.expired",
+            }:
+                finished_status = {
+                    "agent.approval.decided": "DECIDED",
+                    "agent.approval.invalidated": "SKIPPED",
+                    "agent.approval.expired": "EXPIRED",
+                }[topic]
+                binding_ids = uow.feishu_approvals.finish_approval(
+                    approval_id,
+                    status=finished_status,
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsupported Feishu approval outbox topic: {topic or '<missing>'}"
+                )
+            uow.commit()
+        sent = self._notify_active_bindings(binding_ids, retry_leased=True)
         return {"approval_id": approval_id, "sent": sent}
 
-    def _notify_active_bindings(self, binding_ids: list[str], uow: Any) -> int:
+    def _notify_active_bindings(
+        self,
+        binding_ids: list[str],
+        *,
+        retry_leased: bool,
+    ) -> int:
         sent = 0
-        pending_binding_ids = list(dict.fromkeys(str(item) for item in binding_ids))
-        while pending_binding_ids:
-            binding_id = pending_binding_ids.pop(0)
-            active = uow.feishu_approvals.active_for_binding(binding_id, for_update=True)
+        for binding_id in dict.fromkeys(str(item) for item in binding_ids):
+            while True:
+                reservation = self._reserve_active_notification(binding_id)
+                state = str(reservation.get("state") or "")
+                if state == "ADVANCED":
+                    continue
+                if state in {"EMPTY", "NOTIFIED"}:
+                    break
+                if state == "LEASED":
+                    if retry_leased:
+                        raise OutboxRetryAfter(
+                            "Feishu approval notification is already leased",
+                            delay_seconds=self._lease_retry_delay(
+                                reservation.get("notification_lease_expires_at")
+                            ),
+                        )
+                    break
+                if state != "RESERVED":
+                    raise RuntimeError("Feishu approval notification state is invalid")
+                delivery_id = str(reservation["delivery_id"])
+                binding_id = str(reservation["binding_id"])
+                lease_token = str(reservation["notification_lease_token"])
+                message = self._approval_message(reservation)
+                try:
+                    delivered = self._send_text(
+                        str(reservation["open_id"]),
+                        message,
+                        "open_id",
+                    )
+                except Exception:
+                    self._release_notification(
+                        binding_id,
+                        delivery_id,
+                        lease_token,
+                    )
+                    raise
+                if not delivered:
+                    self._release_notification(
+                        binding_id,
+                        delivery_id,
+                        lease_token,
+                    )
+                    raise RuntimeError("Feishu approval notification failed")
+                if not self._finalize_notification(
+                    binding_id,
+                    delivery_id,
+                    lease_token,
+                ):
+                    raise RuntimeError(
+                        "Feishu approval notification finalization lost its lease"
+                    )
+                sent += 1
+                break
+        return sent
+
+    def _reserve_active_notification(self, binding_id: str) -> dict[str, Any]:
+        lease_token = str(uuid.uuid4())
+        with self._repository.unit_of_work() as uow:
+            active = uow.feishu_approvals.active_for_binding(
+                binding_id,
+                for_update=True,
+            )
             if active is None:
-                continue
+                live_lease = uow.feishu_approvals.notification_lease_for_binding(
+                    binding_id,
+                )
+                if live_lease is not None:
+                    uow.commit()
+                    return {**live_lease, "state": "LEASED"}
+                active = uow.feishu_approvals.activate_next(binding_id)
+            if active is None:
+                uow.commit()
+                return {"state": "EMPTY"}
             approval_status = str(active.get("approval_status") or "")
             expires_at = active.get("expires_at")
             expired = bool(
@@ -254,29 +364,134 @@ class FeishuApprovalService:
                 and expires_at <= datetime.now(timezone.utc).replace(tzinfo=None)
             )
             if approval_status != "PENDING" or expired:
-                approval_id = str(active.get("approval_id") or "")
-                # This path already holds one Binding+Delivery.  Advance only
-                # that queue; the expiry outbox owns the global
-                # Approval -> sorted Bindings transition.
-                activated = uow.feishu_approvals.finish_active_for_binding(
+                uow.feishu_approvals.finish_active_for_binding(
                     binding_id,
-                    approval_id,
+                    str(active.get("approval_id") or ""),
                     status="EXPIRED" if expired else "SKIPPED",
                 )
-                pending_binding_ids.extend(
-                    item
-                    for item in activated
-                    if item not in pending_binding_ids
-                )
-                continue
+                uow.commit()
+                return {"state": "ADVANCED"}
             if active.get("notified_at") is not None:
-                continue
-            message = self._approval_message(active)
-            if not self._send_text(str(active["open_id"]), message, "open_id"):
-                raise RuntimeError("Feishu approval notification failed")
-            uow.feishu_approvals.mark_notified(str(active["delivery_id"]))
-            sent += 1
-        return sent
+                uow.commit()
+                return {"state": "NOTIFIED"}
+            reserved = uow.feishu_approvals.reserve_notification(
+                binding_id,
+                str(active["delivery_id"]),
+                lease_token,
+                lease_seconds=self._notification_lease_seconds,
+            )
+            uow.commit()
+        if not reserved:
+            return {
+                "state": "LEASED",
+                "notification_lease_expires_at": active.get(
+                    "notification_lease_expires_at"
+                ),
+            }
+        return {
+            **active,
+            "state": "RESERVED",
+            "notification_lease_token": lease_token,
+        }
+
+    def _finalize_notification(
+        self,
+        binding_id: str,
+        delivery_id: str,
+        lease_token: str,
+    ) -> bool:
+        with self._repository.unit_of_work() as uow:
+            finalized = uow.feishu_approvals.finalize_notification(
+                binding_id,
+                delivery_id,
+                lease_token,
+            )
+            uow.commit()
+        return bool(finalized)
+
+    def _release_notification(
+        self,
+        binding_id: str,
+        delivery_id: str,
+        lease_token: str,
+    ) -> None:
+        with self._repository.unit_of_work() as uow:
+            uow.feishu_approvals.release_notification(
+                binding_id,
+                delivery_id,
+                lease_token,
+                error_summary="Feishu approval notification failed",
+            )
+            uow.commit()
+
+    def _lease_retry_delay(self, expires_at: Any) -> int:
+        if not isinstance(expires_at, datetime):
+            return self._notification_lease_seconds
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return max(1, int((expires_at - now).total_seconds()) + 1)
+
+    @staticmethod
+    def _retry_binding_ids(payload: Any) -> list[str]:
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("Feishu notification retry payload is invalid")
+        raw_binding_ids = payload.get("binding_ids")
+        if not isinstance(raw_binding_ids, list):
+            raise RuntimeError("Feishu notification retry bindings are invalid")
+        binding_ids = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in raw_binding_ids
+                if str(item).strip()
+            )
+        )
+        if not binding_ids:
+            raise RuntimeError("Feishu notification retry has no binding")
+        return binding_ids
+
+    @staticmethod
+    def _append_notification_retry(
+        uow: Any,
+        *,
+        approval_id: str,
+        binding_ids: list[str],
+    ) -> None:
+        normalized_binding_ids = sorted(
+            dict.fromkeys(str(item).strip() for item in binding_ids if str(item).strip())
+        )
+        if not normalized_binding_ids:
+            return
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        uow.events.append_with_outbox(
+            {
+                "event_id": event_id,
+                "event_type": "agent.feishu.notification.retry",
+                "schema_version": 1,
+                "source_system": "agent",
+                "source_event_id": None,
+                "entity_type": "approval_request",
+                "entity_id": approval_id,
+                "work_item_id": None,
+                "run_id": None,
+                "step_id": None,
+                "occurred_at": now,
+                "observed_at": now,
+                "correlation_id": event_id,
+                "causation_id": approval_id,
+                "payload": {
+                    "approval_id": approval_id,
+                    "binding_ids": normalized_binding_ids,
+                },
+            },
+            (
+                {
+                    "consumer_name": "feishu.approval",
+                    "topic": "agent.feishu.notification.retry",
+                    "partition_key": approval_id,
+                    "max_attempts": 20,
+                },
+            ),
+        )
 
     @staticmethod
     def _approval_message(active: Mapping[str, Any]) -> str:

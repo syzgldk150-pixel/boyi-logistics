@@ -478,7 +478,7 @@ class _Catalog:
         if tool_name != self.step.tool_name:
             return None
         replay_safe = self.step.operation_type is OperationType.INTERNAL_PROJECTION_WRITE
-        return {
+        capability = {
             "name": tool_name,
             "version": "1.0.0",
             "operation_type": self.step.operation_type.value,
@@ -491,6 +491,16 @@ class _Catalog:
             "retry": {"safe": replay_safe},
             "idempotency": {"mode": "key" if replay_safe else "none"},
         }
+        if tool_name.startswith("automation."):
+            capability["_plugin_runtime"] = {
+                "automation_id": "instance-one",
+                "plugin_id": "test-plugin",
+                "core_tool_name": "external_write_tool",
+                "runtime_permissions": {"browser": False},
+                "account_bindings": {"primary": "account-1"},
+                "resource_bindings": {"record": "record-1"},
+            }
+        return capability
 
 
 class _Execution:

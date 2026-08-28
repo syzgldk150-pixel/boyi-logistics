@@ -34,6 +34,12 @@ SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION = "017"
 SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = "scheduled_task_contract_upgrade_backup_017"
 SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE = "scheduled_task_contract_upgrade_created_017"
 AUTOMATION_PROJECT_AUTHORIZATION_VERSION = "018"
+FEISHU_NOTIFICATION_LEASE_VERSION = "030"
+FEISHU_NOTIFICATION_DELIVERY_TABLE = "feishu_approval_deliveries"
+FEISHU_NOTIFICATION_LEASE_COLUMNS = (
+    "notification_lease_token",
+    "notification_lease_expires_at",
+)
 AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE = "scheduled_task_automation_identity_backup_018"
 AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE = "automation_project_migration_capture_018"
 AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE = "automation_project_reviewed_schedule_map_018"
@@ -2704,6 +2710,72 @@ def report_automation_project_authorization_status() -> int:
     return 0
 
 
+def report_feishu_notification_lease_status() -> int:
+    """Report whether migration 030 predated this release without exposing rows."""
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            applied = False
+            if _migration_table_exists(cursor):
+                cursor.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version=%s",
+                    (FEISHU_NOTIFICATION_LEASE_VERSION,),
+                )
+                applied = cursor.fetchone() is not None
+            print(
+                "feishu_notification_lease_status="
+                + ("applied" if applied else "pending")
+            )
+    finally:
+        connection.close()
+    return 0
+
+
+def restore_feishu_notification_leases() -> int:
+    """Clear migration-030 sender leases before restarting pre-030 code."""
+
+    connection = _connect()
+    try:
+        connection.begin()
+        restored = 0
+        with connection.cursor() as cursor:
+            _require_mysql8(cursor)
+            table_exists = _table_exists(
+                cursor,
+                FEISHU_NOTIFICATION_DELIVERY_TABLE,
+            )
+            columns_exist = table_exists and all(
+                _column_exists(
+                    cursor,
+                    FEISHU_NOTIFICATION_DELIVERY_TABLE,
+                    column_name,
+                )
+                for column_name in FEISHU_NOTIFICATION_LEASE_COLUMNS
+            )
+            if columns_exist:
+                cursor.execute(
+                    """
+                    UPDATE feishu_approval_deliveries
+                    SET notification_lease_token=NULL,
+                        notification_lease_expires_at=NULL,
+                        updated_at=NOW(6)
+                    WHERE notification_lease_token IS NOT NULL
+                       OR notification_lease_expires_at IS NOT NULL
+                    """
+                )
+                restored = int(getattr(cursor, "rowcount", 0) or 0)
+        connection.commit()
+        print(f"feishu_notification_leases_restored={restored}")
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return 0
+
+
 def report_control_plane_policy_bootstrap_marker_status() -> int:
     connection = _connect()
     try:
@@ -2816,6 +2888,16 @@ def main() -> int:
         help="Report applied, pending_clean, or pending_dirty for migration 018",
     )
     modes.add_argument(
+        "--feishu-notification-lease-status",
+        action="store_true",
+        help="Report whether migration 030 predates this release",
+    )
+    modes.add_argument(
+        "--restore-feishu-notification-leases",
+        action="store_true",
+        help="Clear migration-030 sender leases before a source rollback",
+    )
+    modes.add_argument(
         "--check-automation-project-required-resources",
         action="store_true",
         help=(
@@ -2909,6 +2991,8 @@ def main() -> int:
         return restore_daily_sign_single_tms_account()
     if args.restore_control_plane_policy_bootstrap:
         return restore_control_plane_policy_bootstrap()
+    if args.restore_feishu_notification_leases:
+        return restore_feishu_notification_leases()
     if args.control_plane_task_cutover_status:
         return report_control_plane_task_cutover_status()
     if args.daily_sign_single_tms_status:
@@ -2917,6 +3001,8 @@ def main() -> int:
         return report_scheduled_task_contract_upgrade_status()
     if args.automation_project_authorization_status:
         return report_automation_project_authorization_status()
+    if args.feishu_notification_lease_status:
+        return report_feishu_notification_lease_status()
     if args.check_automation_project_required_resources:
         return check_automation_project_required_resources(_connect)
     if args.check_automation_project_scheduled_task_identities: return check_automation_project_scheduled_task_identities(_connect)

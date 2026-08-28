@@ -106,7 +106,7 @@ def _run_preflight(
             textwrap.dedent(
                 """
                 set -Eeuo pipefail
-                source "$1" "$2" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa agent,console 0 0
+                source "$1" "$2" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa shared 0 0
                 WORKER_NGINX_STAGED_CONFIG="$3"
                 WORKER_NGINX_INSTALLED_CONFIG="$4"
                 WORKER_NGINX_SITE_CONFIG="$5"

@@ -2339,6 +2339,83 @@ tools:
     timeout: 21600
     heavy: false
 
+  - name: analyze_finance_reviews
+    version: "1.0.0"
+    operation_type: internal_projection_write
+    risk_level: medium
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: admin
+    permissions:
+      required_roles:
+        - admin
+    account_scope:
+      mode: none
+      allow_implicit_default: false
+    idempotency:
+      mode: key
+      key_fields:
+        - trigger_id
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields:
+        - source
+        - observed_at
+        - execution_result
+    postconditions:
+      - executor_reported_success
+    description: "在独立受治理 Run 中分析待人工确认的未知费用类目，不发送外部通知，不修改正式映射或原始流水"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        trigger_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "触发本次分析的完成事件或手工请求标识"
+        source_run_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "产生本次分析触发的来源 Run 标识"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: "本次最多分析的待人工确认类目数"
+      required: [trigger_id, source_run_id, limit]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/finance_review_analysis_tool.py
+    timeout: 1800
+    heavy: false
+
   - name: automation_profile
     version: "1.0.0"
     operation_type: internal_projection_write

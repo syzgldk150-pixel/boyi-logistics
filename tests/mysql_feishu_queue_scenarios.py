@@ -261,16 +261,14 @@ def run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(h
         ),
     )
     first_recovery = approval_pairs[0][0]
-    with repository.unit_of_work() as uow:
-        result = service.handle_outbox(
-            {
-                "topic": "agent.approval.requested",
-                "entity_id": first_recovery["approval_id"],
-                "payload_json": {"plan_hash": first_recovery["plan_hash"]},
-            },
-            uow,
-        )
-        uow.commit()
+    result = service.handle_outbox(
+        {
+            "topic": "agent.approval.requested",
+            "entity_id": first_recovery["approval_id"],
+            "payload_json": {"plan_hash": first_recovery["plan_hash"]},
+        },
+        None,
+    )
     harness.assertEqual(3, result["sent"])
     harness.assertEqual(3, len(sent))
     with harness._connection(database) as connection, connection.cursor() as cursor:

@@ -56,6 +56,19 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 WEBHOOK_TOKEN_HEADER = "X-Agent-Webhook-Token"
 
 
+def _positive_runtime_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
 class RedactingFilter(logging.Filter):
     """Remove credentials from every message before it reaches a handler."""
 
@@ -158,7 +171,10 @@ from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.business_module_command_gate import BusinessModuleCommandGate
 from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.control_plane_service import ControlPlaneService
-from agent.orchestration.feishu_approval_service import FeishuApprovalService
+from agent.orchestration.feishu_approval_service import (
+    DEFAULT_NOTIFICATION_LEASE_SECONDS,
+    FeishuApprovalService,
+)
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import (
     Actor,
@@ -169,7 +185,7 @@ from agent.orchestration.models import (
     RunStatus,
     new_id,
 )
-from agent.orchestration.outbox_dispatcher import OutboxDispatcher
+from agent.orchestration.outbox_dispatcher import OutboxDispatcher, OutboxDispatcherGroup
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.policy_engine import PolicyEngine
@@ -228,6 +244,7 @@ from feishu.message_handler import (
     queue_im_message_payload,
 )
 from feishu.notify import (
+    FEISHU_SEND_TIMEOUT_SECONDS,
     send_finance_anomaly_alert,
     send_text_sync,
     send_tms_session_disconnected_alert,
@@ -251,7 +268,7 @@ configure_feishu_operation(feishu_operation)
 agent_core: AgentCore | None = None
 orchestration_repository: OrchestrationRepository | None = None
 workflow_runner: WorkflowRunner | None = None
-outbox_dispatcher: OutboxDispatcher | None = None
+outbox_dispatcher: OutboxDispatcherGroup | None = None
 control_plane_service: ControlPlaneService | None = None
 scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
@@ -719,26 +736,81 @@ def _finance_sync_failure_handler(delivery, _uow):
     }
 
 
-def _finance_brain_completed_handler(runtime: AgentCore, loop, delivery, _uow):
-    """Consume finance Run completion on the main loop without execution bypasses."""
+def _finance_review_analysis_command(
+    *,
+    trigger_id: str,
+    source_run_id: str,
+    limit: int,
+    source: str,
+    actor: Actor,
+    idempotency_key: str,
+    correlation_id: str,
+) -> Command:
+    """Build the one governed command used by automatic and manual analysis."""
+
+    safe_trigger_id = str(trigger_id or "").strip()
+    safe_source_run_id = str(source_run_id or "").strip()
+    if not safe_trigger_id or not safe_source_run_id:
+        raise RuntimeError("finance analysis trigger identity is missing")
+    if isinstance(limit, bool) or not 1 <= int(limit) <= 100:
+        raise RuntimeError("finance analysis limit must be between 1 and 100")
+    return Command(
+        command_type="tool.execute",
+        source=source,
+        actor=actor,
+        parameters={
+            "tool_name": "analyze_finance_reviews",
+            "arguments": {
+                "trigger_id": safe_trigger_id,
+                "source_run_id": safe_source_run_id,
+                "limit": int(limit),
+            },
+        },
+        idempotency_key=idempotency_key,
+        entity_refs=(
+            EntityRef(
+                entity_type="finance_review_queue",
+                entity_id="pending",
+                source_system="finance",
+            ),
+        ),
+        correlation_id=correlation_id,
+    )
+
+
+def _finance_brain_completed_handler(command_submitter, delivery, _uow):
+    """Submit durable post-sync analysis and return without running FinanceBrain."""
 
     payload = delivery.get("payload_json")
     tool_names = payload.get("tool_names") if isinstance(payload, dict) else None
-    if not isinstance(tool_names, list) or "sync_finance_bills" not in tool_names:
+    if (
+        str(delivery.get("event_type") or "") != "agent.run.completed"
+        or not isinstance(tool_names, list)
+        or "sync_finance_bills" not in tool_names
+    ):
         return {"event_id": delivery.get("event_id"), "processed": False}
-    brain = runtime.finance_brain
-    if brain is None:
-        raise RuntimeError("finance brain is unavailable")
-    future = asyncio.run_coroutine_threadsafe(brain.process_after_sync(), loop)
-    try:
-        result = future.result(timeout=1800)
-    except Exception:
-        future.cancel()
-        raise
+    event_id = str(delivery.get("event_id") or "").strip()
+    source_run_id = str(payload.get("run_id") or delivery.get("run_id") or "").strip()
+    if not event_id or not source_run_id:
+        raise RuntimeError("finance completion event is missing identity")
+    command = _finance_review_analysis_command(
+        trigger_id=event_id,
+        source_run_id=source_run_id,
+        limit=20,
+        source="system",
+        actor=Actor(
+            ActorType.SYSTEM,
+            "finance-brain-outbox",
+            authenticated_by="durable_outbox",
+        ),
+        idempotency_key=f"finance-analysis:v1:{event_id}",
+        correlation_id=str(delivery.get("correlation_id") or source_run_id),
+    )
+    receipt = command_submitter(command)
     return {
-        "event_id": delivery.get("event_id"),
+        "event_id": event_id,
         "processed": True,
-        "result": result,
+        **receipt.to_dict(),
     }
 
 
@@ -1081,7 +1153,7 @@ async def lifespan(app: FastAPI):
             package_reader=FilesystemWorkerPackageArchiveReader(plugin_runtime.storage),
         )
     await asyncio.to_thread(plugin_runtime.reconcile)
-    initial_plugin_health = plugin_runtime.health()
+    await asyncio.to_thread(plugin_runtime.health)
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
     business_finance_query = BusinessFinanceQueryService(
@@ -1207,10 +1279,15 @@ async def lifespan(app: FastAPI):
         policy,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
     )
+    if FEISHU_SEND_TIMEOUT_SECONDS >= DEFAULT_NOTIFICATION_LEASE_SECONDS:
+        raise RuntimeError(
+            "Feishu send timeout must be shorter than its notification lease"
+        )
     feishu_approval_service = FeishuApprovalService(
         repository,
         approval_service,
         send_text=send_text_sync,
+        notification_lease_seconds=DEFAULT_NOTIFICATION_LEASE_SECONDS,
     )
     automation_project_entrypoints = AutomationProjectEntrypoints(
         project_policy_service,
@@ -1236,30 +1313,50 @@ async def lifespan(app: FastAPI):
         verifier=ResultVerifier(plugin_runtime.runtime_repository),
         worker_id=f"{INSTANCE_ID}:runs",
         protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
+        worker_concurrency=_positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2),
+        browser_concurrency=_positive_runtime_int("WORKFLOW_BROWSER_CONCURRENCY", 1),
     )
     runner_holder["runner"] = runner
     plugin_runtime.target_service.set_wake_runner(runner.wake)
-    dispatcher = OutboxDispatcher(
-        repository,
-        worker_id=f"{INSTANCE_ID}:outbox",
-        # FinanceBrain may make several bounded model calls.  Keep its durable
-        # lease longer than the handler timeout so a second Agent instance does
-        # not reclaim and duplicate the same post-sync analysis.
-        lease_seconds=3600,
-        handlers={
-            "orchestration.run_worker": _noop_outbox_handler,
-            "orchestration.audit": _project_run_completed_event,
-            "feishu.approval": feishu_approval_service.handle_outbox,
-            "feishu.approval.expiry": feishu_approval_service.handle_outbox,
-            "finance.failure_alert": _finance_sync_failure_handler,
-            "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
-                runtime,
-                loop,
-                delivery,
-                uow,
-            ),
-        },
-    )
+    outbox_handlers = {
+        "orchestration.run_worker": _noop_outbox_handler,
+        "orchestration.audit": _project_run_completed_event,
+        "feishu.approval": feishu_approval_service.handle_outbox,
+        "feishu.approval.expiry": feishu_approval_service.handle_outbox,
+        "finance.failure_alert": _finance_sync_failure_handler,
+        "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
+            gateway.submit,
+            delivery,
+            uow,
+        ),
+    }
+    dispatchers = []
+    for consumer_name, handler in outbox_handlers.items():
+        # Each consumer claims only its own rows. FinanceBrain now submits a
+        # separate Run, so every outbox handler has the same short lease.
+        handler_uses_uow = consumer_name not in {
+            "feishu.approval",
+            "feishu.approval.expiry",
+            "finance.failure_alert",
+            "finance.brain",
+        }
+        dispatchers.append(
+            OutboxDispatcher(
+                repository,
+                worker_id=f"{INSTANCE_ID}:outbox:{consumer_name}",
+                consumer_name=consumer_name,
+                lease_seconds=60,
+                batch_size=(
+                    1
+                    if consumer_name
+                    in {"feishu.approval", "feishu.approval.expiry"}
+                    else 50
+                ),
+                handlers={consumer_name: handler},
+                handler_uses_uow=handler_uses_uow,
+            )
+        )
+    dispatcher = OutboxDispatcherGroup(dispatchers)
     service = ControlPlaneService(
         repository,
         approval_service,
@@ -1278,10 +1375,10 @@ async def lifespan(app: FastAPI):
         execution_runtime=plugin_runtime.execution_router,
         control_plane_service=service,
     )
-    release_hold = (
-        scheduler_release_hold_requested()
-        or initial_plugin_health.get("ok") is not True
-    )
+    # A release marker is the only process-wide execution hold. Plugin health is
+    # projected per project: one unavailable generation must not freeze core
+    # tools or unrelated committed plugins.
+    release_hold = scheduler_release_hold_requested()
     await runner.start(held_for_release=release_hold)
     await dispatcher.start()
     bind_agent_runtime(runtime, loop)
@@ -1832,8 +1929,7 @@ def _release_sha() -> str:
     return value or "development"
 
 
-@app.get("/internal/v1/health")
-async def internal_health():
+def _internal_health_payload() -> dict[str, Any]:
     runtime = _runtime()
     process = psutil.Process()
     mem_mb = process.memory_info().rss / 1024 / 1024
@@ -1844,7 +1940,7 @@ async def internal_health():
     minutes, _ = divmod(rem, 60)
     uptime_str = f"{days}d {hours}h {minutes}m"
 
-    return api_success(
+    return (
         {
             "status": "ok",
             "release_sha": _release_sha(),
@@ -1879,6 +1975,14 @@ async def internal_health():
             "heavy_task_lock": runtime.heavy_lock_held(),
         }
     )
+
+
+@app.get("/internal/v1/health")
+async def internal_health():
+    # Component probes may touch MySQL, plugin catalogs, and SDK state. Keep
+    # every such probe off the Uvicorn event loop; public /health stays a
+    # constant-time liveness response with no business locks.
+    return api_success(await asyncio.to_thread(_internal_health_payload))
 
 
 class ActorPayload(BaseModel):
@@ -2383,7 +2487,9 @@ class LLMClearCredentialRequest(BaseModel):
 
 
 class FinanceAnalyzeRequest(BaseModel):
-    limit: int = 20
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 @app.get("/tools", deprecated=True)
@@ -2445,7 +2551,7 @@ async def internal_activate_scheduler_after_release(request: Request):
             release_marker_present = scheduler_release_hold_requested()
             plugin_runtime = _automation_plugins()
             await asyncio.to_thread(plugin_runtime.reconcile)
-            plugin_status = plugin_runtime.health()
+            plugin_status = await asyncio.to_thread(plugin_runtime.health)
             if plugin_status.get("ok") is not True:
                 raise RuntimeError("Automation plugin service integrity check failed")
             scheduler_status = begin_scheduler_release_activation(_release_sha())
@@ -2587,12 +2693,25 @@ async def internal_clear_llm_credential(req: LLMClearCredentialRequest, request:
     )
 
 
-@app.post("/internal/v1/admin/finance/reviews/analyze")
-async def internal_analyze_finance_reviews(req: FinanceAnalyzeRequest):
-    brain = _runtime().finance_brain
-    if brain is None:
-        raise HTTPException(status_code=503, detail="finance brain is not initialized")
-    return api_success(await brain.analyze_pending(limit=max(1, min(req.limit, 100))))
+@app.post("/internal/v1/admin/finance/reviews/analyze", status_code=202)
+async def internal_analyze_finance_reviews(req: FinanceAnalyzeRequest, request: Request):
+    actor = _require_console_admin_request(request)
+    trigger_id = new_id()
+    command = _finance_review_analysis_command(
+        trigger_id=trigger_id,
+        source_run_id=trigger_id,
+        limit=req.limit,
+        source="console",
+        actor=actor,
+        idempotency_key=f"finance-review-analysis:manual:{trigger_id}",
+        correlation_id=trigger_id,
+    )
+    receipt = await asyncio.to_thread(_runtime().submit_command, command)
+    return JSONResponse(
+        status_code=202,
+        content=api_success(receipt.to_dict()),
+        headers={"Location": f"/internal/v1/runs/{receipt.run_id}"},
+    )
 
 
 @app.post("/knowledge", deprecated=True)

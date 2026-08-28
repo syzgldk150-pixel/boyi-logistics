@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -454,6 +455,21 @@ class _Core:
     async def cancel_tool(self, tool_name: str, started_at: str = "") -> Mapping[str, Any]:
         return {"ok": False, "code": "NOT_RUNNING", "tool": tool_name, "started_at": started_at}
 
+    async def cancel_bound_run(
+        self,
+        *,
+        tool_name: str,
+        run_id: str,
+        step_id: str,
+    ) -> Mapping[str, Any]:
+        return {
+            "ok": True,
+            "source": "core",
+            "tool_name": tool_name,
+            "run_id": run_id,
+            "step_id": step_id,
+        }
+
 
 class _OutputSandbox:
     def __init__(self, output: bytes) -> None:
@@ -502,6 +518,133 @@ class _Catalog:
 
     def get_capability(self, tool_name: str) -> Mapping[str, Any] | None:
         return self.capability if tool_name == self.capability["name"] else None
+
+
+def test_router_forwards_execution_identity_unchanged_to_core() -> None:
+    captured: dict[str, object] = {}
+
+    class CapturingCore(_Core):
+        async def execute(
+            self,
+            capability: Mapping[str, Any],
+            params: Mapping[str, Any],
+            *,
+            trusted_scheduler_context: Mapping[str, object] | None = None,
+            execution_identity: Mapping[str, object] | None = None,
+        ) -> Mapping[str, Any]:
+            captured.update(
+                capability=capability,
+                params=params,
+                trusted_scheduler_context=trusted_scheduler_context,
+                execution_identity=execution_identity,
+            )
+            return {"success": True}
+
+    router = PluginExecutionRouter(
+        core_executor=CapturingCore(),
+        capability_issuer=_Issuer(),
+    )
+    identity = {"schema_version": 1, "lock_key": "exact-resource"}
+    scheduler_context = {"schema_version": 1, "task_id": "task-1"}
+
+    result = asyncio.run(
+        router.execute(
+            {"name": "core-tool"},
+            {"query": "x"},
+            trusted_scheduler_context=scheduler_context,
+            execution_identity=identity,
+        )
+    )
+
+    assert result == {"success": True}
+    assert captured["execution_identity"] is identity
+    assert captured["trusted_scheduler_context"] is scheduler_context
+
+
+def test_router_sync_generation_and_filesystem_checks_do_not_block_event_loop(
+    tmp_path: Path,
+) -> None:
+    capability = _capability(tmp_path)
+
+    class SlowLeaseRepository(_LeaseRepository):
+        def acquire_committed_generation(self, *args: object, **kwargs: object) -> RuntimeGenerationLease:
+            time.sleep(0.2)
+            return super().acquire_committed_generation(*args, **kwargs)
+
+        def release_generation(
+            self,
+            lease: RuntimeGenerationLease,
+            *,
+            outcome: RuntimeLeaseOutcome,
+        ) -> None:
+            time.sleep(0.2)
+            super().release_generation(lease, outcome=outcome)
+
+    class SlowIntegrity(_Integrity):
+        def verify_install_root(self, runtime_metadata: Mapping[str, object]) -> None:
+            time.sleep(0.2)
+            super().verify_install_root(runtime_metadata)
+
+    def release_hold() -> bool:
+        time.sleep(0.2)
+        return False
+
+    leases = SlowLeaseRepository({"project-a": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(),
+        integrity_verifier=SlowIntegrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(
+                _plugin_result(str(capability["_plugin_runtime"]["plugin_id"]))
+            )
+        ),
+        generation_leases=leases,
+        release_hold_provider=release_hold,
+    )
+
+    async def invoke() -> tuple[Mapping[str, Any], float]:
+        task = asyncio.create_task(
+            router.execute(
+                capability,
+                {},
+                trusted_invocation_context=_trusted_binding(capability),
+            )
+        )
+        largest_tick = 0.0
+        while not task.done():
+            started = time.monotonic()
+            await asyncio.sleep(0.01)
+            largest_tick = max(largest_tick, time.monotonic() - started)
+        return await task, largest_tick
+
+    result, largest_tick = asyncio.run(invoke())
+
+    assert result["status"] == "SUCCESS"
+    assert largest_tick < 0.1
+
+
+def test_router_cancel_bound_run_falls_through_to_core_when_no_plugin_matches() -> None:
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(),
+    )
+
+    result = asyncio.run(
+        router.cancel_bound_run(
+            tool_name="legacy-running",
+            run_id="run-1",
+            step_id="step-1",
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "source": "core",
+        "tool_name": "legacy-running",
+        "run_id": "run-1",
+        "step_id": "step-1",
+    }
 
 
 def _step(tool_name: str) -> PlanStep:

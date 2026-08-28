@@ -523,6 +523,29 @@ class ToolRegistryValidationTests(unittest.TestCase):
             finance_sync["approval"],
             {"mode": "schedule_allowlist", "required_role": "super_admin"},
         )
+        finance_analysis = registry.get_capability("analyze_finance_reviews")
+        self.assertEqual(
+            finance_analysis["operation_type"],
+            "internal_projection_write",
+        )
+        self.assertEqual(finance_analysis["risk_level"], "medium")
+        self.assertFalse(finance_analysis["llm_exposed"])
+        self.assertEqual(
+            finance_analysis["approval"],
+            {"mode": "required", "required_role": "admin"},
+        )
+        self.assertEqual(
+            finance_analysis["account_scope"],
+            {"mode": "none", "allow_implicit_default": False},
+        )
+        self.assertEqual(
+            finance_analysis["retry"],
+            {"safe": False, "max_attempts": 1},
+        )
+        self.assertEqual(
+            finance_analysis["executor"],
+            "tools/finance_review_analysis_tool.py",
+        )
         self.assertIsNone(
             registry.get_capability("finance_etl"),
             "the retired legacy ETL must not re-enter the production catalog",

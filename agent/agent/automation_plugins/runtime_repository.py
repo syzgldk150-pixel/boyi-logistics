@@ -293,6 +293,17 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
             row = uow.automation_plugins.get_project(automation_id)
             return self._project_from_row(uow.automation_plugins, row) if row else None
 
+    def list_instance_ids(self) -> Sequence[str]:
+        """Read project identities without compiling persisted plugin objects."""
+
+        with self._orchestration.unit_of_work() as uow:
+            return tuple(
+                str(row.get("automation_id") or "").strip()
+                if isinstance(row, Mapping)
+                else ""
+                for row in uow.automation_plugins.list_projects()
+            )
+
     def list_instances(self) -> Sequence[PluginInstanceRecord]:
         with self._orchestration.unit_of_work() as uow:
             return tuple(
@@ -441,10 +452,15 @@ class MySQLAutomationProjectConfigurationReadAdapter:
             "config_json",
             "account_bindings_json",
             "resource_bindings_json",
-            "enabled_entrypoints_json",
         ):
-            if not isinstance(row.get(field), (Mapping, list)):
+            if not isinstance(row.get(field), Mapping):
                 raise ValueError(f"persisted project config field is invalid: {field}")
+        if not isinstance(row.get("enabled_entrypoints_json"), list):
+            raise ValueError(
+                "persisted project config field is invalid: enabled_entrypoints_json"
+            )
+        if not isinstance(row.get("schedule"), Mapping):
+            raise ValueError("persisted project config field is invalid: schedule")
         device_id = str(row.get("device_id") or "")
         device_name = str(row.get("device_name") or "")
         if bool(device_id) != bool(device_name):
@@ -487,6 +503,17 @@ class MySQLAutomationPluginRuntimeAdapter:
         with self._orchestration.unit_of_work() as uow:
             row = uow.automation_plugins.get_project_runtime_row(automation_id)
             return _runtime_from_row(row) if row is not None else None
+
+    def list_project_runtime_ids(self) -> Sequence[str]:
+        """Read runtime identities without parsing state or generation records."""
+
+        with self._orchestration.unit_of_work() as uow:
+            return tuple(
+                str(row.get("automation_id") or "").strip()
+                if isinstance(row, Mapping)
+                else ""
+                for row in uow.automation_plugins.list_project_runtime_rows()
+            )
 
     def list_project_runtimes(self) -> Sequence[ProjectRuntimeRecord]:
         with self._orchestration.unit_of_work() as uow:

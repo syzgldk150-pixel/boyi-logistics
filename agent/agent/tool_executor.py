@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
 import signal
 import sys
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from types import MappingProxyType
@@ -27,13 +27,11 @@ logger = logging.getLogger("tools")
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
-LOCK_FILE = os.path.join(PROJECT_ROOT, "logs", ".heavy_task.lock")
 CANCEL_MESSAGE = "任务已取消"
-HEAVY_LOCK_RETRY_SECONDS = 0.5
-DEFAULT_HEAVY_QUEUE_TIMEOUT = 900.0
 TRUSTED_SCHEDULER_CONTEXT_ENV = "AGENT_TRUSTED_SCHEDULER_CONTEXT"
 _TRUSTED_SCHEDULER_CONTEXT_SCHEMA_VERSION = 1
 _TRUSTED_SCHEDULER_TOOL = "r7_arrival_checkin"
+MAX_COMPLETED_EXECUTION_HISTORY = 64
 _R7_SCHEDULED_PROFILE = APPROVED_SCHEDULED_TASK_PROFILES["r7_arrival_checkin"]
 _R7_SCHEDULED_TASK_IDS = _R7_SCHEDULED_PROFILE.approved_task_ids
 _SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -331,20 +329,80 @@ def _resolve_python() -> str:
 
 class ToolExecutor:
     def __init__(self):
-        self._heavy_lock_fd = None
-        self._heavy_queue_lock = asyncio.Lock()
-        self._queued_tools: set[str] = set()
         self._last_run: dict | None = None
         self._running_outputs: dict[str, dict] = {}
 
+    @staticmethod
+    def _execution_key(execution_identity: Mapping[str, object] | None) -> str:
+        if execution_identity is None:
+            return f"legacy:{uuid.uuid4()}"
+        run_id = str(execution_identity.get("run_id") or "").strip()
+        step_id = str(execution_identity.get("step_id") or "").strip()
+        if not run_id or not step_id:
+            raise ValueError("execution_identity requires non-empty run_id and step_id")
+        return f"run:{run_id}:step:{step_id}"
+
+    def _matching_entries(
+        self,
+        tool_name: str,
+        *,
+        started_at: str = "",
+        live_only: bool = False,
+    ) -> list[dict]:
+        matches = [
+            entry
+            for entry in self._running_outputs.values()
+            if entry.get("tool_name") == tool_name
+            and (not live_only or entry.get("running"))
+            and (not started_at or entry.get("started_at") == started_at)
+        ]
+        return sorted(
+            matches,
+            key=lambda entry: float(entry.get("started") or 0.0),
+            reverse=True,
+        )
+
+    def _prune_completed_entries(self) -> None:
+        completed = sorted(
+            (
+                (execution_id, entry)
+                for execution_id, entry in self._running_outputs.items()
+                if not entry.get("running")
+            ),
+            key=lambda item: float(item[1].get("started") or 0.0),
+            reverse=True,
+        )
+        for execution_id, _entry in completed[MAX_COMPLETED_EXECUTION_HISTORY:]:
+            self._running_outputs.pop(execution_id, None)
+
+    def _entry_for_status(self, tool_name: str, *, started_at: str = "") -> tuple[dict | None, int]:
+        live = self._matching_entries(
+            tool_name,
+            started_at=started_at,
+            live_only=True,
+        )
+        if live:
+            return live[0], len(live)
+        history = self._matching_entries(tool_name, started_at=started_at)
+        return (history[0], len(history)) if history else (None, 0)
+
     def get_running_output(self, tool_name: str, offset: int = 0, started_at: str = "") -> dict:
         """Return live output for a running tool."""
-        entry = self._running_outputs.get(tool_name)
+        entry, matches = self._entry_for_status(tool_name, started_at=started_at)
         if not entry:
             return {"lines": [], "running": False, "offset": 0, "total": 0, "cancel_requested": False}
+        if matches > 1 and entry.get("running"):
+            return {
+                "lines": [],
+                "running": True,
+                "offset": 0,
+                "total": 0,
+                "cancel_requested": False,
+                "ambiguous": True,
+                "code": "AMBIGUOUS_TOOL_EXECUTION",
+                "instances": matches,
+            }
         entry_started_at = str(entry.get("started_at") or "")
-        if started_at and entry_started_at and entry_started_at < started_at:
-            return {"lines": [], "running": False, "offset": 0, "total": 0, "cancel_requested": False}
         lines = entry["lines"]
         return {
             "lines": lines[offset:],
@@ -353,37 +411,60 @@ class ToolExecutor:
             "total": len(lines),
             "started_at": entry_started_at,
             "cancel_requested": bool(entry.get("cancel_requested")),
+            "execution_id": str(entry.get("execution_id") or ""),
         }
 
     def is_tool_running(self, tool_name: str) -> bool:
-        entry = self._running_outputs.get(tool_name)
-        return bool(entry and entry.get("running"))
+        return bool(self._matching_entries(tool_name, live_only=True))
 
     def running_tool_info(self, tool_name: str) -> dict:
-        entry = self._running_outputs.get(tool_name)
-        if not entry or not entry.get("running"):
+        matches = self._matching_entries(tool_name, live_only=True)
+        if not matches:
             return {"running": False, "started_at": "", "cancel_requested": False}
+        if len(matches) != 1:
+            return {
+                "running": True,
+                "started_at": "",
+                "cancel_requested": False,
+                "ambiguous": True,
+                "code": "AMBIGUOUS_TOOL_EXECUTION",
+                "instances": len(matches),
+            }
+        entry = matches[0]
         return {
             "running": True,
             "started_at": str(entry.get("started_at") or ""),
             "cancel_requested": bool(entry.get("cancel_requested")),
+            "execution_id": str(entry.get("execution_id") or ""),
         }
 
     def running_tools(self) -> list[str]:
-        return sorted(
-            name
-            for name, entry in self._running_outputs.items()
-            if entry and entry.get("running")
-        )
+        return sorted({
+            str(entry.get("tool_name") or "")
+            for entry in self._running_outputs.values()
+            if entry and entry.get("running") and entry.get("tool_name")
+        })
 
     async def cancel_tool(self, tool_name: str, started_at: str = "") -> dict:
-        entry = self._running_outputs.get(tool_name)
-        if not entry or not entry.get("running"):
+        matches = self._matching_entries(
+            tool_name,
+            started_at=started_at,
+            live_only=True,
+        )
+        if not matches:
             return {"ok": False, "message": "当前没有运行中的任务。", "code": "NOT_RUNNING"}
+        if len(matches) != 1:
+            return {
+                "ok": False,
+                "message": "存在多个同名运行实例，请按 Run 和 Step 精确取消。",
+                "code": "AMBIGUOUS_TOOL_EXECUTION",
+            }
+        return await self._cancel_entry(matches[0])
+
+    async def _cancel_entry(self, entry: dict) -> dict:
+        """Cancel a previously resolved exact execution entry."""
 
         entry_started_at = str(entry.get("started_at") or "")
-        if started_at and entry_started_at and entry_started_at != started_at:
-            return {"ok": False, "message": "当前运行实例已变化，请刷新后重试。", "code": "RUN_MISMATCH"}
 
         if entry.get("cancel_requested"):
             return {
@@ -410,19 +491,45 @@ class ToolExecutor:
         asyncio.create_task(self._ensure_process_stopped(proc))
         return {"ok": True, "message": "已发送取消请求，正在停止脚本。", "started_at": entry_started_at}
 
-    def heavy_lock_held(self) -> bool:
+    async def cancel_bound_run(
+        self,
+        *,
+        tool_name: str,
+        run_id: str,
+        step_id: str,
+    ) -> dict:
+        """Cancel exactly one subprocess owned by a durable Run step."""
+
         try:
-            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                return False
-            except BlockingIOError:
-                return True
-            finally:
-                os.close(fd)
-        except OSError:
-            return False
+            execution_key = self._execution_key(
+                {"run_id": run_id, "step_id": step_id}
+            )
+        except ValueError:
+            return {
+                "ok": False,
+                "message": "Run 和 Step 身份不完整。",
+                "code": "INVALID_EXECUTION_IDENTITY",
+            }
+        entry = self._running_outputs.get(execution_key)
+        if (
+            entry is None
+            or entry.get("tool_name") != tool_name
+            or not entry.get("running")
+        ):
+            return {
+                "ok": False,
+                "message": "指定的 Run Step 当前没有运行。",
+                "code": "NOT_RUNNING",
+            }
+        return await self._cancel_entry(entry)
+
+    def heavy_lock_held(self) -> bool:
+        """Compatibility status: report active heavy work without serializing it."""
+
+        return any(
+            entry.get("running") and entry.get("heavy")
+            for entry in self._running_outputs.values()
+        )
 
     async def _terminate_process(self, proc: asyncio.subprocess.Process, *, force: bool) -> None:
         if proc.returncode is not None:
@@ -488,50 +595,30 @@ class ToolExecutor:
         params: dict,
         *,
         trusted_scheduler_context: Mapping[str, object] | None = None,
+        execution_identity: Mapping[str, object] | None = None,
     ) -> dict:
-        name = tool_config["name"]
-        heavy = tool_config.get("heavy", False)
-        existing = self._running_outputs.get(name)
+        try:
+            execution_key = self._execution_key(execution_identity)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "error_code": "INVALID_EXECUTION_IDENTITY",
+            }
+        existing = self._running_outputs.get(execution_key)
         if existing and existing.get("running"):
-            return {"success": False, "error": "脚本正在执行中，请先等待完成或取消当前任务。", "error_code": "TOOL_ALREADY_RUNNING"}
-        if heavy and name in self._queued_tools:
-            return {"success": False, "error": "脚本正在排队或执行中，请先等待完成。", "error_code": "TOOL_ALREADY_RUNNING"}
-        if heavy:
-            self._queued_tools.add(name)
-            try:
-                async with self._heavy_queue_lock:
-                    return await self._execute_now(
-                        tool_config,
-                        params,
-                        trusted_scheduler_context=trusted_scheduler_context,
-                    )
-            finally:
-                self._queued_tools.discard(name)
+            return {
+                "success": False,
+                "error": "指定的 Run Step 已经在执行。",
+                "error_code": "EXECUTION_ALREADY_RUNNING",
+            }
+        self._prune_completed_entries()
         return await self._execute_now(
             tool_config,
             params,
             trusted_scheduler_context=trusted_scheduler_context,
+            execution_key=execution_key,
         )
-
-    async def _acquire_heavy_lock(self, *, queue_timeout: float) -> int:
-        lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR)
-        start = time.monotonic()
-        while True:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return lock_fd
-            except BlockingIOError:
-                elapsed = time.monotonic() - start
-                if queue_timeout > 0 and elapsed >= queue_timeout:
-                    os.close(lock_fd)
-                    raise TimeoutError("重任务排队等待超时，请稍后再试")
-                sleep_for = HEAVY_LOCK_RETRY_SECONDS
-                if queue_timeout > 0:
-                    sleep_for = min(sleep_for, max(queue_timeout - elapsed, 0.05))
-                await asyncio.sleep(sleep_for)
-            except Exception:
-                os.close(lock_fd)
-                raise
 
     async def _execute_now(
         self,
@@ -539,20 +626,16 @@ class ToolExecutor:
         params: dict,
         *,
         trusted_scheduler_context: Mapping[str, object] | None = None,
+        execution_key: str,
     ) -> dict:
         """Execute a tool script via subprocess."""
         name = tool_config["name"]
         executor = os.path.join(PROJECT_ROOT, tool_config["executor"])
         timeout = tool_config.get("timeout", 300)
         heavy = tool_config.get("heavy", False)
-        queue_timeout = float(tool_config.get("queue_timeout", DEFAULT_HEAVY_QUEUE_TIMEOUT))
 
         if not os.path.exists(executor):
             return {"success": False, "error": f"执行脚本不存在: {executor}"}
-
-        existing = self._running_outputs.get(name)
-        if existing and existing.get("running"):
-            return {"success": False, "error": "脚本正在执行中，请先等待完成或取消当前任务。", "error_code": "TOOL_ALREADY_RUNNING"}
 
         start = time.time()
         safe_params = redact_sensitive(params)
@@ -563,25 +646,24 @@ class ToolExecutor:
             heavy,
         )
 
-        lock_fd = None
         entry: dict | None = None
         execution_capability = ""
         try:
-            if heavy:
-                lock_fd = await self._acquire_heavy_lock(queue_timeout=queue_timeout)
-
             input_json = json.dumps(params, ensure_ascii=False)
             python_executable = _resolve_python()
-            started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._running_outputs[name] = {
+            started_at = datetime.now().isoformat(timespec="microseconds")
+            self._running_outputs[execution_key] = {
+                "execution_id": execution_key,
+                "tool_name": name,
                 "lines": [],
                 "running": True,
                 "started": time.time(),
                 "started_at": started_at,
                 "cancel_requested": False,
                 "proc": None,
+                "heavy": bool(heavy),
             }
-            entry = self._running_outputs[name]
+            entry = self._running_outputs[execution_key]
             buf = entry["lines"]
             execution_capability = issue_execution_capability(
                 name,
@@ -788,7 +870,7 @@ class ToolExecutor:
 
         except Exception as exc:
             duration = round(time.time() - start, 2)
-            if entry is not None and self._running_outputs.get(name) is entry:
+            if entry is not None and self._running_outputs.get(execution_key) is entry:
                 entry["running"] = False
                 entry["proc"] = None
             safe_error = _redact_execution_capability(exc, execution_capability)
@@ -798,9 +880,8 @@ class ToolExecutor:
         finally:
             if execution_capability:
                 revoke_execution_capability(execution_capability)
-            if lock_fd is not None:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
+            if entry is not None:
+                self._prune_completed_entries()
 
     def last_tool_info(self) -> dict | None:
         return self._last_run

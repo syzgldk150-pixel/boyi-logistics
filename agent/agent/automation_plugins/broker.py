@@ -622,12 +622,12 @@ class LocalBrokerCapabilityIssuer:
         if pending is None:
             return None
 
-        called = False
+        phase = "ready"
 
         def mark_write_started() -> None:
-            nonlocal called
+            nonlocal phase
             with self._lock:
-                if called:
+                if phase != "ready":
                     raise PluginExecutionError("write start marker was called more than once", code="WRITE_ATTEMPT_START_REPLAYED")
                 current = self._grants.get(digest)
                 if current is not state or normalized_request_id not in current.pending_write_calls:
@@ -640,9 +640,17 @@ class LocalBrokerCapabilityIssuer:
                 if set(context) != required or self._write_attempt_recorder is None:
                     raise PluginExecutionError("durable write attempt evidence is unavailable", code="WRITE_ATTEMPT_RECEIPT_UNAVAILABLE")
                 operation, action, role, binding, arguments = current.pending_write_calls[normalized_request_id]
+                recorder = self._write_attempt_recorder
+                receipt_context = dict(context)
+                phase = "persisting"
+
+            # Target hashing and durable storage may be expensive. The issuer
+            # lock only reserves this one-shot transition; no other capability
+            # observation or Broker call waits for persistence.
+            try:
                 target_ref, target_ref_sha256 = _extract_write_target_ref(
-                    automation_id=str(context["automation_id"]),
-                    plugin_id=str(context["plugin_id"]),
+                    automation_id=str(receipt_context["automation_id"]),
+                    plugin_id=str(receipt_context["plugin_id"]),
                     operation=operation,
                     action=action,
                     role=role,
@@ -651,7 +659,7 @@ class LocalBrokerCapabilityIssuer:
                     arguments=arguments,
                 )
                 receipt = {
-                    **{key: value for key, value in context.items() if key != "plugin_id"},
+                    **{key: value for key, value in receipt_context.items() if key != "plugin_id"},
                     "request_id": normalized_request_id,
                     "operation": operation,
                     "action": action,
@@ -659,14 +667,83 @@ class LocalBrokerCapabilityIssuer:
                     "target_ref_sha256": target_ref_sha256,
                     "target_ref_json": target_ref,
                 }
-                self._write_attempt_recorder(receipt)
-                called = True
+                recorder(receipt)
+            except Exception:
+                with self._lock:
+                    phase = "failed"
+                raise
+
+            # Persistence must succeed before this callback returns to the
+            # adapter and permits its first external mutation.
+            with self._lock:
+                current = self._grants.get(digest)
+                if current is not state or normalized_request_id not in current.pending_write_calls:
+                    phase = "failed"
+                    raise PluginExecutionError(
+                        "write start marker is no longer valid",
+                        code="WRITE_ATTEMPT_START_INVALID",
+                    )
                 current.pending_write_calls.pop(normalized_request_id, None)
                 current.started_mutating_calls += 1
+                phase = "started"
 
-        setattr(mark_write_started, "started", lambda: called)
+        def started() -> bool:
+            with self._lock:
+                return phase == "started"
+
+        setattr(mark_write_started, "started", started)
 
         return mark_write_started
+
+
+@dataclass(frozen=True)
+class _PreparedBrokerInvocation:
+    grant: BrokerGrant
+    binding: object
+    operation: str
+    action: str
+    role: str
+    arguments: dict[str, Any]
+    mark_write_started: Callable[[], None] | None
+
+
+def _copy_broker_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(arguments)
+
+
+def _prepare_broker_invocation(
+    issuer: LocalBrokerCapabilityIssuer,
+    request: Mapping[str, Any],
+) -> _PreparedBrokerInvocation:
+    """Reserve the grant and prepare immutable call inputs off the event loop."""
+
+    capability = str(request.get("capability") or "")
+    request_id = str(request.get("request_id") or "")
+    operation = str(request.get("operation") or "")
+    action = str(request.get("action") or "")
+    role = str(request.get("role") or "")
+    arguments = _copy_broker_arguments(request["arguments"])
+    grant, binding = issuer.consume(
+        capability,
+        request_id=request_id,
+        operation=operation,
+        action=action,
+        role=role,
+        arguments=arguments,
+    )
+    mark_write_started = issuer.mark_write_started_hook(
+        capability,
+        request_id=request_id,
+    )
+    return _PreparedBrokerInvocation(
+        grant=grant,
+        binding=binding,
+        operation=operation,
+        action=action,
+        role=role,
+        arguments=arguments,
+        mark_write_started=mark_write_started,
+    )
 
 
 def _assert_redacted(value: Any) -> None:
@@ -682,6 +759,56 @@ def _assert_redacted(value: Any) -> None:
     elif isinstance(value, (list, tuple)):
         for item in value:
             _assert_redacted(item)
+
+
+def _decompress_broker_request(compressed: bytes) -> bytes:
+    decompressor = zlib.decompressobj()
+    try:
+        payload = decompressor.decompress(
+            compressed,
+            _MAX_BROKER_REQUEST_BYTES + 1,
+        )
+    except zlib.error as exc:
+        raise PluginExecutionError(
+            "core broker request compression is invalid",
+            code="BROKER_REQUEST_INVALID",
+        ) from exc
+    if (
+        len(payload) > _MAX_BROKER_REQUEST_BYTES
+        or decompressor.unconsumed_tail
+        or not decompressor.eof
+        or decompressor.unused_data
+    ):
+        raise PluginExecutionError(
+            "core broker request is too large or invalid",
+            code="BROKER_REQUEST_TOO_LARGE",
+        )
+    return payload
+
+
+def _decode_broker_request(payload: bytes) -> dict[str, Any]:
+    request = json.loads(payload.decode("utf-8"))
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "request_id",
+        "capability",
+        "operation",
+        "action",
+        "role",
+        "arguments",
+    }:
+        raise PluginExecutionError("core broker request schema is invalid")
+    if request.get("schema_version") != 1 or not isinstance(request.get("arguments"), dict):
+        raise PluginExecutionError("core broker request fields are invalid")
+    uuid.UUID(str(request.get("request_id") or ""))
+    return request
+
+
+def _serialize_broker_response(response: Mapping[str, Any]) -> bytes:
+    data = canonical_json_bytes(response)
+    if len(data) > 10 * 1024 * 1024:
+        return canonical_json_bytes({"ok": False, "error_code": "BROKER_RESPONSE_TOO_LARGE"})
+    return data
 
 
 class LocalCoreAutomationBroker:
@@ -757,54 +884,34 @@ class LocalCoreAutomationBroker:
         response: dict[str, Any]
         try:
             payload = await self._read_request_payload(reader)
-            request = json.loads(payload.decode("utf-8"))
-            if not isinstance(request, dict) or set(request) != {
-                "schema_version",
-                "request_id",
-                "capability",
-                "operation",
-                "action",
-                "role",
-                "arguments",
-            }:
-                raise PluginExecutionError("core broker request schema is invalid")
-            if request.get("schema_version") != 1 or not isinstance(request.get("arguments"), dict):
-                raise PluginExecutionError("core broker request fields are invalid")
-            uuid.UUID(str(request.get("request_id") or ""))
-            grant, binding = self._issuer.consume(
-                str(request.get("capability") or ""),
-                request_id=str(request.get("request_id") or ""),
-                operation=str(request.get("operation") or ""),
-                action=str(request.get("action") or ""),
-                role=str(request.get("role") or ""),
-                arguments=dict(request["arguments"]),
-            )
-            mark_write_started = self._issuer.mark_write_started_hook(
-                str(request.get("capability") or ""),
-                request_id=str(request.get("request_id") or ""),
+            request = await asyncio.to_thread(_decode_broker_request, payload)
+            prepared = await asyncio.to_thread(
+                _prepare_broker_invocation,
+                self._issuer,
+                request,
             )
             result = await self._adapter.invoke(
-                grant=grant,
-                operation=str(request["operation"]),
-                action=str(request["action"]),
-                role=str(request["role"]),
-                binding=binding,
-                arguments=dict(request["arguments"]),
-                mark_write_started=mark_write_started,
+                grant=prepared.grant,
+                operation=prepared.operation,
+                action=prepared.action,
+                role=prepared.role,
+                binding=prepared.binding,
+                arguments=prepared.arguments,
+                mark_write_started=prepared.mark_write_started,
             )
             public_result = dict(result)
-            if mark_write_started is not None:
+            if prepared.mark_write_started is not None:
                 verified_noop = _is_verified_write_noop(
                     public_result,
-                    grant=grant,
+                    grant=prepared.grant,
                     request=request,
                 )
-                if verified_noop and mark_write_started.started():
+                if verified_noop and prepared.mark_write_started.started():
                     raise PluginExecutionError(
                         "core broker write no-op crossed its started boundary",
                         code="WRITE_ATTEMPT_NOOP_MARKED",
                     )
-                if not verified_noop and not mark_write_started.started():
+                if not verified_noop and not prepared.mark_write_started.started():
                     # A write adapter that returns without crossing the marker
                     # has not established a durable boundary and must never be
                     # treated as a successful invocation.
@@ -813,7 +920,7 @@ class LocalCoreAutomationBroker:
                         code="WRITE_ATTEMPT_START_NOT_RECORDED",
                     )
                 public_result.pop(VERIFIED_WRITE_NOOP_FIELD, None)
-            _assert_redacted(public_result)
+            await asyncio.to_thread(_assert_redacted, public_result)
             response = {"ok": True, "data": public_result}
         except Exception as exc:
             response = {
@@ -821,9 +928,7 @@ class LocalCoreAutomationBroker:
                 "error_code": getattr(exc, "code", type(exc).__name__.upper())[:64],
                 "error": redact_text(exc)[:300],
             }
-        data = canonical_json_bytes(response)
-        if len(data) > 10 * 1024 * 1024:
-            data = canonical_json_bytes({"ok": False, "error_code": "BROKER_RESPONSE_TOO_LARGE"})
+        data = await asyncio.to_thread(_serialize_broker_response, response)
         try:
             writer.write(data)
             await writer.drain()
@@ -881,25 +986,4 @@ class LocalCoreAutomationBroker:
                 "core broker request is incomplete",
                 code="BROKER_REQUEST_INVALID",
             ) from exc
-        decompressor = zlib.decompressobj()
-        try:
-            payload = decompressor.decompress(
-                compressed,
-                _MAX_BROKER_REQUEST_BYTES + 1,
-            )
-        except zlib.error as exc:
-            raise PluginExecutionError(
-                "core broker request compression is invalid",
-                code="BROKER_REQUEST_INVALID",
-            ) from exc
-        if (
-            len(payload) > _MAX_BROKER_REQUEST_BYTES
-            or decompressor.unconsumed_tail
-            or not decompressor.eof
-            or decompressor.unused_data
-        ):
-            raise PluginExecutionError(
-                "core broker request is too large or invalid",
-                code="BROKER_REQUEST_TOO_LARGE",
-            )
-        return payload
+        return await asyncio.to_thread(_decompress_broker_request, compressed)
