@@ -1240,6 +1240,31 @@ def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _current_r13_projection_summary(
+    ledger_rows: list[dict[str, Any]],
+    publication_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    current_open_codes = {
+        clean_text(row.get("tracking_number"))
+        for row in ledger_rows
+        if row.get("r13_current") is True and row.get("tms_signed") is not True
+    }
+    published_current_codes = {
+        clean_text(row.get("tracking_number"))
+        for row in publication_rows
+        if row.get("r13_current") is True
+    }
+    return {
+        "current_open_codes": current_open_codes,
+        "published_current_codes": published_current_codes,
+        "current_signed_rows": sum(
+            1
+            for row in ledger_rows
+            if row.get("r13_current") is True and row.get("tms_signed") is True
+        ),
+    }
+
+
 def _sheet_values(payload: Any) -> list[list[Any]]:
     if not isinstance(payload, dict):
         return []
@@ -1757,6 +1782,23 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 for row in ledger_rows
                 if ledger_row_should_publish(row, observed_at.date())
             ]
+        )
+        current_projection = _current_r13_projection_summary(ledger_rows, open_rows)
+        current_open_codes = current_projection["current_open_codes"]
+        published_current_codes = current_projection["published_current_codes"]
+        if current_open_codes != published_current_codes:
+            raise DailySignSyncError(
+                "PROJECTION_SET_MISMATCH",
+                "R13 当前未签清单与每日应签待发布清单不一致，已保留原表。",
+                retryable=True,
+            )
+        diagnostics.update(
+            {
+                "r13_current_open_rows": len(current_open_codes),
+                "r13_current_signed_rows": current_projection[
+                    "current_signed_rows"
+                ],
+            }
         )
         missing_publication_r13_plan = sum(
             1
