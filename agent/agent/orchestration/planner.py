@@ -1,4 +1,4 @@
-"""Deterministic v1 planner.
+"""Deterministic schema-versioned planner.
 
 The first release intentionally supports explicit, deterministic tool plans.
 An LLM may select only catalog capabilities marked read/compute and exposed to
@@ -20,6 +20,8 @@ from agent.automation_plugins.code_owned_fields import (
     resolve_selection_capability_phase,
 )
 from agent.orchestration.models import (
+    PLAN_SCHEMA_VERSION,
+    SUPPORTED_PLAN_SCHEMA_VERSIONS,
     Command,
     ContextSnapshot,
     OperationType,
@@ -28,6 +30,10 @@ from agent.orchestration.models import (
     PlanStep,
     RiskLevel,
     sha256_json,
+)
+from agent.orchestration.plan_dependencies import (
+    plan_context_fingerprint,
+    plan_tool_catalog_hash,
 )
 from agent.orchestration.impact_preview import build_write_impact
 from agent.orchestration.ports import ToolCatalogPort
@@ -42,10 +48,42 @@ CUSTOMER_PROBLEM_SYNC_TOOL = "sync_customer_service_problems"
 
 
 class DeterministicPlanner:
-    def __init__(self, catalog: ToolCatalogPort) -> None:
+    def __init__(
+        self,
+        catalog: ToolCatalogPort,
+        *,
+        schema_version: int = PLAN_SCHEMA_VERSION,
+    ) -> None:
+        if (
+            type(schema_version) is not int
+            or schema_version not in SUPPORTED_PLAN_SCHEMA_VERSIONS
+        ):
+            raise OrchestrationError(
+                "UNSUPPORTED_PLAN_SCHEMA",
+                f"Unsupported plan schema: {schema_version}",
+            )
         self._catalog = catalog
+        self._schema_version = schema_version
 
-    def plan(self, command: Command, context: ContextSnapshot, *, llm_selected: bool = False) -> Plan:
+    def plan(
+        self,
+        command: Command,
+        context: ContextSnapshot,
+        *,
+        llm_selected: bool = False,
+        schema_version: int | None = None,
+    ) -> Plan:
+        selected_schema_version = (
+            self._schema_version if schema_version is None else schema_version
+        )
+        if (
+            type(selected_schema_version) is not int
+            or selected_schema_version not in SUPPORTED_PLAN_SCHEMA_VERSIONS
+        ):
+            raise OrchestrationError(
+                "UNSUPPORTED_PLAN_SCHEMA",
+                f"Unsupported plan schema: {selected_schema_version}",
+            )
         parameters = command.parameters
         tool_name = str(parameters.get("tool_name") or "").strip()
         if not tool_name:
@@ -189,10 +227,22 @@ class DeterministicPlanner:
             requires_approval=False,
         )
         invocation = command.automation_invocation
+        context_fingerprint = plan_context_fingerprint(
+            schema_version=selected_schema_version,
+            steps=(step,),
+            context=context,
+            catalog=self._catalog,
+            automation_project=invocation is not None,
+        )
+        tool_catalog_hash = plan_tool_catalog_hash(
+            schema_version=selected_schema_version,
+            steps=(step,),
+            catalog=self._catalog,
+        )
         return Plan(
             command_type=command.command_type,
-            context_fingerprint=context.fingerprint,
-            tool_catalog_hash=self._catalog.catalog_hash,
+            context_fingerprint=context_fingerprint,
+            tool_catalog_hash=tool_catalog_hash,
             steps=(step,),
             impact=impact,
             automation_id=(invocation.automation_id if invocation is not None else None),
@@ -202,6 +252,7 @@ class DeterministicPlanner:
             automation_contract_hash=(
                 invocation.contract_hash if invocation is not None else None
             ),
+            schema_version=selected_schema_version,
         )
 
 

@@ -1547,7 +1547,7 @@ class AgentRunRepository(_RepositoryBase):
         plan_hash: str,
         catalog_hash: str,
         context_hash: str,
-        plan_schema_version: int = 1,
+        plan_schema_version: int,
     ) -> dict[str, Any]:
         """CAS-refresh the only run state allowed to replace an existing plan."""
 

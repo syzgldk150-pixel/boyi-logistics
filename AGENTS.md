@@ -35,6 +35,7 @@
 - 数据库结构只由 `agent/migrations/` 的顺序 SQL 和部署期迁移器维护；服务、仓储、同步工具和 Console 请求路径只能校验结构及读写数据，不能运行 DDL。
 - Console 保持现有 HTTP 框架；`console/app.py` 只负责组合、生命周期和请求分发，业务实现必须进入 `console/services/`，路由识别进入 `console/routes/`。
 - TMS SessionBroker 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别位于 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 和 `session_validation_service.py`，调度器只依赖公开接口。
+- TMS 登录浏览器必须在按账号隔离的 staged 子进程中运行，总期限由非敏感配置 `TMS_BROWSER_ACTION_TIMEOUT_SECONDS` 控制且默认 120 秒；同账号并发登录或执行立即 `BLOCKED_LOGIN`，不同账号互不阻塞，token/epoch 不匹配的迟到结果不得提交。通用 Broker 只做本地账号/资源绑定检查；业务动作直接访问真实目标并由响应登录页进入 `BLOCKED_LOGIN`，完整 capability 矩阵只用于后台监控且不得成为执行门禁。
 - `agent/agent/` 不得依赖 `tools` 或 `feishu`；跨包回调和事件必须由 `agent/main.py` 组合注入，或通过 `shared/runtime_events.py` 的中立契约发布。
 - 生产与 CI 固定使用 Python 3.10；服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 精确固定。Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境；只有任一锁文件内容变化或环境校验失败时才构建新环境并在健康检查前原子切换。失败时从当次暂存目录恢复旧环境和源码；成功后也必须保留当次远端精确回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。
 - 提交前运行 Ruff、工具清单、仓库卫生、内部 API 契约与导入边界检查，GitHub Actions 也必须覆盖这些检查。跟踪文本统一 UTF-8 无 BOM，单个 Python 文件不得超过 3,000 行。
@@ -43,6 +44,7 @@
 ## Agent 统一控制平面
 
 - 系统保持 Agent + Console 双服务；业务编排、审批、执行恢复和事务 Outbox 全部位于 Agent，禁止新增独立 LLM 服务、消息中间件或 Console 侧编排器。完整规范见 `agent/docs/control_plane_v1.md`。
+- 新 Command 使用依赖切片 Schema v2 Plan Hash，历史等待审批 Run 保持原 Schema；WorkflowRunner 默认两个有界 Worker、浏览器单并发（分别可由 `WORKFLOW_RUNNER_CONCURRENCY`、`WORKFLOW_BROWSER_CONCURRENCY` 配置），只读/计算无执行互斥，受保护写仅按完整业务身份精确串行。Outbox 按投影/审批/财务职责分消费者，慢财务分析必须进入独立 Command/Run 和工具子进程。
 - 除登录/验证码、Console 本地 OCR 与手工运单 CRUD 外，Console、飞书、APScheduler、Webhook 和兼容工具 API 必须提交 Command；只有 `agent/agent/orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`。
 - Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；通用仓储原语、未知写恢复状态机、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/automation_unknown_write_recovery.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
 - Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。
@@ -52,6 +54,7 @@
 - 生产已经执行的 `014_control_plane_task_cutover.sql` 必须保持与 `schema_migrations` 一致的原始字节，不得把后续修复回写到旧迁移；`015` 建立任务级策略表，`016`/`017` 完成账号与任务合同升级，`018` 建立项目代际和一次性授权证据。首次 post-018 发布要求 71/68/16 与 10 LEGACY/6 REQUIRE 全部闭合；marker 已存在的后续发布允许管理员合法启停、改 schedule 或改回逐次审批，但当前项目、策略与原始 marker 证据必须各自可验证。
 - 保存或清除自动化账号凭据前，Agent 必须在同一事务中把所有显式引用、以及 `sync_finance_bills` 等代码声明的隐式账号依赖对应的 `EXACT_SCHEDULE_EXEMPT` 降为 `REQUIRE_EACH_RUN` 并写审计/Outbox；账号级 MySQL 执行锁必须让凭据变更与所有非终态受保护写 Run 串行化，凭据变更租约存续期间禁止重新授予相关免审，撤权、活动 Run 检查或锁获取失败时凭据写入必须 fail closed。项目级 `PROJECT_FULL_AUTO` 是独立的持久管理员意图，凭据变化不得改写；账号或登录态不闭合时应由运行前校验显式阻断。每个受保护写步骤在同一账号锁内重新评估当前策略并提交 `RUNNING`；免审已失效时原子回到 `WAITING_APPROVAL`，已有 `RUNNING/VERIFYING` 写步骤只允许 reconcile，未知结果不得重放。终态 Run 的人工 `retry` 只允许原计划全部为 read/compute；任何外部写、财务写、内部投影写或 destructive step 都必须提交新 Command 并重新经过策略/审批，禁止复制原 Scheduler 身份重放。
 - 生产发布必须持有远端互斥锁，在任何 mutation 前捕获 `014`/`016`/`017`/`018` 与各 bootstrap marker 的原状态；停止服务前后都要确认没有 `RUNNING`/`VERIFYING` 的受保护写。失败回滚只撤销本次从 pending/marker-absent 产生的状态，并按项目策略 bootstrap、`018`、旧任务 bootstrap、`017`、`016`、`014` 的逆序恢复。新 Agent 重启时必须由部署标记同时保持 Scheduler 暂停和 WorkflowRunner 不领取 Run；签名 identity smoke、post-018 项目 manifest 和依赖记录全部通过后，签名管理接口才先恢复并确认两者均可运行，最后删除匹配本次 SHA 的 marker。marker 删除是发布提交点；删除前异常或进程退出必须保留 marker，使下次启动继续 hold，响应丢失后的重复激活必须幂等完成，提交请求发出后不得再自动回滚可能已经开始执行的任务。
+- 发布器默认按变更选择 Console-only、Agent-only 或 shared/migration；只有共享代码、迁移、迁移运行器或依赖锁变化才协调两个服务。每条路径只重启和回滚自己负责的服务，同时保留远端发布锁、受保护写门禁、迁移 checksum、精确回滚材料、激活标记与对应健康检查。
 - “每日应签”和客服问题件先作为只读影子投影。每日应签只由真实主单签收证据关闭；问题件列表消失必须按外部 ID 精确详情复核。未连续三个完整业务日满足完整性与集合一致标准前，不得切换首页口径。
 - Console 事项中心只能代理 Agent `/internal/v1/*`，不得直读控制平面表。所有 POST 使用真实 MySQL 管理员会话、同源校验和服务端身份覆盖；Basic Auth 不具备控制平面写权限。审批 TTL 只限制 `PENDING` 的决定时间，已及时批准的同一 plan hash 可跨发布 hold/停机等待执行；飞书决定必须在同一事务内实时复核绑定账号仍启用且为 `super_admin`。跨域事务固定按 Run→Approval→排序后的 Binding→Delivery 加锁，已持单 Binding 的路径不得扩锁到其他 Binding；每个绑定由数据库约束最多一条 `ACTIVE` 投递。
 
@@ -87,6 +90,6 @@
 
 ## 业务模块与经营只读入口
 
-- `shared/business_modules.py` 是 14 个 Console 菜单身份的唯一不可变目录；`027_business_module_lifecycle.sql` 保存生命周期与 Lite 审计。027 可从部分 DDL 状态前向重跑，`scripts/run_migrations.py` 加载 `scripts/business_module_migration_contract.py` 在 seed 前精确校验结构且只补齐缺行；审计仅由唯一仓储/API 生命周期写路径追加，不依赖 trigger。可管理模块的菜单、页面/API 由已签名 Agent 状态投影关闭失败，核心模块不可停用。
+- `shared/business_modules.py` 是 14 个 Console 菜单身份的唯一不可变目录；`027_business_module_lifecycle.sql` 保存生命周期与 Lite 审计。027 可从部分 DDL 状态前向重跑，`scripts/run_migrations.py` 加载 `scripts/business_module_migration_contract.py` 在 seed 前精确校验结构且只补齐缺行；审计仅由唯一仓储/API 生命周期写路径追加，不依赖 trigger。14 个注册模块始终按静态目录显示；Agent 状态未知时 GET 页面壳与只读入口保持可见并明确提示服务不可用，所有写请求 fail closed；已知非 `ENABLED` 的可管理模块继续阻断业务方法，核心模块不可停用。
 - `CommandGateway` 在同一 UoW 生命周期锁中拒绝不可用可管理模块的新普通/项目化命令；项目化命令只从已提交签名治理锚点解析核心工具，已受理 Run 可继续。
 - `query_automation_operations` 只读聚合 `agent_commands` / `agent_runs` 固定日期区间的状态与新鲜度；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，金额不完整不输出金额，也不推断客户收入或异常历史。

@@ -374,6 +374,7 @@ class WorkflowRunner:
                     command,
                     fresh_context,
                     llm_selected=bool(command.parameters.get("llm_selected")),
+                    schema_version=plan.schema_version,
                 )
                 self._validator.validate(fresh_plan, fresh_context, llm_selected=bool(command.parameters.get("llm_selected")))
                 if fresh_plan.plan_hash != plan.plan_hash:
@@ -390,6 +391,7 @@ class WorkflowRunner:
                             plan_hash=fresh_plan.plan_hash,
                             catalog_hash=fresh_plan.tool_catalog_hash,
                             context_hash=fresh_plan.context_fingerprint,
+                            plan_schema_version=fresh_plan.schema_version,
                         )
                         uow.commit()
                     plan = fresh_plan
