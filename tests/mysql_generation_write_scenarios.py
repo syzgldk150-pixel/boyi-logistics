@@ -647,7 +647,7 @@ def run_test_generation_write_lock_order_races(case):
             project = cursor.fetchone()
             case.assertEqual(2, project["target_generation"])
             case.assertEqual(2, project["committed_generation"])
-            case.assertEqual("DRAINING", project["reconcile_state"])
+            case.assertEqual("STABLE", project["reconcile_state"])
             case.assertEqual("ENABLED", project["state"])
             cursor.execute(
                 "SELECT generation, state, snapshot_sha256 "

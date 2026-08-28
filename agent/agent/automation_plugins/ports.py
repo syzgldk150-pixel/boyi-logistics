@@ -526,6 +526,12 @@ class RuntimeGenerationRepositoryPort(Protocol):
 
     def block_generation_unknown_write(self, automation_id: str, generation: int) -> None: ...
 
+    def stabilize_project_after_archival_unknown(
+        self,
+        automation_id: str,
+        generation: int,
+    ) -> None: ...
+
 
 @runtime_checkable
 class RuntimeCoeffectProviderPort(Protocol):
