@@ -542,6 +542,39 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertEqual("自动登录已暂停", paused_status["label"])
         self.assertEqual(("describe", False, False), calls[-1])
 
+    def test_login_page_unavailable_does_not_increment_failure_count(self):
+        calls: list[str] = []
+
+        class FakeBroker(ManualCredentialsBroker):
+            def describe_status(self, *, validate=True, force=False):
+                return {
+                    "status": "expired",
+                    "label": "已过期",
+                    "status_tone": "error",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "session expired",
+                }
+
+            def send_code(self):
+                calls.append("send_code")
+                raise account_manager_module.TMSAuthStateError(
+                    "LOGIN_PAGE_UNAVAILABLE",
+                    "融辉登录页暂时没有加载完成，系统稍后会自动重试。",
+                )
+
+        with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            self.manager.set_auto_login("ronghui_default", True)
+            results = [
+                self.manager.check_status_with_auto_login("ronghui_default", force=True)
+                for _ in range(3)
+            ]
+
+        self.assertEqual(["send_code", "send_code", "send_code"], calls)
+        self.assertTrue(all(result["auto_login_retryable"] for result in results))
+        self.assertTrue(all(result["auto_login_failure_count"] == 0 for result in results))
+        self.assertTrue(all(not result["auto_login_blocked"] for result in results))
+
     def test_force_status_check_keeps_pending_code_without_resending(self):
         calls: list[tuple[str, Any]] = []
 
