@@ -18,6 +18,60 @@ from shared.orchestration_repository_support import (
 )
 
 
+def stabilize_project_after_archival_unknown(
+    cursor: Any,
+    *,
+    automation_id: str,
+    generation: int,
+) -> None:
+    """Close a completed drain while retaining historical unknown evidence."""
+
+    cursor.execute(
+        """
+        UPDATE automation_projects AS project
+        SET project.reconcile_state='STABLE', project.updated_at=NOW(6)
+        WHERE project.automation_id=%s
+          AND project.target_generation=project.committed_generation
+          AND project.committed_generation<>%s
+          AND project.reconcile_state='DRAINING'
+          AND EXISTS (
+              SELECT 1
+              FROM automation_project_generations AS committed
+              WHERE committed.automation_id=project.automation_id
+                AND committed.generation=project.committed_generation
+                AND committed.state='COMMITTED'
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM automation_project_generations AS pending
+              WHERE pending.automation_id=project.automation_id
+                AND pending.generation<>project.committed_generation
+                AND pending.state IN (
+                    'DRAINING', 'DISPOSING', 'FAILED', 'BLOCKED'
+                )
+                AND (
+                    pending.state<>'BLOCKED'
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM automation_project_generation_leases AS archival_lease
+                        WHERE archival_lease.automation_id=pending.automation_id
+                          AND archival_lease.generation=pending.generation
+                          AND archival_lease.outcome='WRITE_OUTCOME_UNKNOWN'
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM automation_project_generation_leases AS active_lease
+                        WHERE active_lease.automation_id=pending.automation_id
+                          AND active_lease.generation=pending.generation
+                          AND active_lease.outcome IN ('RUNNING', 'VERIFYING')
+                    )
+                )
+          )
+        """,
+        (automation_id, generation),
+    )
+
+
 def block_generation_unknown_write_row(
     repository: Any,
     automation_id: str,
@@ -93,6 +147,16 @@ def block_generation_unknown_write_row(
             raise ConcurrentUpdateError(
                 "runtime generation unknown-write state changed"
             )
+        # The unknown predecessor is now a durable audit archive, not active
+        # runtime work.  If the successor is already the committed target and
+        # no other non-archival generation remains, close the drain journal in
+        # this same transaction.  Otherwise the project can remain stuck in
+        # DRAINING forever even though no process is still using the old route.
+        stabilize_project_after_archival_unknown(
+            cursor,
+            automation_id=safe_automation_id,
+            generation=safe_generation,
+        )
 
 
 def lock_archival_unknown_predecessor(
