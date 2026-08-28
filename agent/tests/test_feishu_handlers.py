@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from fastapi import HTTPException
 
 from agent.direct_tool_router import format_price_reply, format_price_reply_messages, parse_price_request
+from agent.orchestration.feishu_approval_service import DEFAULT_NOTIFICATION_LEASE_SECONDS
 from feishu import message_handler, notify
 from feishu.reply_formatter import format_reply
 import main
@@ -771,6 +772,33 @@ class FeishuWebhookHelperTests(unittest.TestCase):
 
 
 class FeishuNotifyTests(unittest.TestCase):
+    def test_send_text_configures_timeout_shorter_than_notification_lease(self):
+        builder = Mock()
+        builder.app_id.return_value = builder
+        builder.app_secret.return_value = builder
+        builder.timeout.return_value = builder
+        client = Mock()
+        builder.build.return_value = client
+        response = Mock()
+        response.success.return_value = True
+        client.im.v1.message.create.return_value = response
+
+        with (
+            patch.dict(
+                os.environ,
+                {"FEISHU_APP_ID": "test-app", "FEISHU_APP_SECRET": "test-secret"},
+                clear=False,
+            ),
+            patch("lark_oapi.Client.builder", return_value=builder),
+        ):
+            self.assertTrue(notify.send_text_sync("ou-test", "test", "open_id"))
+
+        builder.timeout.assert_called_once_with(notify.FEISHU_SEND_TIMEOUT_SECONDS)
+        self.assertLess(
+            notify.FEISHU_SEND_TIMEOUT_SECONDS,
+            DEFAULT_NOTIFICATION_LEASE_SECONDS,
+        )
+
     def test_notify_target_uses_recent_chat_when_env_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)

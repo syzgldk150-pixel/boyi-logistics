@@ -13,6 +13,7 @@ logger = logging.getLogger("feishu")
 
 _STATE_DIR = Path(__file__).resolve().parent / "state"
 _LAST_CHAT_PATH = _STATE_DIR / "last_chat.json"
+FEISHU_SEND_TIMEOUT_SECONDS = 30.0
 
 
 def _now_text() -> str:
@@ -116,7 +117,13 @@ def send_text_sync(receive_id: str, text: str, receive_id_type: str = "chat_id")
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 
-        client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
+        client = (
+            lark.Client.builder()
+            .app_id(app_id)
+            .app_secret(app_secret)
+            .timeout(FEISHU_SEND_TIMEOUT_SECONDS)
+            .build()
+        )
 
         body = (
             CreateMessageRequestBody.builder()

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("auto", "all", "agent", "console")]
+    [ValidateSet("auto", "all", "agent", "console", "shared")]
     [string]$Target = "auto",
     [string]$RemoteHost = "123.57.106.70",
     [string]$SshKeyPath = "C:\Users\DENG\.ssh\codex_ecs_ed25519",
@@ -423,25 +423,68 @@ function Get-Sha256Hex([string]$PathValue) {
     }
 }
 
-function Get-TreeFingerprint([string[]]$Paths) {
-    $entries = [Collections.Generic.List[string]]::new()
-    foreach ($pathValue in $Paths) {
-        $root = Join-Path $PayloadRoot $pathValue
-        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName) {
-            $relative = $file.FullName.Substring($PayloadRoot.Length).TrimStart("\", "/").Replace("\", "/")
-            $hash = Get-Sha256Hex $file.FullName
-            $entries.Add("${relative}=${hash}")
+function Get-ReleaseFingerprints() {
+    $sharedEntries = [Collections.Generic.List[string]]::new()
+    $agentEntries = [Collections.Generic.List[string]]::new()
+    $consoleEntries = [Collections.Generic.List[string]]::new()
+    $sharedAgentPaths = @(
+        "agent/migrations/",
+        "agent/requirements.txt",
+        "agent/requirements.lock",
+        "agent/scripts/run_migrations.py",
+        "agent/scripts/business_module_migration_contract.py",
+        "agent/scripts/migration_018_authorization.py",
+        "agent/scripts/automation_project_release_manifest_preflight.py",
+        "agent/scripts/automation_project_resource_preflight.py",
+        "agent/scripts/automation_project_schedule_identity_preflight.py",
+        "agent/scripts/automation_plugin_install_ownership_preflight.py",
+        "agent/scripts/automation_project_version_preflight.py",
+        "agent/scripts/verify_locked_environment.py"
+    )
+    $sharedConsolePaths = @("console/requirements.txt", "console/requirements.lock")
+
+    foreach ($file in Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File | Sort-Object FullName) {
+        $relative = $file.FullName.Substring($PayloadRoot.Length).TrimStart("\", "/").Replace("\", "/")
+        if ($relative.StartsWith("_manifests/", [StringComparison]::Ordinal)) {
+            continue
+        }
+        $entry = "${relative}=$(Get-Sha256Hex $file.FullName)"
+        if ($relative.StartsWith("shared/", [StringComparison]::Ordinal) -or
+            ($sharedAgentPaths | Where-Object {
+                $relative -ceq $_ -or ($_.EndsWith("/") -and $relative.StartsWith($_, [StringComparison]::Ordinal))
+            }) -or
+            ($sharedConsolePaths -ccontains $relative)) {
+            $sharedEntries.Add($entry)
+        }
+        elseif ($relative.StartsWith("agent/", [StringComparison]::Ordinal)) {
+            $agentEntries.Add($entry)
+        }
+        elseif ($relative.StartsWith("console/", [StringComparison]::Ordinal)) {
+            $consoleEntries.Add($entry)
         }
     }
-    $joined = [string]::Join("`n", @($entries | Sort-Object))
-    $bytes = [Text.Encoding]::UTF8.GetBytes($joined)
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        return (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join "")
+
+    $result = @{}
+    foreach ($scope in @("agent", "console", "shared")) {
+        $entries = switch ($scope) {
+            "agent" { $agentEntries }
+            "console" { $consoleEntries }
+            "shared" { $sharedEntries }
+        }
+        if ($entries.Count -eq 0) {
+            throw "Release fingerprint scope is empty: $scope"
+        }
+        $joined = [string]::Join("`n", @($entries | Sort-Object))
+        $bytes = [Text.Encoding]::UTF8.GetBytes($joined)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $result[$scope] = (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join "")
+        }
+        finally {
+            $sha.Dispose()
+        }
     }
-    finally {
-        $sha.Dispose()
-    }
+    return $result
 }
 
 function Load-State() {
@@ -467,11 +510,26 @@ function Save-State([hashtable]$State) {
 }
 
 function Resolve-Targets([hashtable]$State, [hashtable]$Fingerprints) {
+    $sharedChanged = $State["sharedHash"] -ne $Fingerprints["shared"]
     switch ($Target) {
-        "all" { return @("agent", "console") }
-        "agent" { return @("agent") }
-        "console" { return @("console") }
+        "all" { return @("shared") }
+        "shared" { return @("shared") }
+        "agent" {
+            if ($sharedChanged) {
+                throw "Explicit Agent-only release conflicts with changed shared/dependency/migration scope. Publish -Target shared."
+            }
+            return @("agent")
+        }
+        "console" {
+            if ($sharedChanged) {
+                throw "Explicit Console-only release conflicts with changed shared/dependency/migration scope. Publish -Target shared."
+            }
+            return @("console")
+        }
         "auto" {
+            if ($sharedChanged) {
+                return @("shared")
+            }
             $resolved = [Collections.Generic.List[string]]::new()
             foreach ($name in @("agent", "console")) {
                 if ($State["${name}Hash"] -ne $Fingerprints[$name]) {
@@ -500,24 +558,23 @@ if (Test-LocalTcpListener 9000) {
 $releaseId = "release-$($releaseSha.Substring(0, 12))-$(Get-Date -Format 'yyyyMMddHHmmss')"
 $TaskTempDir = Join-Path $TaskTempRoot $releaseId
 $PayloadRoot = Join-Path $TaskTempDir $releaseId
-$remoteStage = "${RemoteDeployRoot}/${releaseId}"
+$remoteStage = ""
 $remoteStageCreated = $false
+$remoteStageBaseTime = Get-Date
+$remoteStageSequence = 0
 
 try {
     New-Item -ItemType Directory -Path $PayloadRoot -Force | Out-Null
     Build-Payload $PayloadRoot
 
-    $fingerprints = @{
-        agent = Get-TreeFingerprint @("agent", "shared")
-        console = Get-TreeFingerprint @("console", "shared")
-    }
+    $fingerprints = Get-ReleaseFingerprints
     $state = Load-State
     $targetsToPublish = @(Resolve-Targets $state $fingerprints)
     if ($targetsToPublish.Count -eq 0) {
         Write-Host "No changed source scope detected. Nothing to publish."
         exit 0
     }
-    if ($targetsToPublish -contains "agent") {
+    if (($targetsToPublish -contains "agent") -or ($targetsToPublish -contains "shared")) {
         Copy-AutomationPluginReleaseInputs `
             $AutomationPluginArtifactRoot `
             $AutomationPluginTrustRoot `
@@ -525,37 +582,56 @@ try {
             $PayloadRoot
     }
 
-    Invoke-Remote "test `"`$(id -un)`" = boyce && test -d /home/boyce && mkdir -p '$RemoteDeployRoot'"
-    & scp @scpArgs -r $PayloadRoot "${remoteSpec}:${RemoteDeployRoot}/"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to upload staged release"
-    }
-    $remoteStageCreated = $true
-
     $skipRestartValue = if ($SkipRestart) { "1" } else { "0" }
     $skipHealthValue = if ($SkipHealthCheck) { "1" } else { "0" }
-    $targetCsv = $targetsToPublish -join ","
-    $remoteReleaseCommand = "bash '$remoteStage/agent/deploy/remote_release.sh' '$remoteStage' '$releaseSha' '$targetCsv' '$skipRestartValue' '$skipHealthValue'"
-    if ($EmergencyUserAuthorizedScheduledWindowOverride) {
-        Write-Warning "Emergency scheduled-window override requested: emergency_user_authorized=true"
-        $remoteReleaseCommand += " '--emergency-scheduled-window-override=emergency_user_authorized'"
-    }
-    Invoke-Remote $remoteReleaseCommand
-    $remoteStageCreated = $false
+    Invoke-Remote "test `"`$(id -un)`" = boyce && test -d /home/boyce && mkdir -p '$RemoteDeployRoot'"
+    foreach ($publishTarget in $targetsToPublish) {
+        # Successful releases deliberately retain their recovery bundle. Give
+        # each independently published service its own remote stage, while a
+        # shared release remains one coordinated invocation and one stage.
+        $remoteStageTimestamp = $remoteStageBaseTime.AddSeconds($remoteStageSequence).ToString("yyyyMMddHHmmss")
+        $remoteStageSequence += 1
+        $remoteStageReleaseId = "release-$($releaseSha.Substring(0, 12))-$remoteStageTimestamp"
+        $remoteStage = "${RemoteDeployRoot}/${remoteStageReleaseId}"
+        Invoke-Remote "test ! -e '$remoteStage'"
+        & scp @scpArgs -r $PayloadRoot "${remoteSpec}:${remoteStage}"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload staged $publishTarget release"
+        }
+        $remoteStageCreated = $true
 
-    foreach ($name in $targetsToPublish) {
-        $state["${name}Hash"] = $fingerprints[$name]
+        $remoteReleaseCommand = "bash '$remoteStage/agent/deploy/remote_release.sh' '$remoteStage' '$releaseSha' '$publishTarget' '$skipRestartValue' '$skipHealthValue'"
+        if ($EmergencyUserAuthorizedScheduledWindowOverride) {
+            Write-Warning "Emergency scheduled-window override requested: emergency_user_authorized=true"
+            $remoteReleaseCommand += " '--emergency-scheduled-window-override=emergency_user_authorized'"
+        }
+        Invoke-Remote $remoteReleaseCommand
+        $remoteStageCreated = $false
+
+        $publishedFingerprintScopes = if ($publishTarget -eq "shared") {
+            @("agent", "console", "shared")
+        }
+        else {
+            @($publishTarget)
+        }
+        foreach ($name in $publishedFingerprintScopes) {
+            $state["${name}Hash"] = $fingerprints[$name]
+        }
+        $state["lastPublishedAt"] = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        $state["lastPublishedTarget"] = $publishTarget
+        $state["lastReleaseSha"] = $releaseSha
+        Save-State $state
+        Write-Host "Publish completed: $publishTarget @ $releaseSha"
     }
-    $state["lastPublishedAt"] = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    $state["lastPublishedTarget"] = $targetCsv
-    $state["lastReleaseSha"] = $releaseSha
-    Save-State $state
-    Write-Host "Publish completed: $targetCsv @ $releaseSha"
 }
 finally {
-    if ($remoteStageCreated -and $remoteStage.StartsWith("/home/boyce/.boyi-deploy/release-")) {
-        # remote_release.sh owns successful cleanup and complete rollback cleanup.
-        # If SSH or rollback fails, this stage may contain the only recovery bundle.
+    if (
+        $remoteStageCreated -and
+        $remoteStage.StartsWith("/home/boyce/.boyi-deploy/release-")
+    ) {
+        # Successful stages are retained as recovery bundles; failed releases
+        # normally clean up after a complete rollback. If SSH or rollback fails,
+        # this stage may contain the only recovery material.
         Write-Warning "Remote release failed; verify whether recovery material remains at: $remoteStage"
     }
     if (Test-Path -LiteralPath $TaskTempDir) {

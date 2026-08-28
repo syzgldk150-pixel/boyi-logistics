@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 import pytest
 
 from agent.automation_plugins.binding_resolver import ProductionProjectBindingResolver
-from agent.automation_plugins.catalog import PluginCatalog
+from agent.automation_plugins.catalog import CompositeToolRegistry, PluginCatalog
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.first_party import (
     deferred_first_party_automation_ids,
@@ -1340,6 +1340,93 @@ def test_stable_material_drift_requires_next_generation_policy_binding() -> None
     assert runtime.reconcile_state is RuntimeReconcileState.STABLE
 
 
+def test_invalid_candidate_keeps_committed_route_and_other_projects_available() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    rejected_id, following_id = sorted(world.expected_automation_ids)[:2]
+    committed_before = world.catalog.get_project_capability(rejected_id)
+    rejected_row = world.desired_rows[rejected_id]
+    rejected_row["config_json"] = {
+        **rejected_row["config_json"],
+        "uncommitted_candidate": True,
+    }
+    visited: list[str] = []
+    service = _target_service(world)
+    reconcile_project = service.reconcile_project
+
+    def _recording_reconcile(automation_id: str):
+        visited.append(automation_id)
+        return reconcile_project(automation_id)
+
+    service.reconcile_project = _recording_reconcile
+
+    assert service.reconcile_all() == ()
+
+    assert following_id in visited
+    assert service.reconciliation_failures()[rejected_id]["code"] == (
+        "PLUGIN_VERSION_CONFLICT"
+    )
+    runtime = world.runtime.get_project_runtime(rejected_id)
+    assert runtime is not None
+    assert runtime.committed_generation == 1
+    assert runtime.target_generation == 1
+    assert runtime.reconcile_state is RuntimeReconcileState.STABLE
+    committed_after = world.catalog.get_project_capability(rejected_id)
+    assert committed_after["_plugin_runtime"]["generation"] == 1
+    assert committed_after == committed_before
+    assert world.catalog.get_project_capability(following_id)["_plugin_runtime"][
+        "generation"
+    ] == 1
+
+
+def test_malformed_upgrade_manifest_is_quarantined_per_project_with_lkg() -> None:
+    world = _build_release_world()
+    _reconcile_world(world)
+    rejected_id, following_id = sorted(world.expected_automation_ids)[:2]
+    rejected = world.project_repository.projects[rejected_id]
+    world.project_repository.projects[rejected_id] = replace(
+        rejected,
+        state=PluginProjectState.UPGRADING,
+        active_version=replace(rejected.active_version, manifest={}),
+        target_generation=2,
+        reconcile_state=RuntimeReconcileState.ERROR,
+    )
+    service = _target_service(world)
+
+    assert service.reconcile_all() == ()
+
+    assert service.reconciliation_failures()[rejected_id]["code"] == (
+        "PLUGIN_MANIFEST_INVALID"
+    )
+    lkg = world.catalog.get_project_capability(rejected_id)
+    assert lkg["_plugin_runtime"]["generation"] == 1
+    following = world.catalog.get_project_capability(following_id)
+    assert following["_plugin_runtime"]["generation"] == 1
+    core_tool = str(following["_plugin_runtime"]["governance_anchor"]["name"])
+    composite = CompositeToolRegistry(world.core, world.catalog)
+    assert world.core.get_capability(core_tool) is not None
+    assert core_tool in composite.list_tools()
+    assert f"automation.{following_id}.run" in composite.list_tools()
+
+    health = world.catalog.production_health(
+        tuple(sorted(world.expected_automation_ids))
+    )
+    assert health["ok"] is True
+    assert health["runnable"] is True
+    assert health["unsupported_automation_ids"] == []
+    assert health["unavailable_projects"] == {
+        rejected_id: {
+            "runtime_status": "UNAVAILABLE",
+            "error_code": "PLUGIN_MANIFEST_INVALID",
+        }
+    }
+    projection = world.catalog.safe_projection()
+    assert projection["unavailable_projects"] == health["unavailable_projects"]
+    assert rejected_id not in {
+        item["automation_id"] for item in projection["instances"]
+    }
+
+
 def test_stable_pointer_requires_a_committed_generation_record() -> None:
     world = _build_release_world()
     _reconcile_world(world)
@@ -1396,6 +1483,19 @@ def test_missing_required_delivery_resource_waits_and_catalog_fails_closed() -> 
     assert health["runnable"] is False
     assert health["runtime_status"] == "UNAVAILABLE"
     assert health["unstable_generations"] == ["delivery_status"]
+    with pytest.raises(PluginConflictError, match="no committed generation"):
+        world.catalog.get_project_capability("delivery_status")
+    available_id = next(
+        automation_id
+        for automation_id in sorted(world.expected_automation_ids)
+        if automation_id != "delivery_status"
+    )
+    available = world.catalog.get_project_capability(available_id)
+    assert available["_plugin_runtime"]["generation"] == 1
+    core_tool_name = str(
+        available["_plugin_runtime"]["governance_anchor"]["name"]
+    )
+    assert world.core.get_capability(core_tool_name) is not None
 
 
 def test_committed_route_value_drift_never_retargets_transport() -> None:

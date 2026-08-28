@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -61,6 +61,32 @@ PROTECTED_STEP_LOCK_WAIT_SECONDS = 5.0
 PROTECTED_STEP_LOCK_RETRY_SECONDS = 0.1
 SCHEDULER_SUPERSESSION_MAX_NO_PROGRESS_BATCHES = 2
 
+# Core tools do not carry plugin runtime permissions.  Keep their browser lane
+# explicit and separate from the registry's ``heavy`` resource hint: OCR and
+# database backfills may be heavy without opening Chromium, while these tools
+# can enter a real Playwright/browser-backed path.
+CORE_BROWSER_TOOL_NAMES = frozenset(
+    {
+        "clock_in_dual",
+        "get_price",
+        "r7_arrival_checkin",
+        "r7_departure_checkin",
+        "sync_arrival_stats",
+        "sync_daily_should_sign",
+        "sync_finance_bills",
+        "sync_scan_codes",
+        "track_waybill",
+    }
+)
+CORE_BROWSER_TMS_ENDPOINTS = frozenset(
+    {
+        "get_price",
+        "ronghui_tms_tracking",
+        "tracking_query",
+        "waybill_tracking",
+    }
+)
+
 
 class WorkflowRunner:
     def __init__(
@@ -82,6 +108,9 @@ class WorkflowRunner:
         ) = None,
         poll_interval_seconds: float = 0.5,
         lease_seconds: int = 120,
+        worker_concurrency: int = 2,
+        browser_concurrency: int = 1,
+        browser_tool_names: Collection[str] = (),
     ) -> None:
         self._repository = repository
         self._catalog = catalog
@@ -97,6 +126,14 @@ class WorkflowRunner:
         self._worker_id = worker_id
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._lease_seconds = max(10, int(lease_seconds))
+        self._worker_concurrency = max(1, int(worker_concurrency))
+        self._browser_concurrency = max(1, int(browser_concurrency))
+        self._browser_tool_names = CORE_BROWSER_TOOL_NAMES | frozenset(
+            str(name).strip() for name in browser_tool_names if str(name).strip()
+        )
+        self._browser_semaphore = asyncio.Semaphore(self._browser_concurrency)
+        self._execution_locks: dict[tuple[str, ...], asyncio.Lock] = {}
+        self._execution_lock_users: dict[tuple[str, ...], int] = {}
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -110,7 +147,10 @@ class WorkflowRunner:
         self._loop = asyncio.get_running_loop()
         self._release_hold = bool(held_for_release)
         self._stop.clear()
-        self._task = asyncio.create_task(self._run_loop(), name=f"run-worker:{self._worker_id}")
+        self._task = asyncio.create_task(
+            self._run_pool(),
+            name=f"run-worker-pool:{self._worker_id}",
+        )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -166,6 +206,22 @@ class WorkflowRunner:
             step_id, _task = active
             await self._execution_port.cancel_step(run_id=run_id, step_id=step_id)
         self.wake(run_id)
+
+    async def _run_pool(self) -> None:
+        workers = [
+            asyncio.create_task(
+                self._run_loop(),
+                name=f"run-worker:{self._worker_id}:{slot + 1}",
+            )
+            for slot in range(self._worker_concurrency)
+        ]
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for worker in workers:
+                if not worker.done():
+                    worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
     async def _run_loop(self) -> None:
         while not self._stop.is_set():
@@ -835,6 +891,311 @@ class WorkflowRunner:
             uow.commit()
         return updated
 
+    def _execution_lock_keys(
+        self,
+        step: PlanStep,
+        plan: Plan,
+        capability: Mapping[str, Any],
+    ) -> tuple[tuple[str, ...], ...]:
+        """Derive only real write conflicts; never invent a global fallback."""
+
+        if step.operation_type in {OperationType.READ, OperationType.COMPUTE}:
+            return ()
+
+        account_ids = {
+            str(value).strip()
+            for value in (step.account_id, step.arguments.get("account_id"))
+            if str(value or "").strip()
+        }
+        raw_account_ids = step.arguments.get("account_ids")
+        if isinstance(raw_account_ids, (list, tuple, set, frozenset)):
+            account_ids.update(
+                str(value).strip()
+                for value in raw_account_ids
+                if str(value or "").strip()
+            )
+
+        plugin_runtime = capability.get("_plugin_runtime")
+        runtime_account_bindings: Mapping[str, Any] = {}
+        runtime_resource_bindings: Mapping[str, Any] = {}
+        runtime_target = ""
+        if isinstance(plugin_runtime, Mapping):
+            raw_bindings = plugin_runtime.get("account_bindings")
+            if isinstance(raw_bindings, Mapping):
+                runtime_account_bindings = raw_bindings
+            raw_resources = plugin_runtime.get("resource_bindings")
+            if isinstance(raw_resources, Mapping):
+                runtime_resource_bindings = raw_resources
+            runtime_target = str(
+                plugin_runtime.get("core_tool_name")
+                or plugin_runtime.get("plugin_id")
+                or plugin_runtime.get("automation_id")
+                or ""
+            ).strip()
+        for raw_binding in runtime_account_bindings.values():
+            values = (
+                raw_binding
+                if isinstance(raw_binding, (list, tuple, set, frozenset))
+                else (raw_binding,)
+            )
+            account_ids.update(
+                str(value).strip()
+                for value in values
+                if str(value or "").strip()
+            )
+
+        keys: set[tuple[str, ...]] = {
+            ("account-write", account_id)
+            for account_id in account_ids
+        }
+        raw_entities = plan.impact.get("entities")
+        entities = raw_entities if isinstance(raw_entities, list) else []
+        explicit_targets = {
+            str(step.arguments.get(field) or "").strip()
+            for field in ("source_system", "platform", "provider", "target")
+            if str(step.arguments.get(field) or "").strip()
+        }
+        single_explicit_target = (
+            next(iter(explicit_targets)) if len(explicit_targets) == 1 else ""
+        )
+        operation = step.operation_type.value
+        for raw_role, raw_resource_id in runtime_resource_bindings.items():
+            role = str(raw_role or "").strip()
+            resource_id = str(raw_resource_id or "").strip()
+            if not runtime_target or not role or not resource_id:
+                continue
+            if account_ids:
+                keys.update(
+                    (
+                        "resource-write",
+                        account_id,
+                        runtime_target,
+                        role,
+                        resource_id,
+                        operation,
+                    )
+                    for account_id in account_ids
+                )
+            else:
+                keys.add(
+                    (
+                        "resource-write",
+                        runtime_target,
+                        role,
+                        resource_id,
+                        operation,
+                    )
+                )
+        for raw_entity in entities:
+            if not isinstance(raw_entity, Mapping):
+                continue
+            target = str(raw_entity.get("source_system") or "").strip()
+            if not target:
+                target = single_explicit_target or runtime_target
+            entity_type = str(raw_entity.get("entity_type") or "").strip()
+            entity_id = str(raw_entity.get("entity_id") or "").strip()
+            metadata = raw_entity.get("metadata")
+            action = (
+                str(metadata.get("action") or "").strip()
+                if isinstance(metadata, Mapping)
+                else ""
+            )
+            if not target or not entity_type or not entity_id:
+                continue
+            if account_ids:
+                keys.update(
+                    (
+                        "resource-write",
+                        account_id,
+                        target,
+                        entity_type,
+                        entity_id,
+                        action or operation,
+                        operation,
+                    )
+                    for account_id in account_ids
+                )
+            else:
+                keys.add(
+                    (
+                        "resource-write",
+                        target,
+                        entity_type,
+                        entity_id,
+                        action or operation,
+                        operation,
+                    )
+                )
+
+        if not keys and step.operation_type in {
+            OperationType.EXTERNAL_WRITE,
+            OperationType.FINANCIAL_WRITE,
+            OperationType.DESTRUCTIVE,
+        }:
+            raise OrchestrationError(
+                "EXECUTION_LOCK_CONTEXT_REQUIRED",
+                "Protected external execution has no exact account, target, or resource lock identity",
+                details={"status": RunStatus.BLOCKED_DATA.value},
+            )
+        return tuple(sorted(keys))
+
+    def _is_browser_step(
+        self,
+        step: PlanStep,
+        capability: Mapping[str, Any],
+    ) -> bool:
+        browser_tool_names = getattr(self, "_browser_tool_names", frozenset())
+        if step.tool_name in browser_tool_names:
+            return True
+        if step.tool_name == "query_waybill":
+            return str(step.arguments.get("query_type") or "status").strip() == "detail"
+        if step.tool_name == "tms_query":
+            endpoint = str(step.arguments.get("endpoint") or "").strip()
+            endpoint = endpoint.removeprefix("/tms/").removeprefix("/")
+            return endpoint in CORE_BROWSER_TMS_ENDPOINTS
+        plugin_runtime = capability.get("_plugin_runtime")
+        if not isinstance(plugin_runtime, Mapping):
+            return False
+        runtime_permissions = plugin_runtime.get("runtime_permissions")
+        return bool(
+            isinstance(runtime_permissions, Mapping)
+            and runtime_permissions.get("browser") is True
+        )
+
+    async def _acquire_execution_slot(
+        self,
+        step: PlanStep,
+        plan: Plan,
+        capability: Mapping[str, Any],
+    ) -> Callable[[], None]:
+        keys = self._execution_lock_keys(step, plan, capability)
+        is_browser = self._is_browser_step(step, capability)
+        if not keys and not is_browser:
+            return _noop_finish
+
+        locks = getattr(self, "_execution_locks", None)
+        if locks is None:
+            locks = {}
+            self._execution_locks = locks
+        users = getattr(self, "_execution_lock_users", None)
+        if users is None:
+            users = {}
+            self._execution_lock_users = users
+        registrations: list[tuple[tuple[str, ...], asyncio.Lock]] = []
+        for key in keys:
+            lock = locks.setdefault(key, asyncio.Lock())
+            users[key] = users.get(key, 0) + 1
+            registrations.append((key, lock))
+
+        acquired: list[tuple[tuple[str, ...], asyncio.Lock]] = []
+        browser_acquired = False
+        released = False
+
+        def finish() -> None:
+            nonlocal released, browser_acquired
+            if released:
+                return
+            released = True
+            if browser_acquired:
+                browser_semaphore.release()
+                browser_acquired = False
+            for _key, lock in reversed(acquired):
+                lock.release()
+            for key, lock in registrations:
+                remaining = users.get(key, 0) - 1
+                if remaining <= 0:
+                    users.pop(key, None)
+                    if not lock.locked():
+                        locks.pop(key, None)
+                else:
+                    users[key] = remaining
+
+        browser_semaphore = getattr(self, "_browser_semaphore", None)
+        if browser_semaphore is None:
+            browser_semaphore = asyncio.Semaphore(1)
+            self._browser_semaphore = browser_semaphore
+        try:
+            for key, lock in registrations:
+                await lock.acquire()
+                acquired.append((key, lock))
+            if is_browser:
+                await browser_semaphore.acquire()
+                browser_acquired = True
+        except BaseException:
+            finish()
+            raise
+        return finish
+
+    def _start_step_under_execution_slot(
+        self,
+        *,
+        run: Mapping[str, Any],
+        plan: Plan,
+        command: Command,
+        step: PlanStep,
+        step_row: Mapping[str, Any],
+    ) -> tuple[dict[str, Any] | None, tuple[dict[str, Any], Any] | None]:
+        project_waiting: tuple[dict[str, Any], Any] | None = None
+        started_step: dict[str, Any] | None = None
+        with self._repository.unit_of_work() as uow:
+            project_decision = None
+            if command.automation_invocation is not None:
+                # Project state is locked before the Run row. Policy changes,
+                # generation switches and uninstall share this exact lock.
+                project_decision = self._evaluate_policy(
+                    plan,
+                    command,
+                    project_transaction=uow,
+                )
+                if not project_decision.allowed:
+                    raise OrchestrationError(
+                        project_decision.code,
+                        project_decision.reason,
+                    )
+            locked_run = uow.runs.get(str(run["run_id"]), for_update=True)
+            if locked_run is None:
+                raise OrchestrationError(
+                    "RUN_NOT_FOUND",
+                    "Run was not found before starting a tool step",
+                )
+            if (
+                str(locked_run.get("status") or "") != RunStatus.RUNNING.value
+                or str(locked_run.get("worker_id") or "") != self._worker_id
+            ):
+                raise OrchestrationError(
+                    "RUN_EXECUTION_LEASE_LOST",
+                    "Run is no longer owned for tool execution",
+                    details={"status": RunStatus.BLOCKED_DATA.value},
+                )
+            if (
+                project_decision is not None
+                and project_decision.requires_approval
+                and not step.requires_approval
+            ):
+                waiting_run = self._defer_locked_unstarted_running_plan_for_approval(
+                    uow,
+                    locked_run=locked_run,
+                    plan=plan,
+                )
+                if waiting_run is None:
+                    raise OrchestrationError(
+                        "PROJECT_POLICY_RECHECK_UNSAFE",
+                        "A project write already started before its policy recheck",
+                        details={"status": RunStatus.BLOCKED_DATA.value},
+                    )
+                project_waiting = (waiting_run, project_decision)
+            else:
+                started_step = uow.steps.transition(
+                    str(step_row["step_id"]),
+                    expected_version=int(step_row["version"]),
+                    expected_statuses=("PENDING", "FAILED_RETRYABLE"),
+                    status="RUNNING",
+                    increment_attempt=True,
+                    started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+            uow.commit()
+        return started_step, project_waiting
+
     async def _execute_plan(self, run: dict[str, Any], plan: Plan, command: Command) -> dict[str, Any]:
         for order, step in enumerate(plan.steps, start=1):
             step_row = self._get_or_create_step(run, step, order)
@@ -850,105 +1211,68 @@ class WorkflowRunner:
                     f"Step {step.step_key} cannot resume from {step_row.get('status')}",
                     details={"status": RunStatus.BLOCKED_DATA.value},
                 )
-            finish_protected_step_start = await self._acquire_protected_step_start(
-                step
+            # Resolve and lock only the execution scope admitted by this plan.
+            # The lock is acquired before the Step becomes RUNNING so a queued
+            # write can never be recovered as though it had already started.
+            capability = self._catalog.get_capability(step.tool_name) or {}
+            finish_execution_slot = await self._acquire_execution_slot(
+                step,
+                plan,
+                capability,
             )
             try:
-                if (
-                    getattr(self, "_protected_step_start_guard", None) is not None
-                    and command.automation_invocation is None
-                ):
-                    fresh_decision = self._evaluate_policy(plan, command)
-                    if not fresh_decision.allowed:
-                        raise OrchestrationError(
-                            fresh_decision.code,
-                            fresh_decision.reason,
-                        )
-                    if fresh_decision.requires_approval and not step.requires_approval:
-                        waiting_run = self._defer_unstarted_running_plan_for_approval(
+                finish_protected_step_start = await self._acquire_protected_step_start(
+                    step
+                )
+                try:
+                    if (
+                        getattr(self, "_protected_step_start_guard", None) is not None
+                        and command.automation_invocation is None
+                    ):
+                        fresh_decision = self._evaluate_policy(plan, command)
+                        if not fresh_decision.allowed:
+                            raise OrchestrationError(
+                                fresh_decision.code,
+                                fresh_decision.reason,
+                            )
+                        if fresh_decision.requires_approval and not step.requires_approval:
+                            waiting_run = self._defer_unstarted_running_plan_for_approval(
+                                run=run,
+                                plan=plan,
+                            )
+                            if waiting_run is None:
+                                raise OrchestrationError(
+                                    "ACCOUNT_POLICY_RECHECK_UNSAFE",
+                                    "A protected write already started before its account policy recheck",
+                                    details={"status": RunStatus.BLOCKED_DATA.value},
+                                )
+                            request_outcome, request_detail = (
+                                self._request_approval_with_policy_fence(
+                                    run=waiting_run,
+                                    plan=_annotate_approval(plan, True),
+                                    decision=fresh_decision,
+                                    command=command,
+                                )
+                            )
+                            if request_outcome == "FAILED":
+                                logger.error(
+                                    "Approval request or policy fence failed after account policy recheck run_id=%s error=%s",
+                                    run["run_id"],
+                                    redact_text(request_detail)[:500],
+                                )
+                            finish_execution_slot()
+                            return waiting_run
+                    started_step, project_waiting = (
+                        self._start_step_under_execution_slot(
                             run=run,
                             plan=plan,
+                            command=command,
+                            step=step,
+                            step_row=step_row,
                         )
-                        if waiting_run is None:
-                            raise OrchestrationError(
-                                "ACCOUNT_POLICY_RECHECK_UNSAFE",
-                                "A protected write already started before its account policy recheck",
-                                details={"status": RunStatus.BLOCKED_DATA.value},
-                            )
-                        request_outcome, request_detail = (
-                            self._request_approval_with_policy_fence(
-                                run=waiting_run,
-                                plan=_annotate_approval(plan, True),
-                                decision=fresh_decision,
-                                command=command,
-                            )
-                        )
-                        if request_outcome == "FAILED":
-                            logger.error(
-                                "Approval request or policy fence failed after account policy recheck run_id=%s error=%s",
-                                run["run_id"],
-                                redact_text(request_detail)[:500],
-                            )
-                        return waiting_run
-                project_waiting: tuple[dict[str, Any], Any] | None = None
-                with self._repository.unit_of_work() as uow:
-                    project_decision = None
-                    if command.automation_invocation is not None:
-                        # Project state is locked before the Run row.  Policy
-                        # changes, grouped approval, generation switch and
-                        # uninstall use the same project serialization lock.
-                        project_decision = self._evaluate_policy(
-                            plan,
-                            command,
-                            project_transaction=uow,
-                        )
-                        if not project_decision.allowed:
-                            raise OrchestrationError(
-                                project_decision.code,
-                                project_decision.reason,
-                            )
-                    locked_run = uow.runs.get(str(run["run_id"]), for_update=True)
-                    if locked_run is None:
-                        raise OrchestrationError(
-                            "RUN_NOT_FOUND",
-                            "Run was not found before starting a tool step",
-                        )
-                    if (
-                        str(locked_run.get("status") or "") != RunStatus.RUNNING.value
-                        or str(locked_run.get("worker_id") or "") != self._worker_id
-                    ):
-                        raise OrchestrationError(
-                            "RUN_EXECUTION_LEASE_LOST",
-                            "Run is no longer owned for tool execution",
-                            details={"status": RunStatus.BLOCKED_DATA.value},
-                        )
-                    if (
-                        project_decision is not None
-                        and project_decision.requires_approval
-                        and not step.requires_approval
-                    ):
-                        waiting_run = self._defer_locked_unstarted_running_plan_for_approval(
-                            uow,
-                            locked_run=locked_run,
-                            plan=plan,
-                        )
-                        if waiting_run is None:
-                            raise OrchestrationError(
-                                "PROJECT_POLICY_RECHECK_UNSAFE",
-                                "A project write already started before its policy recheck",
-                                details={"status": RunStatus.BLOCKED_DATA.value},
-                            )
-                        project_waiting = (waiting_run, project_decision)
-                    else:
-                        started_step = uow.steps.transition(
-                            str(step_row["step_id"]),
-                            expected_version=int(step_row["version"]),
-                            expected_statuses=("PENDING", "FAILED_RETRYABLE"),
-                            status="RUNNING",
-                            increment_attempt=True,
-                            started_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                        )
-                    uow.commit()
+                    )
+                finally:
+                    finish_protected_step_start()
                 if project_waiting is not None:
                     waiting_run, project_decision = project_waiting
                     request_outcome, request_detail = (
@@ -965,14 +1289,21 @@ class WorkflowRunner:
                             run["run_id"],
                             redact_text(request_detail)[:500],
                         )
+                    finish_execution_slot()
                     return waiting_run
-            finally:
-                finish_protected_step_start()
+                if started_step is None:
+                    raise OrchestrationError(
+                        "STEP_START_CONFLICT",
+                        "Tool step did not enter RUNNING before execution",
+                        details={"status": RunStatus.BLOCKED_DATA.value},
+                    )
+            except BaseException:
+                finish_execution_slot()
+                raise
             # Keep the exact capability that was admitted before execution.
             # The Catalog may be blocked by a concurrent generation fence
             # after the subprocess returns; re-querying it here used to turn
             # the plugin's real safe error into an opaque runtime block.
-            capability = self._catalog.get_capability(step.tool_name) or {}
             execution_task = asyncio.create_task(
                 self._execution_port.execute_step(
                     step,
@@ -990,6 +1321,7 @@ class WorkflowRunner:
                 )
             finally:
                 self._active.pop(str(run["run_id"]), None)
+                finish_execution_slot()
             outcome = self._verifier.verify(step, raw_result, capability)
             if outcome.accepted:
                 projection_error: OrchestrationError | None = None

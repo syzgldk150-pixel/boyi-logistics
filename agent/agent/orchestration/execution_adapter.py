@@ -30,7 +30,7 @@ class RegisteredToolExecutionAdapter:
         self._executor = executor
         self._direct_runners = dict(direct_runners or {})
         self._reconcilers = dict(reconcilers or {})
-        self._step_to_tool: dict[tuple[str, str], tuple[str, str]] = {}
+        self._step_to_tool: dict[tuple[str, str], str] = {}
 
     async def execute_step(
         self,
@@ -45,7 +45,7 @@ class RegisteredToolExecutionAdapter:
             raise OrchestrationError("UNKNOWN_TOOL", f"Unknown tool: {step.tool_name}")
         if str(capability.get("version") or "") != step.tool_version:
             raise OrchestrationError("TOOL_VERSION_CHANGED", f"Tool version changed: {step.tool_name}")
-        self._step_to_tool[(run_id, step_id)] = (step.tool_name, "")
+        self._step_to_tool[(run_id, step_id)] = step.tool_name
         started = time.monotonic()
         direct_runner = self._direct_runners.get(step.tool_name)
         try:
@@ -82,17 +82,21 @@ class RegisteredToolExecutionAdapter:
                             "step_id": step_id,
                             "_automation_project_invocation": dict(project_invocation),
                         },
+                        execution_identity={"run_id": run_id, "step_id": step_id},
                     )
                 elif trusted_context is None:
-                    process_result = await self._executor.execute(capability, dict(step.arguments))
+                    process_result = await self._executor.execute(
+                        capability,
+                        dict(step.arguments),
+                        execution_identity={"run_id": run_id, "step_id": step_id},
+                    )
                 else:
                     process_result = await self._executor.execute(
                         capability,
                         dict(step.arguments),
                         trusted_scheduler_context=trusted_context,
+                        execution_identity={"run_id": run_id, "step_id": step_id},
                     )
-                info = self._executor.running_tool_info(step.tool_name)
-                self._step_to_tool[(run_id, step_id)] = (step.tool_name, str(info.get("started_at") or ""))
         except Exception as exc:
             return {
                 "status": "FAILED",
@@ -125,17 +129,19 @@ class RegisteredToolExecutionAdapter:
         identity = self._step_to_tool.get((run_id, step_id))
         if identity is None:
             return {"ok": False, "code": "NOT_RUNNING", "message": "The step is not running"}
-        tool_name, started_at = identity
+        tool_name = identity
         cancel_bound = getattr(self._executor, "cancel_bound_run", None)
         if callable(cancel_bound):
-            bound_result = await cancel_bound(
+            return await cancel_bound(
                 tool_name=tool_name,
                 run_id=run_id,
                 step_id=step_id,
             )
-            if bound_result.get("code") != "NOT_RUNNING":
-                return bound_result
-        return await self._executor.cancel_tool(tool_name, started_at=started_at)
+        return {
+            "ok": False,
+            "code": "EXACT_CANCELLATION_UNSUPPORTED",
+            "message": "The executor cannot cancel this exact Run step",
+        }
 
     async def reconcile_step(
         self,

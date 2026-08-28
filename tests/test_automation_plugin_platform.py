@@ -557,6 +557,24 @@ class _CatalogRepository:
         return self.instance if automation_id == self.instance.automation_id else None
 
 
+class _PartiallyCorruptCatalogRepository:
+    def __init__(self, good: PluginInstanceRecord) -> None:
+        self.good = good
+
+    @staticmethod
+    def list_instance_ids() -> tuple[str, ...]:
+        return ("good-project", "bad-project")
+
+    def get_instance(self, automation_id: str) -> PluginInstanceRecord | None:
+        if automation_id == "bad-project":
+            raise ValueError("persisted snapshot is corrupt")
+        return self.good if automation_id == self.good.automation_id else None
+
+    @staticmethod
+    def list_instances() -> list[PluginInstanceRecord]:
+        raise AssertionError("raw identity discovery must not parse every project")
+
+
 def test_catalog_fragment_binds_trust_source(core_catalog: ToolRegistry) -> None:
     manifest = resolve_release_first_party_manifests(core_catalog)["sync_arrive_list"]
     version = PluginVersionRecord(
@@ -583,6 +601,77 @@ def test_catalog_fragment_binds_trust_source(core_catalog: ToolRegistry) -> None
     assert catalog.safe_projection()["instances"][0][
         "code_owned_config_fields"
     ] == []
+
+
+def test_catalog_quarantines_one_corrupt_persisted_project(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = resolve_release_first_party_manifests(core_catalog)["sync_arrive_list"]
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="1" * 64,
+        manifest_sha256=manifest.manifest_sha256,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root="/srv/plugins/arrive-list",
+    )
+    good = PluginInstanceRecord(
+        automation_id="good-project",
+        display_name="good",
+        plugin_id=manifest.plugin_id,
+        state=PluginProjectState.DISABLED,
+        active_version=version,
+        enabled=False,
+        target_generation=0,
+        committed_generation=0,
+    )
+    catalog = PluginCatalog(_PartiallyCorruptCatalogRepository(good))
+
+    projection = catalog.safe_projection()
+    health = catalog.production_health(("good-project", "bad-project"))
+
+    assert catalog.persisted_automation_ids() == ("bad-project", "good-project")
+    assert [item["automation_id"] for item in projection["instances"]] == [
+        "good-project"
+    ]
+    assert projection["unavailable_projects"] == {
+        "bad-project": {
+            "runtime_status": "UNAVAILABLE",
+            "error_code": "PLUGIN_PROJECT_DATA_INVALID",
+        }
+    }
+    assert health["ok"] is True
+    assert health["runnable"] is True
+    assert health["unsupported_automation_ids"] == []
+
+
+@pytest.mark.parametrize("raw_ids", [("",), ("same", "same")])
+def test_catalog_identity_corruption_remains_global(raw_ids: tuple[str, ...]) -> None:
+    repository = _PartiallyCorruptCatalogRepository.__new__(
+        _PartiallyCorruptCatalogRepository
+    )
+    repository.list_instance_ids = lambda: raw_ids
+    catalog = PluginCatalog(repository)
+
+    with pytest.raises(PluginConflictError) as raised:
+        catalog.safe_projection()
+
+    assert raised.value.code == "PLUGIN_IDENTITY_CONFLICT"
+
+
+def test_catalog_identity_query_error_remains_global() -> None:
+    repository = _PartiallyCorruptCatalogRepository.__new__(
+        _PartiallyCorruptCatalogRepository
+    )
+
+    def _failed_query() -> tuple[str, ...]:
+        raise RuntimeError("database unavailable")
+
+    repository.list_instance_ids = _failed_query
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        PluginCatalog(repository).safe_projection()
 
 
 def test_catalog_projects_exact_first_party_code_owned_fields(

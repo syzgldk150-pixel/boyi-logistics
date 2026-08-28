@@ -21,7 +21,13 @@ from shared.business_module_repository import (
     BusinessModuleLifecycleService,
     BusinessModuleRepository,
 )
-from shared.business_modules import BUSINESS_MODULE_BY_CODE, BUSINESS_MODULE_CATALOG, CORE_MODULE_CODES, BusinessModuleCode
+from shared.business_modules import (
+    BUSINESS_MODULE_BY_CODE,
+    BUSINESS_MODULE_CATALOG,
+    BUSINESS_MODULE_TOOL_OWNERS,
+    CORE_MODULE_CODES,
+    BusinessModuleCode,
+)
 import shared.business_module_repository as business_module_repository
 
 
@@ -141,6 +147,7 @@ class _GateCursor:
 
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
+        self.selected_rows = rows
         self.statements: list[str] = []
 
     def __enter__(self):
@@ -149,11 +156,14 @@ class _GateCursor:
     def __exit__(self, *_args: Any) -> None:
         return None
 
-    def execute(self, statement: str, *_args: Any) -> None:
+    def execute(self, statement: str, params: tuple[Any, ...] | None = None) -> None:
         self.statements.append(statement)
+        if "WHERE module_code=%s" in statement:
+            module_code = str((params or ("",))[0])
+            self.selected_rows = [row for row in self.rows if row["module_code"] == module_code]
 
     def fetchall(self) -> list[dict[str, Any]]:
-        return [dict(row) for row in self.rows]
+        return [dict(row) for row in self.selected_rows]
 
 
 class _GateCommands:
@@ -161,10 +171,12 @@ class _GateCommands:
         self.rows = rows
         self.existing = existing if existing is not None else {}
         self.cursor_calls = 0
+        self.cursor_instance: _GateCursor | None = None
 
     def cursor(self) -> _GateCursor:
         self.cursor_calls += 1
-        return _GateCursor(self.rows)
+        self.cursor_instance = _GateCursor(self.rows)
+        return self.cursor_instance
 
     def get_by_idempotency(self, source: str, key: str, *, for_update: bool) -> dict[str, Any] | None:
         assert for_update is True
@@ -249,6 +261,7 @@ class _Cursor:
 
     def execute(self, statement: str, params: tuple[Any, ...] = ()) -> None:
         sql = " ".join(statement.split())
+        self.connection.statements.append((sql, params))
         self._one = None
         self._many = []
         if sql.startswith("SELECT module_code, action, request_fingerprint"):
@@ -331,6 +344,7 @@ class _Connection:
         }
         self.events: dict[str, dict[str, Any]] = {}
         self.operations: list[str] = []
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
 
     def cursor(self) -> _Cursor:
         return _Cursor(self)
@@ -389,6 +403,11 @@ def test_every_catalog_owned_tool_exists_exactly_once_in_registry() -> None:
     for item in BUSINESS_MODULE_CATALOG:
         for tool_name in item.tool_names:
             assert sum(line.strip() == f"- name: {tool_name}" for line in registered) == 1
+
+
+def test_finance_analysis_command_is_owned_by_finance_module() -> None:
+    assert BUSINESS_MODULE_TOOL_OWNERS["analyze_finance_reviews"] == "finance"
+    assert "analyze_finance_reviews" in BUSINESS_MODULE_BY_CODE["finance"].tool_names
 
 
 def test_migration_seeds_the_exact_enabled_baseline() -> None:
@@ -455,12 +474,28 @@ def test_audit_uses_timestamp_then_stable_event_tiebreaker() -> None:
     assert "ORDER BY created_at DESC, event_id DESC" in source
 
 
-def test_lifecycle_lock_order_serializes_exact_request_replays_after_baseline_lock() -> None:
-    source = (Path(__file__).resolve().parents[2] / "shared" / "business_module_repository.py").read_text(encoding="utf-8")
-    baseline_lock = source.index("SELECT module_code FROM business_modules ORDER BY module_code FOR UPDATE")
-    replay_lookup = source.index("WHERE request_id=%s")
-    assert baseline_lock < replay_lookup
-    assert "WHERE request_id=%s FOR UPDATE" not in source
+def test_lifecycle_transition_locks_only_the_target_module_row() -> None:
+    connection = _Connection()
+
+    _repository(connection).change(
+        module_code="receipts",
+        action="disable",
+        actor_id="admin-1",
+        reason="test narrow lifecycle lock",
+        request_id=str(uuid.uuid4()),
+        expected_record_version=1,
+    )
+
+    locking_statements = [
+        (sql, params) for sql, params in connection.statements if "FOR UPDATE" in sql
+    ]
+    assert len(locking_statements) == 1
+    assert "WHERE module_code=%s FOR UPDATE" in locking_statements[0][0]
+    assert locking_statements[0][1] == ("receipts",)
+    assert any(
+        sql == "SELECT module_code FROM business_modules"
+        for sql, _params in connection.statements
+    )
 
 
 def test_transition_matrix_and_core_rejection() -> None:
@@ -632,7 +667,7 @@ def test_command_gate_allows_enabled_owned_tool_for_tool_and_project_commands() 
         assert uow.commands.cursor_calls == 1
 
 
-def test_command_gate_rejects_unavailable_closed_baseline_and_version_drift() -> None:
+def test_command_gate_rejects_unavailable_missing_row_and_version_drift() -> None:
     cases = (
         ("DISABLED", "1.0.0", "1.0.0", "MODULE_UNAVAILABLE"),
         ("NOT_INSTALLED", "1.0.0", "1.0.0", "MODULE_UNAVAILABLE"),
@@ -651,16 +686,34 @@ def test_command_gate_rejects_unavailable_closed_baseline_and_version_drift() ->
             )
         assert caught.value.code == expected
 
-    for rows in (
-        [row for row in _gate_rows() if row["module_code"] != "waybill_query"],
-        _gate_rows() + [{"module_code": "unknown", "code_version": "1.0.0", "installed_version": "1.0.0", "lifecycle_state": "ENABLED"}],
-    ):
-        with pytest.raises(OrchestrationError) as caught:
-            BusinessModuleCommandGate().check_new_command(
-                SimpleNamespace(command_type="tool.execute", parameters={"tool_name": "query_waybill"}),
-                SimpleNamespace(commands=_GateCommands(rows)),
-            )
-        assert caught.value.code == "MODULE_STATUS_BLOCKED"
+    rows = [row for row in _gate_rows() if row["module_code"] != "waybill_query"]
+    with pytest.raises(OrchestrationError) as caught:
+        BusinessModuleCommandGate().check_new_command(
+            SimpleNamespace(command_type="tool.execute", parameters={"tool_name": "query_waybill"}),
+            SimpleNamespace(commands=_GateCommands(rows)),
+        )
+    assert caught.value.code == "MODULE_STATUS_BLOCKED"
+
+
+def test_command_gate_locks_only_the_owned_module_row() -> None:
+    commands = _GateCommands(
+        _gate_rows()
+        + [
+            {
+                "module_code": "unrelated-runtime-row",
+                "code_version": "bad-version",
+                "installed_version": None,
+                "lifecycle_state": "BLOCKED",
+            }
+        ]
+    )
+
+    BusinessModuleCommandGate().check_new_command(
+        SimpleNamespace(command_type="tool.execute", parameters={"tool_name": "query_waybill"}),
+        SimpleNamespace(commands=commands),
+    )
+    assert commands.cursor_instance is not None
+    assert "WHERE module_code=%s FOR UPDATE" in commands.cursor_instance.statements[0]
 
 
 def test_command_gate_leaves_unowned_and_core_owned_tools_unaffected() -> None:

@@ -239,6 +239,9 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
     def get_instance(self, automation_id: str) -> PluginInstanceRecord | None:
         return self._catalog.get_instance(automation_id)
 
+    def list_instance_ids(self) -> Sequence[str]:
+        return self._catalog.list_instance_ids()
+
     def list_instances(self) -> Sequence[PluginInstanceRecord]:
         return self._catalog.list_instances()
 

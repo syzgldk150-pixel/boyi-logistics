@@ -417,6 +417,128 @@ def test_disabled_unconfigured_signed_upload_is_non_blocking_before_binding() ->
     assert health["unstable_generations"] == []
 
 
+def test_reconcile_all_quarantines_one_project_and_continues() -> None:
+    entries = tuple(
+        SimpleNamespace(automation_id=automation_id)
+        for automation_id in ("project-a", "project-b", "project-c")
+    )
+    service = object.__new__(MySQLRuntimeTargetService)
+    service._catalog = SimpleNamespace(list=lambda: entries)
+    service._last_reconcile_failures = {}
+
+    def _reconcile_project(automation_id: str):
+        if automation_id == "project-b":
+            raise PluginConflictError(
+                "candidate contract is invalid",
+                code="RUNTIME_TARGET_MATERIAL_MISMATCH",
+            )
+        return f"committed:{automation_id}"
+
+    service.reconcile_project = _reconcile_project
+
+    assert service.reconcile_all() == (
+        "committed:project-a",
+        "committed:project-c",
+    )
+    assert service.reconciliation_failures() == {
+        "project-b": {
+            "code": "RUNTIME_TARGET_MATERIAL_MISMATCH",
+            "error_summary": "candidate contract is invalid",
+        }
+    }
+
+
+def test_reconcile_all_keeps_catalog_identity_conflicts_global() -> None:
+    service = object.__new__(MySQLRuntimeTargetService)
+    service._catalog_repository = SimpleNamespace(
+        list_instances=lambda: (
+            SimpleNamespace(automation_id="project-a"),
+            SimpleNamespace(automation_id="project-a"),
+        )
+    )
+    service._catalog = SimpleNamespace(
+        excluded_persisted_automation_ids=lambda: set(),
+    )
+    service._last_reconcile_failures = {}
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        service.reconcile_all()
+
+    assert exc_info.value.code == "PLUGIN_IDENTITY_CONFLICT"
+
+
+def test_reconcile_all_keeps_missing_catalog_identity_global() -> None:
+    service = object.__new__(MySQLRuntimeTargetService)
+    service._catalog_repository = SimpleNamespace(
+        list_instances=lambda: (
+            SimpleNamespace(automation_id="project-a"),
+            SimpleNamespace(automation_id=""),
+        )
+    )
+    service._catalog = SimpleNamespace(
+        excluded_persisted_automation_ids=lambda: set(),
+    )
+    service._last_reconcile_failures = {}
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        service.reconcile_all()
+
+    assert exc_info.value.code == "PLUGIN_IDENTITY_CONFLICT"
+
+
+def test_reconcile_all_does_not_downgrade_platform_failures() -> None:
+    entries = tuple(
+        SimpleNamespace(automation_id=automation_id)
+        for automation_id in ("project-a", "project-b")
+    )
+    service = object.__new__(MySQLRuntimeTargetService)
+    service._catalog = SimpleNamespace(list=lambda: entries)
+    service._last_reconcile_failures = {
+        "previous-project": {
+            "code": "PLUGIN_PROJECT_NOT_CONFIGURED",
+            "error_summary": "previous warning",
+        }
+    }
+
+    def _reconcile_project(automation_id: str):
+        if automation_id == "project-b":
+            raise RuntimeError("database connection unavailable")
+        return f"committed:{automation_id}"
+
+    service.reconcile_project = _reconcile_project
+
+    with pytest.raises(RuntimeError, match="database connection unavailable"):
+        service.reconcile_all()
+
+    # An incomplete platform scan must not replace the last complete warning
+    # snapshot with a misleading partial result.
+    assert service.reconciliation_failures() == {
+        "previous-project": {
+            "code": "PLUGIN_PROJECT_NOT_CONFIGURED",
+            "error_summary": "previous warning",
+        }
+    }
+
+
+def test_reconcile_all_keeps_project_reported_identity_conflict_global() -> None:
+    service = object.__new__(MySQLRuntimeTargetService)
+    service._catalog = SimpleNamespace(
+        list=lambda: (SimpleNamespace(automation_id="project-a"),)
+    )
+    service._last_reconcile_failures = {}
+    service.reconcile_project = lambda _automation_id: (_ for _ in ()).throw(
+        PluginConflictError(
+            "duplicate automation identity",
+            code="PLUGIN_IDENTITY_CONFLICT",
+        )
+    )
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        service.reconcile_all()
+
+    assert exc_info.value.code == "PLUGIN_IDENTITY_CONFLICT"
+
+
 def test_snapshot_binds_only_closed_desired_material(tmp_path: Path) -> None:
     core, entry, row, policy = _entry_and_row(tmp_path)
     snapshot = build_runtime_generation_snapshot(
@@ -911,6 +1033,86 @@ def test_runtime_health_snapshot_never_requeries_persistence(monkeypatch) -> Non
 
     assert live_health["ok"] is True
     assert runtime.health_snapshot()["catalog"]["ok"] is True
+
+
+def test_runtime_health_projects_candidate_failure_without_global_hold(
+    monkeypatch,
+) -> None:
+    class _HealthCatalog:
+        @staticmethod
+        def production_health(_expected):
+            return {"ok": True, "runnable": True, "runtime_status": "READY"}
+
+        @staticmethod
+        def excluded_persisted_automation_ids():
+            return set()
+
+    monkeypatch.setattr(
+        production_module,
+        "runtime_generation_health",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            healthy=False,
+            project_count=2,
+            committed_count=1,
+            active_lease_count=0,
+            blocked_projects={
+                "project-b": ("PROJECT_RUNTIME_DATA_INVALID",),
+            },
+        ),
+    )
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.catalog = _HealthCatalog()
+    runtime.required_first_party_ids = frozenset({"project-a", "project-b"})
+    runtime.runtime_repository = object()
+    runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
+    runtime.target_service = SimpleNamespace(
+        reconciliation_failures=lambda: {
+            "project-b": {
+                "code": "RUNTIME_TARGET_MATERIAL_MISMATCH",
+                "error_summary": "candidate rejected",
+            }
+        }
+    )
+    runtime._started = True
+    runtime._sandbox_canary = SandboxCanaryResult(
+        healthy=True,
+        code="OK",
+        checked_at=datetime.now(timezone.utc),
+    )
+
+    health = runtime.health()
+
+    assert health["ok"] is True
+    assert health["runnable"] is True
+    assert health["generations"]["healthy"] is False
+    assert health["reconciliation_errors"] == {
+        "project-b": {
+            "code": "RUNTIME_TARGET_MATERIAL_MISMATCH",
+            "error_summary": "candidate rejected",
+        }
+    }
+
+
+def test_reconcile_all_quarantines_value_error_and_continues() -> None:
+    target_service = object.__new__(MySQLRuntimeTargetService)
+    target_service._catalog = SimpleNamespace(
+        persisted_automation_ids=lambda: ("bad-project", "good-project")
+    )
+    visited: list[str] = []
+
+    def _reconcile(automation_id: str) -> str:
+        visited.append(automation_id)
+        if automation_id == "bad-project":
+            raise ValueError("corrupt persisted generation")
+        return automation_id
+
+    target_service.reconcile_project = _reconcile
+
+    assert target_service.reconcile_all() == ("good-project",)
+    assert visited == ["bad-project", "good-project"]
+    assert target_service.reconciliation_failures()["bad-project"]["code"] == (
+        "PLUGIN_PROJECT_DATA_INVALID"
+    )
 
 
 def test_runtime_reconcile_finishes_inflight_generation_then_stages_release() -> None:

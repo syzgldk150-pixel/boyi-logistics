@@ -675,7 +675,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             scheduler_module._scheduler = previous_scheduler
             scheduler_module._include_startup_catchup_for_process = previous_include
 
-    def test_reload_invalid_plan_preserves_existing_jobs(self):
+    def test_reload_quarantines_invalid_row_and_keeps_valid_rows(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -691,6 +691,15 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 "enabled": True,
                 "configuration_version": 2,
             },
+            {
+                "id": "healthy_daily",
+                "name": "Healthy daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "20 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
         ]
         previous_scheduler = scheduler_module._scheduler
         previous_include = scheduler_module._include_startup_catchup_for_process
@@ -699,15 +708,19 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 scheduler = init_scheduler(core, include_startup_catchup=False)
                 scheduler.start(paused=True)
                 try:
-                    before = self._scheduler_job_state(scheduler.get_job("stable_daily"))
                     core.memory.rows[0]["cron_expression"] = "not a cron expression"
+                    core.memory.rows[1]["cron_expression"] = "35 2 * * *"
 
-                    with self.assertRaisesRegex(ValueError, "Invalid cron expression"):
-                        scheduler_module.reload_scheduler(core)
+                    reloaded = scheduler_module.reload_scheduler(core)
 
+                    self.assertIsNone(scheduler.get_job("stable_daily"))
+                    healthy = scheduler.get_job("healthy_daily")
+                    self.assertIsNotNone(healthy)
+                    self.assertIn("hour='2'", str(healthy.trigger))
+                    self.assertEqual(["healthy_daily"], reloaded["job_ids"])
                     self.assertEqual(
-                        before,
-                        self._scheduler_job_state(scheduler.get_job("stable_daily")),
+                        ["stable_daily"],
+                        [item["task_id"] for item in reloaded["invalid_tasks"]],
                     )
                 finally:
                     scheduler.shutdown(wait=False)
@@ -717,7 +730,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             scheduler_module._scheduler = previous_scheduler
             scheduler_module._include_startup_catchup_for_process = previous_include
 
-    def test_reload_registration_failure_restores_exact_previous_jobs(self):
+    def test_reload_registration_failure_only_quarantines_failed_row(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -750,10 +763,6 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 scheduler = init_scheduler(core, include_startup_catchup=False)
                 scheduler.start(paused=True)
                 try:
-                    before = {
-                        job.id: self._scheduler_job_state(job)
-                        for job in scheduler.get_jobs()
-                    }
                     original_add_job = scheduler_module._add_job
                     calls = 0
 
@@ -768,18 +777,64 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                         scheduler_module,
                         "_add_job",
                         side_effect=fail_second_registration,
-                    ), self.assertRaisesRegex(RuntimeError, "injected registration failure"):
-                        scheduler_module.reload_scheduler(core)
+                    ):
+                        reloaded = scheduler_module.reload_scheduler(core)
 
-                    after = {
-                        job.id: self._scheduler_job_state(job)
-                        for job in scheduler.get_jobs()
-                    }
-                    self.assertEqual(before, after)
+                    self.assertIsNotNone(scheduler.get_job("first_daily"))
+                    self.assertIsNone(scheduler.get_job("second_daily"))
+                    self.assertEqual(["first_daily"], reloaded["job_ids"])
+                    self.assertEqual(
+                        ["second_daily"],
+                        [item["task_id"] for item in reloaded["invalid_tasks"]],
+                    )
                 finally:
                     scheduler.shutdown(wait=False)
 
             asyncio.run(exercise())
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_duplicate_enabled_task_id_remains_a_global_conflict(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "duplicate_daily",
+                "name": "First owner",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            }
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            scheduler = init_scheduler(core, include_startup_catchup=False)
+            before = self._scheduler_job_state(scheduler.get_job("duplicate_daily"))
+            core.memory.rows.append(
+                {
+                    **core.memory.rows[0],
+                    "name": "Second owner",
+                    "cron_expression": "20 1 * * *",
+                }
+            )
+
+            with self.assertRaisesRegex(
+                scheduler_module.ScheduledTaskIdentityConflictError,
+                "Duplicate enabled scheduled task id",
+            ):
+                scheduler_module.reload_scheduler(core)
+
+            self.assertEqual(
+                before,
+                self._scheduler_job_state(scheduler.get_job("duplicate_daily")),
+            )
         finally:
             scheduler_module._scheduler = previous_scheduler
             scheduler_module._include_startup_catchup_for_process = previous_include
@@ -1048,7 +1103,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         self.assertEqual([], core.calls)
         self.assertEqual([], invoker.calls)
 
-    def test_deferred_r7_schedule_drift_blocks_loading_and_startup(self):
+    def test_deferred_r7_schedule_drift_is_quarantined_per_row(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
         import agent.scheduler as scheduler_module
@@ -1091,10 +1146,9 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 scheduler_module._scheduler = scheduler_module.AsyncIOScheduler(
                     timezone="Asia/Shanghai"
                 )
-                with self.subTest(override=override), self.assertRaisesRegex(
-                    scheduler_module.DeferredR7ScheduleIdentityError,
-                    "reviewed migration identity",
-                ):
+                with self.subTest(override=override), self.assertLogs(
+                    "agent", level="ERROR"
+                ) as captured:
                     scheduler_module._load_tasks_from_db(
                         core,
                         automation_project_invoker=invoker,
@@ -1102,6 +1156,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 self.assertEqual(0, len(scheduler_module._scheduler.get_jobs()))
                 self.assertEqual([], core.calls)
                 self.assertEqual([], invoker.calls)
+                self.assertIn("Scheduled task quarantined", "\n".join(captured.output))
 
             startup_core = _AgentCore()
             startup_core.memory.rows = [
@@ -1110,11 +1165,13 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             with patch(
                 "agent.scheduler.ensure_control_plane_schedule_tasks",
                 return_value=(),
-            ), self.assertRaises(scheduler_module.DeferredR7ScheduleIdentityError):
-                scheduler_module.init_scheduler(
+            ), self.assertLogs("agent", level="ERROR") as captured:
+                scheduler = scheduler_module.init_scheduler(
                     startup_core,
                     include_startup_catchup=False,
                 )
+            self.assertEqual([], scheduler.get_jobs())
+            self.assertIn("Scheduled task quarantined", "\n".join(captured.output))
         finally:
             scheduler_module._scheduler = previous_scheduler
 
@@ -1486,16 +1543,30 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         from main import _finance_brain_completed_handler
 
         result = _finance_brain_completed_handler(
-            SimpleNamespace(finance_brain=None),
-            object(),
+            lambda _command: self.fail("non-finance completion must not submit"),
             {
                 "event_id": "00000000-0000-0000-0000-000000000005",
+                "event_type": "agent.run.completed",
                 "payload_json": {"tool_names": ["sync_daily_sign"]},
             },
             object(),
         )
 
         self.assertFalse(result["processed"])
+
+    def test_finance_analysis_is_not_scheduler_seeded_or_allowlisted(self):
+        registry_path = Path(__file__).resolve().parents[1] / "tools" / "registry.yaml"
+        tools = yaml.safe_load(registry_path.read_text(encoding="utf-8"))["tools"]
+        analysis = next(item for item in tools if item["name"] == "analyze_finance_reviews")
+
+        self.assertEqual(
+            {"mode": "required", "required_role": "admin"},
+            analysis["approval"],
+        )
+        self.assertNotIn(
+            "analyze_finance_reviews",
+            {item["tool_name"] for item in PHASE7_SCHEDULED_TASK_TEMPLATES},
+        )
 
     def test_legacy_excel_finance_pipeline_is_fully_removed(self):
         agent_root = Path(__file__).resolve().parents[1]

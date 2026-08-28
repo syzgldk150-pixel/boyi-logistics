@@ -274,6 +274,27 @@ class FeishuApprovalRepository(RepositoryBase):
         if self._lock_binding(safe_binding_id) is None:
             return None
         with self.cursor() as cursor:
+            # A notification lease occupies the whole administrator queue,
+            # including when its delivery became terminal while the Feishu
+            # request was in flight.  Expired owners lose that lane before a
+            # new delivery is considered.
+            cursor.execute(
+                """
+                UPDATE feishu_approval_deliveries
+                SET notification_lease_token=NULL,
+                    notification_lease_expires_at=NULL,
+                    last_error_summary=COALESCE(
+                        last_error_summary,
+                        'Feishu notification lease expired before finalization'
+                    ),
+                    updated_at=NOW(6)
+                WHERE binding_id=%s
+                  AND notified_at IS NULL
+                  AND notification_lease_token IS NOT NULL
+                  AND notification_lease_expires_at<=NOW(6)
+                """,
+                (safe_binding_id,),
+            )
             cursor.execute(
                 """
                 SELECT delivery_id FROM feishu_approval_deliveries
@@ -283,6 +304,20 @@ class FeishuApprovalRepository(RepositoryBase):
             )
             active = _row_dict(cursor, cursor.fetchone())
             if active is None:
+                cursor.execute(
+                    """
+                    SELECT delivery_id
+                    FROM feishu_approval_deliveries
+                    WHERE binding_id=%s
+                      AND notified_at IS NULL
+                      AND notification_lease_token IS NOT NULL
+                    ORDER BY notification_lease_expires_at, delivery_id
+                    LIMIT 1 FOR UPDATE
+                    """,
+                    (safe_binding_id,),
+                )
+                if _row_dict(cursor, cursor.fetchone()) is not None:
+                    return None
                 cursor.execute(
                     """
                     SELECT delivery_id FROM feishu_approval_deliveries
@@ -364,16 +399,142 @@ class FeishuApprovalRepository(RepositoryBase):
             )
             return _row_dict(cursor, cursor.fetchone())
 
-    def mark_notified(self, delivery_id: str) -> None:
+    def notification_lease_for_binding(
+        self,
+        binding_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the live sender that currently owns one binding lane."""
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT delivery_id, notification_lease_token,
+                       notification_lease_expires_at
+                FROM feishu_approval_deliveries
+                WHERE binding_id=%s
+                  AND notified_at IS NULL
+                  AND notification_lease_token IS NOT NULL
+                  AND notification_lease_expires_at>NOW(6)
+                ORDER BY notification_lease_expires_at, delivery_id
+                LIMIT 1
+                """,
+                (_required_text(binding_id, "binding_id"),),
+            )
+            return _row_dict(cursor, cursor.fetchone())
+
+    def reserve_notification(
+        self,
+        binding_id: str,
+        delivery_id: str,
+        lease_token: str,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be a positive integer")
+        safe_binding_id = _required_text(binding_id, "binding_id")
+        if self._lock_binding(safe_binding_id) is None:
+            return False
         with self.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE feishu_approval_deliveries
-                SET notified_at=NOW(6), updated_at=NOW(6)
-                WHERE delivery_id=%s AND status='ACTIVE'
+                SET notification_lease_token=%s,
+                    notification_lease_expires_at=TIMESTAMPADD(SECOND, %s, NOW(6)),
+                    last_error_summary=NULL,
+                    updated_at=NOW(6)
+                WHERE delivery_id=%s
+                  AND binding_id=%s
+                  AND status='ACTIVE'
+                  AND notified_at IS NULL
+                  AND (
+                      notification_lease_token IS NULL
+                      OR notification_lease_expires_at<=NOW(6)
+                  )
                 """,
-                (_required_text(delivery_id, "delivery_id"),),
+                (
+                    _required_text(lease_token, "notification_lease_token"),
+                    lease_seconds,
+                    _required_text(delivery_id, "delivery_id"),
+                    safe_binding_id,
+                ),
             )
+            return int(getattr(cursor, "rowcount", 0) or 0) == 1
+
+    def finalize_notification(
+        self,
+        binding_id: str,
+        delivery_id: str,
+        lease_token: str,
+    ) -> bool:
+        safe_binding_id = _required_text(binding_id, "binding_id")
+        safe_delivery_id = _required_text(delivery_id, "delivery_id")
+        safe_lease_token = _required_text(
+            lease_token,
+            "notification_lease_token",
+        )
+        if self._lock_binding(safe_binding_id) is None:
+            return False
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE feishu_approval_deliveries
+                SET notified_at=NOW(6),
+                    notification_lease_token=NULL,
+                    notification_lease_expires_at=NULL,
+                    last_error_summary=NULL,
+                    updated_at=NOW(6)
+                WHERE delivery_id=%s
+                  AND binding_id=%s
+                  AND notification_lease_token=%s
+                  AND notified_at IS NULL
+                """,
+                (safe_delivery_id, safe_binding_id, safe_lease_token),
+            )
+            finalized = int(getattr(cursor, "rowcount", 0) or 0) == 1
+        if finalized:
+            self.activate_next(safe_binding_id)
+        return finalized
+
+    def release_notification(
+        self,
+        binding_id: str,
+        delivery_id: str,
+        lease_token: str,
+        *,
+        error_summary: str,
+    ) -> bool:
+        safe_binding_id = _required_text(binding_id, "binding_id")
+        if self._lock_binding(safe_binding_id) is None:
+            return False
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE feishu_approval_deliveries
+                SET notification_lease_token=NULL,
+                    notification_lease_expires_at=NULL,
+                    last_error_summary=%s,
+                    updated_at=NOW(6)
+                WHERE delivery_id=%s
+                  AND binding_id=%s
+                  AND notification_lease_token=%s
+                  AND notified_at IS NULL
+                """,
+                (
+                    str(error_summary or "")[:500] or None,
+                    _required_text(delivery_id, "delivery_id"),
+                    safe_binding_id,
+                    _required_text(lease_token, "notification_lease_token"),
+                ),
+            )
+            released = int(getattr(cursor, "rowcount", 0) or 0) == 1
+        if released:
+            self.activate_next(safe_binding_id)
+        return released
 
     def finish_approval(self, approval_id: str, *, status: str = "DECIDED") -> list[str]:
         """Finish an approval across queues when no binding lock is pre-held.
