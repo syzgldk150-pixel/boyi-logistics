@@ -604,13 +604,14 @@ def run_test_generation_write_lock_order_races(case):
             connection,
             cursor_factory=case.pymysql.cursors.DictCursor,
         )
-        with case.assertRaises(ConcurrentUpdateError):
-            archival_repository.commit_generation_cas_row(
-                archival_automation_id,
-                2,
-                expected_committed_generation=1,
-            )
-        connection.rollback()
+        # An older run that is still finalizing must not block a prepared
+        # successor. Its eventual unknown-write evidence is quarantined on the
+        # archived generation while the newly committed route remains usable.
+        archival_repository.commit_generation_cas_row(
+            archival_automation_id,
+            2,
+            expected_committed_generation=1,
+        )
         archival_repository.finalize_generation_write_row(
             automation_id=archival_automation_id,
             generation=1,
