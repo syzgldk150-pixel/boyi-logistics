@@ -344,7 +344,7 @@ def _audit_ronghui(params: dict[str, Any]) -> dict[str, Any]:
     session_profile = _clean_text(params.get("session_profile")) or RONGHUI_SESSION_PROFILE
     timeout_sec = int(params.get("timeout_sec") or 30)
     try:
-        session = get_session_broker(session_profile).build_requests_session(validate=True)
+        session = get_session_broker(session_profile).build_requests_session(validate=False)
     except TMSAuthStateError as exc:
         return _failure(
             platform="ronghui",

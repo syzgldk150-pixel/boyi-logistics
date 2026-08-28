@@ -1856,7 +1856,7 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     raw_path = _clean_text(params.get("path"))
     session = None
     if not raw_path or raw_path == "/":
-        session = get_session_broker(RONGHUI_WAYBILL_SESSION_PROFILE).build_requests_session(validate=True)
+        session = get_session_broker(RONGHUI_WAYBILL_SESSION_PROFILE).build_requests_session(validate=False)
     try:
         path, query, remote_url = _target_from_params(
             session,
@@ -1868,7 +1868,7 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         return {"ok": False, "error_code": "INVALID_PROXY_PATH", "error": str(exc)}
     if session is None:
-        session = get_session_broker(RONGHUI_WAYBILL_SESSION_PROFILE).build_requests_session(validate=True)
+        session = get_session_broker(RONGHUI_WAYBILL_SESSION_PROFILE).build_requests_session(validate=False)
     user_info_cookie = _client_user_info_cookie_from_session(session)
     cache_key = _cacheable_lookup_key(method, path, query)
     cached_payload = _get_lookup_cache_entry(cache_key)

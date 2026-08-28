@@ -1,5 +1,7 @@
 """Stable facade for TMS session profiles."""
 
+import math
+
 from agent.tms_runtime.session_support import *  # noqa: F403
 from agent.tms_runtime.session_adapters import (
     RonghuiSessionAdapter,
@@ -8,6 +10,10 @@ from agent.tms_runtime.session_adapters import (
 )
 from agent.tms_runtime.session_persistence import SessionPersistenceMixin
 from agent.tms_runtime.session_validation_service import SessionValidationMixin
+
+
+_BROWSER_ACTION_TIMEOUT_ENV = "TMS_BROWSER_ACTION_TIMEOUT_SECONDS"
+_DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 120.0
 
 
 class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
@@ -29,6 +35,9 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         login_page_marker: str = LOGIN_PAGE_MARKER,
         login_mode: str = "image",
         require_phone: bool = False,
+        state_dir_override: str | Path | None = None,
+        execute_login_inline: bool = False,
+        browser_action_timeout_sec: float | None = None,
     ) -> None:
         module_dir = Path(__file__).resolve().parent
         self.profile_name = _safe_profile_name(profile_name)
@@ -46,8 +55,8 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         self._login_page_marker = str(login_page_marker or "").strip()
         self._login_mode = str(login_mode or "image").strip().lower() or "image"
         self._require_phone = bool(require_phone)
-        self._state_dir = module_dir / "state"
-        if self.profile_name != "default":
+        self._state_dir = Path(state_dir_override) if state_dir_override is not None else module_dir / "state"
+        if state_dir_override is None and self.profile_name != "default":
             self._state_dir = self._state_dir / self.profile_name
         self._state_store = SessionStateStore(self._state_dir)
         self._meta_path = self._state_dir / "session_meta.json"
@@ -57,6 +66,26 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         self._pending_login_state_path = self._state_dir / "pending_login_state.json"
         self._login_profile_path = self._state_dir / "login_profile.json"
         self._lock = threading.RLock()
+        self._login_operation_lock = threading.Lock()
+        self._active_login_token: str | None = None
+        self._state_epoch = 0
+        self._execute_login_inline = bool(execute_login_inline)
+        timeout_value: float | str
+        if browser_action_timeout_sec is not None:
+            timeout_value = browser_action_timeout_sec
+        else:
+            configured_timeout = os.getenv(_BROWSER_ACTION_TIMEOUT_ENV)
+            timeout_value = (
+                configured_timeout
+                if configured_timeout is not None
+                else _DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS
+            )
+        try:
+            self._browser_action_timeout_sec = float(timeout_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{_BROWSER_ACTION_TIMEOUT_ENV} must be a positive number") from exc
+        if not math.isfinite(self._browser_action_timeout_sec) or self._browser_action_timeout_sec <= 0:
+            raise ValueError(f"{_BROWSER_ACTION_TIMEOUT_ENV} must be a positive number")
         self._health_snapshot_meta = self._load_meta()
         self._pending: PendingBrowser | None = None
         self._provider_adapter: SessionProviderAdapter = (
@@ -79,11 +108,18 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
 
     def send_code(self) -> dict[str, Any]:
         """Start the provider-specific login flow through the stable façade."""
-        return self._provider_adapter.send_code()
+        if self._execute_login_inline:
+            return self._provider_adapter.send_code()
+        return self._run_staged_login_operation("send", "")
 
     def submit_code(self, code: str) -> dict[str, Any]:
         """Complete the provider-specific login flow through the stable façade."""
-        return self._provider_adapter.submit_code(code)
+        code_value = str(code or "").strip()
+        if not code_value:
+            raise TMSAuthStateError("AUTH_PENDING_CODE", "验证码不能为空。")
+        if self._execute_login_inline:
+            return self._provider_adapter.submit_code(code_value)
+        return self._run_staged_login_operation("submit", code_value)
 
     def _session_from_saved_state_locked(self) -> requests.Session:
         storage_state = self._load_storage_state()
@@ -104,11 +140,11 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
             if not isinstance(cookie, dict):
                 continue
             _set_requests_cookie_from_storage(session, cookie)
-        return session
+        return self._install_session_auth_hook(session)
 
     def describe_status(self, *, validate: bool = True, force: bool = False) -> dict[str, Any]:
+        meta = self._validate(force=force) if validate else self._read_meta_snapshot()
         with self._lock:
-            meta = self._validate_locked(force=force) if validate else self._save_meta(self._load_meta())
             credentials = self._credentials_status_locked()
             return {
                 "profile": self.profile_name,
@@ -167,19 +203,24 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         raise TMSAuthStateError("AUTH_REQUIRED", status.get("last_error_summary") or "当前未登录或登录态已过期。")
 
     def build_requests_session(self, *, validate: bool = True) -> requests.Session:
+        if validate:
+            self.ensure_authenticated(validate=True)
         with self._lock:
-            self.ensure_authenticated(validate=validate)
+            if self._active_login_token is not None:
+                raise TMSAuthStateError("BLOCKED_LOGIN", "该账号正在登录，本次动作未排队。")
+            if not self._storage_state_path.exists():
+                raise TMSAuthStateError("AUTH_REQUIRED", "共享登录态不存在，请重新登录。")
             return self._session_from_saved_state_locked()
 
     def build_requests_session_unchecked(self) -> requests.Session:
-        with self._lock:
-            if not self._storage_state_path.exists():
-                raise TMSAuthStateError("AUTH_REQUIRED", "Shared storage state does not exist; please log in again.")
-            return self._session_from_saved_state_locked()
+        return self.build_requests_session(validate=False)
 
     def get_storage_state_path(self, *, validate: bool = True) -> str:
+        if validate:
+            self.ensure_authenticated(validate=True)
         with self._lock:
-            self.ensure_authenticated(validate=validate)
+            if self._active_login_token is not None:
+                raise TMSAuthStateError("BLOCKED_LOGIN", "该账号正在登录，本次动作未排队。")
             if not self._storage_state_path.exists():
                 raise TMSAuthStateError("AUTH_REQUIRED", "共享 storage state 不存在，请重新登录。")
             return str(self._storage_state_path)
@@ -192,44 +233,63 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
 
 
 _SESSION_BROKERS: dict[str, SessionBroker] = {}
+_SESSION_BROKERS_LOCK = threading.Lock()
+
+
+def build_session_broker(
+    profile_name: str = "default",
+    *,
+    state_dir_override: str | Path | None = None,
+    execute_login_inline: bool = False,
+    browser_action_timeout_sec: float | None = None,
+) -> SessionBroker:
+    normalized = _safe_profile_name(profile_name)
+    if normalized == "ronghui":
+        normalized = "default"
+    common = {
+        "profile_name": normalized,
+        "state_dir_override": state_dir_override,
+        "execute_login_inline": execute_login_inline,
+        "browser_action_timeout_sec": browser_action_timeout_sec,
+    }
+    if normalized == "yunda" or normalized.startswith("yunda_"):
+        return SessionBroker(
+            **common,
+            username_envs=YUNDA_USERNAME_ENVS if normalized == "yunda" else (),
+            password_envs=YUNDA_PASSWORD_ENVS if normalized == "yunda" else (),
+            phone_envs=YUNDA_PHONE_ENVS if normalized == "yunda" else (),
+            base_origin_envs=YUNDA_BASE_ORIGIN_ENVS,
+            base_origin_default=YUNDA_BASE_ORIGIN,
+            login_path_envs=YUNDA_LOGIN_PATH_ENVS,
+            login_path_default=YUNDA_LOGIN_PATH,
+            home_path_envs=YUNDA_HOME_PATH_ENVS,
+            home_path_default=YUNDA_HOME_PATH,
+            login_url_keywords=("ky-sso.yunda56.com/login", "/login"),
+            login_body_markers=("用户登录", "请输入用户名"),
+            login_page_marker="",
+            login_mode="yunda_password",
+            require_phone=False,
+        )
+    if normalized != "default":
+        # Every managed non-default account owns an independent saved
+        # credential file and session directory. It must never inherit a
+        # deployment-wide username/password from another account.
+        return SessionBroker(
+            **common,
+            username_envs=(),
+            password_envs=(),
+            phone_envs=(),
+        )
+    return SessionBroker(**common)
 
 
 def get_session_broker(profile_name: str = "default") -> SessionBroker:
     normalized = _safe_profile_name(profile_name)
     if normalized == "ronghui":
         normalized = "default"
-    if normalized not in _SESSION_BROKERS:
-        if normalized == "yunda" or normalized.startswith("yunda_"):
-            username_envs = YUNDA_USERNAME_ENVS if normalized == "yunda" else ()
-            password_envs = YUNDA_PASSWORD_ENVS if normalized == "yunda" else ()
-            phone_envs = YUNDA_PHONE_ENVS if normalized == "yunda" else ()
-            _SESSION_BROKERS[normalized] = SessionBroker(
-                profile_name=normalized,
-                username_envs=username_envs,
-                password_envs=password_envs,
-                phone_envs=phone_envs,
-                base_origin_envs=YUNDA_BASE_ORIGIN_ENVS,
-                base_origin_default=YUNDA_BASE_ORIGIN,
-                login_path_envs=YUNDA_LOGIN_PATH_ENVS,
-                login_path_default=YUNDA_LOGIN_PATH,
-                home_path_envs=YUNDA_HOME_PATH_ENVS,
-                home_path_default=YUNDA_HOME_PATH,
-                login_url_keywords=("ky-sso.yunda56.com/login", "/login"),
-                login_body_markers=("用户登录", "请输入用户名"),
-                login_page_marker="",
-                login_mode="yunda_password",
-                require_phone=False,
-            )
-        elif normalized != "default":
-            # Every managed non-default account owns an independent saved
-            # credential file and session directory. It must never inherit a
-            # deployment-wide username/password from another account.
-            _SESSION_BROKERS[normalized] = SessionBroker(
-                profile_name=normalized,
-                username_envs=(),
-                password_envs=(),
-                phone_envs=(),
-            )
-        else:
-            _SESSION_BROKERS[normalized] = SessionBroker(profile_name=normalized)
-    return _SESSION_BROKERS[normalized]
+    with _SESSION_BROKERS_LOCK:
+        broker = _SESSION_BROKERS.get(normalized)
+        if broker is None:
+            broker = build_session_broker(normalized)
+            _SESSION_BROKERS[normalized] = broker
+        return broker

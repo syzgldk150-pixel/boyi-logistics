@@ -1154,7 +1154,10 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     form = params.get("form") if isinstance(params.get("form"), dict) else {}
     context = params.get("context") if isinstance(params.get("context"), dict) else {}
     broker = get_session_broker("yunda")
-    session = broker.build_requests_session(validate=True)
+    # The entry page and its exact pricing/save endpoints are the capability
+    # preflight.  Do not couple a waybill write to the report/message/problem
+    # health matrix before reaching the real target.
+    session = broker.build_requests_session(validate=False)
     page_context = _fetch_entry_context(session)
     prepared_form = _prepare_form(form, page_context=page_context)
     referer = _clean_text(context.get("page_url")) or page_context["page_url"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from http import HTTPStatus
 import posixpath
 import time
@@ -10,28 +11,43 @@ from urllib.parse import unquote, urlparse
 
 from console.app_support import *  # noqa: F403
 from console.navigation import CONSOLE_CONTROL_PLANE_NAVIGATION, CONSOLE_NAVIGATION
-from shared.business_modules import BUSINESS_MODULE_BY_CODE, CORE_MODULE_CODES
+from shared.business_modules import BUSINESS_MODULE_BY_CODE
 
 
 _MODULE_MANAGER_ROUTE = "/settings/modules"
 _CURRENT_REQUEST_USER = object()
+_MODULE_STATUS_SUCCESS_CACHE_TTL_SECONDS = 2.0
+_MODULE_STATUS_FAILURE_CACHE_TTL_SECONDS = 5.0
+_MODULE_STATUS_REQUEST_TIMEOUT_SECONDS = 2.0
+_CURRENT_MODULE_STATUS_UNAVAILABLE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "current_business_module_status_unavailable",
+    default=False,
+)
 
 
 class BusinessModulesServiceMixin:
     def _business_module_rows(self, handler: BaseHTTPRequestHandler | None = None) -> dict[str, dict[str, Any]] | None:
         cached = getattr(self, "_business_module_status_cache", None)
-        if isinstance(cached, tuple) and time.monotonic() - cached[0] < 2:
-            return dict(cached[1])
+        if isinstance(cached, tuple) and len(cached) >= 2:
+            cached_rows = cached[1]
+            cache_ttl = (
+                _MODULE_STATUS_SUCCESS_CACHE_TTL_SECONDS
+                if isinstance(cached_rows, dict)
+                else _MODULE_STATUS_FAILURE_CACHE_TTL_SECONDS
+            )
+            if time.monotonic() - cached[0] < cache_ttl:
+                return dict(cached_rows) if isinstance(cached_rows, dict) else None
         user = getattr(handler, "current_admin_user", None) if handler is not None else current_admin_user()
         result = self._agent_request(
             "GET",
             "/internal/v1/admin/modules",
-            timeout=12,
+            timeout=_MODULE_STATUS_REQUEST_TIMEOUT_SECONDS,
             console_principal=self._mysql_console_principal(user),
         )
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         items = data.get("items") if isinstance(data.get("items"), list) else None
         if not result.get("ok") or items is None:
+            self._business_module_status_cache = (time.monotonic(), None, "")
             return None
         rows = {str(item.get("module_code")): item for item in items if isinstance(item, dict)}
         self._business_module_status_cache = (time.monotonic(), dict(rows), str(data.get("release_sha") or ""))
@@ -39,6 +55,14 @@ class BusinessModulesServiceMixin:
 
     def _invalidate_business_module_status_cache(self) -> None:
         self._business_module_status_cache = None
+
+    @staticmethod
+    def _reset_business_module_request_state() -> None:
+        _CURRENT_MODULE_STATUS_UNAVAILABLE.set(False)
+
+    @staticmethod
+    def _business_module_status_unavailable_for_request() -> bool:
+        return _CURRENT_MODULE_STATUS_UNAVAILABLE.get()
 
     @staticmethod
     def _can_see_module_manager_navigation(user: Mapping[str, Any] | None) -> bool:
@@ -62,30 +86,13 @@ class BusinessModulesServiceMixin:
             user = current_admin_user()
         module_manager_visible = self._can_see_module_manager_navigation(user)
         navigation = (*CONSOLE_NAVIGATION, *CONSOLE_CONTROL_PLANE_NAVIGATION)
-        rows = self._business_module_rows()
-        if rows is None:
-            return tuple(
-                item
-                for item in navigation
-                if (
-                    item["route"] == _MODULE_MANAGER_ROUTE
-                    and module_manager_visible
-                )
-                or item["route"] == "/"
-                or self._module_code_for_route(item["route"]) in CORE_MODULE_CODES
-            )
         return tuple(
             item for item in navigation
             if (
                 item["route"] == _MODULE_MANAGER_ROUTE
                 and module_manager_visible
             )
-            or str(
-                (rows.get(self._module_code_for_route(item["route"])) or {}).get(
-                    "lifecycle_state"
-                )
-            )
-            == "ENABLED"
+            or item["route"] != _MODULE_MANAGER_ROUTE
         )
 
     def _business_module_mobile_nav(self, user: Mapping[str, Any] | None, navigation: list[dict[str, str]]) -> tuple[str, ...]:
@@ -174,7 +181,13 @@ class BusinessModulesServiceMixin:
             return ""
         return BusinessModulesServiceMixin._module_code_for_normalized_request_path(normalized)
 
-    def _reject_unavailable_business_module_request(self, handler: BaseHTTPRequestHandler, path: str) -> bool:
+    def _reject_unavailable_business_module_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        *,
+        method: str | None = None,
+    ) -> bool:
         if path == _MODULE_MANAGER_ROUTE or path.startswith(_MODULE_MANAGER_ROUTE + "/"):
             return False
         normalized = self._normalized_module_request_path(path)
@@ -186,9 +199,11 @@ class BusinessModulesServiceMixin:
             return False
         rows = self._business_module_rows(handler)
         if rows is None:
-            if module_code in CORE_MODULE_CODES:
+            _CURRENT_MODULE_STATUS_UNAVAILABLE.set(True)
+            request_method = str(method or getattr(handler, "command", "GET") or "GET").upper()
+            if request_method == "GET":
                 return False
-            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error_code": "MODULE_STATUS_UNAVAILABLE", "message": "模块状态暂不可用，已拒绝访问可管理模块。"})
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error_code": "MODULE_STATUS_UNAVAILABLE", "message": "Agent 服务不可用，已暂停该模块的写入操作。"})
             return True
         state = str((rows.get(module_code) or {}).get("lifecycle_state") or "BLOCKED")
         if state == "ENABLED":

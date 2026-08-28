@@ -584,7 +584,7 @@ def _fetch_ronghui(params: dict[str, Any], *, direction: str) -> tuple[list[dict
     max_pages = _coerce_int(params.get("max_pages"), DEFAULT_MAX_PAGES)
     timeout_sec = _coerce_int(params.get("timeout_sec"), 60)
     session_profile = _clean(params.get("session_profile")) or PRICE_SESSION_PROFILE
-    session = get_session_broker(session_profile).build_requests_session(validate=True)
+    session = get_session_broker(session_profile).build_requests_session(validate=False)
     login_site_code = _resolve_ronghui_login_site_code(session, params)
     call_id = _ronghui_process_call_id(direction)
     headers = {
@@ -765,7 +765,7 @@ def _fetch_yunda(params: dict[str, Any], *, direction: str) -> tuple[list[dict[s
     page_size = _coerce_int(params.get("page_size"), DEFAULT_PAGE_SIZE)
     max_pages = _coerce_int(params.get("max_pages"), DEFAULT_MAX_PAGES)
     timeout_sec = _coerce_int(params.get("timeout_sec"), 60)
-    session = get_session_broker("yunda").build_requests_session(validate=True)
+    session = get_session_broker("yunda").build_requests_session(validate=False)
     data_url = _clean(params.get("yunda_datagrid_url") or params.get("datagrid_url"))
     if not data_url:
         data_url = _discover_yunda_datagrid_url(session, direction=direction, timeout_sec=timeout_sec)
