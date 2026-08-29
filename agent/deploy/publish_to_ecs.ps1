@@ -434,6 +434,7 @@ function Get-ReleaseFingerprints() {
         "agent/scripts/run_migrations.py",
         "agent/scripts/business_module_migration_contract.py",
         "agent/scripts/migration_018_authorization.py",
+        "agent/scripts/migration_030_notification_lease.py",
         "agent/scripts/automation_project_release_manifest_preflight.py",
         "agent/scripts/automation_project_resource_preflight.py",
         "agent/scripts/automation_project_schedule_identity_preflight.py",
