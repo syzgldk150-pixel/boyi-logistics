@@ -4,7 +4,7 @@ type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
 status: active
-updated: 2026-08-23
+updated: 2026-08-29
 ---
 
 # Agent 统一控制平面 v1
@@ -216,6 +216,11 @@ Outbox 和消费者幂等回执。生产已执行的 `014` 按 `schema_migration
 `autocommit=False`，显式 Unit of Work 负责 begin/commit/rollback。Work Item、Run、Step、
 Evidence、Domain Event 与 Outbox 在同一事务提交；运行时不执行 DDL。Outbox 具备租约、
 重试、死信与 `(consumer_name, event_id)` 消费幂等。
+
+迁移 `031` 为控制平面滚动清理补充索引。Agent 启动后每六小时分批清理超过 30 天的
+`domain_events`、`outbox_events`、`event_consumptions` 与 `approval_requests` 已终结记录，
+先删消费回执/投递或审批决定，再删父记录。非终态 Run/Work Item、`PENDING`/`PROCESSING`
+Outbox、待决定审批以及仍在飞书通知队列或租约中的记录不清理；每批独立提交，避免长事务阻塞业务。
 
 Evidence 只保存非敏感来源、账号标识、外部记录标识、观测时间、页码与完整性证明。
 Cookie、Token、密码、原始请求体和可执行 HTML 不得进入响应、日志或持久化证据。

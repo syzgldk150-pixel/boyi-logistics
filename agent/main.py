@@ -186,6 +186,7 @@ from agent.orchestration.models import (
     new_id,
 )
 from agent.orchestration.outbox_dispatcher import OutboxDispatcher, OutboxDispatcherGroup
+from agent.orchestration.control_plane_retention import ControlPlaneRetentionWorker
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.policy_engine import PolicyEngine
@@ -271,6 +272,7 @@ agent_core: AgentCore | None = None
 orchestration_repository: OrchestrationRepository | None = None
 workflow_runner: WorkflowRunner | None = None
 outbox_dispatcher: OutboxDispatcherGroup | None = None
+control_plane_retention_worker: ControlPlaneRetentionWorker | None = None
 control_plane_service: ControlPlaneService | None = None
 scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
@@ -1113,6 +1115,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global orchestration_repository, workflow_runner, outbox_dispatcher, control_plane_service
+    global control_plane_retention_worker
     global scheduled_task_approval_service, scheduled_task_approval_bootstrap
     global automation_plugin_runtime, automation_project_policy_service
     global automation_worker_transport_service
@@ -1391,6 +1394,7 @@ async def lifespan(app: FastAPI):
             )
         )
     dispatcher = OutboxDispatcherGroup(dispatchers)
+    retention_worker = ControlPlaneRetentionWorker(repository)
     service = ControlPlaneService(
         repository,
         approval_service,
@@ -1401,6 +1405,7 @@ async def lifespan(app: FastAPI):
     orchestration_repository = repository
     workflow_runner = runner
     outbox_dispatcher = dispatcher
+    control_plane_retention_worker = retention_worker
     control_plane_service = service
     runtime.configure_orchestration(
         command_gateway=gateway,
@@ -1415,6 +1420,7 @@ async def lifespan(app: FastAPI):
     release_hold = scheduler_release_hold_requested()
     await runner.start(held_for_release=release_hold)
     await dispatcher.start()
+    await retention_worker.start()
     bind_agent_runtime(runtime, loop)
     bind_agent_command_runtime(runtime)
 
@@ -1469,6 +1475,7 @@ async def lifespan(app: FastAPI):
     bind_automation_project_entrypoints(None)
     bind_feishu_approval_runtime(None)
     await stop_feishu_ws()
+    await retention_worker.stop()
     await runner.stop()
     await dispatcher.stop()
     await plugin_runtime.stop()
@@ -1483,6 +1490,7 @@ async def lifespan(app: FastAPI):
     feishu_approval_service = None
     automation_project_policy_service = None
     outbox_dispatcher = None
+    control_plane_retention_worker = None
     workflow_runner = None
     orchestration_repository = None
     agent_core = None
