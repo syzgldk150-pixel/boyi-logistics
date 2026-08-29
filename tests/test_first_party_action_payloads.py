@@ -29,10 +29,7 @@ from tests.first_party_action_payload_support import (
     build_scan_preview_binding,
     load_first_party_action,
 )
-from agent.automation_plugins.core_adapter import (
-    AccountManagerSessionResolver,
-    RegisteredCoreAutomationBrokerAdapter,
-)
+from agent.automation_plugins.core_adapter import AccountManagerSessionResolver, RegisteredCoreAutomationBrokerAdapter
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.first_party_handlers import (
     FirstPartyCoreHandlerPorts,
@@ -108,6 +105,11 @@ def _fresh_write_result(count: int, label: str) -> dict[str, object]:
         "after_observation_id": f"after-{label}",
         "write_response_received": True,
     }
+
+
+class _ActiveBindingDescriptorAlias:
+    def require_active_binding_descriptor(self, account_id):
+        return self.require_authenticated_binding(account_id)
 
 
 class _PayloadSandbox:
@@ -551,10 +553,7 @@ def test_clock_signed_payload_runs_through_router_and_fresh_read_verifier(
         ),
     )
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id: str):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id: str):
             assert account_id == "ronghui-clock"
             return {
@@ -644,10 +643,7 @@ def test_delivery_status_signed_payload_runs_through_router_and_verifier(
         broker_operations=broker_operations,
     )
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id: str):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id: str):
             assert account_id == "ronghui-east"
             return {
@@ -1075,10 +1071,7 @@ def test_site_send_signed_payload_runs_through_router_and_write_verifier(
     )
     call_order: list[str] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id: str):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id: str):
             assert account_id == "ronghui-site-east"
             return {
@@ -1400,10 +1393,7 @@ def test_customer_problem_payload_calls_real_local_broker_without_account_ids(
     resolved_accounts: list[str] = []
     core_calls: list[tuple[str, tuple[str, ...], dict]] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             resolved_accounts.append(account_id)
             assert account_id in {"account-a", "account-b"}
@@ -1560,10 +1550,7 @@ def test_customer_payload_runs_through_router_and_result_verifier(
     leases = _ReadGenerationLeases(capability)
     resolved_accounts: list[str] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             resolved_accounts.append(account_id)
             return {
@@ -1772,10 +1759,7 @@ def test_arrive_payload_runs_closed_production_primitives_through_write_verifier
     call_order: list[str] = []
     authenticated: list[str] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             authenticated.append(account_id)
             assert account_id == "arrive-account"
@@ -2076,10 +2060,7 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
     }
     detail_record = {**source_record, "recipient_address": "complete recipient address"}
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             authenticated.append(account_id)
             assert account_id == "stats-account"
@@ -2428,10 +2409,7 @@ def test_scan_codes_runs_router_to_fresh_server_verifier(
     )
     primitive_calls: list[tuple[object, ...]] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             assert account_id == "ronghui-scan"
             return {
@@ -2638,10 +2616,7 @@ def test_yunda_dispatch_runs_router_to_write_verifier_with_exact_bindings(
     source_calls: list[tuple[object, ...]] = []
     writes: list[tuple[object, ...]] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             account_calls.append(str(account_id))
             assert account_id == "yunda-account"
@@ -2837,10 +2812,7 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
     account_calls: list[str] = []
     primitive_calls: list[tuple[object, ...]] = []
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            return self.require_authenticated_binding(account_id)
-
+    class Manager(_ActiveBindingDescriptorAlias):
         def require_authenticated_binding(self, account_id):
             account_calls.append(str(account_id))
             assert account_id == "yunda-account"
