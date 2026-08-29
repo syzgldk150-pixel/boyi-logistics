@@ -110,8 +110,8 @@ def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
         cursor.execute(
             "INSERT INTO admin_users "
             "(username, display_name, password_hash, is_active, "
-            "control_plane_role) VALUES (%s, %s, 'test-only-hash', 1, "
-            "'super_admin')",
+            "control_plane_role, created_at, updated_at) "
+            "VALUES (%s, %s, 'test-only-hash', 1, 'super_admin', NOW(6), NOW(6))",
             (f"lease-admin-{binding_id}", "Lease invariant admin"),
         )
         admin_user_id = int(cursor.lastrowid)
