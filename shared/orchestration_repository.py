@@ -2724,6 +2724,128 @@ class OutboxRepository(_RepositoryBase):
             return cursor.fetchone() is not None
 
 
+class ControlPlaneRetentionRepository(_RepositoryBase):
+    """Delete terminal control-plane records after their rolling retention window."""
+
+    def purge_batch(self, *, retention_days: int, batch_size: int) -> dict[str, int]:
+        days = int(retention_days)
+        if days <= 0:
+            raise ValueError("retention_days must be positive")
+        limit = max(1, min(int(batch_size), 1_000))
+        counts = {
+            "domain_events": 0,
+            "outbox_events": 0,
+            "event_consumptions": 0,
+            "approval_requests": 0,
+            "approval_decisions": 0,
+        }
+        with self.cursor() as cursor:
+            event_ids = self._lock_expired_event_ids(cursor, days=days, limit=limit)
+            if event_ids:
+                placeholders = ", ".join("%s" for _ in event_ids)
+                cursor.execute(
+                    f"DELETE FROM event_consumptions WHERE event_id IN ({placeholders})",
+                    event_ids,
+                )
+                counts["event_consumptions"] = int(getattr(cursor, "rowcount", 0) or 0)
+                cursor.execute(
+                    f"DELETE FROM outbox_events WHERE event_id IN ({placeholders})",
+                    event_ids,
+                )
+                counts["outbox_events"] = int(getattr(cursor, "rowcount", 0) or 0)
+                cursor.execute(
+                    f"DELETE FROM domain_events WHERE event_id IN ({placeholders})",
+                    event_ids,
+                )
+                counts["domain_events"] = int(getattr(cursor, "rowcount", 0) or 0)
+                if counts["domain_events"] != len(event_ids):
+                    raise ConcurrentUpdateError(
+                        "control-plane retention lost a locked domain event"
+                    )
+
+            approval_ids = self._lock_expired_approval_ids(
+                cursor,
+                days=days,
+                limit=limit,
+            )
+            if approval_ids:
+                placeholders = ", ".join("%s" for _ in approval_ids)
+                cursor.execute(
+                    f"DELETE FROM approval_decisions WHERE approval_id IN ({placeholders})",
+                    approval_ids,
+                )
+                counts["approval_decisions"] = int(getattr(cursor, "rowcount", 0) or 0)
+                cursor.execute(
+                    f"DELETE FROM approval_requests WHERE approval_id IN ({placeholders})",
+                    approval_ids,
+                )
+                counts["approval_requests"] = int(getattr(cursor, "rowcount", 0) or 0)
+                if counts["approval_requests"] != len(approval_ids):
+                    raise ConcurrentUpdateError(
+                        "control-plane retention lost a locked approval request"
+                    )
+        return counts
+
+    @staticmethod
+    def _lock_expired_event_ids(cursor: Any, *, days: int, limit: int) -> list[str]:
+        cursor.execute(
+            """
+            SELECT domain_event.event_id
+            FROM domain_events AS domain_event
+            LEFT JOIN agent_runs AS run ON run.run_id=domain_event.run_id
+            LEFT JOIN work_items AS item ON item.work_item_id=domain_event.work_item_id
+            WHERE domain_event.created_at < DATE_SUB(NOW(6), INTERVAL %s DAY)
+              AND (domain_event.run_id IS NULL OR run.status IN (
+                  'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
+              ))
+              AND (
+                  domain_event.work_item_id IS NULL
+                  OR item.status IN ('RESOLVED', 'CANCELLED')
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM outbox_events AS pending_outbox
+                  WHERE pending_outbox.event_id=domain_event.event_id
+                    AND pending_outbox.status IN ('PENDING', 'PROCESSING')
+              )
+            ORDER BY domain_event.created_at, domain_event.event_id
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+            """,
+            (days, limit),
+        )
+        return [str(row["event_id"]) for row in _rows(cursor)]
+
+    @staticmethod
+    def _lock_expired_approval_ids(cursor: Any, *, days: int, limit: int) -> list[str]:
+        cursor.execute(
+            """
+            SELECT approval.approval_id
+            FROM approval_requests AS approval
+            JOIN agent_runs AS run ON run.run_id=approval.run_id
+            JOIN work_items AS item ON item.work_item_id=approval.work_item_id
+            WHERE approval.created_at < DATE_SUB(NOW(6), INTERVAL %s DAY)
+              AND approval.status IN ('APPROVED', 'REJECTED', 'EXPIRED', 'INVALIDATED')
+              AND run.status IN ('COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED')
+              AND item.status IN ('RESOLVED', 'CANCELLED')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM feishu_approval_deliveries AS delivery
+                  WHERE delivery.approval_id=approval.approval_id
+                    AND (
+                        delivery.status IN ('QUEUED', 'ACTIVE')
+                        OR delivery.notification_lease_token IS NOT NULL
+                    )
+              )
+            ORDER BY approval.created_at, approval.approval_id
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+            """,
+            (days, limit),
+        )
+        return [str(row["approval_id"]) for row in _rows(cursor)]
+
+
 class OrchestrationUnitOfWork:
     """One explicit MySQL transaction spanning all orchestration repositories."""
 
@@ -2764,6 +2886,7 @@ class OrchestrationUnitOfWork:
         self.evidence = EvidenceRepository(connection, self._cursor_factory)
         self.events = DomainEventRepository(connection, self._cursor_factory)
         self.outbox = OutboxRepository(connection, self._cursor_factory)
+        self.retention = ControlPlaneRetentionRepository(connection, self._cursor_factory)
         self.entity_links = ExternalEntityLinkRepository(connection, self._cursor_factory)
         self.pilot_sources = PilotProjectionSourceRepository(connection, self._cursor_factory)
         self.scheduled_policies = ScheduledTaskApprovalPolicyRepository(
