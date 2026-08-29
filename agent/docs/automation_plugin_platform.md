@@ -7,7 +7,7 @@ related:
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-28
+updated: 2026-08-29
 ---
 
 # 自动化插件平台
@@ -61,6 +61,14 @@ manifest、文件表和签名，再防 Zip Slip/符号链接/重解析点/硬链
 文件保存，并在安装元数据中只记录相对名与 package SHA-256。首方发布包也走同一复制流程，后续
 Worker 下载不依赖已经轮换的 release 目录。读取时同时校验版本目录边界、符号/硬链接、打开前后
 inode、大小和摘要；管理投影及下载响应均不暴露服务器文件路径。
+
+每个插件版本继续保留自己的 venv 和主解释器，不能通过共享 venv、软链接或硬链接跨插件复用，避免
+依赖升级、卸载或版本热切换影响其他插件。Python 3.10 复制模式可能额外生成 `bin/python3` 和
+`bin/python3.10` 两个完整解释器副本；新安装已在提交不可变版本目录前移除这些冗余别名。历史版本
+只能在 Agent 已停止且没有活动插件执行的维护窗口中使用 `scripts/compact_plugin_venvs.py` 处理：
+先不带 `--apply` 做只读统计，确认别名无软/硬链接且与 `bin/python` 逐字节一致后再显式应用。该工具
+只删除两个冗余别名，保留每个版本独立的 `bin/python`、签名包、原始 ZIP、版本目录和数据库代际引用，
+不改变热插拔与回滚身份。
 
 启动 bootstrap 会对数据库中已存在的首方签名版本重新核验完整 manifest、签名身份、确定性安装
 路径、安装元数据、原始 ZIP 摘要、签名文件、payload 文件闭集和 Python 入口。若回滚曾保留精确的
