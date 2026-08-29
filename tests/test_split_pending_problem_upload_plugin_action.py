@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tools import split_pending_problem_upload_tool as legacy_action
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION_SOURCE = (
@@ -168,6 +170,40 @@ def test_preview_owns_classification_state_join_and_fingerprint():
     assert result["meta"]["postcondition_evidence"]["0"]["details"][
         "write_attempted"
     ] is False
+
+
+def test_legacy_read_only_preview_fingerprint_matches_signed_candidate_material():
+    action, _ = _load_action()
+    rows = _source_rows()
+    stored = [
+        {
+            "tracking_number": "R_SPLIT",
+            "problem_type": "少货/分批",
+            "upload_status": "success",
+            "complaint_status": "failed",
+        },
+        {
+            "tracking_number": "R_ZERO",
+            "problem_type": "有发未到",
+            "upload_status": "pending",
+            "complaint_status": "not_applicable",
+        },
+    ]
+
+    signed_result, _ = _preview(action, rows=rows, stored=stored)
+    legacy_candidates, _ = legacy_action.classify_sheet_values(rows)
+    legacy_eligible, legacy_hidden = legacy_action._stateful_candidates(
+        legacy_candidates,
+        stored,
+    )
+
+    assert legacy_hidden == signed_result["data"]["hidden_completed_count"]
+    assert [item["bill_code"] for item in legacy_eligible] == [
+        item["bill_code"] for item in signed_result["data"]["candidates"]
+    ]
+    assert legacy_action._preview_fingerprint(legacy_eligible) == signed_result["data"][
+        "preview_fingerprint"
+    ]
 
 
 def test_formal_selection_preflights_all_before_internal_or_external_writes():

@@ -207,7 +207,7 @@ docs/
 ## 分批差错及问题件
 
 - 飞书文本仅精确指令“分批”触发低风险只读工具 `preview_split_pending_problems`；自提问题件预览使用 `preview_self_pickup_problems`。两条封装器只接受显式 `account_id` 并强制旧实现 `dry_run=true`，任何写入参数都会被拒绝；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
-- 交互先生成 dry-run 编号列表和选择快照；飞书固定命令只允许原发起人在有效 pending 内完成选择与确认，Console 只允许从已完成且验签的候选 Run 勾选子集并由服务端恢复指纹，两者才能调用签名项目 `automation.split_pending_problem_upload.run`。Scheduler、LLM 和旧同名工具均不能执行正式上传。
+- 交互通过互斥检查后先回复正在生成，再生成 dry-run 编号列表和选择快照；旧只读预览必须使用与签名 action 相同的指纹字段和规范化序列化。飞书固定命令只允许原发起人在有效 pending 内完成选择与确认，Console 只允许从已完成且验签的候选 Run 勾选子集并由服务端恢复指纹，两者才能调用签名项目 `automation.split_pending_problem_upload.run`。Scheduler、LLM 和旧同名工具均不能执行正式上传。
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
 - `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉差错或问题件上报。
 - `sync_arrival_stats` 的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1，历史回填必须使用独立扫描同步工具。

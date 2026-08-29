@@ -73,7 +73,7 @@
 - `../../1/AGENTS.md`
 
 - 分批差错及问题件：
-  - `split_pending_problem_upload_tool.py` dry-run 返回未完成候选、步骤状态、隐藏成功数量和指纹；正式参数缺少 `selected_bill_codes` / `preview_fingerprint` 必须拒绝。
+  - `split_pending_problem_upload_tool.py` dry-run 返回未完成候选、步骤状态、隐藏成功数量和指纹；该只读预览指纹的字段与规范化序列化必须和签名 action 保持完全一致；正式参数缺少 `selected_bill_codes` / `preview_fingerprint` 必须拒绝。
   - 正式执行先校验最新来源与状态指纹，再刷新全部当前未齐 Sheet/MySQL 快照；融辉外部操作只处理所选运单，并通过 `phase7_mysql_store.py` 独立回写差错和问题件结果。
   - `sync_arrival_stats` 成功完成统计输出后调用共享快照模块；结构异常或重复运单显式失败并保留旧快照，正常统计但全部到齐时写空候选以清理目标旧行，且不得调用融辉上报。
   - 完整成功的问题件上报必须同时写入 `waybill_problem_events`，保留外部唯一 ID、精确类型和 TMS 登记时间；后续补齐或当前未齐快照删除不得抹除历史延期证据。
