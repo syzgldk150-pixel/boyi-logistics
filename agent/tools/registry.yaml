@@ -808,7 +808,7 @@ tools:
       properties:
         request_body:
           type: object
-          description: "可选，仅允许覆盖 get_qianshou 的非凭据查询参数；账号必须由 r13_account_id 经账号管理器显式绑定"
+          description: "可选，仅允许覆盖 get_qianshou 的时间与分页参数；账号和站点必须由 r13_account_id 经中央账号目录显式绑定，调用方不得覆盖"
         base_token:
           type: string
           description: "可选，覆盖 phase7.daily_sign_bitable 的 base_token"
@@ -827,11 +827,11 @@ tools:
         account_id:
           type: string
           minLength: 1
-          description: "必填，唯一的融辉 TMS 邵阳大祥站账号 ID；统一用于问题件、主单签收、轨迹核验和地址补全"
+          description: "必填，自动化项目当前绑定的融辉 TMS 账号 ID；统一用于问题件、主单签收、轨迹核验和地址补全，禁止默认或固定账号"
         r13_account_id:
           type: string
           minLength: 1
-          description: "必填，每日应签 R13 查询账号 ID"
+          description: "必填，自动化项目当前绑定的 R13 查询账号 ID；站点范围从该账号登录后的真实上下文读取，业务参数不能另传站点"
         days:
           type: integer
           minimum: 1
@@ -1871,10 +1871,10 @@ tools:
           description: "可选，默认 true；仅预览飞书候选单号，不实际上传 TMS"
         account_id:
           type: string
-          description: "可选，自提部 TMS 账号角色绑定；默认使用 ronghui_self_pickup_problem"
+          description: "必填，由自动化项目的自提部 TMS 账号角色绑定传入；禁止选择默认账号"
         daxiang_s_account_id:
           type: string
-          description: "可选，大祥S站 TMS 账号角色绑定；默认使用 ronghui_daxiang_s，不要使用 price_default"
+          description: "处理大祥S站自提件时必填，由自动化项目的大祥S站 TMS 账号角色绑定传入；禁止选择默认账号"
         include_daxiang_s_self_pickup:
           type: boolean
           description: "可选，默认 true；同时处理邵阳大祥S站且派送方式=自提的单号"
@@ -1896,7 +1896,7 @@ tools:
           type: string
           pattern: "^[0-9a-f]{64}$"
           description: "正式执行必填；绑定来源行、业务规则和候选集合"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false
@@ -1946,7 +1946,7 @@ tools:
       required: true
       required_fields: [source, observed_at, pagination_complete]
     postconditions: [authoritative_preview_returned]
-    description: "只读预览分批差错及有发未到候选；封装器强制 dry_run=true，不接受写入参数，也不会改写飞书、MySQL 或融辉"
+    description: "只读预览分批及有发未到问题件候选；封装器强制 dry_run=true，不接受写入参数，也不会改写飞书、MySQL 或融辉"
     input_schema:
       type: object
       additionalProperties: false
@@ -2001,7 +2001,7 @@ tools:
         - execution_result
     postconditions:
       - third_party_split_problem_confirmed
-    description: "分批差错及问题件：dry-run 返回可选择的未完成运单和预览指纹；正式模式仅执行人工选择的运单，少货/分批先上报差错再登记问题件，有发未到只登记问题件"
+    description: "分批问题件：dry-run 返回可选择的未完成运单和预览指纹；正式模式仅执行人工选择的运单，少货/分批与有发未到都只登记问题件，不进入投诉方登记"
     input_schema:
       type: object
       additionalProperties: false
@@ -2011,7 +2011,7 @@ tools:
           description: "可选，默认 true；仅预览候选，不写目标 Sheet、数据库或融辉"
         account_id:
           type: string
-          description: "可选，融辉账号角色绑定；默认使用 ronghui_default（账号管理中的 739010002）"
+          description: "必填，由自动化项目的融辉账号角色绑定传入；禁止选择默认账号"
         selected_bill_codes:
           type: array
           items:
@@ -2020,7 +2020,7 @@ tools:
         preview_fingerprint:
           type: string
           description: "正式模式必填；dry-run 返回的 64 位预览指纹，用于执行前零写入复核"
-      required: []
+      required: [account_id]
     output_schema:
       type: object
       additionalProperties: false

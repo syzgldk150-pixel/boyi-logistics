@@ -36,6 +36,15 @@ def _manifest_mapping() -> dict:
     return resolve_first_party_manifests(ToolRegistry())["sync_scan_codes"].to_mapping()
 
 
+def test_every_first_party_automation_account_role_requires_project_binding() -> None:
+    manifests = resolve_first_party_manifests(ToolRegistry())
+
+    for manifest in manifests.values():
+        for role in manifest.account_roles:
+            assert role["required"] is True, (manifest.plugin_id, role["role"])
+            assert role["argument_field"] is None, (manifest.plugin_id, role["role"])
+
+
 def test_governance_anchor_is_signed_and_cannot_drift_from_action_contract() -> None:
     source = _manifest_mapping()
     source["governance_anchor"]["risk_level"] = "low"
@@ -305,7 +314,13 @@ def test_split_contract_is_human_triggered_with_verified_selection_fields() -> N
         "split_pending_problem_upload"
     ]
 
-    assert source["version"] == "1.0.23"
+    assert source["version"] == "1.0.25"
+    broker_actions = {
+        (item["operation"], item["action"])
+        for item in source["runtime_permissions"]["broker_operations"]
+    }
+    assert ("browser.invoke", "ronghui.problem.create") in broker_actions
+    assert not any(action.startswith("ronghui.complaint.") for _operation, action in broker_actions)
     assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,
@@ -336,7 +351,7 @@ def test_self_pickup_contract_has_verified_human_selection_fields() -> None:
         "self_pickup_problem_upload"
     ]
 
-    assert source["version"] == "1.0.23"
+    assert source["version"] == "1.0.25"
     assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,

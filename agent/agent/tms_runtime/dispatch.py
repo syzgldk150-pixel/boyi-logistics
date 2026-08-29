@@ -123,9 +123,18 @@ TARGET_ACCOUNT_PURPOSES: dict[str, str] = {
     "ronghui_waybill_proxy": "price",
 }
 
-TARGET_DEFAULT_ACCOUNT_IDS: dict[str, str] = {
-    "self_pickup_problem_upload": "ronghui_self_pickup_problem",
-    "split_pending_problem_upload": "ronghui_default",
+TARGET_REQUIRED_ACCOUNT_FIELDS: dict[str, str] = {
+    "get_qianshou": "r13_account_id",
+    "self_pickup_problem_upload": "account_id",
+    "split_pending_problem_upload": "account_id",
+}
+
+TARGET_PRIMARY_ACCOUNT_ROLE_FIELDS: dict[str, dict[str, str]] = {
+    "get_qianshou": {
+        "account_field": "r13_account_id",
+        "output_account_field": "r13_account_id",
+        "output_session_profile_field": "",
+    },
 }
 
 TARGET_ACCOUNT_ROLE_FIELDS: dict[str, list[dict[str, str]]] = {
@@ -255,19 +264,36 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
         try:
             target = TARGETS[name]
             input_params = dict(req.params)
-            target_account_id = TARGET_DEFAULT_ACCOUNT_IDS.get(name, "")
-            if (
-                target_account_id
-                and not input_params.get("account_id")
-                and not input_params.get("accountId")
-                and not input_params.get("session_profile")
-            ):
-                input_params["account_id"] = target_account_id
-            effective_params = resolve_account_params(
-                input_params,
-                default_system=TARGET_ACCOUNT_SYSTEMS.get(name, ""),
-                default_purpose=TARGET_ACCOUNT_PURPOSES.get(name, ""),
+            required_account_field = TARGET_REQUIRED_ACCOUNT_FIELDS.get(name, "")
+            required_account_parts = required_account_field.split("_")
+            required_account_alias = required_account_parts[0] + "".join(
+                part.title() for part in required_account_parts[1:]
             )
+            if required_account_field and not str(
+                input_params.get(required_account_field)
+                or input_params.get(required_account_alias)
+                or ""
+            ).strip():
+                raise TMSAuthStateError(
+                    "AUTH_REQUIRED",
+                    "该自动化必须由项目设置显式传入绑定账号，禁止选择默认账号。",
+                )
+            primary_role_binding = TARGET_PRIMARY_ACCOUNT_ROLE_FIELDS.get(name)
+            if primary_role_binding is not None:
+                effective_params = resolve_role_account_params(
+                    input_params,
+                    account_field=primary_role_binding["account_field"],
+                    output_account_field=primary_role_binding["output_account_field"],
+                    output_session_profile_field=primary_role_binding[
+                        "output_session_profile_field"
+                    ],
+                )
+            else:
+                effective_params = resolve_account_params(
+                    input_params,
+                    default_system=TARGET_ACCOUNT_SYSTEMS.get(name, ""),
+                    default_purpose=TARGET_ACCOUNT_PURPOSES.get(name, ""),
+                )
             for role_binding in TARGET_ACCOUNT_ROLE_FIELDS.get(name, []):
                 effective_params = resolve_role_account_params(
                     effective_params,

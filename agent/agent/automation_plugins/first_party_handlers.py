@@ -33,6 +33,7 @@ from agent.automation_plugins.first_party_handler_common import (
     _committed_result_count,
     _contains_broker_owned_material,
     _customer_public_item,
+    _daily_sign_account_bindings,
     _declared_page_result,
     _encode_daily_sign_result,
     _error,
@@ -574,10 +575,7 @@ class _FirstPartyCoreHandlers:
                 "daily-sign arguments contain broker-owned material",
                 "BROKER_ARGUMENT_INVALID",
             )
-        r13_account_id = _one_role_account(context, "r13_account_id")
-        account_id = _one_role_account(context, "account_id")
-        _account_descriptor(self._ports, r13_account_id, systems={"r13"})
-        _account_descriptor(self._ports, account_id, systems={"ronghui"})
+        account_bindings = _daily_sign_account_bindings(self._ports, context)
         daily_resources = {
             role: str(context.resource_bindings.get(role) or "").strip()
             for role in ("daily_sign_bitable", "daily_sign_sheet")
@@ -589,11 +587,7 @@ class _FirstPartyCoreHandlers:
             )
         self._mark_write_started(context)
         authoritative = self._ports.daily_sign_sync(
-            {
-                **values,
-                "r13_account_id": r13_account_id,
-                "account_id": account_id,
-            },
+            {**values, **account_bindings},
             daily_resources,
         )
         encoded = _encode_daily_sign_result(authoritative)
@@ -602,12 +596,7 @@ class _FirstPartyCoreHandlers:
         proof = {
             "status": encoded["status"],
             "account_bindings_sha256": hashlib.sha256(
-                canonical_json_bytes(
-                    {
-                        "r13_account_id": r13_account_id,
-                        "account_id": account_id,
-                    }
-                )
+                canonical_json_bytes(account_bindings)
             ).hexdigest(),
             "resource_bindings_sha256": hashlib.sha256(
                 canonical_json_bytes(daily_resources)

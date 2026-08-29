@@ -1981,50 +1981,6 @@ class Phase7SyncToolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 arrival_stats_sync_tool.run_arrival_stats_sync({})
 
-    def test_daily_sign_request_does_not_load_legacy_r13_resource(self):
-        with patch("tools.daily_sign_sync_tool.get_workflow_resource") as resource_mock:
-            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
-                {"request_body": {"days": 1}}
-            )
-
-        self.assertEqual({"days": 1}, request_body)
-        resource_mock.assert_not_called()
-
-    def test_daily_sign_sync_prefers_r13_account_manager_credentials(self):
-        class FakeAccountManager:
-            def resolve_role_account_params(self, params, **kwargs):
-                self.kwargs = kwargs
-                result = dict(params)
-                result["username"] = "r13-account-user"
-                result["password"] = "r13-account-pass"
-                return result
-
-        fake_manager = FakeAccountManager()
-        with (
-            patch("tools.daily_sign_sync_tool.get_account_manager", return_value=fake_manager),
-            patch("tools.daily_sign_sync_tool.get_workflow_resource") as resource_mock,
-        ):
-            request_body = daily_sign_sync_tool.build_daily_sign_request_body(
-                {
-                    "r13_account_id": "r13_default",
-                    "request_body": {"days": 1},
-                }
-            )
-
-        self.assertEqual("r13_account_id", fake_manager.kwargs["account_field"])
-        self.assertEqual("", fake_manager.kwargs["output_account_field"])
-        self.assertEqual("", fake_manager.kwargs["output_session_profile_field"])
-        self.assertEqual("r13-account-user", request_body["username"])
-        self.assertEqual("r13-account-pass", request_body["password"])
-        resource_mock.assert_not_called()
-
-    def test_daily_sign_request_rejects_inline_credentials_and_account_selectors(self):
-        for forbidden in ("username", "password", "account_id", "r13_account_id"):
-            with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
-                daily_sign_sync_tool.build_daily_sign_request_body(
-                    {"request_body": {"days": 1, forbidden: "caller-controlled"}}
-                )
-
     def test_daily_sign_sync_surfaces_get_qianshou_error(self):
         from datetime import datetime
 
@@ -2464,8 +2420,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                 ):
                     result = daily_sign_sync_tool.run_daily_sign_sync(
                         {
-                            "r13_account_id": "r13_default",
-                            "account_id": "ronghui_daxiang_s",
+                            "r13_account_id": "r13-project-selected",
+                            "account_id": "ronghui-project-selected",
                             "days": 1,
                         }
                     )

@@ -57,13 +57,20 @@ def source_values(*rows: list[object]) -> list[list[object]]:
 
 
 class SplitPendingProblemUploadTests(unittest.TestCase):
+    def test_missing_account_binding_fails_before_source_read(self):
+        with patch.object(tool, "_read_source_values") as read_mock:
+            result = tool.run_split_pending_problem_upload({"dry_run": True})
+        self.assertEqual("blocked_config", result["stage"])
+        self.assertIn("account_id", result["error"])
+        read_mock.assert_not_called()
+
     def test_classifies_partial_and_zero_arrival(self):
         candidates, source_rows = tool.classify_sheet_values(
             source_values(source_row("R_PART", 10, 4), source_row("R_ZERO", 6, 0))
         )
         self.assertEqual(2, source_rows)
         self.assertEqual("少货/分批", candidates[0]["problem_type"])
-        self.assertEqual("应到10件，已到4件", candidates[0]["problem_cause"])
+        self.assertEqual("应到10件 实际到4件", candidates[0]["problem_cause"])
         self.assertEqual("有发未到", candidates[1]["problem_type"])
         self.assertEqual("通知类（不顺延时效）", candidates[1]["problem_owner_type"])
 
@@ -81,7 +88,7 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
                 {
                     "tracking_number": "R_PART",
                     "problem_type": "少货/分批",
-                    "upload_status": "success",
+                    "upload_status": "failed",
                     "complaint_status": "pending",
                 },
                 {
@@ -94,9 +101,9 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
         )
         self.assertEqual(1, hidden)
         self.assertEqual(["R_PART"], [item["bill_code"] for item in eligible])
-        self.assertEqual("待补差错", eligible[0]["candidate_status"])
-        self.assertTrue(eligible[0]["run_complaint"])
-        self.assertFalse(eligible[0]["run_problem_item"])
+        self.assertEqual("问题件失败", eligible[0]["candidate_status"])
+        self.assertEqual("not_applicable", eligible[0]["complaint_status"])
+        self.assertTrue(eligible[0]["run_problem_item"])
 
     def test_same_type_quantity_change_stays_hidden_but_type_change_resets(self):
         partial, _ = tool.classify_sheet_values(source_values(source_row("R1", 10, 7)))
@@ -122,7 +129,7 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
             }],
         )
         self.assertEqual("未执行", changed[0]["candidate_status"])
-        self.assertEqual("pending", changed[0]["complaint_status"])
+        self.assertEqual("not_applicable", changed[0]["complaint_status"])
         self.assertEqual("pending", changed[0]["problem_item_status"])
 
     def test_fingerprint_changes_when_source_quantity_changes(self):
@@ -142,7 +149,9 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
         ), patch.object(tool, "replace_split_pending_problem_items") as replace_mock, patch.object(
             tool, "_sync_target_sheet"
         ) as sheet_mock, patch.object(tool, "_upload_to_tms") as upload_mock:
-            result = tool.run_split_pending_problem_upload({"dry_run": True})
+            result = tool.run_split_pending_problem_upload(
+                {"dry_run": True, "account_id": "bound-account"}
+            )
         self.assertTrue(result["ok"])
         self.assertEqual("dry_run", result["stage"])
         self.assertEqual(2, result["candidate_count"])
@@ -153,7 +162,9 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
 
     def test_formal_mode_requires_selection_and_fingerprint_before_source_read(self):
         with patch.object(tool, "_read_source_values") as read_mock:
-            result = tool.run_split_pending_problem_upload({"dry_run": False})
+            result = tool.run_split_pending_problem_upload(
+                {"dry_run": False, "account_id": "bound-account"}
+            )
         self.assertEqual("selection_required", result["stage"])
         read_mock.assert_not_called()
 
@@ -166,6 +177,7 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
         ) as sheet_mock, patch.object(tool, "_upload_to_tms") as upload_mock:
             result = tool.run_split_pending_problem_upload(
                 {
+                    "account_id": "bound-account",
                     "dry_run": False,
                     "selected_bill_codes": ["R1"],
                     "preview_fingerprint": "0" * 64,
@@ -182,7 +194,9 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
         with patch.object(tool, "_read_source_values", return_value=read_result), patch.object(
             tool, "list_split_pending_problem_items", return_value=[]
         ):
-            preview = tool.run_split_pending_problem_upload({"dry_run": True})
+            preview = tool.run_split_pending_problem_upload(
+                {"dry_run": True, "account_id": "bound-account"}
+            )
         upload_payload = {
             "message": "完成 1/1 单",
             "results": [{
@@ -215,6 +229,7 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
         ):
             result = tool.run_split_pending_problem_upload(
                 {
+                    "account_id": "bound-account",
                     "dry_run": False,
                     "selected_bill_codes": ["R2"],
                     "preview_fingerprint": preview["preview_fingerprint"],
@@ -225,6 +240,56 @@ class SplitPendingProblemUploadTests(unittest.TestCase):
         self.assertEqual(2, len(replace_mock.call_args.args[0]))
         self.assertEqual(2, len(sheet_mock.call_args.args[0]))
         self.assertEqual(["R2"], [item["bill_code"] for item in upload_mock.call_args.args[0]])
+
+    def test_event_failure_does_not_mark_database_result_complete(self):
+        values = source_values(source_row("R1", 10, 4))
+        read_result = (values, {"sheet_id": "8fc516"})
+        with patch.object(tool, "_read_source_values", return_value=read_result), patch.object(
+            tool, "list_split_pending_problem_items", return_value=[]
+        ):
+            preview = tool.run_split_pending_problem_upload(
+                {"dry_run": True, "account_id": "bound-account"}
+            )
+        upload_payload = {
+            "message": "完成 1/1 单",
+            "results": [
+                {
+                    "bill_code": "R1",
+                    "complaint": None,
+                    "problem_type": "少货/分批",
+                    "problem_item": {
+                        "status": "success",
+                        "external_id": "problem-r1",
+                        "registered_at": "2026-08-12 16:00:00",
+                        "registered_site": "登记网点",
+                    },
+                    "complete": True,
+                }
+            ],
+        }
+        with patch.object(tool, "_read_source_values", return_value=read_result), patch.object(
+            tool, "list_split_pending_problem_items", return_value=[]
+        ), patch.object(
+            tool, "replace_split_pending_problem_items", return_value={"current": 1}
+        ), patch.object(
+            tool, "_sync_target_sheet", return_value={"rows": 1}
+        ), patch.object(
+            tool, "_upload_to_tms", return_value=upload_payload
+        ), patch.object(
+            tool, "upsert_problem_events", side_effect=RuntimeError("event failed")
+        ), patch.object(
+            tool, "update_split_pending_combined_results"
+        ) as update_mock:
+            result = tool.run_split_pending_problem_upload(
+                {
+                    "account_id": "bound-account",
+                    "dry_run": False,
+                    "selected_bill_codes": ["R1"],
+                    "preview_fingerprint": preview["preview_fingerprint"],
+                }
+            )
+        self.assertEqual("event_store_failed", result["stage"])
+        update_mock.assert_not_called()
 
     def test_router_accepts_only_exact_new_trigger(self):
         request = direct_tool_request_from_text("分批")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import sys
 from collections.abc import Mapping
@@ -231,27 +230,6 @@ class _Harness:
             result["external_id"] = plan["external_id"]
         return result
 
-    def complaint_action(
-        self,
-        _descriptor,
-        action: str,
-        plan: Mapping[str, Any],
-    ):
-        bill_code = str(plan["bill_code"])
-        self.calls.append(f"complaint:{action}:{bill_code}")
-        if action == "query":
-            return {"ready": True}
-        if action == "create":
-            return {
-                "bill_code": bill_code,
-                "duplicate": False,
-                "external_id": f"complaint-{bill_code}",
-                "plan_sha256": hashlib.sha256(bill_code.encode()).hexdigest(),
-                "saved": True,
-                "verified": True,
-            }
-        return {"confirmed": True, **plan}
-
     def snapshot_reader(self):
         return [dict(record) for record in self.snapshot]
 
@@ -262,11 +240,7 @@ class _Harness:
                 **record,
                 "tracking_number": record["bill_code"],
                 "upload_status": "pending",
-                "complaint_status": (
-                    "pending"
-                    if record["problem_type"] == "少货/分批"
-                    else "not_applicable"
-                ),
+                "complaint_status": "not_applicable",
             }
             for record in records
         ]
@@ -304,7 +278,6 @@ class _Harness:
             resource_loader=self.resource_loader,
             feishu_operation=self.feishu_operation,
             problem_action=self.problem_action,
-            complaint_action=self.complaint_action,
             snapshot_reader=self.snapshot_reader,
             snapshot_replacer=self.snapshot_replacer,
             result_updater=self.result_updater,
@@ -409,8 +382,8 @@ def test_split_payload_runs_full_closed_write_and_readback_chain() -> None:
     assert result["data"]["results"] == [
         {
             "bill_code": "R_SPLIT",
-            "complaint_external_id": "complaint-R_SPLIT",
-            "complaint_status": "success",
+            "complaint_external_id": "",
+            "complaint_status": "not_applicable",
             "problem_external_id": "problem-R_SPLIT",
             "problem_item_status": "success",
             "problem_type": "少货/分批",
@@ -418,15 +391,13 @@ def test_split_payload_runs_full_closed_write_and_readback_chain() -> None:
             "verified": True,
         }
     ]
-    assert harness.calls.index("complaint:query:R_SPLIT") < harness.calls.index(
-        "projection:snapshot-replace"
-    )
     assert harness.calls.index("problem:query:R_SPLIT") < harness.calls.index(
         "projection:snapshot-replace"
     )
+    assert not any(call.startswith("complaint:") for call in harness.calls)
     assert harness.calls[-2:] == [
-        "projection:result-upsert",
         "ledger:event-upsert",
+        "projection:result-upsert",
     ]
     assert _PRIMARY not in repr(result)
     assert _SPLIT_TARGET not in repr(result)
@@ -446,7 +417,6 @@ def test_target_sheet_acknowledgement_without_matching_readback_is_unknown() -> 
         resource_loader=harness.resource_loader,
         feishu_operation=drifting_feishu,
         problem_action=harness.problem_action,
-        complaint_action=harness.complaint_action,
         snapshot_reader=harness.snapshot_reader,
         snapshot_replacer=harness.snapshot_replacer,
         result_updater=harness.result_updater,

@@ -34,12 +34,8 @@ from agent.tms_runtime.scripts.ronghui_problem_upload import upload_problem_item
 
 DEFAULT_SPREADSHEET_TOKEN = "F0NVsI5dlhaWugtw14YcmdrQnvh"
 DEFAULT_SHEET_ID = "UeBd3I"
-DEFAULT_ACCOUNT_ID = "ronghui_self_pickup_problem"
-DEFAULT_SESSION_PROFILE = "self_pickup_problem_upload"
 SOURCE_SELF_PICKUP_DEPARTMENT = "self_pickup_department"
 SOURCE_DAXIANG_S_SELF_PICKUP = "daxiang_s_self_pickup"
-DAXIANG_S_ACCOUNT_ID = "ronghui_daxiang_s"
-DAXIANG_S_SESSION_PROFILE = "daxiang_s"
 DEFAULT_SOURCE_SHEET_TITLE = "每日到货表"
 DEFAULT_DESTINATION_SITE = "邵阳自提部"
 DAXIANG_S_DESTINATION_SITE = "邵阳大祥S站"
@@ -120,12 +116,21 @@ def _bool_param(params: dict[str, Any], key: str, default: bool = False) -> bool
     return bool(value)
 
 
-def _normalize_bill_code(value: Any) -> str:
+def _required_role_value(params: dict[str, Any], key: str) -> str:
+    value = _clean_text(params.get(key))
+    if not value:
+        raise ValueError(f"项目设置必须显式绑定 {key}")
+    return value
+
+
+def _normalize_bill_code(value: Any, *, label: str = "运单号") -> str:
     text = _clean_text(value)
     if text.startswith("="):
         text = text[1:].strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
         text = text[1:-1].strip()
+    if any(character.isspace() for character in text):
+        raise ValueError(f"{label}包含内部空白，不能自动删除或拼接")
     return text
 
 
@@ -260,28 +265,35 @@ def _header_index(headers: list[Any], candidates: tuple[str, ...], default: int)
 def _source_rules(params: dict[str, Any]) -> list[dict[str, Any]]:
     problem_type = _clean_text(params.get("problem_type") or DEFAULT_PROBLEM_TYPE)
     problem_owner_type = _clean_text(params.get("problem_owner_type") or DEFAULT_PROBLEM_OWNER_TYPE)
+    account_id = _required_role_value(params, "account_id")
+    session_profile = _required_role_value(params, "session_profile")
     rules = [
         {
             "source_id": SOURCE_SELF_PICKUP_DEPARTMENT,
             "source_name": DEFAULT_DESTINATION_SITE,
             "destination_site": _clean_text(params.get("destination_site") or DEFAULT_DESTINATION_SITE),
             "delivery_method": "",
-            "account_id": _clean_text(params.get("account_id") or DEFAULT_ACCOUNT_ID),
-            "session_profile": _clean_text(params.get("session_profile") or DEFAULT_SESSION_PROFILE),
+            "account_id": account_id,
+            "session_profile": session_profile,
             "problem_type": problem_type,
             "problem_owner_type": problem_owner_type,
             "problem_cause": _clean_text(params.get("problem_cause") or DEFAULT_PROBLEM_CAUSE),
         }
     ]
     if _bool_param(params, "include_daxiang_s_self_pickup", True):
+        daxiang_account_id = _required_role_value(params, "daxiang_s_account_id")
+        daxiang_session_profile = _required_role_value(
+            params,
+            "daxiang_s_session_profile",
+        )
         rules.append(
             {
                 "source_id": SOURCE_DAXIANG_S_SELF_PICKUP,
                 "source_name": "邵阳大祥S站自提",
                 "destination_site": _clean_text(params.get("daxiang_s_destination_site") or DAXIANG_S_DESTINATION_SITE),
                 "delivery_method": _clean_text(params.get("daxiang_s_delivery_method") or DAXIANG_S_DELIVERY_METHOD),
-                "account_id": _clean_text(params.get("daxiang_s_account_id") or DAXIANG_S_ACCOUNT_ID),
-                "session_profile": _clean_text(params.get("daxiang_s_session_profile") or DAXIANG_S_SESSION_PROFILE),
+                "account_id": daxiang_account_id,
+                "session_profile": daxiang_session_profile,
                 "problem_type": _clean_text(params.get("daxiang_s_problem_type") or problem_type),
                 "problem_owner_type": _clean_text(params.get("daxiang_s_problem_owner_type") or problem_owner_type),
                 "problem_cause": _clean_text(params.get("daxiang_s_problem_cause") or DAXIANG_S_PROBLEM_CAUSE),
@@ -302,12 +314,18 @@ def _public_source_rule(rule: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_bound_account_roles(params: dict[str, Any]) -> dict[str, Any]:
+    _required_role_value(params, "account_id")
+    include_daxiang = _bool_param(params, "include_daxiang_s_self_pickup", True)
+    if include_daxiang:
+        _required_role_value(params, "daxiang_s_account_id")
     manager = get_account_manager()
     resolved = manager.resolve_role_account_params(
         params,
         account_field="account_id",
         output_session_profile_field="session_profile",
     )
+    if not include_daxiang:
+        return resolved
     return manager.resolve_role_account_params(
         resolved,
         account_field="daxiang_s_account_id",
@@ -332,19 +350,7 @@ def _collect_waybills_from_values(
     arrival_count_col = _header_index(headers, ("累计到货件数", "已到货件数", "到货件数"), -1)
     goods_count_col = _header_index(headers, ("货物件数", "货物总件数", "总货物件数", "开单件数", "应到件数", "件数"), -1)
     if source_rules is None:
-        source_rules = [
-            {
-                "source_id": "default",
-                "source_name": _clean_text(destination_site),
-                "destination_site": _clean_text(destination_site),
-                "delivery_method": "",
-                "account_id": DEFAULT_ACCOUNT_ID,
-                "session_profile": DEFAULT_SESSION_PROFILE,
-                "problem_type": DEFAULT_PROBLEM_TYPE,
-                "problem_owner_type": DEFAULT_PROBLEM_OWNER_TYPE,
-                "problem_cause": DEFAULT_PROBLEM_CAUSE,
-            }
-        ]
+        raise ValueError("source_rules 必须包含显式账号绑定")
     if any(_clean_text(rule.get("delivery_method")) for rule in source_rules) and delivery_col < 0:
         raise RuntimeError("每日到货表缺少派送方式列，无法筛选邵阳大祥S站自提单号")
     if arrival_count_col < 0 or goods_count_col < 0 or arrival_count_col == goods_count_col:
@@ -353,15 +359,9 @@ def _collect_waybills_from_values(
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for row_number, row in enumerate(values[1:], start=2):
-        bill = _normalize_bill_code(row[bill_col] if len(row) > bill_col else "")
-        if not bill:
-            continue
         destination = _clean_text(row[dest_col] if len(row) > dest_col else "")
         delivery_method = _clean_text(row[delivery_col] if delivery_col >= 0 and len(row) > delivery_col else "")
-        arrival_count = _clean_text(row[arrival_count_col] if len(row) > arrival_count_col else "")
-        goods_count = _clean_text(row[goods_count_col] if len(row) > goods_count_col else "")
-        if not _is_arrival_complete(arrival_count, goods_count):
-            continue
+        matched_rules: list[dict[str, Any]] = []
         for rule in source_rules:
             rule_destination = _clean_text(rule.get("destination_site"))
             if rule_destination and destination and destination != rule_destination:
@@ -371,6 +371,22 @@ def _collect_waybills_from_values(
             rule_delivery = _clean_text(rule.get("delivery_method"))
             if rule_delivery and delivery_method != rule_delivery:
                 continue
+            matched_rules.append(rule)
+        if not matched_rules:
+            continue
+        if len(matched_rules) != 1:
+            raise ValueError(f"每日到货表第 {row_number} 行同时匹配多个自提来源")
+        bill = _normalize_bill_code(
+            row[bill_col] if len(row) > bill_col else "",
+            label=f"每日到货表第 {row_number} 行运单号",
+        )
+        if not bill:
+            continue
+        arrival_count = _clean_text(row[arrival_count_col] if len(row) > arrival_count_col else "")
+        goods_count = _clean_text(row[goods_count_col] if len(row) > goods_count_col else "")
+        if not _is_arrival_complete(arrival_count, goods_count):
+            continue
+        for rule in matched_rules:
             source_id = _clean_text(rule.get("source_id")) or "default"
             seen_key = (source_id, bill)
             if seen_key in seen:
@@ -1015,8 +1031,8 @@ def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
     dry_run = _bool_param(params, "dry_run", True)
     source_rules = _source_rules(params)
     primary_rule = source_rules[0] if source_rules else {}
-    account_id = _clean_text(primary_rule.get("account_id") or DEFAULT_ACCOUNT_ID)
-    session_profile = _clean_text(primary_rule.get("session_profile") or DEFAULT_SESSION_PROFILE)
+    account_id = _clean_text(primary_rule.get("account_id"))
+    session_profile = _clean_text(primary_rule.get("session_profile"))
 
     records, source = _read_feishu_waybills(params)
     preview = _candidate_preview(records)
@@ -1102,7 +1118,9 @@ def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
                 "problem_cause": rule.get("problem_cause"),
             }
         )
-        group_session_profile = _clean_text(rule.get("session_profile") or DEFAULT_SESSION_PROFILE)
+        group_session_profile = _clean_text(rule.get("session_profile"))
+        if not group_session_profile:
+            raise ValueError(f"{source_id} 未解析出 session_profile")
         session = TMSAuth(profile=group_session_profile).login_and_get_session(
             max_attempts=max(1, int(params.get("max_login_attempts") or 6))
         )

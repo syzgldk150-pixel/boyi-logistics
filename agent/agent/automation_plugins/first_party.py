@@ -67,8 +67,8 @@ FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
-    "self_pickup_problem_upload": "1.0.23",
-    "split_pending_problem_upload": "1.0.23",
+    "self_pickup_problem_upload": "1.0.25",
+    "split_pending_problem_upload": "1.0.25",
     "sync_arrival_stats": "1.0.21",
     "sync_scan_codes": "1.0.23",
 }
@@ -406,7 +406,6 @@ _FIRST_PARTY_WRITE_BROKER_ACTIONS = frozenset(
         "ronghui.problem.create",
         "split_pending.snapshot.replace",
         "feishu.sheet.replace_rows",
-        "ronghui.complaint.create",
         "split_pending.result.upsert",
         "daily_sign.problem_event.upsert",
         "scan.snapshot.replace",
@@ -448,8 +447,6 @@ _FIRST_PARTY_READ_BROKER_ACTIONS = frozenset(
         "ronghui.arrive_list.read_page",
         "ronghui.clock.precheck",
         "ronghui.clock.verify",
-        "ronghui.complaint.query",
-        "ronghui.complaint.verify",
         "ronghui.delivery_status.read",
         "ronghui.finance.capture_page",
         "ronghui.finance.verify_source_totals",
@@ -564,9 +561,6 @@ _FIRST_PARTY_BROKER_ACTIONS: Mapping[str, tuple[FirstPartyBrokerAction, ...]] = 
             "feishu.sheet.replace_rows",
             "split_pending_target_sheet",
         ),
-        _broker_action("browser.invoke", "ronghui.complaint.query", "account_id"),
-        _broker_action("browser.invoke", "ronghui.complaint.create", "account_id"),
-        _broker_action("browser.invoke", "ronghui.complaint.verify", "account_id"),
         _broker_action("browser.invoke", "ronghui.problem.query", "account_id"),
         _broker_action("browser.invoke", "ronghui.problem.create", "account_id"),
         _broker_action("browser.invoke", "ronghui.problem.verify", "account_id"),

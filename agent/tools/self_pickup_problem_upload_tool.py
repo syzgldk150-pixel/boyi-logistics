@@ -18,12 +18,35 @@ from tools.tms_tool import call_http_service
 
 
 UPLOAD_TIMEOUT_SEC = 7200
-DEFAULT_ACCOUNT_ID = "ronghui_self_pickup_problem"
+
+
+def _bool_param(params: dict[str, Any], key: str, default: bool) -> bool:
+    value = params.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
 
 
 def run_self_pickup_problem_upload(params: dict[str, Any] | None = None) -> dict[str, Any]:
     params = dict(params or {})
-    params.setdefault("account_id", DEFAULT_ACCOUNT_ID)
+    required_accounts = ["account_id"]
+    if _bool_param(params, "include_daxiang_s_self_pickup", True):
+        required_accounts.append("daxiang_s_account_id")
+    missing = [field for field in required_accounts if not str(params.get(field) or "").strip()]
+    if missing:
+        message = f"项目设置必须显式绑定账号：{', '.join(missing)}"
+        return {
+            "ok": False,
+            "stage": "blocked_config",
+            "error": message,
+            "message": message,
+        }
     result = call_http_service(
         "/self_pickup_problem_upload",
         {

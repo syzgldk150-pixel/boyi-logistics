@@ -44,6 +44,15 @@ def load_script_module():
                 sys.modules[name] = previous
 
 
+def bound_source_params():
+    return {
+        "account_id": "bound-self",
+        "session_profile": "bound-self-profile",
+        "daxiang_s_account_id": "bound-daxiang",
+        "daxiang_s_session_profile": "bound-daxiang-profile",
+    }
+
+
 class SelfPickupArrivalCompletenessTest(unittest.TestCase):
     def test_problem_causes_match_current_pickup_notice_text(self):
         script = load_script_module()
@@ -77,7 +86,7 @@ class SelfPickupArrivalCompletenessTest(unittest.TestCase):
 
         records = script._collect_waybills_from_values(
             values,
-            source_rules=script._source_rules({}),
+            source_rules=script._source_rules(bound_source_params()),
             source_sheet_id="sheet1",
             source_sheet_title="每日到货表",
         )
@@ -97,7 +106,7 @@ class SelfPickupArrivalCompletenessTest(unittest.TestCase):
 
         records = script._collect_waybills_from_values(
             values,
-            source_rules=script._source_rules({}),
+            source_rules=script._source_rules(bound_source_params()),
             source_sheet_id="sheet1",
             source_sheet_title="每日到货表",
         )
@@ -114,7 +123,7 @@ class SelfPickupArrivalCompletenessTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "累计到货件数.*货物件数"):
             script._collect_waybills_from_values(
                 values,
-                source_rules=script._source_rules({}),
+                source_rules=script._source_rules(bound_source_params()),
                 source_sheet_id="sheet1",
                 source_sheet_title="每日到货表",
             )
